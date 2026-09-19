@@ -36,8 +36,9 @@ def test_local_variation_file_ref_resolves(tmp_path):
     classes = _get_variation_classes(
         {"variations": [{"myvar.py:TagVariation": {}}]}, str(tmp_path))
     assert len(classes) == 1
-    cls, _ = classes[0]
+    cls, _params, ref = classes[0]
     assert cls.__name__ == "TagVariation"
+    assert ref == "myvar.py:TagVariation"
 
 
 def test_unknown_variation_name_raises(tmp_path):

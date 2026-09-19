@@ -824,9 +824,8 @@ RESERVED_ENV_NAMES = frozenset({
     'BT_LOG', 'LOG_TOPICS',
     # what the container is allowed to use
     'AVAILABLE_CPUS', 'AVAILABLE_MEM',
-    # upload credentials and where a campaign's objects land
-    'S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_PREFIX',
-    'S3_CAMPAIGN_PREFIX',
+    # how the pod reaches the service's data plane
+    'ROBOVAST_DATA_URL', 'ROBOVAST_TOKEN', 'ROBOVAST_CAMPAIGN_ID',
 })
 
 

@@ -183,8 +183,8 @@ export type RetriggerAxis = Schemas['RetriggerAxis']
 
 export type ActionResult = Schemas['ActionResult']
 
-// Whether a run's 3D geometry is ready, and what the wait is on if not. Mirrors CampaignDataStatus'
-// job: say why you are about to wait, before you wait.
+// Whether a run's 3D geometry is ready, and what the wait is on if not: say why you are about to
+// wait, before you wait.
 export type SceneStatus = Schemas['SceneStatus']
 
 // control_server.Status (reused verbatim by the interface) — the live monitor model.
@@ -323,11 +323,6 @@ export interface DataTable {
 export type DataDescribe = Schemas['DataDescribe']
 
 export type DataQueryResult = Schemas['DataQueryResult']
-
-// Whether querying a campaign has to transfer its databases from the object store first.
-// `fetch_required: false` (a local service) means the question does not apply — the backend
-// difference is resolved server-side, so a view reads the same fields either way.
-export type CampaignDataStatus = Schemas['CampaignDataStatus']
 
 export interface PlotSpec {
   title: string
@@ -502,11 +497,10 @@ export const robovast = {
   upgradeService: (force: boolean) =>
     request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
 
-  // Direct URL of a campaign's tar.gz (a GET the browser downloads). Both lanes answer
-  // it: a cluster service streams it from the object store, a local one tars its own
-  // results directory.
+  // Direct URL of a campaign's tar.gz (a GET the browser downloads), on the data plane:
+  // the service tars its results directory into the response, on either lane.
   archiveUrl: (campaignId: string) =>
-    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/archive`,
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
 
   // What the configured share holds, read by the service with its own credentials --
   // a browser has none. `configured: false` means this service has no share at all,
@@ -628,8 +622,8 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/retrigger/check`,
     ),
 
-  // Permanently delete one campaign wholesale (local dir / cluster object-store data +
-  // leftover Jobs + cache). Refused by the service while the campaign is still running.
+  // Permanently delete one campaign wholesale (its results directory + leftover Jobs +
+  // cache). Refused by the service while the campaign is still running.
   deleteCampaign: (campaignId: string) =>
     request<ActionResult>('DELETE', `/campaigns/${encodeURIComponent(campaignId)}`),
 
@@ -799,14 +793,6 @@ export const robovast = {
       max_rows: maxRows,
       max_bytes: UI_RESULT_BYTES,
     }),
-
-  // Cheap pre-flight for the two above: on a cluster campaign the first of them fetches the
-  // databases from the object store inside the request, which without a word looks like a hang.
-  campaignDataStatus: (campaignId: string) =>
-    request<CampaignDataStatus>(
-      'GET',
-      `/campaigns/${encodeURIComponent(campaignId)}/data-status`,
-    ),
 
   listCampaignPlots: (campaignId: string) =>
     request<CampaignPlotsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/plots`),

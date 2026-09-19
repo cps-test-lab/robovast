@@ -97,9 +97,8 @@ RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
 #: so an unmounted workspace store is discarded on each version bump — every project a
 #: user had pushed, gone, while the upgrade reports success.
 #:
-#: The campaign results root needed the same treatment and did not get it for longer, because
-#: it was believed to be a cache of the object store. It is not, for a campaign the service is
-#: *driving* — see :data:`RESULTS_VOLUME_NAME`.
+#: The campaign results root is the same case and a larger one: it is not a cache of
+#: anything, it is where every campaign lives — see :data:`RESULTS_VOLUME_NAME`.
 #:
 #: An explicit path plus ``ROBOVAST_WORKSPACES_ROOT`` rather than mounting over the
 #: default ``~/.robovast/workspaces``: the default is resolved from ``HOME`` inside the
@@ -111,18 +110,15 @@ WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
 DEFAULT_WORKSPACES_HOST_PATH = data_paths.DEFAULT_WORKSPACES_HOST_PATH
 WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 
-#: Where the service keeps the working root of the campaigns it drives, and the volume
-#: backing it.
+#: Where every campaign lives, on either lane, and the volume backing it.
 #:
-#: Not a cache, and expensive to treat as one. A cluster campaign's
-#: *durable* home is the object store, but the one being driven has a local tree all the
-#: same: each batch downloads its own results into it, per-run extraction reads it through a
-#: path (``search.extractor.Extractor.extract``), and postprocessing reads it to derive
-#: the campaign's results. Unmounted it landed on the container's writable layer — as ``/var/lib/results``,
-#: the *sibling* of the workspaces mount, one directory outside what was covered — so every
-#: restart discarded it. Combined with a resume that rebuilds it before the port is bound,
-#: that was a restart loop no ``startupProbe`` could have saved: each attempt was killed
-#: mid-restore and the next began again from an empty directory.
+#: Not a cache and not a mirror: ``<results_root>/<campaign_id>/`` **is** the campaign.
+#: The driver writes into it, a job pod's outputs are extracted into it by the data plane,
+#: per-run extraction reads it through a path (``search.extractor.Extractor.extract``),
+#: postprocessing derives its results into it, and every read a client makes of
+#: ``/results/…`` is a file opened under it. Unmounted it would land on the container's
+#: writable layer — as ``/var/lib/results``, the *sibling* of the workspaces mount, one
+#: directory outside what is covered — and every restart would discard it.
 #:
 #: Named on the command line via ``vast serve --results-dir`` rather than left to
 #: ``local_results_root``'s ``<workspaces_root>/../results``, for the reason
@@ -221,12 +217,11 @@ def results_volume(storage_path="", storage_class=""):
     one it already tests, results cannot become node-local behind its back and be abandoned by
     a pod that was free to move.
 
-    And it commits no public API to an arrangement that may not last. This is the driver's
-    mirror of a campaign whose home is the object store -- it downloads Job output it did not
-    produce and re-uploads it whole (``KubernetesBackend.finalize_campaign``) -- and what
-    keeps that necessary is only that per-run extraction runs driver-side against a local path
-    (``search.extractor.Extractor.extract``). Move extraction into a Job, as rosbag conversion
-    already is, and this volume stops being needed.
+    And it keeps the two halves of the service's disk one decision. The results are the
+    larger half by orders of magnitude, so a deployment that provisioned its workspaces and
+    left its campaigns on the node's root filesystem is the split this derivation makes
+    unrepresentable. How much room the claim gets is the one thing stated separately, with
+    ``--results-size``.
     """
     if storage_class:
         return {"name": RESULTS_VOLUME_NAME,
@@ -236,13 +231,44 @@ def results_volume(storage_path="", storage_class=""):
                          "type": "DirectoryOrCreate"}}
 
 
-def results_pvc_manifest(namespace, storage_class, size="500Gi"):
-    """The PVC for :func:`results_volume`, or ``None`` when backed by hostPath.
+#: The default size of the results claim, and the floor an operator raises with
+#: ``--results-size``. An order of magnitude larger than the workspaces claim's default,
+#: because this is where every campaign lives: a campaign's run artifacts outweigh
+#: everything the driver itself writes by four orders of magnitude, and a service drives
+#: many at once.
+DEFAULT_RESULTS_SIZE = "500Gi"
 
-    An order of magnitude larger than the workspaces claim's default, because this is the
-    largest store the service keeps: one measured campaign held 4.0 GB of run artifacts
-    against 0.4 MB of anything the driver itself produced, and a service drives many at once.
+#: Kubernetes quantity suffixes, as multiples of a byte. Both series, because a
+#: StorageClass takes either and an operator who writes ``500G`` must not be told it is
+#: smaller than the ``500Gi`` already deployed without the comparison being true.
+_QUANTITY_UNITS = {"": 1, "k": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15,
+                   "Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Pi": 2**50}
+
+
+def parse_quantity(value: str) -> int:
+    """A Kubernetes storage quantity in bytes, or ``ValueError`` naming what was read.
+
+    Only enough of the grammar to compare two claim sizes, which is the one question asked
+    of it: a decimal number and an optional binary or decimal suffix. Refusing what it
+    cannot read rather than guessing is what keeps a typo from being read as a shrink --
+    the one outcome a provider rejects after the claim is already patched.
     """
+    text = (value or "").strip()
+    for suffix in sorted(_QUANTITY_UNITS, key=len, reverse=True):
+        if suffix and not text.endswith(suffix):
+            continue
+        number = text[:len(text) - len(suffix)] if suffix else text
+        try:
+            return int(float(number) * _QUANTITY_UNITS[suffix])
+        except ValueError:
+            break
+    raise ValueError(
+        f"{value!r} is not a storage size: write a number and an optional unit, "
+        f"e.g. '500Gi', '2Ti' or '750G'.")
+
+
+def results_pvc_manifest(namespace, storage_class, size=""):
+    """The PVC for :func:`results_volume`, or ``None`` when backed by hostPath."""
     if not storage_class:
         return None
     return {
@@ -252,8 +278,51 @@ def results_pvc_manifest(namespace, storage_class, size="500Gi"):
                      "labels": {"app": SERVICE_NAME}},
         "spec": {"accessModes": ["ReadWriteOnce"],
                  "storageClassName": storage_class,
-                 "resources": {"requests": {"storage": size}}},
+                 "resources": {"requests": {"storage": size or DEFAULT_RESULTS_SIZE}}},
     }
+
+
+def grow_results_claim(core, namespace, size, *, dry_run=False):
+    """Raise the results claim to *size*, or say why it cannot be raised. Returns a message.
+
+    The claim is created once, at setup, and most of a bound PVC's spec is immutable -- so
+    a re-render cannot carry a new size and this patch is the only way a running deployment
+    gets more room for its campaigns. Every class this deployment targets expands a bound
+    claim online, so the pod is not rolled and no campaign is interrupted.
+
+    Two things are refused rather than attempted. A **smaller** size, because Kubernetes
+    rejects a shrink and the operator's intent would otherwise be lost between an accepted
+    command and a claim that never changed. A deployment with **no claim**, because its
+    results are a directory on the node and its bound is that node's disk: there is no
+    volume to size, and reporting success would leave the operator believing they had
+    raised one.
+    """
+    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
+
+    wanted = parse_quantity(size)
+    try:
+        claim = core.read_namespaced_persistent_volume_claim(RESULTS_VOLUME_NAME, namespace)
+    except ApiException as exc:
+        if exc.status != 404:
+            raise
+        raise RuntimeError(
+            f"the results of this deployment are a directory on the data node, not a "
+            f"volume, so there is nothing to resize: its bound is that node's disk. A "
+            f"claim is created by 'vast cluster setup' with a StorageClass "
+            f"(--workspaces-class), which moves the campaigns with it.") from exc
+    current = (claim.spec.resources.requests or {}).get("storage", "")
+    if current and parse_quantity(current) > wanted:
+        raise RuntimeError(
+            f"the results claim already asks for {current} and a claim cannot be shrunk: "
+            f"Kubernetes rejects a request below the bound size, and the volume is where "
+            f"every campaign lives. Ask for {current} or more.")
+    if current and parse_quantity(current) == wanted:
+        return f"the results claim already asks for {current}"
+    core.patch_namespaced_persistent_volume_claim(
+        RESULTS_VOLUME_NAME, namespace,
+        {"spec": {"resources": {"requests": {"storage": size}}}},
+        dry_run="All" if dry_run else None)
+    return f"raised the results claim from {current or 'its size'} to {size}"
 
 
 def _service_rbac_manifests(namespace):
@@ -294,10 +363,15 @@ def _service_rbac_manifests(namespace):
                 # the service creates and tears down.
                 {"apiGroups": [""], "resources": ["pods", "pods/log"],
                  "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
-                # The registry push Secret: read to authenticate the "is this image
-                # already pushed?" probe (see ClusterService._resolve_registry_objects).
-                # Read-only, by name -- nothing here ever writes a Secret.
-                {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
+                # Secrets, three verbs and no more. ``get``: the registry push Secret,
+                # read to authenticate the "is this image already pushed?" probe (see
+                # ClusterService._resolve_registry_objects). ``create`` and ``delete``:
+                # each campaign's data-plane token Secret, made before its first Job
+                # and removed with the campaign (pod_access.ensure_campaign_secret /
+                # delete_campaign_secret) -- without them no campaign starts a Job.
+                # Nothing lists, watches or rewrites a Secret, so nothing may.
+                {"apiGroups": [""], "resources": ["secrets"],
+                 "verbs": ["get", "create", "delete"]},
                 # ConfigMaps are NOT read-only, unlike the Secret above: besides reading
                 # the private-CA ConfigMap, postprocessing ships its scripts into the
                 # postprocess Job as a ConfigMap it creates, replaces on a re-run and
@@ -423,11 +497,16 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     what makes every deploy roll. Pass a fixed value to compare two manifests without the
     timestamp being the difference.
 
-    **One container.** The registry and the campaign index used to ride along here and now
+    **Three containers, one port.** The control plane (``vast serve``) and the data plane
+    (``vast serve-data``, the tar streams pods exchange with the service) are two
+    processes on Unix sockets, and an nginx front owns :data:`SERVICE_PORT` and routes
+    between them -- see :mod:`.front_deploy` for why. The registry and the campaign index
     live in the ``robovast`` pod (:mod:`.store_pod`): they are cluster-lifetime
-    infrastructure, and this Deployment is rolled by every upgrade. What is left in this
-    pod is the service and the two volumes only the service uses.
+    infrastructure, and this Deployment is rolled by every upgrade. Every container here
+    goes with an upgrade, and none carries state that should not.
     """
+    from . import front_deploy  # pylint: disable=import-outside-toplevel
+
     if restarted_at is None:
         restarted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     container = {
@@ -438,21 +517,21 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         # <workspaces_root>/../results, which resolved one directory OUTSIDE the only mount
         # this pod had. See RESULTS_VOLUME_NAME.
         "command": ["vast", "serve",
-                    "--host", "0.0.0.0", "--port", str(SERVICE_PORT),
+                    "--uds", front_deploy.SERVICE_SOCKET,
                     "--results-dir", RESULTS_DATA_DIR],
-        "ports": [{"containerPort": SERVICE_PORT, "name": "http"}],
         "env": list(env or []),
         "resources": SERVICE_RESOURCES,
+        # The probes reach the process over its socket: the pod's port is the front's.
         "readinessProbe": {
-            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            **front_deploy.socket_probe(front_deploy.SERVICE_SOCKET),
             "initialDelaySeconds": 5, "periodSeconds": 10},
         "livenessProbe": {
-            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            **front_deploy.socket_probe(front_deploy.SERVICE_SOCKET),
             "initialDelaySeconds": 15, "periodSeconds": 20},
         # Holds the two probes above off until the service actually answers; see
         # STARTUP_PROBE_PERIOD_SECONDS for why the budget is measured in minutes.
         "startupProbe": {
-            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            **front_deploy.socket_probe(front_deploy.SERVICE_SOCKET),
             "initialDelaySeconds": 5,
             "periodSeconds": STARTUP_PROBE_PERIOD_SECONDS,
             "failureThreshold": STARTUP_PROBE_FAILURE_THRESHOLD},
@@ -466,15 +545,41 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     container["volumeMounts"] = [{"name": WORKSPACES_VOLUME_NAME,
                                   "mountPath": WORKSPACES_DATA_DIR},
                                  {"name": RESULTS_VOLUME_NAME,
-                                  "mountPath": RESULTS_DATA_DIR}]
+                                  "mountPath": RESULTS_DATA_DIR},
+                                 {"name": front_deploy.SOCKET_VOLUME_NAME,
+                                  "mountPath": front_deploy.SOCKET_DIR}]
+    # The data plane: the same image, the results volume, the auth Secret and nothing
+    # else -- no workspaces, no cluster config, no credentials of any other kind. It
+    # verifies the control plane's tokens with the shared secret and reads the tree.
+    data = {
+        "name": front_deploy.DATA_CONTAINER_NAME,
+        "image": image,
+        "imagePullPolicy": "Always",
+        "command": ["vast", "serve-data",
+                    "--uds", front_deploy.DATA_SOCKET,
+                    "--results-dir", RESULTS_DATA_DIR],
+        "resources": front_deploy.DATA_RESOURCES,
+        "envFrom": [{"secretRef": {"name": AUTH_SECRET_NAME}}],
+        "volumeMounts": [{"name": RESULTS_VOLUME_NAME, "mountPath": RESULTS_DATA_DIR},
+                         {"name": front_deploy.SOCKET_VOLUME_NAME,
+                          "mountPath": front_deploy.SOCKET_DIR}],
+        "readinessProbe": {
+            **front_deploy.socket_probe(front_deploy.DATA_SOCKET),
+            "initialDelaySeconds": 5, "periodSeconds": 10},
+        "livenessProbe": {
+            **front_deploy.socket_probe(front_deploy.DATA_SOCKET),
+            "initialDelaySeconds": 15, "periodSeconds": 20},
+    }
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
-        "containers": [container],
+        "containers": [container, data, front_deploy.front_container(SERVICE_PORT)],
         "volumes": [
             workspaces_volume(workspaces_storage_path, workspaces_storage_class),
             # Backed like the workspaces store, deliberately -- see results_volume().
             results_volume(_results_host_path(workspaces_storage_path),
-                           workspaces_storage_class)],
+                           workspaces_storage_class),
+            front_deploy.socket_volume(),
+            front_deploy.front_config_volume()],
     }
     if node_selector:
         pod_spec["nodeSelector"] = dict(node_selector)
@@ -500,6 +605,14 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
             # placed, never an error. RoboVAST is the sole scheduler of its own work by design;
             # making the queue cluster-wide state is what a second replica would first require.
             "replicas": 1,
+            # The old pod goes before the new one starts, rather than the default rolling
+            # overlap. The campaigns are on a ReadWriteOnce claim, which one node may
+            # mount at a time: a replacement scheduled elsewhere while the old pod still
+            # holds it never starts, and the upgrade waits out its timeout on a
+            # Multi-Attach the Deployment reports as merely "progressing". The cost is the
+            # seconds of unavailability an upgrade already has -- a single replica cannot
+            # be rolled without them.
+            "strategy": {"type": "Recreate"},
             "selector": {"matchLabels": {"app": SERVICE_NAME}},
             "template": {
                 "metadata": {"labels": {"app": SERVICE_NAME},
@@ -542,7 +655,7 @@ def _service_manifest(namespace, ingress_class=""):
             # Ingress rule points at. The published hostname and every image ref built
             # from it are unchanged -- one Ingress may front two Services.
             "ports": [
-                {"port": SERVICE_PORT, "targetPort": SERVICE_PORT, "name": "http"},
+                {"port": SERVICE_PORT, "targetPort": "http", "name": "http"},
             ],
         },
     }
@@ -1716,60 +1829,30 @@ def reconcile_registry_ingress_path(namespace="default", kube_context=None):
     return True
 
 
-#: The container an embedded object store runs in, and the path campaigns live under inside
-#: it. Spelled here rather than imported from a cluster config because this module must not
-#: depend on which provider is deployed -- and the question it asks is about the live pod,
-#: which answers for whichever provider created it.
-STORE_CONTAINER_NAME = "minio"
-STORE_DATA_MOUNT = "/data"
-
-
-def store_backing(pod):
-    """What holds this deployment's campaigns, as ``(kind, detail)``.
-
-    ``("emptyDir", None)`` when the store lives and dies with its pod, ``("hostPath", path)``
-    or ``("claim", name)`` when it outlives one, and ``(None, None)`` where the pod runs no
-    embedded store -- the campaigns are then in a bucket, which no pod holds.
-
-    Resolved from the container's own mount rather than from a volume name, so it stays true
-    for every provider that embeds a store without this module knowing which one is deployed.
-    """
-    container = next((c for c in (pod.spec.containers or [])
-                      if c.name == STORE_CONTAINER_NAME), None)
-    if container is None:
-        return None, None
-    mount = next((m for m in (container.volume_mounts or [])
-                  if m.mount_path == STORE_DATA_MOUNT), None)
-    if mount is None:
-        return None, None
-    volume = next((v for v in (pod.spec.volumes or []) if v.name == mount.name), None)
-    if volume is None:
-        return None, None
-    if volume.host_path is not None:
-        return "hostPath", volume.host_path.path
-    if volume.persistent_volume_claim is not None:
-        return "claim", volume.persistent_volume_claim.claim_name
-    if volume.empty_dir is not None:
-        return "emptyDir", None
-    return None, None
-
-
 def verify_store_pod_infrastructure(namespace="default", kube_context=None,
                                     registry_authenticated=False):
-    """Raise unless the live ``robovast`` pod runs the registry and the index.
+    """Raise unless the live ``robovast`` pod runs the registry and the index, and nothing else.
 
-    Both moved out of this Deployment and into the pod ``vast cluster setup`` creates
-    (:mod:`.store_pod`). That pod is created once and **kept** on a re-run -- a 409 is
-    tolerated so a setup does not destroy the campaign store -- so a cluster set up before
-    the move does not gain the two containers by re-running setup or upgrading. It would
-    then run a service whose Ingress routes ``/v2`` at a container that does not exist and
-    whose DSN names a port nothing listens on: an ImagePullBackOff on the next campaign's
-    job pods, and an IndexUnreachableError on the next query, both far from here.
+    The pod is created once by ``vast cluster setup`` (:mod:`.store_pod`) and **kept** on a
+    re-run -- a 409 is tolerated so a setup does not restart the index and the registry for
+    nothing -- so a live pod that does not match the manifest stays as it is. Two shapes of
+    mismatch are refused here, before the service is deployed, because the service rendered
+    against them would look healthy and fail far away:
 
-    Checked before the service is deployed, because the remedy recreates the store pod
-    (``vast cluster cleanup`` then ``vast cluster setup``) and what that costs depends on
-    what backs the store -- so the operator must choose it knowingly rather than discover it
-    from a failing pilot run.
+    * a pod that lacks the registry or the index: the Ingress would route ``/v2`` at a
+      container that does not exist and the DSN would name a port nothing listens on -- an
+      ImagePullBackOff on the next campaign's job pods and an IndexUnreachableError on the
+      next query;
+    * a pod that carries an object-store container: campaigns live on the service's
+      results volume, so every campaign in that store is one the service cannot see.
+
+    Both have one remedy, ``vast cluster cleanup`` followed by ``vast cluster setup``, which
+    recreates the pod. What that costs is said in the message: built images are rebuilt on
+    demand and the index is re-ingested, but a campaign in an object store is **not
+    migrated** and must be archived first.
+
+    No pod at all is refused too: nothing but setup creates it, so its absence means the
+    cluster is not set up.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
@@ -1780,36 +1863,31 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
     try:
         pod = client.CoreV1Api().read_namespaced_pod(store_pod.STORE_POD_NAME, namespace)
     except ApiException as exc:
-        if exc.status == 404:
-            # No store pod at all is a different failure with a different message, and the
-            # providers that deploy one already report it (`verify_cluster_ready`).
-            return
-        raise
+        if exc.status != 404:
+            raise
+        raise RuntimeError(
+            f"there is no {store_pod.STORE_POD_NAME} pod in namespace {namespace}, so the "
+            f"service has no registry to push to and no index to query. 'vast cluster setup' "
+            f"creates it.") from exc
+    remedy = "'vast cluster cleanup' then 'vast cluster setup', which recreates the pod"
+    if store_pod.carries_an_object_store(pod):
+        raise RuntimeError(
+            f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} carries an "
+            f"object-store container ({store_pod.OBJECT_STORE_CONTAINER_NAME}). Campaigns "
+            f"live on the service's results volume, and nothing reads that store -- so every "
+            f"campaign in it is one the service cannot see. Setup keeps an existing pod as "
+            f"it is, so the remedy is {remedy}. The campaigns in that store are NOT migrated: "
+            f"archive what matters first with 'vast share <campaign>' or 'vast campaign "
+            f"download <campaign>', because nothing else holds a complete copy.")
     missing = store_pod.missing_infrastructure(pod)
-    if not missing:
-        _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated)
-        return
-    kind, detail = store_backing(pod)
-    if kind == "emptyDir":
-        cost = ("Its campaign store lives in the pod, so recreating it DISCARDS every "
-                "campaign the store holds, and the index cannot be re-ingested afterwards "
-                "because its source goes at the same moment. Archive what matters first -- "
-                "'vast share <campaign>' or 'vast campaign download <campaign>' -- because "
-                "nothing else holds a complete copy.")
-    elif kind in ("hostPath", "claim"):
-        where = f"the node directory {detail}" if kind == "hostPath" else f"the {detail} volume"
-        cost = (f"The campaigns are in {where} and outlive the pod, so the new one finds "
-                f"them again and the index is re-ingested from them.")
-    else:
-        cost = ("The campaigns are in this deployment's bucket rather than in the pod, so "
-                "nothing it holds is lost, and the index is re-ingested from them.")
-    raise RuntimeError(
-        f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
-        f"{', '.join(missing)}. This deployment predates their move out of the "
-        f"{SERVICE_NAME} pod, and setup keeps an existing store pod as it is, so re-running "
-        f"setup cannot add them. The remedy is 'vast cluster cleanup' then "
-        f"'vast cluster setup', which recreates the pod; built images are rebuilt on "
-        f"demand. {cost}")
+    if missing:
+        raise RuntimeError(
+            f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
+            f"{', '.join(missing)}. Setup keeps an existing pod as it is, so re-running "
+            f"setup cannot add them; the remedy is {remedy}. Built images are rebuilt on "
+            f"demand and the index is re-ingested from the campaigns on the results volume, "
+            f"which this does not touch.")
+    _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated)
 
 
 def _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated):
@@ -1827,7 +1905,7 @@ def _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated):
         return
     logger.warning(
         "The registry credential is in place, but the %s pod in namespace %s is still "
-        "running a registry that does NOT require it: setup keeps an existing store pod as "
+        "running a registry that does NOT require it: setup keeps an existing pod as "
         "it is, so a changed container spec cannot reach it. The registry stays open to "
         "anyone who can reach the published host until the pod is recreated -- 'vast "
         "cluster cleanup' then 'vast cluster setup'. Built images are rebuilt on demand, "
@@ -1850,10 +1928,10 @@ def published_host(namespace="default", kube_context=None):
 
 def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
                  job_node_labels=None,):
-    """Env that tells the in-cluster ClusterService how to reach the object store.
+    """Env that tells the in-cluster ClusterService which cluster it is driving.
 
     The service (the cluster mode) reconstructs the same cluster config the controller
-    uses, so ``create_campaign`` can stage inputs and controllers can pull them.
+    uses -- the provider's scheduling answers and its ``-o`` options -- from these.
 
     ``kube_context`` records the context this service was deployed with, so the
     in-pod driver can resolve per-cluster resource lists (keyed by context name)
@@ -2001,6 +2079,7 @@ def service_manifests(namespace="default", image=None, env=None,
                       tls_secret="", issuer="", insecure_http=False,
                       public_origin=None, registry_host="", registry_password="",
                       workspaces_storage_path="", workspaces_storage_class="",
+                      results_storage_size="",
                       node_selector=None, index_password=""):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
@@ -2069,19 +2148,16 @@ def service_manifests(namespace="default", image=None, env=None,
         if not any(e["name"] == var for e in env):
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
-    # The disk settings -- the free-space reserve and how long an unread fetched campaign is
-    # kept -- from the operator's .env like the family above, and carried unconditionally for
-    # the same reason: "" is the default, so deleting the line resets the pod instead of leaving
-    # the old value in force. Each is parsed here first, so a malformed value fails this command
-    # on the operator's machine rather than the service in the pod.
-    from robovast.service.storage_reserve import (  # pylint: disable=import-outside-toplevel
-        RESERVE_ENV, reserve_gb)
+    # The free-space reserve, from the operator's .env like the family above, and carried
+    # unconditionally for the same reason: "" is the default, so deleting the line resets the
+    # pod instead of leaving the old value in force. Parsed here first, so a malformed value
+    # fails this command on the operator's machine rather than the service in the pod.
+    from robovast.common.disk_reserve import (  # pylint: disable=import-outside-toplevel
+        RESERVE_ENV, configured_reserve_gb)
 
-    from .fetch_cache import MAX_AGE_ENV, max_age_days  # pylint: disable=import-outside-toplevel
-    for var, validate in ((RESERVE_ENV, reserve_gb), (MAX_AGE_ENV, max_age_days)):
-        if not any(e["name"] == var for e in env):
-            validate()
-            env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
+    if not any(e["name"] == RESERVE_ENV for e in env):
+        configured_reserve_gb()
+        env = [*env, {"name": RESERVE_ENV, "value": os.environ.get(RESERVE_ENV, "").strip()}]
 
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means -- so an
@@ -2159,7 +2235,8 @@ def service_manifests(namespace="default", image=None, env=None,
     # referencing a PVC nothing created and a pod that stayed Pending with no explanation.
     # `results_volume` is backed by that same class, so it would have inherited the fault.
     for pvc in (workspaces_pvc_manifest(namespace, workspaces_storage_class),
-                results_pvc_manifest(namespace, workspaces_storage_class)):
+                results_pvc_manifest(namespace, workspaces_storage_class,
+                                     results_storage_size)):
         if pvc:
             extra.append(pvc)
 
@@ -2181,9 +2258,11 @@ def service_manifests(namespace="default", image=None, env=None,
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
                                 insecure=insecure_http)
+    from . import front_deploy  # pylint: disable=import-outside-toplevel
     return [
         *_service_rbac_manifests(namespace),
         *extra,
+        front_deploy.front_configmap_manifest(namespace, SERVICE_PORT),
         _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
                              env_secret_names=env_secret_names,
                              pull_secret=pull_secret,
@@ -2359,6 +2438,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
                    tls_secret="", issuer="", insecure_http=False,
                    public_origin=None, registry_host="", registry_password="",
                    workspaces_storage_path="", workspaces_storage_class="",
+                   results_storage_size="",
                    node_selector=None):
     """Create/update the robovast-service (idempotent). Returns the manifest list.
 
@@ -2439,6 +2519,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
         registry_host=registry_host, registry_password=registry_password,
         workspaces_storage_path=workspaces_storage_path,
         workspaces_storage_class=workspaces_storage_class,
+        results_storage_size=results_storage_size,
         node_selector=node_selector)
     by_kind = {m["kind"]: m for m in manifests}
     sa = by_kind["ServiceAccount"]
@@ -2493,6 +2574,11 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     for claim in [m for m in manifests if m["kind"] == "PersistentVolumeClaim"]:
         _create_or_ok(lambda c=claim: core.create_namespaced_persistent_volume_claim(
             namespace, c, dry_run=dr))
+    # A claim that already exists keeps the size it was created with, which is why growing
+    # the campaigns' volume is a patch of its own rather than a re-render.
+    if results_storage_size:
+        logger.info("%s", grow_results_claim(core, namespace, results_storage_size,
+                                             dry_run=dry_run))
     # Deployment (patch spec on conflict, so a `setup --force` over a live
     # service updates it in place instead of failing)
     _create_or_replace(
@@ -2575,10 +2661,9 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
 
     Setup writes the cluster config the service reconstructs into the Deployment's
     env (:func:`_cluster_env`), so **the cluster is the authoritative source** — no
-    local flag file needed. This is what lets ``vast serve --backend cluster -x
-    <ctx>`` and the cluster maintenance commands work from any host with kubeconfig
-    access, including one that never ran ``setup``. Returns ``(None, {})`` when the
-    Deployment (or the config env) is absent.
+    local flag file needed. This is what lets the cluster maintenance commands work from
+    any host with kubeconfig access, including one that never ran ``setup``. Returns
+    ``(None, {})`` when the Deployment (or the config env) is absent.
     """
     import json  # pylint: disable=import-outside-toplevel
 
@@ -2635,9 +2720,8 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
 def delete_service(namespace="default", kube_context=None):
     """Remove the robovast-service Deployment + Service + RBAC (best-effort).
 
-    Never touches the object store (the durable data home), so the
-    ``cluster cleanup`` → ``cluster setup`` cycle that updates the service
-    keeps the campaign data it left behind.
+    Never touches the results volume, so the ``cluster cleanup`` → ``cluster setup`` cycle
+    that updates the service keeps every campaign it left behind.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel

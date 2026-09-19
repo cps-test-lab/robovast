@@ -106,6 +106,25 @@ class VariationConfigError(ValueError):
         self.config_name = config_name
 
 
+class VariationFailed(RuntimeError):
+    """A plugin's own code broke while composing: a bug, not a refusal.
+
+    The message is the whole report -- the plugin, the exception and the tail of the frames
+    it broke in, rendered by :func:`robovast.client.status.failure_detail` at the one site
+    that catches it. Rendered there rather than by each surface because there is no one
+    surface: the CLI, the MCP tools, the service's HTTP details and a campaign's recorded
+    error all reduce an exception to its message, and only a message that already carries
+    the frames reaches every one of them.
+
+    So ``include_traceback = False``: a surface prints the message as it is, and none appends
+    the frames a second time or points at a debug log for them. A ``RuntimeError`` so that
+    what a plugin bug already was to its callers -- fatal to a batch and to a search alike,
+    never tolerated as an infeasible draw -- stays so.
+    """
+
+    include_traceback = False
+
+
 class DestinationConfig(VariationConfig):
     """Config base for a variation whose outputs the author binds to channels.
 

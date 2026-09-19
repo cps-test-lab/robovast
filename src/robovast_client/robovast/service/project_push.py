@@ -443,7 +443,7 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
     say = logger.info
-    url = f"{client.base_url}{Routes.CAMPAIGNS}/{campaign_id}/archive"
+    url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
     say("Downloading %s from robovast-service ...", campaign_id)
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
     tmp_path = f"{dest_path}.part"

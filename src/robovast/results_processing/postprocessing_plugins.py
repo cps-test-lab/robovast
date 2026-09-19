@@ -312,9 +312,10 @@ def _interrupted_job_dirs(results_dir: str) -> list:
     ``[]`` for every campaign nobody intervened in — the ledger file does not exist — so
     this costs one missing-file check on the normal path and changes nothing about it.
 
-    Read here rather than passed in because the postprocessing pipeline runs where the
-    campaign is (in-cluster, against the object-store mount), and its plugins take their
-    inputs from ``results_dir``; there is no caller in that process holding the kill.
+    Read here rather than passed in because the postprocessing pipeline runs against a
+    campaign directory (on the cluster, the copy a postprocessing pod fetched), and its
+    plugins take their inputs from ``results_dir``; there is no caller in that process
+    holding the kill.
     """
     from robovast.common.campaign_data import (KIND_INVALID, KIND_KILLED,
                                                 read_interventions)
@@ -612,9 +613,8 @@ class RunLog(BasePostprocessingPlugin):
     :mod:`robovast.results_processing.run_log`. In outline: the logs are written **per
     job** (``_jobs/<batch>/job-N/logs/``), so each run resolves its job through the
     campaign's ``job_links.yaml`` manifest — not the ``job`` symlink, which only appears
-    once a job has finished and cannot exist in an object store at all. The output lands in
-    the **run** directory, where the index ingest's glob already looks, so the
-    ``run_log`` table needs no ingest code of its own.
+    once a job has finished. The output lands in the **run** directory, where the index
+    ingest's glob already looks, so the ``run_log`` table needs no ingest code of its own.
 
     Example usage in .vast config (only needed to override a default):
 
@@ -750,9 +750,9 @@ class ResourceUsage(BasePostprocessingPlugin):
     :mod:`robovast.results_processing.resource_usage`. In outline: every container writes
     ``resource_usage_<container>.csv`` per **job** (``_jobs/<batch>/job-N/``), so each run
     resolves its job through the campaign's ``job_links.yaml`` manifest — not the ``job``
-    symlink, which only appears once a job has finished and cannot exist in an object store
-    at all. The output lands in the **run** directory, where the index ingest's glob
-    already looks, so the ``resource_usage`` table needs no ingest code of its own.
+    symlink, which only appears once a job has finished. The output lands in the **run**
+    directory, where the index ingest's glob already looks, so the ``resource_usage``
+    table needs no ingest code of its own.
 
     Unlike ``run_log``, a job's samples are **partitioned** between the runs it served
     rather than given to all of them: another run's CPU is not this run's, and copying it

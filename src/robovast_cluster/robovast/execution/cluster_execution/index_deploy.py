@@ -14,42 +14,40 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Postgres RoboVAST runs for itself, in the object-store pod.
+"""The Postgres RoboVAST runs for itself, in the ``robovast`` pod.
 
 The central index holds every campaign's rows, which is what makes comparing the nine
 campaigns of a search arm one query instead of materialising ~10 GB of per-campaign
 databases. It runs as a container in the **``robovast`` pod** -- the one
-``vast cluster setup`` creates for the object store -- and is reached through that pod's
-existing ClusterIP Service.
+``vast cluster setup`` creates for the registry and the index (:mod:`.store_pod`) -- and
+is reached through that pod's ClusterIP Service.
 
 **Why not the service pod.** ``robovast-service`` is a Deployment, and every
 ``vast service upgrade`` rolls it; a Postgres living there is restarted by each upgrade,
-including the ones that only bump the controller image. The store pod is created once at
-cluster setup, is node-pinned, and already holds the campaign data these rows index -- so
-the index sits beside what it indexes and goes away only with
+including the ones that only bump the controller image. The ``robovast`` pod is created
+once at cluster setup and is node-pinned, so the index goes away only with
 ``vast cluster cleanup``. Losing it there is an accepted, deliberate cost: every row is
-re-derivable from the campaign directories in the object store.
+re-derivable from the campaign directories on the service's results volume.
 
 **It is a cache with a long memory, not a system of record.** ``campaign.db`` holds the
 dimensions and the artifacts hold the metrics, so losing the index costs a re-ingest, not
-data -- which is why this is one replica with no HA, no backup, no replication and no PVC.
-What it must not do is lose the volume on a *routine* action, because re-ingesting the
-corpus is hours; ``vast cluster cleanup`` is not routine, an upgrade is.
+data -- which is why this is one replica with no HA, no backup and no replication. What it
+must not do is lose the volume on a *routine* action, because re-ingesting the corpus is
+hours; ``vast cluster cleanup`` is not routine, an upgrade is.
 
-The price of the move is that the service no longer reaches it on ``127.0.0.1``: it is a
-different pod, so the connection goes over the pod network to
-:func:`index_host`. Nothing else changes -- one namespace, one Secret, one client.
+The service reaches it over the pod network, at :func:`index_host` -- one namespace, one
+Secret, one client.
 """
 
 from . import data_paths
 
-#: Postgres' own port. Published on the store pod's ClusterIP Service and nowhere else:
+#: Postgres' own port. Published on the ``robovast`` pod's ClusterIP Service and nowhere else:
 #: no Ingress rule routes to it, so it is reachable from inside the cluster network and not
 #: from outside it. Exposing it further would be a database on the internet with one shared
 #: password, which is a different security posture from the one this deployment has.
 INDEX_PORT = 5432
 
-#: Container name inside the store pod.
+#: Container name inside the ``robovast`` pod.
 INDEX_CONTAINER_NAME = "index"
 
 
@@ -116,7 +114,7 @@ INDEX_PASSWORD_KEY = "password"
 
 
 def index_host(namespace: str = "default") -> str:
-    """The in-cluster DNS name the index answers on: the store pod's Service.
+    """The in-cluster DNS name the index answers on: the ``robovast`` pod's Service.
 
     One spelling, in :func:`store_pod.store_host` -- the registry's Ingress backend needs
     the same name, and a second definition would drift from it.
@@ -154,7 +152,7 @@ def index_secret_manifest(namespace: str, password: str) -> dict:
 
 
 def index_container() -> dict:
-    """The Postgres container to run in the object-store pod."""
+    """The Postgres container to run in the ``robovast`` pod."""
     password_ref = {"secretKeyRef": {"name": INDEX_SECRET_NAME,
                                      "key": INDEX_PASSWORD_KEY}}
     return {
@@ -189,14 +187,15 @@ def index_container() -> dict:
 
 
 def index_volume(storage_path: str = "", storage_class: str = "") -> dict:
-    """The volume backing the index, backed exactly like the object store beside it.
+    """The volume backing the index: a claim where a class is given, else a node directory.
 
     **The index is derived data and must not outlive its sources.** Every row in it was
-    ingested from a campaign in the object store, so an index that survived a store which did
-    not would answer questions about campaigns nobody can reproduce, re-ingest or check --
-    confidently, and with nothing to compare against. It shares the store's pod, takes the
-    store's backing, and sits at a path derived from the store's, so the two are created,
-    moved and destroyed as one thing rather than by a rule someone has to remember.
+    ingested from a campaign on the service's results volume, so an index that survived
+    results which did not would answer questions about campaigns nobody can reproduce,
+    re-ingest or check -- confidently, and with nothing to compare against. Its path is
+    derived from the results' (:mod:`.data_paths`) and its class follows theirs unless
+    ``--index-class`` says otherwise, so the two sit on one disk and one node by
+    construction rather than by a rule someone has to remember.
 
     What losing it costs is a re-ingest from the campaigns beside it: hours for a large
     corpus, and nothing that cannot be rebuilt. That is why it is one replica, with no
@@ -215,7 +214,7 @@ def index_volume(storage_path: str = "", storage_class: str = "") -> dict:
 
 
 #: The claim's size when the operator did not state one. Sized for the metadata of a large
-#: corpus, not for the campaigns themselves -- those are in the object store.
+#: corpus, not for the campaigns themselves -- those are on the results volume.
 DEFAULT_INDEX_SIZE = "20Gi"
 
 
@@ -233,16 +232,3 @@ def index_pvc_manifest(namespace: str, storage_class: str, size: str = ""):
                  "storageClassName": storage_class,
                  "resources": {"requests": {"storage": size}}},
     }
-
-
-def index_host_path(store_storage_path: str = "") -> str:
-    """Where the index goes: beside the object store it is derived from.
-
-    One directory holds both, so they are one thing to place, one disk to size and one thing
-    to delete -- which is what keeps a derived index from outliving its sources. Falls back to
-    the default only when the store itself is unplaced, where both take their defaults and are
-    siblings there too.
-    """
-    if not store_storage_path:
-        return DEFAULT_INDEX_HOST_PATH
-    return data_paths.derive_sibling(store_storage_path, "store", "index")

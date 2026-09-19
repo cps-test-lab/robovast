@@ -4,26 +4,20 @@
 
 The critical path is create_job_manifest / _build_job_manifest /
 get_job_manifest. These tests pin the manifest shape a scenario Job is submitted
-with — the container env, volumes, init container, the per-job S3 wiring and
-deadline — so the manifest builder can be refactored/split behind a safety net
-instead of blind.
+with — the container env, volumes, the init container that fetches its inputs, the
+uploader that delivers its results and the deadline — so the manifest builder can be
+refactored/split behind a safety net instead of blind.
 """
 
 
 from kubernetes import client
 
 from robovast.execution.backends import RunOptions  # noqa: F401  # pylint: disable=unused-import  (import parity)
-from robovast.execution.cluster_execution import in_pod_storage, kubernetes_backend
+from robovast.execution.cluster_execution import kubernetes_backend, pod_access, pod_upload
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
 
 
 class _FakeClusterConfig:
-    def get_s3_endpoint(self):
-        return "http://s3:9000"
-
-    def get_s3_credentials(self):
-        return ("ak", "sk")
-
     def get_registry_config(self):
         import types
         return types.SimpleNamespace(pull_secret_name="")
@@ -69,8 +63,6 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
     # Secret read above was costing thirty-five seconds a test, which is a good reason
     # to state both here rather than leave the next reader to find the second one.
     monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
-    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
-                        lambda cfg, camp: ("bkt", ""))
     campaign_data = {
         "configs": configs or [{"name": "cfgA"}],
         "execution": execution or {},
@@ -114,10 +106,12 @@ def test_create_job_manifest_shape(monkeypatch):
     assert {v["name"] for v in spec["volumes"]} == {
         "config", "out", "dshm", "ipc", "tmp"}
 
-    # The s3-init init container mirrors the config tree in before the run.
+    # The fetch-inputs init container streams the campaign's inputs onto /config
+    # before the run, from the data plane and with nothing else to reach it by.
     init = spec["initContainers"][0]
-    assert init["name"] == "s3-init"
-    assert _env_dict(init)["S3_ENDPOINT"] == "http://s3:9000"
+    assert init["name"] == "fetch-inputs"
+    assert init["env"] == pod_access.campaign_pod_env("ns", r.campaign)
+    assert "/campaigns/camp-2026-07-17-120000/inputs" in " ".join(init["command"])
 
     # Main container per-job wiring.
     main_env = _env_dict(spec["containers"][0])
@@ -125,7 +119,6 @@ def test_create_job_manifest_shape(monkeypatch):
     assert main_env["OUTPUT_RESULT_PER_SCENARIO"] == "true"
     assert main_env["SCENARIO_PARAMETER_FILE"] == f"/config/{r._job_tag(job.index)}.params.yaml"
     assert main_env["OUTPUT_DIR"] == f"/out/_jobs/{r._job_artifact_path(job.index)}"
-    assert main_env["S3_PREFIX"] == ""  # embedded per-campaign bucket → empty prefix
     # The behaviour tree is recorded unless a campaign opts out, so a cluster run is
     # explainable afterwards without anyone having remembered to ask for it.
     assert main_env["BT_LOG"] == "true"
@@ -241,28 +234,61 @@ def test_job_tag_and_artifact_path_are_batch_namespaced(monkeypatch):
     assert r._job_artifact_path(3) == "job-3"
 
 
-def test_a_sidecar_can_upload_what_it_writes_after_the_scenario_ends(monkeypatch):
-    """A sidecar carries the S3 credentials, because it runs the upload script itself.
+def test_a_sidecar_knows_where_its_run_writes(monkeypatch):
+    """The anchor a relative artifact path resolves against, so a per-run file lands in
+    the run's own directory rather than at the campaign root.
 
-    /out is an emptyDir that dies with the pod, and the only thing that copies it out is
-    the main container's --post-run upload -- which runs while the scenario finishes,
-    BEFORE kubelet stops a sidecar. So everything a sidecar wrote after that was lost:
-    the simulator's run.npz and capture/ (an .npz writes its index at close, so it exists
-    only at shutdown), and the tail of every sidecar log -- the simulator's was truncated
-    to nine lines of start-up for a 99-second run. secondary_entrypoint.sh now runs
-    /tmp/s3_upload.sh once its workload exits, which needs these.
+    A sidecar uploads nothing itself: it writes ``/ipc/done.<name>`` once it has finished
+    writing, and the pod's uploader container delivers ``/out`` after every marker exists.
     """
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
         "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
     m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
     env = _env_dict(_sidecar(m, "simulation"))
-    assert env["S3_ENDPOINT"] == "http://s3:9000"
-    assert env["S3_ACCESS_KEY"] == "ak"
-    assert env["S3_SECRET_KEY"] == "sk"
-    # And the anchor a relative artifact path resolves against, so a per-run file lands
-    # in the run's own directory rather than at the campaign root.
     assert env["RUN_OUTPUT_DIR"] == "/out/cfgA/0"
+
+
+def test_the_pod_carries_one_uploader_that_waits_for_every_container(monkeypatch):
+    """One container delivers the pod's whole ``/out``, once, after every container of the
+    pod has written its marker -- so a Job is complete exactly when its results are home.
+
+    A regular container rather than a native sidecar, because a Job is finished when its
+    regular containers have exited and that is what the driver's wait loop reads.
+    """
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "sut": {"image": "sut:test"},
+        "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+
+    uploader = next(c for c in spec["containers"]
+                    if c["name"] == pod_upload.UPLOADER_CONTAINER)
+    assert "restartPolicy" not in uploader
+    assert uploader["command"] == pod_upload.uploader_command(
+        r.campaign, [sc.name for sc in r.plan.sidecars])
+    assert uploader["env"] == pod_access.campaign_pod_env("ns", r.campaign)
+    assert {m["name"] for m in uploader["volumeMounts"]} == {"out", "ipc"}
+    # The window its TERM handler has to deliver what /out holds when a stop or a
+    # deadline tears the pod down.
+    assert spec["terminationGracePeriodSeconds"] >= pod_upload.UPLOAD_TERMINATION_GRACE
+
+
+def test_only_the_transfer_containers_carry_the_campaigns_access(monkeypatch):
+    """A pod reaches the data plane by address and scoped token, and only the two
+    containers that move bytes -- the inputs fetch and the uploader -- carry them. The
+    workload containers run images that are not ours and are given nothing to reach it."""
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+
+    access = {pod_access.DATA_URL_ENV, pod_access.TOKEN_ENV, pod_access.CAMPAIGN_ID_ENV}
+    carriers = {c["name"] for c in spec["containers"] + spec["initContainers"]
+                if access & {e["name"] for e in c.get("env", [])}}
+    assert carriers == {"fetch-inputs", pod_upload.UPLOADER_CONTAINER}
 
 
 # -- GPUs ---------------------------------------------------------------------------
@@ -530,9 +556,9 @@ def test_every_container_shares_the_one_dev_shm(monkeypatch):
 
 def test_only_native_sidecars_can_be_restarted(monkeypatch):
     """The invariant `pod_invalidating_restart` rests on: the pod is restartPolicy Never,
-    so its regular container and the one-shot s3-init are never restarted by the kubelet at
-    all. Only the native sidecars carry restartPolicy Always -- which is why the useful
-    filter on a restart is the EXIT CODE, not the container's name."""
+    so its regular containers and the one-shot fetch-inputs are never restarted by the
+    kubelet at all. Only the native sidecars carry restartPolicy Always -- which is why the
+    useful filter on a restart is the EXIT CODE, not the container's name."""
     r = _runner(monkeypatch, execution={
         "containers": {"sut": {"image": "an-image"},
                        "simulation": {"image": "another-image"}}})
@@ -541,7 +567,7 @@ def test_only_native_sidecars_can_be_restarted(monkeypatch):
 
     assert spec["restartPolicy"] == "Never"
     assert r.campaign_data is not None
-    assert spec["initContainers"][0]["name"] == "s3-init"
+    assert spec["initContainers"][0]["name"] == "fetch-inputs"
     assert "restartPolicy" not in spec["initContainers"][0]
     sidecars = {c["name"]: c for c in spec["initContainers"][1:]}
     assert set(sidecars) == {"sut", "simulation"}
@@ -550,13 +576,15 @@ def test_only_native_sidecars_can_be_restarted(monkeypatch):
 
 def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
     """`_container_role` maps this one name onto the `scenario` role; it is the single
-    container name that never appears in a .vast."""
+    container name that never appears in a .vast. It is the pod's first regular container,
+    ahead of the uploader that delivers what it wrote."""
     from robovast.execution.cluster_execution.manifests import MAIN_CONTAINER_NAME
 
     r = _runner(monkeypatch)
     spec = r.create_job_manifest(r._build_jobs()[0],
                                  total_jobs=1)["spec"]["template"]["spec"]
-    assert [c["name"] for c in spec["containers"]] == [MAIN_CONTAINER_NAME]
+    assert [c["name"] for c in spec["containers"]] == [
+        MAIN_CONTAINER_NAME, pod_upload.UPLOADER_CONTAINER]
 
 def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
     """The pod itself must carry it, not whatever admits it.
@@ -595,6 +623,29 @@ def test_a_probe_asks_the_scenario_runner_to_report_on_itself(monkeypatch):
     main = probe["spec"]["template"]["spec"]["containers"][0]
     params = next(e for e in main["env"] if e["name"] == SCENARIO_PARAMS_ENV)
     assert TICK_LOG_FLAG in params["value"]
+
+
+def test_a_probe_keeps_every_container_out_of_the_run_tree(monkeypatch):
+    """Three variables name where a job writes, and a sidecar's per-run artifacts resolve against
+    the third: a simulator's recording lands under ``RUN_OUTPUT_DIR``, and a probe that inherited
+    the job's value put the probe's records into a real run directory -- a campaign result no
+    trial produced. Every container, because the sidecars are the ones that write per run."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    r = _runner(monkeypatch)
+    base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    probe = probe_manifest(base, job_name="probe-n1", params_file="/config/p.yaml",
+                           output_dir="/out/_calibration/n1",
+                           display_name="calibration probe · n1")
+    spec = probe["spec"]["template"]["spec"]
+    containers = list(spec.get("containers") or []) + list(spec.get("initContainers") or [])
+    seen = set()
+    for container in containers:
+        for entry in container.get("env") or []:
+            if entry["name"] in ("OUTPUT_DIR", "RUN_OUTPUT_DIR"):
+                seen.add(entry["name"])
+                assert entry["value"] == "/out/_calibration/n1", (container["name"], entry)
+    assert seen == {"OUTPUT_DIR", "RUN_OUTPUT_DIR"}, "the base job must carry both to prove it"
 
 
 def test_a_campaign_run_is_not_asked_to(monkeypatch):
@@ -660,8 +711,10 @@ def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatc
     for job in r._build_jobs():
         manifest = r.create_job_manifest(job, total_jobs=2)
         spec = manifest["spec"]["template"]["spec"]
-        # The premise of the shape: no separate simulator container to deliver it to.
-        assert [c["name"] for c in spec["containers"]][1:] == []
+        # The premise of the shape: no separate simulator container to deliver it to --
+        # the pod's other regular container only uploads what it wrote.
+        assert [c["name"] for c in spec["containers"]][1:] == [
+            pod_upload.UPLOADER_CONTAINER]
         env = _env_dict(_main_of(manifest))
         worlds[job.items[0].config_name] = env["ROQSIM_WORLD"]
 

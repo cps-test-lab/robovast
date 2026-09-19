@@ -46,7 +46,7 @@ def transport(monkeypatch, tmp_path):
 def campaign(transport):
     """A campaign directory with a snapshot ``.vast`` declaring all four notebook levels."""
     cid = "search-1"
-    config_dir = Path(transport._data_dir(cid)) / "_config"  # noqa: SLF001
+    config_dir = Path(transport.campaign_dir(cid)) / "_config"  # noqa: SLF001
     (config_dir / "analysis").mkdir(parents=True)
     (config_dir / "sim.vast").write_text(_VAST, encoding="utf-8")
     for level in ("campaign", "batch", "config", "run"):

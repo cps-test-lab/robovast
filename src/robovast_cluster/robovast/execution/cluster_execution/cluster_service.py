@@ -24,12 +24,8 @@ scenario Jobs. Cluster and local therefore share the whole driver-hosting shape 
 only the backend differs — and everything below is expressed as overrides of
 ``LocalTransport``'s launch hooks.
 
-There is **no per-campaign controller pod** any more. It predated this persistent
-service and had become a redundant second copy of a process the service can host
-itself; removing it also removed the project/plugin staging round-trip through the
-object store, the duplicate ``controller.log`` (pod stdout *and* object store), and
-the per-campaign HTTP control server the host had to reach over a pod IP. Live
-status is now just a read of the in-process ``ControllerState``.
+There is **no per-campaign controller pod**: the service hosts the driver, and live
+status is a read of the in-process ``ControllerState``.
 
 What still runs as its own Kubernetes workload — because each genuinely needs to:
 
@@ -37,10 +33,13 @@ What still runs as its own Kubernetes workload — because each genuinely needs 
 * **auxiliary variation containers** — one aux Pod per campaign the driver execs
   into (see :mod:`..execution.cluster_execution.container_runner`).
 
-Durability is unchanged: the object store is the campaign's home, so finished
-campaigns survive a service restart untouched. A campaign still *running* when the
-service restarts is interrupted (its Jobs and uploaded results persist) — the
-accepted trade for running the driver in-process.
+A campaign's home is the service's results volume, exactly as on the local lane, so
+every file, scene, config and query path is the inherited one and nothing here reads
+results from anywhere but the campaign directory. Pods reach that directory through
+the data plane (:mod:`.pod_access`): a Job fetches its inputs as one tar stream and
+delivers its outputs as one, so a finished Job's results are already home. Finished
+campaigns survive a service restart untouched; a campaign still *running* when the
+service restarts is picked up again (:mod:`.campaign_resume`).
 """
 
 import contextlib
@@ -54,19 +53,16 @@ import threading
 import time
 from pathlib import Path
 
-from robovast.client import file_address
-from robovast.common import file_view
 from robovast.common.config import SCENARIO_CONTAINER
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
-                                               STOP_SCOPE_MESSAGES, Phase, is_running,
+                                               STOP_SCOPE_MESSAGES, Phase,
                                                stop_scope_for_phase)
 from robovast.common.campaign_data import update_launch_scheduling
 from robovast.service.client import LocalTransport
 from robovast.service.local_transport import require_scheduling_change
-from robovast.service.interface import (ActionResult, FileListing, FileText, JobCounts, JobKind,
+from robovast.service.interface import (ActionResult, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
-                                        ResourceUsage, CacheSize, KeptCacheEntry,
-                                        DiskSpace, UpgradeInfo, VersionInfo)
+                                        ResourceUsage, DiskSpace, UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
 
@@ -85,17 +81,6 @@ def _tree_bytes(path: Path) -> int:
     return total
 
 AUX_LABEL = "app=robovast-aux"
-
-
-def _object_entry(name: str, size):
-    """One ``detail=True`` entry for an object-store listing.
-
-    No ``modified`` or ``executable``: a directory here is a *common prefix*, which has
-    neither, and the listing call does not carry per-object metadata. ``None`` says
-    "this substrate did not report it" rather than fabricating a zero.
-    """
-    from robovast.service.interface import FileEntry
-    return FileEntry(name=name.rstrip("/"), is_dir=name.endswith("/"), bytes=size)
 
 
 #: Container-state waiting reasons that mean the node is still *fetching the image*. Kubelet reports
@@ -245,22 +230,22 @@ class ClusterService(LocalTransport):
     def __init__(self, namespace=None, cluster_config_name=None,
                  cluster_config_kwargs=None, store=None,
                  reap_on_start=True, kube_context=None, results_dir=None):
-        # Where the campaigns this service DRIVES keep their working root. Not a cache: a
-        # batch downloads its own results into it, extraction reads it through a path, and
-        # postprocessing derives data.db from it -- so it has to outlive a container, and the
-        # deployment mounts the directory it names (see serve_backend / service_deploy).
+        # Where every campaign of this service lives. Not a cache: the driver writes into
+        # it, pods deliver their outputs into it through the data plane, extraction reads
+        # it through a path, and postprocessing derives data.db from it -- so it has to
+        # outlive a container, and the deployment mounts the directory it names (see
+        # serve_backend / service_deploy).
         super().__init__(store=store, results_dir=results_dir)
         self.namespace = namespace or os.environ.get("ROBOVAST_NAMESPACE", "default")
-        # Which kubeconfig context to dispatch into. None off-cluster means the
-        # active context; in-cluster the incluster config is used for the API
-        # client, but the context *name* still resolves per-cluster resource
-        # lists — deploy stamps it into ROBOVAST_KUBE_CONTEXT for the in-pod driver.
+        # Which kubeconfig context to dispatch into. The in-cluster config is what the
+        # API client uses, but the context *name* still resolves per-cluster resource
+        # lists -- deploy stamps it into ROBOVAST_KUBE_CONTEXT for the in-pod driver.
         self.kube_context = kube_context or os.environ.get("ROBOVAST_KUBE_CONTEXT")
         # Which of the three sources won, reported in version(). Without it the
         # implicit case ("whatever kubectl points at") is indistinguishable from a
         # deliberate one, and that is the case that quietly targets another cluster.
         self._kube_context_source = (
-            "--context" if kube_context
+            "constructor" if kube_context
             else "ROBOVAST_KUBE_CONTEXT" if os.environ.get("ROBOVAST_KUBE_CONTEXT")
             else "active kubeconfig context")
         # Built on first use rather than here: constructing it touches the Kubernetes client,
@@ -274,39 +259,7 @@ class ClusterService(LocalTransport):
         if self._config_kwargs is None:
             raw = os.environ.get("ROBOVAST_CLUSTER_CONFIG_KWARGS")
             self._config_kwargs = json.loads(raw) if raw else {}
-        # Off-cluster + embedded MinIO: one persistent kubectl port-forward for the
-        # service lifetime, giving the in-process driver's storage client a
-        # host-reachable S3 endpoint (see _driver_s3_endpoint / _cluster_config).
-        self._minio_pf = None
-        self._minio_pf_endpoint = None
-        self._minio_pf_port: "int | None" = None
-        self._pf_lock = threading.Lock()
-        # Bumped every time a forward is opened. A storage client that timed out watches
-        # this instead of tearing the tunnel down itself: the keep-alive
-        # (_pf_monitor_loop) is the single rotator, so "has it been replaced yet?" is the
-        # only question a client needs answered. Guarded by _pf_lock.
-        self._pf_generation = 0
-        self._pf_monitor: "threading.Thread | None" = None
-        self._pf_monitor_stop = threading.Event()
-        # Per-campaign locks so concurrent readers don't each re-download the same
-        # objects into the shared cache dir. Guarded by ``_fetch_locks_guard``.
-        self._fetch_locks: dict[str, threading.Lock] = {}
-        self._fetch_locks_guard = threading.Lock()
-        # What this service's last transfer of each campaign's objects cost, as
-        # ``(bytes, seconds)`` — so ``campaign_data_status`` reports a measured number
-        # rather than a guess, and a caller that waited can be told why. Process-local: a
-        # restart forgets it, and the cache it describes is scratch anyway.
-        self._last_fetch: dict[str, tuple[int, float]] = {}
-        # How many operations hold each campaign's cache dir pinned -- with the dir's own
-        # modification time, the record of when it was last read, what lets a cache clear
-        # run beside the readers: see ``_fetch_cache_keep_reason``. Guarded by
-        # ``_fetch_locks_guard``.
-        self._cache_pins: dict[str, int] = {}
-        # The background removal of cache dirs nobody has read for the maximum age; started
-        # with the service's other startup work below, stopped by ``shutdown``.
-        self._cache_expiry: "threading.Thread | None" = None
-        self._cache_expiry_stop = threading.Event()
-        # Last kubelet Summary reading behind the disk/store meters, as
+        # Last kubelet Summary reading behind the disk and results meters, as
         # ``(monotonic, fields)``. Its own TTL, longer than the usage cache's -- see
         # ``_DISK_CACHE_TTL``. Read under ``_usage_lock``, so it needs no lock of its own.
         self._disk_cache: "tuple[float, dict] | None" = None
@@ -329,26 +282,6 @@ class ClusterService(LocalTransport):
         # Not ``_usage_lock``: that one is held across a reading that talks to every kubelet
         # in turn, and the job listing must not wait behind it.
         self._pod_metrics_lock = threading.Lock()
-        # How far along the blocking work for each campaign currently is — the counts behind
-        # ``CampaignDataStatus.progress``. Written by the transfer and the notebook render,
-        # dropped when they finish, so a present entry means "busy right now". In memory on
-        # purpose: a client polls this once a second while a transfer is saturating the
-        # port-forward, and asking must not add a round-trip to the store it is describing.
-        self._work_progress: dict[str, "WorkProgress"] = {}
-        self._work_progress_guard = threading.Lock()
-        # (monotonic, {campaign_id: created_at}) from the object store's campaign index,
-        # or None when it must be re-read. TTL-cached because the campaign-list SSE stream
-        # re-lists once a second; see _campaign_index.
-        #: (when, {id: created_at}, {id: finished_at}) — both maps from ONE cached pass,
-        #: because ordering needs a start time for every campaign and a finish time for
-        #: every terminal one, and two listings of zero-byte keys cost far less than a
-        #: record fetch per campaign.
-        self._index_cache: "tuple[float, dict, dict] | None" = None
-        self._index_lock = threading.Lock()
-        # True while one caller is out doing the listing. Guards the single-flight in
-        # _campaign_index: the listing itself must not hold _index_lock (it is network
-        # I/O), so this is what stops a poll from launching a second one behind the first.
-        self._index_refreshing = False
         if reap_on_start:
             self.reap_orphans()
             self.resume_interrupted_campaigns()
@@ -357,7 +290,6 @@ class ClusterService(LocalTransport):
             # design. Only a waiter writes what that Job did, so without this the previous
             # attempt's verdict stands over a conversion that succeeded.
             self.reattach_live_postprocessing()
-            self._start_cache_expiry()
 
     # -- version ------------------------------------------------------------
 
@@ -369,11 +301,8 @@ class ClusterService(LocalTransport):
         v.namespace = self.namespace
         v.in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
         v.api_server = self._api_server_url()
-        # No filesystem roots on this lane. Campaign results live in the object store;
-        # the local ``/tmp/robovast-campaigns`` scratch is ephemeral and holds only
-        # already-fetched campaigns, so a caller told to look there would find one
-        # campaign present and the next missing. Workspaces *are* on this service's
-        # disk, but that disk is the cluster's, not the caller's.
+        # No filesystem roots on this lane: the campaigns and the workspaces are on this
+        # service's volumes, and that disk is the cluster's, not the caller's.
         v.results_root = None
         v.sources_root = None
         # Overrides the local lane's unconditional True: here a build needs somewhere to
@@ -574,7 +503,7 @@ class ClusterService(LocalTransport):
                     mem_used += int(_parse_resource(requests.get("memory")))
 
         jobs_running, jobs_pending = self._scenario_job_tally()
-        measured = self._disk_and_store(node_names, service_node)
+        measured = self._disk_and_results(node_names, service_node)
         cpu_metric, mem_metric, metrics_reason = self._measured_cpu_mem(node_names)
         return ResourceUsage(
             backend="kubernetes",
@@ -594,8 +523,7 @@ class ClusterService(LocalTransport):
             jobs_pending=jobs_pending,
             disk=measured.get("disk"),
             disk_node=measured.get("disk_node"),
-            store=measured.get("store"),
-            store_node=measured.get("store_node"),
+            results=measured.get("results"),
             disk_unavailable=measured.get("unavailable"),
         )
 
@@ -603,7 +531,7 @@ class ClusterService(LocalTransport):
         """Real cpu/memory consumption from metrics-server: ``(cores, bytes, reason)``.
 
         One ``metrics.k8s.io/v1beta1/nodes`` list for the whole cluster -- not a per-node
-        fan-out like :meth:`_disk_and_store`, which is why this needs no budget: the payload
+        fan-out like :meth:`_disk_and_results`, which is why this needs no budget: the payload
         is one small item per node, next to a ``list_pod_for_all_namespaces`` in the same
         window that carries every non-terminal pod spec in the cluster.
 
@@ -684,8 +612,8 @@ class ClusterService(LocalTransport):
                                 "not reported")
         return cpu, mem, None
 
-    def _disk_and_store(self, node_names, service_node=None) -> dict:
-        """The kubelet-measured ``disk``/``store`` fields, and which node each came from.
+    def _disk_and_results(self, node_names, service_node=None) -> dict:
+        """The kubelet-measured ``disk`` and ``results`` fields, and the node they came from.
 
         Read over the ``nodes/proxy`` subresource — the same channel
         :func:`robovast.common.execution._check_static_cpu_manager` reads ``configz`` on.
@@ -700,12 +628,12 @@ class ClusterService(LocalTransport):
         now = time.monotonic()
         cached = self._disk_cache
         if cached is None or now - cached[0] >= self._DISK_CACHE_TTL:
-            cached = (now, self._read_disk_and_store(sorted(node_names), service_node))
+            cached = (now, self._read_disk_and_results(sorted(node_names), service_node))
             self._disk_cache = cached
         return cached[1]
 
-    def _read_disk_and_store(self, node_names, service_node=None) -> dict:
-        """The SERVICE's node filesystem, then let the provider name its results store.
+    def _read_disk_and_results(self, node_names, service_node=None) -> dict:
+        """The SERVICE's node filesystem, and the results volume mounted on its pod.
 
         Node-local, not summed, and that is the whole point at scale. A cluster-wide sum
         answers a question nobody asks: with twenty nodes it reports tens of terabytes while
@@ -718,17 +646,17 @@ class ClusterService(LocalTransport):
 
         ``used / (used + available)``, not ``capacityBytes``: reserved blocks are in the
         capacity and cannot be written, so ``available`` is the only honest denominator --
-        the same correction the store's meter carries.
+        the same correction the results meter carries.
 
         ``node.fs`` (nodefs) only, **not** summed with ``node.runtime.imageFs``: on a
         single-disk node those are two views of the SAME device, so summing doubles
         capacity and used alike -- the ratio survives but the labelled numbers become
         fiction.
 
-        The store is a different node's business, so the nodes are read in order --
-        the service's first, so the disk figure is answerable even if the budget then runs
-        out -- and the walk STOPS as soon as the provider recognises its store. On the
-        clusters that have one that is one or two reads, whatever the node count.
+        The results volume is on the service's pod, so the service's node answers both
+        figures and the walk stops there; the other nodes are read only when the service's
+        could not be identified. On a hostPath deployment the kubelet reports no per-volume
+        figure and ``disk`` is that same filesystem, so no ``results`` field is drawn.
         """
         from .kube_client import (  # pylint: disable=import-outside-toplevel
             read_node_summary, nodefs_used_available)
@@ -759,23 +687,10 @@ class ClusterService(LocalTransport):
                 logger.debug("kubelet stats/summary unavailable on node %s: %s", name, e)
                 if name == service_node:
                     fields["unavailable"] = self._summary_read_reason(e)
-            # Stop as soon as the provider can answer: its store lives on one node, and
-            # walking the rest buys nothing but latency against the budget.
-            store_used, store_capacity, store_reason = self._store_usage(summaries)
-            if store_used is not None and store_capacity is not None and store_capacity > 0:
-                fields["store"] = DiskSpace(capacity_bytes=store_capacity,
-                                            used_bytes=store_used)
-                # The node whose Summary finally answered. The walk stops here, so this is
-                # the one that carries the store -- which is not necessarily the service's.
-                fields["store_node"] = name
-                break
-            if store_reason:
-                # The provider found its store and cannot measure it, which no further node
-                # will change. Walking the rest would spend the budget re-learning that, so
-                # the reason ends the walk. Logged rather than returned: publishing it means
-                # a schema field and a UI that reads it, and an unexplained absent meter is
-                # what the Store row already shows for a bucket-backed provider.
-                logger.debug("no store meter: %s", store_reason)
+            results = self._results_volume_usage(summaries)
+            if results is not None:
+                fields["results"] = results
+            if name == service_node:
                 break
         if "disk" not in fields and "unavailable" not in fields:
             fields["unavailable"] = (
@@ -803,21 +718,34 @@ class ClusterService(LocalTransport):
         prefix = f"HTTP {status}: " if status else f"{e.__class__.__name__}: "
         return f"the kubelet Summary API did not answer: {prefix}{detail}"
 
-    def _store_usage(self, summaries):
-        """The provider's results-store reading, as ``(used, capacity, reason)``.
+    @staticmethod
+    def _results_volume_usage(summaries) -> "DiskSpace | None":
+        """The service pod's results volume out of the kubelet's per-pod stats, or ``None``.
 
-        Delegated because the answer is provider-specific: a cluster hosting its own object
-        store can measure the volume behind it, while one backed by a cloud bucket has no
-        capacity to fill and so no meter to draw. A non-empty reason means there will be no
-        figure and says why, which is the difference between a store nobody has looked at yet
-        and one that cannot be measured at all. Never fatal — a provider that raises must not
-        take the disk meter down with it.
+        **The denominator is ``used + available``, not ``capacityBytes``.** A volume with no
+        size limit reports the whole node filesystem as its capacity -- a filesystem it
+        shares with the images, the containers and every other directory -- so
+        ``capacityBytes`` reads as headroom that is not there. ``availableBytes`` is what
+        the filesystem will actually still take.
+
+        ``None`` for a hostPath: the kubelet reports no per-volume stats for one, and the
+        Disk meter already reports that filesystem.
         """
-        try:
-            return self._cluster_config().get_store_usage(summaries)
-        except Exception as e:  # noqa: BLE001 - the disk meter must still be answerable
-            logger.debug("could not read the results store usage: %s", e)
-            return None, None, ""
+        from .service_deploy import RESULTS_VOLUME_NAME, SERVICE_NAME  # pylint: disable=import-outside-toplevel
+        for summary in (summaries or {}).values():
+            for pod in (summary.get("pods") or []):
+                if not ((pod.get("podRef") or {}).get("name") or "").startswith(SERVICE_NAME + "-"):
+                    continue
+                for volume in (pod.get("volume") or []):
+                    if volume.get("name") != RESULTS_VOLUME_NAME:
+                        continue
+                    used = volume.get("usedBytes")
+                    available = volume.get("availableBytes")
+                    if used is None or available is None:
+                        return None
+                    return DiskSpace(capacity_bytes=int(used) + int(available),
+                                     used_bytes=int(used))
+        return None
 
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` over every scenario-run Job in this namespace.
@@ -861,149 +789,7 @@ class ClusterService(LocalTransport):
         cfg = get_cluster_config(self._config_name)
         if self._config_kwargs:
             cfg.restore_from_setup_kwargs(self._config_kwargs)
-        # Off-cluster the driver's storage client cannot use the cluster-internal
-        # endpoint, so install a resolver giving it a host-reachable one. Every
-        # off-cluster storage_client_for caller uses a cfg built here (the
-        # service's, directly or via backend.cluster_config), so this one line
-        # reaches them all — no arg threading. The config owns the per-provider
-        # policy (embedded → port-forward, else → direct); the service only owns
-        # the port-forward. In-cluster we install nothing: robovast:9000 resolves.
-        # Lazy: the port-forward opens only when a storage client is actually built.
-        if not os.environ.get("KUBERNETES_SERVICE_HOST"):
-            cfg.set_driver_s3_endpoint_resolver(
-                lambda force_reconnect=False, current=None: cfg.resolve_driver_s3_endpoint(
-                    self._minio_port_forward_endpoint, force_reconnect, current))
         return cfg
-
-    def _minio_port_forward_endpoint(self, force_restart: bool = False,
-                                     current: "str | None" = None) -> str:
-        """Return ``http://localhost:<port>`` for the shared MinIO port-forward,
-        opening (or re-opening) the forward under the lock.
-
-        A ``kubectl port-forward`` frequently goes *stalled-but-alive* under a large
-        transfer (e.g. downloading a whole campaign's rosbags): the process keeps
-        running while its tunnel stops proxying, so every S3 request then read-times
-        out. ``poll()`` cannot see this — it only reports a *dead process*. So the
-        driver's storage client, on a network timeout, re-resolves with
-        *force_restart=True*, which tears the current forward down and opens a fresh
-        one on a new port; the client then rebuilds itself against the new endpoint.
-
-        *current* is the endpoint the caller was using. When many storage clients
-        share this one forward, a stall makes them **all** time out and request a
-        restart at once; honoring every request would make each teardown kill the
-        forward a sibling just opened, and the sibling's next request would then hit
-        "connection refused". So a forced restart is coalesced: if *current* no longer
-        matches the live endpoint, another caller already rotated the forward since —
-        return the fresh endpoint untouched instead of tearing it down again.
-        """
-        from robovast.common.shutdown import is_shutting_down
-
-        from .bucket_ops import open_minio_port_forward
-        with self._pf_lock:
-            if force_restart:
-                if (current is not None and self._minio_pf is not None
-                        and current != self._minio_pf_endpoint):
-                    return self._minio_pf_endpoint
-                self._close_minio_pf_locked()
-            elif self._minio_pf is not None and self._minio_pf.poll() is not None:
-                self._minio_pf = None  # forward died; drop it and reopen below
-            if self._minio_pf is None:
-                # Opening one now would hand the process a kubectl child it is no
-                # longer around to reap: shutdown() has closed (or is closing) the
-                # forward, and a late caller — an in-flight S3 read on a worker
-                # thread — would resurrect it and leak the tunnel past exit.
-                if is_shutting_down():
-                    raise RuntimeError(
-                        "service is shutting down; not opening a MinIO port-forward")
-                self._minio_pf, port = open_minio_port_forward(
-                    self.namespace, self.kube_context)
-                self._minio_pf_endpoint = f"http://localhost:{port}"
-                self._minio_pf_port = port
-                self._pf_generation += 1
-                logger.info("Opened MinIO port-forward for driver S3 at %s (generation %d)",
-                            self._minio_pf_endpoint, self._pf_generation)
-                self._start_pf_monitor_locked()
-            return self._minio_pf_endpoint
-
-    #: How often the keep-alive probes the forward, and how many consecutive failures it
-    #: takes to rotate. Two failures rather than one so a single dropped probe — a busy
-    #: tunnel mid-transfer, a GC pause — does not throw away a working forward.
-    _PF_PROBE_INTERVAL_S = 5.0
-    _PF_FAILURES_BEFORE_ROTATE = 2
-
-    def _start_pf_monitor_locked(self) -> None:
-        """Start the keep-alive thread, once. Caller must hold ``_pf_lock``."""
-        if self._pf_monitor is not None:
-            return
-        self._pf_monitor = threading.Thread(
-            target=self._pf_monitor_loop, name="robovast-minio-pf-keepalive", daemon=True)
-        self._pf_monitor.start()
-
-    def _pf_monitor_loop(self) -> None:
-        """Probe the shared forward on a timer and rotate it when it stops serving.
-
-        Stall detection belongs here rather than on the request path. Discovering a stalled
-        tunnel by *waiting for an S3 request to time out* costs that request its whole
-        timeout budget, and every concurrent request pays it too — which is how one stalled
-        forward turned into an unresponsive API. A 5 s probe with a 5 s deadline finds the
-        same fact for a fixed, tiny cost and off the path serving users.
-
-        This is also the **only** rotator, which is what makes it safe to rotate at all:
-        when N storage clients all time out on one stalled forward and each asks for a
-        restart, every teardown kills the tunnel a sibling just opened (the thundering-herd
-        mutual teardown the ``current``-coalescing in
-        :meth:`_minio_port_forward_endpoint` exists to blunt). One prober cannot race
-        itself, so clients need not force anything — they wait for
-        ``_pf_generation`` to move and re-resolve.
-        """
-        from robovast.common.shutdown import is_shutting_down
-
-        from .bucket_ops import forward_is_serving
-        failures = 0
-        while not self._pf_monitor_stop.wait(self._PF_PROBE_INTERVAL_S):
-            if is_shutting_down():
-                return
-            with self._pf_lock:
-                port = self._minio_pf_port
-                pf = self._minio_pf
-            if pf is None or port is None:
-                failures = 0
-                continue          # nothing open right now; the next caller opens one
-            if forward_is_serving(port):
-                failures = 0
-                continue
-            failures += 1
-            if failures < self._PF_FAILURES_BEFORE_ROTATE:
-                logger.debug("MinIO port-forward on %d missed a probe (%d/%d)",
-                             port, failures, self._PF_FAILURES_BEFORE_ROTATE)
-                continue
-            failures = 0
-            logger.warning(
-                "MinIO port-forward on port %d stopped serving; rotating it", port)
-            try:
-                with self._pf_lock:
-                    # Re-check under the lock: a caller may have rotated it since the probe.
-                    if self._minio_pf_port != port:
-                        continue
-                    self._close_minio_pf_locked()
-                # Reopened outside the lock is wrong (two callers could both open one), so
-                # go through the normal path, which holds the lock and bumps the generation.
-                self._minio_port_forward_endpoint()
-            except Exception as e:  # noqa: BLE001 - a keep-alive must outlive one failure
-                logger.warning("Could not rotate the MinIO port-forward: %s", e)
-
-    def _close_minio_pf_locked(self) -> None:
-        """Terminate the current MinIO port-forward. Caller must hold ``_pf_lock``."""
-        pf, self._minio_pf = self._minio_pf, None
-        self._minio_pf_endpoint = None
-        self._minio_pf_port = None
-        if pf is not None and pf.poll() is None:
-            pf.terminate()
-            try:
-                pf.wait(timeout=5)
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                pf.kill()
-
 
     def _load_kube(self):
         from .kube_client import load_kube_config
@@ -1039,12 +825,20 @@ class ClusterService(LocalTransport):
         return None
 
     def _build_backend(self, state):
+        from . import pod_access
         from .kubernetes_backend import KubernetesBackend
+        # The campaign's data-plane token, minted here because this process holds the
+        # secret the gate verifies. A backend built for no campaign (a share upload) carries
+        # none: nothing it launches needs one. The id is read from the state's status --
+        # the controller state keeps it there, not as an attribute of its own.
+        campaign_id = state.snapshot().campaign_id if state is not None else None
+        token = self.scoped_token(pod_access.campaign_scope(campaign_id)) if campaign_id else ""
         return KubernetesBackend(cluster_config=self._cluster_config(),
                                  namespace=self.namespace,
                                  kube_context=self.kube_context,
                                  state=state,
-                                 admission=self._admission_controller())
+                                 admission=self._admission_controller(),
+                                 data_token=token)
 
     def _admission_controller(self):
         """The process-wide admission queue, built once.
@@ -1087,10 +881,19 @@ class ClusterService(LocalTransport):
                 # promise room on nodes the pods may not use.
                 from .node_placement import job_node_pool
 
-                self._admission = AdmissionController(ClusterBudgetProvider(
-                    _core, node_selector=job_node_pool(),
-                    cluster_config=self._cluster_config(),
-                    kube_context=self.kube_context))
+                # The disk every campaign's results land on, measured where this process
+                # mounts it: on a node-directory deployment that is the node's own
+                # filesystem, the one the kubelet evicts on.
+                from robovast.common.disk_reserve import \
+                    disk_shortfall  # pylint: disable=import-outside-toplevel
+                campaigns_root = self._campaigns_root()
+                self._admission = AdmissionController(
+                    ClusterBudgetProvider(
+                        _core, node_selector=job_node_pool(),
+                        cluster_config=self._cluster_config(),
+                        kube_context=self.kube_context),
+                    space_gate=lambda: disk_shortfall(campaigns_root,
+                                                      label="the results volume"))
             return self._admission
 
     def _run_options(self, request):
@@ -1159,7 +962,7 @@ class ClusterService(LocalTransport):
                            pull_secret=self._registry_pull_secret(),
                            on_pending=_aux_pending_logger(tag),
                            should_stop=should_stop,
-                           **self._aux_store_kwargs()) as session:
+                           **self._aux_staging_kwargs()) as session:
             token = set_container_runner_factory(session.runner_factory())
             try:
                 yield
@@ -1188,7 +991,6 @@ class ClusterService(LocalTransport):
 
         from .container_runner import AUX_HOLD_LIMIT_S, ClusterContainerRunner
         from .kube_exec_lane import HELD_CONTAINER
-        store = self._aux_store_kwargs()
         slots = {}
         # For the reason ``AuxPodSession`` takes one: nothing in the contract says two
         # runners cannot be asked for at once, and two holds of one identity is a second
@@ -1228,8 +1030,8 @@ class ClusterService(LocalTransport):
             def factory(spec):
                 return ClusterContainerRunner(
                     spec, container_name(hold(spec)), self.namespace,
-                    self._k8s(), storage=store["storage"], bucket=store["bucket"],
-                    owner_id=str(tag), kube_context=self.kube_context,
+                    self._k8s(), stage_dir=self.staged_dir,
+                    kube_context=self.kube_context,
                     container=HELD_CONTAINER, reprovision=rehold)
 
             yield factory
@@ -1237,513 +1039,18 @@ class ClusterService(LocalTransport):
             for slot in slots.values():
                 self._exec_manager.release_hold(slot)
 
-    def _aux_store_kwargs(self) -> dict:
-        """Storage wiring for an aux pod's workspace mirror.
+    def _aux_staging_kwargs(self) -> dict:
+        """The data-plane wiring an aux pod's workspace transfer needs.
 
-        The same bucket an image-build context stages to — an aux workspace belongs to no
-        campaign's results either, and is scratch that is deleted when the runner closes.
-        The pod is given the *cluster-internal* endpoint, while this process keeps its own
-        client (which off-cluster reaches the store through a port-forward).
+        The service's own staging: where a runner's workspace lives on this disk, how a
+        pod's slot is dropped, and the token a pod is given to reach its slot -- the same
+        three things an image build's context and an exec pod's ``/config`` use.
         """
-        from robovast.execution.cluster_execution import in_pod_storage
-
-        from .cluster_image_build import build_context_bucket
-        cfg = self._cluster_config()
-        access_key, secret_key = cfg.get_s3_credentials()
         return {
-            "storage": in_pod_storage.storage_client_for(cfg),
-            "bucket": build_context_bucket(cfg),
-            "s3": (cfg.get_s3_endpoint(), access_key, secret_key),
+            "stage_dir": self.staged_dir,
+            "discard_staged": self.discard_staged,
+            "token_for": self.scoped_token,
         }
-
-    def _record_campaign_failure(self, campaign_id, results_dir, state, exc, backend):
-        """Record the terminal outcome *and* publish it to the object store.
-
-        The local base class only writes ``_execution/outcome.json`` on disk; here the
-        service pod's disk is scratch, so the reason must reach the durable home —
-        otherwise ``get_status`` could not explain a failure after the fact.
-        """
-        from robovast.execution.controller import _record_controller_failure
-        campaign_root = os.path.join(results_dir, campaign_id)
-        try:
-            _record_controller_failure(campaign_root, campaign_id, state, exc, backend)
-        except Exception:  # noqa: BLE001 - never mask the original failure
-            logger.warning("Could not record failure for %s", campaign_id, exc_info=True)
-
-    def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
-        """Publish a stopped campaign's outcome to the object store (pod disk is scratch).
-
-        Succeeds for a Stop-button stop (the storage tunnel is up); on Ctrl+C the
-        tunnel is already gone, so the upload fails quietly (logged concisely, no
-        traceback) — the process is exiting anyway.
-        """
-        from robovast.execution.controller import _record_controller_outcome
-        campaign_root = os.path.join(results_dir, campaign_id)
-        try:
-            _record_controller_outcome(campaign_root, campaign_id, state, backend)
-        except Exception as e:  # noqa: BLE001 - best-effort; never block the stop
-            logger.warning("Could not record stopped outcome for %s: %s", campaign_id, e)
-
-    # -- status / listing ---------------------------------------------------
-
-    # ``_status_from_disk`` is inherited, not overridden here: ``_record_dir`` puts the
-    # durable ``_execution/outcome.json`` where every reader already looks, so the inherited
-    # implementation — which prefers ``outcome.json`` and merges ``postprocessed`` from a
-    # present ``data.db`` — is the one precedence for both lanes. An override reading the
-    # object store itself cannot keep a per-campaign status in step with the list view,
-    # because ``_summary_for`` reconstructs directly and never calls it.
-
-    def _durable_campaign_ids(self) -> set[str]:
-        """Campaign ids from the object store's index (see ``in_pod_storage``).
-
-        This is what makes a finished cluster campaign listable at all: its home is the
-        object store, and the inherited disk scan sees only what this pod happens to still
-        have in scratch.
-        """
-        return set(self._campaign_index()[0])
-
-    def _started_at_for(self, cid: str) -> "str | None":
-        """Inherited precedence, plus the index as the last resort.
-
-        The index is consulted **before** the store's ``campaign.db``, and that ordering is
-        the point: ``list_campaigns`` calls this for *every* candidate id to order them
-        before it paginates, so a start time read per campaign would mean one object read
-        per campaign on every cold listing — with a 100-campaign SSE poll behind it. The
-        marker carries the time in its key, so the whole ordering pass costs the one cached
-        listing, and ``_record_dir`` is reached only for the page actually rendered.
-        """
-        with self._lock:
-            entry = self._campaigns.get(cid)
-        if entry is not None:
-            return entry.created_at
-        cached = self._started_at_cache.get(cid)
-        if cached is not None:
-            return cached
-        indexed = self._campaign_index()[0].get(cid)
-        if indexed:
-            self._started_at_cache[cid] = indexed
-            return indexed
-        return super()._started_at_for(cid)
-
-    def _finished_at_for(self, cid: str) -> "str | None":
-        """Inherited precedence, plus the index as the last resort — see
-        :meth:`_started_at_for`, whose reasoning this repeats exactly.
-
-        The marker matters more here than the start one does, because a finish time has no
-        cheap fallback: without it, ordering the terminal group would mean materialising a
-        record per campaign, which is what that override exists to avoid.
-
-        Not cached locally. The inherited cache is keyed to a value written once; this one
-        moves whenever a campaign ends again, and the index it reads is already cached for
-        :data:`_INDEX_CACHE_TTL`, so a second cache would only add a way to be stale.
-        """
-        with self._lock:
-            entry = self._campaigns.get(cid)
-        if entry is None:
-            indexed = self._campaign_index()[1].get(cid)
-            if indexed:
-                return indexed
-        return super()._finished_at_for(cid)
-
-    def campaign_is_live(self, campaign_id: str) -> bool:
-        """This pod's registry first, then the object store's finish marker.
-
-        A stateless service outlives the drivers it started and shares the store with its
-        siblings, so "not in my registry" cannot mean "over" here: after a restart that is
-        every campaign, and the download of one still running would then be offered under a
-        name promising a complete campaign. A campaign the index knows and has no finish
-        marker for is treated as live -- the direction that errs towards warning about an
-        archive that turns out to be whole, rather than the reverse.
-        """
-        if super().campaign_is_live(campaign_id):
-            return True
-        indexed, finished = self._campaign_index()
-        return campaign_id in indexed and campaign_id not in finished
-
-    def _on_campaign_finished(self, campaign_id: str, state) -> None:
-        """Publish the campaign's finish marker, so a listing can order by it.
-
-        Best-effort for the same reason as :meth:`_on_campaign_started`: a campaign that has
-        already run is not worth failing over its index entry, and a campaign whose marker
-        never lands simply orders by its start time.
-        """
-        from datetime import datetime, timezone
-        from robovast.execution.cluster_execution import in_pod_storage
-        from robovast.execution.control_server import is_terminal
-        snap = state.snapshot() if state is not None else None
-        if snap is None or not is_terminal(snap.phase) or not snap.phase_since:
-            return
-        finished_at = datetime.fromtimestamp(snap.phase_since, tz=timezone.utc).isoformat()
-        try:
-            cfg = self._cluster_config()
-            # Interactive: one tiny marker PUT on the campaign's last breath, already
-            # best-effort, and nothing should wait minutes on a stalled tunnel for it.
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-            in_pod_storage.mark_campaign_finished(storage, cfg, campaign_id, finished_at)
-        except Exception as e:  # noqa: BLE001 - discoverability, not correctness
-            logger.warning("Could not record the finish time of campaign %s: %s",
-                           campaign_id, e)
-            return
-        with self._index_lock:
-            # Extended rather than dropped, for the reason `_on_campaign_started` gives:
-            # a cold listing at exactly this moment is the one worth avoiding.
-            cached = self._index_cache
-            if cached is not None:
-                self._index_cache = (cached[0], cached[1],
-                                     {**cached[2], campaign_id: finished_at})
-
-    #: How long a campaign-index listing is reused. The campaign-list SSE stream re-lists
-    #: every second (app.py ``_SSE_LIST_POLL_S``), so without this every one of those polls
-    #: would be an object-store round-trip.
-    _INDEX_CACHE_TTL = 10.0
-
-    @staticmethod
-    def _empty_index() -> "tuple[dict, dict]":
-        return {}, {}
-
-    def _campaign_index(self) -> "tuple[dict, dict]":
-        """``({campaign_id: created_at}, {campaign_id: finished_at})`` from the object store,
-        cached together for :data:`_INDEX_CACHE_TTL`.
-
-        Two maps from one cached pass rather than two caches: they are read by the same
-        ordering loop, on the same tick, and a campaign appears in the second only once it
-        has ended.
-
-        Best-effort: an unreachable store means "cannot tell what is stored right now", and
-        the honest response is to list what we *can* see rather than fail the listing. The
-        stale cache is kept in that case, so a brief outage does not make every stored
-        campaign blink out of the list and back.
-
-        **Single-flight.** The listing runs outside ``_index_lock`` on purpose — holding the
-        lock across network I/O would queue every reader behind it — but that alone let
-        *every* concurrent caller past a cold cache issue its own listing. Behind a 1 Hz SSE
-        poll and a slow store that compounds: each tick starts another round-trip that the
-        previous tick has not finished, so the work in flight grows without bound and each
-        piece of it holds a worker thread. So one caller refreshes and the rest take the
-        stale value immediately; a slightly-late listing is worth far more than a
-        pile-up. ``{}`` is only returned when there is nothing cached at all.
-        """
-        from robovast.execution.cluster_execution import in_pod_storage
-        now = time.monotonic()
-        with self._index_lock:
-            cached = self._index_cache
-            if cached is not None and now - cached[0] < self._INDEX_CACHE_TTL:
-                return cached[1:]
-            if self._index_refreshing:
-                return self._empty_index() if cached is None else cached[1:]
-            self._index_refreshing = True
-        try:
-            cfg = self._cluster_config()
-            # Interactive: this listing sits under the campaign-list SSE's 1 Hz poll, and
-            # the ``except`` below already has a good degraded answer (the stale cache).
-            # With the bulk budget a stalled tunnel made each poll block for minutes.
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-            index = dict(in_pod_storage.list_indexed_campaigns(storage, cfg))
-            finished = dict(in_pod_storage.list_finished_campaigns(storage, cfg))
-        except Exception as e:  # noqa: BLE001 - never fail a listing over discovery
-            logger.warning("Could not read the campaign index: %s", e)
-            with self._index_lock:
-                self._index_refreshing = False
-                return self._empty_index() if self._index_cache is None else self._index_cache[1:]
-        with self._index_lock:
-            self._index_refreshing = False
-            # A marker ``_on_campaign_started`` added while this listing was in flight is
-            # simply overwritten, and that is fine: ``list_campaigns`` unions the live
-            # registry into its id set (``LocalTransport._extra_live_ids``), so a campaign
-            # this process just started stays listed without the index, and the next
-            # refresh picks the marker up from the store.
-            self._index_cache = (now, index, finished)
-        return index, finished
-
-    def _on_campaign_started(self, campaign_id: str, created_at: str) -> None:
-        """Publish the campaign's index marker, so it is discoverable from here on.
-
-        Called at the top of the driver, before the image build and the run: everything
-        that can go wrong afterwards — a failed build, a crash mid-run, a stop, a failed
-        finalize upload — leaves a campaign that is still listed, which is the whole reason
-        the marker is not written at the end.
-
-        Best-effort: a campaign is not worth failing over its index entry, and a store
-        broken enough to refuse this will fail the campaign's own uploads with a real error
-        moments later.
-        """
-        from robovast.execution.cluster_execution import in_pod_storage
-        try:
-            cfg = self._cluster_config()
-            # Interactive: one tiny marker PUT, already best-effort, and it runs at the
-            # head of the driver — a start must not sit for minutes on a stalled tunnel.
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-            in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
-        except Exception as e:  # noqa: BLE001 - discoverability, not correctness
-            logger.warning("Could not index campaign %s for discovery: %s",
-                           campaign_id, e)
-            return
-        with self._index_lock:
-            # Add the new marker to the cache rather than dropping it. Dropping it forced a
-            # cold listing at the *worst* moment: the campaign whose start just invalidated
-            # it is about to saturate the same connection with its own uploads, and the
-            # campaign-list poll would meet a cold cache on every tick until one listing
-            # completed. Inserting the one fact the listing would have told us keeps the
-            # campaign instantly discoverable and the cache warm. Nothing else about the
-            # index can have changed as a result of *this* call.
-            cached = self._index_cache
-            if cached is None:
-                self._index_cache = None  # nothing to extend; the next caller lists
-            else:
-                self._index_cache = (cached[0], {**cached[1], campaign_id: created_at},
-                                     cached[2])
-
-    def _unmark_campaign(self, campaign_id: str) -> None:
-        """Drop a deleted campaign's index marker, so it stops being listed."""
-        from robovast.execution.cluster_execution import in_pod_storage
-        try:
-            cfg = self._cluster_config()
-            # Interactive: one tiny marker delete on a request path, already best-effort.
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-            in_pod_storage.unmark_campaign_indexed(storage, cfg, campaign_id)
-            in_pod_storage.unmark_campaign_finished(storage, cfg, campaign_id)
-        except Exception as e:  # noqa: BLE001 - the data itself is already gone
-            logger.warning("Could not remove campaign %s from the index: %s",
-                           campaign_id, e)
-        with self._index_lock:
-            self._index_cache = None
-
-    def _store_phase_bytes(self, campaign_id: str):
-        """A ``get_bytes`` over the campaign's durable ``_execution/`` phase files.
-
-        Resolved **lazily, on the first miss**: this sits behind the log SSE stream,
-        which re-polls while the user watches, so a campaign whose phase files are all
-        on pod scratch must not pay a store round-trip per poll. A store that cannot be
-        resolved reads as "no durable copy" (``None`` for every file) rather than an
-        error — the log panel showing what it can beats it showing a stack trace.
-        """
-        from robovast.common.campaign_logs import EXECUTION_DIR
-        from robovast.execution.cluster_execution import in_pod_storage
-
-        #: Empty until first use, then holds ``(storage, bucket, prefix)`` or ``None``.
-        resolved: list = []
-
-        def _read(filename: str):
-            if not resolved:
-                try:
-                    cfg = self._cluster_config()
-                    bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-                    resolved.append((
-                        in_pod_storage.storage_client_for(cfg, interactive=True),
-                        bucket, prefix))
-                except Exception as e:  # noqa: BLE001 - best-effort; empty if unavailable
-                    logger.debug("could not resolve object store for %s: %s", campaign_id, e)
-                    resolved.append(None)
-            if resolved[0] is None:
-                return None
-            storage, bucket, prefix = resolved[0]
-            try:
-                raw = storage.read_object(bucket, f"{prefix}{EXECUTION_DIR}/{filename}")
-            except Exception as e:  # noqa: BLE001 - a missing phase file is normal
-                logger.debug("could not read %s for %s: %s", filename, campaign_id, e)
-                return None
-            if not raw:
-                return None
-            return raw if isinstance(raw, bytes) else raw.encode("utf-8", "replace")
-
-        return _read
-
-    def _store_section_names(self, campaign_id: str) -> list[str]:
-        """Names under the campaign's durable ``_execution/``, relative to it.
-
-        One listing, for the reader that has no local copy to enumerate: an archived
-        section's name carries the sequence that orders it, so a campaign whose repeatable
-        phases ran more than once cannot be assembled without knowing which names exist.
-
-        Fails soft to ``[]``, like :meth:`_store_phase_bytes` fails soft to ``None``: the
-        live base files are named unconditionally by the caller, so an unreachable store
-        costs the archived sections of an old campaign, not the log.
-        """
-        from robovast.common.campaign_logs import EXECUTION_DIR
-        from robovast.execution.cluster_execution import in_pod_storage
-        try:
-            cfg = self._cluster_config()
-            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-            base = f"{prefix}{EXECUTION_DIR}/"
-            return [key[len(base):] for key in storage.list_keys(bucket, base)
-                    if key.startswith(base)]
-        except Exception as e:  # noqa: BLE001 - best-effort; see the docstring
-            logger.debug("could not list the execution dir of %s: %s", campaign_id, e)
-            return []
-
-    def _archive_repeatable_sections(self, campaign_id: str) -> None:
-        """Move every finished repeatable-phase log aside, before a new run writes one.
-
-        A repeatable phase (postprocess, share) writes the same filename every time it
-        runs. Left in place, the next run either replaces those bytes or appends to them,
-        and either way the assembled campaign log stops being append-only: the reader
-        streams it by byte offset, so a section that changes behind an offset already
-        consumed is a section nobody is ever shown. Archived under
-        ``_execution/sections/<seq>-<phase>.log``, it is finished and immutable, the new
-        run's file is the only one still growing, and
-        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last.
-
-        **All** of them, not only the phase about to run, so at most one live base file
-        exists and "the live one is last" has exactly one answer.
-
-        One sequence across the store and both local roots, allocated from everything
-        already archived anywhere, so the same run of a phase gets the same name wherever
-        its copy lives and the two listings cannot disagree about the order.
-
-        The store keeps the base object and it is **truncated**, not deleted: the only
-        delete this API offers is by prefix, and it appends a ``/`` to whatever it is given
-        (so it would refuse the exact key rather than remove it -- and a prefix delete that
-        did match would take siblings). An empty base object is also the honest state
-        between the archive and the new run's first publish, and it grows from there.
-
-        Best-effort throughout: an operation must run even when the account of the
-        previous one could not be moved. What a failure costs is a duplicated section
-        until the new run publishes over the base file, which is worth strictly less than
-        the postprocess it would otherwise block.
-        """
-        from robovast.common.campaign_logs import (EXECUTION_DIR, REPEATABLE_PHASES,
-                                                   disk_section_names, next_section_seq,
-                                                   section_name)
-        with self._lock:
-            entry = self._campaigns.get(campaign_id)
-        roots = [self._cache_dir(campaign_id)]
-        if entry is not None:
-            roots.append(Path(entry.results_dir) / campaign_id)
-        existing = list(self._store_section_names(campaign_id))
-        for root in roots:
-            existing += disk_section_names(root)
-        seq = next_section_seq(existing)
-        for base in REPEATABLE_PHASES:
-            target = section_name(seq, base)
-            moved = self._archive_stored_section(campaign_id, base, target,
-                                                 mirror_root=roots[0])
-            for root in roots:
-                live = Path(root) / EXECUTION_DIR / base
-                if not live.exists():
-                    continue
-                try:
-                    (Path(root) / EXECUTION_DIR / target).parent.mkdir(
-                        parents=True, exist_ok=True)
-                    live.replace(Path(root) / EXECUTION_DIR / target)
-                    moved = True
-                except OSError as e:
-                    logger.warning("Could not archive %s of %s under %s: %s",
-                                   base, campaign_id, root, e)
-            if moved:
-                # Consumed only when something actually moved: a phase that never ran
-                # would otherwise burn a number and leave a gap in the campaign's order.
-                seq += 1
-
-    def _archive_stored_section(self, campaign_id: str, base: str, target: str, *,
-                                mirror_root) -> bool:
-        """Copy the durable *base* phase log to *target* and empty it. ``True`` if moved.
-
-        The copy is landed under *mirror_root* as well, and that is not a cache
-        optimisation: the reader of a **tracked** campaign names the archived sections from
-        its local roots, because listing the store behind an SSE poll is the round-trip
-        this path exists to avoid. A phase whose log lives only in the store -- a
-        postprocess publishes from the pod's own tree -- would otherwise be archived where
-        no tracked reader can name it, and the section would vanish from the stream for as
-        long as the operation runs.
-        """
-        from robovast.common.campaign_logs import EXECUTION_DIR
-        from robovast.execution.cluster_execution import in_pod_storage
-        try:
-            cfg = self._cluster_config()
-            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-            key = f"{prefix}{EXECUTION_DIR}/{base}"
-            raw = storage.read_object(bucket, key)
-            if not raw:
-                return False
-            with tempfile.TemporaryDirectory() as tmp:
-                archived = Path(tmp) / "section.log"
-                archived.write_bytes(raw if isinstance(raw, bytes)
-                                     else raw.encode("utf-8", "replace"))
-                storage.upload_file(str(archived), bucket,
-                                    f"{prefix}{EXECUTION_DIR}/{target}")
-                local = Path(mirror_root) / EXECUTION_DIR / target
-                local.parent.mkdir(parents=True, exist_ok=True)
-                local.write_bytes(archived.read_bytes())
-                # Only after the copy is up, so a failure here leaves the section
-                # duplicated rather than lost.
-                empty = Path(tmp) / "empty.log"
-                empty.write_bytes(b"")
-                storage.upload_file(str(empty), bucket, key)
-            return True
-        except Exception as e:  # noqa: BLE001 - never block the operation; see the caller
-            logger.warning("Could not archive the stored %s of %s: %s", base,
-                           campaign_id, e)
-            return False
-
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        """Serve the unified infrastructure log — live pod scratch, then object store.
-
-        Assembles the per-phase files (variation → run → postprocessing) into one
-        divider-separated stream (see
-        :func:`robovast.common.campaign_logs.assemble_log`). While this process is
-        driving the campaign each phase file is a local file in the service pod's
-        scratch (the same one the thread-isolated handlers write), read straight
-        from *offset*. Once the campaign is no longer tracked here, the durable copy
-        of each phase file in the object store is read.
-
-        The two are **layered, not either/or**, because not every phase writes to the
-        tracked scratch root. Cluster postprocessing runs against its own fetched
-        campaign root and publishes ``postprocessing.log`` to the object store, so a
-        scratch-only read served every tracked cluster campaign a log with no
-        POSTPROCESSING section at all — pass or fail — while the bytes sat in the store
-        the whole time. That is not detectable as a bug from the reader's side: a
-        missing phase file is also how "this phase has not run" looks.
-        """
-        from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log,
-                                                   disk_get_bytes, disk_section_names,
-                                                   layered_by_writer, layered_get_bytes,
-                                                   ordered_sections)
-        # Every phase's live file, whether or not it is there; see `available` below.
-        live = [filename for _banner, filename in INFRA_PHASES]
-        with self._lock:
-            entry = self._campaigns.get(campaign_id)
-        store = self._store_phase_bytes(campaign_id)
-        if entry is not None:
-            # Scratch first, except for the phase files THIS entry's operation writes
-            # somewhere else. A postprocess and a share export on this lane work against a
-            # fetched root and publish from there, so the copy under the tracked root is an
-            # earlier attempt's -- present, frozen, and therefore the winner under an
-            # absence-only fallback, which is how a succeeded postprocess read as the
-            # image-pull failure before it. Asked of the entry rather than of a fixed list
-            # of phases, so a campaign this process drives costs no store call at all: that
-            # read sits behind an SSE stream that re-polls while a user watches.
-            campaign_dir = Path(entry.results_dir) / campaign_id
-            # Two local roots, because a re-triggered operation does not work where the
-            # campaign is tracked: it works against the cache dir `_materialize` fills.
-            # Both are ordinary directory reads, so covering the second costs no round
-            # trip -- and the archived sections a retrigger moves aside land there.
-            cache_dir = self._cache_dir(campaign_id)
-            local = layered_get_bytes(disk_get_bytes(campaign_dir),
-                                      disk_get_bytes(cache_dir))
-            get_bytes = layered_by_writer(local, store,
-                                          entry.elsewhere_written_phase_files)
-            # Archived sections are discovered from the local roots -- their names carry
-            # the sequence, and only what exists can be ordered. The live base files are
-            # named unconditionally instead of listed: a tracked campaign's phase file may
-            # exist only in the store (a postprocess publishes from the pod's own tree, not
-            # into either root), and listing this path's sources would drop that whole
-            # section. A name whose bytes are nowhere is skipped by `assemble_log`, so
-            # naming one costs nothing, where missing one costs a section.
-            available = (live
-                         + disk_section_names(campaign_dir)
-                         + disk_section_names(cache_dir))
-            eof = self._is_done(entry)
-        else:  # past / reaped campaign: the store holds every phase file's durable copy
-            get_bytes = store
-            available = live + self._store_section_names(campaign_id)
-            eof = True
-        text, next_offset, eof = assemble_log(get_bytes, offset, eof=eof,
-                                              sections=ordered_sections(available))
-        return LogChunk(text=text, next_offset=next_offset, eof=eof)
-
-    # -- jobs (live) --------------------------------------------------------
 
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
         """List the Kubernetes Jobs a campaign has in flight, with live status.
@@ -1999,7 +1306,7 @@ class ClusterService(LocalTransport):
         return PodLogTail()
 
     def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a Job's log from byte *offset* onward, live from its pod or from the store.
+        """Serve a Job's log from byte *offset* onward, live from its pod or from the campaign.
 
         Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
         its containers' logs merged into one stream (the main ``robovast`` container
@@ -2007,7 +1314,7 @@ class ClusterService(LocalTransport):
         incremental: a cached tail keeps the full assembled text so the byte offset
         still maps onto it, but each poll only pulls the delta from the kube API
         rather than the whole log. A pod that is gone is not an error: the log comes from
-        the campaign's objects instead (:meth:`_archived_job_log`), which is the ordinary
+        the campaign directory instead (:meth:`_archived_job_log`), which is the ordinary
         state of every finished job.
 
         A ``Pending`` pod is read like any other, and must be: the sim/SUT sidecars are
@@ -2043,11 +1350,11 @@ class ClusterService(LocalTransport):
         return LogChunk(text=text, next_offset=next_offset, eof=terminal)
 
     def _archived_job_log(self, campaign_id: str, job_name: str, offset: int) -> LogChunk:
-        """A finished job's log, read from the campaign's objects instead of its pod.
+        """A finished job's log, read from the campaign directory instead of its pod.
 
         A pod is deleted when its Job is cleaned up, so for most of a campaign's life the
-        live source above is gone while the same output is durable in the object store: the
-        job mirrors ``/out`` there as it ends, which is also what makes an already-finished
+        live source above is gone while the same output is in the campaign: the pod's
+        uploader delivers ``/out`` as it ends, which is also what makes an already-finished
         run of a still-running campaign readable at all. Without this the log of every run
         but the executing one is a 404.
 
@@ -2059,8 +1366,8 @@ class ClusterService(LocalTransport):
 
         Raises:
             KeyError: When the campaign has no such job, or its artifacts were never
-                uploaded (a run killed before it could mirror). Reported as absent rather
-                than as an empty log, which would read as a run that said nothing.
+                delivered (a run killed before its uploader could). Reported as absent
+                rather than as an empty log, which would read as a run that said nothing.
         """
         import yaml
 
@@ -2070,21 +1377,20 @@ class ClusterService(LocalTransport):
                                               container_of_log_file, is_sidecar_log,
                                               tag_width)
 
-        storage, bucket, prefix = self._campaign_object_location(campaign_id,
-                                                                 interactive=True)
-        manifest = storage.read_object(bucket, f"{prefix}{JOB_LINKS_MANIFEST_REL}")
-        if manifest is None:
+        campaign_dir = self.campaign_dir(campaign_id)
+        try:
+            manifest = (campaign_dir / JOB_LINKS_MANIFEST_REL).read_bytes()
+        except FileNotFoundError:
             raise KeyError(
                 f"campaign {campaign_id!r} has no job-link manifest: no archived log for "
-                f"job {job_name!r}")
+                f"job {job_name!r}") from None
         try:
             job_rel = resolve_job_artifact_rel(yaml.safe_load(manifest) or {}, job_name)
         except FileNotFoundError as e:
             raise KeyError(f"{e} in campaign {campaign_id!r}") from None
 
-        log_prefix = f"{prefix}{job_rel}/logs/"
-        objects, _ = storage.list_entries(bucket, log_prefix)
-        names = sorted(key[len(log_prefix):] for key, _ in objects)
+        log_dir = campaign_dir / job_rel / "logs"
+        names = sorted(p.name for p in log_dir.iterdir()) if log_dir.is_dir() else []
         # Main container first, then the sidecars in name order -- the local lane's order,
         # so the same job does not read differently depending on which lane served it.
         files = [n for n in names if n == MAIN_LOG]
@@ -2098,7 +1404,7 @@ class ClusterService(LocalTransport):
         width = tag_width(containers) if multi else 0
         entries = []
         for file_order, (name, container) in enumerate(zip(files, containers)):
-            raw = storage.read_object(bucket, f"{log_prefix}{name}") or b""
+            raw = (log_dir / name).read_bytes()
             lines = raw.decode("utf-8", errors="replace").split("\n")
             # A file ending in a newline splits with a trailing "" that is not a line. Only
             # the last one: a blank line inside the log is the container's own output.
@@ -2157,9 +1463,7 @@ class ClusterService(LocalTransport):
         registry = self._images.registry(require=False)
         if not registry.enabled():
             raise ValueError(f"cannot build an image: {registry.why_disabled()}")
-        from .cluster_image_build import build_context_bucket
-        bucket = build_context_bucket(cfg)
-        return project, campaign_config, specs, project_dir, cfg, registry, bucket
+        return project, campaign_config, specs, project_dir, cfg, registry
 
     @property
     def _images(self):
@@ -2180,24 +1484,24 @@ class ClusterService(LocalTransport):
     def build_image(self, request):
         from robovast.service.image_build import primary_build_ref
         self._admit_storage("build an image")
-        (_project, _cc, specs, project_dir, cfg, registry, bucket) = \
+        (_project, _cc, specs, project_dir, cfg, registry) = \
             self._build_context(request)
-        refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+        refs = {name: self._start_cluster_build(spec, project_dir, cfg, registry)
                 for name, spec in specs.items()}
         return primary_build_ref(refs)
 
-    def _start_cluster_build(self, spec, project_dir, cfg, registry, bucket):
+    def _start_cluster_build(self, spec, project_dir, cfg, registry):
         """Core (idempotent) launch shared by build_image + the campaign preflight."""
         from robovast.common.execution import BUILD_IMAGE_PREFIX, resolve_build_base_image
-        from robovast.execution.cluster_execution import in_pod_storage
         from robovast.service.image_build import cache_scope, generate_dockerfile
         from robovast.service.interface import ImageBuildRef, ImageBuildStatus
 
         from robovast.common.errors import ImageBuildFailed
 
+        from . import pod_access
         from .buildkitd_deploy import BUILDKITD_NAME, buildkitd_address, buildkitd_ready
-        from .cluster_image_build import (build_job_manifest, cache_image_ref,
-                                          context_prefix, s3_init_env, stage_context_to_s3)
+        from .cluster_image_build import (build_job_manifest, cache_image_ref, context_slot,
+                                          stage_context)
 
         # One resolution, from the store, so a submitted build and a later "is it there?"
         # cannot disagree about what this image is called. Deriving it separately is how a
@@ -2211,7 +1515,7 @@ class ClusterService(LocalTransport):
         # that only ever hits the cache would never sweep): retire the contexts no
         # status poll got to — a build submitted with --no-wait and never polled, or
         # one whose service restarted mid-build.
-        self._sweep_build_contexts(cfg, bucket)
+        self._sweep_build_contexts()
 
         # Idempotent, and the registry is asked first: a pushed manifest for this exact
         # input hash is durable proof the image exists, where the Job that produced it is
@@ -2292,8 +1596,8 @@ class ClusterService(LocalTransport):
                 f"`vast doctor -n {self.namespace}` says which.")
 
         # Registered *before* staging so a concurrent build's context sweep can see
-        # this build is in flight — its context exists in the object store for the
-        # whole upload, while its Job does not exist yet.
+        # this build is in flight — its context sits in a staged slot for the whole
+        # copy, while its Job does not exist yet.
         status = ImageBuildStatus(build_id=build_id, tag=spec.tag, phase="pending",
                                   image_ref=symbolic, digest=image_hash)
         # The spec rides along so a failure can be classified against what was actually
@@ -2306,7 +1610,7 @@ class ClusterService(LocalTransport):
         # holds the sweep back, so a submit that dies here (staging error, rejected
         # Job) would otherwise strand its context for as long as the service lives.
         try:
-            # Stage the context (project dir + generated Dockerfile) to S3.
+            # Stage the context (project dir + generated Dockerfile) for the Job to fetch.
             base_ref = (spec.base_image or registry.base_experiment_image
                         or resolve_build_base_image())
             # Record the *resolved* base, not the declared one: spec.base_image is often
@@ -2323,10 +1627,8 @@ class ClusterService(LocalTransport):
             # could not name, the failure the resolution exists to prevent.
             dockerfile = generate_dockerfile(spec, project_dir, base_ref,
                                              resolved_vcs=self._images.resolve_vcs(spec))
-            build_prefix = context_prefix(build_id)
-            storage = in_pod_storage.storage_client_for(cfg)
-            context_bytes = stage_context_to_s3(storage, bucket, build_prefix,
-                                                project_dir, dockerfile)
+            slot = context_slot(build_id)
+            context_bytes = stage_context(self.staged_dir(slot), project_dir, dockerfile)
 
             # Scoped to this build's layer-chain shape, not just the container name:
             # otherwise every project's `sut` shares one tag and evicts the others' layers.
@@ -2338,12 +1640,11 @@ class ClusterService(LocalTransport):
             # `_await_build_image` writes into the campaign's build.log.
             status.context_bytes, status.cache_ref = context_bytes or 0, cache_ref
 
-            access_key, secret_key = cfg.get_s3_credentials()
-            init_env = s3_init_env(cfg.get_s3_endpoint(), access_key, secret_key,
-                                   bucket, build_prefix)
             manifest = build_job_manifest(
                 build_id=build_id, image_ref=image_ref, campaign_label=build_id,
-                init_env=init_env, push_secret_name=registry.push_secret_name,
+                # Reaches this build's context and nothing else.
+                token=self.scoped_token(pod_access.staged_scope(slot)),
+                push_secret_name=registry.push_secret_name,
                 namespace=self.namespace, insecure=registry.insecure,
                 ca_configmap_name=registry.ca_configmap_name,
                 cache_ref=cache_ref,
@@ -2362,7 +1663,7 @@ class ClusterService(LocalTransport):
             self._k8s_batch().create_namespaced_job(self.namespace, manifest)
         except BaseException:
             status.phase, status.done = "failed", True
-            self._discard_build_context(cfg, bucket, build_id)
+            self._discard_build_context(build_id)
             raise
         status.phase = "building"
         # The base is most of the built image: every experiment image is FROM a family
@@ -2372,25 +1673,21 @@ class ClusterService(LocalTransport):
         self._warm(base_ref)
         return ImageBuildRef(build_id=build_id, tag=spec.tag, cached=False)
 
-    def _discard_build_context(self, cfg, bucket: str, build_id: str) -> None:
+    def _discard_build_context(self, build_id: str) -> None:
         """Drop *build_id*'s staged context. Best-effort: a leftover copy of the
         project dir is not worth failing a finished build over, but it is worth a
         warning, since the next sweep is the only thing that will retry it."""
-        from robovast.execution.cluster_execution import in_pod_storage
-
-        from .cluster_image_build import discard_context
+        from .cluster_image_build import context_slot
         try:
-            storage = in_pod_storage.storage_client_for(cfg)
-            removed = discard_context(storage, bucket, build_id)
+            removed = self.discard_staged(context_slot(build_id))
         except Exception as e:  # noqa: BLE001 - cleanup must not fail the build
             logger.warning("could not discard the staged build context for %s: %s",
                            build_id, e)
             return
         if removed:
-            logger.info("discarded the staged build context for %s (%d objects)",
-                        build_id, removed)
+            logger.info("discarded the staged build context for %s", build_id)
 
-    def _sweep_build_contexts(self, cfg, bucket: str) -> None:
+    def _sweep_build_contexts(self) -> None:
         """Discard staged contexts whose build is over.
 
         A context is stale when no build Job owns it any more (Jobs self-destruct at
@@ -2400,12 +1697,9 @@ class ClusterService(LocalTransport):
         exists, so "no Job" alone would delete a context out from under a sibling
         request's init container.
         """
-        from robovast.execution.cluster_execution import in_pod_storage
-
-        from .cluster_image_build import staged_context_build_ids
+        from .cluster_image_build import BUILD_CONTEXT_PREFIX, staged_context_build_ids
         try:
-            storage = in_pod_storage.storage_client_for(cfg)
-            staged = staged_context_build_ids(storage, bucket)
+            staged = staged_context_build_ids(self.staged_dir(BUILD_CONTEXT_PREFIX))
             jobs = self._k8s_batch().list_namespaced_job(
                 self.namespace, label_selector="jobgroup=image-builds").items
         except Exception as e:  # noqa: BLE001 - cleanup must not fail the build
@@ -2417,7 +1711,7 @@ class ClusterService(LocalTransport):
         live |= {bid for bid, rec in list(self._image_build_state().items())
                  if not rec["status"].done}
         for build_id in sorted(staged - live):
-            self._discard_build_context(cfg, bucket, build_id)
+            self._discard_build_context(build_id)
 
     def _registry_has_image(self, found) -> bool:
         """Is *found* already pushed? The **build** path's fail-closed view of the store.
@@ -2635,16 +1929,8 @@ class ClusterService(LocalTransport):
         return ""
 
     def _retire_build_context(self, build_id: str) -> None:
-        """Discard a just-finished build's staged context, resolving the bucket."""
-        from .cluster_image_build import build_context_bucket
-        try:
-            cfg = self._cluster_config()
-            bucket = build_context_bucket(cfg)
-        except Exception as e:  # noqa: BLE001 - cleanup must not fail a status read
-            logger.warning("cannot resolve the build-context bucket for %s: %s",
-                           build_id, e)
-            return
-        self._discard_build_context(cfg, bucket, build_id)
+        """Discard a just-finished build's staged context."""
+        self._discard_build_context(build_id)
 
     def _warm(self, image_ref: str) -> None:
         """Pull *image_ref* onto a node now, so the next pod to run it does not wait.
@@ -2873,9 +2159,7 @@ class ClusterService(LocalTransport):
         if resolved is None:
             return []
         specs, project_dir, cfg, registry = resolved
-        from .cluster_image_build import build_context_bucket
-        bucket = build_context_bucket(cfg)
-        return [self._start_cluster_build(spec, project_dir, cfg, registry, bucket)
+        return [self._start_cluster_build(spec, project_dir, cfg, registry)
                 for spec in specs.values()]
 
     def _resolve_built_images(self, project, campaign_config, image_project=None,
@@ -2887,14 +2171,6 @@ class ClusterService(LocalTransport):
         del registry            # the store carries the registry the refs are formed against
         return {name: self._images.ref_for(spec, project_dir).ref
                 for name, spec in specs.items()}
-
-    # ``list_campaigns`` is inherited from LocalTransport. Its id set is "on disk ∪ durable
-    # ∪ being driven", and this lane contributes the middle one via
-    # ``_durable_campaign_ids``: off-cluster the driver runs in this process and writes each
-    # campaign under the local results dir, so the disk scan already covers those, but in-pod
-    # the disk is scratch and the object store's index is the only record that a campaign
-    # from a previous service life exists. Each id is then resolved by the same precedence
-    # ``get_status`` uses — live snapshot if tracked, else its records via ``_record_dir``.
 
     def _scheduling_for(self, campaign_id: str, *, live: bool) -> dict:
         """What the queue holds for this campaign, for a listing row.
@@ -2955,8 +2231,7 @@ class ClusterService(LocalTransport):
         # It is logged loudly because what it costs is a restart quietly reverting the change.
         campaign_root = Path(entry.results_dir) / campaign_id
         try:
-            if update_launch_scheduling(campaign_root, priority=priority, paused=paused):
-                self._publish_campaign_records(campaign_id, campaign_root)
+            update_launch_scheduling(campaign_root, priority=priority, paused=paused)
         except OSError as e:
             logger.warning("Could not record scheduling for %s, so a service restart would "
                            "return it to what it was launched with: %s", campaign_id, e)
@@ -3172,7 +2447,6 @@ class ClusterService(LocalTransport):
         # Mirrored at once, for the reason the kill is: postprocessing runs as its own in-cluster
         # Job before the campaign root is uploaded, so a probe recorded only on pod disk would be
         # lost exactly when the results are assembled.
-        self._publish_interventions(campaign_id, campaign_root)
         from robovast.service.local_transport import _PROBE_LIMIT_S
         pod, pod_container = self._job_pod_target(campaign_id, job_name, container)
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
@@ -3191,8 +2465,8 @@ class ClusterService(LocalTransport):
         completion and the batch still projects its results.
 
         ``Background`` propagation so the pod is collected with the Job, through its
-        owner reference. Whatever this job's runs had already
-        uploaded to the object store survives: each job uploads its own results.
+        owner reference. Whatever the pod's uploader delivers within the termination grace
+        survives: each Job delivers its own results.
         """
         from kubernetes import client
 
@@ -3208,7 +2482,6 @@ class ClusterService(LocalTransport):
         campaign_root = self._campaigns_root() / campaign_id
         record_intervention(campaign_root, kind=KIND_KILLED, job_dir=job_dir, job_name=job_name,
                             source=source, detail=reason)
-        self._publish_interventions(campaign_id, campaign_root)
         try:
             self._k8s_batch().delete_namespaced_job(
                 job_name, self.namespace,
@@ -3223,30 +2496,6 @@ class ClusterService(LocalTransport):
             ok=True,
             message=(f"deleted job {job_name}; the campaign continues with its remaining "
                      f"jobs and this job's unfinished runs are recorded as 'killed'"))
-
-    def _publish_interventions(self, campaign_id: str, campaign_root) -> None:
-        """Push the kill ledger to the object store **now**, not at finalize.
-
-        Postprocessing runs as its own in-cluster Job reading the campaign from the object
-        store, and it starts *before* ``_finalize`` uploads the campaign root — so a ledger
-        that waited for finalize would reach the store only after the step that needs it
-        had already failed on the killed job's unfinalized rosbag.
-
-        Best-effort, like every other record this lane publishes: a kill that could not be
-        mirrored still took effect and is still on local disk, and the run is still
-        recorded as ``killed`` by the controller, which reads that disk.
-        """
-        from robovast.common.campaign_data import _INTERVENTIONS_FILENAME
-        from robovast.execution.cluster_execution import in_pod_storage
-        path = campaign_root / "_execution" / _INTERVENTIONS_FILENAME
-        try:
-            cfg = self._cluster_config()
-            storage = in_pod_storage.storage_client_for(cfg)
-            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            storage.upload_file(str(path), bucket,
-                                f"{prefix}_execution/{_INTERVENTIONS_FILENAME}")
-        except Exception as e:  # noqa: BLE001 - never block the stop on the mirror
-            logger.warning("Could not publish the kill ledger for %s: %s", campaign_id, e)
 
     def _job_artifact_dir(self, job_name: str) -> str:
         """The Job's campaign-relative artifact dir, read off the Job itself.
@@ -3298,7 +2547,7 @@ class ClusterService(LocalTransport):
         """True: this lane's campaigns outlive the process, and the next one adopts them.
 
         A cluster campaign's compute is its scenario Jobs. They are not children of this
-        process, they upload their own results to the object store, and
+        process, they deliver their own results to the campaign, and
         :mod:`~robovast.execution.cluster_execution.campaign_resume` re-attaches to them at
         startup -- so exiting is not a reason to destroy them, and a pod replacement
         (``vast service upgrade``, an eviction, a drain, an OOM) stops being a data-loss
@@ -3322,14 +2571,10 @@ class ClusterService(LocalTransport):
     def _exec_lane(self):
         """The in-cluster exec lane: one aux pod, driven through ``pods/exec``.
 
-        Staging goes through the object store, exactly as an image build's context does
-        (see ``_start_cluster_build``) — the same bucket resolution, the same
-        service-side client, and the pod given the *cluster-internal* endpoint rather
-        than whatever this process is using to reach the store.
+        Staging goes through the data plane, exactly as an image build's context does
+        (see ``_start_cluster_build``): the tree is written on this disk, the pod fetches
+        it with a token scoped to its slot, and the slot is dropped with the pod.
         """
-        from robovast.execution.cluster_execution import in_pod_storage
-
-        from .cluster_image_build import build_context_bucket
         from .container_runner import service_pod_owner_reference
         from .kube_exec_lane import KubeExecLane
         owner = None
@@ -3337,23 +2582,15 @@ class ClusterService(LocalTransport):
             owner = service_pod_owner_reference(self._k8s(), self.namespace)
         except Exception as e:  # noqa: BLE001 - off-cluster there is no service pod
             logger.debug("no service-pod owner reference for the exec pod: %s", e)
-        cfg = self._cluster_config()
-        # A diagnostic exec belongs to no campaign, so it has no campaign bucket — the
-        # same position an image build is in, and the same answer.
-        bucket = build_context_bucket(cfg)
-        access_key, secret_key = cfg.get_s3_credentials()
         return KubeExecLane(self.namespace, owner_ref=owner,
                             kube_context=self.kube_context,
                             # The exec pod runs the experiment image, which on this lane is
                             # in our own registry and may be private. Without this the pull
                             # succeeds only on a node that already cached it.
                             pull_secret=self._registry_pull_secret(),
-                            # Deferred: off-cluster, building this opens a port-forward,
-                            # and the stray-reap builds a lane it never stages into.
-                            storage_factory=lambda: in_pod_storage.storage_client_for(cfg),
-                            bucket=bucket,
-                            s3_endpoint=cfg.get_s3_endpoint(),
-                            s3_access_key=access_key, s3_secret_key=secret_key)
+                            stage_dir=self.staged_dir,
+                            discard_staged=self.discard_staged,
+                            token_for=self.scoped_token)
 
     def _reap_stray_exec_container(self) -> None:
         """Delete every exec pod and staged tree left by a previous service process.
@@ -3369,26 +2606,6 @@ class ClusterService(LocalTransport):
                             len(deleted), ", ".join(deleted))
         except Exception as e:  # noqa: BLE001 - a missing cluster must not break startup
             logger.debug("could not check for stray exec pods: %s", e)
-
-    # -- shutdown -----------------------------------------------------------
-
-    def shutdown(self) -> None:
-        """Stop running campaigns, then tear down the shared MinIO port-forward."""
-        # Stop the keep-alive first, and outside the lock: it must not observe the
-        # teardown below as a stall and helpfully reopen the tunnel this is closing.
-        self._pf_monitor_stop.set()
-        monitor, self._pf_monitor = self._pf_monitor, None
-        if monitor is not None:
-            monitor.join(timeout=self._PF_PROBE_INTERVAL_S + 1)
-        self._cache_expiry_stop.set()
-        expiry, self._cache_expiry = self._cache_expiry, None
-        if expiry is not None:
-            expiry.join(timeout=5)
-        try:
-            super().shutdown()
-        finally:
-            with self._pf_lock:
-                self._close_minio_pf_locked()
 
     # -- orphan reaping -----------------------------------------------------
 
@@ -3428,12 +2645,9 @@ class ClusterService(LocalTransport):
         """``{campaign_id: why}`` for the live campaigns a replacement could not pick up.
 
         Asked of :mod:`.campaign_resume` -- the same decision the successor will make, over the
-        same restored campaign root -- so the warning before a roll and the behaviour after it
-        cannot drift apart. Restoring the root is part of that decision and not a detail of it:
-        a running campaign's frozen ``_config/`` lives in the object store until its first batch
-        lands, so planning against whatever happens to be on disk refuses every campaign in its
-        first batch. A campaign this cannot answer for is treated as one that would be lost: the
-        whole point of the refusal is to be wrong in the safe direction.
+        same campaign root -- so the warning before a roll and the behaviour after it cannot
+        drift apart. A campaign this cannot answer for is treated as one that would be lost:
+        the whole point of the refusal is to be wrong in the safe direction.
         """
         from . import campaign_resume
         blocked = {}
@@ -3452,7 +2666,7 @@ class ClusterService(LocalTransport):
 
         Synchronously, and before this service answers anything. Not a background thread:
         ``_launch_campaign`` returns as soon as a campaign is named, so the blocking part is
-        one index listing plus a restore per campaign — and registering the campaigns *here*
+        one directory scan — and registering the campaigns *here*
         is what stops a fresh launch arriving over the API and racing a campaign that is
         about to be adopted.
 
@@ -3467,454 +2681,31 @@ class ClusterService(LocalTransport):
                         len(resumed), ", ".join(resumed))
         return outcomes
 
-    def cleanup_campaign_data(self, request) -> ActionResult:
-        """Delete campaign result bucket(s) from the object store.
-
-        Runs here (not on the client) because this process holds the cluster config
-        (object-store credentials) and the authoritative live-campaign set. A bulk
-        delete (``campaign_id`` None) always skips campaigns this service is still
-        driving; a targeted delete honours ``force`` to remove a named one anyway.
-        """
-        from robovast.execution.cluster_execution import bucket_ops
-        from robovast.service.interface import ListCampaignsRequest
-
-        running: set = set()
-        if request.campaign_id is None or not request.force:
-            for c in self.list_campaigns(ListCampaignsRequest(limit=1000)).campaigns:
-                if is_running(c.phase):
-                    # Match both the raw id and its sanitized bucket name, since
-                    # ``cleanup_campaigns`` compares against object-store names.
-                    running.add(c.campaign_id)
-                    running.add(bucket_ops.bucket_name(c.campaign_id))
-        removed = bucket_ops.cleanup_campaigns(
-            self._cluster_config(), namespace=self.namespace,
-            context=self.kube_context, campaign_id=request.campaign_id,
-            running_campaigns=running)
-        # Retire the marker of everything actually removed, or those campaigns keep being
-        # listed with nothing behind them. Driven by what the sweep *did*, not by what it
-        # was asked to do: a campaign whose delete failed keeps its marker, because its
-        # data is still there and a listing that omits stored data is the very defect the
-        # index exists to fix. Matching is forward-only (id → bucket name); the reverse is
-        # the lossy transform this index replaced.
-        self._unmark_removed(removed)
-        return ActionResult(
-            ok=True, message=f"Removed {len(removed)} bucket(s) from the object store.")
-
-    def _unmark_removed(self, removed) -> None:
-        """Retire index markers for the storage names *removed* names.
-
-        Skips the object store entirely when nothing was removed — the common no-op, and
-        it keeps a cleanup that swept nothing from paying for a listing.
-        """
-        if not removed:
-            return
-        from robovast.execution.cluster_execution import bucket_ops
-        gone = set(removed)
-        for cid in self._campaign_index()[0]:
-            if cid in gone or bucket_ops.bucket_name(cid) in gone:
-                self._unmark_campaign(cid)
-
     def delete_campaign(self, campaign_id: str) -> ActionResult:
-        """Delete one cluster campaign wholesale: object-store data, leftover Jobs,
-        and the service's local caches (see :meth:`RobovastInterface.delete_campaign`).
+        """Delete one cluster campaign wholesale: its directory, its leftover Jobs and its
+        token Secret (see :meth:`RobovastInterface.delete_campaign`).
 
-        The object store is the durable home here, so it is the primary target; the
-        Job reap catches anything a crashed/orphaned campaign left behind, and the
-        cache wipe mirrors the local transport. The external share copy is untouched.
+        The directory is the inherited delete; the Job reap catches anything a crashed or
+        orphaned campaign left behind. The external share copy is untouched.
         """
-        import shutil
-
-        from botocore.exceptions import ClientError
-
-        from robovast.execution.cluster_execution import bucket_ops
-
+        from . import pod_access
         from .cluster_execution import cleanup_cluster_campaign
 
-        self._ensure_deletable(campaign_id)  # refuse while this service still drives it
-        cfg = self._cluster_config()
-        # 1. Durable home: object-store bucket / shared prefix. Tolerate an
-        #    already-absent bucket so a repeated delete is idempotent.
-        try:
-            bucket_ops.delete_campaign(campaign_id, cfg, namespace=self.namespace,
-                                       context=self.kube_context)
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "NoSuchBucket":
-                raise
-        # 2. Reap any leftover Jobs/pods (best-effort — the data is already gone).
+        result = super().delete_campaign(campaign_id)
         try:
             cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                      context=self.kube_context)
         except Exception:  # noqa: BLE001 - cleanup is best-effort
             logger.warning("Leftover-Job cleanup for %s failed", campaign_id,
                            exc_info=True)
-        # 3. The index marker, or the campaign keeps being listed with no data behind it.
-        self._unmark_campaign(campaign_id)
-        # 4. The central index. Inherited rather than repeated: this lane deletes more
-        # places than the local one, but the index is the same index, and a campaign whose
-        # object-store copy is gone must not keep answering queries from rows describing it.
-        self._forget_in_index(campaign_id)
-        # 5. Service-local caches: the fetch scratch and any in-pod driver dir.
-        shutil.rmtree(self._cache_dir(campaign_id), ignore_errors=True)
-        shutil.rmtree(self._campaign_dir(campaign_id), ignore_errors=True)
-        with self._lock:
-            self._campaigns.pop(campaign_id, None)
-        return ActionResult(
-            ok=True,
-            message=f"Deleted campaign {campaign_id!r} (object store, jobs, index, "
-                    f"cache).")
+        try:
+            pod_access.delete_campaign_secret(self._k8s(), self.namespace, campaign_id)
+        except Exception:  # noqa: BLE001 - a Secret with no campaign is a leftover, not a fault
+            logger.warning("Could not remove the token Secret of %s", campaign_id,
+                           exc_info=True)
+        return result
 
     # -- data / results -----------------------------------------------------
-
-    #: Where the fetch cache lives. The pod's own scratch: the object store is the durable
-    #: home, and this is only a copy of what readers asked for.
-    _FETCH_CACHE_ROOT = Path("/tmp") / "robovast-campaigns"  # noqa: S108 - pod scratch
-
-    def _cache_dir(self, campaign_id: str) -> Path:
-        """Local scratch mirroring a campaign's objects. Ephemeral by design — the object
-        store is the durable home — and shared by the whole-campaign fetch and every
-        named-object fetch, so the two can never hold divergent copies of one file."""
-        return self._FETCH_CACHE_ROOT / campaign_id
-
-    # -- clearing the fetch cache ------------------------------------------------------------
-
-    #: What the fetch cache is called where a reader sees it.
-    FETCH_CACHE = "object-store fetch cache"
-
-    #: How recently a campaign's cache dir must have been handed to a reader for a clear to
-    #: keep it. A reader is given a *path*, and every one of them opens files under it after
-    #: the fetch lock is released -- a results download, a notebook render, a plugin endpoint --
-    #: so there is no lock a clear could take that would cover them. An hour outlasts every
-    #: such request; an operation that can run longer pins the dir (``_holding_cache``).
-    _CACHE_READ_GRACE_S = 3600.0
-
-    def _mark_cache_read(self, campaign_id: str) -> None:
-        """Record that a reader was just handed this campaign's cache dir -- on the dir itself.
-
-        Its modification time, so the record lasts exactly as long as the files it describes: a
-        service restarted beside a cache it did not fill still knows how long each entry has sat
-        unread. Called under the campaign's fetch lock, so a clear waiting on that lock sees it
-        when it re-checks.
-        """
-        try:
-            os.utime(self._cache_dir(campaign_id))
-        except OSError:
-            pass    # no dir, so nothing was handed out
-
-    def _cache_idle_s(self, campaign_id: str) -> "float | None":
-        """Seconds since this campaign's cache dir was last read; ``None`` when there is none."""
-        try:
-            return time.time() - self._cache_dir(campaign_id).stat().st_mtime
-        except OSError:
-            return None
-
-    @contextlib.contextmanager
-    def _holding_cache(self, campaign_id: str):
-        """Keep a clear away from this campaign's cache dir for the duration.
-
-        For an operation that goes on using the dir for longer than the read grace. Take it
-        *before* the fetch: a clear either removed the dir already, and the fetch that follows
-        restores it, or it re-checks under the fetch lock and finds the pin.
-        """
-        with self._fetch_locks_guard:
-            self._cache_pins[campaign_id] = self._cache_pins.get(campaign_id, 0) + 1
-        try:
-            yield
-        finally:
-            with self._fetch_locks_guard:
-                left = self._cache_pins[campaign_id] - 1
-                if left:
-                    self._cache_pins[campaign_id] = left
-                else:
-                    del self._cache_pins[campaign_id]
-
-    def _fetch_cache_keep_reason(self, campaign_id: str) -> str:
-        """Why a clear must leave this campaign's cache dir, or ``""`` when it may go."""
-        with self._lock:
-            entry = self._campaigns.get(campaign_id)
-        if entry is not None and not self._is_done(entry):
-            return "the campaign is still running"
-        with self._fetch_locks_guard:
-            pinned = self._cache_pins.get(campaign_id, 0)
-        if pinned:
-            return "an operation on the campaign is using it"
-        idle = self._cache_idle_s(campaign_id)
-        if idle is not None and idle < self._CACHE_READ_GRACE_S:
-            return "read within the last hour, so a reader may still be using it"
-        return ""
-
-    def _remove_fetch_cache_dir(self, campaign_id: str, keep_reason) -> str:
-        """Remove one campaign's cache dir unless *keep_reason* names a reason to keep it.
-
-        Asked again under the campaign's fetch lock, so a fetch in flight finishes first and
-        the reader it served is then recent enough to keep. Returns ``""`` once the dir is
-        gone, or the reason it stayed.
-        """
-        import shutil  # pylint: disable=import-outside-toplevel
-        with self._fetch_locks_guard:
-            lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
-        with lock:
-            reason = keep_reason()
-            if not reason:
-                shutil.rmtree(self._cache_dir(campaign_id), ignore_errors=True)
-            return reason
-
-    def _lane_cache_sweeps(self) -> list:
-        return [self._sweep_fetch_cache]
-
-    def _sweep_fetch_cache(self, clear: bool):
-        """Report the fetch cache, removing each campaign's dir that may go when *clear*.
-
-        Each removal goes through :meth:`_remove_fetch_cache_dir`, which checks again under
-        the campaign's fetch lock.
-        """
-        from robovast.service.local_transport import \
-            _Swept  # pylint: disable=import-outside-toplevel
-        swept = _Swept(size=CacheSize(name=self.FETCH_CACHE))
-        root = self._FETCH_CACHE_ROOT
-        dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
-        for cache_dir in dirs:
-            campaign_id = cache_dir.name
-            size = _tree_bytes(cache_dir)
-            reason = self._fetch_cache_keep_reason(campaign_id)
-            if clear and not reason:
-                reason = self._remove_fetch_cache_dir(
-                    campaign_id, lambda cid=campaign_id: self._fetch_cache_keep_reason(cid))
-                if not reason:
-                    swept.freed_bytes += size
-                    swept.removed += 1
-                    continue
-            swept.size.size_bytes += size
-            swept.size.entries += 1
-            if reason:
-                swept.kept.append(KeptCacheEntry(cache=self.FETCH_CACHE, name=campaign_id,
-                                                 size_bytes=size, reason=reason))
-        return swept
-
-    # -- expiring the fetch cache ------------------------------------------------------------
-
-    #: How often the fetch cache is checked for dirs left unread past the maximum age. A check
-    #: is one stat per cached campaign, so this sets how promptly space comes back, not a cost.
-    _CACHE_EXPIRY_INTERVAL_S = 3600.0
-
-    def _start_cache_expiry(self) -> None:
-        """Start removing cache dirs nobody has read for the maximum age (:mod:`.fetch_cache`).
-
-        A malformed setting raises here, so the service fails to start rather than keeping,
-        or removing, what nobody asked it to.
-        """
-        from .fetch_cache import MAX_AGE_ENV, max_age_days
-        days = max_age_days()
-        if days <= 0:
-            logger.info("fetch cache expiry is off (%s=0)", MAX_AGE_ENV)
-            return
-        self._cache_expiry = threading.Thread(
-            target=self._cache_expiry_loop, args=(days * 86400.0,),
-            name="robovast-fetch-cache-expiry", daemon=True)
-        self._cache_expiry.start()
-
-    def _cache_expiry_loop(self, max_age_s: float) -> None:
-        while True:
-            try:
-                self._expire_fetch_cache(max_age_s)
-            except Exception:  # noqa: BLE001 - a failed pass must not end the ones after it
-                logger.warning("could not expire the fetch cache", exc_info=True)
-            if self._cache_expiry_stop.wait(self._CACHE_EXPIRY_INTERVAL_S):
-                return
-
-    def _expire_fetch_cache(self, max_age_s: float) -> int:
-        """Remove each campaign's cache dir left unread for *max_age_s*; return how many went.
-
-        What a clear keeps is kept here too -- a running campaign, a pinned dir -- and the dir's
-        age is judged again under its fetch lock, so a read that lands meanwhile saves it.
-        Only removed dirs are measured, for the log line.
-        """
-        def keep_reason(campaign_id):
-            idle = self._cache_idle_s(campaign_id)
-            if idle is None or idle < max_age_s:
-                return "read recently"
-            return self._fetch_cache_keep_reason(campaign_id)
-
-        root = self._FETCH_CACHE_ROOT
-        dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
-        removed = freed = 0
-        for cache_dir in dirs:
-            campaign_id = cache_dir.name
-            if keep_reason(campaign_id):
-                continue
-            size = _tree_bytes(cache_dir)
-            if not self._remove_fetch_cache_dir(campaign_id,
-                                                lambda cid=campaign_id: keep_reason(cid)):
-                removed += 1
-                freed += size
-        if removed:
-            logger.info("fetch cache: removed %d campaign(s) unread for %.1f days, %d bytes",
-                        removed, max_age_s / 86400.0, freed)
-        return removed
-
-    def _data_dir(self, campaign_id: str):
-        """Refused on this lane: there is no cheap "the campaign's directory" here.
-
-        Answering it with ``fetch_campaign`` — the whole object-store prefix, rosbags
-        included — makes every *inherited* method touching it a whole-campaign download,
-        silently and at the worst possible moment: ``list_campaign_plots`` pulls the entire
-        campaign to read one small ``.vast``, once per campaign, every time the Results page
-        loads.
-
-        The failure mode is what makes this a refusal rather than a comment. Nothing errors,
-        no test fails, the page merely takes minutes and the pod moves gigabytes. So a caller
-        says what it needs and pays only that:
-
-        * :meth:`_query_dir` — the campaign a SQL query names (it reads the index).
-        * :meth:`_config_dir` — the frozen ``_config`` snapshot.
-        * :meth:`_whole_campaign_dir` — everything, when that is genuinely the need.
-        """
-        raise NotImplementedError(
-            f"_data_dir is not available on the cluster lane (campaign {campaign_id!r}): "
-            "it would fetch the whole campaign from the object store. Ask for what you "
-            "need instead — _query_dir (a query, which reads the index), _config_dir "
-            "(the frozen config snapshot), or _whole_campaign_dir (everything, "
-            "deliberately).")
-
-    def _whole_campaign_dir(self, campaign_id: str):
-        """Everything, deliberately: the campaign prefix into the local cache.
-
-        Expensive by nature — the callers entitled to it cannot know which files they
-        will read (notebook rendering against run outputs, the ``/results`` address
-        space, endpoint plugins via ``resolve_data_dir``).
-        """
-        return self.fetch_campaign(campaign_id)
-
-    def _config_dir(self, campaign_id: str):
-        """Materialise only the frozen ``_config`` snapshot, then answer from the cache.
-
-        A handful of small objects against ``fetch_campaign``'s whole prefix — the same
-        discipline as :meth:`_scene_source_dir`, and the reason the declared-plots and
-        panel-asset readers are cheap again.
-        """
-        storage, bucket, prefix = self._campaign_object_location(
-            campaign_id, interactive=True)
-        objects, _ = storage.list_entries(bucket, f"{prefix}_config")
-        rels = [key[len(prefix):] for key, _size in objects]
-        if rels:
-            self._materialize(campaign_id, rels, "campaign config", interactive=True)
-        return Path(self._cache_dir(campaign_id)) / "_config"
-
-    @contextlib.contextmanager
-    def _render_progress(self, campaign_id: str, workload: str):
-        """Publish notebook-execution progress, continuing the bar the transfer started.
-
-        The two halves of an Explorer click are a fetch and a render, and only reporting the
-        first would replace a silent wait with a bar that fills, vanishes, and leaves the
-        caller staring at nothing for the remaining minutes.
-        """
-        with self._reporting_progress(campaign_id) as publish:
-            def on_cell(done, total):
-                publish(phase="executing", unit="cells", done=done, total=total,
-                        detail=workload)
-            yield on_cell
-
-    @contextlib.contextmanager
-    def _reporting_progress(self, campaign_id: str):
-        """Publish this campaign's live progress for the duration of the block.
-
-        Yields a ``publish(**fields)`` that builds a :class:`WorkProgress`, and drops the
-        entry on the way out however the block ends — so a failed transfer stops advertising
-        itself as in flight rather than leaving a bar frozen at 37%% forever.
-
-        One record per campaign, not per request: the expensive phase is already serialised
-        by ``_fetch_locks``, so the only overlap this loses is two notebooks of the same
-        campaign executing at once, where last-writer-wins costs a caller nothing but a
-        slightly wrong cell number.
-        """
-        from robovast.service.interface import WorkProgress
-
-        def publish(**fields) -> None:
-            with self._work_progress_guard:
-                self._work_progress[campaign_id] = WorkProgress(**fields)
-
-        try:
-            yield publish
-        finally:
-            with self._work_progress_guard:
-                self._work_progress.pop(campaign_id, None)
-
-    def _materialize(self, campaign_id: str, rel_paths, subject: str, *,
-                     interactive: bool = False) -> Path:
-        """Copy named objects of a campaign into its cache dir; return the dir.
-
-        A **single-object** fetch per path — the same discipline as the ``/results`` file
-        overrides below, and the reason both callers exist: pulling the campaign prefix to
-        read a 2 KB ``outcome.json`` drags every rosbag the campaign produced, in the
-        deployment where campaigns are largest. Writes into the
-        *same* cache dir, so a later full ``fetch_campaign`` finds these files already at
-        the right size and skips them.
-
-        A cached copy is validated by **size, not existence**: ``outcome.json`` is
-        rewritten in place by re-postprocessing, and an existence check would pin the first
-        version this service ever saw and serve it forever.
-
-        A missing object is skipped, not an error: whether "not published yet" is a problem
-        is the caller's question, and each answers it differently (a campaign with no
-        ``outcome.json`` reconstructs to ``unknown``).
-        """
-        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
-
-        from robovast.common.progress import fmt_size
-        dest = self._cache_dir(campaign_id)
-        storage, bucket, prefix = self._campaign_object_location(
-            campaign_id, interactive=interactive)
-        with self._fetch_locks_guard:
-            lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
-        # The same lock ``fetch_campaign`` takes: concurrent first-load reads (the results
-        # explorer fires one query per sub-view; the campaign list re-summarizes every
-        # second) must not race to write the same file, nor race a whole-campaign fetch
-        # writing it too.
-        rel_paths = list(rel_paths)
-        with lock, self._reporting_progress(campaign_id) as publish:
-            fetched = total = done = 0
-            started = time.perf_counter()
-            try:
-                for rel in rel_paths:
-                    dst = dest / Path(rel)
-                    size = storage.stat_object(bucket, f"{prefix}{rel}")
-                    if size is None:
-                        continue
-                    total += size
-                    if dst.exists() and dst.stat().st_size == size:
-                        continue
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    # Published before the transfer, not after: a single object can be
-                    # hundreds of MB, so the interesting part of this wait is the file in
-                    # flight.
-                    # Nothing is published when every path is already cached — an instant
-                    # call should not flash a progress bar.
-                    publish(phase="downloading", unit="files", done=done,
-                            total=len(rel_paths), bytes_done=fetched, detail=rel)
-                    storage.download_object(bucket, f"{prefix}{rel}", str(dst))
-                    fetched += size
-                    done += 1
-            # An unreachable store (dropped port-forward, connection reset) is translated
-            # by ``_S3StorageClient._resilient`` into ObjectStoreUnreachableError — a
-            # RuntimeError the service maps to 503, naming the endpoint and the object.
-            except ClientError as exc:
-                # No bucket: never published (still running / never finalized) or cleaned
-                # up. A clean 404 rather than an ASGI 500.
-                if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
-                    raise KeyError(
-                        f"No stored data for campaign {campaign_id!r}: its object "
-                        f"store bucket does not exist (not yet published or removed)"
-                    ) from exc
-                raise
-            elapsed = time.perf_counter() - started
-            self._mark_cache_read(campaign_id)
-        if fetched:
-            self._last_fetch[campaign_id] = (fetched, elapsed)
-            logger.info("Fetched %s for campaign %s (%s of %s) from %s/%s in %.1fs",
-                        subject, campaign_id, fmt_size(fetched), fmt_size(total),
-                        bucket, prefix, elapsed)
-        return dest
-
-    # -- on-demand 3D geometry ---------------------------------------------
 
     def _resolve_image_digest(self, ref: str):  # pylint: disable=useless-return
         """No tag→digest resolution on this lane. Refusing beats answering with the wrong bytes.
@@ -3930,126 +2721,6 @@ class ClusterService(LocalTransport):
         # docstring above is about that. Falling off the end would read as an
         # unfinished function.
         return None
-
-    def _scene_source_dir(self, campaign_id: str) -> str:
-        """Materialise only what resolving geometry reads, then answer from that.
-
-        One small object -- ``execution.yaml`` -- against ``fetch_campaign``'s whole prefix, which for a
-        25-run campaign is rosbags. The run's capture manifest is fetched by ``_scene_capture`` below,
-        because its path depends on the run.
-        """
-        self._materialize(campaign_id, ("_execution/execution.yaml",), "execution metadata",
-                          interactive=True)
-        return str(self._cache_dir(campaign_id))
-
-    def _retrigger_source_dir(self, campaign_id: str) -> str:
-        """Materialise what a retrigger reads, then answer from the cache like the base class.
-
-        A named-object fetch, not ``fetch_campaign``: a retrigger reads the frozen config and
-        three small records, where the campaign prefix is rosbags. Same discipline as
-        ``_scene_source_dir`` above.
-
-        ``_config/`` is listed rather than assumed, because its contents are whatever the
-        campaign's ``run_files`` matched. A missing prefix raises ``KeyError`` from
-        ``list_files``, which is exactly the "this campaign froze no config" refusal — so it is
-        left to propagate.
-        """
-        address = file_address.format_address(
-            file_address.RESULTS, campaign_id, "_config/")
-        # limit=0 is "no window" (see file_view.paginate), so this is the whole listing in one
-        # call -- a partial page would stage a partial config, which the run_files coverage
-        # check would then report as a corrupt source rather than a truncated read.
-        listing = self.list_files(address, recursive=True, limit=0)
-        # Undetailed entries are strings relative to the address, directories keeping a
-        # trailing "/" (see FileListing).
-        rel_paths = [f"_config/{name}" for name in listing.entries
-                     if not name.endswith("/")]
-        # The records a retrigger replays from. Absent ones are skipped by _materialize, and
-        # each reader decides what its absence means (a campaign that failed before its first
-        # batch has no execution.yaml; one predating launch.yaml has no launch record).
-        rel_paths += ["_execution/execution.yaml", "_execution/launch.yaml",
-                      "_transient/configurations.yaml"]
-        self._materialize(campaign_id, tuple(rel_paths), "campaign config",
-                          interactive=True)
-        return str(self._cache_dir(campaign_id))
-
-    def _role_image_source_dir(self, campaign_id: str) -> str:
-        """Materialise what reading a campaign's per-role images needs, then answer from the cache.
-
-        The same two objects a retrigger reads — the frozen ``_config/`` and
-        ``_execution/execution.yaml`` — so this reuses that fetch rather than issuing a second
-        listing for the same prefix. Inheriting the base class's answer would read a directory
-        that does not exist on this lane, which is precisely the failure mode the seam exists
-        for.
-        """
-        return self._retrigger_source_dir(campaign_id)
-
-    def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
-        """Fetch this run's capture manifest, then read it the way the base class does.
-
-        Without this the cluster lane would look for a file on a disk that has none -- the gap that makes
-        ``exec_in_container(campaign_id=…)`` fail for a campaign this service did not drive.
-        """
-        rel = f"{config_name}/{run_id}/capture/capture.json"
-        self._materialize(campaign_id, (rel,), "run capture manifest", interactive=True)
-        return super()._scene_capture(campaign_id, config_name, run_id)
-
-    def _run_state_path(self, campaign_id: str, config_name: str, run_id: str,
-                        filename: str):
-        """Fetch this run's recording, then point at it where the base class expects.
-
-        Same shape as :meth:`_scene_capture` above and for the same reason: the render runs a
-        container over a *path*, and on this lane nothing is on local disk until asked for.
-        A single object — the recording is the one input the frame is drawn from.
-        """
-        rel = f"{config_name}/{run_id}/{filename}"
-        self._materialize(campaign_id, (rel,), "run state recording", interactive=True)
-        return super()._run_state_path(campaign_id, config_name, run_id, filename)
-
-    def _scene_identity(self, campaign_id, config_name, run_id):
-        """Materialise a campaign-owned world's whole ``_config/`` before resolving identity.
-
-        A world declared as a path in the ``.vast`` is archived under ``_config/``, and on
-        this lane nothing is on local disk until it is asked for. Which world it is, is only
-        known once the capture has been read, so this cannot join ``_scene_source_dir``'s
-        fetch.
-
-        The **whole** prefix, not the world object: the world names its meshes and colliders
-        by the ``/config/...`` path the job mounted them at, and the rebuild reproduces that
-        mount from this tree (see ``scene_cache._campaign_world``). It is also what the cache
-        key is computed over, so a partial fetch would key geometry on a partial tree.
-        Listed rather than assumed, for the reason ``_retrigger_source_dir`` gives.
-        """
-        from robovast.service import scene_cache  # pylint: disable=import-outside-toplevel
-
-        manifest = self._scene_capture(campaign_id, config_name, run_id)
-        rel = scene_cache.campaign_world_rel(
-            str((manifest or {}).get("world") or ""), config_name)
-        address = file_address.format_address(
-            file_address.RESULTS, campaign_id, "_config/")
-        # limit=0 is "no window" (see file_view.paginate): a partial page would stage a partial
-        # tree, which hashes to a key that is neither this campaign's nor anyone else's.
-        listing = self.list_files(address, recursive=True, limit=0)
-        names = [name for name in listing.entries if not name.endswith("/")]
-        # The `.vast` always, because identity needs it to know WHICH simulator ran and so who
-        # to ask how to rebuild the geometry. The rest only for a campaign-owned world -- a
-        # packaged one is in the image, and staging a campaign's meshes to compile it would be
-        # transfer for nothing.
-        wanted = names if rel else [n for n in names if n.endswith(".vast")]
-        self._materialize(campaign_id, tuple(f"_config/{n}" for n in wanted),
-                          "campaign config", interactive=True)
-        # A world a variation GENERATED lives under the configuration, not the campaign, and
-        # names its meshes by that prefix -- so its own tree has to come down too, or the
-        # build compiles a world whose every reference is missing.
-        if rel and rel.startswith(f"{config_name}/"):
-            per_config = file_address.format_address(
-                file_address.RESULTS, campaign_id, f"{config_name}/_config/")
-            entries = self.list_files(per_config, recursive=True, limit=0).entries
-            self._materialize(
-                campaign_id,
-                tuple(f"{config_name}/_config/{n}" for n in entries if not n.endswith("/")),
-                "configuration config", interactive=True)
-        return super()._scene_identity(campaign_id, config_name, run_id)
 
     def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):
         """A context manager yielding an aux-pod runner factory on the campaign's own image.
@@ -4089,7 +2760,7 @@ class ClusterService(LocalTransport):
                                pull_secret=pull_secret,
                                kube_context=self.kube_context,
                                on_pending=_pod_wait_reporter(on_wait),
-                               **self._aux_store_kwargs()) as session:
+                               **self._aux_staging_kwargs()) as session:
                 session.provision(spec)
                 yield session.runner_factory()
 
@@ -4109,303 +2780,6 @@ class ClusterService(LocalTransport):
         """
         return self._images.pull_secret_name()
 
-    def _query_dir(self, campaign_id: str):
-        """Where the campaign *would* be — a path, not a transfer.
-
-        A query reads the central index, so nothing about this campaign has to be on this
-        pod's disk for one to answer. All the shared query surface still wants from a path
-        is the campaign it names, so this returns the cache dir unfetched: the id is in its
-        name and no object is touched. It stays an override because the inherited
-        ``_query_dir`` goes through the refused :meth:`_data_dir`.
-        """
-        return Path(self._cache_dir(campaign_id))
-
-    #: The campaign's **recorded facts**: its store row (start time, description, per-run
-    #: tallies) and its durable terminal outcome. Both small and both enough to summarize a
-    #: campaign without fetching any of its results.
-    _RECORD_OBJECTS = ("campaign.db", "_execution/outcome.json")
-
-    def _rest_dir(self, cid: str):
-        """Where *cid*'s records already are on this pod's disk, without fetching any.
-
-        The inherited version looks only under the results root, which is right for a campaign
-        this process drives. Every *other* campaign here keeps its durable copy in the object
-        store and its local copy in the cache dir, so without this override the summary cache
-        would never find a key for them -- and they are the many, which is the whole point.
-
-        Whether a fetch is needed is deliberately not asked: this must stay free, because it is
-        called on the 1 Hz listing path precisely to avoid ``_record_dir``, whose ``_materialize``
-        re-validates its objects against the store by size on every call.
-        """
-        local = super()._rest_dir(cid)
-        if local is not None:
-            return local
-        cached = self._cache_dir(cid)
-        return cached if (cached / "campaign.db").is_file() else None
-
-    def _is_record_cache(self, campaign_dir) -> bool:
-        """Whether *campaign_dir* is a fetched mirror of the object store (:meth:`_cache_dir`)
-        rather than a campaign tree this pod drives.
-
-        Asked of the directory, not of the campaign id, because that is what the readers
-        below are handed -- and resolved through ``_cache_dir`` so the answer follows
-        wherever that puts the scratch.
-        """
-        path = Path(campaign_dir)
-        return path == Path(self._cache_dir(path.name))
-
-    def _run_counts(self, campaign_dir: Path, *, live: bool) -> dict:
-        """The store's own tallies for a fetched record cache: no backfill, no disk walk.
-
-        For a campaign this pod does not drive, :meth:`_record_dir` hands back the
-        two-object mirror of the object store, not the campaign's tree. The inherited
-        backfill and its ``get_vast_configuration_info`` fallback both read per-run
-        directories that are not there and never will be, so both can only answer zero --
-        after opening ``campaign.db`` **read-write**.
-
-        That open is what makes this more than wasted work. ``CampaignStore`` migrates on
-        open, so a campaign recorded under an older schema gets rewritten in the cache; the
-        copy then no longer matches the object it mirrors in size, and size is exactly how
-        :meth:`_materialize` decides a cached object is stale. The next listing pass
-        re-fetches it, the read migrates it again, and the pod re-downloads that campaign's
-        records once per pass for as long as a browser tab is open, one log line each time.
-        Only a campaign with **no runs recorded** reaches the backfill at all, so this shows
-        as a few rows cycling in the log rather than as the whole listing.
-        """
-        if not self._is_record_cache(campaign_dir):
-            return super()._run_counts(campaign_dir, live=live)
-        from robovast.common.store import read_run_counts
-        counts = read_run_counts(campaign_dir)
-        # ``None`` is a store too old to have the ``run`` table. The walk is the inherited
-        # answer for that, and here it is also the honest one -- it finds nothing, because
-        # the runs are not on this disk -- while carrying the keys the caller expects.
-        return counts if counts is not None else self._walk_counts(campaign_dir)
-
-    def _record_dir(self, cid: str) -> Path:
-        """Where *cid*'s recorded facts are, fetching the two small objects if needed.
-
-        The object store is this lane's durable home, so a campaign this process is not
-        driving may have no local copy at all — in-pod that is every campaign from a
-        previous service life, and the inherited readers would answer ``unknown`` and zero
-        for all of them. Materializing exactly two objects makes the whole inherited
-        summary/status path correct without a single new reader.
-
-        Three campaigns are left alone:
-
-        * one this process is **driving** — its driver owns ``campaign.db`` and is writing
-          it right now, and its dir is already the live truth;
-        * one whose driver dir already holds ``campaign.db`` — off-cluster the driver runs
-          here and writes locally, so there is nothing to fetch;
-        * one the index does not list — there is nothing of it in the store to fetch, and
-          the check is free (that listing is already cached for the id set). Without it a
-          listing would attempt a fetch per row, so an *unreachable* store cost one
-          connect timeout per campaign on the page instead of one for the page.
-        """
-        local = self._campaign_dir(cid)
-        with self._lock:
-            tracked = cid in self._campaigns
-        if tracked or (local / "campaign.db").is_file():
-            return local
-        if cid not in self._campaign_index()[0]:
-            return local
-        try:
-            # Interactive: two small objects, and ``list_campaigns`` reaches here per row
-            # on a 1 Hz poll. The ``except`` below already degrades to "unknown".
-            return self._materialize(cid, self._RECORD_OBJECTS, "campaign records",
-                                     interactive=True)
-        except (RuntimeError, KeyError) as e:
-            # Unreachable store, or no bucket for this campaign. Absent records are not a
-            # failed listing: the inherited readers report ``unknown`` / no start time,
-            # which is the honest answer, and the next poll retries.
-            logger.debug("could not materialize records for %s: %s", cid, e)
-            return local
-
-    def campaign_data_status(self, campaign_id: str):
-        """Cluster: a query transfers nothing, because it reads the central index.
-
-        Kept as an override even though the answer now matches the local lane's shape: the
-        *reason* differs, and the note is what a client shows. The databases are not on this
-        pod and never have to be — the campaign's rows are in the index, so there is no
-        fetch to warn about and no probe of the object store to run.
-        """
-        from robovast.service.interface import CampaignDataStatus
-        return CampaignDataStatus(
-            campaign_id=campaign_id, source="object-store", fetch_required=False,
-            cached=True, transfer="none",
-            note="the campaign's results are in the central index; a query reads them "
-                 "there and transfers nothing from the object store")
-
-    # -- files: the /results namespace, served straight from the object store --------
-    #
-    # These override the inherited filesystem implementations for ``/results`` only —
-    # ``/sources`` is a workspace on this service's own disk and stays inherited.
-    #
-    # The point of the override is what it does *not* do: ``_data_dir`` above fetches
-    # the whole campaign prefix, so reading a 2 KB ``outcome.json`` through it would
-    # drag every rosbag the campaign produced, in the deployment where campaigns are
-    # largest. A single-object read is a single object.
-    #
-    # Rendering (binary refusal, line windows, listing assembly) is **not** reimplemented
-    # here — it comes from ``file_view``, so the same file read through either lane
-    # gives the same answer. It did not, once: an inlined ``splitlines()`` counted a
-    # different number of lines than an iterated file.
-
-    def _results_parts(self, address: str):
-        """``(owner, rel)`` for a ``/results`` address, or ``None`` for another
-        namespace — the one place this class decides an override applies."""
-        namespace, owner, rel = file_address.parse_address(address)
-        return (owner, rel) if namespace == file_address.RESULTS else None
-
-    def _results_key(self, campaign_id: str, rel_path: str) -> tuple:
-        """``(storage, bucket, key)`` for one object, with the escapes refused.
-
-        ``safe_join`` cannot serve here — there is no filesystem to resolve against, so
-        no symlink to follow and no ``resolve()`` to verify with. ``check_relative`` is
-        the half of that check which is about the path's *shape*, and it is the half
-        that applies to a key.
-        """
-        from robovast.client.safe_path import check_relative
-        if rel_path:
-            check_relative(rel_path)
-        storage, bucket, prefix = self._campaign_object_location(campaign_id)
-        return storage, bucket, f"{prefix}{rel_path}"
-
-    def _campaign_object_location(self, campaign_id: str, *, interactive: bool = False):
-        """``(storage, bucket, prefix)`` for a campaign's objects.
-
-        *interactive* selects the fail-fast timeout budget, for the callers whose objects
-        are a couple of KB on a polled request path rather than a campaign's worth of
-        rosbags; see :func:`in_pod_storage.storage_client_for`.
-        """
-        from robovast.execution.cluster_execution import in_pod_storage
-        cfg = self._cluster_config()
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        return (in_pod_storage.storage_client_for(cfg, interactive=interactive),
-                bucket, prefix)
-
-    def read_file_bytes(self, address: str) -> bytes:
-        parts = self._results_parts(address)
-        if parts is None:
-            return super().read_file_bytes(address)
-        owner, rel = parts
-        if not rel:
-            raise ValueError(f"{address!r} is a campaign, not a file — list it instead")
-        storage, bucket, key = self._results_key(owner, rel)
-        data = storage.read_object(bucket, key)
-        if data is None:
-            raise KeyError(f"no file at {address!r}")
-        return data
-
-    def local_file(self, address: str) -> Path:
-        """The one object behind *address*, fetched into the campaign's cache dir.
-
-        Overridden for the same reason as its three neighbours, and it is the override whose
-        absence was *invisible*: this class inherits ``LocalTransport.local_file``, so the
-        HTTP layer's "does this lane have a path?" test could never be False, and the
-        inherited implementation resolved a ``/results`` address through ``_data_dir`` --
-        which on this lane is :meth:`fetch_campaign`, i.e. it pulled the **whole campaign**,
-        every rosbag included, to serve one file. A ``<video>`` tag on a 5 MB recording paid
-        for gigabytes on first play, and nothing about the request said so.
-
-        :meth:`_materialize` is the fix and already the discipline of the reads below: one
-        object, validated by size, written into the same cache dir a later full fetch reuses.
-        The caller gets a real path, so the response still streams with ``Range``.
-        """
-        parts = self._results_parts(address)
-        if parts is None:
-            return super().local_file(address)
-        owner, rel = parts
-        if not rel:
-            raise ValueError(f"{address!r} is a campaign, not a file — list it instead")
-        # interactive: this is a browser waiting on a media request, not a batch transfer.
-        cache = self._materialize(owner, (rel,), f"file {rel}", interactive=True)
-        target = cache / rel
-        if not target.is_file():
-            raise KeyError(f"no file at {address!r}")
-        return target
-
-    def read_file(self, address: str, lines: int = 200, offset: int = 0):
-        parts = self._results_parts(address)
-        if parts is None:
-            return super().read_file(address, lines, offset)
-        owner, rel = parts
-        data = self.read_file_bytes(address)
-        if file_view.is_binary_bytes(data):
-            raise file_view.binary_refused(rel.rsplit("/", 1)[-1])
-        return FileText(
-            address=file_address.format_address(file_address.RESULTS, owner, rel),
-            **file_view.text_page(data.decode("utf-8", errors="replace"), lines, offset))
-
-    def list_files(self, address: str, recursive: bool = False, detail: bool = False,
-                   offset: int = 0, limit: int = 100):
-        parts = self._results_parts(address)
-        if parts is None:
-            return super().list_files(address, recursive, detail, offset, limit)
-        owner, rel = parts
-        storage, bucket, key = self._results_key(owner, rel)
-        base = f"{key.rstrip('/')}/" if key.rstrip("/") else key
-        objects, sub_prefixes = storage.list_entries(bucket, key,
-                                                     delimited=not recursive)
-        entries = [(k[len(base):], size) for k, size in objects]
-        entries += [(p[len(base):], None) for p in sub_prefixes]
-        if not entries:
-            # An object store has no empty directories: nothing under the prefix means
-            # the directory does not exist, which is a 404 rather than an empty listing.
-            raise KeyError(f"no directory at {address!r}")
-        entries.sort(key=lambda e: e[0])
-        return file_view.build_listing(
-            FileListing,
-            file_address.format_address(file_address.RESULTS, owner,
-                                        f"{rel.rstrip('/')}/" if rel else ""),
-            entries, recursive=recursive, detail=detail, offset=offset, limit=limit,
-            detail_fn=_object_entry)
-
-    def _publish_config_edit(self, campaign_id: str) -> None:
-        """Publish an in-place ``_config/<name>.vast`` edit to the object store.
-
-        The object store is the durable home, and a re-run fetches from it with
-        ``force=True`` — which would re-download the *old* config over the just-edited
-        local copy. Uploading the edited ``.vast`` here makes the edit durable so the
-        re-run reads it. (Overrides the local no-op.)
-        """
-        from robovast.common.results_utils import campaign_vast
-        from robovast.execution.cluster_execution import in_pod_storage
-        vast = campaign_vast(self._campaign_dir(campaign_id))
-        cfg = self._cluster_config()
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        storage = in_pod_storage.storage_client_for(cfg)
-        storage.upload_file(str(vast), bucket, f"{prefix}_config/{vast.name}")
-        logger.info("Published edited config %s for %s to the object store",
-                    vast.name, campaign_id)
-
-    def _publish_campaign_records(self, campaign_id: str, campaign_root) -> None:
-        """Publish the launch record now, not at ``finalize_campaign``.
-
-        This lane's driver disk is scratch (see :ref:`campaign-discovery`), so a record
-        written there and uploaded only when the campaign finishes is absent from every
-        campaign that did *not* finish — which is the set someone comes looking at, and the
-        set a restart has to re-launch from. It rides on :meth:`_publish_execution` rather
-        than a put of its own: ``_execution/`` holds only this record at launch time, and
-        one uploader for that directory is one fewer thing to keep in step.
-
-        Best-effort, and quiet about it: the campaign's own uploads follow within seconds
-        and will fail loudly if the store is genuinely unreachable.
-        """
-        try:
-            self._publish_execution(campaign_id, campaign_root)
-        except Exception as e:  # noqa: BLE001 - a record is not worth failing a campaign
-            logger.warning("Could not publish the launch record for %s: %s",
-                           campaign_id, e)
-
-    def _publish_execution(self, campaign_id: str, campaign_root) -> None:
-        """Upload a campaign's ``_execution/`` (outcome + logs) to the store.
-
-        One definition, shared with the postprocess's own mid-run publishes: an account
-        that two functions upload is an account two functions can disagree about where.
-        """
-        from .postprocess_job import publish_execution_dir
-        publish_execution_dir(self._cluster_config(), campaign_id, campaign_root)
-
     def _postprocess_campaign(self, campaign_id: str, campaign_dir, *,
                               force: bool = False, skip=(), state=None) -> tuple:
         """Postprocess through the Job, as this lane does everywhere else.
@@ -4422,10 +2796,12 @@ class ClusterService(LocalTransport):
         """
         from robovast.execution.control_server import stop_checker  # noqa: PLC0415
 
+        from . import pod_access  # noqa: PLC0415
         from .postprocess_job import postprocess_campaign  # noqa: PLC0415
 
         return postprocess_campaign(
             self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
+            token=self.scoped_token(pod_access.campaign_scope(campaign_id)),
             force=force, skip=list(skip or []), kube_context=self.kube_context,
             state=state,
             # A postprocess is a tracked campaign while it runs, so ``stop`` reaches it --
@@ -4439,63 +2815,35 @@ class ClusterService(LocalTransport):
         """(Re)run analysis postprocessing for a cluster campaign, as a monitored
         background operation (returns immediately; watch it in the campaign view).
 
-        Both stages run in the postprocessing pod: it stages the campaign once into a
+        Both stages run in the postprocessing pod: it fetches the campaign once into a
         shared volume, converts the rosbags there in the campaign's own execution image,
-        and runs the host stage — metrics, provenance, the index ingest — against the same
-        volume. This process only submits the Job and records its outcome, so the campaign
-        is transferred once rather than into the pod *and* into this pod's scratch. Both
-        stages write ``postprocessing.log``, which is published to the object store so the
-        Monitor and a later restart see it.
+        and runs the host stage -- metrics, provenance, the index ingest -- against the
+        same volume, delivering what it derived back into the campaign. This process only
+        submits the Job and records its outcome.
 
-        No campaign log handler is attached around this, unlike the local lane: on this lane
-        that same file is written by the conversion Job and pulled down by ``sync_outputs``,
-        so a handler streaming into it would be overwritten mid-write by the fetch. The
-        failure path where no such file arrives authors one instead
+        No campaign log handler is attached around this, unlike the local lane: the pod's
+        own output is what the POSTPROCESSING section shows, published into the campaign's
+        ``postprocessing.log`` while the Job runs, so a handler streaming this process's
+        lines into the same file would be overwritten by each publish. The failure path
+        where no such file arrives authors one instead
         (``postprocess_job._write_failure_log``), which is what keeps a failed postprocess
         visible in the campaign log where a successful one is read.
         """
-        from .postprocess_job import postprocess_campaign
-
         self._admit_storage(f"postprocess {request.campaign_id}")
+        campaign_dir = self.campaign_dir(request.campaign_id)
 
         def work(state):
-            # **No whole-campaign fetch.** Both stages read the run tree inside the
-            # postprocessing pod, which stages the campaign into its own volume once; a
-            # copy here would be a second full transfer of the same objects into scratch
-            # this service has no room for, and on a large campaign it is tens of GB and
-            # minutes before the Job is even submitted. What is left for this process is
-            # the handful of small status objects it has to edit and publish back, which
-            # is the fetch ``_materialize`` exists for -- one object per named path,
-            # written into the same cache dir.
-            campaign_root = self._materialize(
-                request.campaign_id, self._SHARE_STATUS_OBJECTS,
-                "the campaign's postprocessing status")
-            cfg = self._cluster_config()
-            from robovast.execution.control_server import stop_checker  # noqa: PLC0415
-            ok, message = postprocess_campaign(
-                cfg, request.campaign_id, str(campaign_root), self.namespace,
-                force=request.force, skip=list(request.skip or []),
-                kube_context=self.kube_context, state=state,
-                admission=self._admission_controller(),
-                should_stop=stop_checker(state))
-            # The recording re-materialises after the pod has run, because the pod is what
-            # wrote the provenance marker and the run rows the reconstruction reads: from
-            # the copies pulled *before* the postprocess, a campaign that was just
-            # postprocessed is recorded as carrying no derived data.
+            ok, message = self._postprocess_campaign(
+                request.campaign_id, campaign_dir,
+                force=request.force, skip=list(request.skip or []), state=state)
             self._record_postprocess_outcome(request.campaign_id, state, ok, message)
 
-        # Before the dispatch, so no writer of a repeatable phase file is running while its
-        # finished predecessor is moved aside: the campaign log may only grow at its end.
-        self._archive_repeatable_sections(request.campaign_id)
-        # The pod writes postprocessing.log into its own staged tree and publishes it, so
-        # the copy under the tracked root is whatever an earlier attempt left there.
         return self._dispatch_background(
-            request.campaign_id, phase=Phase.POSTPROCESSING, work=work,
-            elsewhere_written_phase_files={"postprocessing.log"})
+            request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
 
     def _record_postprocess_outcome(self, campaign_id: str, state, ok: bool,
                                     message: str) -> None:
-        """Write and publish a postprocessing verdict, and notify on it.
+        """Write a postprocessing verdict into the campaign, and notify on it.
 
         One definition for the process that submitted the Job and the one that only waited
         for it (:meth:`reattach_postprocessing`): the campaign has a single record of what
@@ -4503,26 +2851,8 @@ class ClusterService(LocalTransport):
         choose between.
         """
         from robovast.execution.status_recovery import record_step_outcome
-        campaign_root = self._materialize(
-            campaign_id, self._SHARE_STATUS_OBJECTS,
-            "the campaign's postprocessing status")
-        status = record_step_outcome(campaign_root, postprocessing=(ok, message))
-        # Publish _execution (outcome + the conversion's postprocessing.log, even on
-        # failure) so the result survives a restart and the Monitor can read it.
-        #
-        # Reported as its own failure rather than raised, because the two are different
-        # findings that a shared handler renders identical: the postprocess may have
-        # succeeded and only the account of it be missing. A reader told "postprocessing
-        # failed" would go looking for a fault in the campaign instead of at the store.
-        try:
-            self._publish_execution(campaign_id, campaign_root)
-        except Exception as e:  # noqa: BLE001 - the outcome above is what must survive
-            logger.exception("Could not publish the postprocessing account for %s",
-                             campaign_id)
-            detail = (f"the account of this postprocess was written but could not be "
-                      f"published, so the campaign log may not show it: {e}")
-            message = f"{message} ({detail})" if not ok else detail
-            state.update(error=detail)
+        status = record_step_outcome(self.campaign_dir(campaign_id),
+                                     postprocessing=(ok, message))
         state.update(postprocessed=status.postprocessed,
                      postprocessing_error=status.postprocessing_error)
         # The recorded phase, not `finished`: `record_step_outcome` preserves how the
@@ -4554,11 +2884,9 @@ class ClusterService(LocalTransport):
         work: the Job is running and will finish either way, and only a waiter writes what
         it did into the campaign.
 
-        Started in the background rather than run here, because identifying which campaign
-        a live Job belongs to needs the campaign index, and a restart is exactly when the
-        store may not be up yet -- a redeploy brings it back alongside this process. So the
-        discovery waits for the store, and waiting must not hold up a service that has to
-        answer. Returns the thread, for a caller that needs to join it; see
+        Started in the background rather than run here, because it lists the namespace's
+        Jobs, and waiting on the API must not hold up a service that has to answer.
+        Returns the thread, for a caller that needs to join it; see
         :mod:`.postprocess_reattach` for how the Jobs are found. Never raises.
         """
         from . import postprocess_reattach
@@ -4581,12 +2909,9 @@ class ClusterService(LocalTransport):
         from .postprocess_job import reattach_conversion_job
 
         def work(state):
-            campaign_root = self._materialize(
-                campaign_id, self._SHARE_STATUS_OBJECTS,
-                "the campaign's postprocessing status")
             from robovast.execution.control_server import stop_checker  # noqa: PLC0415
             ok, message = reattach_conversion_job(
-                self._cluster_config(), campaign_id, str(campaign_root), self.namespace,
+                campaign_id, str(self.campaign_dir(campaign_id)), self.namespace,
                 job_name, kube_context=self.kube_context,
                 should_stop=stop_checker(state))
             if ok is None:
@@ -4596,469 +2921,5 @@ class ClusterService(LocalTransport):
                 return
             self._record_postprocess_outcome(campaign_id, state, ok, message)
 
-        result = self._dispatch_background(
-            campaign_id, phase=Phase.POSTPROCESSING, work=work,
-            elsewhere_written_phase_files={"postprocessing.log"})
+        result = self._dispatch_background(campaign_id, phase=Phase.POSTPROCESSING, work=work)
         return bool(result.ok)
-
-    #: Campaign-relative prefixes kept out of an exported archive: ``_postproc`` is a
-    #: legacy staging copy carried by campaigns converted before the conversion wrote the
-    #: canonical paths directly, and ``.cache`` is postprocessing's rebuildable hash cache.
-    #: The first is what the download stream already drops; the second is
-    #: ``campaign_archive.DEFAULT_EXCLUDE``, so an exported archive and one the
-    #: campaign uploaded itself hold the same thing.
-    #:
-    #: Still excluded rather than removed from the set: a campaign that predates the change
-    #: keeps its copy until a postprocess clears it, and exporting the same derived data
-    #: twice would be the one thing the prefix was always wrong about.
-    _SHARE_EXCLUDE_PREFIXES = frozenset({"_postproc", ".cache"})
-
-    #: What `record_step_outcome` needs to reconstruct the campaign's Status, and all it
-    #: needs: the durable outcome, the run table, and the postprocessing marker. Pulling
-    #: these three beats pulling the campaign (see `run_share`).
-    #:
-    #: The marker is postprocessing's provenance record. It was ``_execution/data.db``,
-    #: which is no longer written -- so the reconstruction saw no derived data for any
-    #: campaign, and a re-triggered export could name and record a fully postprocessed
-    #: campaign's archive as raw.
-    _SHARE_STATUS_OBJECTS = ("_execution/outcome.json", "_transient/postprocessing.yaml",
-                             "campaign.db")
-
-    def run_share(self, request) -> ActionResult:
-        """(Re)trigger upload-to-share for a cluster campaign, as a monitored background
-        operation. The outcome (clear/set ``share_error``) is recorded and published;
-        adjusting the share env and re-triggering re-uploads to the new provider.
-
-        **Nothing is staged on the way.** A ``fetch_campaign(force=True)`` first would
-        materialise the entire campaign in this pod's scratch before a byte reached the
-        share, which on a campaign of any size is a second full copy the pod has no room
-        for and a long wait reported nowhere the campaign view looks. The
-        objects are tarred straight out of the store into the request body instead, the
-        same no-scratch path ``campaign_tar_stream`` already serves the download from.
-        Only the three small objects that carry the campaign's *status* are pulled down,
-        because the outcome has to be edited and published back.
-        """
-        from robovast.client.status import failure_detail
-        from robovast.execution.status_recovery import record_step_outcome
-
-        def work(state):
-            # Pinned for the whole export: the outcome is edited in the materialised root and
-            # published back at the end, which can be long after the read grace has passed.
-            with self._holding_cache(request.campaign_id):
-                _share(state)
-
-        def _share(state):
-            from robovast.client.logging_config import (add_campaign_log_handler,
-                                                        remove_campaign_log_handler)
-            campaign_root = self._materialize(
-                request.campaign_id, self._SHARE_STATUS_OBJECTS, "the campaign's outcome")
-            # A SHARE phase file, same as the local lane, and written *before*
-            # `_publish_execution` below so the account of the upload rides up to the object
-            # store with the rest of `_execution` rather than staying in this service's scratch.
-            handler = None
-            try:
-                (Path(campaign_root) / "_execution").mkdir(parents=True, exist_ok=True)
-                handler = add_campaign_log_handler(
-                    str(Path(campaign_root) / "_execution" / "share.log"))
-            except Exception:  # pylint: disable=broad-except
-                logger.warning("Could not open share.log for %s", request.campaign_id,
-                               exc_info=True)
-            try:
-                logger.info("upload-to-share: %s", request.campaign_id)
-                self._stream_campaign_to_share(request.campaign_id, campaign_root, state)
-                ok, message = True, "upload-to-share complete"
-                logger.info("✓ %s", message)
-            except Exception as e:  # noqa: BLE001 - surfaced via status + share_error
-                ok, message = False, failure_detail(e)
-                logger.error("✗ upload-to-share failed: %s", message)
-            finally:
-                remove_campaign_log_handler(handler)
-            status = record_step_outcome(campaign_root, share=(ok, message))
-            self._publish_execution(request.campaign_id, campaign_root)
-            state.update(share_error=status.share_error)
-            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
-            # campaign ended, and a live entry that disagreed with it would answer
-            # differently until the next restart.
-            state.set_phase(status.phase)
-
-        # Before the dispatch, for the same reason as the postprocess, and one more: the
-        # handler `work` opens on share.log APPENDS, so an earlier export's copy left in the
-        # materialised root would become the head of this export's section.
-        self._archive_repeatable_sections(request.campaign_id)
-        # Same as the postprocess: this writes share.log into a materialised root and
-        # publishes it, never into the tracked one a local read looks in.
-        return self._dispatch_background(
-            request.campaign_id, phase=Phase.SHARING, work=work,
-            elsewhere_written_phase_files={"share.log"})
-
-    def _stream_campaign_to_share(self, campaign_id: str, campaign_root, state) -> None:
-        """Tar the campaign's stored objects straight into the share. No scratch.
-
-        *campaign_root* supplies only the variant — postprocessing's provenance record
-        (``_transient/postprocessing.yaml``) present with entries, or not — so the name
-        an export writes and the name the campaign-end upload writes are decided by the
-        same rule. That record is why it is among :data:`_SHARE_STATUS_OBJECTS`.
-        """
-        from robovast.common.errors import CampaignConfigError
-        from robovast.execution import campaign_archive
-        from robovast.execution.controller import make_upload_progress_cb
-        from robovast.execution.share_providers.naming import archive_name, campaign_variant
-
-        from . import in_pod_upload
-
-        # Before anything is created on the share. `_materialize` skips an object that is
-        # not there, and `add_campaign_members` tars an empty prefix without complaint, so
-        # without this an unknown id uploads a valid, empty archive under that name and
-        # reports success -- the worst possible answer. The predicate is the one
-        # `list_campaigns` answers with, so this and the listing cannot disagree.
-        if not self._campaign_is_here(campaign_id):
-            raise KeyError(f"no campaign {campaign_id!r} on this service")
-
-        provider = in_pod_upload.load_provider_from_env()
-        if provider is None:
-            raise CampaignConfigError(
-                "Cannot export to the share: no share provider is configured "
-                "(ROBOVAST_SHARE_TYPE is unset in this service's environment).\n"
-                "Set it and its credentials in the environment / .env that 'vast serve' "
-                "runs with, then re-run the export.")
-        # Before the share is touched at all, and after the cheap env read: a campaign that
-        # can never be imported is not worth a round trip to a provider to find out.
-        self._refuse_unimportable(campaign_id)
-        in_pod_upload.verify_share_access(provider)
-
-        variant = campaign_variant(campaign_root)
-        object_name = archive_name(campaign_id, variant)
-        cfg = self._cluster_config()
-        excludes = set(self._SHARE_EXCLUDE_PREFIXES)
-
-        progress = make_upload_progress_cb(state)
-        on_member = getattr(progress, "on_member", None)
-        if on_member is not None:
-            # A listing pass, not a transfer: the sizes come back with the keys. It is
-            # the only denominator available, because the archive is gzipped on the fly
-            # and its compressed length is unknown until the last byte.
-            progress.set_source_total(
-                cfg.campaign_object_bytes(campaign_id, exclude_prefixes=excludes))
-
-        logger.info("Streaming %s campaign %s from the object store to the %s share as %s...",
-                    variant, campaign_id, provider.SHARE_TYPE, object_name)
-        with campaign_archive.tar_stream(
-                lambda tar: cfg.add_campaign_members(
-                    tar, campaign_id, exclude_prefixes=excludes,
-                    on_member=on_member)) as stream:
-            provider.upload_archive_stream(stream, object_name, progress_callback=progress)
-        if on_member is not None:
-            progress.finish()
-        logger.info("Uploaded %s to the %s share.", object_name, provider.SHARE_TYPE)
-
-    def _refuse_unimportable(self, campaign_id: str) -> None:
-        """Refuse to upload an archive no deployment could ever take back in.
-
-        The guard above answers "is this id a campaign here"; this answers "is what is
-        stored under it importable". They are different questions, and only the second
-        catches a campaign that died before its ``_config/`` was published: it is indexed,
-        it lists, it has an ``_execution/`` full of logs, and every byte of it tars and
-        uploads happily into an archive whose only possible future is an ingest refusal on
-        somebody else's service.
-
-        Only the ``_config/`` prefix is listed. Nothing else decides the answer, and a
-        campaign's full key listing is the one thing an export of a large campaign should
-        not pay for twice.
-        """
-        from robovast.common.errors import CampaignConfigError
-        from robovast.service.ingest import missing_for_import
-        storage, bucket, prefix = self._campaign_object_location(campaign_id)
-        objects, _sub_prefixes = storage.list_entries(bucket, f"{prefix}_config")
-        missing = missing_for_import(key[len(prefix):] for key, _size in objects)
-        if missing:
-            raise CampaignConfigError(
-                f"Cannot export {campaign_id}: it has no " + " ".join(missing) +
-                "\nAn archive written from it could not be imported by any deployment, "
-                "including this one, so it is refused here rather than at the far end of "
-                "a transfer.")
-
-    # -- taking a campaign in ------------------------------------------------
-    #
-    # The import sequence itself is the inherited one; only the four questions it asks
-    # about durability differ here, because a pod's scratch is not where a campaign lives.
-
-    def _campaign_is_here(self, campaign_id: str) -> bool:
-        """The object store's index is the answer, not this pod's disk.
-
-        Asking the filesystem would report "no" for every campaign this pod has not
-        happened to fetch, so an import would sail past the collision check and then
-        overwrite a campaign in the durable home that nobody was warned about.
-
-        The live registry counts too, and must: the index marker is written best-effort at
-        the head of the driver, so a campaign this service is driving right now can be
-        listed (``list_campaigns`` unions the registry in) while its marker is missing. A
-        predicate narrower than the listing makes such a campaign refuse the very download
-        its card offers — and a download is the one operation that has to be available for
-        every campaign that exists here, postprocessed or raw, finished or still running.
-        """
-        if campaign_id in self._durable_campaign_ids():
-            return True
-        with self._lock:
-            if campaign_id in self._campaigns:
-                return True
-        return campaign_id in self._extra_live_ids()
-
-    def _release_durable_campaign(self, campaign_id: str) -> None:
-        """Under ``force``: delete the object-store copy being replaced, and its marker.
-
-        Deliberately not :meth:`delete_campaign`, whose ``_ensure_deletable`` refuses a
-        campaign this service is driving — by this point the import is registered under
-        that very id, so the campaign would be refused on account of the operation asking.
-        The guard that matters has already run: ``_dispatch_background`` would not have
-        started a second operation on a busy campaign.
-        """
-        from botocore.exceptions import ClientError
-
-        from robovast.execution.cluster_execution import bucket_ops
-        try:
-            bucket_ops.delete_campaign(campaign_id, self._cluster_config(),
-                                       namespace=self.namespace, context=self.kube_context)
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "NoSuchBucket":
-                raise
-        self._unmark_campaign(campaign_id)
-
-    def _publish_imported_campaign(self, campaign_id: str, target) -> None:
-        """Upload the arrived tree to the object store and index it.
-
-        Without this an import would land on a pod's ephemeral disk and be gone with the
-        pod — and invisible even before that, since ``_durable_campaign_ids`` answers from
-        the index rather than from what happens to be on disk.
-
-        It is also what a raw import's postprocessing reads: the Job stages the campaign
-        into its pod out of the store, so this upload — which creates the campaign's bucket
-        — has to precede it. The scratch copy therefore stays until
-        :meth:`_finish_imported_campaign`.
-
-        ``upload_dir`` walks without following symlinks, so the ``<config>/<run>/job``
-        links are not uploaded — correct, because the object store has no symlinks and the
-        download side rebuilds them from ``_transient/job_links.yaml``, which is a real
-        file and does travel.
-        """
-        from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
-
-        from robovast.common.store import \
-            read_campaign_created_at  # pylint: disable=import-outside-toplevel
-        from robovast.execution.cluster_execution import \
-            in_pod_storage  # pylint: disable=import-outside-toplevel
-
-        cfg = self._cluster_config()
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        storage = in_pod_storage.storage_client_for(cfg)
-        count = storage.upload_dir(str(target), bucket, prefix.rstrip("/"))
-        logger.info("Published %d objects of imported campaign %s to the object store",
-                    count, campaign_id)
-        # The marker is what makes it listable at all; its created_at rides in the key so
-        # a cold listing can order campaigns without an object read each.
-        # The campaign's own recorded start time, so an imported campaign sorts where it
-        # belongs in the listing rather than jumping to the top as if it had just run.
-        created_at = (read_campaign_created_at(target)
-                      or datetime.now(timezone.utc).isoformat())
-        in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
-        with self._index_lock:
-            self._index_cache = None
-
-    def _finish_imported_campaign(self, campaign_id: str, target) -> None:
-        """Publish the account postprocessing wrote here, and drop the pod's copy.
-
-        The campaign itself went up before the postprocess
-        (:meth:`_publish_imported_campaign`) and the Job published the outputs it computed,
-        so what lives in this tree and nowhere else is ``_execution/``: the verdict
-        ``_postprocess_after_import`` recorded from the Job's outcome, beside the import's
-        own log and report. Publishing it is what makes an imported campaign read the same
-        through ``list_files`` — which answers from the store — as it does here.
-
-        Then the copy goes: the durable home is the store, and a multi-gigabyte campaign
-        left on scratch is how a service pod fills its disk.
-        """
-        import shutil  # pylint: disable=import-outside-toplevel
-
-        self._publish_execution(campaign_id, target)
-        shutil.rmtree(target, ignore_errors=True)
-
-    def _publish_failed_import(self, campaign_id: str, target) -> None:
-        """Publish a failed import's ``_execution/`` — the account, not the campaign.
-
-        A failed import never reaches :meth:`_publish_imported_campaign`, so on this lane
-        its ``import.log`` and ``import.json`` would stay on the pod's scratch while
-        ``list_files``/``read_file`` read the object store: the campaign card showing the
-        refusal, and ``/results/<id>`` answering *no directory* for the one campaign whose
-        files anybody wanted to open -- the reason written down, and unreachable.
-
-        Only ``_execution/`` goes up. The rest of the tree is whatever the archive held,
-        which by definition this deployment could not make sense of, and a failed import of
-        a large campaign must not spend a full upload explaining itself. The scratch copy is
-        dropped either way — the pod's disk is not a place to leave an unusable tree.
-
-        The campaign is indexed, so it survives a restart and ``vast campaign delete`` finds
-        it. That also makes :meth:`_campaign_is_here` true for the id, so a retry needs
-        ``force`` — which is what the failure already tells the reader to use, and
-        :meth:`_release_durable_campaign` already clears.
-        """
-        import shutil  # pylint: disable=import-outside-toplevel
-        from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
-
-        from robovast.common.store import \
-            read_campaign_created_at  # pylint: disable=import-outside-toplevel
-        from robovast.execution.cluster_execution import \
-            in_pod_storage  # pylint: disable=import-outside-toplevel
-
-        execution = Path(target) / "_execution"
-        try:
-            cfg = self._cluster_config()
-            bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-            storage = in_pod_storage.storage_client_for(cfg)
-            if execution.is_dir():
-                count = storage.upload_dir(str(execution),
-                                           bucket, f"{prefix.rstrip('/')}/_execution")
-                logger.info("Published %d objects accounting for the failed import of %s",
-                            count, campaign_id)
-            # The archive's own start time when it brought a readable store, so a failed
-            # import sorts where the campaign belongs rather than at the top of the list;
-            # now() when it did not, which is most of them -- that is often what failed.
-            created_at = (read_campaign_created_at(target)
-                          or datetime.now(timezone.utc).isoformat())
-            in_pod_storage.mark_campaign_indexed(storage, cfg, campaign_id, created_at)
-            with self._index_lock:
-                self._index_cache = None
-        except Exception:  # pylint: disable=broad-except
-            # Best-effort, like `_record_failed_import`: the import already failed, and
-            # failing to publish the account of it must not replace that reason with a
-            # second, less useful one. The service log still holds the whole sequence.
-            logger.warning("Could not publish the failed import of %s to the object store",
-                           campaign_id, exc_info=True)
-        shutil.rmtree(target, ignore_errors=True)
-
-    def campaign_tar_stream(self, campaign_id: str):
-        """Yield a ``tar.gz`` of the campaign as the store holds it, streamed from it.
-
-        Postprocessed or raw, finished or still running: what is in the store is what
-        comes out. Nothing here waits on postprocessing, and nothing may — derived data is
-        an addition to a campaign, never the condition for reading one.
-
-        Backs ``GET /campaigns/{id}/archive``. Objects are fetched and tarred on the
-        fly (:func:`campaign_archive.iter_tar`), so **no scratch is used on the service
-        during or after the download** — decisive for ~1TB campaigns. ``_postproc/``
-        internal staging is excluded so the archive is the clean campaign layout.
-        """
-        from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
-
-        # Eagerly, before a generator is handed to the response: once streaming has begun
-        # the status line is already 200, so a campaign that does not exist arrives as a
-        # truncated body -- "Response ended prematurely" on the client, which names neither
-        # the campaign nor the problem. The predicate covers everything the listing shows,
-        # so a campaign with a card can never be refused the download that card offers.
-        if not self._campaign_is_here(campaign_id):
-            raise KeyError(f"no campaign {campaign_id!r} on this service")
-
-        cfg = self._cluster_config()
-        # No tolerant reader here, unlike the local lane: an object is written once and
-        # whole, so a campaign in flight is a set of complete files that happens to be
-        # short a few -- which is exactly what the marker announces.
-        live = self.campaign_is_live(campaign_id)
-        facts = self._snapshot_facts(campaign_id) if live else {}
-
-        def _add(tar):
-            cfg.add_campaign_members(tar, campaign_id, exclude_prefixes={"_postproc"})
-            if live:
-                campaign_archive.add_snapshot_marker(tar, campaign_id, **facts)
-
-        return campaign_archive.iter_tar(_add)
-
-    def fetch_campaign(self, campaign_id: str, force: bool = False, dest=None, include=None):
-        """Pull a campaign from the object store to a local dir; return it.
-
-        The object store is the durable home (the campaign loop published the full
-        campaign there via ``finalize_campaign``). The stateless service pulls it
-        into ephemeral scratch on demand — to serve a download or re-postprocess.
-
-        Objects are immutable, so files already present locally with a matching
-        size are left untouched (see ``download_prefix``): repeat pulls — e.g. a
-        notebook re-render — become near-noops. Pass ``force=True`` to overwrite
-        the local cache unconditionally.
-
-        ``dest`` overrides where it lands, and there is exactly one caller that needs to:
-        :mod:`.campaign_resume`, restoring a campaign that is **not finished** into the
-        driver's own campaign root, so its controller re-enters a directory holding what
-        the earlier life produced. Everything else wants the shared scratch cache and the
-        deduplication that comes with it, so the default stands.
-
-        ``include`` narrows the fetch to the keys it selects (see
-        ``StorageClient.download_prefix``); the same caller uses it to take a campaign's
-        control plane without its run artifacts. A narrowed fetch leaves an **incomplete**
-        directory behind, so whoever asks for one owns getting the rest before anything reads
-        it -- ``ExecutionBackend.ensure_campaign_root_complete`` is that call.
-        """
-        from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
-
-        from robovast.common.progress import fmt_size
-        from robovast.execution.cluster_execution import in_pod_storage
-        cfg = self._cluster_config()
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        into_cache = dest is None
-        dest = Path(dest) if dest is not None else self._cache_dir(campaign_id)
-        dest.mkdir(parents=True, exist_ok=True)
-        storage = in_pod_storage.storage_client_for(cfg)
-        with self._fetch_locks_guard:
-            lock = self._fetch_locks.setdefault(campaign_id, threading.Lock())
-        # Serialize fetches of the same campaign: the first request populates the
-        # cache while the rest wait, then find it complete and skip re-downloading
-        # (immutable objects, matching size). Different campaigns still fetch in
-        # parallel.
-        started = time.perf_counter()
-        fetched_bytes = 0
-        with lock, self._reporting_progress(campaign_id) as publish:
-            # ``listing`` is the pre-pass ``download_prefix`` runs to learn the denominator.
-            # Named rather than left blank: on a campaign with 100k objects it is itself a
-            # visible wait, and "listing" beats a bar that sits at 0/0.
-            publish(phase="listing", unit="files", detail=campaign_id)
-
-            def on_change(done, total, done_bytes, total_bytes):
-                nonlocal fetched_bytes
-                fetched_bytes = done_bytes
-                publish(phase="downloading", unit="files", done=done, total=total,
-                        bytes_done=done_bytes, bytes_total=total_bytes,
-                        detail=campaign_id)
-
-            try:
-                # A whole campaign is GBs over a port-forward; without a running count the
-                # transfer is indistinguishable from a hang for as long as it takes. The log
-                # line serves whoever reads the pod log; ``on_progress`` serves the UI, which
-                # additionally needs the denominator to draw a bar.
-                n = storage.download_prefix(
-                    bucket, prefix, str(dest), force=force, include=include,
-                    on_file=in_pod_storage.download_progress_logger(
-                        f"Campaign {campaign_id}"),
-                    on_progress=in_pod_storage.download_progress_reporter(on_change))
-            # An unreachable store is translated by ``_resilient`` (see _materialize).
-            except ClientError as exc:
-                # No bucket for this campaign in the object store: it was never
-                # published (e.g. still running / never finalized) or has been
-                # cleaned up. Surface a clean 404 instead of an ASGI 500.
-                if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
-                    raise KeyError(
-                        f"No stored data for campaign {campaign_id!r}: its object "
-                        f"store bucket does not exist (not yet published or removed)"
-                    ) from exc
-                raise
-            if into_cache:
-                self._mark_cache_read(campaign_id)
-        # Elapsed as well as the count: "1832 files" alone does not distinguish a transfer
-        # that took two seconds from one that took four minutes, which is the only question
-        # a caller staring at a slow first call actually has. The byte figure comes from the
-        # progress reporter's running sum — free now that it is tracked, where summing the
-        # cache dir would stat every file of a campaign that can hold 100k of them.
-        elapsed = time.perf_counter() - started
-        logger.info("Fetched campaign %s (%d file(s), %s) from %s/%s to %s in %.1fs",
-                    campaign_id, n, fmt_size(fetched_bytes), bucket, prefix, dest, elapsed)
-        if fetched_bytes:
-            # Same slot ``_materialize`` writes: both describe "what this service's last
-            # transfer of this campaign cost", and a caller asking why the first click was
-            # slow does not care which of the two paid for it.
-            self._last_fetch[campaign_id] = (fetched_bytes, elapsed)
-        return dest

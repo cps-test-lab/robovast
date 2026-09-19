@@ -402,7 +402,7 @@ def test_download_offers_the_url_whatever_lane_the_campaign_ran_on(dual_lane, la
     if lane:
         dual_lane["camp-x"] = lane
     result = results_lifecycle.get_campaign_download("camp-x")
-    assert result["url"].endswith("/campaigns/camp-x/archive")
+    assert result["url"].endswith("/data/campaigns/camp-x/archive")
     assert "error" not in result
 
 
@@ -431,8 +431,8 @@ def test_get_campaign_download_cluster_returns_url(monkeypatch):
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("kubernetes"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
-    assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
-    assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
+    assert res["url"] == "http://127.0.0.1:8800/data/campaigns/camp-2026-01-01-000000/archive"
+    assert res["path"] == "/data/campaigns/camp-2026-01-01-000000/archive"
     assert res["next_step"] == "vast campaign download camp-2026-01-01-000000"
     assert "error" not in res
 
@@ -442,7 +442,7 @@ def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("docker"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
-    assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
+    assert res["url"] == "http://127.0.0.1:8800/data/campaigns/camp-2026-01-01-000000/archive"
 
 
 def test_get_campaign_download_says_nothing_about_the_share(monkeypatch):
@@ -475,7 +475,7 @@ def test_get_campaign_download_without_a_transport_omits_the_url(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: impl)
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert "url" not in res          # omitted, not empty
-    assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
+    assert res["path"] == "/data/campaigns/camp-2026-01-01-000000/archive"
     assert res["next_step"] == "vast campaign download camp-2026-01-01-000000"
     assert "error" not in res
 
@@ -489,7 +489,7 @@ def test_get_campaign_download_uses_the_declared_origin(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: impl)
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert res["url"] == ("https://robovast.example.org"
-                          "/campaigns/camp-2026-01-01-000000/archive")
+                          "/data/campaigns/camp-2026-01-01-000000/archive")
 
 
 def test_get_campaign_download_no_service_errors(monkeypatch):

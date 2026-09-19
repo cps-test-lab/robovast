@@ -20,13 +20,12 @@ from robovast.execution.cluster_execution import postprocess_job as pj
 
 from robovast.common.index_db import DSN_ENV
 from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
+from robovast.execution.cluster_execution import pod_access
 from robovast.execution.cluster_execution.postprocess_host import ENV_COMMANDS, ENV_FORCE
 from robovast.execution.cluster_execution.postprocess_job import (CAMPAIGN_MOUNT,
                                                                   HOST_CONTAINER,
                                                                   STAGE_CONTAINER,
                                                                   build_manifest)
-from robovast.execution.cluster_execution.postprocess_stage import (ENV_BATCH_JOBS,
-                                                                     ENV_SKIP_BAGS)
 
 _CMDS = [{"plugins": [{"type": "rosout_to_csv"}]}]
 
@@ -46,9 +45,7 @@ def _pod_spec(rosbag_cmds=None, **kw):
     # Not a default argument: a shared mutable default is one a caller can edit for every
     # later test in the file.
     rosbag_cmds = _CMDS if rosbag_cmds is None else rosbag_cmds
-    m = build_manifest("camp-2026-08-27-12000000", "img:1", rosbag_cmds,
-                       ("http://s3.example.com", "ak", "sk", "bucket", "prefix/"),
-                       "robovast", **kw)
+    m = build_manifest("camp-2026-08-27-12000000", "img:1", rosbag_cmds, "robovast", **kw)
     return m["spec"]["template"]["spec"]
 
 
@@ -90,11 +87,12 @@ def test_a_batch_job_has_the_same_shape_and_is_told_not_to_complete():
 
     What a batch must not do is COMPLETE the campaign: the index ingest, the metadata and
     the provenance record describe a finished campaign, and this runs per batch on one that
-    is still growing. What it must still do is derive and upload, and the host container is
-    the only one holding the store -- the conversion runs the campaign's own image and is
-    given nothing. A Job that ended at its conversion would leave every CSV in the pod's
-    emptyDir, so the batch could never be scored, and nothing would report an error: the Job
-    succeeds, the fetch finds nothing, and the search spends its budget scoring no cells.
+    is still growing. What it must still do is derive and deliver, and the host container
+    is the only one holding the campaign's token -- the conversion runs the campaign's own
+    image and is given nothing. A Job that ended at its conversion would leave every CSV in
+    the pod's emptyDir, so the batch could never be scored, and nothing would report an
+    error: the Job succeeds, nothing lands, and the search spends its budget scoring no
+    cells.
     """
     cmds = [{"nav2_bt_tree": {"bt_xml": "files/bt.xml"}}]
     spec = _pod_spec(batch_commands=cmds)
@@ -146,24 +144,27 @@ def test_bags_are_staged_exactly_when_something_in_the_pod_opens_one():
     nothing reads. Set when it should not be, a campaign's conversion is handed a tree with
     no bags in it and reports every one of them missing.
     """
-    with_bags = _by_name(_pod_spec())[STAGE_CONTAINER]["env"]
-    without = _by_name(_pod_spec(rosbag_cmds=[]))[STAGE_CONTAINER]["env"]
+    with_bags = _by_name(_pod_spec())[STAGE_CONTAINER]["command"][-1]
+    without = _by_name(_pod_spec(rosbag_cmds=[]))[STAGE_CONTAINER]["command"][-1]
 
-    assert ENV_SKIP_BAGS not in [e["name"] for e in with_bags]
-    assert {"name": ENV_SKIP_BAGS, "value": "1"} in without
+    # The selection is a query on the archive the stage fetches: decided where the bytes
+    # are, so what the pod is not given it does not pay to download.
+    assert "skip_bags=false" in with_bags
+    assert "skip_bags=true" in without
 
 
 # -- what each container is trusted with -------------------------------------
 
 
-def test_only_the_host_container_is_given_the_index_and_the_store():
+def test_only_the_host_container_is_given_the_index_and_only_ours_the_token():
     """The conversion runs an arbitrary user image, so it holds no credential at all.
 
     It is the campaign's own image -- the system under test's -- and the only reason it is
     in this pod is that custom ROS2 types deserialize nowhere else. It reads and writes the
-    shared campaign mount and nothing more, so anything that would let it reach the store
-    or the index is a credential handed to a stranger for no purpose. The index DSN goes
-    to the host container alone, because that is the only container that writes the index.
+    shared campaign mount and nothing more, so anything that would let it reach the data
+    plane or the index is a credential handed to a stranger for no purpose. The index DSN
+    goes to the host container alone, because that is the only container that writes the
+    index; the campaign's token goes to the two containers that move its bytes.
     """
     containers = _by_name(_pod_spec())
 
@@ -176,11 +177,12 @@ def test_only_the_host_container_is_given_the_index_and_the_store():
 
     host_env = {e["name"] for e in containers["host"]["env"]}
     assert DSN_ENV in host_env
-    assert {"S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", ENV_FORCE} <= host_env
+    assert {pod_access.DATA_URL_ENV, pod_access.TOKEN_ENV, pod_access.CAMPAIGN_ID_ENV,
+            ENV_FORCE} <= host_env
 
-    # The stage container talks to the store too, but never to the index: it fetches.
+    # The stage container reaches the data plane too, but never the index: it fetches.
     stage_env = {e["name"] for e in containers[STAGE_CONTAINER]["env"]}
-    assert "S3_ACCESS_KEY" in stage_env and DSN_ENV not in stage_env
+    assert pod_access.TOKEN_ENV in stage_env and DSN_ENV not in stage_env
 
 
 # -- what the pod reserves ---------------------------------------------------
@@ -242,39 +244,45 @@ def test_a_volume_is_declared_only_where_a_container_mounts_it(rosbag_cmds):
 
 def test_one_tree_is_writable_by_containers_that_run_as_different_users():
     """The stage container creates the campaign tree and the conversion writes its outputs
-    INTO it, as a different user: the controller image runs as root, an execution image as
-    its own unprivileged user. Without a shared group AND a group-writable umask, the
-    conversion fails on its first output file with EACCES -- after staging the whole
-    campaign, so the cost is paid before the failure.
+    INTO it, as a different user: the sidecar and controller images run as root, an
+    execution image as its own unprivileged user. Without a shared group AND group-writable
+    modes, the conversion fails on its first output file with EACCES -- after staging the
+    whole campaign, so the cost is paid before the failure.
 
     Both halves are asserted because either alone is useless: a group that cannot write is
-    not access, and a permissive umask on a tree the other user is not in the group of is
-    not either.
+    not access, and a group-writable mode on a tree the other user is not in the group of
+    is not either. The stage extracts with `tar`, which as root restores the archive's
+    owner and mode, so it hands the tree over explicitly; the host creates files itself,
+    so its umask is what decides.
     """
     spec = _pod_spec()
 
     assert spec["securityContext"]["fsGroup"] == pj.CAMPAIGN_TREE_GID
     assert pj.CAMPAIGN_TREE_GID in spec["securityContext"]["supplementalGroups"]
-    for container in spec["initContainers"] + spec["containers"]:
-        if container["name"] == pj.CONVERT_CONTAINER:
-            continue  # it writes as itself; it is the reader of this arrangement
-        assert "umask 0002" in " ".join(container["command"]), container["name"]
+    containers = _by_name(spec)
+    stage = " ".join(containers[STAGE_CONTAINER]["command"])
+    assert f"chgrp {pj.CAMPAIGN_TREE_GID}" in stage and "chmod g+rwX" in stage
+    assert "umask 0002" in " ".join(containers[HOST_CONTAINER]["command"])
 
 
-def test_every_container_runs_python_unbuffered():
+def test_every_python_container_runs_unbuffered():
     """The campaign log is read from the pod's stdout, and stdout here is a pipe.
 
     Python block-buffers a pipe, so a step's output would reach the log in ~8 KB clumps long
     after it happened -- and publishing a running postprocess exists precisely so someone can
     watch it. The conversion container matters most: it is the longest step and the source of
     the progress output, and it is the one container deliberately given no other environment,
-    which makes it the easiest to leave out.
+    which makes it the easiest to leave out. The stage runs no Python -- `curl | tar` --
+    so it has nothing to unbuffer.
     """
     containers = _by_name(_pod_spec())
 
     assert containers, "the manifest defines no containers"
     for name, container in sorted(containers.items()):
         env = {e["name"]: e.get("value") for e in container.get("env") or []}
+        if name == STAGE_CONTAINER:
+            assert "PYTHONUNBUFFERED" not in env
+            continue
         assert env.get("PYTHONUNBUFFERED") == "1", (
             f"container {name} buffers its output, so the live log lags behind it")
 
@@ -289,13 +297,11 @@ def test_a_batch_stages_only_its_own_jobs():
     """
     spec = _pod_spec(batch_commands=[{"nav2_bt_tree": {}}], discriminator="batch-3/reps-5")
 
-    stage_env = {e["name"]: e["value"] for e in _by_name(spec)[STAGE_CONTAINER]["env"]
-                 if "value" in e}
-    assert stage_env[ENV_BATCH_JOBS] == "batch-3/reps-5"
+    fetch = _by_name(spec)[STAGE_CONTAINER]["command"][-1]
+    assert "batch_jobs=batch-3%2Freps-5" in fetch
 
 
 def test_a_campaign_level_pass_stages_every_batch():
     """It derives the whole campaign, so narrowing it to one batch would hide the rest."""
-    stage_env = {e["name"]: e["value"] for e in _by_name(_pod_spec())[STAGE_CONTAINER]["env"]
-                 if "value" in e}
-    assert ENV_BATCH_JOBS not in stage_env
+    fetch = _by_name(_pod_spec())[STAGE_CONTAINER]["command"][-1]
+    assert "batch_jobs" not in fetch

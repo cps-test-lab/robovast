@@ -24,7 +24,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
                                                                    aux_pod_name,
                                                                    build_aux_pod_manifest)
 from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, Phase)
-from robovast.service.interface import CreateCampaignRequest
+from robovast.service.interface import CreateCampaignRequest, JobKind
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
@@ -35,11 +35,6 @@ def cs():
     svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
                          cluster_config_kwargs={"foo": "bar"}, store=store,
                          reap_on_start=False)
-    # Seed the campaign-index cache empty. Campaign discovery reads the object store (see
-    # _campaign_index), and off-cluster that opens a kubectl port-forward — which no test
-    # has, and which *blocks* rather than failing. Tests that exercise discovery use the
-    # ``indexed`` fixture below, which installs a fake store and clears this.
-    svc._index_cache = (time.monotonic(), {}, {})
     # No unit test may reach metrics.k8s.io. ``list_jobs`` reads pod metrics on every call, and
     # an unfaked client builds a real one and waits out its timeout against whatever kubeconfig
     # this machine happens to have -- a slow test whose result depends on the developer's
@@ -59,62 +54,42 @@ def test_cluster_config_requires_name():
         cs._cluster_config()
 
 
+def test_a_campaigns_backend_carries_the_campaigns_data_plane_token():
+    """Built from the controller state the campaign worker hands over, as the worker does.
+
+    Without the token no pod of the campaign can fetch its inputs or deliver its outputs,
+    and the backend refuses to start one -- so a state whose campaign id is not read here
+    fails every campaign before its first Job.
+    """
+    from robovast.execution.cluster_execution import pod_access
+    from robovast.execution.control_server import ControllerState
+
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=False)
+    cs.bind_auth_token("master-secret")
+    cs._admission_controller = lambda: None
+    backend = cs._build_backend(state=ControllerState(campaign_id="camp-2026-01-01-000000"))
+    assert backend.data_token
+    assert backend.data_token == cs.scoped_token(
+        pod_access.campaign_scope("camp-2026-01-01-000000"))
+
+
+def test_a_backend_for_no_campaign_carries_no_token():
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=False)
+    cs.bind_auth_token("master-secret")
+    cs._admission_controller = lambda: None
+    assert cs._build_backend(state=None).data_token == ""
+
+
 def test_build_backend_threads_kube_context():
-    """`vast serve --backend cluster -x local` must reach the K8s backend."""
+    """The context this service was built with must reach the K8s backend."""
     cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
                         cluster_config_kwargs={}, reap_on_start=False,
                         kube_context="local")
     backend = cs._build_backend(state=None)
     assert backend.kube_context == "local"
     assert backend.namespace == "ns2"
-
-
-def test_cleanup_campaign_data_runs_server_side(cs, monkeypatch):
-    """Bucket cleanup goes through the service with its own config/context.
-
-    So the CLI/MCP need no object-store credentials — the service passes its
-    ``_cluster_config()``, namespace and context straight to ``bucket_ops``.
-    """
-    calls = {}
-
-    def fake_cleanup(cluster_config, namespace, context, campaign_id,
-                     running_campaigns):
-        calls.update(namespace=namespace, context=context, campaign_id=campaign_id,
-                     running=running_campaigns)
-        return ["camp-1", "camp-2", "camp-3"]
-
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.bucket_ops.cleanup_campaigns",
-        fake_cleanup)
-    monkeypatch.setattr(cs, "kube_context", "local")
-    # Retiring the index markers is tested separately; it needs an object store.
-    monkeypatch.setattr(cs, "_unmark_removed", lambda removed: None)
-
-    from robovast.service.interface import CleanupDataRequest
-    res = cs.cleanup_campaign_data(CleanupDataRequest(campaign_id="camp-1"))
-    assert res.ok and "3" in res.message
-    assert calls["namespace"] == "ns1" and calls["context"] == "local"
-    assert calls["campaign_id"] == "camp-1"
-
-
-def test_cleanup_campaign_data_skips_live_campaigns(cs, monkeypatch):
-    """A bulk delete must never remove a campaign the service is still driving."""
-    from robovast.service.interface import CampaignSummary, ListCampaignsResponse
-
-    monkeypatch.setattr(cs, "list_campaigns", lambda *a, **k: ListCampaignsResponse(
-        total=2, campaigns=[
-            CampaignSummary(campaign_id="live-1", phase="running"),
-            CampaignSummary(campaign_id="done-1", phase="finished")]))
-    seen = {}
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.bucket_ops.cleanup_campaigns",
-        lambda *a, **kw: seen.update(kw) or [])
-    monkeypatch.setattr(cs, "_unmark_removed", lambda removed: None)
-
-    from robovast.service.interface import CleanupDataRequest
-    cs.cleanup_campaign_data(CleanupDataRequest())  # campaign_id=None → bulk
-    assert "live-1" in seen["running_campaigns"]
-    assert "done-1" not in seen["running_campaigns"]
 
 
 def test_read_service_config_from_cluster_parses_env(monkeypatch):
@@ -184,88 +159,6 @@ def test_run_options_carry_upload_to_share(cs):
     assert default.upload_to_share is False
 
 
-def test_campaign_tar_stream_refuses_an_unknown_campaign_before_it_streams(cs, monkeypatch):
-    """A campaign that is not here must fail *before* the response starts.
-
-    Found live. Once a byte has been streamed the status line is already 200, so an
-    unknown campaign reached the client as a truncated body -- ``ChunkedEncodingError:
-    Response ended prematurely``, which names neither the campaign nor the problem, and
-    left a ``.part`` file behind. Raised eagerly it is a 404 with a sentence in it.
-
-    The predicate covers everything ``list_campaigns`` shows, so the archive route and the
-    listing cannot disagree about what this service has.
-    """
-
-    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: {"other-2026-01-01-000000"})
-    monkeypatch.setattr(
-        cs, "_cluster_config",
-        lambda: types.SimpleNamespace(add_campaign_members=lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("must not touch the object store for a campaign that is not here"))))
-
-    with pytest.raises(KeyError, match="camp-2026-01-01-000000"):
-        cs.campaign_tar_stream("camp-2026-01-01-000000")
-
-
-@pytest.mark.parametrize("live_by", ["driven_here", "driven_elsewhere"])
-def test_campaign_tar_stream_serves_a_campaign_the_index_has_not_caught_up_with(
-        cs, monkeypatch, live_by):
-    """A live campaign downloads even with no index marker, wherever it is driven.
-
-    The marker is written best-effort at the head of the driver, so it can be missing
-    while the campaign is listed all the same (the listing unions the live registry in).
-    Refusing the download there hides it behind an object nobody can see, on the campaign
-    a reader is most likely to be watching -- so the predicate has to cover both halves of
-    that union, this pod's own campaigns and the ones another pod is driving.
-    """
-    campaign_id = "camp-2026-01-01-000000"
-    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: set())
-    if live_by == "driven_here":
-        monkeypatch.setattr(cs, "_extra_live_ids", lambda: set())
-        cs._campaigns[campaign_id] = types.SimpleNamespace(
-            campaign_id=campaign_id, thread=None,
-            state=types.SimpleNamespace(
-                snapshot=lambda: types.SimpleNamespace(phase="running")))
-    else:
-        monkeypatch.setattr(cs, "_extra_live_ids", lambda: {campaign_id})
-
-    tarred = []
-    monkeypatch.setattr(
-        cs, "_cluster_config",
-        lambda: types.SimpleNamespace(
-            add_campaign_members=lambda tar, cid, exclude_prefixes=(): tarred.append(
-                (cid, tuple(exclude_prefixes)))))
-
-    b"".join(cs.campaign_tar_stream(campaign_id))
-
-    assert tarred == [(campaign_id, ("_postproc",))]
-
-
-def test_campaign_tar_stream_streams_object_store_excluding_postproc(cs, monkeypatch):
-    """The download stream tars objects from the config's add_campaign_members,
-    passing the _postproc exclusion — no scratch on the service."""
-
-    monkeypatch.setattr(cs, "_durable_campaign_ids", lambda: {"camp-2026-01-01-000000"})
-    seen = {}
-
-    def _add_members(tar, campaign_id, exclude_prefixes=()):
-        seen["campaign_id"] = campaign_id
-        seen["exclude"] = set(exclude_prefixes)
-        import io
-        import tarfile
-        info = tarfile.TarInfo(name=f"{campaign_id}/campaign.db")
-        info.size = 2
-        tar.addfile(info, io.BytesIO(b"db"))
-
-    monkeypatch.setattr(
-        cs, "_cluster_config",
-        lambda: types.SimpleNamespace(add_campaign_members=_add_members))
-
-    data = b"".join(cs.campaign_tar_stream("camp-2026-01-01-000000"))
-    assert data  # a real gzip stream
-    assert seen["campaign_id"] == "camp-2026-01-01-000000"
-    assert seen["exclude"] == {"_postproc"}
-
-
 def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
     """So data.db rides the campaign's existing upload rather than a second one."""
     assert cs._postprocess_in_process() is False
@@ -324,395 +217,6 @@ def test_a_broken_build_section_is_a_config_error_too(cs, monkeypatch, tmp_path)
 
     with pytest.raises(CampaignConfigError, match="python_packages"):
         cs._start_build_images(project, campaign_config)
-
-
-# -- discovery: the object store is the durable home ------------------------
-#
-# In-pod the disk is scratch, so a campaign from a previous service life exists only in
-# the object store. Two things make it visible again: the campaign index supplies its id
-# (and the start time the listing orders by), and ``_record_dir`` fetches the two small
-# objects that carry its recorded facts.
-
-
-class _IndexStorage:
-    """Object store holding just the keys these tests exercise."""
-
-    def __init__(self, objects=None):
-        self.objects = dict(objects or {})
-        self.reads: list[str] = []
-        self.prefix_downloads = 0
-
-    # -- index --
-    def upload_file(self, local_path, bucket, key):
-        with open(local_path, "rb") as fh:
-            self.objects[key] = fh.read()
-
-    def list_keys(self, bucket, prefix=""):
-        head = f"{prefix.rstrip('/')}/" if prefix else ""
-        return sorted(k for k in self.objects if k.startswith(head))
-
-    def delete_prefix(self, bucket, prefix):
-        gone = [k for k in self.objects if k.startswith(f"{prefix.rstrip('/')}/")]
-        for key in gone:
-            del self.objects[key]
-        return len(gone)
-
-    # -- single-object reads --
-    def stat_object(self, bucket, key):
-        self.reads.append(key)
-        blob = self.objects.get(key)
-        return None if blob is None else len(blob)
-
-    def download_object(self, bucket, key, dst):
-        with open(dst, "wb") as fh:
-            fh.write(self.objects[key])
-        return True
-
-    def download_prefix(self, *a, **kw):  # pragma: no cover - must never be called
-        self.prefix_downloads += 1
-        raise AssertionError("a campaign summary must not fetch the whole prefix")
-
-
-@pytest.fixture
-def indexed(cs, monkeypatch, tmp_path):
-    """A ClusterService whose object store is an ``_IndexStorage``, with no local disk."""
-    storage = _IndexStorage()
-    monkeypatch.setattr(cs, "_campaigns_root", lambda: tmp_path / "results")
-    monkeypatch.setattr(cs, "_cache_dir", lambda cid: tmp_path / "cache" / cid)
-    # ``interactive=`` selects the timeout budget (fail-fast for polled request paths vs
-    # patient for bulk transfers); it changes no behaviour these tests observe, so the
-    # doubles accept and ignore it rather than each caller having to know.
-    monkeypatch.setattr(cs, "_campaign_object_location",
-                        lambda cid, *, interactive=False: (storage, "bkt", ""))
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.storage_client_for",
-        lambda cfg, *, interactive=False: storage)
-    monkeypatch.setattr(cs, "_cluster_config", lambda: object())
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.campaign_index_bucket",
-        lambda cfg: "bkt")
-    cs._index_cache = None  # discovery is the subject here; read it from the fake store
-    return cs, storage
-
-
-def test_a_campaign_with_no_records_anywhere_is_unknown(indexed):
-    """"Not reconstructable" is a phase, not an exception: the id resolves and says so."""
-    cs, _storage = indexed
-    status = cs._status_from_disk("nope-2026-07-17-120000")
-    assert status.phase == "unknown"
-    assert status.campaign_id == "nope-2026-07-17-120000"
-
-
-def test_a_stored_campaign_reports_its_real_phase_not_unknown(indexed):
-    """The durable ``outcome.json`` explains a campaign this process never drove.
-
-    It travels through the *inherited* ``_status_from_disk``: ``_record_dir`` puts the
-    object where every reader already looks, so the list view and the per-campaign status
-    cannot disagree — which is what the deleted cluster-only override promised but could
-    not deliver, since ``_summary_for`` never called it.
-    """
-    cs, storage = indexed
-    cid = "camp-2026-07-17-120000"
-    from robovast.execution.cluster_execution import in_pod_storage
-    in_pod_storage.mark_campaign_indexed(storage, object(), cid, "t")
-    storage.objects["_execution/outcome.json"] = (
-        b'{"phase": "failed", "campaign_id": "' + cid.encode() + b'", '
-        b'"error": "the runs were aborted"}')
-
-    status = cs._status_from_disk(cid)
-    assert status.phase == "failed"
-    assert status.error == "the runs were aborted"
-
-
-def test_records_are_two_single_object_reads_never_a_prefix_fetch(indexed):
-    """A 2 KB record must not drag a 1 TB campaign — the point of the whole seam."""
-    cs, storage = indexed
-    from robovast.execution.cluster_execution import in_pod_storage
-    in_pod_storage.mark_campaign_indexed(
-        storage, object(), "camp-2026-07-17-120000", "t")
-    storage.reads.clear()
-    cs._record_dir("camp-2026-07-17-120000")
-    assert storage.reads == list(ClusterService._RECORD_OBJECTS)
-    assert storage.prefix_downloads == 0
-
-
-def test_a_campaign_this_process_drives_is_never_fetched(indexed, monkeypatch):
-    """Its driver owns ``campaign.db`` and is writing it right now."""
-    cs, storage = indexed
-    cid = "live-2026-07-17-120000"
-    monkeypatch.setitem(cs._campaigns, cid, object())
-    assert cs._record_dir(cid) == cs._campaign_dir(cid)
-    assert storage.reads == []
-
-
-def test_a_fetched_record_cache_is_never_written_back(indexed):
-    """A summary read must leave the cache byte-identical to the object it mirrors.
-
-    ``_materialize`` decides a cached object is stale by comparing its size with the
-    store's, so a read that rewrites the copy makes the next listing pass re-fetch it --
-    and that pass reads it again, rewrites it again, and the pod re-downloads the campaign
-    once per pass for as long as a tab is open. The inherited zero-runs path does exactly
-    that: it opens ``campaign.db`` read-write to backfill run rows from a run tree the
-    cache does not hold, and ``CampaignStore`` migrates an older-schema store on open.
-    """
-    cs, storage = indexed
-    from robovast.execution.cluster_execution import in_pod_storage
-    cid = "old-2026-07-17-120000"
-    in_pod_storage.mark_campaign_indexed(storage, object(), cid, "t")
-    # An empty database: a store predating the ``run`` table, which is what sends the
-    # inherited path to the backfill in the first place.
-    storage.objects["campaign.db"] = b""
-    storage.objects["_execution/outcome.json"] = b'{"phase": "finished"}'
-
-    root = cs._record_dir(cid)
-    counts = cs._run_counts(root, live=False)
-
-    assert counts["num_runs"] == 0
-    assert (root / "campaign.db").read_bytes() == storage.objects["campaign.db"]
-
-
-def test_a_campaign_tree_this_pod_drives_is_still_backfilled(indexed, monkeypatch):
-    """Read-only is the rule for the cache, not for a real tree: there the runs *are* on
-    disk, the repair sticks, and nothing re-fetches the store afterwards."""
-    cs, _storage = indexed
-    seen = []
-    monkeypatch.setattr("robovast.common.campaign_index.backfill_run_rows",
-                        lambda d: seen.append(d) or 0)
-    root = cs._campaign_dir("live-2026-07-17-120000")
-    root.mkdir(parents=True)
-
-    cs._run_counts(root, live=False)
-
-    assert seen == [root]
-
-
-def test_the_index_supplies_the_ids_the_disk_scan_cannot_see(indexed):
-    cs, storage = indexed
-    from robovast.execution.cluster_execution import in_pod_storage
-    in_pod_storage.mark_campaign_indexed(
-        storage, object(), "Camp_One-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
-
-    assert cs._durable_campaign_ids() == {"Camp_One-2026-07-17-120000"}
-
-
-def test_the_ordering_pass_costs_no_object_reads(indexed):
-    """``list_campaigns`` asks every candidate for its start time before it paginates, so
-    a start time read per campaign would be one round-trip per campaign on a listing the
-    SSE stream repeats every second. The marker carries it in its key instead."""
-    cs, storage = indexed
-    from robovast.execution.cluster_execution import in_pod_storage
-    for i in range(5):
-        in_pod_storage.mark_campaign_indexed(
-            storage, object(), f"c{i}-2026-07-17-12000{i}", f"2026-07-17T12:00:0{i}+00:00")
-    storage.reads.clear()
-
-    started = {cid: cs._started_at_for(cid) for cid in cs._durable_campaign_ids()}
-    assert started["c3-2026-07-17-120003"] == "2026-07-17T12:00:03+00:00"
-    assert storage.reads == []
-
-
-def test_an_indexed_campaign_is_marked_at_driver_start(indexed):
-    """Before the image build and the run, so every later failure is still findable."""
-    cs, _storage = indexed
-    cs._on_campaign_started("camp-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
-    assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
-
-
-def test_indexing_failure_never_fails_the_campaign(cs, monkeypatch):
-    """Discoverability is worth a warning, not a dead campaign — and a store broken
-    enough to refuse this fails the campaign's own uploads with a real error anyway."""
-    monkeypatch.setattr(cs, "_cluster_config",
-                        lambda: (_ for _ in ()).throw(RuntimeError("no store")))
-    cs._on_campaign_started("camp-2026-07-17-120000", "t")  # must not raise
-
-
-def test_deleting_a_campaign_retires_its_marker(indexed):
-    """Otherwise it keeps being listed with nothing behind it."""
-    cs, _storage = indexed
-    cs._on_campaign_started("camp-2026-07-17-120000", "t")
-    cs._unmark_campaign("camp-2026-07-17-120000")
-    assert cs._durable_campaign_ids() == set()
-
-
-def test_an_unreachable_store_keeps_the_last_known_index(indexed, monkeypatch):
-    """A brief outage must not make every stored campaign blink out of the list."""
-    cs, _storage = indexed
-    cs._on_campaign_started("camp-2026-07-17-120000", "t")
-    assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
-
-    # Expire the TTL while keeping the value, which is exactly the state a poll after a
-    # brief outage is in.
-    cs._index_cache = (cs._index_cache[0] - 999,) + cs._index_cache[1:]
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
-        lambda *a: (_ for _ in ()).throw(RuntimeError("store down")))
-    assert cs._durable_campaign_ids() == {"camp-2026-07-17-120000"}
-
-
-def test_a_campaign_start_leaves_the_index_cache_warm(indexed):
-    """Starting a campaign must not force a cold listing.
-
-    Dropping the cache here was the worst possible timing: the campaign whose start
-    invalidated it is about to saturate the same connection with its own uploads, and the
-    1 Hz campaign-list poll would then meet a cold cache on every tick until some listing
-    finally returned. The marker is the one fact a listing would have added, so add it.
-    """
-    cs, _storage = indexed
-    cs._campaign_index()                      # populate the cache
-    cs._on_campaign_started("camp-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
-
-    cached = cs._index_cache
-    assert cached is not None, "the start must not drop the cache"
-    assert cached[1]["camp-2026-07-17-120000"] == "2026-07-17T12:00:00+00:00"
-
-
-def test_only_one_caller_lists_the_index_at_a_time(indexed, monkeypatch):
-    """Single-flight: concurrent pollers take the stale value instead of each listing.
-
-    The listing deliberately runs outside ``_index_lock`` (network I/O under a lock would
-    queue every reader), which without this let every caller past a cold cache start its
-    own round-trip. Behind a 1 Hz SSE poll against a slow store that grows without bound,
-    each in-flight listing holding a worker thread — the mechanism that took the API down.
-    """
-    import threading
-    cs, storage = indexed
-    from robovast.execution.cluster_execution import in_pod_storage
-    in_pod_storage.mark_campaign_indexed(storage, object(), "c-2026-07-17-120000", "t")
-    cs._campaign_index()                      # warm, so there is a stale value to serve
-    cs._index_cache = (cs._index_cache[0] - 999,) + cs._index_cache[1:]   # expire the TTL
-
-    in_listing, release = threading.Event(), threading.Event()
-    calls = []
-
-    def slow_list(*a):
-        calls.append(1)
-        in_listing.set()
-        release.wait(5)          # hold the "network" open, like a stalled tunnel
-        return {"c-2026-07-17-120000": "t"}.items()
-
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
-        slow_list)
-
-    refresher = threading.Thread(target=cs._campaign_index, daemon=True)
-    refresher.start()
-    assert in_listing.wait(5), "the first caller should be out listing"
-
-    # A second poll arriving mid-listing must return immediately with the stale value.
-    assert cs._campaign_index() == ({"c-2026-07-17-120000": "t"}, {})
-    assert len(calls) == 1, "the second caller must not start its own listing"
-
-    release.set()
-    refresher.join(5)
-    assert len(calls) == 1
-
-
-def test_a_failed_listing_releases_the_single_flight_flag(indexed, monkeypatch):
-    """Otherwise one error would wedge the index on its stale value forever."""
-    cs, _storage = indexed
-    cs._campaign_index()
-    cs._index_cache = (cs._index_cache[0] - 999,) + cs._index_cache[1:]
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.list_indexed_campaigns",
-        lambda *a: (_ for _ in ()).throw(RuntimeError("store down")))
-
-    cs._campaign_index()
-    assert cs._index_refreshing is False
-
-
-# -- the MinIO port-forward keep-alive --------------------------------------
-
-class _FakePf:
-    """A ``kubectl port-forward`` child that stays alive, like the real stalled one."""
-
-    def poll(self):
-        return None
-
-    def terminate(self):
-        pass
-
-    def wait(self, timeout=None):
-        return 0
-
-
-@pytest.fixture
-def pf(cs, monkeypatch):
-    """*cs* with a fake port-forward, and a knob for whether the tunnel serves.
-
-    Returns ``(cs, serving, opened)``: flip ``serving["ok"]`` to simulate the tunnel going
-    stalled-but-alive, and read ``opened`` for the ports handed out.
-    """
-    import robovast.execution.cluster_execution.bucket_ops as bo
-    serving, opened = {"ok": True}, []
-
-    def _open(ns, ctx):
-        port = 40000 + len(opened)
-        opened.append(port)
-        return _FakePf(), port
-
-    monkeypatch.setattr(bo, "open_minio_port_forward", _open)
-    monkeypatch.setattr(bo, "forward_is_serving",
-                        lambda port, timeout_s=5.0: serving["ok"])
-    cs._PF_PROBE_INTERVAL_S = 0.05      # the cadence is not what these tests are about
-    yield cs, serving, opened
-    cs._pf_monitor_stop.set()
-
-
-def test_a_healthy_forward_is_never_rotated(pf):
-    """The keep-alive must be invisible when nothing is wrong — rotating a working tunnel
-    would break the transfers running over it."""
-    cs, _serving, opened = pf
-    cs._minio_port_forward_endpoint()
-    time.sleep(0.4)                     # many probe intervals
-    assert opened == [40000], "a serving forward was replaced"
-    assert cs._pf_generation == 1
-
-
-def test_a_stalled_forward_is_rotated_without_a_request_waiting_on_it(pf):
-    """The point of the keep-alive.
-
-    Before it, a stalled-but-alive tunnel was discovered only by an S3 request *timing
-    out* — so the discovery cost that request its whole timeout budget, and every
-    concurrent request paid it too. Nothing here issues an S3 call at all.
-    """
-    cs, serving, opened = pf
-    first = cs._minio_port_forward_endpoint()
-    serving["ok"] = False
-
-    deadline = time.monotonic() + 5
-    while cs._pf_generation < 2 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert cs._pf_generation >= 2, "the stalled forward was never rotated"
-    assert cs._minio_pf_endpoint != first
-    assert len(opened) >= 2
-
-
-def test_one_missed_probe_does_not_rotate(pf):
-    """Two consecutive failures, so a single dropped probe — a tunnel busy mid-transfer,
-    a GC pause — does not throw away a forward that is fine."""
-    cs, serving, opened = pf
-    cs._minio_port_forward_endpoint()
-    assert cs._PF_FAILURES_BEFORE_ROTATE >= 2
-
-    serving["ok"] = False               # exactly one probe fails, then it recovers
-    time.sleep(cs._PF_PROBE_INTERVAL_S * 1.5)
-    serving["ok"] = True
-    time.sleep(0.3)
-    assert opened == [40000], "a single missed probe rotated the forward"
-
-
-def test_shutdown_stops_the_keepalive_before_closing_the_forward(pf):
-    """Otherwise the keep-alive reads the teardown as a stall and reopens the tunnel the
-    process is closing — leaking a kubectl child past exit."""
-    cs, _serving, _opened = pf
-    cs._minio_port_forward_endpoint()
-    monitor = cs._pf_monitor
-    assert monitor is not None and monitor.is_alive()
-
-    cs.shutdown()
-    assert not monitor.is_alive()
-    assert cs._pf_monitor is None
-    assert cs._minio_pf is None and cs._minio_pf_port is None
 
 
 # -- jobs (live) ------------------------------------------------------------
@@ -1291,7 +795,7 @@ def test_a_silent_kubelet_on_the_services_node_says_what_actually_failed(cs, mon
 
     usage = cs.resource_usage()
 
-    assert usage.disk is None and usage.store is None
+    assert usage.disk is None and usage.results is None
     assert "connection refused" in usage.disk_unavailable
     assert "nodes/proxy" not in usage.disk_unavailable, \
         "only a 403 is an RBAC verdict; anything else must report its own cause"
@@ -1353,91 +857,61 @@ def test_the_kubelet_connection_is_released(cs, monkeypatch):
     assert core.responses and all(r.released for r in core.responses)
 
 
-def test_resource_usage_reports_the_rke2_results_store(cs, monkeypatch):
-    """The store meter comes from the provider, out of the summaries already fetched."""
-    from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
-
+def test_resource_usage_reports_the_results_volume(cs, monkeypatch):
+    """The volume the campaigns live on, out of the per-pod stats already fetched."""
     _disk_env(cs, monkeypatch, ["n1"],
-              {"n1": _summary(400, 600, pods=[_minio_pod(200, 600)])},
+              {"n1": _summary(400, 600, pods=[_results_volume_pod(200, 600)])},
               service_node="n1")
-    monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
 
     usage = cs.resource_usage()
 
-    # The store's own used, plus what the filesystem will still take: 200 + 600.
-    assert (usage.store.capacity_bytes, usage.store.used_bytes) == (800, 200)
-    # NOT the node filesystem's total. The emptyDir declares no sizeLimit, so it shares the
-    # disk with images, containers and every campaign directory -- its ceiling is what is
-    # left plus what it already holds, and it genuinely shrinks as the rest of the node
-    # fills. Reporting the filesystem's capacity here invited reading hundreds of spare
-    # gigabytes into a disk that was already nearly full.
+    # The volume's own used, plus what the filesystem will still take: 200 + 600.
+    assert (usage.results.capacity_bytes, usage.results.used_bytes) == (800, 200)
+    # NOT the node filesystem's total. A volume with no size limit reports the whole
+    # filesystem as its capacity -- a filesystem it shares with images, containers and
+    # every campaign directory -- so `capacityBytes` reads as headroom that is not there.
     assert usage.disk.capacity_bytes == 1000
-    assert usage.store.capacity_bytes < usage.disk.capacity_bytes
+    assert usage.results.capacity_bytes < usage.disk.capacity_bytes
 
 
-def test_the_node_walk_stops_once_the_store_answers(cs, monkeypatch):
-    """The store lives on one node, so walking the rest buys only latency."""
-    from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
-
+def test_the_node_walk_stops_at_the_services_own_node(cs, monkeypatch):
+    """Both figures are the service pod's, so no other node can change either."""
     core = _disk_env(cs, monkeypatch, ["n1", "n2", "n3"],
-                     {"n1": _summary(400, 600, pods=[_minio_pod(200, 600)]),
+                     {"n1": _summary(400, 600, pods=[_results_volume_pod(200, 600)]),
                       "n2": _summary(1, 1), "n3": _summary(1, 1)},
                      service_node="n1")
-    monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
 
-    assert cs.resource_usage().store is not None
+    assert cs.resource_usage().results is not None
     assert core.proxy_calls == [("n1", "stats/summary")], \
-        "the walk must stop as soon as the provider recognises its store"
+        "the walk must stop at the node that carries the service pod"
 
 
-def test_the_walk_stops_when_the_store_is_here_and_cannot_be_measured(cs, monkeypatch):
-    """A hostPath store is in the stats as a pod with no volume entry.
+def test_a_host_path_results_dir_draws_no_second_meter(cs, monkeypatch):
+    """A hostPath has no per-volume stats, and `disk` is already that filesystem.
 
-    No further node will change that, so the walk must end there. Walking on would spend the
-    disk budget re-learning it on every node, on the one lane where the store is a directory
-    -- which is the default.
+    Reported as no figure rather than as a volume of size zero: no figure is honest, a
+    wrong one is not.
     """
-    from robovast.execution.cluster_config.rke2 import Rke2ClusterConfig
-    from robovast.execution.cluster_config.minio_store import MINIO_POD_NAME
-
-    unmeasurable = {"podRef": {"name": MINIO_POD_NAME, "namespace": "default"}, "volume": []}
     core = _disk_env(cs, monkeypatch, ["n1", "n2", "n3"],
-                     {"n1": _summary(400, 600, pods=[unmeasurable]),
+                     {"n1": _summary(400, 600, pods=[_service_pod_stats(volumes=[])]),
                       "n2": _summary(1, 1), "n3": _summary(1, 1)},
                      service_node="n1")
-    monkeypatch.setattr(cs, "_cluster_config", lambda: Rke2ClusterConfig())
 
     usage = cs.resource_usage()
-    assert usage.store is None, "no figure is honest; a wrong one is not"
-    assert usage.disk is not None, "the disk meter must survive a store that cannot answer"
-    assert core.proxy_calls == [("n1", "stats/summary")], \
-        "an unmeasurable store must end the walk, not restart it on every node"
+    assert usage.results is None
+    assert usage.disk is not None, "the disk meter must survive a volume that cannot answer"
+    assert core.proxy_calls == [("n1", "stats/summary")]
 
 
-def test_resource_usage_has_no_store_when_the_provider_cannot_say(cs, monkeypatch):
-    """A provider that cannot measure its store reports none — not a store of size zero.
-
-    That is the honest answer for a cloud bucket, which has no capacity to fill, and for a
-    MinIO pod on a node whose kubelet was not read.
-    """
-    _disk_env(cs, monkeypatch, ["n1"], {"n1": _summary(400, 600)},  # no MinIO pod in stats
+def test_resource_usage_has_no_results_meter_when_no_pod_reports_one(cs, monkeypatch):
+    """The service pod is not in the stats at all -- the honest answer is no figure."""
+    _disk_env(cs, monkeypatch, ["n1"], {"n1": _summary(400, 600)},
               service_node="n1")
 
     usage = cs.resource_usage()
 
-    assert usage.store is None
+    assert usage.results is None
     assert usage.disk is not None      # the disk meter is unaffected
-
-
-def test_base_config_reports_no_store_usage_by_default():
-    """The hook defaults to "cannot say", so a provider opts in rather than out.
-
-    The empty reason is the load-bearing half: it means *keep looking*, so a caller walking
-    nodes does not stop at a provider that simply has not been asked yet.
-    """
-    from robovast.execution.cluster_config.base_config import BaseConfig
-
-    assert BaseConfig.get_store_usage(object(), {"n1": {}}) == (None, None, "")
 
 
 def _usage_node(name, cpu, mem):
@@ -1472,20 +946,25 @@ def _summary(fs_used, fs_available, image_fs=None, pods=()):
 _RESERVED = 7
 
 
-def _minio_pod(used, available):
-    """A pod entry shaped like the RKE2 MinIO pod's, for the results-store hook.
+def _service_pod_stats(volumes):
+    """The service pod as the kubelet's per-pod stats carry it."""
+    from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME
+    return {"podRef": {"name": f"{SERVICE_NAME}-abc123", "namespace": "ns1"},
+            "volume": list(volumes)}
 
-    Same denominator as the disk meter, for the reason ``get_store_usage`` documents: the
-    ``/data`` emptyDir declares no ``sizeLimit``, so its ``capacityBytes`` is the whole node
-    filesystem -- which the store shares with images, containers and every campaign
-    directory. ``used + available`` is what this buffer can really still reach, so
-    ``capacityBytes`` is a decoy here too.
+
+def _results_volume_pod(used, available):
+    """The service pod carrying a measurable results volume.
+
+    Same denominator as the disk meter: a volume with no ``sizeLimit`` reports the whole
+    node filesystem as its ``capacityBytes`` -- a filesystem it shares with images,
+    containers and every campaign directory. ``used + available`` is what it can really
+    still reach, so ``capacityBytes`` is a decoy here too.
     """
-    from robovast.execution.cluster_config.rke2 import MINIO_POD_NAME, MINIO_VOLUME_NAME
-    return {"podRef": {"name": MINIO_POD_NAME, "namespace": "default"},
-            "volume": [{"name": MINIO_VOLUME_NAME, "usedBytes": used,
-                        "availableBytes": available,
-                        "capacityBytes": used + available + _RESERVED}]}
+    from robovast.execution.cluster_execution.service_deploy import RESULTS_VOLUME_NAME
+    return _service_pod_stats([{"name": RESULTS_VOLUME_NAME, "usedBytes": used,
+                                "availableBytes": available,
+                                "capacityBytes": used + available + _RESERVED}])
 
 
 def _usage_pod(labels, phase, node=None, cpu=None, mem=None, namespace="other"):
@@ -1762,42 +1241,31 @@ def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
     assert "mujoco model loaded" in lines[0]
 
 
-class _JobLogStorage:
-    """An object store holding one campaign's uploaded job artifacts, keyed by object name."""
-
-    def __init__(self, objects):
-        self.objects = dict(objects)
-
-    def read_object(self, bucket, key):
-        return self.objects.get(key)
-
-    def list_entries(self, bucket, prefix="", delimited=False):
-        return [(k, len(v)) for k, v in sorted(self.objects.items()) if k.startswith(prefix)], []
-
-
-def _no_pod(cs, monkeypatch, objects):
-    """A job whose pod is gone, and a campaign whose objects are *objects*."""
+def _no_pod(cs, monkeypatch, tmp_path, files):
+    """A job whose pod is gone, and a campaign holding *files* (rel path -> bytes)."""
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
             return types.SimpleNamespace(items=[])
 
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    storage = _JobLogStorage(objects)
-    monkeypatch.setattr(cs, "_campaign_object_location",
-                        lambda cid, *, interactive=False: (storage, "bkt", f"{cid}/"))
+    monkeypatch.setattr(cs, "_campaigns_root", lambda: tmp_path)
+    for rel, blob in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
 
 
-def test_get_job_log_of_a_finished_job_is_read_from_the_campaign_objects(cs, monkeypatch):
+def test_get_job_log_of_a_finished_job_is_read_from_the_campaign(cs, monkeypatch, tmp_path):
     """No pod is the normal state of a finished job, not an error.
 
-    The job mirrored ``/out`` to the object store as it ended, so its log is read from there:
-    resolved through the job-link manifest to the artifact dir, main container first, the
-    sidecars after it, and tagged the way the live tail tags them so a run reads the same
-    whichever source served it.
+    The pod's uploader delivered ``/out`` into the campaign as it ended, so the log is read
+    from there: resolved through the job-link manifest to the artifact dir, main container
+    first, the sidecars after it, and tagged the way the live tail tags them so a run reads
+    the same whichever source served it.
     """
     from robovast.common.execution import JOB_LINKS_MANIFEST_REL
-    _no_pod(cs, monkeypatch, {
+    _no_pod(cs, monkeypatch, tmp_path, {
         f"camp/{JOB_LINKS_MANIFEST_REL}": b"cfg/0/job: ../../_jobs/cfg-0\n",
         "camp/_jobs/cfg-0/logs/system.log": b"mujoco model loaded\nrun ended\n",
         "camp/_jobs/cfg-0/logs/system_simulation.log": b"sim up\n",
@@ -1816,9 +1284,9 @@ def test_get_job_log_of_a_finished_job_is_read_from_the_campaign_objects(cs, mon
     assert cs.get_job_log("camp", "cfg/0", offset=chunk.next_offset).text == ""
 
 
-def test_get_job_log_of_a_job_that_archived_nothing_is_absent(cs, monkeypatch):
-    """A job with no pod AND no uploaded logs is reported absent, not as an empty log."""
-    _no_pod(cs, monkeypatch, {})
+def test_get_job_log_of_a_job_that_delivered_nothing_is_absent(cs, monkeypatch, tmp_path):
+    """A job with no pod AND no delivered logs is reported absent, not as an empty log."""
+    _no_pod(cs, monkeypatch, tmp_path, {})
     with pytest.raises(KeyError):
         cs.get_job_log("camp", "gone")
 
@@ -2062,91 +1530,18 @@ def test_stop_leaves_the_aux_pod_its_own_composition_holds(cs, monkeypatch):
     assert calls[0]["aux"] is False
 
 
-# -- the launch record reaches the store before anything can fail -----------
+# -- the launch record is written before anything can fail ------------------
 
-def test_recording_the_launch_publishes_it(cs, tmp_path, monkeypatch):
-    """Written and published in one call, at the top of the driver.
+def test_recording_the_launch_writes_it_into_the_campaign(cs, tmp_path):
+    """At the top of the driver, into the campaign itself.
 
-    This lane's driver disk is scratch, so a record left on it is missing from every
-    campaign that did not finish — which is the set someone comes looking at, and the set
-    a restart has to re-launch from.
+    The campaign directory is the durable home on this lane as on the local one, so a
+    campaign that never finished still carries the record of what it was launched with --
+    which is the set someone comes looking at, and the set a restart re-launches from.
     """
-    published = []
-    monkeypatch.setattr(type(cs), "_publish_execution",
-                        lambda self, cid, root: published.append((cid, str(root))))
-
     cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
 
     assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
-    assert published == [("camp-a", str(tmp_path / "camp-a"))]
-
-
-def test_an_unpublishable_record_does_not_fail_the_campaign(cs, tmp_path, monkeypatch):
-    """The campaign's own uploads follow within seconds and report a dead store loudly."""
-    def boom(self, cid, root):
-        raise RuntimeError("store unreachable")
-
-    monkeypatch.setattr(type(cs), "_publish_execution", boom)
-
-    cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
-
-    assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
-
-
-# -- driver S3 endpoint (off-cluster host reachability) ---------------------
-
-def test_driver_endpoint_in_cluster_uses_cluster_internal(cs, monkeypatch):
-    """In-cluster (robovast:9000 resolves) → no override, no port-forward."""
-    opened = []
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.bucket_ops.open_minio_port_forward",
-        lambda ns, ctx: opened.append((ns, ctx)) or (object(), 1))
-    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
-
-    cfg = cs._cluster_config()
-    assert cfg.get_driver_s3_endpoint() == cfg.get_s3_endpoint() == "http://robovast:9000"
-    assert opened == []  # never port-forwarded in-cluster
-
-
-def test_driver_endpoint_off_cluster_embedded_lazily_forwards(cs, monkeypatch):
-    """Off-cluster + embedded MinIO → localhost port-forward, opened once, reused."""
-
-    calls = []
-    alive = types.SimpleNamespace(poll=lambda: None)  # a running port-forward
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.bucket_ops.open_minio_port_forward",
-        lambda ns, ctx: calls.append((ns, ctx)) or (alive, 18099))
-    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-    monkeypatch.setattr(cs, "kube_context", "local")
-
-    cfg = cs._cluster_config()
-    assert calls == []  # lazy: building the config opens nothing
-
-    assert cfg.get_driver_s3_endpoint() == "http://localhost:18099"
-    # A second config's resolver reuses the one shared forward.
-    assert cs._cluster_config().get_driver_s3_endpoint() == "http://localhost:18099"
-    assert calls == [("ns1", "local")]  # opened exactly once
-
-
-def test_shutdown_terminates_port_forward(cs, monkeypatch):
-    """Service teardown closes the shared MinIO port-forward."""
-
-    proc = types.SimpleNamespace(_alive=True)
-    proc.poll = lambda: None if proc._alive else 0
-    terminated = {}
-    proc.terminate = lambda: terminated.update(done=True)
-    proc.wait = lambda timeout=None: 0
-
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.bucket_ops.open_minio_port_forward",
-        lambda ns, ctx: (proc, 18099))
-    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-    cs._cluster_config().get_driver_s3_endpoint()  # opens the forward
-    assert cs._minio_pf is proc
-
-    cs.shutdown()
-    assert terminated.get("done") is True
-    assert cs._minio_pf is None
 
 
 # -- aux pod (replaces the controller-pod sidecar) --------------------------
@@ -2158,8 +1553,13 @@ def _spec():
                          env={"A": "1"}, run_as_user="1000:1000")
 
 
-def test_aux_pod_manifest_shape():
-    m = build_aux_pod_manifest("nav-2026-07-17-120000", [_spec()], "ns1")
+def _staging(tmp_path):
+    return {"stage_dir": lambda slot: tmp_path / "_staged" / slot,
+            "token_for": lambda scope: "tok"}
+
+
+def test_aux_pod_manifest_shape(tmp_path):
+    m = build_aux_pod_manifest("nav-2026-07-17-120000", [_spec()], "ns1", **_staging(tmp_path))
     assert m["kind"] == "Pod"
     assert m["metadata"]["name"] == aux_pod_name("nav-2026-07-17-120000")
     assert m["metadata"]["namespace"] == "ns1"
@@ -2177,55 +1577,22 @@ def test_aux_pod_manifest_shape():
     assert c["securityContext"] == {"runAsUser": 1000}
 
 
-def test_aux_pod_is_labelled_per_campaign():
+def test_aux_pod_is_labelled_per_campaign(tmp_path):
     """So concurrent campaigns' aux pods never collide and cleanup can target one."""
-    a = build_aux_pod_manifest("camp-a-2026-07-17-120000", [_spec()], "ns")
-    b = build_aux_pod_manifest("camp-b-2026-07-17-120000", [_spec()], "ns")
+    a = build_aux_pod_manifest("camp-a-2026-07-17-120000", [_spec()], "ns", **_staging(tmp_path))
+    b = build_aux_pod_manifest("camp-b-2026-07-17-120000", [_spec()], "ns", **_staging(tmp_path))
     assert a["metadata"]["name"] != b["metadata"]["name"]
     assert (a["metadata"]["labels"]["campaign-id"]
             != b["metadata"]["labels"]["campaign-id"])
 
 
-def test_aux_pod_owner_reference_ties_it_to_the_service_pod():
+def test_aux_pod_owner_reference_ties_it_to_the_service_pod(tmp_path):
     """K8s then GCs it if the service is replaced — the sidecar's old guarantee."""
     owner = {"apiVersion": "v1", "kind": "Pod", "name": "robovast-service-x",
              "uid": "abc", "controller": False, "blockOwnerDeletion": False}
-    m = build_aux_pod_manifest("c-2026-07-17-120000", [_spec()], "ns", owner_ref=owner)
+    m = build_aux_pod_manifest("c-2026-07-17-120000", [_spec()], "ns", owner_ref=owner,
+                               **_staging(tmp_path))
     assert m["metadata"]["ownerReferences"] == [owner]
-
-
-def test_cleanup_retires_the_markers_of_what_it_actually_removed(indexed):
-    """A swept campaign must stop being listed — and a *survivor* must not.
-
-    Driven by what the sweep did rather than what it was asked to do: a campaign whose
-    bucket delete failed keeps its marker, because its data is still there and a listing
-    that omits stored data is the defect this index exists to fix.
-    """
-    cs, storage = indexed
-    from robovast.execution.cluster_execution import in_pod_storage
-    for cid in ("gone_One-2026-07-17-120000", "kept-2026-07-17-120001"):
-        in_pod_storage.mark_campaign_indexed(storage, object(), cid, "t")
-
-    # In per-campaign-bucket mode the sweep reports sanitised *bucket* names; matching is
-    # forward-only (id → bucket name), never the lossy inverse.
-    cs._unmark_removed(["gone-one-2026-07-17-120000"])
-    assert cs._durable_campaign_ids() == {"kept-2026-07-17-120001"}
-
-
-def test_cleanup_that_removed_nothing_does_not_touch_the_store(indexed):
-    cs, storage = indexed
-    storage.reads.clear()
-    cs._unmark_removed([])
-    assert storage.objects == {} and storage.reads == []
-
-
-def test_an_unindexed_campaign_is_never_fetched(indexed):
-    """Nothing of it is in the store, so there is nothing to fetch — and this is what
-    keeps a listing behind an unreachable store to one timeout instead of one per row."""
-    cs, storage = indexed
-    assert cs._record_dir("stranger-2026-07-17-120000") == \
-        cs._campaign_dir("stranger-2026-07-17-120000")
-    assert storage.reads == []
 
 
 def test_scene_geometry_is_keyed_on_the_simulators_image():
@@ -2407,58 +1774,6 @@ def test_a_missing_archived_world_says_so(tmp_path):
         _scene_identity_for(tmp_path, "/config/files/depot_nav2.yaml", archive=False)
 
 
-def test_the_cluster_lane_fetches_a_campaign_owned_world_before_resolving_identity():
-    """Nothing is on local disk here until it is asked for.
-
-    A world declared as a path in the .vast is archived under _config/, and its path is
-    only known once the capture has been read -- so it cannot join _scene_source_dir's
-    fetch and has to be materialised separately, exactly as the capture is. Without it the
-    build failed with "not archived with the campaign" for a world that was archived, just
-    not yet local.
-
-    The whole prefix, not the world object: what the world references travels with it, and
-    the cache key is computed over the tree.
-    """
-    from types import SimpleNamespace
-    from unittest.mock import patch
-
-    svc = ClusterService.__new__(ClusterService)
-    fetched = []
-    svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
-    svc._scene_capture = lambda cid, cn, rid: {"world": "/config/files/depot_nav2.yaml"}
-    svc.list_files = lambda address, recursive=False, limit=100: SimpleNamespace(
-        entries=["files/", "files/depot_nav2.yaml", "environments/hex/3d-mesh/hex.stl"])
-    with patch.object(type(svc).__mro__[1], "_scene_identity",
-                      lambda *a, **k: ("identity", "key")):
-        svc._scene_identity("camp", "goal-1", "0")
-    assert "_config/files/depot_nav2.yaml" in fetched
-    assert "_config/environments/hex/3d-mesh/hex.stl" in fetched
-    # Directory entries keep a trailing "/" and are not objects to fetch.
-    assert "_config/files/" not in fetched
-
-
-def test_a_packaged_world_fetches_the_vast_and_nothing_else():
-    """The world lives in the image, so its meshes are not this side's to stage.
-
-    The ``.vast`` still is: it names the simulator, and without it the build cannot ask which
-    backend knows how to compile the geometry -- a campaign whose world needs no staging at all
-    would otherwise be refused with "no simulator declared".
-    """
-    from types import SimpleNamespace
-    from unittest.mock import patch
-
-    svc = ClusterService.__new__(ClusterService)
-    fetched = []
-    svc._materialize = lambda cid, rels, what, interactive=False: fetched.extend(rels)
-    svc._scene_capture = lambda cid, cn, rid: {"world": "roqsim_scenes:depot"}
-    svc.list_files = lambda address, recursive=False, limit=100: SimpleNamespace(
-        entries=["p.vast", "environments/hex/3d-mesh/hex.stl"])
-    with patch.object(type(svc).__mro__[1], "_scene_identity",
-                      lambda *a, **k: ("identity", "key")):
-        svc._scene_identity("camp", "goal-1", "0")
-    assert fetched == ["_config/p.vast"]
-
-
 # -- get_job_state on the cluster: same read, a pod instead of a container ------------------------
 
 
@@ -2635,6 +1950,24 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
         "scenario-abc-x9", "simulation")
 
 
+def test_the_health_pull_asks_a_calibration_probe_as_it_asks_a_run(cs, monkeypatch):
+    """The probe runs one real configuration in the job shape so that its measurement stands for
+    the jobs' -- and the health read is part of that shape: a process the service starts inside
+    the simulator's container, charged to the simulator's memory. A probe spared it is sized
+    without it, and every job then meets, over a limit with no room for it, the one cost the probe
+    never saw. The postprocessing conversion is the job that carries no run, and stays skipped."""
+    pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
+    _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
+    monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
+        types.SimpleNamespace(job_name="scenario-abc", status="running",
+                              kind=JobKind.CALIBRATION),
+        types.SimpleNamespace(job_name="scenario-pp", status="running",
+                              kind=JobKind.POSTPROCESSING),
+    ]))
+
+    assert [name for name, *_ in cs._health_targets("camp-1")] == ["scenario-abc"]
+
+
 def test_a_role_in_a_native_sidecar_is_found(cs, monkeypatch):
     """The simulator and the system under test are ``initContainers`` with ``restartPolicy:
     Always`` -- workload containers that Kubernetes files under a field whose name says the
@@ -2768,160 +2101,15 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
     assert cs._health_targets("camp-1") == []
 
 
-# -- the campaign log's two byte sources ------------------------------------
-
-
-def _tracked(cs, campaign_id, results_dir, terminal=True, elsewhere=frozenset()):
-    """Register *campaign_id* as tracked here, rooted at *results_dir*.
-
-    *elsewhere* mirrors ``_LocalCampaign.elsewhere_written_phase_files``: the phase files
-    this entry's operation writes somewhere other than *results_dir*. Empty is the campaign
-    case -- a campaign this process drives writes every phase where it is tracked.
-    """
-    phase = Phase.FINISHED if terminal else Phase.RUNNING
-    cs._campaigns[campaign_id] = types.SimpleNamespace(
-        results_dir=str(results_dir), thread=None,
-        elsewhere_written_phase_files=frozenset(elsewhere),
-        state=types.SimpleNamespace(snapshot=lambda: types.SimpleNamespace(phase=phase)))
-
-
-def _fake_store(cs, monkeypatch, objects, cache_dir=None):
-    """Point the durable half of the log reader at *objects* (key -> bytes).
-
-    Also roots the cache dir -- where a re-triggered operation works, and so where its
-    archived log sections land -- inside the test, so nothing the reader answers depends on
-    what an earlier run of anything left in the host's scratch.
-    """
-    reads = []
-
-    class _Store:
-        def read_object(self, bucket, key):
-            reads.append(key)
-            return objects.get(key)
-
-        def list_keys(self, bucket, prefix=""):
-            return sorted(k for k in objects if k.startswith(prefix.rstrip("/") + "/"))
-
-        def upload_file(self, local_path, bucket, key):
-            objects[key] = Path(local_path).read_bytes()
-
-    monkeypatch.setattr(cs, "_cache_dir",
-                        lambda cid: Path(cache_dir or tempfile.mkdtemp()) / cid)
-    monkeypatch.setattr(cs, "_cluster_config", lambda: object())
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.campaign_storage_location",
-        lambda cfg, cid: ("bucket", f"{cid}/"))
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.in_pod_storage.storage_client_for",
-        lambda cfg, interactive=False: _Store())
-    return types.SimpleNamespace(reads=reads)
-
-
-def test_a_tracked_campaign_gets_the_phases_that_are_only_in_the_store(cs, monkeypatch, tmp_path):
-    """Cluster postprocessing does not write to the tracked scratch root — it works in
-    its own fetched campaign root and publishes to the object store. Reading scratch
-    alone served every tracked cluster campaign a log with no POSTPROCESSING section at
-    all, pass or fail, while the bytes sat in the store the whole time.
-    """
-    exec_dir = tmp_path / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    (exec_dir / "controller.log").write_bytes(b"ran 8 configs\n")
-    _tracked(cs, "camp-1", tmp_path)
-    _fake_store(cs, monkeypatch,
-                {"camp-1/_execution/postprocessing.log": b"rosbags_process.py: error: boom\n"})
-
-    chunk = cs.get_campaign_logs("camp-1")
-
-    assert "ran 8 configs" in chunk.text          # from scratch
-    assert "POSTPROCESSING" in chunk.text         # from the store
-    assert "error: boom" in chunk.text
-
-
-def test_a_live_scratch_phase_file_wins_over_its_durable_copy(cs, monkeypatch, tmp_path):
-    """The durable copy of a phase still being appended to lags it. Preferring the store
-    would let one poll return fewer bytes than the last, putting the client's byte offset
-    past the end of the stream.
-    """
-    exec_dir = tmp_path / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    (exec_dir / "controller.log").write_bytes(b"live\n")
-    _tracked(cs, "camp-1", tmp_path, terminal=False)
-    _fake_store(cs, monkeypatch, {"camp-1/_execution/controller.log": b"stale\nand\nlonger\n"})
-
-    chunk = cs.get_campaign_logs("camp-1")
-
-    assert "live" in chunk.text and "stale" not in chunk.text
-    assert chunk.eof is False
-
-
-def test_a_fully_scratch_campaign_never_touches_the_store(cs, monkeypatch, tmp_path):
-    """This read sits behind the log SSE stream, which re-polls while a user watches; a
-    store round-trip per phase per poll is the pathology the offset protocol exists to
-    avoid.
-    """
-    from robovast.common.campaign_logs import INFRA_PHASES
-    exec_dir = tmp_path / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    for _, filename in INFRA_PHASES:
-        (exec_dir / filename).write_bytes(b"x\n")
-    _tracked(cs, "camp-1", tmp_path)
-    spy = _fake_store(cs, monkeypatch, {})
-
-    cs.get_campaign_logs("camp-1")
-
-    assert spy.reads == []
-
-
-def test_an_unreachable_store_still_serves_what_scratch_has(cs, monkeypatch, tmp_path):
-    """A diagnostic surface must degrade, not fail: the log panel showing the phases it
-    can reach beats it showing a stack trace.
-    """
-    exec_dir = tmp_path / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    (exec_dir / "controller.log").write_bytes(b"ran\n")
-    _tracked(cs, "camp-1", tmp_path)
-    monkeypatch.setattr(cs, "_cluster_config", lambda: (_ for _ in ()).throw(RuntimeError("no store")))
-
-    chunk = cs.get_campaign_logs("camp-1")
-
-    assert "ran" in chunk.text
-
-
-def test_owed_work_reads_the_real_services_campaign_index(indexed, monkeypatch):
-    """``campaign_resume`` against a real ClusterService, not a hand-written stub.
-
-    Every other resume test drives a ``_FakeService``, and that stub answered
-    ``_campaign_index`` with a bare map where the real method returns a
-    ``(created_at, finished_at)`` pair. So the whole suite passed while the deployed
-    service raised ``TypeError`` on its first candidate, resumed nothing, and reported it
-    as an unreachable store. A feature whose collaborator is only ever a double is a
-    feature nothing has run.
-    """
-    from robovast.execution.cluster_execution import campaign_resume, in_pod_storage
-
-    cs, storage = indexed
-    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
-                        lambda cfg, cid: ("bkt", f"{cid}/"))
-    cs._on_campaign_started("live-2026-07-18-120000", "2026-07-18T12:00:00+00:00")
-    cs._on_campaign_started("over-2026-07-17-120000", "2026-07-17T12:00:00+00:00")
-    storage.objects["over-2026-07-17-120000/_execution/outcome.json"] = b"{}"
-
-    # Only the campaign with no recorded ending, and the newest first.
-    assert campaign_resume.owed_work(cs) == ["live-2026-07-18-120000"]
-
-
 def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
     """``vast serve --results-dir`` has to reach the cluster lane, not just the local one.
 
-    It was accepted and dropped here on the grounds that a cluster campaign's results live in
-    the object store. They do -- *durably*. The campaign being driven has a local working root
-    all the same: each batch downloads its own results into it, per-run extraction reads it
-    through a path, and postprocessing derives ``data.db`` from it.
-
-    Dropping the flag left that root at ``local_results_root``'s
-    ``<workspaces_root>/../results``, which in the deployed pod resolved one directory outside
-    the only mount it had. Every restart discarded it, and since resume rebuilds it before the
-    port is bound, a restart with live campaigns could never finish.
+    The results volume is where a cluster campaign lives: its pods deliver their runs into
+    it, per-run extraction reads it through a path, and postprocessing derives ``data.db``
+    from it. Without the flag that root is ``local_results_root``'s
+    ``<workspaces_root>/../results``, which in the deployed pod is one directory outside
+    the only mount it has: every restart would discard it, and since resume reads it before
+    the port is bound, a restart with live campaigns could never finish.
     """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
     svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
@@ -2929,183 +2117,13 @@ def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
                          reap_on_start=False, results_dir=str(tmp_path / "mounted"))
 
     assert svc._campaigns_root() == tmp_path / "mounted"
-    assert svc._campaign_dir("camp-a") == tmp_path / "mounted" / "camp-a"
+    assert svc.campaign_dir("camp-a") == tmp_path / "mounted" / "camp-a"
 
 
 def test_without_results_dir_the_lane_keeps_its_default(cs):
     """No flag, no surprise: the shared ``local_results_root`` precedence still decides."""
     from robovast.common.results_root import local_results_root
     assert cs._campaigns_root() == local_results_root(cs.store.registry.root)
-
-
-def test_a_postprocess_that_ran_elsewhere_is_read_from_the_store(cs, monkeypatch, tmp_path):
-    """A retriggered postprocess writes its log into a fetched root and publishes it, so
-    the copy under the tracked root is an earlier attempt's -- present, frozen, and the
-    winner under an absence-only fallback. That is how a postprocess which had just
-    ingested twenty thousand rows showed the image-pull failure of the attempt before it.
-
-    Only that phase moves: the driver's own phases must still be read locally, or a running
-    campaign would show a stale RUN section for its whole life.
-    """
-    exec_dir = tmp_path / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    (exec_dir / "controller.log").write_bytes(b"live run\n")
-    (exec_dir / "postprocessing.log").write_bytes(b"an older attempt\n")
-    _tracked(cs, "camp-1", tmp_path, elsewhere={"postprocessing.log"})
-    _fake_store(cs, monkeypatch, {
-        "camp-1/_execution/controller.log": b"lagging run\n",
-        "camp-1/_execution/postprocessing.log": b"what the pod wrote\n"})
-
-    text = cs.get_campaign_logs("camp-1").text
-
-    assert "what the pod wrote" in text and "an older attempt" not in text
-    assert "live run" in text and "lagging run" not in text
-
-
-# -- the campaign log may only ever grow at its end -------------------------
-#
-# A reader streams it by byte offset, so a repeatable phase run again must land after
-# everything already written. Each finished run is archived under
-# ``_execution/sections/<seq>-<phase>.log`` before the next one starts writing.
-
-
-def test_a_rerun_archives_the_finished_section_before_it_starts(cs, monkeypatch, tmp_path):
-    """The durable copy of the previous run is moved aside, and the base object is left
-    empty for the new run to grow into -- so the section a reader has already consumed
-    keeps the bytes and the offset it had."""
-    _fake_store(cs, monkeypatch, objects := {
-        "camp-1/_execution/postprocessing.log": b"the first postprocess\n",
-        "camp-1/_execution/share.log": b"the export that followed it\n"})
-
-    cs._archive_repeatable_sections("camp-1")
-
-    assert objects["camp-1/_execution/sections/0001-postprocessing.log"] == \
-        b"the first postprocess\n"
-    assert objects["camp-1/_execution/sections/0002-share.log"] == \
-        b"the export that followed it\n"
-    # Present and empty, not gone: the only delete this store API offers is by prefix.
-    assert objects["camp-1/_execution/postprocessing.log"] == b""
-    assert objects["camp-1/_execution/share.log"] == b""
-
-
-def test_a_second_rerun_continues_the_sequence(cs, monkeypatch, tmp_path):
-    """The sequence is the campaign's order, so it counts across phases and across runs --
-    a name reused would overwrite a finished section."""
-    _fake_store(cs, monkeypatch, objects := {
-        "camp-1/_execution/sections/0001-postprocessing.log": b"first\n",
-        "camp-1/_execution/postprocessing.log": b"second\n"})
-
-    cs._archive_repeatable_sections("camp-1")
-
-    assert objects["camp-1/_execution/sections/0002-postprocessing.log"] == b"second\n"
-    assert objects["camp-1/_execution/sections/0001-postprocessing.log"] == b"first\n"
-
-
-def test_a_phase_that_never_ran_burns_no_sequence_number(cs, monkeypatch, tmp_path):
-    """A gap in the numbering would say something happened between two sections that did
-    not, and the sequence is the only record of the order."""
-    _fake_store(cs, monkeypatch, objects := {
-        "camp-1/_execution/postprocessing.log": b"a postprocess, no export\n"})
-
-    cs._archive_repeatable_sections("camp-1")
-    objects["camp-1/_execution/postprocessing.log"] = b"another postprocess\n"
-    cs._archive_repeatable_sections("camp-1")
-
-    assert sorted(k for k in objects if "/sections/" in k) == [
-        "camp-1/_execution/sections/0001-postprocessing.log",
-        "camp-1/_execution/sections/0002-postprocessing.log"]
-
-
-def test_the_tracked_reader_puts_a_rerun_after_the_phase_that_followed_it(cs, monkeypatch,
-                                                                          tmp_path):
-    """Postprocess, share, postprocess again -- driven through the archiving the two
-    dispatches perform. The second postprocess must read *after* the share, not back in the
-    slot the first one occupied: a fixed phase order put its bytes ahead of an offset the
-    reader had consumed, and a live viewer never saw them."""
-    exec_dir = tmp_path / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    (exec_dir / "controller.log").write_bytes(b"ran the campaign\n")
-    _fake_store(cs, monkeypatch, objects := {
-        "camp-1/_execution/postprocessing.log": b"first postprocess\n"},
-        cache_dir=tmp_path / "cache")
-
-    # A share is retriggered: the finished postprocess is archived, then the export writes
-    # its own phase file into the materialised root it works against.
-    cs._archive_repeatable_sections("camp-1")
-    share = tmp_path / "cache" / "camp-1" / "_execution" / "share.log"
-    share.parent.mkdir(parents=True, exist_ok=True)
-    share.write_bytes(b"the export\n")
-    # ...and then a postprocess is retriggered, which archives that export in turn.
-    cs._archive_repeatable_sections("camp-1")
-    objects["camp-1/_execution/postprocessing.log"] = b"postprocessing again\n"
-    _tracked(cs, "camp-1", tmp_path, terminal=False, elsewhere={"postprocessing.log"})
-
-    text = cs.get_campaign_logs("camp-1").text
-
-    assert text.index("first postprocess") < text.index("the export")
-    assert text.index("the export") < text.index("postprocessing again")
-
-
-def test_a_tracked_reader_sees_the_sections_left_in_the_cache_dir(cs, monkeypatch, tmp_path):
-    """A re-triggered operation works against the cache dir, not the tracked root, so that
-    is where its archived sections land. Listing only the tracked root would drop them from
-    the stream -- and a stream that loses a section is one that shrank."""
-    (tmp_path / "camp-1" / "_execution").mkdir(parents=True)
-    (tmp_path / "camp-1" / "_execution" / "controller.log").write_bytes(b"ran\n")
-    cache = tmp_path / "cache" / "camp-1" / "_execution" / "sections"
-    cache.mkdir(parents=True)
-    (cache / "0001-share.log").write_bytes(b"the first export\n")
-    _tracked(cs, "camp-1", tmp_path, elsewhere={"share.log"})
-    _fake_store(cs, monkeypatch, {}, cache_dir=tmp_path / "cache")
-
-    text = cs.get_campaign_logs("camp-1").text
-
-    assert "the first export" in text
-    assert text.index("ran") < text.index("the first export")
-
-
-def test_an_untracked_campaign_orders_its_sections_from_the_store_listing(cs, monkeypatch):
-    """Nothing local is left to enumerate, and the sequence that orders the sections lives
-    in their names -- so the reader has to list the durable execution dir to find them."""
-    _fake_store(cs, monkeypatch, {
-        "camp-9/_execution/controller.log": b"ran\n",
-        "camp-9/_execution/sections/0001-postprocessing.log": b"first postprocess\n",
-        "camp-9/_execution/sections/0002-share.log": b"the export\n",
-        "camp-9/_execution/postprocessing.log": b"the latest postprocess\n"})
-
-    chunk = cs.get_campaign_logs("camp-9")
-
-    assert chunk.eof is True
-    assert chunk.text.index("first postprocess") < chunk.text.index("the export")
-    assert chunk.text.index("the export") < chunk.text.index("the latest postprocess")
-
-
-def test_an_unreachable_store_does_not_stop_the_operation(cs, monkeypatch, tmp_path):
-    """Archiving is bookkeeping about the account of an operation; the operation itself is
-    the thing that must happen. A failure costs a duplicated section until the new run
-    publishes over the base file, which is worth strictly less than the postprocess it
-    would otherwise block."""
-    monkeypatch.setattr(cs, "_cache_dir", lambda cid: tmp_path / "cache" / cid)
-    monkeypatch.setattr(cs, "_cluster_config",
-                        lambda: (_ for _ in ()).throw(RuntimeError("no store")))
-
-    cs._archive_repeatable_sections("camp-1")  # must not raise
-
-
-def test_a_local_section_that_cannot_be_moved_does_not_stop_the_operation(cs, monkeypatch,
-                                                                          tmp_path):
-    """Same rule one level down: the disk half fails on its own terms (a read-only mount,
-    a vanished root) and the operation still runs."""
-    exec_dir = tmp_path / "cache" / "camp-1" / "_execution"
-    exec_dir.mkdir(parents=True)
-    (exec_dir / "share.log").write_bytes(b"an earlier export\n")
-    _fake_store(cs, monkeypatch, {}, cache_dir=tmp_path / "cache")
-    monkeypatch.setattr(Path, "replace",
-                        lambda self, target: (_ for _ in ()).throw(OSError("read-only")))
-
-    cs._archive_repeatable_sections("camp-1")  # must not raise
-
-    assert (exec_dir / "share.log").exists()
 
 
 # --- per-job live usage ------------------------------------------------------------------

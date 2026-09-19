@@ -312,12 +312,14 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
 
         waypoint_generator = WaypointGenerator(map_file_path)
 
-        file_cache = FileCache(cache_path, "robovast_path_generation_", [self.parameters, seed, path_length, num_goal_poses])
+        # The prefix names the pickle layout: a cache written under an earlier layout is
+        # not found rather than unpacked into the wrong shape.
+        file_cache = FileCache(cache_path, "robovast_path_generation_v2_", [self.parameters, seed, path_length, num_goal_poses])
         cache = file_cache.get_cached_file([map_file_path], binary=True)
         if cache:
-            cached_start_pose, cached_goal_poses, cached_path, cached_length = pickle.loads(cache)
+            cached_start_pose, cached_goal_poses, cached_path = pickle.loads(cache)
             self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
-            return cached_start_pose, cached_goal_poses, cached_path, map_file_path, cached_length
+            return cached_start_pose, cached_goal_poses, cached_path, map_file_path
 
         # The robot the campaign declared, not the constructor's default: the waypoints
         # below are sampled against `robot_diameter` clearance, and a planner inflating by
@@ -460,7 +462,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             ))
 
         self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_poses}")
-        file_content = pickle.dumps((start_pose, goal_poses, path, length))
+        file_content = pickle.dumps((start_pose, goal_poses, path))
         file_cache.save_file_to_cache(
             input_files=[map_file_path],
             file_content=file_content,

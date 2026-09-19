@@ -411,6 +411,11 @@ it costs instead is an exec in a container the caller already holds, since ``val
 and ``preview_configurations`` compose inside the lane's aux-runner context and keep it warm
 across an authoring loop.
 
+Every world, and each question once: within one composition the answer is memoised on what
+the query asks (image, command, documents). roqsim's query names the world and nothing else,
+so a sweep whose cells differ only in an override -- a mesh swapped per cell -- is one
+question and one container round trip, however many ``sim`` blocks it resolves to.
+
 That query is a container like any other, so it is subject to the same two facts every aux
 container is: it is handed the campaign's files at ``/config`` (the command names the world
 there, not by its path on the host), and its image reference must be one a registry can serve

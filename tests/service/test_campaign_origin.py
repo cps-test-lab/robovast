@@ -225,7 +225,7 @@ def test_a_rerun_copies_the_parents_workspace_forward(client, tmp_path):
     parent_dir = tmp_path / "results" / "basic-nav-20260814-101233"
     parent_dir.mkdir(parents=True)
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=_origin())
-    client._record_dir = lambda cid: parent_dir
+    client.campaign_dir = lambda cid: parent_dir
 
     got = client._retrigger_origin("basic-nav-20260814-101233", _NATIVE)
     assert got.kind == "retrigger"
@@ -239,7 +239,7 @@ def test_a_rerun_of_a_rerun_still_names_the_root_workspace(client, tmp_path):
     parent_dir.mkdir(parents=True)
     first_rerun = _origin(kind=OriginKind.RETRIGGER, from_campaign="original")
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=first_rerun)
-    client._record_dir = lambda cid: parent_dir
+    client.campaign_dir = lambda cid: parent_dir
 
     got = client._retrigger_origin("rerun-1", _NATIVE)
     assert got.from_campaign == "rerun-1"          # the IMMEDIATE parent
@@ -251,7 +251,7 @@ def test_a_rerun_of_a_campaign_with_no_origin_still_records_its_lineage(client, 
     parent_dir = tmp_path / "results" / "old-campaign"
     parent_dir.mkdir(parents=True)
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {})
-    client._record_dir = lambda cid: parent_dir
+    client.campaign_dir = lambda cid: parent_dir
 
     got = client._retrigger_origin("old-campaign", _NATIVE)
     assert got.from_campaign == "old-campaign"
@@ -264,7 +264,7 @@ def test_a_rerun_of_an_old_campaign_records_where_its_config_was_migrated_from(
     parent_dir = tmp_path / "results" / "v1-campaign"
     parent_dir.mkdir(parents=True)
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=_origin())
-    client._record_dir = lambda cid: parent_dir
+    client.campaign_dir = lambda cid: parent_dir
 
     got = client._retrigger_origin("v1-campaign", _MIGRATED)
     assert got.config_version_from == 1
@@ -276,7 +276,7 @@ def test_a_rerun_of_a_current_campaign_claims_no_migration(client, tmp_path):
     parent_dir = tmp_path / "results" / "current-campaign"
     parent_dir.mkdir(parents=True)
     CampaignStore(parent_dir / STORE_FILENAME).create_campaign("p", {}, origin=_origin())
-    client._record_dir = lambda cid: parent_dir
+    client.campaign_dir = lambda cid: parent_dir
 
     got = client._retrigger_origin("current-campaign", _NATIVE)
     assert got.config_version_from == 4

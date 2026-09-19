@@ -383,30 +383,7 @@ def _retrigger_view(campaign_id: str) -> dict:
     }}
 
 
-async def _announced(ctx, campaign_id: str, call):
-    """Run ``call(preflight)`` off the event loop, saying first if it must fetch.
-
-    The announcement has to precede the wait to be worth anything, so it goes out as an MCP
-    log notification *before* the call starts; the call then runs in a worker thread so that
-    notification actually reaches the client instead of sitting behind a blocked loop.
-    ``ctx`` is None for an in-process caller, which just means no live notification — the
-    reason still arrives with the result, via the warning middleware.
-
-    The probe made here is handed to *call* rather than repeated inside it: probing twice
-    would log the warning twice and, worse, read the post-fetch state as if it were the
-    pre-fetch one.
-    """
-    import anyio
-    # The probe too: it asks the service, which may ask the object store.
-    preflight = await anyio.to_thread.run_sync(
-        lambda: data_access.announce_pending_fetch(campaign_id))
-    if preflight[1] and ctx is not None:
-        await ctx.info(preflight[1])
-    return await anyio.to_thread.run_sync(lambda: call(preflight))
-
-
-async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
-                                 ctx: Context | None = None) -> dict:
+async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -> dict:
     """The schema to write SQL against. Call this before ``query_campaign_data_sql``.
 
     Read the returned ``note`` first — it carries ready-made queries for the common
@@ -416,35 +393,15 @@ async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
 
     Args:
         campaign_id: Campaign identifier, or an absolute campaign path.
-        preflight_only: Return just the ``fetch`` verdict (two metadata lookups, no
-            schema read). Worth it before a **batch** of queries against a cluster
-            campaign you have not touched yet, so a slow first call is explainable
-            rather than looking like a hang.
 
     Returns:
-        ``{campaign_id, tables, note, fetch}`` — each table
-        ``{schema, table, columns, rows, description}``. With ``preflight_only``,
-        ``{campaign_id, source, fetch_required, cached, transfer, db_bytes,
-        fetch_in_progress, last_fetch_seconds, last_fetch_bytes, note}``. Or ``{error}``.
-
-        ``fetch`` is what this call cost: the first read of a cluster campaign transfers
-        its two databases from the object store, and ``transfer`` separates
-        ``cluster-network`` (fast) from ``port-forward`` (slow). ``fetch_required: false``
-        means the campaign is local and the question does not apply.
+        ``{campaign_id, tables, note}`` — each table
+        ``{schema, table, columns, rows, description}``. Or ``{error}``.
     """
-    if preflight_only:
-        import anyio
-        # Metadata lookups against the service and the store: off the event loop.
-        status = await anyio.to_thread.run_sync(lambda: data_access.data_status(campaign_id))
-        if status is None:
-            return {"error": (
-                "no robovast-service answered, so there is nothing to fetch from: "
-                "campaign data is read from local disk in this process. (A service too "
-                "old to serve /data-status reports the same.)")}
-        return status
-    return await _announced(
-        ctx, campaign_id,
-        lambda pf: data_access.describe(campaign_id, preflight=pf))
+    import anyio
+    del ctx
+    # Off the event loop: the read goes to the service, or to the index.
+    return await anyio.to_thread.run_sync(lambda: data_access.describe(campaign_id))
 
 
 async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
@@ -466,8 +423,7 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
 
     Returns:
-        ``{campaign_id, columns, rows, row_count, truncated, fetch[, csv_url]}``
-        or ``{error}``. See ``describe_campaign_data`` for what ``fetch`` costs.
+        ``{campaign_id, columns, rows, row_count, truncated[, csv_url]}`` or ``{error}``.
 
     Examples::
 
@@ -480,9 +436,9 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         SELECT campaign_id, AVG(objective) FROM runs
         WHERE campaign_id IN ('campaign-A', 'campaign-B') GROUP BY campaign_id
     """
-    result = await _announced(
-        ctx, campaign_id,
-        lambda pf: data_access.query(campaign_id, sql, limit, preflight=pf))
+    import anyio
+    del ctx
+    result = await anyio.to_thread.run_sync(lambda: data_access.query(campaign_id, sql, limit))
     # Only when it was actually capped: an uncapped result needs no second way to get it,
     # and offering one anyway trains a reader to ignore the field.
     if result.get("truncated"):

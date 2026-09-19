@@ -25,10 +25,7 @@ Download and import are the two directions of the same move, so they sit togethe
 answers where to fetch a campaign from, the other takes one in. Neither carries bytes --
 an archive is routinely gigabytes, so both deal in paths and links.
 
-Removal is one verb with a scope flag rather than two tools. A caller facing
-``delete_campaign`` beside ``cleanup_campaign_data`` has to know that one erases the
-campaign and the other only frees its buckets — a distinction the names do not carry,
-between two irreversible operations. ``data_only`` states the scope at the call site.
+Removal is one verb: a campaign has one home, and deleting it is deleting that.
 """
 
 import logging
@@ -129,44 +126,26 @@ def run_share(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def delete_campaign(campaign_id: str = "", data_only: bool = False,
-                    force: bool = False) -> dict:
-    """Irreversibly remove a campaign, or just free the storage its results occupy.
+def delete_campaign(campaign_id: str) -> dict:
+    """Irreversibly remove a campaign: its directory, and on a cluster its leftover Jobs.
 
-    Runs through the robovast-service, which holds the object-store credentials and the
-    authoritative live-campaign set — no kubeconfig, S3 keys or namespaces here. A
-    running campaign is refused; stop it first. The external share copy is never touched.
+    Runs through the robovast-service — no kubeconfig or namespace here. A running campaign
+    is refused; stop it first. The external share copy is never touched.
 
     Args:
-        campaign_id: The campaign to remove. Required unless ``data_only`` — with
-            ``data_only`` an empty id sweeps **all** finished campaigns.
-        data_only: Free the object-store bucket(s) only, keeping the campaign itself.
-            Use once results are downloaded or published. Cluster campaigns only; a
-            local service has no object store.
-        force: Act on a named campaign the service still considers live.
+        campaign_id: The campaign to remove.
 
     Returns:
-        ``{ok, message}`` — for ``data_only``, how many buckets were removed — or
-        ``{error}``.
+        ``{ok, message}`` or ``{error}``.
     """
     client = service_access.service_client()
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
-    # An empty id means "every finished campaign" only for the bucket sweep, which is
-    # what cleanup has always meant. Wholesale deletion has no such form, and letting an
-    # empty id fall through to it would erase the entire corpus from a missing argument.
-    if not campaign_id and not data_only:
-        return {"error": "campaign_id is required to delete a campaign. (An empty id "
-                         "is only meaningful with data_only=True, which sweeps every "
-                         "finished campaign's object-store data.)"}
+    if not campaign_id:
+        return {"error": "campaign_id is required to delete a campaign."}
     try:
-        if data_only:
-            from robovast.service.interface import CleanupDataRequest
-            res = client.cleanup_campaign_data(
-                CleanupDataRequest(campaign_id=campaign_id or None, force=force))
-        else:
-            res = client.delete_campaign(campaign_id)
+        res = client.delete_campaign(campaign_id)
         return {"ok": res.ok, "message": res.message}
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}

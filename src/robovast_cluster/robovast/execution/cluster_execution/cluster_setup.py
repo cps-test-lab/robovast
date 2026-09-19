@@ -231,13 +231,13 @@ def get_cluster_config(config_name):
 def get_cluster_config_for_context(context_key=None, namespace="default"):
     """Get a cluster config instance, reconstructed **from the deployed service**.
 
-    This is the way to obtain a config object for commands that run *after*
-    ``setup`` (``cleanup``, off-cluster ``serve --backend cluster``). It reads the config name + setup kwargs from the in-cluster
-    ``robovast-service`` Deployment's env — the authoritative record setup wrote
-    there — and calls :meth:`~BaseConfig.restore_from_setup_kwargs` so that
-    credential-dependent methods such as :meth:`~BaseConfig.get_s3_credentials`
-    work without the user re-passing ``-o`` flags, and **from any host** (no local
-    flag file). Bucket cleanup does not use this — it runs server-side.
+    This is the way to obtain a config object for the operator commands that run *after*
+    ``setup`` (``cleanup``, ``service upgrade``, ``doctor``). It reads the config
+    name + setup kwargs from the in-cluster ``robovast-service`` Deployment's env — the
+    authoritative record setup wrote there — and calls
+    :meth:`~BaseConfig.restore_from_setup_kwargs` so that methods depending on ``-o``
+    options answer without the user re-passing them, and **from any host** (no local
+    flag file).
 
     Args:
         context_key (str | None): Kubernetes context; ``None`` uses the active one.
@@ -279,9 +279,9 @@ def setup_server(config_name=None, list_configs=False, force=False,
             (see ``buildkitd_deploy.apply_buildkitd``). Its own channel rather than a
             ``cluster_kwargs`` entry for the reason below: these are not provider options and
             must not be splatted into ``setup_cluster``.
-        data_node (str): Node to hold the workspaces, the registry and a node-local results
-            store -- and, unless *buildkit_node* says otherwise, the build cache too, so one
-            name moves the whole deployment's on-disk state. Naming a node moves it off
+        data_node (str): Node to hold the workspaces, the results, the index and the
+            registry -- and, unless *buildkit_node* says otherwise, the build cache too, so
+            one name moves the whole deployment's on-disk state. Naming a node moves it off
             whatever node holds it now, without a second confirming flag; the bytes are not
             migrated, and the node they stay on is reported. Empty means "keep the labelled
             one, or pick the emptiest disk the first time" -- see :mod:`.node_placement`.
@@ -306,8 +306,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
             "build_source", "build_previous"}`` -- where this deployment's node-local state
             was placed, which rule decided it, and the node it was taken off if this run
             moved it, so the caller can state all three. Values are ``None`` where nothing
-            is pinned (a provisioned volume or an external bucket keeps nothing on a node)
-            or where nothing moved. ``"job_node_aliases"`` is the
+            is pinned (a provisioned volume keeps nothing on a node) or where nothing
+            moved. ``"job_node_aliases"`` is the
             :class:`.node_placement.AliasChanges` the registry reconcile made.
 
     Raises:
@@ -329,26 +329,6 @@ def setup_server(config_name=None, list_configs=False, force=False,
             "or --list to see available configs."
         )
 
-    # Argument errors first, before anything dials the cluster: a placement this provider
-    # cannot apply is one, and being told so should not cost a connection timeout -- nor
-    # leave a half-set-up cluster behind it. The lookup is offline.
-    if not getattr(get_cluster_config(config_name), "store_is_placeable", False):
-        from ..cluster_config.minio_store import \
-            refuse_a_store_placement  # pylint: disable=import-outside-toplevel
-        refuse_a_store_placement(
-            config_name, (service_kwargs or {}).get("store_storage_path", ""),
-            (service_kwargs or {}).get("store_storage_class", ""),
-            get_cluster_config(config_name).get_storage_backend())
-    elif (service_kwargs or {}).get("index_storage_class"):
-        # The mirror image, and an argument error for the same reason: here the store IS a
-        # volume this deployment places, and --store-class already backs the index with it.
-        # A second class would put the index on a volume of its own, where it could outlive
-        # the campaigns every one of its rows was ingested from.
-        raise RuntimeError(
-            f"--index-class backs the campaign index on its own, but the '{config_name}' "
-            "provider places the object store as a volume, and the index takes that volume "
-            "so the two are created, moved and destroyed together. Use --store-class.")
-
     # Check if cluster is already set up — the deployed service's env is the
     # record (no local flag file), so this is correct even from another host.
     kube_context = cluster_kwargs.pop('kube_context', None)
@@ -360,10 +340,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     if existing_config and not force:
         key_label = f" for context '{context_key}'" if context_key else ""
         # Point at `upgrade` first, because it is what almost everyone reaching this
-        # message actually wants. `setup` *provisions*: it re-runs the device plugin, the
-        # object store and the registry storage, and it takes its ingress/registry/storage
-        # options as arguments -- so a re-run without the flags of the original run
-        # re-provisions with different ones. `upgrade` reads those back from the live
+        # message actually wants. `setup` *provisions*: it re-runs the device plugin and
+        # the registry/index pod, and it takes its ingress/registry/storage options as
+        # arguments -- so a re-run without the flags of the original run re-provisions
+        # with different ones. `upgrade` reads those back from the live
         # cluster and touches only the image, RBAC and the env-derived Secrets.
         raise RuntimeError(
             f"Cluster is already set up with '{existing_config}' config{key_label}.\n"
@@ -482,9 +462,9 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # volume is noise at best, and with a zonal disk it is unschedulable.
     data_placement = resolve_placement(
         core, DATA_NODE_LABEL,
-        # Only the workspaces class matters for the *service* pod now -- the registry
-        # volume moved to the store pod. The store pod's own placement is decided below and
-        # is what the registry and index hostPaths follow.
+        # The workspaces class decides for the *service* pod, whose results volume follows
+        # it. The `robovast` pod's own placement is decided below and is what the registry
+        # and index hostPaths follow.
         node_local=not service_kwargs.get("workspaces_storage_class"),
         requested=data_node, extra_labels=control_node_labels)
     service_kwargs["node_selector"] = data_placement.selector if data_placement else {}
@@ -510,20 +490,20 @@ def setup_server(config_name=None, list_configs=False, force=False,
         requested=buildkit_node, tolerations=CAMPAIGN_NODE_TOLERATIONS)
     buildkit_kwargs["node_selector"] = build_placement.selector if build_placement else {}
 
-    # The store is a pod like any other, so it takes the data node's selector -- ANDed with
-    # whatever pool the operator's `control.node_labels` allows, not replaced by it: a pool
-    # selector alone still lets the pod float within the pool, which is this same bug at a
-    # smaller scale.
+    # The `robovast` pod (registry + index) is a pod like any other, so it takes the data
+    # node's selector -- ANDed with whatever pool the operator's `control.node_labels`
+    # allows, not replaced by it: a pool selector alone lets the pod float within the pool,
+    # which is the unpinned placement below at a smaller scale.
     #
-    # Pinned whether or not the *object store* is node-local, which it was conditional on
-    # before: this pod now also carries the registry's blobs and the campaign index, both
-    # hostPath-backed, so an unpinned pod would come back on another node with an empty
-    # registry and an empty index while everything reported healthy.
+    # Pinned whenever the data node is: the registry's blobs and the campaign index are
+    # hostPath-backed unless a class says otherwise, so an unpinned pod would come back on
+    # another node with an empty registry and an empty index while everything reported
+    # healthy.
     store_selector = dict(control_node_labels or {})
     if data_placement is not None:
         store_selector.update(data_placement.selector)
 
-    # The index password must exist BEFORE the store pod is created: its Postgres container
+    # The index password must exist BEFORE the pod is created: its Postgres container
     # reads the Secret as POSTGRES_PASSWORD, and a pod created without it sits in
     # CreateContainerConfigError. `deploy_service` below reads this same value back rather
     # than minting a second one -- the password is never rotated (see
@@ -531,8 +511,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
     from .service_deploy import ensure_index_secret  # pylint: disable=import-outside-toplevel
     ensure_index_secret(namespace, kube_context)
 
-    # The registry's password file, for the same reason and at the same moment: the store
-    # pod mounts it. Empty host -> no credential, because an unpublished deployment has no
+    # The registry's password file, for the same reason and at the same moment: the pod
+    # mounts it. Empty host -> no credential, because an unpublished deployment has no
     # route to its registry and cannot build at all; publishing is what makes it reachable,
     # so publishing is what turns auth on.
     from .service_deploy import \
@@ -540,30 +520,16 @@ def setup_server(config_name=None, list_configs=False, force=False,
     registry_host = _resolve_registry_host(service_kwargs, namespace, kube_context)
     registry_password = ensure_registry_htpasswd(namespace, kube_context, registry_host)
 
-    # The storage flags for the registry and the index travel to the *store pod* now, not
-    # to the service Deployment: that is where both volumes live. Passed as named arguments
+    # The storage flags for the registry and the index travel to the `robovast` pod, not to
+    # the service Deployment: that is where both volumes live. Passed as named arguments
     # rather than through `cluster_kwargs`, which is the `-o key=value` channel and is
-    # persisted as this cluster's recorded provider config.
-    from .index_deploy import index_host_path  # pylint: disable=import-outside-toplevel
-    store_storage_path = service_kwargs.pop("store_storage_path", "")
-    store_storage_class = service_kwargs.pop("store_storage_class", "")
-    store_storage_size = service_kwargs.pop("store_storage_size", "")
-    # A bucket has no directory to place and no class to provision, so a store placement
-    # there would be recorded and read later as though it had applied. Refused before
-    # anything is created, like the other argument errors above.
+    # persisted as this cluster's recorded provider config. The index's path and class are
+    # already derived from the results' by the CLI (`data_paths`): beside the campaigns it
+    # was ingested from, on their backing unless --index-class said otherwise.
     cluster_config.setup_cluster(
         kube_context=kube_context,
         control_node_labels=store_selector or None,
-        store_storage_path=store_storage_path,
-        store_storage_class=store_storage_class,
-        store_storage_size=store_storage_size,
-        # Beside the store, never beside the workspaces: every row in the index was ingested
-        # from a campaign in the store, so the two belong on one disk and move together.
-        index_storage_path=index_host_path(store_storage_path),
-        # A class only a bucket-backed provider can be given (refused above for the others),
-        # and the one this deployment's own durable state needs on a managed node pool: with
-        # the campaigns in a bucket, a hostPath index is the only thing a replaced node takes
-        # with it.
+        index_storage_path=service_kwargs.pop("index_storage_path", ""),
         index_storage_class=service_kwargs.pop("index_storage_class", ""),
         index_storage_size=service_kwargs.pop("index_storage_size", ""),
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
@@ -575,10 +541,12 @@ def setup_server(config_name=None, list_configs=False, force=False,
         **cluster_kwargs,
     )
 
-    # An existing store pod is deliberately KEPT on a 409 (see `kubernetes.apply_manifests`),
-    # so a cluster set up before the registry and the index moved into it does not gain
-    # them here. Refuse now, naming the destructive remedy, rather than deploying a service
-    # whose registry route and index DSN point at containers that do not exist.
+    # An existing `robovast` pod is deliberately KEPT on a 409 (see
+    # `kubernetes.apply_manifests`), so a live pod that lacks the registry or the index --
+    # or carries an object store -- does not change here. Refuse now, naming the
+    # destructive remedy, rather than deploying a service whose registry route and index
+    # DSN point at containers that do not exist, or whose campaigns sit in a store nothing
+    # reads.
     from .service_deploy import \
         verify_store_pod_infrastructure  # pylint: disable=import-outside-toplevel
     verify_store_pod_infrastructure(namespace, kube_context,
@@ -709,17 +677,14 @@ def _node_data_locations(namespace, kube_context):
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
 
-    from ..cluster_config.minio_store import live_store_backing  # pylint: disable=import-outside-toplevel
     from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
     from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
+    from .store_pod import STORE_POD_NAME  # pylint: disable=import-outside-toplevel
 
     paths = []
     try:
         load_kube_config(context=kube_context)
-        kind, detail = live_store_backing(namespace)
-        if kind == "hostPath":
-            paths.append(detail)
-        pod = client.CoreV1Api().read_namespaced_pod("robovast", namespace)
+        pod = client.CoreV1Api().read_namespaced_pod(STORE_POD_NAME, namespace)
         for volume in (pod.spec.volumes or []):
             if volume.host_path is not None and volume.host_path.path not in paths:
                 paths.append(volume.host_path.path)
@@ -782,8 +747,8 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
     kube_context = cluster_kwargs.pop("kube_context", None)
 
     # Read where this deployment's data is BEFORE deleting the objects that record it: the
-    # store pod's volume and the service Deployment's are the only statement of it, and once
-    # they are gone the directories on the node are unreachable and unnamed.
+    # `robovast` pod's volumes and the service Deployment's are the only statement of it,
+    # and once they are gone the directories on the node are unreachable and unnamed.
     kept = _node_data_locations(namespace, kube_context)
     try:
         from .cluster_execution import \
@@ -817,8 +782,8 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
     # is deliberately kept -- see `delete_buildkitd`.
     delete_buildkitd(namespace, kube_context)
 
-    # Remove the persistent robovast-service (Deployment + Service + RBAC).
-    # Never touches the object store (the durable data home).
+    # Remove the persistent robovast-service (Deployment + Service + RBAC). Its results
+    # volume -- the durable home of every finished campaign -- is deliberately kept.
     from .service_deploy import delete_service
     delete_service(namespace=namespace, kube_context=kube_context)
 
@@ -847,7 +812,7 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
                     "untouched", ", ".join(cleared) if cleared else "no node")
 
     # The data, last: everything that could still be writing to it is gone by now. Kept
-    # unless asked for, because the store holds finished campaigns and a teardown that
+    # unless asked for, because the results hold finished campaigns and a teardown that
     # silently deleted them would be a very expensive way to free a node.
     purged = []
     if delete_data and kept:

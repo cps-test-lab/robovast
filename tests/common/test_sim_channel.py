@@ -227,6 +227,32 @@ def test_every_distinct_world_travels(backend, execution):
     assert staged == {"worlds/a.yaml", "worlds/b.yaml"}  # the package ref needs nothing
 
 
+def test_a_question_many_blocks_ask_is_asked_once(backend, execution, monkeypatch, tmp_path):
+    """The query a backend states may depend on less than the block does: one naming only
+    the world sees nothing of an override that swaps a mesh. A sweep varying that override
+    has one world and a block per cell, and each ask is a container round trip."""
+    from robovast.common import config_generation as cg
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    monkeypatch.setattr(backend, "input_files", lambda cfg, execution, vast_dir: S.ContainerQuery(
+        ContainerSpec(image="img"), ["sim", "inputs", cfg.config]))
+    asked = []
+
+    def answer(query, vast_dir, **_):
+        asked.append(query.command[-1])
+        return [query.command[-1]]
+    monkeypatch.setattr(cg, "_run_input_files_query", answer)
+
+    configs = [{"name": f"mesh-{i}", "sim": {"components.floorplan.mesh": f"meshes/{i}.stl"}}
+               for i in range(3)]
+    configs.append({"name": "other", "sim": {"config": "worlds/other.yaml"}})
+    run_files = []
+    cg._resolve_config_sim_blocks(configs, {"execution": execution, "configuration": []},
+                                  str(tmp_path), run_files)
+    assert asked == ["worlds/depot.yaml", "worlds/other.yaml"]
+    assert run_files == ["worlds/depot.yaml", "worlds/other.yaml"]
+
+
 def test_a_cells_own_world_is_not_asked_of_the_campaign(backend, execution, tmp_path):
     """A variation that generates its cell's world produces a `sim` value at the config
     mount, not a campaign path. Staging it is the configuration's business -- asking the

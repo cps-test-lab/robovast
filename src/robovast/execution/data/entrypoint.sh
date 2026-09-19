@@ -51,7 +51,7 @@ fi
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
 # Fail fast if any required tool is missing, rather than wasting a full run and
-# only discovering the gap in a post-run step (e.g. 'mc' during the S3 upload).
+# only discovering the gap in a post-run step.
 check_required_tools() {
     local missing=""
     for _tool in "$@"; do
@@ -195,6 +195,9 @@ else
         log "Started rosbag recording ${LOG_TOPICS} (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
     fi
 
+    # The lane's post-run block: the cleanup hooks the runner is handed, and `run_scenario`,
+    # which is how the runner is started -- an exec over this shell on the local lane, a
+    # child of it on the cluster, where something has to run after the runner is gone.
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"
@@ -244,9 +247,9 @@ else
     if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
         log "Starting scenario execution (mode=${SCENARIO_MODE}) with config file..."
         log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     else
         log "Starting scenario execution (mode=${SCENARIO_MODE}) without config file..."
-        exec ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
     fi
 fi

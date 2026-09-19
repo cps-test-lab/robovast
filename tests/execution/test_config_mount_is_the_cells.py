@@ -13,7 +13,7 @@ file-owning configuration per job.
 from kubernetes import client
 
 from robovast.common.execution import build_job_parameter_documents, scenario_env
-from robovast.execution.cluster_execution import in_pod_storage, kubernetes_backend
+from robovast.execution.cluster_execution import kubernetes_backend
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
 from robovast.execution.packer import JobSpec, WorkItem
 
@@ -119,15 +119,14 @@ def test_a_file_valued_parameter_is_carried_as_the_campaign_wrote_it():
 
 
 # -- the cluster lane ------------------------------------------------------------------
+#
+# The cluster lane names the cell's inputs on the request it fetches `/config` with; the
+# data plane emits each one after the campaign's copy, so the cell's file lands on it
+# (`tests/service/test_data_app.py`). What the init container decides is therefore WHICH
+# paths are asked for.
 
 
 class _FakeClusterConfig:
-    def get_s3_endpoint(self):
-        return "http://s3:9000"
-
-    def get_s3_credentials(self):
-        return ("ak", "sk")
-
     def get_registry_config(self):
         import types
         return types.SimpleNamespace(pull_secret_name="")
@@ -149,8 +148,6 @@ def _init_command(monkeypatch, configs, runs=1, runs_per_job=1):
     monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
                         _no_such_secret)
     monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
-    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
-                        lambda cfg, camp: ("bkt", ""))
     runner = BatchJobRunner.for_batch(
         campaign_data={"configs": configs,
                        "execution": {"runs_per_job": runs_per_job},
@@ -161,44 +158,47 @@ def _init_command(monkeypatch, configs, runs=1, runs_per_job=1):
     job = runner._build_jobs()[0]
     manifest = runner.create_job_manifest(job, total_jobs=1)
     spec = manifest["spec"]["template"]["spec"]
-    init = next(c for c in spec["initContainers"] if c["name"] == "s3-init")
+    init = next(c for c in spec["initContainers"] if c["name"] == "fetch-inputs")
     return " ".join(init["command"] + init.get("args", []))
 
 
 _CLUSTER_CONFIGS = [{"name": "cfg-a",
                      "_config_files": [(DEPLOY_REL, f"/gen/cfg-a/{DEPLOY_REL}")]}]
 
+#: How ``config_file=<config>:<rel>`` reads once it is URL-quoted onto the query.
+_ASKED_FOR = "config_file=cfg-a%3Afiles%2Fnav2_params.yaml"
 
-def test_the_init_container_stages_a_path_once_for_a_packed_job(monkeypatch):
-    """The cluster twin of the local dedupe: several runs of one cell are one copy."""
+
+def test_the_init_container_asks_for_a_path_once_for_a_packed_job(monkeypatch):
+    """The cluster twin of the local dedupe: several runs of one cell ask once."""
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS, runs=3, runs_per_job=3)
-    assert command.count(f"/config/{DEPLOY_REL}") == 1, command
+    assert command.count(_ASKED_FOR) == 1, command
 
 
-def test_the_init_container_stages_the_cells_file_at_the_config_mount(monkeypatch):
+def test_the_init_container_asks_for_the_cells_file(monkeypatch):
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS)
-    assert f"cfg-a/_config/{DEPLOY_REL} /config/{DEPLOY_REL}" in command, command
+    assert _ASKED_FOR in command, command
 
 
-def test_it_stages_after_both_campaign_mirrors(monkeypatch):
-    """Order is the mechanism: the cell's copy has to land on the campaign's, not under
-    it."""
+def test_it_fetches_the_whole_view_in_one_stream(monkeypatch):
+    """One request carries the campaign's copies and the cell's, in that order, so the
+    order the cell's file lands on the campaign's is the stream's rather than a step the
+    pod could get wrong."""
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS)
-    campaign = command.index("_config/ /config/")
-    transient = command.index("_transient/ /config/")
-    cell = command.index(f"/config/{DEPLOY_REL}")
-    assert campaign < cell and transient < cell, command
+    assert command.count("curl") == 1, command
+    assert "/campaigns/camp-2026-07-17-120000/inputs" in command, command
+    assert "tar -x -C /config" in command, command
 
 
-def test_it_never_puts_a_cells_records_at_the_config_mount(monkeypatch):
+def test_it_never_asks_for_a_cells_records(monkeypatch):
     """`<config>/_config/` also holds `scenario.config`, which is the entrypoint's default
     parameter file -- which is why the deploy paths are named rather than mirrored."""
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS)
-    assert "/config/scenario.config" not in command, command
-    assert "/config/sut.config" not in command, command
-    assert "/config/cfg-a/" not in command, command
+    assert "scenario.config" not in command, command
+    assert "sut.config" not in command, command
+    assert "cfg-a" not in command.replace(_ASKED_FOR, ""), command
 
 
-def test_a_campaign_staging_nothing_per_cell_adds_no_step(monkeypatch):
+def test_a_campaign_staging_nothing_per_cell_names_no_file(monkeypatch):
     command = _init_command(monkeypatch, [{"name": "cfg-a"}])
-    assert "mc cp" not in command, command
+    assert "config_file=" not in command, command

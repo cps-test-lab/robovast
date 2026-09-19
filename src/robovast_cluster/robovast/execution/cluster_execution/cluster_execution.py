@@ -549,9 +549,11 @@ def pod_invalidating_restart(pod) -> "tuple[str, str] | None":
     What does separate the cases is *how* the container left. A sidecar that finished its
     work exits 0 and the kubelet restarts it because that is what ``Always`` means; the
     trial is untouched and the run's own verdict stands. A sidecar that CRASHED -- non-zero,
-    OOM-killed, or dead on a signal -- takes its state with it, and the scenario carries on
-    against a simulator that no longer remembers the trial. That result is worthless
-    whether it says failed or, worse, passed.
+    OOM-killed, or dead on a signal -- takes its state with it. The instance the kubelet
+    starts in its place runs no workload (``secondary_entrypoint.sh`` refuses a second start
+    in the same pod), so the scenario is left without its simulator or its stack until this
+    reading ends the job. A result from that trial would be worthless whether it said failed
+    or, worse, passed, which is why the job is ended rather than left to time out.
 
     Unknown counts as invalidating: a missing ``last_state`` means the kubelet has not said
     what the previous instance died of, and treating silence as a clean exit is how a

@@ -305,7 +305,7 @@ def _cache_hit_setup(cs, monkeypatch, batch):
                      image_hash="abc123")
     monkeypatch.setattr(cs, "_image_store", types.SimpleNamespace(
         ref_for=lambda spec, project_dir: found), raising=False)
-    monkeypatch.setattr(cs, "_sweep_build_contexts", lambda cfg, bucket: None)
+    monkeypatch.setattr(cs, "_sweep_build_contexts", lambda: None)
     monkeypatch.setattr(cs, "_registry_has_image", lambda f: True)
     _wire(cs, monkeypatch, batch)
     return BuildSpec(tag="sut", base_image="")
@@ -319,7 +319,7 @@ def test_a_cache_hit_still_warms(cs, monkeypatch):
     batch = _Batch()
     spec = _cache_hit_setup(cs, monkeypatch, batch)
 
-    ref = cs._start_cluster_build(spec, "/proj", object(), object(), "bucket")
+    ref = cs._start_cluster_build(spec, "/proj", object(), object())
     assert ref.cached is True
     assert batch.images == [REF]
 
@@ -328,7 +328,7 @@ def test_a_cache_hit_whose_prewarm_fails_still_reports_cached(cs, monkeypatch):
     batch = _Batch(fail_with=_api_exception(403))
     spec = _cache_hit_setup(cs, monkeypatch, batch)
 
-    assert cs._start_cluster_build(spec, "/proj", object(), object(), "bucket").cached
+    assert cs._start_cluster_build(spec, "/proj", object(), object()).cached
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +385,9 @@ def test_an_unreachable_cluster_does_not_fail_a_finished_deployment(monkeypatch)
 def _submit_stubs(cs, monkeypatch, batch, base_image="",
                   deployment_base="harbor.example.org/robovast/robovast:t"):
     """Stub a submit far enough that it reaches Job creation, so the base fire point runs."""
-    from robovast.execution.cluster_execution import cluster_image_build, in_pod_storage
+    from robovast.execution.cluster_execution import cluster_image_build
     from robovast.service.image_store import ImageRef
 
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: object())
     monkeypatch.setattr(cs, "_image_store", types.SimpleNamespace(
         ref_for=lambda spec_, dir_: ImageRef(ref=REF, identity="build:sut@abc123",
                                              build_id=BUILD, image_hash="abc123"),
@@ -401,7 +400,7 @@ def _submit_stubs(cs, monkeypatch, batch, base_image="",
         push_refused=lambda image_ref: False,
         pull_secret_name=lambda: "reg-push"), raising=False)
     monkeypatch.setattr(cs, "_existing_build_job", lambda bid: None)
-    monkeypatch.setattr(cs, "_sweep_build_contexts", lambda cfg, bucket: None)
+    monkeypatch.setattr(cs, "_sweep_build_contexts", lambda: None)
     monkeypatch.setattr(cs, "_registry_has_image", lambda found: False)
     monkeypatch.setattr(cs, "_k8s_batch", lambda: batch)
     monkeypatch.setattr("robovast.service.image_build.generate_dockerfile",
@@ -411,15 +410,15 @@ def _submit_stubs(cs, monkeypatch, batch, base_image="",
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.buildkitd_deploy.buildkitd_ready",
         lambda namespace: True)
-    monkeypatch.setattr(cluster_image_build, "stage_context_to_s3",
-                        lambda *a, **kw: None)
+    monkeypatch.setattr(cluster_image_build, "stage_context", lambda *a, **kw: None)
+    # The pod is given a token scoped to its slot; the submit mints it from the service's
+    # secret, which a test service has not been given.
+    monkeypatch.setattr(cs, "scoped_token", lambda scope: f"tok({scope})")
     monkeypatch.setattr(cluster_image_build, "build_job_manifest",
                         lambda **kw: {"metadata": {"name": kw["build_id"]},
                                       "spec": {"template": {"spec": {"containers": [
                                           {"image": kw["image_ref"]}]}}}})
-    cfg = types.SimpleNamespace(get_s3_credentials=lambda: ("ak", "sk"),
-                                get_s3_endpoint=lambda: "http://robovast:9000",
-                                get_host_aliases=lambda: None)
+    cfg = types.SimpleNamespace(get_host_aliases=lambda: None)
     spec = BuildSpec(tag="sut", base_image=base_image)
     registry = types.SimpleNamespace(registry_prefix="harbor.example.org/robovast",
                                      push_secret_name="push", pull_secret_name="reg-push",
@@ -435,7 +434,7 @@ def test_a_submit_warms_the_resolved_base_alongside_the_build(cs, monkeypatch):
     batch = _Batch()
     cfg, spec, registry = _submit_stubs(cs, monkeypatch, batch)
 
-    ref = cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt")
+    ref = cs._start_cluster_build(spec, "/proj", cfg, registry)
     assert ref.cached is False
     # The deployment default, since this spec declares no base of its own -- the common
     # case, and the one a test asserting `spec.base_image` would silently miss.
@@ -457,7 +456,7 @@ def test_a_submit_whose_base_prewarm_fails_still_submits_the_build(cs, monkeypat
     cfg, spec, registry = _submit_stubs(cs, monkeypatch, batch,
                                         base_image="harbor.example.org/robovast/robovast:t")
 
-    assert cs._start_cluster_build(spec, "/proj", cfg, registry, "bkt").cached is False
+    assert cs._start_cluster_build(spec, "/proj", cfg, registry).cached is False
     assert batch.names == [BUILD]
 
 

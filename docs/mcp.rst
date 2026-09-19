@@ -193,6 +193,12 @@ variation's auxiliary one. That is why it can be the cheap tier and still settle
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
 
+It checks every world a run would load, once each: the campaign's ``simulation`` block
+when some configuration runs it as authored, and each distinct block a configuration's own
+``sim:`` resolves to. A campaign whose every configuration overrides the block -- a world
+naming its mesh per configuration and none by default -- is checked on those configurations'
+worlds only, because no run opens the default as authored.
+
 ``check_scenario`` is the second such check, on the same pool but in the **scenario** container
 (``service/scenario_query.py``): does the scenario parse there, imports resolved? Only that
 image can answer — ``import osc.<library>`` resolves against the
@@ -231,7 +237,8 @@ remember and map onto their situation:
   reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
   span by ``LocalTransport._aux_runner_context``: a campaign gets one for its run, a preview
-  gets one held by the container-exec manager and reaped on idleness, and a local service
+  gets one held by the container-exec manager, idle only once every holder has released it
+  and reaped after that, and a local service
   needs none because ``docker`` on the host is the fallback. When none of those applies —
   composing in a process with no backend and no ``docker`` — the refusal is
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
@@ -276,10 +283,6 @@ must call the lister to learn the name the getter needs. So an **empty argument 
      - the group catalog / a group's plugins / a name search
    * - ``list_campaigns()`` / ``(running_only=True)``
      - every campaign / the live ones
-   * - ``describe_campaign_data(id)`` / ``(preflight_only=True)``
-     - the schema / just the fetch verdict, without reading it
-   * - ``delete_campaign(id)`` / ``(id, data_only=True)``
-     - remove the campaign / free only its object-store data
    * - ``nav_get_trajectory(…)`` / ``(…, stats_only=True)``
      - the points / distance, duration, speeds, bounding box
    * - ``nav_get_map_info(…)`` / ``(…, occupancy=True)``
@@ -411,17 +414,14 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
-A query never fetches a campaign
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A query costs the rows it touches
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Results live in a central index, so a query is answered there for every campaign, on both
-lanes. Nothing is materialized in the service to answer one: no first-query transfer, and no
-per-campaign database that has to exist before a question can be asked.
-
-``describe_campaign_data(preflight_only=True)`` therefore reports ``fetch_required: false``
-and ``transfer: none``, which is what "the question does not apply" looks like. It remains a
-cheap pre-flight worth calling before a batch of queries, and the ``fetch`` field on a query
-result reports the same — a client that used to explain a wait now has nothing to explain.
+lanes. Nothing is materialized in the service to answer one, and no per-campaign database
+has to exist before a question can be asked — so ``describe_campaign_data`` takes a
+campaign id and returns the schema, and a query result says what it matched and nothing
+about where it came from.
 
 Cost tracks the rows a query touches, not the rosbags beside them — the same rule
 ``read_file`` follows for ``/results``.
@@ -471,8 +471,8 @@ non-recursive by default (a campaign has one directory per configuration and one
 run) and report ``total`` when truncated, so you know to page. ``read_file`` returns
 text and refuses binary — fetch those over HTTP or with ``vast files get``.
 
-Writes are restricted to ``/sources``: campaign results are immutable, and on the
-cluster they are object-store objects that a local write could not change. Inline
+Writes are restricted to ``/sources``: campaign results are immutable — they are the
+record a figure is drawn over, and a rewritten one is a figure nobody can check. Inline
 writes accept only ``.vast``/``.osc``; everything else goes through ``create_upload``,
 so its bytes never enter the token stream.
 
@@ -558,8 +558,7 @@ next. It is deliberately not on every reply, since a field that always appears i
 one that stops being read.
 
 Results live
-wherever the service keeps them — local disk for a local ``vast serve``, the
-object store for a cluster service (retrieve via the web UI or
+wherever the service keeps them — its results root on either lane (retrieve via the web UI or
 ``get_campaign_download``, which hands back the route, the ``vast campaign download``
 command with the id filled in, and a URL when this deployment declares an origin to build
 one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
@@ -655,7 +654,7 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 .. note::
 
    ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current
-   usage — plus, where the lane can report them, its ``disk`` and results ``store``
+   usage — plus, where the lane can report them, its ``disk`` and ``results``
    filesystems — and a ``parallel_runs`` flag. The fields mean the same thing on either
    lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
    against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
@@ -675,12 +674,13 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    metrics-server cannot measure, saying which in ``metrics_unavailable`` — and ``null``
    never means zero.
 
-   ``storage_refusal`` is non-null while ``disk`` or ``store`` has less free space than the
+   ``storage_refusal`` is non-null while ``disk`` or ``results`` has less free space than the
    reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`). While
    it is set, ``start_campaign``, re-runs, image builds, imports and postprocessing are
-   refused with the same sentence; campaigns already running continue. Check it before a
-   sweep rather than learning it from the refusal. When clearing the service's caches would
-   help, the refusal's ``next_step`` is ``vast service cache --clear``.
+   refused with the same sentence; campaigns already running continue, but on a cluster start
+   no new Jobs below the reserve and say so in ``get_campaign_status``'s ``stage``. Check
+   it before a sweep rather than learning it from the refusal. When clearing the service's
+   caches would help, the refusal's ``next_step`` is ``vast service cache --clear``.
 
 
 .. _mcp-liveness:
@@ -770,7 +770,9 @@ reads the JSON, and keeps it for the length of one poll interval. So nothing run
 container between reads, nothing is emitted into any log, nothing is written into the results,
 and a campaign nobody is watching is never asked at all. N watchers cost one check per
 interval, and the read happens off the request thread — a wedged container cannot slow a
-status read even by its own timeout.
+status read even by its own timeout. Every running job that carries a run is asked, a
+node-calibration probe included: the read runs inside the simulator's container and counts
+against its memory, and a probe that was not asked would size the simulator without it.
 
 **The contract, and all of it.** A simulator's reply carries ``findings``, each
 
@@ -1169,9 +1171,9 @@ the service's default lane, the same rule ``start_campaign`` follows. Ask the la
 will *run* on: an image checked on one says nothing about the other. Both stage the
 project's ``/config`` and, when ``workspace_id`` is given, mount that workspace read-only
 at ``/sources/<workspace_id>`` — the same address, so a path returned by ``write_file`` is
-usable verbatim in the command either way. In-cluster the staging goes through the object
-store, exactly as a campaign job's does, so anything a campaign can stage this can stage
-too — there is no separate size ceiling to run into.
+usable verbatim in the command either way. In-cluster the staging is a tar stream from the
+service's data plane into the pod, exactly as a campaign job's inputs are, so anything a
+campaign can stage this can stage too — there is no separate size ceiling to run into.
 
 **A running campaign is never a target of this tool.** There is no way from here to a
 job's container or pod, and the argument for that has not changed: a campaign in flight is
@@ -1267,7 +1269,7 @@ What it keeps, and does not:
   the retained window, and the panel says so rather than claiming a month it does not have.
 * Rows go to the central index (:mod:`robovast.common.index_db`), buffered rather than written
   per call: a Postgres round-trip in front of every tool call would cost more than some of the
-  tools. They therefore survive a service restart but not the results store, which the index
+  tools. They therefore survive a service restart but not the results volume, which the index
   shares a lifetime with.
 
 **Recording never fails a tool call.** Every path in
