@@ -501,12 +501,13 @@ GIT_TOKEN_SECRET_ID = "git_token"
 
 
 def resolve_sidecar_image(explicit: str | None = None) -> str:
-    """Resolve the robovast-sidecar image (object-store init + postprocessing Job).
+    """Resolve the robovast-sidecar image: the data-plane transfers of every pod.
 
-    Resolved *inside* the service (the s3-init container, the mc-tools aux container,
-    the postprocessing Job, campaign Jobs and the image-build Job all call this from
-    there), so the project it uses is the one carried into the service pod's
-    environment — see :func:`~...service_deploy.service_manifests`.
+    Resolved *inside* the service (a campaign Job's ``fetch-inputs`` and ``uploader``
+    containers, an aux pod's transfer container, the postprocessing Job's ``stage``, and
+    the image-build Job's context fetch all call this from there), so the project it uses
+    is the one carried into the service pod's environment — see
+    :func:`~...service_deploy.service_manifests`.
     """
     return _resolve_image(MEMBER_SIDECAR, explicit=explicit, role="sidecar image")
 
