@@ -1,5 +1,8 @@
 """Declared markers resolve in Python as they do in the browser."""
 
+import pytest
+from pydantic import ValidationError
+
 from robovast.common.panel_bindings import declared_markers
 
 CONFIG = {
@@ -18,6 +21,24 @@ def test_a_literal_pose_is_drawn_where_it_says():
     assert m.model_dump(exclude_none=True) == {
         "kind": "pose", "pos": [-2.5, 0.0], "yaw": 0.0, "label": "start", "color": "#60a5fa",
         "group": "declared"}
+
+
+def test_a_pose_states_the_placement_as_the_rest_of_the_file_does():
+    [m] = declared_markers({"markers": [{"kind": "pose", "label": "goal",
+                                         "pose": {"position": {"x": 2.5, "y": 0.0},
+                                                  "orientation": {"yaw": 1.0}}}]}, CONFIG)
+    assert (m.pos, m.yaw, m.label) == ([2.5, 0.0], 1.0, "goal")
+    [m] = declared_markers({"markers": [{"kind": "pose", "pose": {"x": 1.0, "y": 2.0},
+                                         "offset": [1.0, 0.0]}]}, CONFIG)
+    assert m.pos == [2.0, 2.0]  # a bare position is a pose too, and the offset still applies
+
+
+def test_a_placement_is_stated_once():
+    with pytest.raises(ValidationError, match="drop 'pos'/'yaw'"):
+        declared_markers({"markers": [{"kind": "pose", "pose": {"x": 1.0, "y": 2.0},
+                                       "pos": [3.0, 4.0]}]}, CONFIG)
+    with pytest.raises(ValidationError, match="needs a position"):
+        declared_markers({"markers": [{"kind": "pose", "label": "nowhere"}]}, CONFIG)
 
 
 def test_a_param_marker_follows_the_configuration():

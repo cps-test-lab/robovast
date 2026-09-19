@@ -58,8 +58,8 @@ visualization:
         title: Map
         map: files/empty_room.yaml
         markers:
-        - {kind: pose, pos: [-2.5, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
-        - {kind: pose, pos: [2.5, 0.0], yaw: 0.0, label: goal, color: "#4ade80"}
+        - {kind: pose, pose: {position: {x: -2.5, y: 0.0}}, label: start, color: "#60a5fa"}
+        - {kind: pose, pose: {position: {x: 2.5, y: 0.0}}, label: goal, color: "#4ade80"}
   results:
     explorer:
       notebooks:

@@ -53,7 +53,7 @@ visualization:
         # MAP-frame -- this panel *is* the map -- so goal_pose needs no offset. The robot starts at
         # the map origin: gz spawns it at world (-8, 0) and map = world + (8, 0), which is also where
         # AMCL is seeded (files/nav2_params.yaml).
-        - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+        - {kind: pose, pose: {position: {x: 0.0, y: 0.0}}, label: start, color: "#60a5fa"}
         - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
     # Web Run view: replay one run over its rosbag timeline.

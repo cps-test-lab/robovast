@@ -93,7 +93,12 @@ class DeclaredMarker(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     kind: Literal[MARKER_KINDS]
-    #: ``[x, y]`` or ``[x, y, z]``, when the position is written out.
+    #: The placement, written out the way a ``.vast`` states one everywhere else:
+    #: ``{position: {x, y, z}, orientation: {yaw}}``, or a bare ``{x, y}``. Carries the yaw,
+    #: so it is stated instead of ``pos``/``yaw``, not beside them.
+    pose: Optional[dict] = None
+    #: ``[x, y]`` or ``[x, y, z]``: the same list :class:`SceneMarker` draws, for a marker
+    #: whose position is a bare point. ``pose`` is the fuller spelling.
     pos: Optional[list[float]] = None
     #: A resolved scenario parameter holding a pose, or a list of them (one marker each).
     param: Optional[str] = None
@@ -115,12 +120,19 @@ class DeclaredMarker(BaseModel):
     group: Optional[str] = None
 
     @model_validator(mode='after')
-    def _has_a_position_source(self):
-        sources = [k for k in ("pos", "param", "internal", "points") if getattr(self, k) is not None]
+    def _has_one_position_source(self):
+        sources = [k for k in ("pose", "pos", "param", "internal", "points")
+                   if getattr(self, k) is not None]
         if not sources:
             raise ValueError(
-                f"a declared {self.kind!r} marker needs a position: 'pos' (written out), 'param' / "
-                "'internal' (read from the configuration), or 'points' for a path")
+                f"a declared {self.kind!r} marker needs a position: 'pose' or 'pos' (written out), "
+                "'param' / 'internal' (read from the configuration), or 'points' for a path")
+        # A pose carries its own orientation, so stating one beside `pos`/`yaw` is two answers to
+        # one question -- the shape that lets a value be stated, ignored, and nothing raised.
+        if self.pose is not None and (self.pos is not None or self.yaw is not None):
+            raise ValueError(
+                "a declared marker states its placement once: 'pose' carries the position and the "
+                "yaw, so drop 'pos'/'yaw' beside it")
         return self
 
 
@@ -155,12 +167,15 @@ def declared_markers(bindings: Optional[dict], config: dict) -> list:
     out: list = []
     for entry in declared:
         marker = DeclaredMarker.model_validate(entry)
-        fields = marker.model_dump(exclude={"param", "internal", "offset"}, exclude_none=True)
+        fields = marker.model_dump(exclude={"pose", "param", "internal", "offset"},
+                                   exclude_none=True)
         fields.setdefault("group", "declared")
         if not marker.param and not marker.internal:
-            pos = _translate(marker.pos, marker.offset)
+            stated, yaw = read_pose(marker.pose) if marker.pose is not None else (marker.pos, None)
+            pos = _translate(stated, marker.offset)
             if marker.points if marker.kind == "path" else pos:
-                out.append(SceneMarker(**{**fields, "pos": pos}))
+                out.append(SceneMarker(**{**fields, "pos": pos,
+                                          "yaw": marker.yaw if marker.pose is None else yaw}))
             continue
         # `param:` and `internal:` are the same question -- where does this position come from.
         # A path reads the value as its polyline; every other kind reads it as a pose, and a list
