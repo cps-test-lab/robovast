@@ -1188,8 +1188,8 @@ resets it, and an upgrade prints every value it changes on the running daemon:
 Environment                           What it bounds                Default
 ====================================  ============================  ==========================
 ``ROBOVAST_BUILDKIT_CACHE_MAX``       the cache's size              ``150GB``
-``ROBOVAST_BUILDKIT_CACHE_MIN_FREE``  free space kept on its disk   the free-space reserve,
-                                                                    at least ``50GB``
+``ROBOVAST_BUILDKIT_CACHE_MIN_FREE``  free space kept on its disk   ``ROBOVAST_DISK_RESERVE_GB``
+                                                                    when set, at least ``50GB``
 ``ROBOVAST_BUILDKIT_CACHE_RESERVED``  cache kept even when old      ``100GB``
 ``ROBOVAST_BUILDKIT_MEMORY``          memory one build may use      ``16Gi``
 ``ROBOVAST_BUILDKIT_CPU``             CPU one build may use         ``8``
@@ -1204,8 +1204,8 @@ upgrade: write them into the ``.env`` first.
 **Size the cache for the disk it lands on.** The load-bearing setting is the free space it
 keeps: it is measured against the *filesystem*, so it prunes the cache long before an
 oversized ceiling is reached, and stops a full builder disk from becoming DiskPressure
-evictions on its node. Unset, it is the service's free-space reserve
-(``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`).
+evictions on its node. Unset, it is the service's free-space reserve where that is stated in
+gigabytes (``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`), and never below ``50GB``.
 
 **A build killed for memory** is reported as a ``resource`` failure fixable by ``infra``, not
 as a missing dependency: the daemon's ceilings are one build's ceilings. Raise

@@ -290,13 +290,15 @@ class ImageStoreUnavailable(RuntimeError):
 
 
 class InsufficientStorageError(ActionableError):
-    """Raised when new disk-consuming work is refused because free space is below the reserve.
+    """Raised when a write is refused because free space is below the reserve.
 
     Distinct from a write that already failed for lack of space (:func:`is_storage_full`):
-    this is the service declining to *start* something while it still has room to keep
-    running what it has -- see :mod:`robovast.service.storage_reserve`. Both reach an HTTP
-    caller as a 507; this one says which meter is short and by how much, and its
-    ``next_step`` is clearing the service cache when that would free something worth it.
+    this is RoboVAST declining a write while it still has room to keep running what it has --
+    new work the service would start, a fetch somebody is waiting on, or a paused download
+    whose campaign was stopped (see :mod:`robovast.common.disk_reserve`). Both reach an HTTP
+    caller as a 507; this one says which disk is short and by how much, and a refusal of new
+    work carries clearing the service cache as its ``next_step`` when that would free
+    something worth it.
 
     Not a ``RuntimeError``: nothing is in conflict, and a caller that maps a conflict to
     "wait for the other operation" would wait for something that will not finish.

@@ -1,12 +1,13 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""New disk-consuming work is refused below the free-space reserve; running work is not.
+"""The free-space reserve: new work is refused below it, and running downloads pause at it.
 
 A campaign, a re-run, an image build, an import and a postprocessing run each write an amount
-nobody knows beforehand. Started on a nearly full disk, one of them does not only fail itself:
-on a cluster it drives the node past the kubelet's eviction threshold and every pod there is
-evicted, the service included. So the service keeps a reserve -- and the refusal, the meters
-and the MCP tool must be one measurement, or a caller is refused while the meter looks fine.
+nobody knows beforehand. Written past what the disk can spare, one of them does not only fail
+itself: on a cluster it drives the node past the kubelet's eviction threshold and every pod
+there is evicted, the service included. So the service keeps a reserve -- the refusal, the
+meters and the MCP tool must be one measurement, and the download of a campaign already
+running must stop at the reserve rather than write through it.
 """
 
 from collections import namedtuple
@@ -15,12 +16,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.common.errors import InsufficientStorageError
-from robovast.service import storage_reserve
+from robovast.common import disk_reserve
 from robovast.service.app import build_app
 from robovast.service.interface import (DiskSpace, ImportCampaignRequest, ResourceUsage,
                                         RunPostprocessingRequest, Routes)
 from robovast.service.local_transport import LocalTransport
-from robovast.service.storage_reserve import RESERVE_ENV, reserve_gb, storage_refusal
+from robovast.common.disk_reserve import (DEFAULT_RESERVE_FRACTION, RESERVE_ENV,
+                                          configured_reserve_gb)
+from robovast.service.storage_reserve import storage_refusal
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 _GB = 1000 ** 3
@@ -39,17 +42,33 @@ def _usage(disk_free_gb=None, store_free_gb=None, **extra) -> ResourceUsage:
 
 # -- the setting -----------------------------------------------------------------------------
 
-def test_an_unset_reserve_keeps_none(monkeypatch):
-    """Only a disk's operator knows its eviction threshold; a fixed default would refuse every
-    campaign on a disk smaller than it -- a laptop's, a CI runner's."""
+def test_an_unset_reserve_is_a_fraction_of_the_disk(monkeypatch):
+    """Above the kubelet's default eviction threshold of 10%, on any size of disk: an absolute
+    default would sit below it on a large disk and refuse everything on a small one."""
     monkeypatch.delenv(RESERVE_ENV, raising=False)
-    assert reserve_gb() == 0
+    assert configured_reserve_gb() is None
+    assert DEFAULT_RESERVE_FRACTION > 0.10
+    refusal = storage_refusal(_usage(disk_free_gb=100))       # of 1000 GB
+    assert "below the 150 GB reserve" in refusal
+    assert "15% of that disk" in refusal and RESERVE_ENV in refusal
+    assert storage_refusal(_usage(disk_free_gb=200)) is None
+
+
+def test_a_reserve_of_zero_keeps_none(monkeypatch):
+    monkeypatch.setenv(RESERVE_ENV, "0")
     assert storage_refusal(_usage(disk_free_gb=1)) is None
 
 
 def test_a_stated_reserve_is_read_in_gigabytes(monkeypatch):
     monkeypatch.setenv(RESERVE_ENV, "150")
-    assert reserve_gb() == 150
+    assert configured_reserve_gb() == 150
+
+
+def test_the_suite_switches_off_the_variable_the_module_reads():
+    """The suite-wide fixture names the variable instead of importing it; this keeps the two
+    the same, or every test would silently depend on the host's free space again."""
+    import os
+    assert os.environ[RESERVE_ENV] == "0"
 
 
 @pytest.mark.parametrize("value", ["lots", "-5", "nan", "inf", "150GB"])
@@ -57,7 +76,7 @@ def test_a_malformed_reserve_fails_naming_the_variable(monkeypatch, value):
     """Falling back to none would leave unprotected the disk its operator meant to protect."""
     monkeypatch.setenv(RESERVE_ENV, value)
     with pytest.raises(ValueError, match=RESERVE_ENV):
-        reserve_gb()
+        configured_reserve_gb()
 
 
 # -- the verdict -----------------------------------------------------------------------------
@@ -212,12 +231,13 @@ def test_a_refused_launch_is_a_507_carrying_the_sentence(transport, monkeypatch)
 
 def test_the_setting_is_reported_with_its_default():
     from robovast.service.settings_report import KNOWN
-    assert KNOWN[storage_reserve.RESERVE_ENV].default == "0"
+    assert KNOWN[disk_reserve.RESERVE_ENV].default == "15% of the disk"
 
 
 def test_no_reserve_reads_nothing(transport, monkeypatch):
-    """Unset, the admission costs nothing -- on a cluster a reading is several API calls."""
-    monkeypatch.delenv(RESERVE_ENV)
+    """Switched off, the admission costs nothing -- on a cluster a reading is several API
+    calls."""
+    monkeypatch.setenv(RESERVE_ENV, "0")
 
     def unreadable():
         raise AssertionError("no reserve, so nothing to read")
@@ -241,3 +261,160 @@ def test_a_malformed_reserve_fails_the_operation_loudly(transport, monkeypatch):
     monkeypatch.setenv(RESERVE_ENV, "plenty")
     with pytest.raises(ValueError, match=RESERVE_ENV):
         transport.create_archive_upload()
+
+
+# -- running work pauses at the reserve ------------------------------------------------------
+
+class _Disk:
+    """A filesystem whose free space the test sets, read the way ``psutil.disk_usage`` is."""
+
+    Usage = namedtuple("Usage", "total used free percent")
+
+    def __init__(self, free_gb, capacity_gb=1000):
+        self.free_gb = free_gb
+        self.capacity_gb = capacity_gb
+        self.paths = []
+
+    def __call__(self, path):
+        self.paths.append(path)
+        free = int(self.free_gb * _GB)
+        return self.Usage(self.capacity_gb * _GB, self.capacity_gb * _GB - free, free, 0.0)
+
+
+@pytest.fixture(name="disk")
+def _disk(monkeypatch):
+    import psutil
+
+    disk = _Disk(free_gb=400)
+    monkeypatch.setattr(psutil, "disk_usage", disk)
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    return disk
+
+
+def test_a_download_with_room_does_not_wait(disk, tmp_path):
+    def sleep(_s):
+        raise AssertionError("room enough, so nothing to wait for")
+
+    disk_reserve.wait_for_room(tmp_path, action="Batch b's download", sleep=sleep)
+
+
+def test_a_download_at_the_reserve_pauses_until_space_is_freed(disk, tmp_path, caplog):
+    caplog.set_level("INFO", logger=disk_reserve.__name__)
+    disk.free_gb = 90
+    said = []
+
+    def sleep(_s):
+        disk.free_gb += 50              # somebody deletes a campaign
+    disk_reserve.wait_for_room(tmp_path, action="Batch b's download",
+                                  on_pause=said.append, sleep=sleep)
+    assert disk.free_gb >= 150
+    # The pause is put where a person looks, with the amounts, and taken down again.
+    assert said[0].startswith("Batch b's download paused: the service's disk has 90 GB free")
+    assert "150 GB reserve" in said[0]
+    assert said[-1] is None
+    assert "Batch b's download paused" in caplog.text
+    assert "resumed" in caplog.text
+
+
+def test_a_stop_ends_the_pause(disk, tmp_path):
+    """A stopped campaign must not sit waiting for space it no longer needs."""
+    disk.free_gb = 90
+    with pytest.raises(InsufficientStorageError, match="stopped while paused"):
+        disk_reserve.wait_for_room(tmp_path, action="Batch b's download",
+                                      should_stop=lambda: True, sleep=lambda _s: None)
+
+
+def test_the_pause_is_between_files(disk, tmp_path):
+    """``download_prefix`` calls ``on_file`` after each file, so the next one waits."""
+    order = []
+    disk.free_gb = 90
+
+    def sleep(_s):
+        order.append("waited")
+        disk.free_gb = 400
+
+    callback = disk_reserve.pausing(tmp_path, action="a download",
+                                       on_file=lambda: order.append("counted"), sleep=sleep)
+    callback()
+    assert order == ["counted", "waited"]
+
+
+def test_the_disk_measured_is_the_one_written_to(disk, tmp_path):
+    """A download creates its destination, so the nearest existing ancestor is measured."""
+    disk_reserve.wait_for_room(tmp_path / "camp" / "_jobs", action="a download")
+    assert disk.paths == [str(tmp_path)]
+
+
+def test_a_fetch_somebody_waits_on_is_refused_not_paused(disk, tmp_path):
+    disk.free_gb = 90
+    with pytest.raises(InsufficientStorageError,
+                       match="Cannot fetch campaign c: the service's disk has 90 GB free"):
+        disk_reserve.require_room(tmp_path, action="fetch campaign c")
+
+
+def test_no_reserve_never_pauses(disk, tmp_path, monkeypatch):
+    monkeypatch.setenv(RESERVE_ENV, "0")
+    disk.free_gb = 0
+    disk_reserve.wait_for_room(tmp_path, action="a download",
+                                  sleep=lambda _s: pytest.fail("no reserve, no pause"))
+
+
+def test_the_cluster_backend_puts_the_pause_on_the_campaigns_status():
+    """The stage is what ``get_campaign_status`` and the web UI show; the stop is the runs'."""
+    from robovast.execution.cluster_execution.kubernetes_backend import _disk_pause_kwargs
+
+    class State:
+        stage = "running"
+        stop_requested = False
+
+        def update(self, **fields):
+            self.stage = fields["stage"]
+
+    state = State()
+    pause = _disk_pause_kwargs(state)
+    pause["on_pause"]("paused: short of disk")
+    assert state.stage == "paused: short of disk"
+    pause["on_pause"](None)
+    assert state.stage is None
+    assert pause["should_stop"]() is False
+    state.stop_requested = True
+    assert pause["should_stop"]() is True
+    assert _disk_pause_kwargs(None) == {}
+
+
+def test_postprocessing_outputs_wait_for_room_before_each_file(disk, tmp_path, monkeypatch):
+    from robovast.execution.cluster_execution import in_pod_storage
+    from robovast.execution.cluster_execution import postprocess_job as pj
+
+    written = []
+
+    class Store:
+        def download_prefix(self, bucket, prefix, local_dir, force=False, on_file=None, **_):
+            return 0
+
+        def read_object(self, bucket, key):
+            return b"a.csv\nb.csv\n"
+
+        def stat_object(self, bucket, key):
+            return None
+
+        def download_object(self, bucket, key, dst):
+            written.append((disk.free_gb, key.rsplit("/", 1)[-1]))
+            disk.free_gb -= 30              # each output takes 30 GB
+            return True
+
+        def delete_prefix(self, bucket, prefix):
+            return 0
+
+    monkeypatch.setattr(in_pod_storage, "campaign_storage_location", lambda _c, _i: ("b", "p/"))
+    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda _c: Store())
+    monkeypatch.setattr(pj, "_manifest_paths", lambda _m: ["a.csv", "b.csv"])
+    disk.free_gb = 170
+
+    def sleep(_s):
+        disk.free_gb = 400
+
+    monkeypatch.setattr(disk_reserve.time, "sleep", sleep)
+    pj.sync_outputs(object(), "camp", str(tmp_path))
+    # a.csv fitted; b.csv would have taken the disk to 110 GB, so it waited for room first.
+    assert written == [(170, "a.csv"), (400, "b.csv")]

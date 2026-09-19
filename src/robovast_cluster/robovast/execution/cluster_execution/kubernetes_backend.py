@@ -79,6 +79,7 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        job_artifact_rel, node_label, read_job_links,
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
+from robovast.common.disk_reserve import pausing, wait_for_room
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
                                          RunOptions, ShareStopped)
@@ -132,6 +133,19 @@ def _download_progress_logger(batch_tag, interval=_DOWNLOAD_PROGRESS_INTERVAL):
                         batch_tag, state["count"])
 
     return on_file
+
+
+def _disk_pause_kwargs(state) -> dict:
+    """How a download into the service's disk pauses: on the campaign's own status.
+
+    The pause is put on *state*'s ``stage``, which is what a person watching the campaign reads,
+    and cleared when it ends; a stop of the campaign's runs ends it. With no controller state (a
+    backend driven outside the service) the pause is only logged.
+    """
+    if state is None:
+        return {}
+    return {"on_pause": lambda message: state.update(stage=message),
+            "should_stop": lambda: state.stop_requested}
 
 
 def pull_policy_for(image_ref: str) -> str:
@@ -3383,7 +3397,13 @@ class BatchJobRunner:
         # the campaign log shows progress instead of appearing hung.
         logger.info("Batch %s: downloading result files from object store...",
                     self._batch_tag)
-        on_file = _download_progress_logger(self._batch_tag)
+        # The largest write the service makes, into its own disk: it pauses between files
+        # rather than take the node past its eviction threshold (see disk_reserve).
+        action = f"Batch {self._batch_tag}'s result download"
+        wait_for_room(campaign_root, action=action, **_disk_pause_kwargs(self._state))
+        on_file = pausing(campaign_root, action=action,
+                          on_file=_download_progress_logger(self._batch_tag),
+                          **_disk_pause_kwargs(self._state))
         # The 3s run-progress poller lists the whole campaign prefix over this same
         # (off-cluster) storage tunnel; pause it for the duration of the download so
         # the transfer runs uncontended. Resumed in the finally so a download error
@@ -3991,10 +4011,14 @@ class KubernetesBackend(ExecutionBackend):
         # (`count_pending`), which `download_prefix` otherwise skips. Worth it here and
         # nowhere else in this class: this transfer runs once per resumed campaign, takes
         # minutes, and a bare running count cannot say whether it is near done.
+        action = f"Restoring campaign {campaign_id}'s root"
+        wait_for_room(campaign_root, action=action, **_disk_pause_kwargs(self._state))
         n = storage.download_prefix(
             bucket, prefix, campaign_root,
-            on_file=in_pod_storage.download_progress_logger(
-                f"Campaign {campaign_id} (completing root)"),
+            on_file=pausing(campaign_root, action=action,
+                            on_file=in_pod_storage.download_progress_logger(
+                                f"Campaign {campaign_id} (completing root)"),
+                            **_disk_pause_kwargs(self._state)),
             on_progress=in_pod_storage.download_progress_reporter(on_change))
         if n:
             logger.info("Completed campaign root for %s with %d file(s) from %s/%s "
