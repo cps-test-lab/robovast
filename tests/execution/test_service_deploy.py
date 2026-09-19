@@ -11,6 +11,7 @@ the cluster e2e path, not here.
 
 import pytest
 
+from robovast.execution.cluster_execution import front_deploy
 from robovast.execution.cluster_execution import service_deploy as sd
 
 
@@ -34,6 +35,7 @@ def test_manifests_have_expected_kinds_and_names():
         # Cluster-scoped read for the /usage endpoint (nodes are not namespaced).
         ("ClusterRole", f"{sd.SERVICE_ACCOUNT}-usage-default"),
         ("ClusterRoleBinding", f"{sd.SERVICE_ACCOUNT}-usage-default"),
+        ("ConfigMap", front_deploy.FRONT_CONFIGMAP_NAME),
         ("Deployment", sd.SERVICE_NAME),
         ("Service", sd.SERVICE_NAME),
     ]
@@ -232,21 +234,71 @@ def test_workspace_store_honours_an_explicitly_configured_root():
     assert roots == [{"name": sd.WORKSPACES_ROOT_ENV, "value": "/somewhere/else"}]
 
 
-def test_deployment_runs_vast_serve_on_service_port():
+def test_deployment_runs_vast_serve_behind_the_front_on_one_port():
+    """Three containers, one port: the front owns it and the two planes sit on sockets.
+
+    The control plane never binds the port -- a `--host`/`--port` here would race the
+    front for it -- and the data plane runs the same image with the results volume and
+    the auth Secret alone, so a pod's upload verifies against the same secret without
+    the data container learning anything else the control plane is given.
+    """
     ms = sd.service_manifests(namespace="ns1", image="example/robovast:test")
     dep = next(m for m in ms if m["kind"] == "Deployment")
-    container = dep["spec"]["template"]["spec"]["containers"][0]
-    assert container["image"] == "example/robovast:test"
-    assert container["command"] == ["vast", "serve", "--host", "0.0.0.0",
-                                    "--port", str(sd.SERVICE_PORT),
-                                    "--results-dir", sd.RESULTS_DATA_DIR]
-    assert container["ports"][0]["containerPort"] == sd.SERVICE_PORT
-    assert container["readinessProbe"]["httpGet"]["path"] == "/healthz"
+    pod = dep["spec"]["template"]["spec"]
+    by_name = {c["name"]: c for c in pod["containers"]}
+    assert list(by_name) == [sd.SERVICE_NAME, front_deploy.DATA_CONTAINER_NAME,
+                             front_deploy.FRONT_CONTAINER_NAME]
+
+    control = by_name[sd.SERVICE_NAME]
+    assert control["image"] == "example/robovast:test"
+    assert control["command"] == ["vast", "serve", "--uds", front_deploy.SERVICE_SOCKET,
+                                  "--results-dir", sd.RESULTS_DATA_DIR]
+    assert "ports" not in control
+    assert control["readinessProbe"]["exec"]["command"][-1] == "http://robovast/healthz"
+
+    data = by_name[front_deploy.DATA_CONTAINER_NAME]
+    assert data["image"] == "example/robovast:test"
+    assert data["command"] == ["vast", "serve-data", "--uds", front_deploy.DATA_SOCKET,
+                               "--results-dir", sd.RESULTS_DATA_DIR]
+    assert {m["name"] for m in data["volumeMounts"]} == {sd.RESULTS_VOLUME_NAME,
+                                                         front_deploy.SOCKET_VOLUME_NAME}
+    assert data["envFrom"] == [{"secretRef": {"name": sd.AUTH_SECRET_NAME}}]
+    assert "env" not in data
+
+    front = by_name[front_deploy.FRONT_CONTAINER_NAME]
+    assert front["ports"] == [{"containerPort": sd.SERVICE_PORT, "name": "http"}]
+    assert front["readinessProbe"]["httpGet"] == {"path": "/healthz", "port": sd.SERVICE_PORT}
+    # The one port is the Service's target, by the name the front gives it.
+    service = next(m for m in ms if m["kind"] == "Service")
+    assert service["spec"]["ports"] == [{"port": sd.SERVICE_PORT, "targetPort": "http",
+                                         "name": "http"}]
+    # The sockets live in memory and the front's config is the rendered ConfigMap.
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes[front_deploy.SOCKET_VOLUME_NAME]["emptyDir"] == {"medium": "Memory"}
+    assert volumes[front_deploy.FRONT_CONFIGMAP_NAME]["configMap"]["name"] == \
+        front_deploy.FRONT_CONFIGMAP_NAME
     # binds to the service account that can launch controllers
-    assert dep["spec"]["template"]["spec"]["serviceAccountName"] == sd.SERVICE_ACCOUNT
+    assert pod["serviceAccountName"] == sd.SERVICE_ACCOUNT
     # namespace threaded through every object
     assert all(m["metadata"].get("namespace", "ns1") == "ns1"
                for m in ms if m["kind"] != "ClusterRole")
+
+
+def test_the_front_routes_the_data_prefix_to_the_data_socket():
+    """The rendered nginx config names both sockets and sends `/data/` to the data plane
+    unbuffered: an upload that was spooled through the front's disk first would double
+    the write and hold the response back by the whole transfer."""
+    from robovast.service.interface import Routes
+    ms = sd.service_manifests(namespace="default", image="x")
+    cm = next(m for m in ms if m["kind"] == "ConfigMap")
+    config = cm["data"][front_deploy.FRONT_CONFIG_KEY]
+    assert f"unix:{front_deploy.SERVICE_SOCKET}" in config
+    assert f"unix:{front_deploy.DATA_SOCKET}" in config
+    assert f"listen {sd.SERVICE_PORT};" in config
+    data_block = config[config.index(f"location {Routes.DATA}/"):config.index("location / ")]
+    assert "proxy_request_buffering off;" in data_block
+    assert "proxy_buffering off;" in data_block
+    assert "client_max_body_size 0;" in config
 
 
 def test_deploy_context_stamped_into_service_env():
@@ -578,8 +630,7 @@ def test_startup_probe_gives_a_resume_room_before_liveness_kills_it():
     container = next(m for m in ms if m["kind"] == "Deployment")[
         "spec"]["template"]["spec"]["containers"][0]
     startup = container["startupProbe"]
-    assert startup["httpGet"]["path"] == "/healthz"
-    assert startup["httpGet"]["port"] == sd.SERVICE_PORT
+    assert startup["exec"] == front_deploy.socket_probe(front_deploy.SERVICE_SOCKET)["exec"]
 
     liveness = container["livenessProbe"]
     liveness_budget = (liveness["initialDelaySeconds"]

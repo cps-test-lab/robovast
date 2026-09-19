@@ -44,7 +44,11 @@ def test_the_registry_runs_in_the_store_pod_not_the_service_pod():
     service_pod = sd._deployment_manifest(
         "default", "img:latest")["spec"]["template"]["spec"]
     # Exhaustive on purpose: a container appearing here unnoticed is a pod nobody sized.
-    assert [c["name"] for c in service_pod["containers"]] == [sd.SERVICE_NAME]
+    # The three that are here are the service's own processes and its front, each sized
+    # in service_deploy / front_deploy.
+    from robovast.execution.cluster_execution import front_deploy
+    assert [c["name"] for c in service_pod["containers"]] == [
+        sd.SERVICE_NAME, front_deploy.DATA_CONTAINER_NAME, front_deploy.FRONT_CONTAINER_NAME]
 
     assert [c["name"] for c in _pod()["containers"]] == [
         "minio", rd.REGISTRY_CONTAINER_NAME, "index"]

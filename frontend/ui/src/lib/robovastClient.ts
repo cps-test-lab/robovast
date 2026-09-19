@@ -502,11 +502,10 @@ export const robovast = {
   upgradeService: (force: boolean) =>
     request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
 
-  // Direct URL of a campaign's tar.gz (a GET the browser downloads). Both lanes answer
-  // it: a cluster service streams it from the object store, a local one tars its own
-  // results directory.
+  // Direct URL of a campaign's tar.gz (a GET the browser downloads), on the data plane:
+  // the service tars its results directory into the response, on either lane.
   archiveUrl: (campaignId: string) =>
-    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/archive`,
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
 
   // What the configured share holds, read by the service with its own credentials --
   // a browser has none. `configured: false` means this service has no share at all,

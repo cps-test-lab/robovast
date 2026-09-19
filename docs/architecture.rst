@@ -640,7 +640,7 @@ Data flow and result access
 
 For cluster campaigns, results live in the **object store** (the durable home);
 the service is a stateless gateway that streams finished campaigns from it —
-``GET /campaigns/{id}/archive`` tars the campaign's objects **on the fly** into the
+``GET /data/campaigns/{id}/archive`` tars the campaign's objects **on the fly** into the
 response (no scratch on the service, nothing buffered in memory), which is what
 ``vast campaign download`` and the web UI **Download** button use. A local ``vast
 serve`` answers the same route by tarring its own directory: the durable home differs,

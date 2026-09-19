@@ -2354,7 +2354,7 @@ and re-triggering uploads to a different provider.
 
 A re-trigger runs in the **service**, not the driver, and stages nothing on the way: the
 campaign's objects are tarred straight out of the object store into the provider's
-request body, the same no-scratch path that serves ``GET /campaigns/{id}/archive``. Only
+request body, the same no-scratch path that serves ``GET /data/campaigns/{id}/archive``. Only
 the campaign's small status objects (``_execution/outcome.json``, ``_execution/data.db``,
 ``campaign.db``) are pulled down, because the outcome is edited and published back. The
 variant is read off what is there, so a campaign that has since been postprocessed goes

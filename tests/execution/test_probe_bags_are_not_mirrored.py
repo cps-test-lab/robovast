@@ -8,8 +8,8 @@ it cannot convert, cannot fail on, and does not pay to download.
 """
 
 from robovast.common.campaign_data import PROBE_DIR
-from robovast.execution.cluster_execution.postprocess_stage import (BAG_DIR_NAMES,
-                                                                    build_include)
+from robovast.execution.campaign_archive import BAG_DIR_NAMES
+from robovast.execution.cluster_execution.postprocess_stage import build_include
 
 
 def test_the_probe_directory_is_never_staged():
@@ -92,7 +92,7 @@ def test_the_log_this_attempt_writes_is_not_staged_back_into_it():
     before it. It is also where the running Job's log is published, so staging it back would
     fold this attempt's own head into itself.
     """
-    from robovast.execution.cluster_execution.postprocess_stage import NOT_STAGED_LOG
+    from robovast.execution.campaign_archive import NOT_STAGED_LOG
 
     for skip_bags in (False, True):
         include = build_include(skip_bags=skip_bags)
@@ -108,12 +108,12 @@ def test_the_finished_log_sections_are_not_staged_either():
     streams it. Nothing in the pod produces or consumes one, so staging them would transfer
     bytes it cannot use and hand the tail upload a second copy to publish.
     """
-    from robovast.execution.cluster_execution.postprocess_stage import not_staged_sections
+    from robovast.common.campaign_logs import SECTIONS_DIR
 
     include = build_include(skip_bags=False)
 
-    assert not include(f"{not_staged_sections()}0001-postprocessing.log")
-    assert not include(f"{not_staged_sections()}0002-share.log")
+    assert not include(f"_execution/{SECTIONS_DIR}/0001-postprocessing.log")
+    assert not include(f"_execution/{SECTIONS_DIR}/0002-share.log")
     assert include("_execution/execution.yaml")
 
 

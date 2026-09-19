@@ -423,11 +423,16 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     what makes every deploy roll. Pass a fixed value to compare two manifests without the
     timestamp being the difference.
 
-    **One container.** The registry and the campaign index used to ride along here and now
+    **Three containers, one port.** The control plane (``vast serve``) and the data plane
+    (``vast serve-data``, the tar streams pods exchange with the service) are two
+    processes on Unix sockets, and an nginx front owns :data:`SERVICE_PORT` and routes
+    between them -- see :mod:`.front_deploy` for why. The registry and the campaign index
     live in the ``robovast`` pod (:mod:`.store_pod`): they are cluster-lifetime
-    infrastructure, and this Deployment is rolled by every upgrade. What is left in this
-    pod is the service and the two volumes only the service uses.
+    infrastructure, and this Deployment is rolled by every upgrade. Every container here
+    goes with an upgrade, and none carries state that should not.
     """
+    from . import front_deploy  # pylint: disable=import-outside-toplevel
+
     if restarted_at is None:
         restarted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     container = {
@@ -438,21 +443,21 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
         # <workspaces_root>/../results, which resolved one directory OUTSIDE the only mount
         # this pod had. See RESULTS_VOLUME_NAME.
         "command": ["vast", "serve",
-                    "--host", "0.0.0.0", "--port", str(SERVICE_PORT),
+                    "--uds", front_deploy.SERVICE_SOCKET,
                     "--results-dir", RESULTS_DATA_DIR],
-        "ports": [{"containerPort": SERVICE_PORT, "name": "http"}],
         "env": list(env or []),
         "resources": SERVICE_RESOURCES,
+        # The probes reach the process over its socket: the pod's port is the front's.
         "readinessProbe": {
-            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            **front_deploy.socket_probe(front_deploy.SERVICE_SOCKET),
             "initialDelaySeconds": 5, "periodSeconds": 10},
         "livenessProbe": {
-            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            **front_deploy.socket_probe(front_deploy.SERVICE_SOCKET),
             "initialDelaySeconds": 15, "periodSeconds": 20},
         # Holds the two probes above off until the service actually answers; see
         # STARTUP_PROBE_PERIOD_SECONDS for why the budget is measured in minutes.
         "startupProbe": {
-            "httpGet": {"path": "/healthz", "port": SERVICE_PORT},
+            **front_deploy.socket_probe(front_deploy.SERVICE_SOCKET),
             "initialDelaySeconds": 5,
             "periodSeconds": STARTUP_PROBE_PERIOD_SECONDS,
             "failureThreshold": STARTUP_PROBE_FAILURE_THRESHOLD},
@@ -466,15 +471,41 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     container["volumeMounts"] = [{"name": WORKSPACES_VOLUME_NAME,
                                   "mountPath": WORKSPACES_DATA_DIR},
                                  {"name": RESULTS_VOLUME_NAME,
-                                  "mountPath": RESULTS_DATA_DIR}]
+                                  "mountPath": RESULTS_DATA_DIR},
+                                 {"name": front_deploy.SOCKET_VOLUME_NAME,
+                                  "mountPath": front_deploy.SOCKET_DIR}]
+    # The data plane: the same image, the results volume, the auth Secret and nothing
+    # else -- no workspaces, no cluster config, no credentials of any other kind. It
+    # verifies the control plane's tokens with the shared secret and reads the tree.
+    data = {
+        "name": front_deploy.DATA_CONTAINER_NAME,
+        "image": image,
+        "imagePullPolicy": "Always",
+        "command": ["vast", "serve-data",
+                    "--uds", front_deploy.DATA_SOCKET,
+                    "--results-dir", RESULTS_DATA_DIR],
+        "resources": front_deploy.DATA_RESOURCES,
+        "envFrom": [{"secretRef": {"name": AUTH_SECRET_NAME}}],
+        "volumeMounts": [{"name": RESULTS_VOLUME_NAME, "mountPath": RESULTS_DATA_DIR},
+                         {"name": front_deploy.SOCKET_VOLUME_NAME,
+                          "mountPath": front_deploy.SOCKET_DIR}],
+        "readinessProbe": {
+            **front_deploy.socket_probe(front_deploy.DATA_SOCKET),
+            "initialDelaySeconds": 5, "periodSeconds": 10},
+        "livenessProbe": {
+            **front_deploy.socket_probe(front_deploy.DATA_SOCKET),
+            "initialDelaySeconds": 15, "periodSeconds": 20},
+    }
     pod_spec = {
         "serviceAccountName": SERVICE_ACCOUNT,
-        "containers": [container],
+        "containers": [container, data, front_deploy.front_container(SERVICE_PORT)],
         "volumes": [
             workspaces_volume(workspaces_storage_path, workspaces_storage_class),
             # Backed like the workspaces store, deliberately -- see results_volume().
             results_volume(_results_host_path(workspaces_storage_path),
-                           workspaces_storage_class)],
+                           workspaces_storage_class),
+            front_deploy.socket_volume(),
+            front_deploy.front_config_volume()],
     }
     if node_selector:
         pod_spec["nodeSelector"] = dict(node_selector)
@@ -542,7 +573,7 @@ def _service_manifest(namespace, ingress_class=""):
             # Ingress rule points at. The published hostname and every image ref built
             # from it are unchanged -- one Ingress may front two Services.
             "ports": [
-                {"port": SERVICE_PORT, "targetPort": SERVICE_PORT, "name": "http"},
+                {"port": SERVICE_PORT, "targetPort": "http", "name": "http"},
             ],
         },
     }
@@ -2181,9 +2212,11 @@ def service_manifests(namespace="default", image=None, env=None,
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
                                 insecure=insecure_http)
+    from . import front_deploy  # pylint: disable=import-outside-toplevel
     return [
         *_service_rbac_manifests(namespace),
         *extra,
+        front_deploy.front_configmap_manifest(namespace, SERVICE_PORT),
         _deployment_manifest(namespace, image, env=env, git_secret=have_git_secret,
                              env_secret_names=env_secret_names,
                              pull_secret=pull_secret,

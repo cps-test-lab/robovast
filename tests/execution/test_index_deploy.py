@@ -39,7 +39,8 @@ def test_the_index_runs_in_the_store_pod_not_the_service_pod():
     controller image. The store pod is created once at setup, is node-pinned, and already
     holds the campaign data these rows index.
     """
-    assert [c["name"] for c in _pod_spec()["containers"]] == [service_deploy.SERVICE_NAME]
+    assert index_deploy.INDEX_CONTAINER_NAME not in [
+        c["name"] for c in _pod_spec()["containers"]]
     assert index_deploy.INDEX_CONTAINER_NAME in [
         c["name"] for c in _store_pod_spec()["containers"]]
 

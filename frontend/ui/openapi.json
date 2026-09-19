@@ -2263,6 +2263,35 @@
         "title": "MigrationMarker",
         "type": "object"
       },
+      "OutputsIngested": {
+        "description": "What a streamed tar of outputs left in a campaign or a staged slot.",
+        "properties": {
+          "bytes": {
+            "default": 0,
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "files": {
+            "default": 0,
+            "title": "Files",
+            "type": "integer"
+          },
+          "refused": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Refused",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bytes",
+          "files",
+          "refused"
+        ],
+        "title": "OutputsIngested",
+        "type": "object"
+      },
       "PanelsSource": {
         "description": "The run-view ``visualization:`` block as editable YAML text.",
         "properties": {
@@ -5466,47 +5495,6 @@
         ]
       }
     },
-    "/campaigns/{campaign_id}/archive": {
-      "get": {
-        "description": "Stream a ``tar.gz`` of the campaign, on either lane.\n\nBacks ``vast campaign download`` and the web UI's download button. What comes\nout is the campaign as this service holds it -- postprocessed if it has been,\nraw if it has not, and a campaign whose postprocessing failed downloads like any\nother: derived data is an addition to a campaign, never the condition for reading\none, so nothing on this path waits on it. Internal ``_postproc/`` staging is\nexcluded so the archive is the clean campaign layout.\n\nNothing is buffered and no scratch is used, on either lane: the cluster fetches\nobjects from the store and tars them on the fly, the local lane tars its own\ndirectory into the response. Decisive for ~1TB campaigns.\n\nRefusing this on a local service with a 409 -- \"the results are already on this\nhost's filesystem\" -- asserts something true of a caller on that host and false\nof everyone else: a ``vast serve`` reached over the network could not be\ndownloaded from at all, and the web UI would have to hide its own button on that\nlane. The lane is not what decides whether a caller can read a file.",
-        "operationId": "download_campaign_archive_campaigns__campaign_id__archive_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "campaign_id",
-            "required": true,
-            "schema": {
-              "title": "Campaign Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Download Campaign Archive",
-        "tags": [
-          "results"
-        ]
-      }
-    },
     "/campaigns/{campaign_id}/costmap": {
       "get": {
         "operationId": "route_campaigns__campaign_id__costmap_get",
@@ -7518,6 +7506,266 @@
         "summary": "Get Config Schema",
         "tags": [
           "authoring"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/archive": {
+      "get": {
+        "description": "Stream a ``tar.gz`` of the campaign.\n\nBacks ``vast campaign download``, the web UI's download button and the\npostprocessing pod's stage. What comes out is the campaign as this service holds\nit -- postprocessed if it has been, raw if it has not; derived data is an addition\nto a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and\n``batch_jobs`` narrow it to what a postprocessing pod reads\n(:class:`ArchiveSelection`).\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Stage",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "skip_bags",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Skip Bags",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "batch_jobs",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Batch Jobs",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Campaign Archive",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/inputs": {
+      "get": {
+        "description": "Stream the tar a job pod extracts into its ``/config``.\n\n``config_file`` names a cell's own input as ``<config_name>:<rel>``, repeated\nonce per file; each lands at ``<rel>`` on top of the campaign's copy.",
+        "operationId": "download_campaign_inputs_data_campaigns__campaign_id__inputs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "config_file",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Config File",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Campaign Inputs",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/outputs": {
+      "put": {
+        "description": "Take a tar of run outputs into the campaign. Streamed, never buffered.\n\nA campaign that is not here is a 404, reached before any member is written: the\nsource resolves the directory before it reads the stream.",
+        "operationId": "upload_campaign_outputs_data_campaigns__campaign_id__outputs_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputsIngested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Campaign Outputs",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/staged/{slot}": {
+      "get": {
+        "description": "Stream a staged slot, or *path* within it, as a ``tar.gz``.",
+        "operationId": "download_staged_data_staged__slot__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot",
+            "required": true,
+            "schema": {
+              "title": "Slot",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Staged",
+        "tags": [
+          "data"
+        ]
+      },
+      "put": {
+        "description": "Take a tar into the staged slot *slot*, creating it.",
+        "operationId": "upload_staged_data_staged__slot__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot",
+            "required": true,
+            "schema": {
+              "title": "Slot",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputsIngested"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Staged",
+        "tags": [
+          "data"
         ]
       }
     },
