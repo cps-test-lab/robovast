@@ -1224,3 +1224,91 @@ def test_a_stated_floor_is_read_off_the_containers_own_block():
     runner = kb.BatchJobRunner.__new__(kb.BatchJobRunner)
     settings = runner._calibration_settings(container)
     assert settings["min"] == {"memory": "1Gi", "cpu": 3}
+
+
+# -- a probe the batch can no longer use ------------------------------------------------
+
+
+def _probing_runner(probes, admission=None, applies=True):
+    """A runner with outstanding probes and nothing else it needs."""
+    import types
+
+    r = kb.BatchJobRunner()
+    r.campaign = "camp-1"
+    r._batch_tag = "batch-0"
+    r._calibration_applies = applies
+    r._probes = dict(probes)
+    r.admission = admission
+    r.deleted, r.freed = [], []
+    r._calibration = types.SimpleNamespace(
+        outcome=lambda: {"calibrated": [], "skipped": {}},
+        abandon=lambda node_id, key: r.freed.append((node_id, key)))
+    r._delete_job = lambda name: r.deleted.append(name)
+    return r
+
+
+class _Queue:
+    """The queue's side of dropping what it has not created."""
+
+    def __init__(self, planned=()):
+        self.planned = list(planned)
+        self.asked = []
+
+    def drop_planned(self, owner):
+        self.asked.append(owner)
+        dropped, self.planned = self.planned, []
+        return dropped
+
+
+def test_an_abandoned_probe_is_deleted_rather_than_left_to_its_deadline():
+    """A probe is pinned, so one still running holds its node against every other campaign
+    until its own activeDeadlineSeconds -- a trial's outer backstop, many times a trial --
+    while nothing is left that will read what it measures."""
+    r = _probing_runner({"probe-a": "n1", "probe-b": "n2"})
+    assert r.abandon_outstanding_probes() == 2
+    assert sorted(r.deleted) == ["probe-a", "probe-b"]
+    assert sorted(r.freed) == [("n1", "probe-a"), ("n2", "probe-b")] and not r._probes
+
+
+def test_abandoning_survives_a_probe_that_cannot_be_deleted():
+    """This runs in the batch's `finally`: a raise here would replace the reason the
+    campaign is unwinding with a consequence of it."""
+    r = _probing_runner({"probe-a": "n1"})
+    r._delete_job = lambda name: (_ for _ in ()).throw(RuntimeError("api down"))
+    assert r.abandon_outstanding_probes() == 1
+    assert r.freed == [("n1", "probe-a")] and not r._probes
+
+
+def test_a_probe_the_queue_has_not_created_is_cancelled_once_every_job_exists():
+    """Nothing of this batch is left to place, so creating it would spend a trial's worth of
+    that node on a figure no run of this batch can use."""
+    q = _Queue(planned=["probe-b"])
+    r = _probing_runner({"probe-a": "n1", "probe-b": "n2"}, admission=q)
+    assert r.drop_probes_with_no_work_left_to_size() == 1
+    assert q.asked == ["camp-1#probes"], "the probes queue under their own owner"
+
+
+def test_a_cancelled_probe_still_counts_as_a_node_that_went_unmeasured():
+    """The node was held for measuring and never measured. Dropping it from the tally would
+    hide a machine the campaign takes no work on -- which is what the tally is for."""
+    q = _Queue(planned=["probe-b"])
+    r = _probing_runner({"probe-b": "n2"}, admission=q)
+    r.drop_probes_with_no_work_left_to_size()
+    assert r.unmeasured_nodes() == ["n2"]
+
+
+def test_a_probe_that_is_running_is_left_to_finish():
+    """It is most of a trial in already, and what it measures still sizes the next batch of
+    a search -- which re-probes only the nodes it has no figures for."""
+    q = _Queue(planned=[])
+    r = _probing_runner({"probe-a": "n1"}, admission=q)
+    assert r.drop_probes_with_no_work_left_to_size() == 0
+    assert r._probes == {"probe-a": "n1"} and not r.deleted
+
+
+def test_a_campaign_with_no_probes_asks_the_queue_nothing():
+    """This is asked every poll for the whole batch, and probes are outstanding only at its
+    start."""
+    q = _Queue(planned=["probe-b"])
+    r = _probing_runner({}, admission=q)
+    assert r.drop_probes_with_no_work_left_to_size() == 0 and q.asked == []

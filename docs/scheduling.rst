@@ -92,6 +92,10 @@ headroom off: a reserve that is never spendable is not part of either answer.
      - Release that job's reservation.
    * - ``cancel(owner) -> int``
      - Drop an owner's planned items and release its holds. Runs per **batch**.
+   * - ``drop_planned(owner) -> list``
+     - Drop only what the queue has not created; the owner keeps the holds behind its
+       created items, which are pods that exist. For an owner with nothing left for a
+       planned item to do.
    * - ``forget_calibration(owner) -> bool``
      - End a campaign's per-node figures. Runs per **campaign**.
    * - ``set_scheduling(campaign, *, priority=None, paused=None)``
@@ -129,10 +133,12 @@ Workflows
         reap     -> finished(key) for each vanished CREATED job
         exit     -> if every plan entry is FINISHED: break
         drain()  -> may create OTHER campaigns' jobs; that is the point
+        probes   -> nothing PLANNED of its own left: drop_planned(campaign#probes)
         publish  -> waiting_for_capacity from states(), not from pods
         sleep 2
     finally:
         cancel(campaign)                # and cancel(campaign#probes)
+        delete every probe Job still outstanding
 
 Step 4 is what makes ordering global without a controller thread: whichever campaign happens
 to be awake advances everybody, in ``(priority, campaign rank, campaign start)`` order.
@@ -190,6 +196,15 @@ Probes queue under a **second owner** (``<campaign>#probes``) so they stay out o
 campaign's progress counts — which means the batch's ``finally`` must cancel both, or a probe
 still ``PLANNED`` holds its node out of the campaign for good.
 
+**A probe outlives its use in two ways, and each costs a node.** Once the batch has created
+every job it defined, nothing of it can be placed on a node still being measured: the probes
+the queue has not created are dropped there and then, rather than created later at a trial's
+cost for a figure no run of this batch can use. One already created is left to finish — it is
+most of a trial in, and its figure still spares the next batch of a search from re-probing
+that node — but when the batch ends it is **deleted**, not merely forgotten. A probe is
+pinned, so one left running holds its node against every other campaign until its own
+``activeDeadlineSeconds``, which is the trial's outer backstop and many times a trial.
+
 **A probe that does not deliver a figure has two very different fates**, and the difference is
 whether it ever ran:
 
@@ -198,9 +213,10 @@ whether it ever ran:
   node's runs would use the starting allocation while every measured node's used a figure, so
   the campaign would mix two allocations and nothing in the results would say which run got
   which. The message names the reason and the remedy for it.
-* **It never ran at all** — pinned to a node that had no room to spare for it, so it was never
-  created. That is *counted*, not fatal: the node takes no work for that batch, is re-probed on
-  the next one, and the campaign is refused only if the same node goes unmeasured
+* **It never ran at all** — pinned to a node that had no room to spare for it, or dropped
+  because the batch had nothing left to place on that node. That is *counted*, not fatal: the
+  node takes no work for that batch, is re-probed on the next one, and the campaign is
+  refused only if the same node goes unmeasured
   ``UNMEASURED_BATCH_LIMIT`` batches running. A probe too large for any node's *capacity* is a
   separate case and never reaches here — ``preflight`` in ``_start_probes`` refuses it before a
   single job exists.
