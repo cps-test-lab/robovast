@@ -131,7 +131,9 @@ def test_every_client_module_imports_without_the_core(without_core, module):
     ["service", "--help"], ["service", "log", "--help"],
     ["service", "info", "--help"], ["service", "resources", "--help"],
     ["service", "restart", "--help"],
-    ["cluster", "--help"], ["cluster", "store-cleanup", "--help"],
+    # ``cluster`` is an empty group until the cluster distribution is installed, and
+    # listing it must still work: that is what tells a client-only install what it has.
+    ["cluster", "--help"],
     ["container", "--help"], ["container", "exec", "--help"],
     ["container", "stop", "--help"],
 ])

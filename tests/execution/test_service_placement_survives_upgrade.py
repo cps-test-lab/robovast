@@ -7,9 +7,9 @@ the storage classes, and "not passed" meant "unpinned, on a hostPath". One upgra
 unpinned the service pod and reverted a PVC-backed volume to a hostPath -- silently, on the
 deployment whose data was the reason those flags were given in the first place.
 
-The registry has since moved to the store pod (``cluster_execution.store_pod``), so the only
-volumes left under this Deployment are the workspaces store and the results root, both
-backed by the workspaces StorageClass. The rule is unchanged; the surface is smaller.
+The registry and the index live in the ``robovast`` pod (``cluster_execution.store_pod``),
+so the volumes under this Deployment are the workspaces and the results root, both backed
+by the workspaces StorageClass.
 
 Two changes make that unreachable, and these tests pin both: the selector is a CONSTANT
 label rather than a value a call site has to remember, and everything else is recovered from

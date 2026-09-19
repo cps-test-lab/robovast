@@ -2,52 +2,65 @@
 # SPDX-License-Identifier: Apache-2.0
 """The ``robovast`` pod carries the deployment's setup-lifetime infrastructure.
 
-The registry and the campaign index used to be extra containers in ``robovast-service``, a
-Deployment every upgrade rolls. These tests pin what the move has to preserve: one Service
-name that the DSN and the Ingress rule both agree with, a pod that exists on every provider
-including the ones with no object store of their own, and -- the one an operator meets --
-a loud refusal on a cluster whose store pod predates the move.
+The registry and the campaign index live in a pod ``vast cluster setup`` creates once,
+rather than in ``robovast-service``, a Deployment every upgrade rolls. These tests pin what
+that arrangement has to hold: one Service name that the DSN and the Ingress rule both agree
+with, the same pod on every provider, and -- the ones an operator meets -- a loud refusal
+on a cluster whose live pod does not match: one lacking a container, one still carrying an
+object store, or one on a node the placement does not want.
 """
 
-import io
+import types
 
 import pytest
-import yaml
 
 from robovast.execution.cluster_execution import (index_deploy, registry_deploy,
                                                   service_deploy, store_pod)
 
 
 def _rke2_docs(namespace="default", **kwargs):
-    from robovast.execution.cluster_config.rke2 import MINIO_MANIFEST_RKE2
-
-    return store_pod.attach_infrastructure(
-        list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2))), namespace, **kwargs)
+    return store_pod.attach_infrastructure([], namespace, **kwargs)
 
 
-def test_a_provider_without_an_object_store_still_gets_the_pod():
-    """GCS keeps campaign data in a bucket, but the registry and the index are pods.
+def test_every_provider_deploys_the_same_pod():
+    """The pod is the same server doing the same work wherever it runs.
 
-    Without this the DSN and the Ingress backend would have to differ per provider -- one
-    more thing that can be right in one place and wrong in another.
+    A provider differs in what the cluster can say about itself and in how its README says
+    to back the volumes, never in the pod: a container present on one provider and not on
+    another is a deployment whose DSN and Ingress route are right in one place and wrong in
+    another.
     """
+    from robovast.execution.cluster_config import azure, gcp, minikube, rke2
+
+    placement = {"namespace": "robotics", "index_storage_class": "fast",
+                 "registry_authenticated": True, "control_node_labels": {"n": "1"}}
+    manifests = [cls().store_pod_manifest(**placement) for cls in (
+        rke2.Rke2ClusterConfig, minikube.MinikubeClusterConfig,
+        azure.AzureClusterConfig, gcp.GcpClusterConfig)]
+
+    assert all(m == manifests[0] for m in manifests)
+    pod = next(d for d in manifests[0] if d["kind"] == "Pod")
+    assert [c["name"] for c in pod["spec"]["containers"]] == list(
+        store_pod.infrastructure_container_names())
+    assert pod["spec"]["nodeSelector"] == {"n": "1"}
+
+
+def test_the_pod_carries_the_registry_and_the_index_and_nothing_else():
+    """Campaigns are on the service's results volume; nothing here holds them."""
     docs = store_pod.attach_infrastructure([], "robotics")
     pod = next(d for d in docs if d["kind"] == "Pod")
     service = next(d for d in docs if d["kind"] == "Service")
 
     assert [c["name"] for c in pod["spec"]["containers"]] == list(
         store_pod.infrastructure_container_names())
+    assert store_pod.OBJECT_STORE_CONTAINER_NAME not in store_pod.infrastructure_container_names()
     assert pod["metadata"]["labels"] == service["spec"]["selector"]
     assert service["metadata"]["name"] == store_pod.STORE_SERVICE_NAME
 
 
-def test_a_bucket_backed_provider_can_put_the_index_on_a_volume():
-    """The one piece of this deployment's durable state a bucket does not hold.
-
-    With the campaigns in a bucket there is no --store-class to back the index beside, so on a
-    node pool whose machines are replaced -- which is every managed one -- a hostPath index
-    goes with the node while every campaign it indexed survives.
-    """
+def test_the_index_can_be_put_on_a_volume_of_its_own():
+    """On a node pool whose machines are replaced -- which is every managed one -- a hostPath
+    index goes with the node, so its class is its own argument."""
     docs = store_pod.attach_infrastructure([], "robotics",
                                            index_storage_class="premium-rwo",
                                            index_storage_size="100Gi")
@@ -138,7 +151,7 @@ def test_no_ingress_class_leaves_a_gke_specific_key_off_every_other_cluster():
 
 
 def test_attaching_twice_changes_nothing():
-    """Setup is re-runnable, and every provider parses its manifest fresh each time."""
+    """Setup is re-runnable, and every provider renders its manifest fresh each time."""
     once = _rke2_docs()
     twice = store_pod.attach_infrastructure(once, "default")
 
@@ -151,7 +164,7 @@ def test_one_service_carries_every_port():
 
     assert len(services) == 1
     ports = {p["name"] for p in services[0]["spec"]["ports"]}
-    assert ports == {"s3", "console", "registry", "index"}
+    assert ports == {"registry", "index"}
 
 
 def test_the_dsn_and_the_ingress_backend_name_the_same_service():
@@ -163,120 +176,124 @@ def test_the_dsn_and_the_ingress_backend_name_the_same_service():
         "the cluster domain is site configuration, not something to write into source"
 
 
-class _Pod:
-    """A store pod as the API returns one: named containers, and the store's volume.
-
-    The backing is part of the fixture because the refusal reports a different cost per
-    kind -- a pod without one would only ever exercise the branch that says nothing is
-    lost, which is the reassurance that must not be given by default.
-    """
-
-    def __init__(self, *names, store="emptyDir", detail=None):
-        mounts = {service_deploy.STORE_CONTAINER_NAME:
-                  [type("M", (), {"name": "minio-storage",
-                                  "mount_path": service_deploy.STORE_DATA_MOUNT})()]}
-        containers = [type("C", (), {"name": n, "volume_mounts": mounts.get(n, [])})()
-                      for n in names]
-        volume = type("V", (), {"name": "minio-storage", "host_path": None,
-                                "persistent_volume_claim": None, "empty_dir": None})()
-        if store == "emptyDir":
-            volume.empty_dir = object()
-        elif store == "hostPath":
-            volume.host_path = type("H", (), {"path": detail})()
-        elif store == "claim":
-            volume.persistent_volume_claim = type("P", (), {"claim_name": detail})()
-        self.spec = type("S", (), {"containers": containers,
-                                   "volumes": [volume] if store else []})()
+def _pod(*names, node_selector=None, node_name="node-a"):
+    """A live pod as the API returns one: named containers and a placement."""
+    containers = [types.SimpleNamespace(name=n, env=[]) for n in names]
+    return types.SimpleNamespace(spec=types.SimpleNamespace(
+        containers=containers, node_selector=node_selector, node_name=node_name))
 
 
-def test_a_store_pod_that_predates_the_move_is_named_not_guessed():
-    assert store_pod.missing_infrastructure(_Pod("minio")) == [
-        registry_deploy.REGISTRY_CONTAINER_NAME, index_deploy.INDEX_CONTAINER_NAME]
-    assert store_pod.missing_infrastructure(_Pod("minio", "registry", "index")) == []
+def _live(monkeypatch, pod):
+    from kubernetes import client as kclient
+
+    monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
+
+    def read(self, name, namespace):
+        if pod is None:
+            raise kclient.exceptions.ApiException(status=404)
+        return pod
+    monkeypatch.setattr(kclient, "CoreV1Api",
+                        lambda *a, **k: type("C", (), {"read_namespaced_pod": read})())
+
+
+def test_a_pod_lacking_a_container_is_named_not_guessed():
+    assert store_pod.missing_infrastructure(_pod("index")) == [
+        registry_deploy.REGISTRY_CONTAINER_NAME]
+    assert store_pod.missing_infrastructure(_pod("registry", "index")) == []
     assert store_pod.missing_infrastructure(None) == list(
         store_pod.infrastructure_container_names())
 
 
-def test_an_existing_cluster_is_refused_rather_than_half_migrated(monkeypatch):
-    """`apply_manifests` keeps a live store pod on a 409, so setup cannot add containers.
+def test_a_pod_lacking_a_container_is_refused_rather_than_half_deployed(monkeypatch):
+    """`apply_manifests` keeps a live pod on a 409, so setup cannot add containers.
 
     Deploying anyway would leave an Ingress routing ``/v2`` at a container that is not
     there and a DSN naming a port nothing listens on -- an ImagePullBackOff on the next
     campaign and an IndexUnreachableError on the next query, neither of them near here.
     """
-    from kubernetes import client as kclient
+    _live(monkeypatch, _pod("index"))
 
-    monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
-    monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: type(
-        "C", (), {"read_namespaced_pod": lambda self, n, ns: _Pod("minio")})())
+    with pytest.raises(RuntimeError, match="cluster cleanup") as excinfo:
+        service_deploy.verify_store_pod_infrastructure("default")
+    assert registry_deploy.REGISTRY_CONTAINER_NAME in str(excinfo.value)
+    assert "NOT migrated" not in str(excinfo.value), (
+        "nothing durable is in this pod; the campaigns are on the results volume")
 
-    with pytest.raises(RuntimeError, match="cluster cleanup"):
+
+def test_a_pod_still_carrying_an_object_store_is_refused_and_says_what_it_costs(monkeypatch):
+    """Campaigns live on the results volume, so a store in the pod is one nothing reads.
+
+    The remedy recreates the pod, and the campaigns in that store go with it: the message
+    has to say so, and name the archive commands, because nothing else holds a copy.
+    """
+    _live(monkeypatch, _pod(store_pod.OBJECT_STORE_CONTAINER_NAME, "registry", "index"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        service_deploy.verify_store_pod_infrastructure("default")
+    message = str(excinfo.value)
+    assert "vast cluster cleanup" in message and "vast cluster setup" in message
+    assert "NOT migrated" in message
+    assert "vast share" in message and "vast campaign download" in message
+
+
+def test_no_pod_at_all_is_refused_rather_than_passed():
+    """Absent is a cluster that is not set up, not one with nothing to check."""
+    assert store_pod.carries_an_object_store(None) is False
+
+
+def test_no_pod_at_all_names_setup(monkeypatch):
+    _live(monkeypatch, None)
+
+    with pytest.raises(RuntimeError, match="vast cluster setup"):
         service_deploy.verify_store_pod_infrastructure("default")
 
 
-def test_the_refusal_names_what_recreating_the_pod_costs(monkeypatch):
-    """The remedy recreates the store pod, and what that costs depends on the backing.
-
-    An ``emptyDir`` store goes with the pod, so the campaigns must be archived first and
-    the index cannot be re-ingested afterwards; a durable one survives, and saying
-    otherwise would train an operator to ignore the warning that matters.
-    """
-    from kubernetes import client as kclient
-
-    monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
-
-    def _refusal(pod):
-        monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: type(
-            "C", (), {"read_namespaced_pod": lambda self, n, ns: pod})())
-        with pytest.raises(RuntimeError) as excinfo:
-            service_deploy.verify_store_pod_infrastructure("default")
-        return str(excinfo.value)
-
-    ephemeral = _refusal(_Pod("minio"))
-    assert "DISCARDS" in ephemeral
-    assert "vast share" in ephemeral
-
-    durable = _refusal(_Pod("minio", store="hostPath", detail="/var/lib/robovast-store"))
-    assert "DISCARDS" not in durable
-    assert "/var/lib/robovast-store" in durable
-
-    claimed = _refusal(_Pod("minio", store="claim", detail="robovast-pvc"))
-    assert "DISCARDS" not in claimed
-    assert "robovast-pvc" in claimed
-
-
-def test_a_store_backed_by_a_bucket_loses_nothing_with_the_pod():
-    """No embedded store means the campaigns are in a bucket, which no pod holds."""
-    assert service_deploy.store_backing(_Pod("registry", "index", store=None)) == (None, None)
-
-
-def test_a_migrated_cluster_passes(monkeypatch):
-    from kubernetes import client as kclient
-
-    monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
-    monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: type(
-        "C", (), {"read_namespaced_pod":
-                  lambda self, n, ns: _Pod("minio", "registry", "index")})())
+def test_a_matching_pod_passes(monkeypatch):
+    _live(monkeypatch, _pod("registry", "index"))
 
     service_deploy.verify_store_pod_infrastructure("default")
+
+
+# -- a pod the placement does not want ---------------------------------------------------
+
+def test_a_pod_on_another_node_is_refused_before_the_apply(monkeypatch):
+    """A changed nodeSelector never reaches a kept pod, so announcing it would be a lie."""
+    _live(monkeypatch, _pod("registry", "index", node_selector={"kubernetes.io/hostname": "b"}))
+
+    with pytest.raises(RuntimeError, match="cannot be moved") as excinfo:
+        store_pod.refuse_a_pod_on_the_wrong_node("default", {"robovast.io/data-node": "true"})
+    assert "not in this pod" in str(excinfo.value), (
+        "the campaigns are on the results volume; recreating this pod does not touch them")
+
+
+def test_a_pod_already_where_it_should_be_is_not_refused(monkeypatch):
+    _live(monkeypatch, _pod("registry", "index",
+                            node_selector={"robovast.io/data-node": "true", "pool": "x"}))
+
+    store_pod.refuse_a_pod_on_the_wrong_node("default", {"robovast.io/data-node": "true"})
+
+
+def test_no_pod_and_no_placement_are_never_refused(monkeypatch):
+    _live(monkeypatch, None)
+
+    store_pod.refuse_a_pod_on_the_wrong_node("default", {"robovast.io/data-node": "true"})
+    store_pod.refuse_a_pod_on_the_wrong_node("default", None)
 
 
 # -- auth that was configured but never reached the cluster ----------------------------
 
 def _live_pod(*containers):
-    import types
     return types.SimpleNamespace(spec=types.SimpleNamespace(containers=list(containers)))
 
 
 def _live_container(name, env_names=()):
-    import types
     return types.SimpleNamespace(
         name=name,
         env=[types.SimpleNamespace(name=n, value="x") for n in env_names])
 
 
-def test_a_kept_store_pod_is_seen_to_be_serving_an_open_registry():
-    """The 409 that keeps an existing store pod keeps its container spec, so turning auth on
+def test_a_kept_pod_is_seen_to_be_serving_an_open_registry():
+    """The 409 that keeps an existing pod keeps its container spec, so turning auth on
     in the manifest does not turn it on in the cluster.
 
     Without noticing this, setup mints a credential, writes both Secrets and reports
@@ -289,7 +306,7 @@ def test_a_kept_store_pod_is_seen_to_be_serving_an_open_registry():
     assert store_pod.registry_enforces_auth(open_registry) is False
 
 
-def test_a_recreated_store_pod_is_seen_to_enforce_it():
+def test_a_recreated_pod_is_seen_to_enforce_it():
     closed = _live_pod(_live_container(registry_deploy.REGISTRY_CONTAINER_NAME,
                                        ["REGISTRY_STORAGE_DELETE_ENABLED", "REGISTRY_AUTH"]))
 
@@ -300,4 +317,4 @@ def test_a_pod_without_a_registry_is_not_read_as_authenticating():
     """Absent and open are both "not asking for a credential", and the missing container is
     already reported by its own check."""
     assert store_pod.registry_enforces_auth(None) is False
-    assert store_pod.registry_enforces_auth(_live_pod(_live_container("minio"))) is False
+    assert store_pod.registry_enforces_auth(_live_pod(_live_container("index"))) is False

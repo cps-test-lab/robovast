@@ -13,8 +13,6 @@ only when every client and both lanes have it.
   "Add an interface operation".
 - CLI, MCP and web UI stay behaviourally consistent: same inputs, same results, whichever
   client and lane the caller uses.
-- On the cluster lane say which part of a campaign you need — `docs/architecture.rst`, "Fetch
-  what the caller needs, not the campaign".
 - Every request is authenticated and identity comes from the resolved `Principal` —
   `docs/http_api.rst`, "Who may call it".
 

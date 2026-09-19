@@ -24,9 +24,8 @@ the inputs hidden.
 
 The result is cached per node: the cache lives in ``<data_dir>/.cache`` (so each
 campaign/config/run node caches separately) and is keyed on the notebook's **content**
-hash plus the injected variables — *not* the file's mtime/size. That matters for the
-cluster service, whose ``fetch_campaign`` re-downloads the campaign on every request
-and bumps every file's mtime; a content hash is what lets the cache actually hit.
+hash plus the injected variables — *not* the file's mtime/size, so an archive imported
+with fresh timestamps, or a tree copied between hosts, still hits.
 
 This core is the happy path only: it executes, exports, caches, and returns the HTML,
 or it raises. Partial-render-on-failure and the styled error page live in the desktop

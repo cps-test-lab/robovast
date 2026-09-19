@@ -26,7 +26,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 _GB = 1000 ** 3
 
 
-def _usage(disk_free_gb=None, store_free_gb=None, **extra) -> ResourceUsage:
+def _usage(disk_free_gb=None, results_free_gb=None, **extra) -> ResourceUsage:
     def space(free_gb):
         if free_gb is None:
             return None
@@ -34,7 +34,7 @@ def _usage(disk_free_gb=None, store_free_gb=None, **extra) -> ResourceUsage:
     return ResourceUsage(backend="docker", cpu_capacity=4, cpu_used=1,
                          memory_capacity_bytes=8 * _GB, memory_used_bytes=_GB,
                          parallel_runs=False, disk=space(disk_free_gb),
-                         store=space(store_free_gb), **extra)
+                         results=space(results_free_gb), **extra)
 
 
 # -- the setting -----------------------------------------------------------------------------
@@ -71,16 +71,17 @@ def test_a_disk_below_the_reserve_is_refused_with_the_amounts(monkeypatch):
     assert "node-a" not in refusal
 
 
-def test_a_store_below_the_reserve_is_refused_too(monkeypatch):
-    """The store is often on another node: one meter can be comfortable while the other fills."""
+def test_a_results_volume_below_the_reserve_is_refused_too(monkeypatch):
+    """The results volume is a claim of its own where the cluster provisions one, so it can
+    fill while the node filesystem under it is comfortable."""
     monkeypatch.setenv(RESERVE_ENV, "150")
-    refusal = storage_refusal(_usage(disk_free_gb=900, store_free_gb=20))
-    assert "the results store has 20 GB free" in refusal
+    refusal = storage_refusal(_usage(disk_free_gb=900, results_free_gb=20))
+    assert "the results volume has 20 GB free" in refusal
 
 
 def test_room_on_both_meters_refuses_nothing(monkeypatch):
     monkeypatch.setenv(RESERVE_ENV, "150")
-    assert storage_refusal(_usage(disk_free_gb=151, store_free_gb=900)) is None
+    assert storage_refusal(_usage(disk_free_gb=151, results_free_gb=900)) is None
 
 
 def test_a_meter_that_could_not_be_read_is_not_a_full_disk(monkeypatch):
@@ -160,7 +161,6 @@ def test_a_rerun_is_refused_before_anything_is_staged(transport, monkeypatch):
     from robovast.service import retrigger
 
     _refusing(transport, monkeypatch)
-    monkeypatch.setattr(transport, "_retrigger_source_dir", lambda cid: "/source")
     monkeypatch.setattr(retrigger, "check", lambda *a, **k: None)
     monkeypatch.setattr(transport, "_admit_retrigger", lambda *a, **k: None)
 
@@ -190,10 +190,10 @@ def test_the_cluster_lane_refuses_its_own_builds_and_postprocessing(monkeypatch)
     monkeypatch.setenv(RESERVE_ENV, "150")
     svc = ClusterService.__new__(ClusterService)
     monkeypatch.setattr(svc, "resource_usage",
-                        lambda: _usage(storage_refusal="the store is short"), raising=False)
-    with pytest.raises(InsufficientStorageError, match="the store is short"):
+                        lambda: _usage(storage_refusal="the volume is short"), raising=False)
+    with pytest.raises(InsufficientStorageError, match="the volume is short"):
         svc.build_image(object())
-    with pytest.raises(InsufficientStorageError, match="the store is short"):
+    with pytest.raises(InsufficientStorageError, match="the volume is short"):
         svc.run_postprocessing(RunPostprocessingRequest(campaign_id="camp-1"))
 
 

@@ -43,6 +43,18 @@ def test_manifests_have_expected_kinds_and_names():
     assert not any(m["kind"] == "Secret" for m in ms)
 
 
+def test_the_old_pod_goes_before_the_new_one_starts():
+    """The campaigns are on a ReadWriteOnce claim, which one node may mount at a time.
+
+    Under the default rolling update the replacement is scheduled while the old pod still
+    holds the volume, and on another node it never starts: a Multi-Attach the Deployment
+    reports as "progressing" until the upgrade times out, with no pod serving either way.
+    """
+    ms = sd.service_manifests(namespace="default", image="example/robovast:test")
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    assert dep["spec"]["strategy"] == {"type": "Recreate"}
+
+
 def test_usage_cluster_role_grants_the_kubelet_proxy_read():
     """The disk meter reads each kubelet's Summary API through ``nodes/proxy``.
 
@@ -456,30 +468,6 @@ def test_a_malformed_disk_reserve_fails_the_deploy_not_the_pod(monkeypatch):
     from robovast.service.storage_reserve import RESERVE_ENV
     monkeypatch.setenv(RESERVE_ENV, "a lot")
     with pytest.raises(ValueError, match=RESERVE_ENV):
-        sd.service_manifests(namespace="default", image="x")
-
-
-def test_the_fetch_cache_age_is_carried_even_when_unset(monkeypatch):
-    """Empty, not absent: deleting the .env line must reset the pod to the default."""
-    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
-    monkeypatch.delenv(MAX_AGE_ENV, raising=False)
-    env = {e["name"]: e["value"] for e in
-           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
-    assert env[MAX_AGE_ENV] == ""
-
-
-def test_the_fetch_cache_age_carries_what_the_environment_says(monkeypatch):
-    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
-    monkeypatch.setenv(MAX_AGE_ENV, "14")
-    env = {e["name"]: e["value"] for e in
-           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
-    assert env[MAX_AGE_ENV] == "14"
-
-
-def test_a_malformed_fetch_cache_age_fails_the_deploy(monkeypatch):
-    from robovast.execution.cluster_execution.fetch_cache import MAX_AGE_ENV
-    monkeypatch.setenv(MAX_AGE_ENV, "a week")
-    with pytest.raises(ValueError, match=MAX_AGE_ENV):
         sd.service_manifests(namespace="default", image="x")
 
 

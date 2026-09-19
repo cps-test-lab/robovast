@@ -131,13 +131,13 @@ def test_data_calls_outlast_a_cold_object_store_fetch(monkeypatch):
     assert calls["get"]["timeout"] == HTTPTransport.DATA_TIMEOUT
 
 
-def test_the_readiness_probe_keeps_the_default_timeout(monkeypatch):
-    """It is the cheap pre-flight: if *it* hangs, the service is unwell, not busy."""
+def test_an_ordinary_call_keeps_the_configured_timeout(monkeypatch):
+    """The longer budget belongs to the data calls alone: a cheap read that hangs means the
+    service is unwell, not busy, and waiting out a data timeout for it hides that."""
     calls = _capture(monkeypatch)
 
-    HTTPTransport("http://svc", timeout=7.0).campaign_data_status("camp-1")
+    HTTPTransport("http://svc", timeout=7.0).list_campaign_panels("camp-1")
 
-    assert calls["get"]["url"] == "http://svc/campaigns/camp-1/data-status"
     assert calls["get"]["timeout"] == 7.0
 
 

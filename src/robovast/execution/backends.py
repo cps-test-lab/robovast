@@ -159,68 +159,18 @@ class ExecutionBackend(ABC):
 
     @abstractmethod
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
+                  runs: int, options: RunOptions) -> None:
         """Execute the jobs for ``campaign_data`` into ``campaign_root``.
 
         ``batch_tag`` (e.g. ``"batch-3"``) namespaces job-level artifacts so
         multiple batches sharing one campaign root do not collide.
-
-        ``whole_campaign`` marks this batch as the entire campaign (batch mode,
-        no other batches share the prefix), letting a backend that stages results
-        through object storage fetch them in one shot rather than per config.
-        """
-
-    def publish_execution_records(self, campaign_root: str) -> None:
-        """Hook called before postprocessing reads the campaign from its durable home.
-
-        The driver writes ``_execution/`` and ``_transient/`` on its own disk, and on a
-        lane where that disk is scratch they reach the store only at
-        :meth:`finalize_campaign` -- which runs *after* the campaign tail. Postprocessing
-        happens in that tail, and where it stages the campaign out of the store rather
-        than reading the driver's disk, it is given a campaign missing every file only the
-        driver has: ``execution.yaml`` among them, without which metadata generation has
-        nothing to say what ran.
-
-        Distinct from :meth:`publish_records`, which publishes ``campaign.db`` alone at
-        every batch boundary. These directories hold growing logs, so publishing them per
-        batch would re-upload a controller log once per batch to no purpose. Once, when a
-        reader that is not this process is about to need them, is the whole requirement.
-
-        Default no-op: on the local lane the driver's disk IS the durable home, so
-        postprocessing reads what the driver just wrote.
-        """
-
-    def publish_records(self, campaign_root: str) -> None:
-        """Hook called whenever the campaign's records change materially.
-
-        Twice, at least: once the ``campaign`` row exists (before any compute is spent),
-        and once each batch closes. Records here means the small, derived-from-nothing
-        files a reader needs to say what a campaign *is* — ``campaign.db``'s campaign,
-        batch and unit rows: its description, who launched it, where its configuration
-        came from, and, for a search, every parameter set scored so far.
-
-        Default no-op: on the local lane those records are already in their durable home.
-        :class:`KubernetesBackend` overrides it, because there the driver's disk is
-        scratch and a record published only at the end is missing from exactly the
-        campaigns that did not reach one.
-
-        Deliberately **not** :meth:`finalize_campaign`, which is the other end of the same
-        idea. That one publishes the whole campaign root — gigabytes of results — and
-        releases the campaign's node calibration; neither is wanted mid-run, and calling
-        it per batch would re-upload every result of every earlier batch.
-
-        Best-effort in the implementation, never in the contract: a campaign must not fail
-        because a record could not be published, but a lane that means to publish must say
-        when it could not.
         """
 
     def finalize_campaign(self, campaign_root: str) -> None:
         """Hook called once after the whole campaign completes (store closed).
 
-        Default no-op: the local :class:`DockerBackend` already materialises the
-        full campaign on disk. The :class:`KubernetesBackend` overrides this to
-        publish campaign-level artifacts (``campaign.db``, ``_execution/``) to
-        storage, so the bucket holds a complete, local-equivalent campaign.
+        Default no-op. The :class:`KubernetesBackend` overrides this to release what the
+        cluster held for the campaign -- its node calibration and its place in the queue.
         """
 
     def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - lane-specific
@@ -236,35 +186,13 @@ class ExecutionBackend(ABC):
         """
         return {}
 
-    def ensure_campaign_root_complete(self, campaign_root: str) -> None:
-        """Hook called before anything needs the campaign's *whole* directory on disk.
-
-        Default no-op: the local :class:`DockerBackend` writes every artifact straight into
-        ``campaign_root``, so it is never incomplete. The :class:`KubernetesBackend` overrides
-        this because a campaign it *resumed* starts with only its control plane -- resume runs
-        before the service can answer at all, so it takes what it needs to re-enter the
-        campaign and leaves the artifacts (see ``campaign_resume``).
-
-        Called from the run tail immediately before postprocessing, which is the first thing
-        that reads the whole tree: adoption reads only ``test.xml``, run counts come from the
-        store's own table rather than a directory walk, and a resumed search replays its
-        earlier evaluations out of ``campaign.db`` instead of re-extracting them. Cheap to
-        call when the tree is already whole -- the fetch skips same-size files -- so callers
-        that are unsure should call it rather than reason about it.
-        """
-
     def campaign_results_bytes(self, campaign_root: str) -> "int | None":
-        """Total bytes this campaign's results occupy in their **durable home**.
+        """Total bytes this campaign's results occupy.
 
         Measured once, in the run tail, so that reading the figure later is a field lookup
         rather than a walk of the results: a campaign is displayed far more often than it
         finishes, and enumerating storage per view scales with the campaign while telling
-        every viewer the same thing.
-
-        The default answers for a lane whose durable home IS ``campaign_root`` -- the local
-        :class:`DockerBackend`, which materialises every artifact there. A lane that keeps
-        its results elsewhere must override this and measure *there*, because the driver's
-        own disk is not evidence about what the durable home holds.
+        every viewer the same thing. ``campaign_root`` is the campaign on every lane.
 
         ``None`` means the size could not be established, which a reader must render as
         "not recorded" rather than as zero. Best-effort by contract: a campaign's results
@@ -462,10 +390,7 @@ class DockerBackend(ExecutionBackend):
         self._state = state
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
-        # whole_campaign is a cluster-only hint (single-shot result fetch); the
-        # local backend already writes results straight into campaign_root.
-        del whole_campaign
+                  runs: int, options: RunOptions) -> None:
         os.makedirs(campaign_root, exist_ok=True)
         image = _scenario_image(campaign_data.get("execution", {}), options)
 

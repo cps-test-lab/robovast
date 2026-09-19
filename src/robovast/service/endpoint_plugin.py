@@ -29,8 +29,8 @@ module — serves that table as JSON), and a **panel** (renders it) entirely via
 Design mirrors the MCP-plugin loader (:mod:`robovast.mcp_server.registry`): an entry-point
 group + a small ``Protocol``. A handler receives a :class:`RunDataContext` (a typed facade —
 ``open_db()`` / ``run_dir()`` / ``params``) so it never hardcodes the on-disk layout, and the
-host resolves the campaign dir behind it (local disk or, on the cluster, an object-store
-fetch), giving local/cluster transparency for free.
+host resolves the campaign dir behind it under its results root, giving local/cluster
+transparency for free.
 
 Scope (deliberately narrow): run-scoped **GET → JSON**. Binary/large per-run artifacts are
 already served generically by ``GET /results/<campaign>/<config>/<run>/<path>`` — use that,
@@ -55,7 +55,7 @@ ENDPOINT_GROUP = "robovast.service_endpoints"
 #: which registers first and would win anyway). ``costmap`` is intentionally absent — its
 #: core route was removed, freeing the name for the ``robovast_nav`` plugin.
 RESERVED_CAMPAIGN_ENDPOINTS = frozenset({
-    "status", "stop", "describe", "query", "data-status", "plots", "panels",
+    "status", "stop", "describe", "query", "plots", "panels",
     "visualizations", "notebook", "archive", "postprocessing", "panel_assets",
     "scene", "scene_assets",
 })
@@ -68,7 +68,7 @@ class RunDataContext:
 
     ``params`` is the request's query string (always includes ``config_name`` + ``run_id``
     for a run-scoped endpoint, plus any endpoint-specific params). ``data_dir`` is resolved
-    by the host (local disk, or an object-store fetch on the cluster) — prefer the helpers.
+    by the host under its results root — prefer the helpers.
     """
 
     campaign_id: str

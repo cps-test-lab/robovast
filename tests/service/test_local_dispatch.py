@@ -105,7 +105,7 @@ def _mark_live(transport, cid: str) -> None:
     state = ControllerState()
     state.set_phase("running")
     entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
-    entry.created_at = (read_campaign_created_at(transport._campaign_dir(cid))
+    entry.created_at = (read_campaign_created_at(transport.campaign_dir(cid))
                         or entry.created_at)
     with transport._lock:
         transport._campaigns[cid] = entry
@@ -366,4 +366,4 @@ def test_a_re_triggered_share_leaves_a_stopped_campaign_stopped(transport):
 
     assert shared["root"].endswith(cid), "the upload ran"
     assert transport.get_status(cid).phase == Phase.STOPPED
-    assert reconstruct_status_from_disk(transport._campaign_dir(cid)).phase == Phase.STOPPED
+    assert reconstruct_status_from_disk(transport.campaign_dir(cid)).phase == Phase.STOPPED

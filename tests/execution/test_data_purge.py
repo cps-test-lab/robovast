@@ -23,7 +23,7 @@ def test_a_path_too_shallow_to_be_meant_is_refused(path):
     assert "refusing to empty" in str(excinfo.value)
 
 
-@pytest.mark.parametrize("path", ["/var/lib/robovast-store", "/media/data/results"])
+@pytest.mark.parametrize("path", ["/var/lib/robovast-results", "/media/data/index"])
 def test_a_real_data_directory_passes(path):
     data_purge.refuse_an_unsafe_path(path)
 
@@ -31,12 +31,12 @@ def test_a_real_data_directory_passes(path):
 def test_the_job_mounts_every_path_and_is_pinned_to_the_data_node():
     """Unpinned, it would land wherever the scheduler liked and empty the wrong node's disk."""
     manifest = data_purge.purge_manifest(
-        "default", ["/media/data/store", "/media/data/results"],
+        "default", ["/media/data/workspaces", "/media/data/results"],
         {"robovast.io/data-node": "true"})
 
     spec = manifest["spec"]["template"]["spec"]
     assert [v["hostPath"]["path"] for v in spec["volumes"]] == [
-        "/media/data/store", "/media/data/results"]
+        "/media/data/workspaces", "/media/data/results"]
     assert spec["nodeSelector"] == {"robovast.io/data-node": "true"}
     assert spec["tolerations"] == [{"operator": "Exists"}], (
         "the data node may be tainted; the bytes are there and nowhere else")
@@ -47,7 +47,7 @@ def test_the_job_mounts_every_path_and_is_pinned_to_the_data_node():
 def test_the_job_empties_the_directories_rather_than_removing_them():
     """A mount point that vanished would leave the next setup writing to a plain directory
     over a disk nobody noticed had gone."""
-    manifest = data_purge.purge_manifest("default", ["/media/data/store"])
+    manifest = data_purge.purge_manifest("default", ["/media/data/results"])
     script = manifest["spec"]["template"]["spec"]["containers"][0]["command"][-1]
 
     assert "rm -rf /purge/0/" in script
@@ -56,4 +56,4 @@ def test_the_job_empties_the_directories_rather_than_removing_them():
 
 def test_an_unsafe_path_never_reaches_a_manifest():
     with pytest.raises(ValueError):
-        data_purge.purge_manifest("default", ["/media/data/store", "/"])
+        data_purge.purge_manifest("default", ["/media/data/results", "/"])

@@ -416,8 +416,8 @@ def stage(vast_file: str, config_name: str, *,
 
     The entrypoint is always rendered **for the lane this exec runs on** — never copied
     from a campaign. ``prepare_campaign_configs`` substitutes lane-specific init and
-    post-run blocks, so a cluster campaign's entrypoint carries cluster init and
-    S3-mirroring logic that would be wrong to run locally.
+    post-run blocks, so a cluster campaign's entrypoint carries cluster init and the
+    done-marker hand-off to the pod's uploader, which would be wrong to run locally.
     """
     from robovast.common import load_config
     from robovast.execution.controller import build_campaign_data, filter_configs_by_name

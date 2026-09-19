@@ -4,15 +4,14 @@ The in-cluster counterpart of :mod:`robovast.service.docker_exec_lane`, built on
 same two primitives the aux-pod container runner already uses — a kept-alive pod and
 ``pods/exec``, which its docstring calls "the in-cluster equivalent of ``docker exec``".
 
-``/config`` arrives the way a campaign Job's does: staged to the object store, then
-mirrored down by an ``mc`` init container from the shared sidecar image. That is a
-deliberate choice among the three transports this repo has. It replaced a ConfigMap,
-which was simpler but capped the staged tree at ~900 KiB and answered "your config is
-too big" with "run it as a campaign instead" — the exact cost this tool exists to avoid.
-It is not the aux pod's tar-over-``pods/exec`` either, because that needs the pod to be
-*running* before its files exist, and needs ``tar``/``base64`` in an image we do not
-control; ``mc`` is already a hard requirement of every cluster experiment image and the
-sidecar carries its own.
+``/config`` arrives the way a campaign Job's does: staged by the service on its own disk,
+then fetched as one tar stream from the data plane by an init container from the shared
+sidecar image (:mod:`.pod_access`). That is a deliberate choice among the transports this
+repo has. A ConfigMap was simpler but capped the staged tree at ~900 KiB and answered
+"your config is too big" with "run it as a campaign instead" — the exact cost this tool
+exists to avoid. The aux pod's exec-channel transfer is not it either, because that needs
+the pod to be *running* before its files exist, and needs tools in an image we do not
+control; the sidecar carries its own.
 
 The deeper reason is that a diagnostic should not have its own staging path. Whatever a
 run does to get files into a container, this must do too, or the check can pass on a
@@ -36,9 +35,12 @@ correct, and each was invisible on the local lane:
 """
 
 import logging
+import shutil
+from pathlib import Path
 
 from robovast.service.container_exec import SLOT_USER, POD_LABEL, ExecSpec, container_name
-from robovast.execution.cluster_execution.kubernetes_backend import pull_policy_for
+
+from . import pod_access
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +50,14 @@ logger = logging.getLogger(__name__)
 HELD_CONTAINER = "exec"
 _PROBE_TIMEOUT_S = 30
 
-#: Key prefix every staged exec tree lives under, inside the lane's bucket.
+#: The staged slot every exec tree lives under, on the service's disk.
 EXEC_PREFIX = "container-exec"
 
-#: Where the workspace is mirrored, when one was named. The local lane bind-mounts it at
+#: The two subtrees of a staged exec slot: what lands at ``/config``, and the workspace.
+CONFIG_SUBDIR = "config"
+WORKSPACE_SUBDIR = "workspace"
+
+#: Where the workspace is fetched to, when one was named. The local lane bind-mounts it at
 #: the same address, so a path taken from ``write_file`` is usable verbatim on both.
 SOURCES_ROOT = "/sources"
 
@@ -64,26 +70,32 @@ def _pod_name(slot: str = SLOT_USER) -> str:
     return container_name(slot)
 
 
-def exec_prefix(namespace: str, slot: str = SLOT_USER) -> str:
-    """Where this namespace's exec tree for *slot* is staged.
+def exec_slot(namespace: str, slot: str = SLOT_USER) -> str:
+    """The staged slot holding this namespace's exec tree for *slot*.
 
-    Namespaced because a pod name is unique only *per namespace*, while a shared-bucket
-    deployment gives several namespaces one bucket. Per slot for the same reason one step
-    down: several pods are held at once now, and a shared prefix would have each one's
-    ``start_held`` overwrite the tree the others already mirrored. One definition, because
-    staging, the init container's mirror and the cleanup must address the same keys.
+    Namespaced because a pod name is unique only *per namespace*, while one service may
+    serve several. Per slot for the same reason one step down: several pods are held at
+    once, and a shared slot would have each one's ``start_held`` overwrite the tree the
+    others already fetched. One definition, because staging, the init container's fetch,
+    the token's scope and the cleanup must address the same slot.
     """
     return f"{EXEC_PREFIX}/{namespace}/{slot}"
 
 
 class KubeExecLane:
-    """Runs exec commands in a single aux pod, staged from the object store."""
+    """Runs exec commands in a single aux pod, staged through the service's data plane.
+
+    *stage_dir*, *discard_staged* and *token_for* are the service's own
+    ``staged_dir(slot)``, ``discard_staged(slot)`` and ``scoped_token(scope)``: the lane
+    writes the tree the pod will fetch, mints the token that reaches it, and drops it
+    with the pod. All three are required -- a lane that cannot stage would answer a
+    different question than the caller asked, against an unstaged ``/config``, and look
+    like a pass.
+    """
 
     def __init__(self, namespace: str, owner_ref: dict | None = None,
-                 kube_context: str | None = None, *, storage=None,
-                 storage_factory=None, bucket: str = "", s3_endpoint: str = "",
-                 s3_access_key: str = "", s3_secret_key: str = "",
-                 pull_secret: str = ""):
+                 kube_context: str | None = None, *, stage_dir, discard_staged,
+                 token_for, pull_secret: str = ""):
         self._namespace = namespace
         self._owner_ref = owner_ref
         # The image under test is one of ours, from this deployment's registry, and it may
@@ -94,46 +106,15 @@ class KubeExecLane:
         # run on — answering a question about somewhere else entirely.
         self._kube_context = kube_context
         self._core = None
-        # The service-side storage client (which may reach the store through a
-        # port-forward) and the in-cluster endpoint the pod itself must use. They are
-        # deliberately separate: an off-cluster service talks to 127.0.0.1:<port>, while
-        # the pod talks to the cluster Service.
-        #
-        # A factory rather than a client, because building one off-cluster opens a
-        # kubectl port-forward: a lane that is constructed and never staged into — the
-        # throwaway one the startup stray-reap builds, say — should not pay for a tunnel
-        # it will not use.
-        self._storage = storage
-        self._storage_factory = storage_factory
-        self._bucket = bucket
-        self._s3 = (s3_endpoint, s3_access_key, s3_secret_key)
-
-    @property
-    def _has_store(self) -> bool:
-        return bool(self._bucket) and (self._storage is not None
-                                       or self._storage_factory is not None)
+        self._stage_dir = stage_dir
+        self._discard = discard_staged
+        self._token_for = token_for
 
     def _client(self):
         if self._core is None:
             from .kube_client import core_v1_client
             self._core = core_v1_client(self._kube_context)
         return self._core
-
-    def _require_store(self):
-        """The staging store, or a refusal naming what is missing.
-
-        Staging has no fallback on purpose. Quietly running the command against an
-        unstaged ``/config`` would answer a different question than the caller asked and
-        look like a pass.
-        """
-        if not self._has_store:
-            raise RuntimeError(
-                "container exec on the cluster lane stages /config through the object "
-                "store, and this lane was built without one. That is a service "
-                "configuration problem, not something a command can work around.")
-        if self._storage is None:
-            self._storage = self._storage_factory()
-        return self._storage
 
     # -- ExecLane ---------------------------------------------------------
 
@@ -159,12 +140,13 @@ class KubeExecLane:
         from .kube_client import raise_api_error, wait_pod_ready
         core = self._client()
         self.stop_held(slot)
-        # An aux container stages nothing: its runner mirrors its own workspace through the
-        # object store around each command, so there is no /config tree to put here.
-        prefix = "" if spec.aux_spec is not None else self._stage(spec, slot)
+        # An aux container stages nothing: its runner moves its own workspace through the
+        # data plane around each command, so there is no /config tree to put here.
+        if spec.aux_spec is None:
+            self._stage(spec, slot)
         try:
             core.create_namespaced_pod(
-                self._namespace, self._held_manifest(spec, deadline_s, prefix, slot))
+                self._namespace, self._held_manifest(spec, deadline_s, slot))
         except ApiException as e:
             self._discard_staged(slot)
             raise_api_error(e, "could not start exec pod")
@@ -176,61 +158,59 @@ class KubeExecLane:
             self.stop_held(slot)
             raise
 
-    def _held_manifest(self, spec: ExecSpec, deadline_s: int, prefix: str,
-                       slot: str) -> dict:
+    def _held_manifest(self, spec: ExecSpec, deadline_s: int, slot: str) -> dict:
         """The pod for *slot*: an experiment container, or a variation's helper image.
 
         The aux form comes from ``build_aux_pod_manifest`` — the campaign path's builder —
         rather than from :func:`_pod_manifest`, so the pod is the one an aux runner already
-        knows how to use: the ``mc`` init container, and an emptyDir at each of
-        ``AUX_MOUNTABLE_PATHS`` that ``expose()`` stages into. Only the pod's name, its
-        single container's name and its label are this lane's, so every held pod is
-        addressed, probed and swept identically whatever is inside it. Reusing that builder
-        is also what keeps the ``mc`` wiring and the pull secret in one place instead of two.
+        knows how to use: the transfer container that moves its workspace, and an emptyDir
+        at each of ``AUX_MOUNTABLE_PATHS`` that ``expose()`` stages into. Only the pod's
+        name, its single container's name and its label are this lane's, so every held pod
+        is addressed, probed and swept identically whatever is inside it. Reusing that
+        builder is also what keeps the data-plane wiring and the pull secret in one place
+        instead of two.
         """
         if spec.aux_spec is None:
+            token = self._token_for(pod_access.staged_scope(exec_slot(self._namespace, slot)))
             return _pod_manifest(spec, deadline_s, self._namespace, self._owner_ref,
-                                 self._s3, self._bucket, prefix,
-                                 pull_secret=self._pull_secret, slot=slot)
+                                 token, pull_secret=self._pull_secret, slot=slot)
 
         from .container_runner import build_aux_pod_manifest
         aux = spec.aux_spec
         return build_aux_pod_manifest(
             slot, [aux], self._namespace, owner_ref=self._owner_ref,
+            stage_dir=self._stage_dir, token_for=self._token_for,
             deadline_seconds=deadline_s, pull_secret=self._pull_secret,
-            s3=self._s3 if self._has_store else None,
             pod_name=_pod_name(slot),
             container_names={aux.container_name(): HELD_CONTAINER},
             extra_labels=_labels())
 
-    def _stage(self, spec: ExecSpec, slot: str = SLOT_USER) -> str:
-        """Upload ``/config`` (and the workspace, if any) and return the key prefix.
+    def _stage(self, spec: ExecSpec, slot: str = SLOT_USER) -> Path:
+        """Write ``/config`` (and the workspace, if any) into the slot's staged tree.
 
-        ``upload_dir`` tags executables with ``x-amz-meta-executable``, which the init
-        container reads back — so a staged run file keeps its mode. The ConfigMap this
-        replaced could not carry modes at all.
+        A plain copy: the tar the pod fetches carries every mode, so a staged run file
+        keeps its executable bit with nothing to restore. Returns the tree's root.
         """
-        storage = self._require_store()
-        prefix = exec_prefix(self._namespace, slot)
-        storage.upload_dir(spec.config_dir, self._bucket, f"{prefix}/config")
+        name = exec_slot(self._namespace, slot)
+        # The tree a previous hold left would otherwise be fetched as part of this one.
+        self._discard(name)
+        root = Path(self._stage_dir(name))
+        shutil.copytree(spec.config_dir, root / CONFIG_SUBDIR)
         if spec.workspace_dir and spec.workspace_id:
-            storage.upload_dir(spec.workspace_dir, self._bucket, f"{prefix}/workspace")
-        return prefix
+            shutil.copytree(spec.workspace_dir, root / WORKSPACE_SUBDIR)
+        return root
 
-    def _discard_staged(self, slot: str = SLOT_USER) -> int:
-        """Delete this namespace's staged tree. Best-effort, but noisy when it fails.
+    def _discard_staged(self, slot: str = SLOT_USER) -> bool:
+        """Delete the slot's staged tree. Best-effort, but noisy when it fails.
 
-        Cleanup must not turn a successful stop into an error — but a leaked prefix is
+        Cleanup must not turn a successful stop into an error — but a leaked tree is
         the one thing nothing else reaps, so silence would be worse.
         """
-        if not self._has_store:
-            return 0
         try:
-            return self._require_store().delete_prefix(self._bucket,
-                                                       exec_prefix(self._namespace, slot))
+            return bool(self._discard(exec_slot(self._namespace, slot)))
         except Exception as e:  # noqa: BLE001 - cleanup never fails a stop
             logger.warning("could not discard the staged exec tree: %s", e)
-            return 0
+            return False
 
     def exec_in(self, target, argv: list, limit_s: int,
                 env: dict | None = None) -> tuple[int, str, str, bool]:
@@ -306,13 +286,11 @@ class KubeExecLane:
         """
         deleted = _sweep_held_pods(self)
         # The staged trees are keyed by slot too, and the same restart lost those keys.
-        # One prefix delete covers every slot of this namespace.
-        if self._has_store:
-            try:
-                self._require_store().delete_prefix(self._bucket,
-                                                    exec_prefix(self._namespace, "").rstrip("/"))
-            except Exception as e:  # noqa: BLE001 - cleanup never fails startup
-                logger.warning("could not discard staged exec trees: %s", e)
+        # One discard of the namespace's tree covers every slot in it.
+        try:
+            self._discard(exec_slot(self._namespace, "").rstrip("/"))
+        except Exception as e:  # noqa: BLE001 - cleanup never fails startup
+            logger.warning("could not discard staged exec trees: %s", e)
         return deleted
 
     def held_container_alive(self, slot: str = SLOT_USER) -> bool:
@@ -404,39 +382,32 @@ def _labels() -> dict:
     return {key: value}
 
 
-def _mirror_command(spec: ExecSpec) -> str:
-    """The init container's ``mc`` script: mirror the staged tree, restore exec bits.
+def _fetch_command(spec: ExecSpec, namespace: str, slot: str) -> str:
+    """The init container's shell: fetch ``/config``, and the workspace when one was named.
 
-    Modelled on the campaign job's init (``kubernetes_backend``) and the build context's
-    (``cluster_image_build.context_fetch_command``) — same alias, same prefix-per-mount
-    shape, so all three read alike.
+    Two fetches of one slot, each a subtree of it (the ``path`` query), so the tree the
+    service staged lands split across the two mounts exactly as it was staged. Modes ride
+    in the tar, so there is nothing to restore afterwards.
     """
-    parts = [
-        'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"',
-        'mc mirror "mystore/$S3_BUCKET/$S3_EXEC_PREFIX/config/" /config/',
-    ]
+    route = f"/staged/{exec_slot(namespace, slot)}"
+    parts = [pod_access.fetch_command(route, "/config", f"path={CONFIG_SUBDIR}")]
     if spec.workspace_dir and spec.workspace_id:
-        parts.append(
-            'mc mirror "mystore/$S3_BUCKET/$S3_EXEC_PREFIX/workspace/" '
-            f'{SOURCES_ROOT}/{spec.workspace_id}/')
-    # Restore the executable bit from the object metadata upload_dir wrote. Trailing
-    # `true` so a tree with no executables in it does not fail the init container.
-    restore = (
-        'src="mystore/$S3_BUCKET/$S3_EXEC_PREFIX/config/"; '
-        'mc find "$src" 2>/dev/null | while IFS= read -r obj; do '
-        "mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
-        'chmod +x "/config/${obj#$src}" || true; done; true')
-    return " && ".join(parts) + "; " + restore
+        parts.append(pod_access.fetch_command(
+            route, f"{SOURCES_ROOT}/{spec.workspace_id}", f"path={WORKSPACE_SUBDIR}"))
+    return " && ".join(parts)
 
 
 def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
-                  owner_ref: dict | None, s3: tuple, bucket: str,
-                  prefix: str, pull_secret: str = "",
+                  owner_ref: dict | None, token: str, pull_secret: str = "",
                   slot: str = SLOT_USER) -> dict:
-    """A single kept-alive container with ``/config`` mirrored down by an init container.
+    """A single kept-alive container with ``/config`` fetched by an init container.
 
     ``activeDeadlineSeconds`` is the manager's own deadline, so the pod cannot outlive
     the service's intent even if the reaper never runs.
+
+    *token* reaches this slot's staged tree and nothing else; it rides in the init
+    container's env (:func:`pod_access.staged_pod_env`) and nowhere the image under test
+    can read it.
 
     *pull_secret* authenticates the pull of the experiment image. It covers the whole pod
     because that is the only granularity Kubernetes offers, but only the main container
@@ -444,15 +415,12 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
     """
     from robovast.common.execution import resolve_sidecar_image
 
-    from .cluster_image_build import s3_init_env
+    from .kubernetes_backend import pull_policy_for
 
     metadata = {"name": _pod_name(slot), "namespace": namespace,
                 "labels": dict(_labels())}
     if owner_ref:
         metadata["ownerReferences"] = [owner_ref]
-    endpoint, access_key, secret_key = s3
-    init_env = s3_init_env(endpoint, access_key, secret_key, bucket, prefix,
-                           prefix_var="S3_EXEC_PREFIX")
 
     volumes = [{"name": "config", "emptyDir": {}}]
     init_mounts = [{"name": "config", "mountPath": "/config"}]
@@ -473,12 +441,12 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
             "restartPolicy": "Never",
             "activeDeadlineSeconds": int(deadline_s),
             "initContainers": [{
-                # The sidecar, not the experiment image: it carries `mc`, and staging
-                # must not depend on what the image under test happens to install.
-                "name": "s3-init", "image": resolve_sidecar_image(),
+                # The sidecar, not the experiment image: it carries the transfer tools,
+                # and staging must not depend on what the image under test installs.
+                "name": "staged-fetch", "image": resolve_sidecar_image(),
                 "imagePullPolicy": "IfNotPresent",
-                "command": ["sh", "-c", _mirror_command(spec)],
-                "env": init_env,
+                "command": ["sh", "-c", _fetch_command(spec, namespace, slot)],
+                "env": pod_access.staged_pod_env(namespace, token),
                 "volumeMounts": init_mounts,
             }],
             "containers": [{

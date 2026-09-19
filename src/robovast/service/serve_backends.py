@@ -31,20 +31,19 @@ SERVE_BACKEND_GROUP = "robovast.execution_backends"
 class ServeBackend(Protocol):
     """Builds the :class:`~robovast.service.interface.RobovastInterface` for one lane."""
 
-    def build(self, *, in_pod: bool, context: str | None, namespace: str, store,
-              workspace_dir=None, results_dir=None):
+    def build(self, *, in_pod: bool, store, workspace_dir=None, results_dir=None):
         """Return the service implementation for this lane.
 
         Args:
-            in_pod: The service is running inside the cluster it dispatches to.
-            context: Kubernetes context to use, when the lane needs one.
-            namespace: Kubernetes namespace, when the lane needs one.
+            in_pod: The service is running inside the cluster it dispatches to. A lane
+                that dispatches elsewhere reads where from its own deployment, not from
+                arguments: a caller naming a cluster it is not running in would be
+                naming one its campaigns' pods cannot reach back to.
             store: A prepared :class:`~robovast.service.workspaces.WorkspaceStore`, or
                 ``None`` to let the lane make its own.
             workspace_dir: A directory pinned in place instead of uploaded.
-            results_dir: Where local campaigns land, or ``None`` for the lane's default.
-                Only the local lane has one; a cluster campaign's results live in the
-                object store.
+            results_dir: Where campaigns land, or ``None`` for the lane's default.
+                Campaigns of either lane live under it.
         """
 
     #: One word for the storage this lane uses, for the startup line.

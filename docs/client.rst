@@ -71,8 +71,6 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast service restart``
      - Roll the deployed service onto the newest image at its tag, through its own API —
        no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
-   * - ``vast cluster store-cleanup``
-     - Remove result buckets from the service's object store.
    * - ``vast container exec|stop``
      - Run a command in the experiment image, to test a container before a campaign does.
    * - ``vast files ls|cat|get|put|rm``
@@ -103,17 +101,18 @@ What is absent, and what is only partly here
 hidden or disabled — the distribution does not register them, so ``vast --help`` on a
 client install lists exactly what it can run. That is the point of installing it alone.
 
-**Partly here:** ``vast cluster`` and ``vast service``. The rule is the same one, applied a
-level down — a subcommand exists exactly when something that can perform it is installed:
+**Partly here:** ``vast service``, and ``vast cluster`` as an empty group. The rule is the
+same one, applied a level down — a subcommand exists exactly when something that can
+perform it is installed:
 
-* ``vast cluster store-cleanup`` and ``vast service log|info|resources|restart`` ship with
-  the client. Every one of them only *drives* a service, so a client install runs them
-  completely.
+* ``vast service log|info|resources|restart|cache|mcp-stats`` ship with the client. Every
+  one of them only *drives* a service, so a client install runs them completely.
 * ``vast cluster setup|cleanup|jobs-cleanup|monitor`` and ``vast service upgrade|token``
   arrive with ``robovast-cluster``. They need a kubeconfig, an API server or a cluster
   Secret.
 
-So ``vast cluster --help`` on a client install lists ``store-cleanup`` and not ``setup``.
+So ``vast service --help`` on a client install lists ``restart`` and not ``upgrade``, and
+``vast cluster --help`` lists nothing at all until the cluster distribution is installed.
 Nothing is stubbed and nothing fails on use.
 
 Both groups spanning two distributions is the design, not an accident: a group is named

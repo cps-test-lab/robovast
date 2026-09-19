@@ -81,11 +81,10 @@ _BAR = "=" * 60
 _campaign_id_lock = threading.Lock()
 _LAST_CAMPAIGN_ID: str | None = None
 
-#: S3-compatible bucket names are capped at 63 characters, and the cluster lane's
-#: embedded object store uses the campaign id as its bucket name verbatim (see
-#: ``in_pod_storage.campaign_storage_location``). Refused HERE, at mint time -- before
-#: any pod or Job exists -- rather than left to surface as a storage-layer 400 once a
-#: campaign has already been accepted and started.
+#: A Kubernetes label value is capped at 63 characters, and a campaign's id is carried
+#: as one on every Job, pod and Secret it owns (``_label_safe_campaign``). Refused HERE,
+#: at mint time -- before any pod or Job exists -- rather than left to surface as an API
+#: rejection once a campaign has already been accepted and started.
 _MAX_CAMPAIGN_ID_LEN = 63
 
 
@@ -262,11 +261,6 @@ class CampaignController:
             self.campaign_id, self.campaign_config_dump, mode=self.mode,
             config_dir="_config", description=self.description,
             created_by=self.created_by, origin=self.origin)
-        # Before a single job exists. The row just written is the only place the
-        # campaign's description, who launched it and where its configuration came from
-        # are recorded, and on a lane whose driver disk is scratch a record published at
-        # the end is missing from every campaign that did not reach one.
-        self.backend.publish_records(self.campaign_root)
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id,
                               progress_deadline_s=self._progress_deadline())
@@ -587,8 +581,7 @@ class CampaignController:
         try:
             self.backend.run_batch(
                 self.batch_campaign_data, campaign_root=self.campaign_root,
-                batch_tag="batch-0", runs=self.runs, options=self.options,
-                whole_campaign=True)
+                batch_tag="batch-0", runs=self.runs, options=self.options)
         finally:
             self._end_batch_progress()
 
@@ -631,12 +624,6 @@ class CampaignController:
                                    invalid=invalid_runs_count, outcomes_counted=True)
             self.state.update(batches_done=1)
         self.notifier.batch_finished(0, len(configs))
-        # The same per-batch checkpoint the search loop takes. Redundant with
-        # ``finalize_campaign`` when the campaign goes on to finish -- and not when it does
-        # not, which is the case this exists for: the unit and run rows just written are the
-        # campaign's tally, and losing them to a crash in the finish tail would leave a
-        # campaign whose results are all in the store reading as if nothing had run.
-        self.backend.publish_records(self.campaign_root)
         logger.info("\n%s\n✅  Batch run complete  —  %d configuration(s) in %s\n%s",
                     _BAR, len(configs), self.campaign_root, _BAR)
         return {"mode": "batch", "configs": len(configs), "campaign_root": self.campaign_root}
@@ -910,11 +897,6 @@ class CampaignController:
             # What this batch MEASURED. A recalled cell was counted by the batch that
             # measured it, and counting it again would report work that did not happen.
             self.notifier.batch_finished(batch_idx - 1, len(scored))
-            # The search's checkpoint. Everything the loop would need to pick up here --
-            # which batches ran and what each parameter set scored -- is in the rows just
-            # written, so publishing them per batch is what makes a search resumable at a
-            # batch boundary rather than only from the start.
-            self.backend.publish_records(self.campaign_root)
             result = stop.should_stop(snap)
             if not result and self._empty_batches >= EMPTY_BATCH_LIMIT:
                 # Not a criterion the campaign declared, and it does not need to be: a
@@ -1247,15 +1229,8 @@ class CampaignController:
         nothing -- 0 outputs synced, and an extractor that refuses the batch while naming the
         world as the likely cause.
 
-        **Two steps, not one.** The Job writes its output to the object store; ``sync_outputs``
-        pulls it into the campaign root, and nothing can read a CSV before that happens. A
-        version of this that ran the Job and skipped the sync logged "rosbag conversion
-        complete" and then handed the extractor a directory with no CSVs in it -- which reads
-        as a conversion that lied about finishing.
-
-        The sync runs **regardless of the Job's outcome**, for the reason the campaign-level
-        path gives: the conversion tees its own error into ``postprocessing.log`` and mirrors
-        it out, so skipping the sync on failure discards the only account of what went wrong.
+        The pod delivers what it derived straight into the campaign root before its Job
+        counts as finished, so a CSV is readable the moment the Job is.
 
         **Derive there, complete later.** The Job runs *local_cmds* -- this batch's own
         ``search.postprocessing`` half -- beside the data, and sends back only what it
@@ -1287,12 +1262,15 @@ class CampaignController:
         from robovast.results_processing.postprocessing import postprocess_convert_resources
         from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
         try:
-            run_job, sync, image_for, complete_message = _conversion_job_runner()
+            run_job, image_for, complete_message = _conversion_job_runner()
             ok, message = run_job(
-                cluster_config, self.campaign_id,
+                cluster_config, self.campaign_id, self.campaign_root,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
                 image_for(self.campaign_root),
                 unwrap_conversion_commands(rosbag_cmds),
+                # The campaign's data-plane token, which its pods carry: the backend was
+                # built with it by the service, the one process holding the secret.
+                token=getattr(self.backend, "data_token", ""),
                 kube_context=getattr(self.backend, "kube_context", None),
                 discriminator=tag,
                 tolerate_under=_interrupted_job_dirs(self.campaign_root),
@@ -1307,9 +1285,6 @@ class CampaignController:
                 convert_resources=postprocess_convert_resources(
                     str(campaign_vast(self.campaign_root))),
                 admission=getattr(self.backend, "admission", None))
-            sync(cluster_config, self.campaign_id, self.campaign_root)
-            # Only now can the message say where the conversion error is: the sync is what
-            # decides whether a POSTPROCESSING section exists to point at.
             message = complete_message(
                 message,
                 os.path.join(self.campaign_root, "_execution", "postprocessing.log"))
@@ -1336,8 +1311,8 @@ class CampaignController:
                 f"instead of this.") from exc
         # The pod derived, so the caller must not. Reached only on a Job that succeeded:
         # a failed one returns False above, and the caller then derives from whatever the
-        # sync did bring back rather than skipping the step on the strength of a Job that
-        # did not do it.
+        # pod did deliver rather than skipping the step on the strength of a Job that did
+        # not do it.
         return True
 
 
@@ -1400,20 +1375,19 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
 
 
 def _conversion_job_runner():
-    """The four cluster helpers a batch conversion needs, resolved in one place.
+    """The three cluster helpers a batch conversion needs, resolved in one place.
 
-    A seam rather than four imports at the call site: it keeps the cluster package out of
-    the import path on a local run, and lets a test substitute the whole set -- which is
-    the only way to check that the Job and the SYNC both happen, and in that order, without
-    a cluster to run them against.
+    A seam rather than three imports at the call site: it keeps the cluster package out
+    of the import path on a local run, and lets a test substitute the whole set without a
+    cluster to run them against.
 
-    ``with_log_pointer`` rides along because a failed Job's message is only half-written
-    until the sync has run: it says where to read the conversion error, and whether that
-    place exists is not known until then.
+    ``with_log_pointer`` rides along because a failed Job's message says where to read
+    the conversion error, and whether that place exists is only known once the Job's
+    account has been published.
     """
     from robovast.execution.cluster_execution.postprocess_job import (
-        campaign_execution_image, run_conversion_job, sync_outputs, with_log_pointer)
-    return run_conversion_job, sync_outputs, campaign_execution_image, with_log_pointer
+        campaign_execution_image, run_conversion_job, with_log_pointer)
+    return run_conversion_job, campaign_execution_image, with_log_pointer
 
 
 def unwrap_conversion_commands(commands) -> list:
@@ -1444,9 +1418,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
 
     Called from the builders' ``finally`` **after the store is closed** (so
     ``campaign.db`` is flushed — the index ingest mirrors it) and **before**
-    :func:`_finalize`. Running before the campaign's own upload means the driver's records
-    are not in the campaign's durable home yet, and postprocessing reads them from there,
-    so this publishes them first (``publish_execution_records``).
+    :func:`_finalize`.
 
     Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)
     and a no-op otherwise. This is an **option, not an env var**, because the service
@@ -1460,37 +1432,15 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     cluster_config = getattr(backend, "cluster_config", None)
     if cluster_config is None:  # local backend — the in-process chain handles it
         return
-    # A campaign this process RESUMED holds only its control plane until now (see
-    # cluster_execution.campaign_resume), and the derived data comes from the whole tree.
-    # Here rather than in the caller's tail because this is the first reader that needs it:
-    # ``finalize_campaign`` only re-uploads, so what is missing locally is simply not
-    # re-sent and the store keeps the copy it already has. A no-op for a campaign that ran
-    # start to finish in this process.
-    # The phase moves BEFORE the root is completed, because completing it is postprocessing's
-    # own first step and can take minutes on a resumed campaign. Left until after, the campaign
-    # sat in `running` for the whole transfer -- where `status.stall_report` measures silence
-    # against the per-run budget and calls it "no progress ... the run is not merely slow",
-    # sending a reader to diagnose a run that had already finished. That verdict is suppressed
-    # off the running phase, and this is what makes the suppression apply.
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
-    backend.ensure_campaign_root_complete(campaign_root)
-    # And the other direction, before a reader that is not this process looks: what the
-    # DRIVER alone wrote has to reach the campaign's durable home. Postprocessing stages
-    # the campaign from there, while `finalize_campaign` publishes it only after this tail
-    # returns -- so the pod was handed a campaign with no `execution.yaml`, and its metadata
-    # step had nothing to say what produced the results it had just derived.
-    #
-    # The docstring above explains the old order as letting the derived CSVs ride the
-    # existing campaign upload. That reason is spent: the derived data is published by
-    # whatever produced it now, so there is nothing left for this to ride.
-    backend.publish_execution_records(campaign_root)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
         from robovast.execution.control_server import stop_checker
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
+            token=getattr(backend, "data_token", ""),
             # The context this backend submitted the campaign's Jobs with; postprocessing
             # must schedule against the same cluster the runs went to.
             kube_context=getattr(backend, "kube_context", None),
@@ -2143,55 +2093,20 @@ def _record_controller_failure(campaign_root, campaign_id, state, exc, backend):
 
 
 def _record_controller_outcome(campaign_root, campaign_id, state, backend):
-    """Durably record the campaign's current terminal ``Status`` (outcome + upload).
+    """Durably record the campaign's current terminal ``Status``.
 
-    Writes ``_execution/outcome.json`` from the live ``state`` — whatever phase it
-    holds (``failed`` for a crash, ``stopped`` for a cooperative stop) — and uploads
-    the control-plane artifacts to the object store, so a **stateless service resolves
-    the terminal state after the pod is gone** (a plain ``_finalize`` upload is skipped
-    for both failures and stops). Best-effort: never masks the caller's flow.
+    Writes ``_execution/outcome.json`` from the live ``state`` — whatever phase it holds
+    (``failed`` for a crash, ``stopped`` for a cooperative stop) — so a service that no
+    longer has this driver resolves the terminal state from the campaign directory.
+    Best-effort: never masks the caller's flow.
     """
+    del backend
     from robovast.common import campaign_data
 
     try:
         campaign_data.write_execution_outcome(campaign_root, state.snapshot())
     except Exception:  # pylint: disable=broad-except
         logger.warning("Could not write outcome.json for %s", campaign_id, exc_info=True)
-        return
-
-    # Upload just the control-plane artifacts (outcome + log) to the object store,
-    # so the stateless service resolves the reason after the pod is gone.
-    cfg = getattr(backend, "cluster_config", None)
-    if cfg is None:
-        return  # local lane: the artifacts are already on the disk the caller reads
-    try:
-        # After the guard, not before it. The upload is a cluster-lane concern, and
-        # importing it first meant every *local* teardown loaded cluster code to
-        # discover it had nothing to do -- which, once that code ships separately,
-        # becomes an ImportError caught below and logged as a failed upload that was
-        # never going to happen.
-        from robovast.execution.cluster_execution import in_pod_storage
-        storage = in_pod_storage.storage_client_for(cfg)
-        bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-        exec_dir = os.path.join(campaign_root, "_execution")
-        # variation.log included: an early config-expansion crash happens before
-        # _finalize's whole-root upload, so its log would otherwise be lost. build.log
-        # for the same reason and more sharply: a campaign that died waiting for its
-        # image never reaches _finalize at all, and the live build log dies with the
-        # build Job at ttlSecondsAfterFinished — this copy is the only surviving record
-        # of why the image never arrived.
-        # container_failures.json is here and not only in the whole-root finalize upload
-        # because this path runs for a campaign that FAILED, and finalize does not run for
-        # one that was stopped -- which is exactly when the evidence matters most.
-        for name in ("outcome.json", "controller.log", "variation.log", "build.log",
-                     "container_failures.json", "interventions.json"):
-            path = os.path.join(exec_dir, name)
-            if os.path.isfile(path):
-                storage.upload_file(path, bucket, f"{prefix}_execution/{name}")
-    except Exception as e:  # pylint: disable=broad-except
-        # Concise (no traceback): on Ctrl+C the storage tunnel is already gone, so a
-        # connection error here is expected and must not re-clutter the shutdown.
-        logger.warning("Could not upload outcome record for %s: %s", campaign_id, e)
 
 
 def filter_configs_by_name(configs, config_filter):

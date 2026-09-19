@@ -249,7 +249,7 @@ def test_a_private_registry_ca_is_configured_on_the_daemon():
 def _job(**over):
     from robovast.execution.cluster_execution.cluster_image_build import build_job_manifest
     kwargs = {"build_id": "imgbuild-x-abc", "image_ref": "reg.local:5000/x:abc",
-              "campaign_label": "imgbuild-x-abc", "init_env": [],
+              "campaign_label": "imgbuild-x-abc", "token": "tok",
               "push_secret_name": "push", "namespace": "ns",
               "daemon_addr": "tcp://robovast-buildkitd.ns.svc:1234"}
     kwargs.update(over)

@@ -344,11 +344,6 @@ class HTTPTransport(RobovastInterface):
         return ListCampaignsResponse.model_validate(
             self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset))
 
-    def cleanup_campaign_data(self, request) -> ActionResult:
-        return ActionResult.model_validate(
-            self._post(Routes.CLEANUP_DATA,
-                       {"campaign_id": request.campaign_id, "force": request.force}))
-
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))
 
@@ -559,16 +554,9 @@ class HTTPTransport(RobovastInterface):
     def ingest_staged(self, slot: str, stream):
         return self._upload(Routes.staged(slot), stream)
 
-    def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
-        # Deliberately the *default* timeout: this is the cheap probe, and if it hangs the
-        # answer is "the service is unwell", not "be patient".
-        from robovast.service.interface import CampaignDataStatus
-        return CampaignDataStatus.model_validate(
-            self._get(Routes.campaign_data_status(campaign_id)))
-
     def campaign_scene_status(self, campaign_id: str, config_name: str,
                               run_id: str) -> "SceneStatus":
-        # The default timeout, as for data-status: this is the cheap probe, and it never builds.
+        # The default timeout: this is the cheap probe, and it never builds.
         from robovast.service.interface import SceneStatus
         return SceneStatus.model_validate(self._get(
             Routes.campaign_scene(campaign_id),

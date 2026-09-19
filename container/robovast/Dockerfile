@@ -66,7 +66,7 @@ COPY --from=scenario-execution-clone /src /
 # refuse `--platform linux/arm64` against such a tag: it hands back the amd64 bytes and labels the
 # result arm64. That built and pushed without complaint for as long as nothing executed in it --
 # on an amd64 runner nothing is emulated, so even the RUN steps below passed -- and what shipped
-# was an arm64 manifest full of amd64 userland, carrying arm64 `mc` and `fixuid` binaries fetched
+# was an arm64 manifest full of amd64 userland, carrying an arm64 `fixuid` binary fetched
 # by TARGETARCH. It died with "Invalid ELF image for this architecture" the moment a real arm64
 # host ran it. container/platforms.env had already recorded this failure for roqsim without the
 # same conclusion being drawn here.
@@ -275,34 +275,6 @@ RUN \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 
-# Install MinIO client (mc) for S3 upload in post-run script.
-# TARGETARCH (amd64 / arm64), not a hard-coded linux-amd64: this image is built for both,
-# so the fixed URL put an x86 binary into every arm64 image.
-ARG TARGETARCH
-# mc is fetched from the project's GitHub release, PINNED and checksummed, because MinIO
-# stopped serving it: dl.min.io answers 410 Gone for every community build, with "the open-source
-# MinIO Server, MinIO Client (mc) and MinIO KES projects are archived and no longer maintained".
-# That took every image here with it -- the URL had no version in it, so there was nothing to
-# fall back to and nothing that said which build had been installed.
-#
-# The release assets survive the archive, so the fix is also an improvement: this pins a build
-# and verifies it, where the old URL took whatever "latest" meant on the day and checked nothing.
-# See MC_RELEASE / MC_SHA256_* below; both architectures are listed because the digest is what
-# makes the pin worth having, and one sum cannot cover two binaries.
-ARG MC_RELEASE=RELEASE.2025-08-13T08-35-41Z
-ARG MC_SHA256_AMD64=01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
-ARG MC_SHA256_ARM64=14c8c9616cfce4636add161304353244e8de383b2e2752c0e9dad01d4c27c12c
-RUN set -eu; \
-    url="https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-${TARGETARCH}.${MC_RELEASE}"; \
-    case "$TARGETARCH" in \
-      amd64) want="$MC_SHA256_AMD64" ;; \
-      arm64) want="$MC_SHA256_ARM64" ;; \
-      *) echo "no pinned mc checksum for TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "$url" -o /usr/local/bin/mc; \
-    echo "$want  /usr/local/bin/mc" | sha256sum -c - ; \
-    chmod +x /usr/local/bin/mc
-
 RUN mkdir -p /ws/src
 
 # From the ``scenario-execution-src`` stage, which is the pinned clone by default and a local
@@ -445,9 +417,9 @@ RUN USER=ubuntu && \
 #
 # Cheap, and it belongs here rather than in CI: on a native runner every RUN above has already
 # exec'd this architecture's binaries, so the base userland is covered by the build itself. What
-# is NOT covered is a binary fetched by TARGETARCH and never run -- mc and fixuid, which were the
-# two that really were arm64 while everything around them was amd64. Also protects a local build,
-# which no CI check reaches.
+# is NOT covered is a binary fetched by TARGETARCH and never run -- fixuid, which really was
+# arm64 while everything around it was amd64. Also protects a local build, which no CI check
+# reaches.
 #
 # Compared against /bin/bash rather than against a table of architecture names: the question is
 # whether these binaries match the userland they have to run in, and bash IS that userland. That
@@ -456,11 +428,10 @@ RUN USER=ubuntu && \
 # coreutils, so this pulls in nothing.
 #
 # fixuid is inspected rather than run: it is setuid and its job is to change uid/gid and exec, so
-# there is no harmless invocation (it takes only -q, and `-v` fails the flag parse). mc has a real
-# one, so it gets exec'd as well as inspected.
+# there is no harmless invocation (it takes only -q, and `-v` fails the flag parse).
 RUN e_machine() { od -An -t x1 -j 18 -N 2 "$1" | tr -d ' '; } && \
     want=$(e_machine /bin/bash) && \
-    for bin in /usr/local/bin/mc /usr/local/bin/fixuid; do \
+    for bin in /usr/local/bin/fixuid; do \
       got=$(e_machine "$bin"); \
       if [ "$got" != "$want" ]; then \
         echo "ERROR: $bin is ELF e_machine $got, but this image's userland is $want." >&2; \
@@ -471,7 +442,6 @@ RUN e_machine() { od -An -t x1 -j 18 -N 2 "$1" | tr -d ' '; } && \
         exit 1; \
       fi; \
     done && \
-    mc --version > /dev/null && \
     echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m), e_machine=${want}"
 
 # The build lock: what this image contains, as opposed to what it was asked for.

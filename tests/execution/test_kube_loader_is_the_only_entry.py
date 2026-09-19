@@ -8,10 +8,10 @@ cluster-touching path already goes through, so the policy cannot be missed". It 
 missed, in ten places: they called ``kubernetes.config.load_kube_config`` directly, so
 every API call on those paths ran with ``timeout=None``.
 
-The visible cost: an off-cluster ``vast serve --backend cluster`` against an unreachable
-cluster sat on a TCP connect for over two minutes and then died in a urllib3 traceback,
-rather than saying in seconds which cluster it could not reach. A documented invariant
-that nothing checks is a comment; this makes it a test.
+The visible cost is paid by every operator command: a ``vast cluster`` verb against an
+unreachable cluster sits on a TCP connect for minutes and then dies in a urllib3
+traceback, rather than saying in seconds which cluster it could not reach. A documented
+invariant that nothing checks is a comment; this makes it a test.
 """
 
 import pathlib

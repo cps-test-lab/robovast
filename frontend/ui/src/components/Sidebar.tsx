@@ -176,7 +176,7 @@ export function Sidebar({
 }
 
 // Passive service-connection + usage indicator, pinned to the sidebar footer (moved here from the
-// old top AppBar). Stacked meters — cpu, mem, jobs while there is scenario work, and disk/store
+// old top AppBar). Stacked meters — cpu, mem, jobs while there is scenario work, and disk/results
 // wherever the backend can report them — each labelled
 // and captioned with its own hover tooltip; the whole block reads "disconnected" until the backend
 // answers. Jobs is conditional because an always-present "0/0" on an empty track was indis-
@@ -259,22 +259,19 @@ function ConnectionStatus() {
           text={formatBytesPair(u.disk.used_bytes, u.disk.capacity_bytes)}
         />
       ) : null}
-      {u.store && u.store.capacity_bytes > 0 ? (
+      {u.results && u.results.capacity_bytes > 0 ? (
         <UsageRow
-          label="Store"
-          // The denominator is what this store can still REACH -- its own bytes plus what
-          // the filesystem behind it will still take -- not that filesystem's size. A
-          // provider whose store is an unbounded volume shares its disk with everything
-          // else on that node, so its size was never a budget: it read 29 of 460 GiB on a
-          // disk already 314 full. Named in the tip because it moves as the node fills,
-          // which is the point rather than a wobble, and because it is NOT the Disk row's
-          // denominator -- the store is its own pod and can be pinned to a different node,
-          // so one meter can be comfortable while the other is full.
-          tip={`campaign results store: ${formatBytes(u.store.used_bytes)} used, ${formatBytes(
-            Math.max(0, u.store.capacity_bytes - u.store.used_bytes),
-          )} still free to it${u.store_node ? ` on ${u.store_node}` : ''}`}
-          fraction={u.store.used_bytes / u.store.capacity_bytes}
-          text={formatBytesPair(u.store.used_bytes, u.store.capacity_bytes)}
+          label="Results"
+          // The results volume is where campaigns live, and the service serves them from it
+          // directly. Drawn only where the volume is a provisioned claim: a directory on the
+          // service's node has no meter of its own, and the Disk row is that filesystem. The
+          // denominator is what this volume can still REACH -- its own bytes plus what the
+          // filesystem behind it will still take -- not that filesystem's size.
+          tip={`results volume: where campaigns live. ${formatBytes(u.results.used_bytes)} used, ${formatBytes(
+            Math.max(0, u.results.capacity_bytes - u.results.used_bytes),
+          )} still free to it`}
+          fraction={u.results.used_bytes / u.results.capacity_bytes}
+          text={formatBytesPair(u.results.used_bytes, u.results.capacity_bytes)}
         />
       ) : null}
       {/* The service's own verdict on the two meters above, not a threshold of the UI's: the

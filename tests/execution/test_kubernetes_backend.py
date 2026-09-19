@@ -3,10 +3,10 @@
 """Unit tests for KubernetesBackend's campaign_root completion.
 
 The auto-chained analysis postprocessing runs against ``campaign_root`` *before*
-``finalize_campaign``, so the backend must leave it complete after ``run_batch``:
-the campaign-level snapshot (``_config``/``_transient``) projected from the object
-store, and ``_execution/execution.yaml`` recorded — exactly what the local (Docker)
-backend leaves via ``run.sh``.
+``finalize_campaign``, so the backend must leave it complete after ``run_batch``: the
+run results each Job's uploader delivered, the campaign-level tree ``run_batch_in_pod``
+prepared into it, and ``_execution/execution.yaml`` recorded — exactly what the local
+(Docker) backend leaves via ``run.sh``.
 """
 
 import types
@@ -14,36 +14,35 @@ import types
 import pytest
 
 from robovast.execution.backends import RunOptions
-from robovast.execution.cluster_execution import in_pod_storage
 from robovast.execution.cluster_execution.kubernetes_backend import (BatchJobRunner,
                                                                      KubernetesBackend)
 
+#: What the service hands the backend for the campaign's pods to authenticate with.
+_TOKEN = "scoped-token"
 
-class _FakeStorage:
-    """Records download_prefix / upload_dir calls; no I/O."""
+
+class _FakeCore:
+    """The CoreV1Api calls a batch makes: the campaign's token Secret."""
 
     def __init__(self):
-        self.downloads = []
+        self.secrets = []
 
-    def download_prefix(self, bucket, prefix, local_dir, force=False, on_file=None):
-        self.downloads.append(prefix)
-        return 1
-
-    def upload_dir(self, local_dir, bucket, prefix=""):
-        return 7
+    def create_namespaced_secret(self, namespace, body):
+        self.secrets.append(body)
 
 
-def _runner_for_download_test(configs):
-    """A BatchJobRunner stubbed down to just its download step."""
+def _runner_for_batch_test(configs):
+    """A BatchJobRunner stubbed down to the steps that bracket the wait loop."""
     r = BatchJobRunner()
     r.cluster_config = object()
+    r.namespace = "ns"
     r.campaign = "camp-2026-07-17-120000"
     r.configs = configs
     r._batch_tag = "batch-0"
     r.campaign_data = {"execution": {}}
-    # Stub every side-effecting step so only the download loop runs.
+    # Stub every side-effecting step so only the batch's own bookkeeping runs.
     r._ensure_k8s_initialized = lambda: None
-    r._s3_settings = lambda: ("ep", "ak", "sk", "bkt", "")  # embedded: empty prefix
+    r.k8s_client = _FakeCore()
     r._write_job_param_files = lambda out_dir, campaign_root=None: None
     r._build_jobs = lambda: []          # no jobs → submission loop is empty
     r.get_remaining_jobs = lambda names: []  # wait loop breaks immediately
@@ -53,68 +52,54 @@ def _runner_for_download_test(configs):
     return r
 
 
-def test_run_batch_in_pod_projects_campaign_level_snapshot(monkeypatch, tmp_path):
-    """The download must include the campaign-level _config/, _transient/ and the
-    batch's job-artifact dir _jobs/<batch_tag>/ (holds sysinfo.yaml et al.).
-
-    Without _config/*.vast the auto-chain's ``campaign_vast`` fails; without
-    _jobs/ the per-run ``job`` symlink cannot resolve sysinfo.yaml for metadata.
-    """
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
+def _no_config_preparation(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
         lambda out_dir, data, cluster=False, instance_type_command=None: None)
 
-    runner = _runner_for_download_test([{"name": "cfgA"}, {"name": "cfgB"}])
-    runner.run_batch_in_pod(str(tmp_path))
 
-    assert storage.downloads == ["cfgA", "cfgB", "_config", "_transient",
-                                 "_jobs/batch-0"]
-
-
-def test_run_batch_in_pod_whole_campaign_single_prefix_download(monkeypatch, tmp_path):
-    """Batch mode fetches the whole campaign in one prefix download, not per config.
-
-    The per-config enumeration exists only to scope _jobs/ across a search's many
-    batches; in batch mode this one batch *is* the campaign, so a single prefix
-    download avoids the O(configs) sequential list calls that stall a large batch.
-    """
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
+def test_the_campaign_root_is_where_the_configs_are_prepared(monkeypatch, tmp_path):
+    """The Jobs' init containers fetch the campaign's inputs from the campaign, so the
+    tree they fetch is written into the campaign root itself and nowhere else."""
+    prepared = []
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False, instance_type_command=None: None)
+        lambda out_dir, data, cluster=False, instance_type_command=None:
+            prepared.append((out_dir, cluster)))
 
-    runner = _runner_for_download_test([{"name": "cfgA"}, {"name": "cfgB"}])
-    runner.run_batch_in_pod(str(tmp_path), whole_campaign=True)
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
-    # One download against the (here embedded/empty) campaign prefix — not one per
-    # config plus the campaign-level dirs.
-    assert storage.downloads == [""]
+    assert prepared == [(str(tmp_path), True)]
+
+
+def test_the_campaigns_token_secret_exists_before_its_first_job(monkeypatch, tmp_path):
+    """A Job's pod reads the token out of a Secret, so the Secret has to be there before
+    any Job is created -- a pod whose secretKeyRef does not resolve never starts."""
+    _no_config_preparation(monkeypatch)
+
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    secret, = runner.k8s_client.secrets
+    assert secret["stringData"]["token"] == _TOKEN
 
 
 def test_run_batch_in_pod_materialises_job_symlinks(monkeypatch, tmp_path):
-    """Each run's ``job`` symlink is created so metadata resolves sysinfo.yaml now.
+    """Each run's ``job`` symlink is created at the end of the batch, so the driver's own
+    metadata and postprocessing resolve ``<run>/job/sysinfo.yaml`` -- as in a local run --
+    rather than only the archive writer seeing them."""
+    _no_config_preparation(monkeypatch)
 
-    In the cluster flow the symlinks were only materialised at upload-to-share,
-    after the driver's own metadata/postprocessing had already run.
-    """
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False, instance_type_command=None: None)
-
-    runner = _runner_for_download_test([{"name": "cfgA"}])
-    # Seed the job-links manifest create_job_links reads (the no-op _write_job_links
-    # stub leaves it intact; the fake storage download writes no files).
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
+    # Seed the job-links manifest create_job_links reads; the no-op _write_job_links
+    # stub leaves it intact.
     transient = tmp_path / "_transient"
     transient.mkdir(parents=True)
     (transient / "job_links.yaml").write_text(
         "cfgA/0/job: ../../_jobs/batch-0/job-0\n")
 
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     link = tmp_path / "cfgA" / "0" / "job"
     assert link.is_symlink()
@@ -122,30 +107,24 @@ def test_run_batch_in_pod_materialises_job_symlinks(monkeypatch, tmp_path):
 
 
 def test_run_batch_in_pod_aborts_cleanly_on_stop(monkeypatch, tmp_path):
-    """A cooperative stop abandons the batch with CampaignStopped, before download.
-
-    On Ctrl+C the storage tunnel is gone; pressing on to download would only fail
-    noisily. The runner must raise the clean stop signal and never touch storage.
-    """
+    """A cooperative stop abandons the batch with CampaignStopped rather than finishing
+    it: the jobs are being torn down, and what they left is what the campaign has."""
     from robovast.execution.backends import CampaignStopped
 
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False, instance_type_command=None: None)
+    _no_config_preparation(monkeypatch)
 
-    runner = _runner_for_download_test([{"name": "cfgA"}])
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
     runner._state = types.SimpleNamespace(stop_requested=True)
 
     with pytest.raises(CampaignStopped):
-        runner.run_batch_in_pod(str(tmp_path))
-    assert storage.downloads == []  # never attempted a download against a dead tunnel
+        runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+    # The batch never reached its tail, so it linked nothing up.
+    assert not (tmp_path / "cfgA").exists()
 
 
 def _backend():
     return KubernetesBackend(cluster_config=object(), namespace="ns",
-                             kube_context=None)
+                             kube_context=None, data_token=_TOKEN)
 
 
 def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path):
@@ -163,7 +142,7 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
     monkeypatch.setattr(
         BatchJobRunner, "for_batch",
         classmethod(lambda cls, **kw: types.SimpleNamespace(
-            run_batch_in_pod=lambda campaign_root, whole_campaign=False: None,
+            run_batch_in_pod=lambda campaign_root, token: None,
             # What the record asks a real runner for: which machines the campaign left out.
             skipped_nodes=dict)))
 
@@ -179,14 +158,10 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
 
 
 def test_finalize_no_longer_records_execution_yaml(monkeypatch, tmp_path):
-    """finalize is now pure upload — execution.yaml was already recorded earlier."""
+    """finalize releases what the cluster held — execution.yaml was recorded earlier."""
     called = []
     monkeypatch.setattr("robovast.common.execution.create_execution_yaml",
                         lambda *a, **k: called.append(True))
-    monkeypatch.setattr(in_pod_storage, "campaign_storage_location",
-                        lambda cfg, cid: ("bkt", ""))
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
 
     be = _backend()
     be.finalize_campaign(str(tmp_path / "camp-2026-07-17-120000"))
@@ -222,11 +197,7 @@ def _job(index, config_name, runs=1):
 
 def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=()):
     """A runner whose wait loop sees *forensics* on its first poll."""
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False, instance_type_command=None: None)
+    _no_config_preparation(monkeypatch)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.restarted_job_forensics",
         lambda core, ns, label, job_names=None: forensics)
@@ -243,16 +214,14 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
         "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
         lambda campaign, tag, index: f"rrroqs-x-{index}")
 
-    runner = _runner_for_download_test([{"name": "cfgA"}])
-    runner.namespace = "ns"
-    runner.k8s_client = object()
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
     runner.k8s_batch_client = _FakeBatchClient()
     runner._build_jobs = lambda: jobs
     runner.create_job_manifest = lambda job, total, node_figures=None: {
         "metadata": {"name": f"rrroqs-x-{job.index}"}}
     polls = [list(remaining_after), []]
     runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
-    return runner, storage
+    return runner
 
 
 _SUT_CRASH = {
@@ -277,11 +246,11 @@ def test_a_restarted_job_is_deleted_and_the_batch_continues(monkeypatch, tmp_pat
     `stop_job` uses -- so the siblings run to completion and the batch still projects its
     results, instead of the campaign ending here.
     """
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
 
-    runner.run_batch_in_pod(str(tmp_path))  # must NOT raise
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)  # must NOT raise
 
     assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
 
@@ -290,10 +259,10 @@ def test_the_invalidated_job_is_recorded_in_the_ledger(monkeypatch, tmp_path):
     """A discarded trial must be visible as discarded, not merely absent."""
     import json
 
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     entry, = json.loads(
         (tmp_path / "_execution" / "interventions.json").read_text())
@@ -309,10 +278,10 @@ def test_the_evidence_is_captured_before_the_pod_is_deleted(monkeypatch, tmp_pat
     code does is delete the Job. Nothing in robovast read it before."""
     import json
 
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     record, = json.loads(
         (tmp_path / "_execution" / "container_failures.json").read_text())
@@ -330,10 +299,10 @@ def test_a_packed_jobs_runs_are_all_invalidated(monkeypatch, tmp_path):
     they shared the process that lost its state."""
     import json
 
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA", runs=3), _job(1, "cfgA")],
         {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
     assert entry["runs"] == ["cfgA/0", "cfgA/1", "cfgA/2"]
@@ -344,11 +313,11 @@ def test_a_job_is_invalidated_only_once(monkeypatch, tmp_path):
     asynchronous -- so without the guard one crash is recorded on every pass."""
     import json
 
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _SUT_CRASH},
         remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
     assert len(json.loads(
@@ -360,9 +329,9 @@ def test_a_restart_seen_after_the_last_job_finished_still_lands(monkeypatch, tmp
     last job's last seconds was never observed at all."""
     import json
 
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA")], {"rrroqs-x-0": _SUT_CRASH})
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
     assert entry["runs"] == ["cfgA/0"]
@@ -373,20 +342,20 @@ def test_a_batch_whose_every_job_lost_a_container_still_fails(monkeypatch, tmp_p
     here. Carrying on would spend the rest of the budget producing cells with no sample."""
     from robovast.execution.backends import CampaignConfigError
 
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _SUT_CRASH, "rrroqs-x-1": _SUT_CRASH})
 
     with pytest.raises(CampaignConfigError, match="every job in batch"):
-        runner.run_batch_in_pod(str(tmp_path))
+        runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
 
 def test_a_single_job_batch_is_exempt_from_that(monkeypatch, tmp_path):
     """One flake is 100% of one job. A pilot must not be reclassified as a systematic
     fault by arithmetic."""
-    runner, _ = _restart_runner(
+    runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA")], {"rrroqs-x-0": _SUT_CRASH})
-    runner.run_batch_in_pod(str(tmp_path))  # must NOT raise
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)  # must NOT raise
     assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
 
 
@@ -402,11 +371,7 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
                     remaining_after=(), blocked_grace=0.0, contended_grace=0.0):
     """A runner whose wait loop sees *blocked* on its first poll, with graces it can
     reach: zero means "already expired", so one poll decides."""
-    storage = _FakeStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
-        lambda out_dir, data, cluster=False, instance_type_command=None: None)
+    _no_config_preparation(monkeypatch)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.restarted_job_forensics",
         lambda core, ns, label, job_names=None: {})
@@ -419,9 +384,7 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
         "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
         lambda campaign, tag, index: f"rrroqs-x-{index}")
 
-    runner = _runner_for_download_test([{"name": "cfgA"}])
-    runner.namespace = "ns"
-    runner.k8s_client = object()
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
     runner.k8s_batch_client = _FakeBatchClient()
     runner._build_jobs = lambda: jobs
     runner.create_job_manifest = lambda job, total, node_figures=None: {
@@ -430,7 +393,7 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
     runner._CONTENDED_GRACE_SECONDS = contended_grace
     polls = [list(remaining_after), []]
     runner.get_remaining_jobs = lambda names: polls.pop(0) if polls else []
-    return runner, storage
+    return runner
 
 
 _THROTTLED = "ErrImagePull: pull QPS exceeded"
@@ -439,12 +402,12 @@ _THROTTLED = "ErrImagePull: pull QPS exceeded"
 def test_a_blocked_job_is_dropped_and_the_batch_continues(monkeypatch, tmp_path):
     """The point of the change: one job goes, the batch drains around the hole -- the
     same seam a restarted job leaves through."""
-    runner, _ = _blocked_runner(
+    runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA"), _job(2, "cfgA")],
         {"rrroqs-x-0": _THROTTLED},
         remaining_after=["rrroqs-x-0", "rrroqs-x-1", "rrroqs-x-2"])
 
-    runner.run_batch_in_pod(str(tmp_path))  # must NOT raise
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)  # must NOT raise
 
     assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
 
@@ -454,10 +417,10 @@ def test_a_dropped_blocked_job_is_recorded_with_kubernetes_own_reason(monkeypatc
     """A discarded trial must be visible as discarded, and say what stopped it."""
     import json
 
-    runner, _ = _blocked_runner(
+    runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _THROTTLED}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
     assert entry["kind"] == "invalid"
@@ -472,40 +435,40 @@ def test_a_whole_batch_that_cannot_start_still_fails_fast(monkeypatch, tmp_path)
     batch blocked is the campaign, not the cluster -- and no batch of it will ever run."""
     from robovast.execution.backends import CampaignConfigError
 
-    runner, _ = _blocked_runner(
+    runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": "ErrImagePull: manifest unknown",
          "rrroqs-x-1": "ErrImagePull: manifest unknown"},
         remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
 
     with pytest.raises(CampaignConfigError, match="none of this batch"):
-        runner.run_batch_in_pod(str(tmp_path))
+        runner.run_batch_in_pod(str(tmp_path), _TOKEN)
     assert runner.k8s_batch_client.deleted == []
 
 
 def test_each_blocked_job_gets_its_own_tolerance(monkeypatch, tmp_path):
     """Per job, not per batch. One shared timer had to pick the shortest, so a job merely
     waiting its turn was failed on the tolerance meant for a job that never will."""
-    runner, _ = _blocked_runner(
+    runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA"), _job(2, "cfgA")],
         {"rrroqs-x-0": "ErrImagePull: manifest unknown", "rrroqs-x-1": _THROTTLED},
         contended={"rrroqs-x-1": _THROTTLED},
         remaining_after=["rrroqs-x-0", "rrroqs-x-1", "rrroqs-x-2"],
         blocked_grace=0.0, contended_grace=900.0)
 
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
 
 
 def test_a_blocked_job_inside_its_grace_is_left_alone(monkeypatch, tmp_path):
     """A blip must cost nothing at all: nothing dropped, nothing raised."""
-    runner, _ = _blocked_runner(
+    runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _THROTTLED}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"],
         blocked_grace=900.0, contended_grace=900.0)
 
-    runner.run_batch_in_pod(str(tmp_path))
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
     assert runner.k8s_batch_client.deleted == []
     assert not (tmp_path / "_execution" / "interventions.json").exists()
@@ -516,7 +479,7 @@ def test_a_batch_whose_every_job_was_dropped_still_fails(monkeypatch, tmp_path):
     losing all of it is a verdict -- whatever mix of causes got it there."""
     from robovast.execution.backends import CampaignConfigError
 
-    runner, _ = _blocked_runner(
+    runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
         {"rrroqs-x-0": _THROTTLED},
         remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
@@ -526,7 +489,7 @@ def test_a_batch_whose_every_job_was_dropped_still_fails(monkeypatch, tmp_path):
         lambda core, ns, label, job_names=None: {"rrroqs-x-1": _SUT_CRASH})
 
     with pytest.raises(CampaignConfigError, match="every job in batch"):
-        runner.run_batch_in_pod(str(tmp_path))
+        runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
 
 # --- Every container says which image bytes it wants, and how hard to look -----------
@@ -543,8 +506,6 @@ _DIGEST = "repo.example.com/robovast@sha256:" + "cd" * 32
 
 def _fake_cluster_config():
     return types.SimpleNamespace(
-        get_s3_endpoint=lambda: "http://s3.example.com",
-        get_s3_credentials=lambda: ("ak", "sk"),
         get_host_aliases=lambda: [],
         get_registry_config=lambda: types.SimpleNamespace(
             pull_secret_name="", push_secret_name="", insecure=False,

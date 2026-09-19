@@ -45,9 +45,9 @@ from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageErro
                                     is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
-from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
+from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
-                                        CampaignVisualizationsResponse, CleanupDataRequest,
+                                        CampaignVisualizationsResponse,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         EditFileRequest, ERROR_CODE_HEADER,
@@ -104,8 +104,7 @@ def _sse_pull_limiter():
     threads. ``_pull_or_exit`` abandons its thread on cancellation, and anyio releases the
     token at that moment while the thread is still inside the blocking call — so a stream
     that keeps dropping and reconnecting can leave more live threads than there are tokens.
-    What actually bounds those is the pull's own timeout budget (see
-    ``in_pod_storage.storage_client_for(interactive=True)``, ~10 s); this limiter's job is
+    What actually bounds those is the pull's own timeout budget; this limiter's job is
     isolation between subsystems, not a hard thread cap.
     """
     import anyio  # pylint: disable=import-outside-toplevel
@@ -418,8 +417,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         unhandled exception becomes. Recorded here, exactly those were missing from the
         record, which is to say the ones nobody could otherwise reconstruct.
         """
-        from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
-            ExecPathUnavailable, ObjectStoreUnreachableError)
+        from robovast.common.errors import ExecPathUnavailable  # pylint: disable=import-outside-toplevel
         try:
             try:
                 return fn()
@@ -450,12 +448,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             logger.warning("%s", e)
             raise HTTPException(status_code=503, detail=str(e),
                                 headers={ERROR_CODE_HEADER: EXEC_PATH_UNAVAILABLE}) from e
-        except ObjectStoreUnreachableError as e:
-            # Before the RuntimeError arm it subclasses: nothing about an unanswering
-            # store is a conflict, and a 503 tells a client the call is worth retrying.
-            # The message is already the whole diagnosis, so no traceback is logged.
-            logger.warning("%s", e)
-            raise HTTPException(status_code=503, detail=str(e)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -1648,11 +1640,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                            force: bool = Body(False, embed=True)) -> CampaignRef:
         return _guard(lambda: impl.retrigger_campaign(campaign_id, force))
 
-    @app.post(Routes.CLEANUP_DATA, response_model=ActionResult, tags=["campaigns"])
-    def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:
-        # Body optional: no body means "all finished campaigns" (live ones skipped).
-        return _guard(lambda: impl.cleanup_campaign_data(request or CleanupDataRequest()))
-
     @app.delete(Routes.campaign("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])
     def delete_campaign(campaign_id: str) -> ActionResult:
         # Wholesale delete of one campaign's durable home. Refuses a running
@@ -1731,18 +1718,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.campaign_describe("{campaign_id}"), response_model=DataDescribe, tags=["results"])
     def describe_campaign_data(campaign_id: str) -> DataDescribe:
         return _guard(lambda: impl.describe_campaign_data(campaign_id))
-
-    @app.get(Routes.campaign_data_status("{campaign_id}"), response_model=CampaignDataStatus,
-             tags=["results"])
-    def campaign_data_status(campaign_id: str) -> CampaignDataStatus:
-        """Whether querying this campaign transfers data first — ask *before* the wait.
-
-        Cheap by contract (two metadata lookups). On a cluster campaign whose databases
-        are not cached yet, a first ``/describe`` or ``/query`` fetches them from the
-        object store inside the request; this says so in advance, so a client can show
-        why instead of appearing to hang.
-        """
-        return _guard(lambda: impl.campaign_data_status(campaign_id))
 
     @app.post(Routes.campaign_query("{campaign_id}"), response_model=DataQueryResult, tags=["results"])
     def query_campaign_data_sql(
@@ -1861,7 +1836,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # ``GET /campaigns/{id}/<name>?config_name&run_id&…`` → JSON, dispatched to the plugin
     # handler with a RunDataContext. Registered after the core routes and before the SPA
     # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
-    # ``impl.resolve_data_dir`` (ClusterService fetches from the object store).
+    # ``impl.campaign_dir``, which is the campaign itself on either lane.
     from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
         RunDataContext, load_service_endpoints)
 
@@ -1870,7 +1845,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             ctx = RunDataContext(
                 campaign_id=campaign_id,
                 params=dict(request.query_params),
-                data_dir=str(impl.resolve_data_dir(campaign_id)))
+                data_dir=str(impl.campaign_dir(campaign_id)))
             return _guard(lambda: endpoint.handle(ctx))
         return route
 
@@ -2145,23 +2120,6 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
 
-    from robovast.common.shutdown import begin_shutdown  # pylint: disable=import-outside-toplevel
-
-    class _Server(uvicorn.Server):
-        """uvicorn server that announces the shutdown before it starts winding down.
-
-        ``handle_exit`` runs in the signal handler — the first moment the process
-        knows a Ctrl+C happened, ahead of the graceful-shutdown clock. Raising the
-        process-wide flag here is what lets blocking I/O several layers down (an S3
-        read retrying over a ``kubectl port-forward``) fail fast instead of repairing
-        a connection this process is about to close; see
-        :mod:`robovast.common.shutdown`.
-        """
-
-        def handle_exit(self, sig, frame):
-            begin_shutdown()
-            super().handle_exit(sig, frame)
-
     token, ephemeral = auth.resolve_token(None)
     app = build_app(impl, mount_mcp=mount_mcp, auth_token=token)
     _enable_thread_dump_signal()
@@ -2210,7 +2168,7 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
                             proxy_headers=proxy_headers,
                             forwarded_allow_ips=forwarded_allow_ips,
                             timeout_graceful_shutdown=5, **listen)
-    server = _Server(config)
+    server = uvicorn.Server(config)
     app.state.should_exit = lambda: server.should_exit
     server.run()
 

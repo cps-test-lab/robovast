@@ -4,14 +4,12 @@
 
 The point of measuring here rather than on read is that the figure is then a field
 lookup for every later viewer. These cover the three things that has to get right: it
-is taken AFTER the finalize upload (so a lane that publishes derived data in that
-upload is not under-reported), it is never allowed to cost a campaign that otherwise
-finished, and "not recorded" stays distinguishable from zero all the way to the row.
+is taken AFTER ``finalize`` (the last step that may still add to the tree), it is never
+allowed to cost a campaign that otherwise finished, and "not recorded" stays
+distinguishable from zero all the way to the row.
 """
 
 import types
-
-import pytest
 
 from robovast.common import campaign_data
 from robovast.execution import controller
@@ -40,7 +38,7 @@ class _Backend:
     def campaign_results_bytes(self, campaign_root):
         self.calls.append("size")
         if self._boom:
-            raise RuntimeError("the store said no")
+            raise RuntimeError("the tree could not be walked")
         return self._size
 
 
@@ -53,13 +51,10 @@ def _patch_tail(monkeypatch, calls):
                         lambda *a, **k: calls.append("record"))
 
 
-def test_size_is_measured_after_the_finalize_upload(monkeypatch):
-    """Order is the whole correctness argument on a lane whose home is a store.
-
-    Postprocessing's derived data reaches that home in ``finalize``; a total taken
-    before it would omit exactly the artifacts the campaign was postprocessed to
-    produce, and would look like a plausible number while doing it.
-    """
+def test_size_is_measured_after_finalize(monkeypatch):
+    """Order is the whole correctness argument: ``finalize`` is the last step that may
+    still add to the campaign, so a total taken before it would omit whatever it adds and
+    look like a plausible number while doing it."""
     backend = _Backend()
     _patch_tail(monkeypatch, backend.calls)
     state = _state()
@@ -83,7 +78,7 @@ def test_size_is_recorded_durably_not_only_in_memory(monkeypatch):
 
 
 def test_a_failed_campaign_records_no_size(monkeypatch):
-    """A failed campaign never finished projecting its results.
+    """A failed campaign never finished writing its results.
 
     Its tree is missing pieces, so a size taken from it is a partial total that reads
     as a complete one. ``None`` says "not recorded", which is the truth.
@@ -164,27 +159,3 @@ def test_the_default_hook_skips_what_the_archive_skips(tmp_path):
     (tmp_path / ".cache" / "big").write_bytes(b"z" * 5000)
     (tmp_path / "campaign.db").write_bytes(b"y" * 12)
     assert _Local().campaign_results_bytes(str(tmp_path)) == 12
-
-
-def test_the_cluster_hook_measures_the_store_not_the_driver_disk(monkeypatch, tmp_path):
-    """The driver's disk is scratch; a resumed campaign holds only its control plane there.
-
-    Walking it would report a fraction of the campaign as the whole, so the override
-    asks the store — whatever this driver happens to hold locally.
-    """
-    kb = pytest.importorskip(
-        "robovast.execution.cluster_execution.kubernetes_backend")
-
-    class _Storage:
-        def list_entries(self, bucket, prefix, delimited=False):
-            return ([(f"{prefix}a/test.xml", 100), (f"{prefix}b/bag.mcap", 900)], [])
-
-    monkeypatch.setattr(kb.in_pod_storage, "campaign_storage_location",
-                        lambda cfg, cid: ("bucket", f"{cid}/"))
-    monkeypatch.setattr(kb.in_pod_storage, "storage_client_for", lambda cfg: _Storage())
-
-    backend = kb.KubernetesBackend.__new__(kb.KubernetesBackend)
-    backend.cluster_config = object()
-    # The local tree is deliberately near-empty: the answer must not come from it.
-    (tmp_path / "camp-1").mkdir()
-    assert backend.campaign_results_bytes(str(tmp_path / "camp-1")) == 1000

@@ -104,18 +104,6 @@ def _unregistered():
                            "Registered: lab-a, lab-b.")
 
 
-class _NoStorage:
-    def __init__(self):
-        self.uploads = 0
-
-    def upload_dir(self, local_dir, bucket, prefix=""):
-        self.uploads += 1
-        return 0
-
-    def download_prefix(self, bucket, prefix, local_dir, force=False, on_file=None):
-        return 0
-
-
 class _Provider:
     def budget(self):
         from robovast.execution.cluster_execution.node_admission import Budget, NodeBudget
@@ -138,13 +126,12 @@ def _launch_runner(monkeypatch, campaign_data, admission=None):
     """A runner stubbed down to its launch decisions, recording every Job it creates."""
     import types
 
-    from robovast.execution.cluster_execution import in_pod_storage
     from robovast.execution.cluster_execution.node_admission import JobSizing
 
-    storage = _NoStorage()
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: storage)
+    prepared = []
     monkeypatch.setattr(kb, "prepare_campaign_configs",
-                        lambda out_dir, data, cluster=False, instance_type_command=None: None)
+                        lambda out_dir, data, cluster=False, instance_type_command=None:
+                            prepared.append(out_dir))
     monkeypatch.delenv(JOB_NODE_POOL_ENV, raising=False)
 
     r = kb.BatchJobRunner()
@@ -154,11 +141,11 @@ def _launch_runner(monkeypatch, campaign_data, admission=None):
     r._batch_tag = "batch-0"
     r.campaign_data = campaign_data
     r.admission = admission
-    r.storage = storage
+    r.prepared = prepared
     r.created = []
-    r.k8s_client = object()
+    r.k8s_client = types.SimpleNamespace(
+        create_namespaced_secret=lambda namespace, body: None)
     r._ensure_k8s_initialized = lambda: None
-    r._s3_settings = lambda: ("ep", "ak", "sk", "bkt", "")
     r._write_job_param_files = lambda out_dir, campaign_root=None: None
     r._build_jobs = lambda: [types.SimpleNamespace(index=0, items=[]),
                              types.SimpleNamespace(index=1, items=[])]
@@ -199,19 +186,19 @@ def _recording_queue():
 @pytest.mark.parametrize("queued", [True, False], ids=["admission", "no-queue"])
 def test_an_unresolvable_alias_refuses_the_campaign_before_any_job_exists(monkeypatch,
                                                                            tmp_path, queued):
-    """Refused naming the alias and the aliases that do exist, before a config is uploaded
+    """Refused naming the alias and the aliases that do exist, before a config is written
     or a single Job created, on the queued path and the path without a queue alike."""
     queue = _recording_queue() if queued else None
     r = _launch_runner(monkeypatch, _CONFINED, admission=queue)
     _resolving_to(monkeypatch, error=_unregistered())
 
     with pytest.raises(kb.CampaignConfigError, match="bench") as err:
-        r.run_batch_in_pod(str(tmp_path), whole_campaign=True)
+        r.run_batch_in_pod(str(tmp_path), "tok")
 
     assert "Registered: lab-a, lab-b" in str(err.value)
     assert "execution.kubernetes.jobs.node" in str(err.value)
     assert r.created == [], "no Job may exist for a campaign whose alias does not resolve"
-    assert r.storage.uploads == 0, "refused before anything reached the store"
+    assert r.prepared == [], "refused before anything was written into the campaign"
     if queue is not None:
         assert queue.preflights == [] and queue.submits == []
 
@@ -223,7 +210,7 @@ def test_a_confined_campaign_is_pinned_to_its_node_and_does_not_reserve_it(monke
     calls = _resolving_to(monkeypatch, node_id="node-x")
 
     with pytest.raises(_Submitted):
-        r.run_batch_in_pod(str(tmp_path), whole_campaign=True)
+        r.run_batch_in_pod(str(tmp_path), "tok")
 
     owner, kw = queue.submits[0]
     assert owner == r.campaign
@@ -239,7 +226,7 @@ def test_an_unconfined_campaign_submits_exactly_as_before(monkeypatch, tmp_path)
     calls = _resolving_to(monkeypatch, node_id="node-x")
 
     with pytest.raises(_Submitted):
-        r.run_batch_in_pod(str(tmp_path), whole_campaign=True)
+        r.run_batch_in_pod(str(tmp_path), "tok")
 
     _, kw = queue.submits[0]
     assert "pin" not in kw and "reserves" not in kw
@@ -251,7 +238,7 @@ def test_a_confined_campaign_without_a_queue_still_confines_every_pod(monkeypatc
     """No queue grants a node there, so the campaign's node is the only thing confining it."""
     r = _launch_runner(monkeypatch, _CONFINED, admission=None)
     _resolving_to(monkeypatch, node_id="node-x")
-    r.run_batch_in_pod(str(tmp_path), whole_campaign=True)
+    r.run_batch_in_pod(str(tmp_path), "tok")
     assert len(r.created) == 2
     for body in r.created:
         assert body["spec"]["template"]["spec"]["nodeSelector"] == {NODE_ID_LABEL: "node-x"}

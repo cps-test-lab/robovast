@@ -245,46 +245,6 @@ def test_a_failed_import_is_kept_so_its_reason_can_be_read(service, tmp_path, mo
     assert "failed" in outcome
 
 
-def test_a_failed_import_publishes_its_reason_on_a_lane_that_drops_the_scratch(
-        service, tmp_path, monkeypatch):
-    """Keeping the tree is only half the promise: it has to be kept where clients read.
-
-    Found live on the cluster lane. Publishing happens only on success, and that lane's
-    ``list_files``/``read_file`` answer from the object store -- so a failed import left
-    ``import.log`` and ``import.json`` on a pod's scratch, and ``/results/<id>`` answered
-    *no directory* for the one campaign whose files anybody wanted to open. The card showed
-    the refusal and nothing behind it could be read: the "worst of both" the keep-the-tree
-    fix was written against, still standing on the lane where campaigns actually run.
-
-    The local lane cannot catch it -- publishing is a no-op there and the scratch *is* the
-    durable home -- so the lane under test drops its tree the way a real one does.
-    """
-    import shutil
-
-    published = {}
-
-    def _publish_and_drop(self, campaign_id, target):
-        published[campaign_id] = (Path(target) / "_execution" / "import.log").read_text(
-            encoding="utf-8")
-        shutil.rmtree(target, ignore_errors=True)
-
-    def _boom(*_a, **_k):
-        raise OSError("disk went away mid-extraction")
-
-    monkeypatch.setattr("robovast.service.ingest.extract_archive", _boom)
-    monkeypatch.setattr(type(service), "_publish_failed_import", _publish_and_drop)
-
-    ref = service.import_campaign(ImportCampaignRequest(
-        archive_path=str(_archive(tmp_path))))
-    status = _wait_done(service, ref.campaign_id)
-
-    assert status.phase == Phase.FAILED
-    assert ref.campaign_id in published, "the failure must be published, not only recorded"
-    # Published *after* the log handler is closed and the outcome written, or what goes up
-    # is a truncated account of a failure -- the one file that exists to explain it.
-    assert "disk went away mid-extraction" in published[ref.campaign_id]
-
-
 def test_an_archive_that_is_not_the_campaign_it_was_fetched_as_is_refused(
         service, tmp_path, monkeypatch):
     """The id is claimed from the object's *name*; the tree lands under the tar's own.
@@ -357,68 +317,13 @@ def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
     status = _wait_done(service, ref.campaign_id)
 
     on_disk = reconstruct_status_from_disk(
-        service._campaign_dir(ref.campaign_id))  # pylint: disable=protected-access
+        service.campaign_dir(ref.campaign_id))  # pylint: disable=protected-access
     assert on_disk.runs.total > 0, "fixture must carry runs for this to test anything"
 
     assert status.postprocessed is True
     assert status.runs.total == on_disk.runs.total
     assert status.runs.completed == on_disk.runs.completed
     assert status.mode == on_disk.mode
-
-
-def test_the_report_survives_a_lane_that_drops_its_scratch_copy(service, tmp_path,
-                                                               monkeypatch):
-    """A lane whose durable home is elsewhere DELETES the tree once the import is over.
-
-    The cluster service does exactly that -- a multi-gigabyte campaign left on a pod's
-    scratch is how the pod fills its disk -- so anything that reads the campaign after
-    that reads a directory that is gone and reconstructs zeros. That is the empty report
-    this whole adoption exists to prevent, and the local lane cannot catch it: the tree
-    survives there whatever the order.
-    """
-    import shutil
-
-    dropped = []
-
-    def _finish_and_drop(self, campaign_id, target):
-        dropped.append(campaign_id)
-        shutil.rmtree(target, ignore_errors=True)
-
-    monkeypatch.setattr(type(service), "_finish_imported_campaign", _finish_and_drop)
-    ref = service.import_campaign(ImportCampaignRequest(
-        archive_path=str(_archive(tmp_path, postprocessed=True, runs=26))))
-    status = _wait_done(service, ref.campaign_id)
-
-    assert dropped == [ref.campaign_id], "the lane under test must have dropped the tree"
-    assert status.runs.total == 26
-    assert status.postprocessed is True
-
-
-def test_the_campaign_is_durable_before_anything_postprocesses_it(service, tmp_path,
-                                                                 monkeypatch):
-    """Publishing precedes the postprocess, because the postprocess reads what it publishes.
-
-    On a lane whose durable home is an object store, postprocessing stages the campaign
-    into its own pod out of that store -- so a campaign published only at the end of the
-    import is one the postprocess found nothing to stage, and on a per-campaign-bucket
-    deployment not even a bucket to list. The local lane cannot catch it: publishing is a
-    no-op there and the postprocess reads the tree on disk either way.
-    """
-    order = []
-
-    monkeypatch.setattr(type(service), "_publish_imported_campaign",
-                        lambda self, cid, target: order.append("publish"))
-    monkeypatch.setattr(type(service), "_postprocess_campaign",
-                        lambda self, cid, d, **k: (order.append("postprocess"),
-                                                   (True, "ok"))[1])
-    monkeypatch.setattr(type(service), "_finish_imported_campaign",
-                        lambda self, cid, target: order.append("finish"))
-
-    ref = service.import_campaign(ImportCampaignRequest(
-        archive_path=str(_archive(tmp_path, runs=26))))
-    _wait_done(service, ref.campaign_id)
-
-    assert order == ["publish", "postprocess", "finish"]
 
 
 def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch):

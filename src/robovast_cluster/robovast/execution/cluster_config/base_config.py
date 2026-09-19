@@ -15,10 +15,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
-import tarfile
 from dataclasses import dataclass
-from typing import Optional
+
+import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,227 +85,141 @@ class RegistryConfig:
                 "--ingress-host. 'vast doctor -n <namespace>' says which.")
 
 
-class BaseConfig(object):
-    """Base class for cluster configurations.
+#: The keyword arguments :meth:`BaseConfig.setup_cluster` hands to
+#: :func:`~robovast.execution.cluster_execution.store_pod.attach_infrastructure`. Named so the
+#: provider ``-o`` options that travel in the same ``kwargs`` (and are persisted as the
+#: cluster's recorded config) are not mistaken for placement.
+STORE_POD_PLACEMENT_KEYS = (
+    "index_storage_path", "index_storage_class", "index_storage_size",
+    "registry_storage_path", "registry_storage_class",
+    "registry_authenticated", "ingress_class",
+)
 
-    Every cluster config plugin must subclass this and implement the abstract
-    methods.  The default implementations assume an **embedded MinIO** server
-    deployed inside the Kubernetes cluster.  Subclasses that use an external
-    S3-compatible service (e.g. Google Cloud Storage) should override the
-    ``uses_embedded_s3``, ``get_s3_*``, and ``get_host_s3_endpoint`` methods.
+
+class BaseConfig(object):
+    """A cluster provider: the ``robovast`` pod, and what the cluster can say about itself.
+
+    Every cluster config plugin subclasses this. A provider does two things. It deploys the
+    deployment's setup-lifetime pod -- the container registry and the campaign index
+    (:mod:`~robovast.execution.cluster_execution.store_pod`) -- which is the same on every
+    provider and is therefore done here, with the provider deciding only what its README
+    says about backing the volumes. And it answers the scheduling questions setup and
+    admission ask of a cluster: how a node reports its instance type, the registry
+    configuration, host aliases for the pods RoboVAST creates, and how much the cluster
+    can grow to.
+
+    Campaigns are not a provider's concern. They live on the service's results volume
+    (:data:`~robovast.execution.cluster_execution.service_deploy.RESULTS_VOLUME_NAME`),
+    which the service Deployment carries and places.
     """
 
     # ------------------------------------------------------------------
     # Cluster lifecycle
     # ------------------------------------------------------------------
 
-    def setup_cluster(self, **kwargs):
-        """Set up the S3-compatible storage infrastructure in the cluster.
+    def store_pod_manifest(self, **kwargs) -> list:
+        """The ``robovast`` pod, its Service and its claims, placed as *kwargs* say.
 
-        For embedded-MinIO configs this deploys the MinIO pod.  For external-S3
-        configs this may deploy only supporting pods (archiver, HTTP server)
-        and validate connectivity to the external service.
+        *kwargs* is what :meth:`setup_cluster` receives: ``namespace``, the placement
+        arguments in :data:`STORE_POD_PLACEMENT_KEYS`, and ``control_node_labels`` -- the
+        data node's selector ANDed with the operator's control pool, which the pod takes
+        because its registry blobs and its index are hostPath-backed unless a class says
+        otherwise, and an unpinned pod would come back on another node with both empty.
+        """
+        from ..cluster_execution import store_pod  # pylint: disable=import-outside-toplevel
+
+        docs = store_pod.attach_infrastructure(
+            [], kwargs.get("namespace", "default"),
+            **{k: kwargs[k] for k in STORE_POD_PLACEMENT_KEYS if k in kwargs})
+        return self._apply_pod_node_selector(docs, kwargs.get("control_node_labels"))
+
+    def setup_cluster(self, **kwargs):
+        """Deploy the ``robovast`` pod (registry + index) and its Service.
+
+        A live pod is kept as it is (``apply_manifests`` tolerates a 409), so a placement
+        the live pod does not match is refused before anything is applied rather than
+        reported and never applied.
 
         Args:
-            **kwargs: Cluster-specific configuration options
+            **kwargs: ``namespace``, ``kube_context``, ``control_node_labels``, the
+                placement arguments in :data:`STORE_POD_PLACEMENT_KEYS`, and the
+                provider's own ``-o`` options.
         """
-        raise NotImplementedError("setup_cluster method must be implemented by subclasses.")
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+        from ..cluster_execution import store_pod  # pylint: disable=import-outside-toplevel
+        from ..cluster_execution.kube_client import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+        from ..cluster_execution.kubernetes import \
+            apply_manifests  # pylint: disable=import-outside-toplevel
+
+        namespace = kwargs.get("namespace", "default")
+        docs = self.store_pod_manifest(**kwargs)
+        load_kube_config(context=kwargs.get("kube_context"))
+        store_pod.refuse_a_pod_on_the_wrong_node(namespace, kwargs.get("control_node_labels"))
+        try:
+            apply_manifests(client.ApiClient(), iter(docs), namespace=namespace)
+        except Exception as e:
+            raise RuntimeError(
+                f"Error applying the {store_pod.STORE_POD_NAME} pod manifest: {e}") from e
+        logger.info("The %s pod (registry and index) is deployed in namespace %s",
+                    store_pod.STORE_POD_NAME, namespace)
+
+    def cleanup_cluster(self, **kwargs):
+        """Remove the ``robovast`` pod, its Service and the claims setup may have created.
+
+        The registry and the index are re-derivable and go with the pod. The campaigns are
+        on the service's results volume, which this does not touch.
+
+        Args:
+            **kwargs: ``namespace``, ``kube_context``, and the provider's own options.
+        """
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+        from ..cluster_execution import store_pod  # pylint: disable=import-outside-toplevel
+        from ..cluster_execution.kube_client import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+        from ..cluster_execution.kubernetes import \
+            delete_manifests  # pylint: disable=import-outside-toplevel
+
+        namespace = kwargs.get("namespace", "default")
+        load_kube_config(context=kwargs.get("kube_context"))
+        delete_manifests(
+            client.CoreV1Api(),
+            store_pod.infrastructure_claims(namespace)
+            + store_pod.attach_infrastructure([], namespace),
+            namespace=namespace)
+        logger.debug("The %s pod is removed from namespace %s",
+                     store_pod.STORE_POD_NAME, namespace)
+
+    def prepare_setup_cluster(self, output_dir, **kwargs):
+        """Write what a manual setup needs: the pod manifest and a README for this provider.
+
+        The README says where campaigns live and how this provider's operator should back
+        the volumes, which is the one thing that differs between providers.
+
+        Args:
+            output_dir (str): Directory where setup files will be written
+            **kwargs: The same options :meth:`setup_cluster` takes
+        """
+        raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
+
+    def write_store_pod_manifest(self, output_dir, **kwargs) -> str:
+        """Write the manifest :meth:`setup_cluster` would apply, for a manual ``kubectl apply``.
+
+        The same documents, from the same arguments: a manifest written for hand-applying
+        must describe the pod this deployment actually uses, or following the README
+        produces a different cluster from running the command.
+        """
+        path = f"{output_dir}/robovast-manifest.yaml"
+        with open(path, "w") as f:
+            f.write("---\n".join(yaml.dump(d, default_flow_style=False)
+                                for d in self.store_pod_manifest(**kwargs)))
+        return path
 
     def get_instance_type_command(self):
         """Get command to retrieve instance type of the current node."""
         raise NotImplementedError("get_instance_type_command method must be implemented by subclasses.")
-
-    def cleanup_cluster(self, **kwargs):
-        """Tear down the storage infrastructure from the cluster.
-
-        For embedded-MinIO configs this removes the MinIO pod.  For external-S3
-        configs this removes supporting pods.  External buckets are **not**
-        deleted (user-managed).
-
-        Args:
-            **kwargs: Cluster-specific configuration options
-        """
-        raise NotImplementedError("cleanup_cluster method must be implemented by subclasses.")
-
-    def prepare_setup_cluster(self, output_dir, **kwargs):
-        """Prepare the cluster for the run.
-
-        Args:
-            output_dir (str): Directory where setup files will be written
-            **kwargs: Cluster-specific configuration options
-        """
-        raise NotImplementedError("prepare_setup_cluster method must be implemented by subclasses.")
-
-    def campaign_object_bytes(self, campaign_id: str, exclude_prefixes=()) -> int:
-        """Sum the stored bytes :meth:`add_campaign_members` would put into a tar.
-
-        The denominator for a streamed upload's progress bar. A listing pass only —
-        object sizes come back with the keys, so this moves no data and costs one
-        request per 1000 objects, which is nothing beside the transfer it measures.
-        """
-        from robovast.execution.cluster_execution import \
-            in_pod_storage  # pylint: disable=import-outside-toplevel
-        bucket, prefix = in_pod_storage.campaign_storage_location(self, campaign_id)
-        access_key, secret_key = self.get_s3_credentials()
-        return _s3_campaign_bytes(
-            bucket, endpoint=self.get_driver_s3_endpoint(),
-            access_key=access_key, secret_key=secret_key,
-            prefix=prefix or None, region=self.get_s3_region(),
-            exclude_prefixes=exclude_prefixes)
-
-    def add_campaign_members(self, tar, campaign_id: str, exclude_prefixes=(),
-                             on_member=None) -> None:
-        """Stream this campaign's stored objects into the open *tar* (no local copy).
-
-        Powers the download stream (``/campaigns/{id}/archive``), for a postprocessed
-        campaign and a raw one alike -- whatever objects the campaign has, tarred: each
-        object is fetched from storage and added to the streaming tar on the fly, so
-        **no scratch is used on the service during or after the download**.
-        *exclude_prefixes* drops internal staging (e.g. ``_postproc/``) so the archive
-        is the clean campaign layout. The default reads the S3/MinIO backend via the
-        driver endpoint, so an off-cluster service reaches MinIO through the same
-        host-reachable resolver (port-forward) as every other driver storage client;
-        configs backed by a different store (e.g. GCS) override this.
-        """
-        from robovast.execution.cluster_execution import \
-            in_pod_storage  # pylint: disable=import-outside-toplevel
-        bucket, prefix = in_pod_storage.campaign_storage_location(self, campaign_id)
-        access_key, secret_key = self.get_s3_credentials()
-        _s3_add_members(
-            tar, bucket, campaign_id,
-            endpoint=self.get_driver_s3_endpoint(),
-            access_key=access_key, secret_key=secret_key,
-            prefix=prefix or None, region=self.get_s3_region(),
-            exclude_prefixes=exclude_prefixes, on_member=on_member)
-
-    def verify_cluster_ready(self, k8s_client=None, namespace="default", kube_context=None):
-        """Verify the storage infrastructure is ready before launching a run.
-
-        Called by a campaign launch after the cluster config is resolved.
-        Configs that deploy in-cluster storage (e.g. the embedded MinIO pod for
-        ``rke2``) override this to confirm it is running and raise a
-        :class:`RuntimeError` with a remediation hint otherwise.
-
-        The default is a no-op: external-storage configs (e.g. GCS) need no
-        in-cluster helper.
-        """
-        del k8s_client, namespace, kube_context
-
-    # ------------------------------------------------------------------
-    # S3 storage configuration
-    # ------------------------------------------------------------------
-
-    def uses_embedded_s3(self) -> bool:
-        """Return ``True`` if this config runs an embedded MinIO server.
-
-        When ``True`` (the default), host-side tools use ``kubectl port-forward``
-        to reach the S3 API.  When ``False``, host-side tools connect directly
-        to the endpoint returned by :meth:`get_host_s3_endpoint`.
-
-        Returns:
-            bool
-        """
-        return True
-
-    def get_s3_endpoint(self) -> str:
-        """Return the **cluster-internal** S3 endpoint URL.
-
-        Used by init containers and job pods running inside the cluster.
-
-        For embedded MinIO this is ``http://robovast:9000``.
-        For external services (e.g. GCS) this may be
-        ``https://storage.googleapis.com``.
-
-        Returns:
-            str: S3 endpoint URL
-        """
-        return "http://robovast:9000"
-
-    def get_host_s3_endpoint(self) -> Optional[str]:
-        """Return the S3 endpoint URL reachable from the **host** machine.
-
-        * ``None`` (default) – host-side tools open a ``kubectl port-forward``
-          to the embedded MinIO pod.
-        * A URL string – host-side tools connect directly to this endpoint,
-          skipping port-forward.
-
-        Returns:
-            str | None
-        """
-        return None
-
-    def get_driver_s3_endpoint(self, force_reconnect: bool = False,
-                               current: Optional[str] = None) -> str:
-        """Return the S3 endpoint the in-process driver's **own** storage client
-        should use (see :func:`..cluster_execution.in_pod_storage.storage_client_for`).
-
-        Defaults to the cluster-internal endpoint (:meth:`get_s3_endpoint`),
-        correct when the driver runs in-cluster. When the driver runs
-        **off-cluster** (the service on the host), that host installs a resolver via
-        :meth:`set_driver_s3_endpoint_resolver` (typically wrapping
-        :meth:`resolve_driver_s3_endpoint`). Job / init-container manifests keep
-        using :meth:`get_s3_endpoint`.
-
-        The resolver is consulted **here**, lazily, so a host that opens a
-        port-forward pays for it only when the driver actually builds a storage
-        client — not on every config build.
-
-        Returns:
-            str: S3 endpoint URL
-        """
-        resolver = getattr(self, "_driver_s3_endpoint_resolver", None)
-        endpoint = resolver(force_reconnect, current) if resolver is not None else None
-        return endpoint or self.get_s3_endpoint()
-
-    def set_driver_s3_endpoint_resolver(self, resolver) -> None:
-        """Install a callable ``resolver(force_reconnect=False)`` returning the driver
-        endpoint (or ``None``).
-
-        See :meth:`get_driver_s3_endpoint`. ``None`` clears any resolver, restoring
-        the cluster-internal default.
-        """
-        self._driver_s3_endpoint_resolver = resolver
-
-    def resolve_driver_s3_endpoint(self, open_port_forward,
-                                   force_reconnect: bool = False,
-                                   current: Optional[str] = None) -> Optional[str]:
-        """Policy: the host-reachable S3 endpoint for an off-cluster driver.
-
-        This is where each config declares **how its storage is reachable from the
-        host**, so the off-cluster host (the service) needs no per-provider
-        knowledge:
-
-        * embedded MinIO (the default) has no host route, so it calls
-          *open_port_forward* — a zero-arg callback that opens a ``kubectl
-          port-forward`` and returns a ``http://localhost:<port>`` URL;
-        * external S3 / GCS-over-S3 return :meth:`get_host_s3_endpoint` (directly
-          reachable, no tunnel).
-
-        Native-GCS configs never reach here — ``storage_client_for`` builds a GCS
-        client for them, which talks to ``storage.googleapis.com`` from anywhere.
-
-        Args:
-            open_port_forward: Callable ``(force_restart=False)`` opening the tunnel
-                on demand and returning the resulting host URL. Only invoked when a
-                tunnel is needed. *force_restart* tears down a stalled forward and
-                opens a fresh one (the driver's storage client requests this after a
-                network timeout).
-            force_reconnect: Forwarded to *open_port_forward* as *force_restart*.
-            current: The endpoint the caller was using; forwarded so a shared forward
-                is torn down only once per stall (concurrent callers that already
-                rotated past *current* get the fresh endpoint back untouched).
-        """
-        if self.uses_embedded_s3():
-            return open_port_forward(force_reconnect, current)
-        return self.get_host_s3_endpoint()
-
-    def get_s3_credentials(self) -> tuple:
-        """Return the ``(access_key, secret_key)`` pair for the S3 service.
-
-        Returns:
-            tuple[str, str]: (access_key, secret_key)
-        """
-        return ("minioadmin", "minioadmin")
 
     def get_registry_config(self) -> RegistryConfig:
         """Return the registry config for agent-built experiment images.
@@ -371,60 +288,6 @@ class BaseConfig(object):
                 by_ip[ip].append(host)
         return [{"ip": ip, "hostnames": hosts} for ip, hosts in by_ip.items()]
 
-    def get_s3_bucket(self) -> Optional[str]:
-        """Return a fixed/shared S3 bucket name, or ``None``.
-
-        * ``None`` (default) – each campaign creates its own bucket
-          (embedded-MinIO mode).
-        * A bucket name string – all campaigns share this single bucket and
-          are separated by key prefixes (external-S3 mode).  The bucket must
-          be pre-created by the user.
-
-        Returns:
-            str | None
-        """
-        return None
-
-    def get_s3_region(self) -> str:
-        """Return the S3 region to use.
-
-        Returns:
-            str: AWS/S3 region name (default ``'us-east-1'`` for MinIO).
-        """
-        return "us-east-1"
-
-    def get_storage_backend(self) -> str:
-        """Return the storage backend identifier: ``'s3'`` or ``'gcs'``.
-
-        The default implementation returns ``'s3'``, which covers both
-        embedded MinIO and any external S3-compatible service.  Subclasses
-        that use native Google Cloud Storage should override this and return
-        ``'gcs'``.
-
-        Returns:
-            str: ``'s3'`` (default) or ``'gcs'``.
-        """
-        return "s3"
-
-    def get_store_usage(self, node_summaries, namespace="default"):
-        """``(used_bytes, capacity_bytes, reason)`` for the campaign store.
-
-        Called by the service's ``/usage`` endpoint to draw the results-store meter.
-        ``(None, None, "")`` means **this provider cannot say and the caller should keep
-        looking**; the default, and the honest answer for a provider backed by a cloud
-        bucket, where object storage has no capacity to fill and so no meter to draw -- not a
-        failure to draw one.
-
-        A non-empty *reason* means the opposite: there will be no figure, and here is what to
-        tell the reader instead. It travels to the UI and to an MCP client, so it says what is
-        true of the store rather than naming a node.
-
-        ``node_summaries`` is ``{node_name: kubelet stats/summary dict}``, already fetched by
-        the caller, so an override needs no cluster round-trip of its own.
-        """
-        del node_summaries, namespace
-        return None, None, ""
-
     def get_cluster_allocatable_resources(self, kube_context=None):
         """Return the total CPU and memory capacity admission should size against.
 
@@ -450,11 +313,9 @@ class BaseConfig(object):
     def restore_from_setup_kwargs(self, kwargs: dict) -> None:
         """Restore config state from the kwargs saved during ``setup_cluster``.
 
-        The default implementation is a no-op.  Subclasses that need
-        persistent credentials (e.g. :class:`GcpClusterConfig`) should
-        override this to re-populate their instance state from the stored
-        kwargs so that methods like :meth:`get_s3_credentials` work correctly
-        on a freshly instantiated config object.
+        The default implementation is a no-op. A subclass whose scheduling answers
+        depend on options given at ``setup`` overrides this to re-populate its instance
+        state from the stored kwargs, so a freshly instantiated config answers the same.
 
         Args:
             kwargs: The ``setup_kwargs`` dict recorded at ``setup`` in the deployed
@@ -462,19 +323,13 @@ class BaseConfig(object):
                     :func:`~robovast.execution.cluster_execution.service_deploy.read_service_config_from_cluster`.
         """
 
-    #: Whether ``--store-path`` / ``--store-class`` mean anything here. ``False`` is the safe
-    #: default: a provider backed by a bucket has no directory to place, and one that builds
-    #: its own store volume would ignore the flag while reporting the setting as accepted.
-    #: The providers that mount the store from a volume this deployment chooses set it.
-    store_is_placeable = False
-
     #: Whether this provider's nodes can have their CPU governor set at all.
     #:
-    #: ``True`` is the safe default, and the opposite direction to the flag above: setup
-    #: attempts it, and a cluster that cannot take it is reported rather than assumed. A
-    #: provider whose nodes are virtual machines sets this ``False`` -- their kernels expose
-    #: no cpufreq policy, because the hypervisor owns the clock -- so setup does not spend a
-    #: readiness wait per run discovering that again, and says once why it is not trying.
+    #: ``True`` is the safe default: setup attempts it, and a cluster that cannot take it
+    #: is reported rather than assumed. A provider whose nodes are virtual machines sets
+    #: this ``False`` -- their kernels expose no cpufreq policy, because the hypervisor
+    #: owns the clock -- so setup does not spend a readiness wait per run discovering that
+    #: again, and says once why it is not trying.
     #:
     #: It is a **default**, never an override: ``--performance-governor`` is obeyed and still
     #: fails loudly, because a supplied argument may not be overruled by provider policy.
@@ -504,133 +359,3 @@ class BaseConfig(object):
                 selector = doc.setdefault('spec', {}).setdefault('nodeSelector', {})
                 selector.update(node_labels)
         return docs
-
-
-# ---------------------------------------------------------------------------
-# S3/MinIO object streaming, used by BaseConfig.add_campaign_members to stream a
-# campaign's stored objects into an open tar on the fly (the postprocessed
-# download). The GCS variant lives in the gcp config.
-# ---------------------------------------------------------------------------
-
-def _s3_add_job_link_entries(tar, s3, bucket_name, prefix, archive_label):
-    """Add ``<config>/<run>/job`` symlink members to the streaming tar.
-
-    Reads the ``_transient/job_links.yaml`` manifest object (written by robovast
-    for packed campaigns) and adds one real symlink member per entry so the
-    tar.gz is navigable. No-op when the manifest object is absent.
-
-    Only *absent* is a no-op. A store that stopped answering is not a campaign
-    without links, and swallowing it here would finish the archive without them and
-    report success -- so the transport error propagates, translated by the caller's
-    :func:`_store_errors_as` block.
-    """
-    import yaml  # pylint: disable=import-outside-toplevel
-    from botocore.exceptions import ClientError  # pylint: disable=import-outside-toplevel
-    manifest_key = (prefix or "") + "_transient/job_links.yaml"
-    try:
-        resp = s3.get_object(Bucket=bucket_name, Key=manifest_key)
-    except ClientError as exc:
-        # Only "it is not there" is the unpacked-campaign case. Anything else the store
-        # answered (a denied read, a bucket that is gone) would produce the same
-        # link-less archive for a reason the operator has to know about.
-        if exc.response.get("Error", {}).get("Code", "") in ("NoSuchKey", "404"):
-            return
-        raise
-    links = yaml.safe_load(resp["Body"].read()) or {}
-    for link_rel, target in links.items():
-        tarinfo = tarfile.TarInfo(name=f"{archive_label}/{link_rel}")
-        tarinfo.type = tarfile.SYMTYPE
-        tarinfo.linkname = target
-        tarinfo.mode = 0o777
-        tar.addfile(tarinfo)
-
-
-def _store_errors_as(endpoint, what: str):
-    """The shared transport-error translation, as a context manager.
-
-    Imported per call so this module stays importable without botocore, which the
-    configs backed by another store and the YAML helpers above do not need.
-    """
-    from robovast.execution.cluster_execution import \
-        store_errors  # pylint: disable=import-outside-toplevel
-    return store_errors.store_errors_as(endpoint, what)
-
-
-def _s3_client(endpoint, access_key, secret_key, region):
-    """Return a driver-side S3 client (shared by the streaming and sizing passes)."""
-    import boto3  # pylint: disable=import-outside-toplevel
-    from botocore.config import Config  # pylint: disable=import-outside-toplevel
-
-    return boto3.client(
-        "s3", endpoint_url=endpoint,
-        aws_access_key_id=access_key, aws_secret_access_key=secret_key,
-        region_name=region,
-        config=Config(signature_version="s3v4",
-                      s3={"addressing_style": "path"},
-                      request_checksum_calculation="when_required",
-                      response_checksum_validation="when_required"))
-
-
-def _s3_campaign_bytes(bucket, *, endpoint, access_key, secret_key,
-                       prefix=None, region="us-east-1", exclude_prefixes=()) -> int:
-    """Sum the sizes of the objects :func:`_s3_add_members` would add. Listing only."""
-    prefix = prefix.rstrip("/") + "/" if prefix else None
-    excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
-    s3 = _s3_client(endpoint, access_key, secret_key, region)
-    paginate_kwargs = {"Bucket": bucket}
-    if prefix:
-        paginate_kwargs["Prefix"] = prefix
-    total = 0
-    with _store_errors_as(endpoint, "listing a campaign's stored objects"):
-        for page in s3.get_paginator("list_objects_v2").paginate(**paginate_kwargs):
-            for obj in page.get("Contents", []):
-                relative_key = obj["Key"][len(prefix):] if prefix else obj["Key"]
-                if excluded and relative_key.startswith(excluded):
-                    continue
-                total += obj["Size"]
-    return total
-
-
-def _s3_add_members(tar, bucket, archive_name, *, endpoint, access_key,
-                    secret_key, prefix=None, region="us-east-1",
-                    exclude_prefixes=(), on_member=None) -> None:
-    """Stream every object of *bucket*/*prefix* into the open *tar*.
-
-    Each object is fetched and added on the fly (no local copy). The archive's single
-    top-level folder is *archive_name* (the campaign id), so it expands to
-    ``<campaign>/<config>/<run>/...``. *exclude_prefixes* are campaign-relative path
-    prefixes to skip (e.g. ``"_postproc"`` — internal staging that is not part of the
-    clean campaign layout).
-    """
-    prefix = prefix.rstrip("/") + "/" if prefix else None
-    excluded = tuple(p.rstrip("/") + "/" for p in exclude_prefixes)
-
-    s3 = _s3_client(endpoint, access_key, secret_key, region)
-
-    paginate_kwargs = {"Bucket": bucket}
-    if prefix:
-        paginate_kwargs["Prefix"] = prefix
-    paginator = s3.get_paginator("list_objects_v2")
-
-    # Covers the object bodies too, not just the requests that fetch them: ``addfile``
-    # reads each ``Body`` here, so a connection lost mid-object raises inside this
-    # block. It runs in the tar writer thread, whose exception is re-raised when the
-    # stream closes -- where a raw botocore traceback names the one key it died on and
-    # not the transfer it belongs to.
-    with _store_errors_as(endpoint, "streaming a campaign's stored objects"):
-        for page in paginator.paginate(**paginate_kwargs):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                relative_key = key[len(prefix):] if prefix else key
-                if excluded and relative_key.startswith(excluded):
-                    continue
-                tarinfo = tarfile.TarInfo(name=f"{archive_name}/{relative_key}")
-                tarinfo.size = obj["Size"]
-                response = s3.get_object(Bucket=bucket, Key=key)
-                tarinfo.mode = (
-                    0o755 if response.get("Metadata", {}).get("executable") == "yes"
-                    else 0o644)
-                tar.addfile(tarinfo, response["Body"])
-                if on_member is not None:
-                    on_member(tarinfo.size)
-        _s3_add_job_link_entries(tar, s3, bucket, prefix, archive_name)

@@ -620,9 +620,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
     : [postprocError ? 'postprocessing' : '', shareError ? 'upload to share' : ''].filter(Boolean)
   const stepIssue = failedSteps.length ? `${failedSteps.join(' + ')} failed` : null
 
-  // Every lane serves the archive now: the cluster streams it from the object store, and a
-  // local service tars its own results directory (`campaign_tar_stream` is on the interface,
-  // implemented by both), and neither waits on postprocessing. So nothing gates the download:
+  // Every lane serves the archive: the service tars the campaign's results directory
+  // (`campaign_tar_stream` is on the interface) and does not wait on postprocessing. So
+  // nothing gates the download:
   // a running campaign is offered as a SNAPSHOT -- what has been written so far, named
   // `<id>.incomplete.tar.gz` by the service and carrying a marker the import reads. Hiding it
   // while a campaign runs withheld the download from precisely the campaign a reader is
