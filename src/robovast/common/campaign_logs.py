@@ -99,8 +99,7 @@ def ordered_sections(available: "list[str]") -> list[tuple[str, str]]:
     it would corrupt every reader's position.
 
     A campaign whose repeatable phases each ran once has no archived sections at all, so
-    it assembles exactly as it always did -- which is what keeps every campaign recorded
-    before this readable.
+    it assembles in the fixed :data:`INFRA_PHASES` order.
     """
     have = set(available)
     out = [(banner, name) for banner, name in HEAD_PHASES if name in have]
@@ -116,9 +115,8 @@ def ordered_sections(available: "list[str]") -> list[tuple[str, str]]:
                              REPEATABLE_PHASES[match.group("base")]))
     out += [(banner, name) for _seq, name, banner in sorted(archived)]
 
-    # The live files last. Two can only be present on a campaign recorded before
-    # archiving existed, where their fixed order is the best available answer and the
-    # same one it always gave.
+    # The live files last. Where both are present -- a campaign whose runs were never
+    # archived -- their fixed order is the only one the files carry.
     out += [(banner, base) for base, banner in REPEATABLE_PHASES.items()
             if base in have]
     return out
@@ -279,8 +277,7 @@ def assemble_log_from_dir(
     moment one of them was archived, under a reader that had already consumed past it.
 
     A campaign that never repeated a phase has no sections, and the order this produces is
-    then exactly the fixed one -- which is what keeps every campaign recorded before
-    archiving existed readable at the offsets it was read at.
+    then exactly the fixed one, so its offsets are the same whichever order is asked for.
     """
     return assemble_log(disk_get_bytes(campaign_dir),
                         offset=offset, eof=eof,

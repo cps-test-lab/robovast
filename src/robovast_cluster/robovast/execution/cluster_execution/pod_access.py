@@ -34,7 +34,7 @@ such pod needs to agree on with the service:
 * **the two shell forms** a container uses: ``curl | tar`` to land a stream on a mount,
   ``tar | curl`` to deliver one. Both stream; neither touches the pod's disk twice.
 
-Pods carry nothing else that reaches storage: no bucket, no key, no endpoint.
+A pod carries nothing else that reaches a campaign.
 """
 
 import os

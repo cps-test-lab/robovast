@@ -29,7 +29,7 @@ def test_the_index_runs_in_the_robovast_pod_not_the_service_pod():
     """The service Deployment is rolled by every upgrade; the ``robovast`` pod is not.
 
     Postgres in the service pod would restart on each version bump, including one that
-    only bumped the controller image. The ``robovast`` pod is created once at setup and is
+    changes nothing but the controller image. The ``robovast`` pod is created once at setup and is
     node-pinned beside the results these rows index.
     """
     assert index_deploy.INDEX_CONTAINER_NAME not in [

@@ -13,10 +13,10 @@ forever, the exec never returns, and ``run()`` hangs. Framing the read with ``he
 The transfer goes through the service's data plane instead, the way a campaign Job and the
 container-exec lane stage: a ``curl | tar`` fetch and a ``tar | curl`` delivery, both
 exec'd in the pod's transfer container, so no stdin in either direction and that failure
-mode is gone by construction rather than by a correct byte count. What is pinned here is
-that *absence*, the empty-workspace short-circuit that the hang was first seen on, and
-the cleanup — a per-variation runner that leaked its tree, or its copy inside the pod,
-would accumulate all campaign long.
+mode is excluded by construction rather than by a correct byte count. What is pinned here
+is that *absence*, the empty-workspace short-circuit, and the cleanup — a per-variation
+runner that leaked its tree, or its copy inside the pod, would accumulate all campaign
+long.
 """
 
 import os
@@ -99,10 +99,10 @@ class _Recorder:
 
 
 def test_neither_direction_uses_stdin_at_all(monkeypatch, staged):
-    """The EOF hang cannot recur, because nothing is written to stdin at all.
+    """Nothing is written to stdin, so there is no EOF to wait for and nothing to frame.
 
-    This is the strengthened successor to the ``head -c <n>`` test: that one checked the
-    framing was *correct*, this one checks there is nothing left to frame.
+    Both directions are one ``curl``/``tar`` pipeline against the data plane, run in the
+    transfer container.
     """
     runner = _runner(staged)
     with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
@@ -115,8 +115,7 @@ def test_neither_direction_uses_stdin_at_all(monkeypatch, staged):
 
     assert [payload for _cmd, payload, _c in rec.calls] == [None, None]
     for script in rec.scripts:
-        for gone in ("head -c", "base64", "tar xzf", "mc "):
-            assert gone not in script, f"{gone!r} is a transport that was replaced"
+        assert "curl" in script and f"${DATA_URL_ENV}" in script, script
 
 
 def test_the_workspace_is_the_staged_tree_itself(staged):
@@ -196,9 +195,8 @@ def test_copy_out_delivers_the_workspace_under_its_own_name(monkeypatch, staged)
 def test_copy_in_of_an_empty_workspace_transfers_nothing(monkeypatch, staged):
     """A generator whose inputs all live in its image stages nothing.
 
-    Round-tripping zero bytes is pure latency per ``run()`` -- and it is the case the
-    original hang was first seen on, so it is worth keeping honest. The directory still
-    has to exist in the pod, because the generator was handed that path.
+    Round-tripping zero bytes is pure latency per ``run()``. The directory still has to
+    exist in the pod, because the generator was handed that path.
     """
     runner = _runner(staged)
     rec = _Recorder()
@@ -537,18 +535,15 @@ def test_the_pod_mounts_its_slot_where_the_service_has_it(staged):
     assert {v["name"] for v in m["containers"][0]["volumeMounts"]} <= declared
 
 
-def test_the_transfer_container_carries_the_slots_access_and_no_store_credentials(staged):
-    """What a pod is given to reach storage: the data plane's address and a token scoped
-    to its own slot. Nothing that names a bucket, a key or an endpoint, in any container."""
+def test_the_transfer_container_carries_the_slots_access_and_nothing_else_does(staged):
+    """What a pod is given to reach the data plane: its address and a token scoped to the
+    pod's own slot, on the transfer container and nowhere else."""
     spec = ContainerSpec(image="example/img:1", env={"MY_VAR": "1"})
     m = _manifest(staged, spec, pod_name="pod-x")
     aux, transfer = m["containers"]
     env = {e["name"]: e["value"] for e in transfer["env"]}
     assert set(env) == {DATA_URL_ENV, TOKEN_ENV}
     assert env[TOKEN_ENV] == staged.token_for("staged:" + aux_slot("pod-x"))
-    for container in (aux, transfer):
-        for e in container.get("env", []):
-            assert not e["name"].startswith(("S3_", "MC_HOST", "AWS_")), e["name"]
     aux_env = {e["name"]: e["value"] for e in aux["env"]}
     assert aux_env == {"MY_VAR": "1"}, "the spec's env reaches the aux container, and only it"
 

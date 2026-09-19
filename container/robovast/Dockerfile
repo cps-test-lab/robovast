@@ -59,22 +59,20 @@ COPY --from=scenario-execution-clone /src /
 # the base image itself baked in, which no amount of pinning *our* apt calls can reach.
 # The tag is kept beside the digest because a bare digest tells a reader nothing about what
 # it is. Refresh both with: make refresh-build-pins
-# `ros`, the Docker Official image, and NOT `osrf/ros:${ROS_DISTRO}-desktop-full`, which this
-# named until the arm64 build was made real.
+# `ros`, the Docker Official image, and NOT `osrf/ros:${ROS_DISTRO}-desktop-full`.
 #
 # osrf/ros publishes each tag as a single amd64 manifest rather than an index. Docker does not
 # refuse `--platform linux/arm64` against such a tag: it hands back the amd64 bytes and labels the
-# result arm64. That built and pushed without complaint for as long as nothing executed in it --
-# on an amd64 runner nothing is emulated, so even the RUN steps below passed -- and what shipped
-# was an arm64 manifest full of amd64 userland, carrying an arm64 `fixuid` binary fetched
-# by TARGETARCH. It died with "Invalid ELF image for this architecture" the moment a real arm64
-# host ran it. container/platforms.env had already recorded this failure for roqsim without the
-# same conclusion being drawn here.
+# result arm64. That builds and pushes without complaint as long as nothing executes in it -- on
+# an amd64 runner nothing is emulated, so even the RUN steps below pass -- and the result is an
+# arm64 manifest full of amd64 userland, carrying an arm64 `fixuid` binary fetched by
+# TARGETARCH, which fails with "Invalid ELF image for this architecture" the moment an arm64 host
+# runs it. container/platforms.env records the same property for roqsim.
 #
 # `ros:${ROS_DISTRO}-ros-base` is a genuine multi-arch index (amd64 + arm64), so each platform's
-# build starts from that platform's bytes. It carries less than desktop-full did; the difference is
+# build starts from that platform's bytes. It carries less than desktop-full; the difference is
 # installed from the pinned snapshot below, which is strictly better for reproducibility -- those
-# packages are now pinned to a dated archive rather than frozen at whenever the base was rebuilt.
+# packages are pinned to a dated archive rather than frozen at whenever the base was rebuilt.
 FROM ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}
 ARG ROS_DISTRO
 ARG ROS_BASE_DIGEST
@@ -411,15 +409,13 @@ RUN USER=ubuntu && \
 # Check that what TARGETARCH fetched matches the userland it landed in.
 #
 # This is the only check that catches an image built for the wrong architecture, because such an
-# image builds, pushes and inspects perfectly and fails when something finally runs it. Every
-# other signal stays green. It is exactly how this image shipped an arm64 manifest full of amd64
-# content for as long as it did.
+# image builds, pushes and inspects perfectly and fails when something finally runs it, while
+# every other signal stays green.
 #
 # Cheap, and it belongs here rather than in CI: on a native runner every RUN above has already
 # exec'd this architecture's binaries, so the base userland is covered by the build itself. What
-# is NOT covered is a binary fetched by TARGETARCH and never run -- fixuid, which really was
-# arm64 while everything around it was amd64. Also protects a local build, which no CI check
-# reaches.
+# is NOT covered is a binary fetched by TARGETARCH and never run -- fixuid, which is exactly what
+# stays arm64 inside an amd64 userland. Also protects a local build, which no CI check reaches.
 #
 # Compared against /bin/bash rather than against a table of architecture names: the question is
 # whether these binaries match the userland they have to run in, and bash IS that userland. That

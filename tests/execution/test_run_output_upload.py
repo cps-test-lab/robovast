@@ -22,7 +22,10 @@ from robovast.common import execution
 from robovast.common.execution import (MAIN_CONTAINER, done_marker, render_entrypoint,
                                        render_secondary_entrypoint)
 
-_UPLOAD_WORDS = ("mc mirror", "s3_upload", "S3_ENDPOINT", "x-amz-meta")
+#: What reaching the data plane takes. A workload container's entrypoint names none of it:
+#: delivery is the uploader container's, and a container that could deliver on its own would
+#: send the pod's shared ``/out`` once per container.
+_DATA_PLANE_WORDS = ("curl", "ROBOVAST_DATA_URL", "ROBOVAST_TOKEN")
 
 
 def _wait_for(path, timeout=10.0) -> bool:
@@ -40,7 +43,7 @@ def _wait_for(path, timeout=10.0) -> bool:
 def test_no_container_uploads_from_its_entrypoint(cluster):
     for script in (render_entrypoint(cluster=cluster),
                    render_secondary_entrypoint(cluster=cluster)):
-        for word in _UPLOAD_WORDS:
+        for word in _DATA_PLANE_WORDS:
             assert word not in script
 
 
@@ -67,7 +70,6 @@ def test_the_cluster_lane_needs_no_extra_tool():
     """The experiment image carries nothing that reaches storage: the transfer is the
     sidecar image's, in the pod's init and uploader containers."""
     assert execution._CLUSTER_INIT_BLOCK == 'EXTRA_REQUIRED_TOOLS=""'
-    assert "mc" not in execution._CLUSTER_INIT_BLOCK.split('"')[1].split()
 
 
 # -- the scenario container, run -------------------------------------------------------

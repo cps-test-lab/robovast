@@ -2078,10 +2078,10 @@ def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
 
     The results volume is where a cluster campaign lives: its pods deliver their runs into
     it, per-run extraction reads it through a path, and postprocessing derives ``data.db``
-    from it. Dropping the flag left that root at ``local_results_root``'s
-    ``<workspaces_root>/../results``, which in the deployed pod resolved one directory
-    outside the only mount it had. Every restart discarded it, and since resume reads it
-    before the port is bound, a restart with live campaigns could never finish.
+    from it. Without the flag that root is ``local_results_root``'s
+    ``<workspaces_root>/../results``, which in the deployed pod is one directory outside
+    the only mount it has: every restart would discard it, and since resume reads it before
+    the port is bound, a restart with live campaigns could never finish.
     """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tempfile.mkdtemp()))
     svc = ClusterService(namespace="ns1", cluster_config_name="rke2",

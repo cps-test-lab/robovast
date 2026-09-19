@@ -1141,7 +1141,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
 
         # Before anything is changed. The service pod this upgrade renders reaches the
         # registry and the index in the `robovast` pod, so a cluster whose pod lacks them --
-        # or still carries an object store nothing reads -- needs cleanup + setup, and must
+        # or carries an object store nothing reads -- needs cleanup + setup, and must
         # hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
 

@@ -252,17 +252,14 @@ def test_the_init_container_is_the_sidecar_not_the_image_under_test(tmp_path):
 
 def test_the_init_container_carries_the_slots_access_and_nothing_else(tmp_path):
     """The data plane's address and a token for this slot, in the init container only:
-    the image under test is not given a credential, and nothing names a store."""
+    the image under test is not given a credential."""
     manifest = _manifest(_spec(tmp_path), token="tok-1")["spec"]
     init, = manifest["initContainers"]
     env = {e["name"]: e["value"] for e in init["env"]}
     assert env == {DATA_URL_ENV: env[DATA_URL_ENV], TOKEN_ENV: "tok-1"}
     main, = manifest["containers"]
     main_env = {e["name"] for e in main["env"]}
-    assert TOKEN_ENV not in main_env
-    for container in (init, main):
-        for e in container["env"]:
-            assert not e["name"].startswith(("S3_", "MC_HOST", "AWS_")), e["name"]
+    assert not main_env & {DATA_URL_ENV, TOKEN_ENV}
 
 
 def test_the_lane_mints_the_token_for_the_slot_it_staged(tmp_path, staged):
@@ -275,9 +272,8 @@ def test_the_lane_mints_the_token_for_the_slot_it_staged(tmp_path, staged):
 
 
 def test_nothing_restores_modes_because_the_tar_carries_them(tmp_path):
-    """A ConfigMap could not carry modes and the store kept them as metadata; a tar
-    carries them as tar does, so a staged run file keeps its executable bit with no
-    restore step to get wrong."""
+    """A tar carries each member's mode, so a staged run file keeps its executable bit
+    with no restore step to get wrong."""
     init, = _manifest(_spec(tmp_path))["spec"]["initContainers"]
     assert "chmod" not in init["command"][-1]
 

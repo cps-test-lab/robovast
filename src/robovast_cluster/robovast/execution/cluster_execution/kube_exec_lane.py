@@ -7,7 +7,7 @@ same two primitives the aux-pod container runner already uses — a kept-alive p
 ``/config`` arrives the way a campaign Job's does: staged by the service on its own disk,
 then fetched as one tar stream from the data plane by an init container from the shared
 sidecar image (:mod:`.pod_access`). That is a deliberate choice among the transports this
-repo has. A ConfigMap was simpler but capped the staged tree at ~900 KiB and answered
+repo has. A ConfigMap would be simpler but caps the staged tree at ~900 KiB and answers
 "your config is too big" with "run it as a campaign instead" — the exact cost this tool
 exists to avoid. The aux pod's exec-channel transfer is not it either, because that needs
 the pod to be *running* before its files exist, and needs tools in an image we do not
