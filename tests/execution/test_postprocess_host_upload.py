@@ -51,7 +51,7 @@ class _DataPlane:
         return self._respond(int(answer), body)
 
     def _respond(self, status: int, body: bytes):
-        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tar:
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:") as tar:
             self.members.append({m.name: tar.extractfile(m).read()
                                  for m in tar.getmembers() if m.isfile()})
         response = requests.Response()
@@ -132,7 +132,7 @@ def test_the_provenance_marker_is_delivered(plane, campaign):
 
 def test_the_delivery_is_one_put_of_a_tar_to_the_campaigns_outputs_route(plane, campaign):
     """The address from the env, the route the data plane serves for exactly this, the
-    campaign's scoped token as the bearer, and a gzip tar as the body: what every pod
+    campaign's scoped token as the bearer, and a plain tar as the body: what every pod
     delivering outputs sends, so the service has one writing half."""
     before = postprocess_host._snapshot(str(campaign))
     (campaign / "cfg" / "0" / "poses.csv").write_text("x,y\n")
@@ -142,8 +142,8 @@ def test_the_delivery_is_one_put_of_a_tar_to_the_campaigns_outputs_route(plane, 
     (request,) = plane.requests
     assert request["url"] == f"{DATA_URL}/campaigns/camp/outputs"
     assert request["headers"]["Authorization"] == f"Bearer {TOKEN}"
-    assert request["headers"]["Content-Type"] == "application/gzip"
-    assert request["body"][:2] == b"\x1f\x8b"
+    assert request["headers"]["Content-Type"] == "application/x-tar"
+    assert request["body"][:2] != b"\x1f\x8b", "a delivery inside the cluster is not gzipped"
 
 
 def test_the_staged_rosbags_are_not_written_back_over_themselves(plane, campaign):

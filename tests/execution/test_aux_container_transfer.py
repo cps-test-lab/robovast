@@ -145,7 +145,7 @@ def test_copy_in_fetches_this_workspace_from_the_pods_slot(monkeypatch, staged):
     script = cmd[2]
     name = os.path.basename(runner.workspace)
     assert f'"${DATA_URL_ENV}/staged/{aux_slot("pod-x")}?path={name}"' in script
-    assert f"tar -xz -C {runner.workspace}" in script
+    assert f"tar -x -C {runner.workspace}" in script
     assert f"chmod -R a+rwX {runner.workspace}" in script, \
         "root fetched it; the aux user has to be able to write into it"
 
@@ -167,7 +167,7 @@ def test_copy_in_carries_an_empty_output_directory_with_the_files(monkeypatch, s
     runner._copy_in()
 
     script, = rec.scripts
-    assert "curl" in script and "tar -xz" in script
+    assert "curl" in script and "tar -x " in script
     assert "artifacts" not in script, "nothing is created by hand; the tar carries it"
 
 
@@ -188,8 +188,8 @@ def test_copy_out_delivers_the_workspace_under_its_own_name(monkeypatch, staged)
     assert container == TRANSFER_CONTAINER
     script = cmd[2]
     parent, name = os.path.split(runner.workspace)
-    assert f"tar -C {parent} -czf - {name} |" in script
-    assert f'-X PUT -T - -H "Content-Type: application/gzip" "${DATA_URL_ENV}/staged/{aux_slot("pod-x")}"' in script
+    assert f"tar -C {parent} -cf - {name} |" in script
+    assert f'-X PUT -T - -H "Content-Type: application/x-tar" "${DATA_URL_ENV}/staged/{aux_slot("pod-x")}"' in script
 
 
 def test_copy_in_of_an_empty_workspace_transfers_nothing(monkeypatch, staged):

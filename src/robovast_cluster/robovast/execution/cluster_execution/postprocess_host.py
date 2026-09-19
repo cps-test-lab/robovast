@@ -182,7 +182,7 @@ def derived_paths(campaign_root: str, before: dict) -> list:
 
 
 def _tar_body(campaign_root: str, rels: list):
-    """A generator of gzip-tar bytes carrying *rels* relative to *campaign_root*.
+    """A generator of plain-tar bytes carrying *rels* relative to *campaign_root*.
 
     A writer thread tars into one end of a pipe and the generator reads the other, so the
     body streams as it is made and nothing the size of the outputs sits in memory or on the
@@ -195,7 +195,7 @@ def _tar_body(campaign_root: str, rels: list):
     def _write():
         try:
             with os.fdopen(write_fd, "wb") as sink, \
-                    tarfile.open(fileobj=sink, mode="w|gz", compresslevel=1) as tar:
+                    tarfile.open(fileobj=sink, mode="w|") as tar:
                 for rel in rels:
                     try:
                         tar.add(os.path.join(campaign_root, rel), arcname=rel,
@@ -239,7 +239,7 @@ def _deliver(campaign_root: str, rels: list, data_url: str, token: str,
     from robovast.service.interface import Routes  # noqa: PLC0415
 
     url = data_url.rstrip("/") + Routes.campaign_outputs(campaign_id)[len(Routes.DATA):]
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/gzip"}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/x-tar"}
     last = None
     for attempt in range(1, _DELIVERY_ATTEMPTS + 1):
         try:

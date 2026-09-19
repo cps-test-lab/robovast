@@ -1035,10 +1035,10 @@ export interface paths {
         };
         /**
          * Download Campaign Archive
-         * @description Stream a ``tar.gz`` of the campaign.
+         * @description Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
          *
          *     Backs ``vast campaign download``, the web UI's download button and the
-         *     postprocessing pod's stage. What comes out is the campaign as this service holds
+         *     postprocessing pod's stage -- which asks for the plain tar, being in the cluster. What comes out is the campaign as this service holds
          *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
          *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
          *     ``batch_jobs`` narrow it to what a postprocessing pod reads
@@ -1111,7 +1111,7 @@ export interface paths {
         };
         /**
          * Download Staged
-         * @description Stream a staged slot, or *path* within it, as a ``tar.gz``.
+         * @description Stream a staged slot, or *path* within it, as a plain tar.
          */
         get: operations["download_staged_data_staged__slot__get"];
         /**
@@ -6205,6 +6205,7 @@ export interface operations {
                 stage?: boolean;
                 skip_bags?: boolean;
                 batch_jobs?: string;
+                uncompressed?: boolean;
             };
             header?: never;
             path: {

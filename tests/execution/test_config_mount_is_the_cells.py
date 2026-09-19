@@ -187,7 +187,7 @@ def test_it_fetches_the_whole_view_in_one_stream(monkeypatch):
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS)
     assert command.count("curl") == 1, command
     assert "/campaigns/camp-2026-07-17-120000/inputs" in command, command
-    assert "tar -xz -C /config" in command, command
+    assert "tar -x -C /config" in command, command
 
 
 def test_it_never_asks_for_a_cells_records(monkeypatch):

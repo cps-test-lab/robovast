@@ -247,7 +247,7 @@ def test_the_init_container_is_the_sidecar_not_the_image_under_test(tmp_path):
     assert init["image"] != "img:1"
     script = init["command"][-1]
     assert f'"${DATA_URL_ENV}/staged/{exec_slot("ns")}?path=config"' in script
-    assert "tar -xz -C /config" in script
+    assert "tar -x -C /config" in script
 
 
 def test_the_init_container_carries_the_slots_access_and_nothing_else(tmp_path):
@@ -318,7 +318,7 @@ def test_a_named_workspace_is_mounted_read_only_at_its_own_address(tmp_path):
     assert not init_mount.get("readOnly")
     script = init["command"][-1]
     assert f'"${DATA_URL_ENV}/staged/{exec_slot("ns")}?path=workspace"' in script
-    assert "tar -xz -C /sources/ws-1" in script
+    assert "tar -x -C /sources/ws-1" in script
 
 
 def test_no_workspace_means_no_sources_mount(tmp_path):

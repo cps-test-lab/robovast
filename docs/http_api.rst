@@ -70,13 +70,14 @@ Large uploads take the side channel instead: ``POST /uploads`` grants a token, a
 The **data plane** is the third namespace, ``/data``: every route that moves a campaign's
 or a staged slot's bytes as one tar stream. ``GET /data/campaigns/{id}/archive`` is the
 campaign as a tar.gz (narrowed by ``stage``, ``skip_bags`` and ``batch_jobs`` to what a
-postprocessing pod reads); ``GET .../inputs`` is what a job pod extracts into its
+postprocessing pod reads, and a plain tar with ``uncompressed``); ``GET .../inputs`` is what a job pod extracts into its
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened and a cell's
 own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
 pod's output tree into the campaign, last writer wins, with what the driver owns -- the
 campaign's own store, its logs -- refused per member and named in the reply; and
 ``GET``/``PUT /data/staged/{slot}`` move the scratch trees the service stages for a build
-or exec pod. These are **control routes, not writes under** ``/results``, so that space
+or exec pod. Every stream a pod reads is a plain tar, and an upload may be plain or
+gzipped: the reader detects it. These are **control routes, not writes under** ``/results``, so that space
 keeps having no write verb at all. Streamed both ways, never buffered: a download is
 tarred as it is read and an upload is extracted as it arrives, through a bounded queue,
 so a slow disk holds the socket back rather than the body piling up in memory. In the

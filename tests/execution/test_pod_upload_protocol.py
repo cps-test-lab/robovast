@@ -105,7 +105,7 @@ class _Pod:
         return (self.record / f"args.{n}").read_text()
 
     def members(self, n: int) -> set:
-        with tarfile.open(self.record / f"body.{n}", "r:gz") as tar:
+        with tarfile.open(self.record / f"body.{n}", "r:") as tar:
             return {m.name for m in tar.getmembers()}
 
     def mark(self, name: str) -> None:

@@ -257,7 +257,7 @@ def test_the_stage_is_the_sidecar_image_fetching_the_campaign_archive(monkeypatc
     assert stage["image"] == "example.com/sidecar:1"
     script = stage["command"][-1]
     assert pod_access.fetch_command("/campaigns/c1/archive", pj.CAMPAIGN_MOUNT,
-                                    "stage=true&skip_bags=false") in script
+                                    "stage=true&uncompressed=true&skip_bags=false") in script
     assert "python" not in script
 
 
@@ -292,7 +292,7 @@ def test_the_stage_hands_the_tree_to_the_pods_group():
     assert "chmod g+rwX" in script
     assert "! -type l" in script
     # After the fetch, and only if it succeeded: a half-extracted tree is not handed on.
-    assert script.index("tar -xz") < script.index("chgrp")
+    assert script.index("tar -x ") < script.index("chgrp")
     assert " && find " in script
 
 
