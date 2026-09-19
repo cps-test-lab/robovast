@@ -368,7 +368,7 @@ def _base_manifest():
         return [{"name": "OUTPUT_DIR", "value": "/out/_jobs/batch-0/job-0"},
                 {"name": "SCENARIO_PARAMETER_FILE", "value": "/config/job-0.params.yaml"},
                 {"name": "SCENARIO_FILE", "value": "scenario.osc"}]
-    # Carries the metadata a real job's manifest carries (see manifests.JOB_TEMPLATE): the
+    # Carries the metadata a real job's manifest carries (see campaign_job_manifest): the
     # campaign labels a probe inherits, and the display annotation it must NOT inherit.
     return {"metadata": {"name": "camp-batch0-job-0",
                          "labels": {"jobgroup": "scenario-runs", "campaign-id": "camp"}},

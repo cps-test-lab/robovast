@@ -81,17 +81,20 @@ from robovast.execution.packer import build_jobs
 
 from . import pod_access, pod_upload
 from .cluster_context import resolve_resources
+from .campaign_job import apply_campaign_pod_policy, campaign_job_manifest, pin_campaign_job
 from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign, blocked_and_contended_reasons,
-                                previous_container_log, restarted_job_forensics)
+                                previous_container_log, resolve_pull_secret,
+                                restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL, JOB_TEMPLATE, MAIN_CONTAINER_NAME
+from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAME,
+                        POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
 # Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
 # import inside the loop would be noise. node_admission imports nothing from this package,
 # so there is no cycle to route around by importing late.
 from .node_admission import CREATED as _ADMIT_CREATED
 from .node_admission import PLANNED as _ADMIT_PLANNED
-from .node_placement import job_node_pool, job_node_selector
+from .node_placement import job_node_pool
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +308,7 @@ def _with_bootstrap(declared: dict, container_name: str = None, roles=()) -> dic
     node still being measured, and every job on a node whose probe was refused. Under
     ``sizing: fixed`` the declaration is always there and this returns it untouched.
 
-    **The limit is written explicitly, never left empty.** ``JOB_TEMPLATE`` reads
+    **The limit is written explicitly, never left empty.** ``POD_TEMPLATE`` reads
     ``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` from ``resourceFieldRef: limits.cpu`` /
     ``limits.memory``, and the downward API substitutes the NODE's allocatable for an empty
     limit -- so a container would be told it has the whole machine, and ``/dev/shm``, sized
@@ -464,7 +467,7 @@ def stamp_resources(spec: dict, resources: dict) -> None:
     a ceiling nothing reserves) or throttle a container that reserved room it is not allowed to
     use.
 
-    **Neither may be left empty.** ``JOB_TEMPLATE`` reads ``AVAILABLE_CPUS`` / ``AVAILABLE_MEM``
+    **Neither may be left empty.** ``POD_TEMPLATE`` reads ``AVAILABLE_CPUS`` / ``AVAILABLE_MEM``
     from ``resourceFieldRef: limits.cpu / limits.memory``, and the downward API substitutes the
     NODE's allocatable for an unset limit -- so a scenario would size itself to the whole
     machine and be wrong in a way that looks right.
@@ -826,8 +829,6 @@ class BatchJobRunner:
         """
         job_manifest = copy.deepcopy(self.manifest)
 
-        label_safe_campaign = _label_safe_campaign(self.campaign)
-        self.replace_template(job_manifest, "$CAMPAIGN_ID", label_safe_campaign)
         self.replace_template(job_manifest, "$JOB_NAME", job_short_name)
         self.replace_template(job_manifest, "$JOB_FULL_NAME", job_full_name)
         self.replace_template(job_manifest, "$ITEM", item_tag)
@@ -848,7 +849,7 @@ class BatchJobRunner:
             # `node_figures` alone is not the condition, and the difference is the whole
             # first job on every node: before anything is measured there are no figures, so
             # gating on them left the main container with NO resources at all rather than
-            # the bootstrap. An empty limit is not merely generous -- JOB_TEMPLATE reads
+            # the bootstrap. An empty limit is not merely generous -- POD_TEMPLATE reads
             # AVAILABLE_CPUS/AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the
             # downward API substitutes the NODE's allocatable for an absent limit, so the
             # scenario sizes itself to the whole machine and the probe measures a container
@@ -889,37 +890,11 @@ class BatchJobRunner:
             if sized:
                 stamp_resources(spec['containers'][0], sized)
 
-        # Tolerate the taint a campaign node may carry, on the pod itself: nothing else
-        # injects it, and a deployment that taints its campaign nodes without it does not
-        # fail loudly -- its pods simply never place. Additive and idempotent, so it is
-        # safe to apply to a spec that already carries it.
-        from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # noqa: PLC0415
-        existing = list(spec.get('tolerations') or [])
-        for toleration in CAMPAIGN_NODE_TOLERATIONS:
-            if dict(toleration) not in existing:
-                existing.append(dict(toleration))
-        spec['tolerations'] = existing
-
-        # Pull secret for an agent-built experiment image pushed to a private
-        # registry (see RegistryConfig). Only present when a registry with auth was
-        # configured at setup; a public/insecure registry needs none. Falls back to the
-        # well-known Secret setup creates when the env var naming it is absent — which is
-        # the normal case for an off-cluster service, since setup writes that name into the
-        # deployed pod's env (see ClusterService._resolve_registry_objects).
-        try:
-            pull_secret = self.cluster_config.get_registry_config().pull_secret_name
-            if not pull_secret:
-                from .service_deploy import REGISTRY_PUSH_SECRET_NAME
-                try:
-                    self.k8s_client.read_namespaced_secret(
-                        REGISTRY_PUSH_SECRET_NAME, self.namespace)
-                    pull_secret = REGISTRY_PUSH_SECRET_NAME
-                except client.exceptions.ApiException:
-                    pull_secret = ""
-        except Exception:  # noqa: BLE001 - registry config is optional
-            pull_secret = ""
-        if pull_secret:
-            spec['imagePullSecrets'] = [{'name': pull_secret}]
+        # The pull secret for an agent-built experiment image pushed to a private registry
+        # (see RegistryConfig), and the campaign nodes' toleration -- the same policy every
+        # admitted campaign Job carries.
+        apply_campaign_pod_policy(
+            spec, resolve_pull_secret(self.cluster_config, self.k8s_client, self.namespace))
 
         # Hosts the cluster's DNS cannot resolve (ROBOVAST_EXTRA_HOST_ALIASES). This
         # covers what the *pod* resolves; the image pull itself is the node's container
@@ -1404,26 +1379,10 @@ class BatchJobRunner:
 
         The node is the one admission granted, or -- where nothing granted one: no queue, an
         unlabelled node -- the node the campaign is confined to, so a confined campaign's pod
-        is confined on every path that creates it. Both ANDed onto whatever the spec already
-        carried, through :func:`~.node_placement.job_node_selector`. The pool is the
-        operator's ``ROBOVAST_JOB_NODE_LABELS``, which is a pod ``nodeSelector``.
-
-        The pool must reach the pod, not just the accounting: the budget provider counts only
-        nodes inside it, so a pod free to land outside would be running on capacity nothing
-        reserved. The pin then narrows the pool rather than widening it -- a selector that
-        replaced the pool would defeat the very confinement it was placed inside.
+        is confined on every path that creates it. See
+        :func:`~.campaign_job.pin_campaign_job`.
         """
-        node_id = node_id or self._campaign_node_id()
-        pool = job_node_pool()
-        if not pool and not node_id:
-            # Nothing to confine. Returned untouched rather than reaching into the manifest:
-            # this is called unconditionally, and a caller with a minimal manifest (an offline
-            # emit, a test) would otherwise die on a key it never needed.
-            return manifest
-        spec = manifest.setdefault('spec', {}).setdefault(
-            'template', {}).setdefault('spec', {})
-        spec['nodeSelector'] = job_node_selector(spec.get('nodeSelector'), node_id, pool)
-        return manifest
+        return pin_campaign_job(manifest, node_id or self._campaign_node_id())
 
     def _create_probe(self, base, key, output_dir, node_id=None):
         """Create one probe Job. Signature matches the queue's create callback."""
@@ -2299,9 +2258,15 @@ class BatchJobRunner:
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace,
-                                       pull_policy=pull_policy_for(image))
-        manifest = yaml.safe_load(yaml_str)
+        # The per-job values stay placeholders here, stamped on each Job built from this
+        # (`_build_job_manifest`); the campaign's own values are known now.
+        manifest = campaign_job_manifest(
+            name="$JOB_NAME", namespace=self.namespace, jobgroup="scenario-runs",
+            campaign_id=self.campaign, ttl_seconds=SCENARIO_JOB_TTL_SECONDS,
+            annotations={"total-job-num": "$TOTAL_JOB_NUM"},
+            pod_name="scenario-runs", pod_annotations={"job-name-full": "$JOB_FULL_NAME"},
+            pod_spec=yaml.safe_load(POD_TEMPLATE.format(
+                image=image, pull_policy=pull_policy_for(image))))
 
         # No queue-membership label, deliberately: this Job is admitted by RoboVAST's own
         # controller (node_admission.AdmissionController), which creates it only once the

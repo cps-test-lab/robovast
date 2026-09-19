@@ -69,7 +69,7 @@ def test_the_role_decides_where_there_is_one():
 
 
 def test_the_limit_is_never_left_empty():
-    """`JOB_TEMPLATE` reads AVAILABLE_CPUS/AVAILABLE_MEM from `limits`, and the downward API
+    """`POD_TEMPLATE` reads AVAILABLE_CPUS/AVAILABLE_MEM from `limits`, and the downward API
     substitutes the NODE's allocatable for an empty limit -- so the container would be told
     it has the whole machine, and /dev/shm, sized from the same place, would turn an overrun
     into a SIGBUS with no reason attached."""
@@ -287,7 +287,7 @@ def test_the_main_container_takes_the_bootstrap_before_any_node_is_calibrated(mo
     waits for measured figures leaves the main container unsized for exactly the runs the
     bootstrap exists to carry.
 
-    An empty limit is not merely generous. JOB_TEMPLATE reads AVAILABLE_CPUS and
+    An empty limit is not merely generous. POD_TEMPLATE reads AVAILABLE_CPUS and
     AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the downward API substitutes the
     NODE's allocatable for an absent limit -- so the scenario sizes itself to the whole
     machine, and the probe measures a container that was never bounded. Measured on a
