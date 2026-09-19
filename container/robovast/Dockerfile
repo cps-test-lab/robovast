@@ -418,7 +418,7 @@ RUN USER=ubuntu && \
 # stays arm64 inside an amd64 userland. Also protects a local build, which no CI check reaches.
 #
 # Compared against /bin/bash rather than against a table of architecture names: the question is
-# whether these binaries match the userland they have to run in, and bash IS that userland. That
+# whether this binary matches the userland it has to run in, and bash IS that userland. That
 # needs no mapping to keep current, and it stays right for an architecture nobody has added yet.
 # ELF e_machine is two little-endian bytes at offset 18 (x86-64 3e00, aarch64 b700); od is in
 # coreutils, so this pulls in nothing.
@@ -427,17 +427,15 @@ RUN USER=ubuntu && \
 # there is no harmless invocation (it takes only -q, and `-v` fails the flag parse).
 RUN e_machine() { od -An -t x1 -j 18 -N 2 "$1" | tr -d ' '; } && \
     want=$(e_machine /bin/bash) && \
-    for bin in /usr/local/bin/fixuid; do \
-      got=$(e_machine "$bin"); \
-      if [ "$got" != "$want" ]; then \
-        echo "ERROR: $bin is ELF e_machine $got, but this image's userland is $want." >&2; \
-        echo "  A binary was fetched for TARGETARCH=${TARGETARCH} into a rootfs of another" >&2; \
-        echo "  architecture, so the image would carry foreign content under a correct-looking" >&2; \
-        echo "  label and die with 'Invalid ELF image' when run. A base whose tag is a single" >&2; \
-        echo "  manifest rather than a multi-arch index does exactly this." >&2; \
-        exit 1; \
-      fi; \
-    done && \
+    got=$(e_machine /usr/local/bin/fixuid) && \
+    if [ "$got" != "$want" ]; then \
+      echo "ERROR: /usr/local/bin/fixuid is ELF e_machine $got, but this image's userland is $want." >&2; \
+      echo "  A binary was fetched for TARGETARCH=${TARGETARCH} into a rootfs of another" >&2; \
+      echo "  architecture, so the image would carry foreign content under a correct-looking" >&2; \
+      echo "  label and die with 'Invalid ELF image' when run. A base whose tag is a single" >&2; \
+      echo "  manifest rather than a multi-arch index does exactly this." >&2; \
+      exit 1; \
+    fi && \
     echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m), e_machine=${want}"
 
 # The build lock: what this image contains, as opposed to what it was asked for.
