@@ -2147,11 +2147,11 @@ def service_manifests(namespace="default", image=None, env=None,
     # unconditionally for the same reason: "" is the default, so deleting the line resets the
     # pod instead of leaving the old value in force. Parsed here first, so a malformed value
     # fails this command on the operator's machine rather than the service in the pod.
-    from robovast.service.storage_reserve import (  # pylint: disable=import-outside-toplevel
-        RESERVE_ENV, reserve_gb)
+    from robovast.common.disk_reserve import (  # pylint: disable=import-outside-toplevel
+        RESERVE_ENV, configured_reserve_gb)
 
     if not any(e["name"] == RESERVE_ENV for e in env):
-        reserve_gb()
+        configured_reserve_gb()
         env = [*env, {"name": RESERVE_ENV, "value": os.environ.get(RESERVE_ENV, "").strip()}]
 
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason

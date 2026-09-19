@@ -33,8 +33,10 @@ upload proceeds with what is there, saying which markers were missing.
 
 The upload retries, because the service it delivers to is rolled by ``vast service
 upgrade`` while campaigns run, and a streamed body cannot be replayed: every attempt
-re-runs the whole ``tar | curl`` pipeline. A response that says the request itself is
-wrong (a 4xx, or 507 for a full volume) is terminal -- retrying it would only repeat the
+re-runs the whole ``tar | curl`` pipeline. A 507 is retried too: the results volume is
+full, the run's output is sound, and space freed within the retry window is space this
+upload lands in -- giving up would throw away a run that already cost its compute. Only a
+4xx is terminal: the request itself is wrong, and retrying it would only repeat the
 answer. The container exits non-zero when the result could not be delivered, so a lost
 result is a failed Job and never a quiet one.
 
@@ -186,12 +188,13 @@ http_status() {
     sed -n 's/.*returned error: \([0-9][0-9][0-9]\).*/\1/p' "${IPC_DIR}/.upload.err" | head -n 1
 }
 
-# A response that would not change on a retry: the request is wrong (4xx) or the volume is
-# full (507). Everything else -- a refused connection while the service rolls, a 502/503
-# from the front, a reset mid-stream -- is worth another attempt.
+# A response that would not change on a retry: the request is wrong (4xx). Everything else
+# is worth another attempt -- a refused connection while the service rolls, a 502/503 from
+# the front, a reset mid-stream, and a 507: a full results volume takes this upload once
+# space is freed.
 is_terminal() {
     case "$1" in
-        4[0-9][0-9]|507) return 0 ;;
+        4[0-9][0-9]) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -209,6 +212,9 @@ upload_with_retries() {
         fi
         status=$(http_status)
         log "ERROR: delivery failed (curl exit ${rc}${status:+, HTTP ${status}}): $(tr '\n' ' ' < "${IPC_DIR}/.upload.err")"
+        if [ "${status}" = "507" ]; then
+            log "the service's results volume is full; retrying while space is freed"
+        fi
         if [ -n "${status}" ] && is_terminal "${status}"; then
             log "ERROR: HTTP ${status} would not change on a retry; giving up"
             return 1

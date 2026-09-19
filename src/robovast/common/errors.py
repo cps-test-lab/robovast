@@ -23,6 +23,7 @@ user-error type the execution backends do, without importing the execution layer
 
 import errno
 import os
+import sqlite3
 
 
 class CampaignConfigError(Exception):
@@ -266,13 +267,13 @@ class ImageStoreUnavailable(RuntimeError):
 
 
 class InsufficientStorageError(ActionableError):
-    """Raised when new disk-consuming work is refused because free space is below the reserve.
+    """Raised when a write is refused because free space is below the reserve.
 
     Distinct from a write that already failed for lack of space (:func:`is_storage_full`):
-    this is the service declining to *start* something while it still has room to keep
-    running what it has -- see :mod:`robovast.service.storage_reserve`. Both reach an HTTP
-    caller as a 507; this one says which meter is short and by how much, and its
-    ``next_step`` is clearing the service cache when that would free something worth it.
+    this is RoboVAST declining new work while it still has room to keep running what it has
+    (see :mod:`robovast.common.disk_reserve`). Both reach an HTTP caller as a 507; this one
+    says which disk is short and by how much, and carries clearing the service cache as its
+    ``next_step`` when that would free something worth it.
 
     Not a ``RuntimeError``: nothing is in conflict, and a caller that maps a conflict to
     "wait for the other operation" would wait for something that will not finish.
@@ -290,13 +291,19 @@ STORAGE_FULL_DETAIL = (
 #: Postgres's SQLSTATE for ``disk_full``: what the index answers when its volume is full.
 _PG_DISK_FULL = "53100"
 
+#: SQLite's primary result code for a full disk: what a campaign's ``campaign.db`` answers
+#: when the results volume is full.
+_SQLITE_FULL = sqlite3.SQLITE_FULL
+
 
 def is_storage_full(exc: BaseException) -> bool:
     """Whether *exc*, or anything that caused it, says the storage behind a write is full.
 
-    Two shapes carry that fact: the kernel's ``ENOSPC``/``EDQUOT`` on a file write, and
+    Three shapes carry that fact: the kernel's ``ENOSPC``/``EDQUOT`` on a file write,
     Postgres's ``disk_full`` on an index write -- matched on the SQLSTATE attribute rather
-    than the psycopg class, so this module does not import the driver.
+    than the psycopg class, so this module does not import the driver -- and SQLite's
+    ``SQLITE_FULL`` on a write to a campaign's store, which SQLite raises as its own error
+    rather than the ``OSError`` behind it.
 
     The cause chain is followed because a layer that translates an ``OSError`` into its own
     refusal (an archive that could not be extracted is a ``ValueError``) would otherwise
@@ -309,6 +316,8 @@ def is_storage_full(exc: BaseException) -> bool:
         if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
             return True
         if getattr(exc, "sqlstate", None) == _PG_DISK_FULL:
+            return True
+        if getattr(exc, "sqlite_errorcode", None) == _SQLITE_FULL:
             return True
         # The chain a traceback prints: an explicit cause, else the exception being handled
         # when this one was raised -- unless ``from None`` said that one is irrelevant.

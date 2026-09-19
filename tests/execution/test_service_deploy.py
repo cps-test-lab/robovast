@@ -448,7 +448,7 @@ def test_family_env_carries_what_the_environment_says(monkeypatch):
 
 def test_the_disk_reserve_is_carried_even_when_unset(monkeypatch):
     """Empty, not absent, for the family's reason: deleting the .env line must reset the pod."""
-    from robovast.service.storage_reserve import RESERVE_ENV
+    from robovast.common.disk_reserve import RESERVE_ENV
     monkeypatch.delenv(RESERVE_ENV, raising=False)
     env = {e["name"]: e["value"] for e in
            _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
@@ -456,7 +456,7 @@ def test_the_disk_reserve_is_carried_even_when_unset(monkeypatch):
 
 
 def test_the_disk_reserve_carries_what_the_environment_says(monkeypatch):
-    from robovast.service.storage_reserve import RESERVE_ENV
+    from robovast.common.disk_reserve import RESERVE_ENV
     monkeypatch.setenv(RESERVE_ENV, "150")
     env = {e["name"]: e["value"] for e in
            _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
@@ -465,7 +465,7 @@ def test_the_disk_reserve_carries_what_the_environment_says(monkeypatch):
 
 def test_a_malformed_disk_reserve_fails_the_deploy_not_the_pod(monkeypatch):
     """Caught on the operator's machine, where the .env is, rather than by every campaign."""
-    from robovast.service.storage_reserve import RESERVE_ENV
+    from robovast.common.disk_reserve import RESERVE_ENV
     monkeypatch.setenv(RESERVE_ENV, "a lot")
     with pytest.raises(ValueError, match=RESERVE_ENV):
         sd.service_manifests(namespace="default", image="x")

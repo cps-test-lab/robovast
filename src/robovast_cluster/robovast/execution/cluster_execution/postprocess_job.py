@@ -386,7 +386,16 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
                         reason)
         time.sleep(poll)
 
+    reason = admission.refusal(owner)
     admission.finished(name)
+    from .node_admission import DISK_WAIT  # noqa: PLC0415
+    if reason.startswith(DISK_WAIT):
+        # Not the cluster being full: nothing is admitted while the disk the results land on
+        # is below its reserve, and that wants space freed rather than smaller resources.
+        return False, None, (
+            f"postprocessing waited {timeout:g}s and was not started: "
+            f"{reason[len(DISK_WAIT):]} The campaign's runs are complete; delete campaigns "
+            f"no longer needed, then re-run postprocessing.")
     return False, None, (
         f"postprocessing waited {timeout:g}s for {sizing.cpu:g} cpu / "
         f"{sizing.memory // 1024 ** 2}Mi and the cluster stayed full. The campaign's runs "

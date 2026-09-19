@@ -253,6 +253,30 @@ def test_a_full_disk_is_a_507(client, monkeypatch):
     assert resp.status_code == 507, resp.text
 
 
+def test_a_write_the_service_could_not_make_is_a_500_not_a_bad_upload(client, monkeypatch):
+    """A disk gone read-only or failing is the service's fault, and an uploader retries a 5xx.
+    Answered as 400 -- "not a readable tar" -- it would give up on output that was sound."""
+    import errno
+
+    from robovast.service import tar_io
+
+    def _read_only(*_a, **_k):
+        raise OSError(errno.EROFS, "Read-only file system")
+    monkeypatch.setattr(tar_io, "_write_atomic", _read_only)
+    resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=_tar([("cell-a/1/x", b"y")]))
+    assert resp.status_code == 500, resp.text
+    assert "could not write the upload" in resp.json()["detail"]
+
+
+def test_an_upload_that_is_not_a_tar_is_a_400(client):
+    """Including gzip's own complaint, which Python raises as an ``OSError`` like any failed
+    write -- the one case where an ``OSError`` is the sender's to fix."""
+    for body in (b"certainly not a tar", b"\x1f\x8b\x08\x00" + b"\x00" * 40):
+        resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=body)
+        assert resp.status_code == 400, (body[:4], resp.text)
+        assert "not a readable tar" in resp.json()["detail"]
+
+
 def test_the_control_plane_mints_tokens_the_data_plane_honours(root):
     """The scope a pod carries is minted by the transport from the secret its gate enforces."""
     store = WorkspaceStore(registry=WorkspaceRegistry(root=root.parent / "ws"))

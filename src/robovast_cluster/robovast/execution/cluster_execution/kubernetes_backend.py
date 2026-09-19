@@ -2037,6 +2037,23 @@ class BatchJobRunner:
             return []
         return [n for n in node_ids if calibration.calibrated(n) is None]
 
+    def _publish_space_wait(self, short) -> None:
+        """Put a wait for disk space on the campaign's ``stage``, and take it off again.
+
+        The queue's refusal reaches the campaign log already; the stage is what a person
+        watching the campaign reads, and a campaign that stopped starting Jobs has to say why
+        there. Cleared the moment the disk has room, so it never outlives the wait.
+        """
+        if self._state is None or short == getattr(self, "_space_wait_shown", None):
+            return
+        from .node_admission import DISK_WAIT  # noqa: PLC0415
+        self._space_wait_shown = short
+        try:
+            self._state.update(stage=f"{DISK_WAIT}{short}" if short else None)
+        except Exception:  # noqa: BLE001 - status reporting must not fail a batch
+            logger.debug("Could not publish the disk wait for batch %s", self._batch_tag,
+                         exc_info=True)
+
     def _publish_capacity_wait(self, waiting: bool) -> None:
         """Tell the status whether this batch is queued, if anyone is listening.
 
@@ -3072,6 +3089,7 @@ class BatchJobRunner:
                 # that is what makes the ordering cluster-wide while keeping the queue
                 # thread-free.
                 admission.drain()
+                self._publish_space_wait(admission.space_shortfall())
                 states = admission.states(self.campaign)
                 created_names = [n for n, st in states.items() if st == _ADMIT_CREATED]
                 planned_count = sum(1 for st in states.values() if st == _ADMIT_PLANNED)

@@ -677,9 +677,10 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    ``storage_refusal`` is non-null while ``disk`` or ``results`` has less free space than the
    reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`). While
    it is set, ``start_campaign``, re-runs, image builds, imports and postprocessing are
-   refused with the same sentence; campaigns already running continue. Check it before a
-   sweep rather than learning it from the refusal. When clearing the service's caches would
-   help, the refusal's ``next_step`` is ``vast service cache --clear``.
+   refused with the same sentence; campaigns already running continue, but on a cluster start
+   no new Jobs below the reserve and say so in ``get_campaign_status``'s ``stage``. Check
+   it before a sweep rather than learning it from the refusal. When clearing the service's
+   caches would help, the refusal's ``next_step`` is ``vast service cache --clear``.
 
 
 .. _mcp-liveness:
