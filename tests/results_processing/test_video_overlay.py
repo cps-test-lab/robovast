@@ -79,7 +79,19 @@ def run_dir(tmp_path):
                              "orientation.w": qw})
 
     (tmp_path / "campaign" / "_transient").mkdir()
+    (tmp_path / "campaign" / "_config").mkdir()
+    # The frozen .vast: what the config view's map2d panel declares, in the map frame.
+    (tmp_path / "campaign" / "_config" / "nav.vast").write_text(yaml.safe_dump({
+        "visualization": {"config": {"panels": [
+            {"parameters": {}},
+            {"map2d": {"map": "files/room.yaml", "markers": [
+                {"kind": "pose", "pos": [-1.0, -1.0], "yaw": 0.0, "label": "start"},
+                {"kind": "pose", "param": "goal", "label": "goal", "color": "#4ade80"},
+            ]}},
+        ]}},
+    }))
     (tmp_path / "campaign" / "_transient" / "configurations.yaml").write_text(yaml.safe_dump({
+        "vast": "/somewhere/on/the/service/nav.vast",
         "configs": [{
             "name": "cfg",
             "config": {
@@ -193,11 +205,34 @@ def test_an_unknown_option_is_refused():
 
 
 def test_markers_come_from_the_configuration(run_dir, layers):
-    overlay = _overlay(run_dir, layers=layers)
+    overlay = _overlay(run_dir, layers=layers, markers=[])
     kinds = sorted(m.kind for m in overlay._markers)
     assert kinds == ["box", "path", "pose"]
     without = _overlay(run_dir, layers=layers, planned_path=False, goal=False, obstacles=False)
     assert without._markers == []
+
+
+def test_the_map2d_panels_declared_markers_are_drawn_unless_stated_otherwise(run_dir, layers):
+    """The same declaration the web config view resolves -- a literal start, a goal read from
+    the configuration's parameter -- lands beside the contributed markers."""
+    overlay = _overlay(run_dir, layers=layers)
+    declared = [m for m in overlay._markers if m.group == "declared"]
+    assert [(m.label, m.pos) for m in declared] == [("start", [-1.0, -1.0]), ("goal", [3.0, 2.0])]
+    panel = overlay.render(1.0)
+    x, y = overlay._to_pixels(3.0, 2.0)
+    r, g, b, _a = _pixel(panel, x, y)
+    assert g > 180 and r < 120, f"expected the goal's green, got {(r, g, b)}"
+
+    stated = _overlay(run_dir, layers=layers, markers=[{"kind": "pose", "pos": [0.5, 0.5], "label": "x"}])
+    assert [m.label for m in stated._markers if m.group == "declared"] == ["x"]
+    assert [m for m in _overlay(run_dir, layers=layers, markers=[])._markers if m.group == "declared"] == []
+
+
+def test_a_missing_frozen_vast_is_named_unless_markers_are_stated(run_dir, layers):
+    (run_dir.parent.parent / "_config" / "nav.vast").unlink()
+    with pytest.raises(vo.NavVideoError, match="nav.vast is missing"):
+        _overlay(run_dir, layers=layers)
+    _overlay(run_dir, layers=layers, markers=[])
 
 
 def test_a_missing_configurations_file_is_named_unless_markers_are_off(run_dir, layers):

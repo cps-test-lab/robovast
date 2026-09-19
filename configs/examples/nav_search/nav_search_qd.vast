@@ -92,6 +92,18 @@ search:
   seed: 1
 
 visualization:
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "35%"}
+    # The trial's endpoints are constants of scenario_roqsim.osc, not factors, so no variation
+    # contributes them: declared here, once, they are drawn by the config view and by the costmap
+    # overlay of a rendered video alike.
+    - map2d:
+        title: Map
+        map: files/empty_room.yaml
+        markers:
+        - {kind: pose, pose: {position: {x: -2.5, y: 0.0}}, label: start, color: "#60a5fa"}
+        - {kind: pose, pose: {position: {x: 2.5, y: 0.0}}, label: goal, color: "#4ade80"}
   results:
     explorer:
       notebooks:

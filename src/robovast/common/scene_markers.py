@@ -25,11 +25,39 @@ What is *here* is the part that needs the variation classes: asking each of them
 what it contributes for one resolved configuration.
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from robovast.client.scene_markers import ConfigViewContribution, Point, SceneMarker
 
-__all__ = ["ConfigViewContribution", "Point", "SceneMarker", "collect_contributions"]
+__all__ = ["ConfigViewContribution", "Point", "SceneMarker", "collect_contributions",
+           "read_pose", "read_xy"]
+
+
+def _field(value, name):
+    return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+def read_xy(value) -> Optional[Point]:
+    """``[x, y]`` -- or ``[x, y, z]`` when z is stated -- from a Position-ish mapping or object,
+    else ``None``."""
+    if value is None:
+        return None
+    x, y, z = _field(value, "x"), _field(value, "y"), _field(value, "z")
+    if x is None or y is None:
+        return None
+    return [float(x), float(y)] if z is None else [float(x), float(y), float(z)]
+
+
+def read_pose(value) -> tuple[Optional[Point], Optional[float]]:
+    """``(pos, yaw)`` from a Pose-ish mapping or object: ``{position: {x, y}, orientation: {yaw}}``,
+    or a bare ``{x, y}`` -- what a hand-written ``.vast`` pose looks like, so it is accepted rather
+    than silently read as nothing. Either half may be absent."""
+    if value is None:
+        return None, None
+    position, orientation = _field(value, "position"), _field(value, "orientation")
+    yaw = _field(orientation, "yaw") if orientation is not None else None
+    pos = read_xy(position) if position is not None else read_xy(value)
+    return pos, (float(yaw) if yaw is not None else None)
 
 
 def collect_contributions(config: dict, variation_classes, base_path: str) -> dict[str, Any]:

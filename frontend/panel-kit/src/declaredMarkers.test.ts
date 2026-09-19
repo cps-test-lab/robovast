@@ -24,6 +24,15 @@ describe('declaredMarkers', () => {
     ])
   })
 
+  it('reads a written-out pose the way the .vast states one elsewhere', () => {
+    const out = declaredMarkers(
+      { markers: [{ kind: 'pose', pose: { position: { x: 2.5, y: 0 }, orientation: { yaw: 1 } },
+                    label: 'goal' }] },
+      config({}),
+    )
+    expect(out).toEqual([{ kind: 'pose', pos: [2.5, 0], yaw: 1, label: 'goal', group: 'declared' }])
+  })
+
   it('reads a pose from the parameter a marker names', () => {
     const out = declaredMarkers(
       { markers: [{ kind: 'pose', param: 'goal_pose', label: 'goal' }] },
