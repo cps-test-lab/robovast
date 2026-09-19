@@ -27,6 +27,20 @@ SIMULATOR_GROUP = "robovast.simulators"
 
 
 @pytest.fixture(autouse=True)
+def _no_disk_reserve(monkeypatch):
+    """No test may depend on how full the machine running the suite is.
+
+    The free-space reserve measures the real filesystem a download writes to, and its default
+    is a fraction of that disk -- so a test that syncs a campaign into ``tmp_path`` would pause
+    on a machine with a nearly full disk and pass on one without. Tests about the reserve set
+    their own value; every other test runs with none.
+    """
+    # ``disk_reserve.RESERVE_ENV``, named rather than imported: the suite-wide conftest must
+    # not need the core installed. ``test_storage_reserve`` pins that the two agree.
+    monkeypatch.setenv("ROBOVAST_DISK_RESERVE_GB", "0")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_login_config(tmp_path, monkeypatch):
     """No test may read or write the developer's real ``vast login``.
 

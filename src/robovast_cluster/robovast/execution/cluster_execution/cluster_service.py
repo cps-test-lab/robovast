@@ -4998,6 +4998,7 @@ class ClusterService(LocalTransport):
 
         from robovast.common.progress import fmt_size
         from robovast.execution.cluster_execution import in_pod_storage
+        from robovast.common.disk_reserve import require_room
         cfg = self._cluster_config()
         bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
         into_cache = dest is None
@@ -5030,10 +5031,24 @@ class ClusterService(LocalTransport):
                 # transfer is indistinguishable from a hang for as long as it takes. The log
                 # line serves whoever reads the pod log; ``on_progress`` serves the UI, which
                 # additionally needs the denominator to draw a bar.
+                # Into the service's own disk. A fetch into the cache has a caller waiting on
+                # it, so it is refused at the reserve, before and between files, rather than
+                # paused (see robovast.common.disk_reserve). Resume's narrowed fetches into a driver's root
+                # take the control plane only; the rest arrives through the backend's
+                # ensure_campaign_root_complete, which pauses instead.
+                action = f"fetch campaign {campaign_id}"
+                log_file = in_pod_storage.download_progress_logger(f"Campaign {campaign_id}")
+                if into_cache:
+                    require_room(dest, action=action)
+
+                def on_file():
+                    log_file()
+                    if into_cache:
+                        require_room(dest, action=action)
+
                 n = storage.download_prefix(
                     bucket, prefix, str(dest), force=force, include=include,
-                    on_file=in_pod_storage.download_progress_logger(
-                        f"Campaign {campaign_id}"),
+                    on_file=on_file,
                     on_progress=in_pod_storage.download_progress_reporter(on_change))
             # An unreachable store is translated by ``_resilient`` (see _materialize).
             except ClientError as exc:

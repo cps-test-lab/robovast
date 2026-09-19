@@ -333,32 +333,46 @@ shell that has the deployment's ``.env``.
 Keeping free space
 ------------------
 
-The service can keep a **free-space reserve**: while its disk or its results store has less
-free space than that, it refuses to *start* a campaign, a re-run, an image build, an import or
-a postprocessing run, with a 507 naming the meter and the amounts. Work already running
-continues, and stopping or deleting campaigns is never refused. The web UI's sidebar and
+The service keeps a **free-space reserve**, so that nothing it writes takes its disk past the
+point where the node evicts it. It honours the reserve two ways:
+
+* While its disk or its results store has less free space than the reserve, it refuses to
+  *start* a campaign, a re-run, an image build, an import or a postprocessing run, with a 507
+  naming the meter and the amounts. A fetch a caller is waiting on -- a download, a query that
+  needs a campaign's files -- is refused the same way.
+* Work already running **pauses** instead of writing into the reserve: a campaign's result
+  download, the restoring of a resumed campaign and the syncing of postprocessing outputs stop
+  between two files, say so on the campaign's status (``stage``), and continue once space is
+  freed. Stopping the campaign ends the pause.
+
+Stopping or deleting campaigns is never refused. The web UI's sidebar and
 ``get_resource_usage`` (``storage_refusal``) show the same verdict. If clearing the service's
 caches would help, the refusal says so: ``vast service cache --clear``, or **Service cache** on
 the Admin page.
+
+Unset, the reserve is **15% of the disk being written to**: above the kubelet's default hard
+eviction threshold (``nodefs.available<10%``), which evicts every pod on the node -- the service
+included -- with room for what is in flight when a pause begins. State an amount instead when
+you know your disk:
 
 .. code-block:: bash
 
    # .env on the machine you run setup/upgrade from, or the one running `vast serve`
    ROBOVAST_DISK_RESERVE_GB=150
 
-It is an absolute amount in gigabytes (10\ :sup:`9` bytes); unset or ``0`` keeps no reserve. An
-invalid value is an error, not a fallback.
+It is an absolute amount in gigabytes (10\ :sup:`9` bytes); ``0`` keeps no reserve. An invalid
+value is an error, not a fallback.
 
-**On a cluster, set it above the kubelet's hard eviction threshold on the data node**, which
-evicts every pod there, the service included. That threshold is usually a *fraction* of the
-disk (``nodefs.available``), so convert it for your disk. Read it from the node:
+**On a cluster, keep it above the kubelet's hard eviction threshold on the data node.** That
+threshold is usually a *fraction* of the disk (``nodefs.available``), so convert it for your
+disk. Read it from the node:
 
 .. code-block:: bash
 
    kubectl get --raw "/api/v1/nodes/<node>/proxy/configz" | jq .kubeletconfig.evictionHard
 
 ``vast cluster setup`` and ``vast service upgrade`` apply it, and deleting the line resets it;
-``vast service restart`` does not. The build cache keeps the same reserve free unless
+``vast service restart`` does not. The build cache keeps a reserve stated here free too, unless
 ``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` says otherwise (see :ref:`the build daemon's settings
 <buildkit-settings>`).
 

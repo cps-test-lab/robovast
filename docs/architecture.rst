@@ -1046,13 +1046,22 @@ lives in the ``run_data`` MCP plugin):
 cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
 ``disk`` and ``store`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
-refusal and the meters are one measurement. With no reserve configured nothing is read; a
+refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
 reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
-launch never depends on the permissions the capacity reading needs. Nothing that continues
-accepted work is guarded:
-resuming a live campaign after a restart would otherwise be abandoned, and stop and delete are
-what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — the status a write
-that already failed for lack of space is also given.
+launch never depends on the permissions the capacity reading needs. A refusal is
+``InsufficientStorageError``, a 507 over HTTP — the status a write that already failed for lack
+of space is also given.
+
+**Accepted work is never refused, but its downloads pause at the reserve.** The largest write
+the service makes is the download of a campaign it is already driving, so admission alone does
+not keep the node clear of its eviction threshold. Every download into the service's own disk
+consults ``robovast.common.disk_reserve.wait_for_room`` before it starts and ``pausing`` after
+each file: the cluster backend's batch download and ``ensure_campaign_root_complete``,
+which put the pause on the controller's ``stage`` and end it on a stop of the runs, and
+``postprocess_job.sync_outputs``. A fetch into the cluster lane's cache has a caller waiting on
+it, so ``fetch_campaign`` refuses there (``require_room``) rather than pausing. Each measures the
+filesystem it writes to, not the meters, because that is the one that fills. Stop and delete
+are never guarded: they are what free space.
 
 **The caches a clear may empty are copies of durable data, and nothing else.**
 ``service_cache`` / ``clear_service_cache`` sweep the scene cache on both lanes and, on the

@@ -2074,11 +2074,11 @@ def service_manifests(namespace="default", image=None, env=None,
     # the same reason: "" is the default, so deleting the line resets the pod instead of leaving
     # the old value in force. Each is parsed here first, so a malformed value fails this command
     # on the operator's machine rather than the service in the pod.
-    from robovast.service.storage_reserve import (  # pylint: disable=import-outside-toplevel
-        RESERVE_ENV, reserve_gb)
+    from robovast.common.disk_reserve import (  # pylint: disable=import-outside-toplevel
+        RESERVE_ENV, configured_reserve_gb)
 
     from .fetch_cache import MAX_AGE_ENV, max_age_days  # pylint: disable=import-outside-toplevel
-    for var, validate in ((RESERVE_ENV, reserve_gb), (MAX_AGE_ENV, max_age_days)):
+    for var, validate in ((RESERVE_ENV, configured_reserve_gb), (MAX_AGE_ENV, max_age_days)):
         if not any(e["name"] == var for e in env):
             validate()
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]

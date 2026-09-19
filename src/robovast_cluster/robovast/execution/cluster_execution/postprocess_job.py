@@ -593,25 +593,32 @@ def sync_outputs(cluster_config, campaign_id: str, campaign_root: str,
     """
     import os  # noqa: PLC0415
 
+    from robovast.common.disk_reserve import pausing, wait_for_room  # noqa: PLC0415
+
     from . import in_pod_storage  # noqa: PLC0415
 
     bucket, campaign_prefix = in_pod_storage.campaign_storage_location(
         cluster_config, campaign_id)
     storage = in_pod_storage.storage_client_for(cluster_config)
+    # Into the service's own disk, so it pauses at the reserve rather than write past it.
+    action = f"Syncing campaign {campaign_id}'s postprocessing outputs"
+    wait_for_room(campaign_root, action=action)
 
     execution = storage.download_prefix(
         bucket, f"{campaign_prefix}_execution",
-        os.path.join(str(campaign_root), "_execution"), force=force)
+        os.path.join(str(campaign_root), "_execution"), force=force,
+        on_file=pausing(campaign_root, action=action))
 
     manifest = storage.read_object(bucket, f"{campaign_prefix}{OUTPUT_MANIFEST}")
     if manifest is None:
         n = storage.download_prefix(bucket, f"{campaign_prefix}{POSTPROC_PREFIX}",
-                                    campaign_root, force=force)
+                                    campaign_root, force=force,
+                                    on_file=pausing(campaign_root, action=action))
         logger.info("Synced %d postprocessing output(s) from the legacy staging prefix "
                     "into %s", n, campaign_root)
     else:
         n = _fetch_manifested(storage, bucket, campaign_prefix, campaign_root,
-                              manifest, force=force)
+                              manifest, force=force, action=action)
         logger.info("Synced %d postprocessing output(s) into %s", n, campaign_root)
 
     if n:
@@ -685,9 +692,14 @@ def _manifest_paths(manifest: bytes) -> list:
 
 
 def _fetch_manifested(storage, bucket: str, campaign_prefix: str, campaign_root: str,
-                      manifest: bytes, force: bool = False) -> int:
-    """Fetch exactly the objects the manifest names; return how many were written."""
+                      manifest: bytes, *, action: str, force: bool = False) -> int:
+    """Fetch exactly the objects the manifest names; return how many were written.
+
+    Each object waits for the disk to be above the reserve first (*action* names the wait).
+    """
     import os  # noqa: PLC0415
+
+    from robovast.common.disk_reserve import wait_for_room  # noqa: PLC0415
     n = 0
     for rel in _manifest_paths(manifest):
         dst = os.path.join(campaign_root, rel)
@@ -697,6 +709,7 @@ def _fetch_manifested(storage, bucket: str, campaign_prefix: str, campaign_root:
             size = storage.stat_object(bucket, f"{campaign_prefix}{rel}")
             if size is not None and size == os.path.getsize(dst):
                 continue
+        wait_for_room(campaign_root, action=action)
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         if storage.download_object(bucket, f"{campaign_prefix}{rel}", dst):
             n += 1

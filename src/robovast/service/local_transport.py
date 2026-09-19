@@ -77,7 +77,8 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
-from robovast.service.storage_reserve import reserve_gb, storage_refusal
+from robovast.common.disk_reserve import reserve_disabled
+from robovast.service.storage_reserve import storage_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -1980,7 +1981,7 @@ class LocalTransport(RobovastInterface):
         every launch because the capacity could not be read would make a campaign depend on
         a permission it never needed. The failure is logged, and ``/usage`` reports it.
         """
-        if reserve_gb() <= 0:          # raises on a malformed value, naming the variable
+        if reserve_disabled():         # raises on a malformed value, naming the variable
             return
         try:
             refusal = self.resource_usage().storage_refusal
