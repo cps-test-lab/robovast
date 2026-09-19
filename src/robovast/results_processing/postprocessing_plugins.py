@@ -398,6 +398,34 @@ def _cancelled_by(should_stop, process: "subprocess.Popen"):
         done.set()
 
 
+#: Where a ``rosbags_process`` entry looks for bags when it names none.
+DEFAULT_BAG_DIR = "rosbag2"
+
+
+def conversion_groups(plugins: Optional[List[dict]] = None, bag_dir: Optional[str] = None,
+                      groups: Optional[List[dict]] = None) -> List[dict]:
+    """The ``groups`` a ``rosbags_process`` entry converts, from either way it is written.
+
+    ``plugins`` (with an optional ``bag_dir``) is one group, as a ``.vast`` entry writes it;
+    ``groups`` is several, each ``{"bag_dir": …, "plugins": […]}``, as the orchestrator
+    passes a campaign's combined entries. Both lanes build the script's ``--config`` from
+    this, so an entry means the same thing wherever it runs.
+
+    Raises ``ValueError`` when both or neither are given, or ``bag_dir`` is given with
+    ``groups`` -- an argument that would otherwise be dropped.
+    """
+    if groups is not None:
+        if plugins is not None or bag_dir is not None:
+            raise ValueError("rosbags_process takes either 'groups' or 'plugins' "
+                             "(with an optional 'bag_dir'), not both")
+        if not groups:
+            raise ValueError("rosbags_process 'groups' is empty")
+        return [dict(group) for group in groups]
+    if not plugins:
+        raise ValueError("rosbags_process requires at least one entry under 'plugins'")
+    return [{"bag_dir": bag_dir or DEFAULT_BAG_DIR, "plugins": list(plugins)}]
+
+
 class RosbagsProcess(BasePostprocessingPlugin):
     # Reads rosbags, so it needs the image whose message definitions wrote them.
     needs_execution_image = True
@@ -426,7 +454,12 @@ class RosbagsProcess(BasePostprocessingPlugin):
                   frames: [base_link]
                 - type: to_csv
                   topics: [/cmd_vel, /odom]
-                - type: rosout_to_csv
+
+    ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). The orchestrator
+    combines every ``rosbags_process`` entry and ``rosbags_*`` name of a campaign into one
+    call, one group per bag directory, and adds the ``logs/rosout_bag`` handlers to it
+    (``_batch_rosbags_commands``), so every kind of bag is converted in one scan and one
+    worker pool. That combined call is what arrives here as ``groups``.
 
     **How much of the machine it uses is not set here.** The step converts one bag per
     process, and how many run at once follows the CPU the conversion is allowed -- which is
@@ -448,9 +481,10 @@ class RosbagsProcess(BasePostprocessingPlugin):
         self,
         results_dir: str,
         config_dir: str,
-        plugins: List[dict],
+        plugins: Optional[List[dict]] = None,
         workers: Optional[int] = None,
         bag_dir: Optional[str] = None,
+        groups: Optional[List[dict]] = None,
         provenance_file: Optional[str] = None,
         execution_image: Optional[str] = None,
         debug: bool = False,
@@ -462,12 +496,15 @@ class RosbagsProcess(BasePostprocessingPlugin):
         Args:
             results_dir: Path to the campaign-<id> directory to process.
             config_dir: Directory containing the config file.
-            plugins: List of handler config dicts, each with a ``type`` key.
+            plugins: List of handler config dicts, each with a ``type`` key, for the bags in
+                *bag_dir*. Give either this or *groups*.
             workers: Bags to convert at once. Omitted -- the normal case -- the conversion
                 derives it from the CPU it is actually allowed (its cgroup quota), so it
                 matches ``results_processing.resources.cpu`` on either lane. Set it only to
                 override that.
             bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
+            groups: Several ``{"bag_dir": …, "plugins": […]}`` converted in one pass: what the
+                orchestrator passes after combining a campaign's entries.
             provenance_file: Optional path for provenance JSON.
             execution_image: Optional Docker image override.
             debug: If True, print all per-bag output; otherwise show only progress/summary.
@@ -481,11 +518,12 @@ class RosbagsProcess(BasePostprocessingPlugin):
         Returns:
             Tuple of (success, message).
         """
-        if not plugins:
-            return False, "rosbags_process requires at least one entry under 'plugins'"
+        try:
+            config_json = json.dumps({"groups": conversion_groups(plugins, bag_dir, groups)})
+        except ValueError as e:
+            return False, str(e)
 
         script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-        config_json = json.dumps({"plugins": plugins})
 
         cmd = [script_path, "--compat-version", str(COMPAT_VERSION),
                "--min-compat-version", str(MIN_IMAGE_COMPAT)]
@@ -514,8 +552,6 @@ class RosbagsProcess(BasePostprocessingPlugin):
                     "--memory", str(to_bytes(sized["memory"]))])
         if workers is not None:
             cmd.extend(["--workers", str(workers)])
-        if bag_dir is not None:
-            cmd.extend(["--bag-dir", bag_dir])
         # A calibration probe is deliberately not a run, so its bag is not campaign data.
         # Converting it cost a bag's work per node, and an interrupted probe's unfinalized
         # bag failed the whole step outright on something nothing was going to read.

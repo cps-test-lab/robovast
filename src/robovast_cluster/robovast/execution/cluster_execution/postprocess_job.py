@@ -407,9 +407,10 @@ def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) ->
     """The batched ``rosbags_process`` invocations a campaign's ``.vast`` asks for.
 
     Reuses the same batching the local path uses (``_batch_rosbags_commands`` merges
-    every ``rosbags_*`` entry into one ``rosbags_process`` call per ``bag_dir``), so
-    the Job runs exactly what ``vast campaign postprocess`` dispatches. Returns a list of
-    ``{plugins, bag_dir?, workers?}`` dicts — empty when the campaign configures no
+    every ``rosbags_*`` entry into one ``rosbags_process`` call with a group per
+    ``bag_dir``), so the Job runs exactly what ``vast campaign postprocess`` dispatches.
+    Returns a list of ``rosbags_process`` parameter dicts (``groups``, or ``plugins`` with
+    ``bag_dir``, and optionally ``workers``) — empty when the campaign configures no
     rosbag conversion (then no Job is needed).
     """
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
@@ -807,16 +808,19 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=(),
     """
     root = campaign_dir(campaign_id)
     log = f"{root}/{_POSTPROC_LOG_REL}"
+    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+        conversion_groups)
+
     convert = []
     for params in rosbag_cmds:
+        groups = conversion_groups(params.get("plugins"), params.get("bag_dir"),
+                                   params.get("groups"))
         args = [
             "/scripts/ros2_exec.sh", "/scripts/rosbags_process.py",
-            "--config", _shquote(json.dumps({"plugins": params.get("plugins", [])})),
+            "--config", _shquote(json.dumps({"groups": groups})),
             "--output-root", _shquote(root),
             "--provenance-file", _shquote(f"{root}/{_ROSBAG_PROVENANCE_REL}"),
         ]
-        if params.get("bag_dir") is not None:
-            args += ["--bag-dir", _shquote(str(params["bag_dir"]))]
         if params.get("workers") is not None:
             args += ["--workers", str(int(params["workers"]))]
         if force:
