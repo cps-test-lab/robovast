@@ -2472,7 +2472,6 @@ class ClusterService(LocalTransport):
         campaign_root = self._campaigns_root() / campaign_id
         record_intervention(campaign_root, kind=KIND_KILLED, job_dir=job_dir, job_name=job_name,
                             source=source, detail=reason)
-        self._publish_interventions(campaign_id, campaign_root)
         try:
             self._k8s_batch().delete_namespaced_job(
                 job_name, self.namespace,
