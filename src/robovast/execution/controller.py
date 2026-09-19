@@ -1215,7 +1215,7 @@ class CampaignController:
                 local, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
 
-    def _postprocess_batch_in_cluster(self, rosbag_cmds: list, local_cmds: list,
+    def _postprocess_batch_in_cluster(self, image_cmds: list, local_cmds: list,
                                       tag: str = "") -> bool:
         """Postprocess a search batch the way the campaign-level path does; did the pod derive?
 
@@ -1250,7 +1250,7 @@ class CampaignController:
         if cluster_config is None:
             from robovast.results_processing.postprocessing import run_postprocessing_commands
             run_postprocessing_commands(
-                rosbag_cmds, results_dir=self.campaign_root,
+                image_cmds, results_dir=self.campaign_root,
                 config_dir=self.vast_dir, output=logger.info)
             return False
         # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
@@ -1267,7 +1267,7 @@ class CampaignController:
                 cluster_config, self.campaign_id, self.campaign_root,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
                 image_for(self.campaign_root),
-                unwrap_conversion_commands(rosbag_cmds),
+                image_cmds,
                 # The campaign's data-plane token, which its pods carry: the backend was
                 # built with it by the service, the one process holding the secret.
                 token=getattr(self.backend, "data_token", ""),
@@ -1342,7 +1342,7 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
     """
     from robovast.results_processing.postprocessing import (ROSBAG_BATCH_NAMES,
                                                             _batch_rosbags_commands,
-                                                            resolve_postprocessing_plugin)
+                                                            needs_execution_image)
     if not commands:
         return [], []
 
@@ -1350,14 +1350,7 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
         return command if isinstance(command, str) else next(iter(command))
 
     def _needs_image(command) -> bool:
-        name = _name(command)
-        if name in ROSBAG_BATCH_NAMES:
-            return True
-        try:
-            plugin = resolve_postprocessing_plugin(name, config_dir)
-        except Exception:  # pylint: disable=broad-except
-            return False
-        return bool(getattr(plugin, "needs_execution_image", False))
+        return needs_execution_image(command, config_dir)
 
     def _is_rosbag(command) -> bool:
         return _name(command) in ROSBAG_BATCH_NAMES or _name(command) == "rosbags_process"
@@ -1388,27 +1381,6 @@ def _conversion_job_runner():
     from robovast.execution.cluster_execution.postprocess_job import (
         campaign_execution_image, run_conversion_job, with_log_pointer)
     return run_conversion_job, campaign_execution_image, with_log_pointer
-
-
-def unwrap_conversion_commands(commands) -> list:
-    """The shape ``run_conversion_job`` takes: the inner ``rosbags_process`` parameter dicts.
-
-    The local runner takes ``{'rosbags_process': {...}}``; the Job takes what is inside it.
-    The campaign-level path has always unwrapped here (``rosbag_commands_for`` ends in
-    ``out.append(cmd["rosbags_process"] or {})``), and a search that dispatched the wrapped
-    form created the Job with the right image and then watched it fail -- which reads as a
-    broken converter rather than a mismatched argument.
-
-    Anything that is not a ``rosbags_process`` batch is passed through: a plugin declaring
-    ``needs_execution_image`` has no wrapper to strip.
-    """
-    out = []
-    for command in commands or []:
-        if isinstance(command, dict) and "rosbags_process" in command:
-            out.append(command["rosbags_process"] or {})
-        else:
-            out.append(command)
-    return out
 
 
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,

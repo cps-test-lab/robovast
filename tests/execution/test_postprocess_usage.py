@@ -17,6 +17,8 @@ from robovast.execution.cluster_execution import postprocess_job as pj
 from robovast.execution.cluster_execution import postprocess_usage as pu
 from robovast.execution.data import monitor_resources
 
+from .image_steps_helper import steps
+
 
 def test_it_is_the_container_level_half_and_says_so():
     """``system_usage``, not ``resource_usage``.
@@ -145,7 +147,7 @@ def test_the_conversion_records_its_usage_even_when_it_failed():
     """A conversion killed for exceeding its memory is exactly the case this record exists
     for, so the record sits outside the block whose failure it explains -- and cannot change
     the conversion's own exit status."""
-    script = pj._conversion_script([{"plugins": [{"type": "to_csv"}]}], False,
+    script = pj._conversion_script(steps("c1", plugins=[{"type": "to_csv"}]),
                                    campaign_id="camp-1")
     assert subprocess.run(["bash", "-n"], input=script, text=True, check=False,
                           capture_output=True).returncode == 0

@@ -19,7 +19,7 @@ def _command(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pp.subprocess, "Popen", _popen)
     try:
-        pp.RosbagsProcess()(str(tmp_path), str(tmp_path), [{"type": "x"}])
+        pp.RosbagsProcess()(str(tmp_path), str(tmp_path), plugins=[{"type": "x"}])
     except _Stop:
         pass
     return captured.get("cmd", [])
