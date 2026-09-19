@@ -327,10 +327,10 @@ def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
 
 
 def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch):
-    """The raw path recorded the postprocessing verdict but never the run tally.
+    """A raw archive reports its run tally, not only its postprocessing verdict.
 
     Both arrival paths go through the same adoption, so neither can report an empty
-    campaign; this is the half that a fix aimed only at the postprocessed branch misses.
+    campaign; this is the raw half of that property.
     """
     monkeypatch.setattr(type(service), "_postprocess_campaign",
                         lambda self, cid, d, **k: (True, "ok"))
@@ -341,13 +341,13 @@ def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch)
 
 
 def _object_store_archive(tmp_path, staged: Path, name: str) -> Path:
-    """An archive in the shape the cluster lane exported while campaigns lived in a bucket.
+    """An archive as an exporter reading an object store writes one.
 
-    Built member by member, as that exporter did: regular files only -- a bucket has no
-    directories -- each mode read from the object's ``executable`` metadata, and the
-    ``job`` symlinks synthesised at the end from ``_transient/job_links.yaml``, because a
-    bucket holds no links either. Shares still hold archives made this way, and importing
-    them is how a campaign from a deployment with an object store reaches one without.
+    Built member by member: regular files only -- a bucket has no directories -- each mode
+    set explicitly, and the ``job`` symlinks synthesised at the end from
+    ``_transient/job_links.yaml``, because a bucket holds no links either. Shares hold
+    archives of this shape, and importing one is how a campaign kept in an object store
+    reaches this service.
     """
     import os
     import yaml as _yaml
@@ -371,12 +371,11 @@ def _object_store_archive(tmp_path, staged: Path, name: str) -> Path:
 
 
 def test_an_archive_exported_from_an_object_store_imports(service, tmp_path):
-    """Campaigns that lived in a bucket are carried over through a share, not migrated.
+    """A campaign kept in an object store arrives through a share, as such an archive.
 
-    So their archives must import: no directory members, links added after the files they
-    point at, executables marked by mode alone -- and the files only a bucket-backed
-    campaign carried (a conversion output list, archived log sections) are data like any
-    other, not a reason to refuse.
+    So it must import: no directory members, links added after the files they point at,
+    executables marked by mode alone -- and the files such a campaign carries (a conversion
+    output list, archived log sections) are data like any other, not a reason to refuse.
     """
     import shutil
     import yaml as _yaml

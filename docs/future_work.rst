@@ -104,12 +104,12 @@ easier to lose than the code.
 
 * *Discovery needs no side record at all.* The design called for each campaign to publish
   an entry a listing could enumerate, so that postprocessing-failed / share-failed /
-  stopped / crashed campaigns stay discoverable. A campaign is now a directory under the
+  stopped / crashed campaigns stay discoverable. A campaign is a directory under the
   service's results root on both lanes, so the listing's own ``iterdir`` sees every one of
-  them from the moment the driver creates it, and the entry, the hook that wrote it and the
-  question of when to write it all went with it.
+  them from the moment the driver creates it, with no entry to publish and no question of
+  when to publish it.
 * *The status does not carry a* ``build_id``. That clause existed to keep the build *log*
-  reachable, and the log is now a ``BUILD`` section of the campaign's own log — reachable
+  reachable, and the log is a ``BUILD`` section of the campaign's own log — reachable
   with the id the caller already has, and durable past the build Job's TTL, which
   ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
   second way to ask the same question.
@@ -205,7 +205,7 @@ The developer loop against a real cluster
 ``vast serve --backend cluster`` runs **inside** the cluster and is refused anywhere else:
 every pod a campaign runs delivers its outputs to the service's data plane over the cluster
 network, which cannot reach a process on a developer's machine. A local debugger against a
-real cluster is still had, by running that same process in the cluster's network with the
+real cluster comes from running that same process in the cluster's network with the
 Service's traffic steered to it:
 
 .. code-block:: bash
@@ -221,15 +221,15 @@ loop, no tunnel. ``--steal`` is what makes it work rather than merely run, becau
 What is open is the ergonomics, not the mechanism. A ``--steal`` session takes the whole
 deployment's traffic for as long as it lasts, so a shared cluster serves one debugger at a
 time and everyone else's web UI is answered by it; scoping the steal to a header or a
-namespace-per-developer is the obvious next step and has not been tried.
+namespace-per-developer is the obvious next step.
 
 .. _future-data-plane:
 
-What the data plane left open
-=============================
+What the data plane does not do
+===============================
 
 Three things the tar-stream data plane (:doc:`deployment`, "What runs in the service pod")
-deliberately did not do.
+deliberately does not do.
 
 **A finished campaign is never archived on its own.** The results volume is one disk that
 only grows: nothing moves a campaign that nobody has read in months onto the share, and

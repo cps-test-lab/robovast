@@ -294,7 +294,6 @@ def test_the_script_is_what_the_pod_runs_and_names_its_route():
     assert f'"$ROBOVAST_DATA_URL/campaigns/{campaign}/outputs"' in script
     assert "Authorization: Bearer $ROBOVAST_TOKEN" in script
     assert "GRACE_S=120\n" in script
-    assert "mc " not in script
 
 
 @pytest.mark.parametrize("bad", [[""], ["a b"], ["a/b"]])

@@ -275,18 +275,20 @@ def test_the_pod_carries_one_uploader_that_waits_for_every_container(monkeypatch
     assert spec["terminationGracePeriodSeconds"] >= pod_upload.UPLOAD_TERMINATION_GRACE
 
 
-def test_no_container_of_the_pod_carries_a_storage_credential(monkeypatch):
-    """A pod reaches the data plane by address and scoped token and by nothing else: no
-    endpoint, no bucket, no key -- so what a pod can reach is what its token allows."""
+def test_only_the_transfer_containers_carry_the_campaigns_access(monkeypatch):
+    """A pod reaches the data plane by address and scoped token, and only the two
+    containers that move bytes -- the inputs fetch and the uploader -- carry them. The
+    workload containers run images that are not ours and are given nothing to reach it."""
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
         "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
     spec = r.create_job_manifest(r._build_jobs()[0],
                                  total_jobs=1)["spec"]["template"]["spec"]
 
-    for container in spec["containers"] + spec["initContainers"]:
-        names = [e["name"] for e in container.get("env", [])]
-        assert not [n for n in names if n.startswith("S3_")], (container["name"], names)
+    access = {pod_access.DATA_URL_ENV, pod_access.TOKEN_ENV, pod_access.CAMPAIGN_ID_ENV}
+    carriers = {c["name"] for c in spec["containers"] + spec["initContainers"]
+                if access & {e["name"] for e in c.get("env", [])}}
+    assert carriers == {"fetch-inputs", pod_upload.UPLOADER_CONTAINER}
 
 
 # -- GPUs ---------------------------------------------------------------------------

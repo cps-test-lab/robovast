@@ -492,8 +492,8 @@ def setup_server(config_name=None, list_configs=False, force=False,
 
     # The `robovast` pod (registry + index) is a pod like any other, so it takes the data
     # node's selector -- ANDed with whatever pool the operator's `control.node_labels`
-    # allows, not replaced by it: a pool selector alone still lets the pod float within the
-    # pool, which is this same bug at a smaller scale.
+    # allows, not replaced by it: a pool selector alone lets the pod float within the pool,
+    # which is the unpinned placement below at a smaller scale.
     #
     # Pinned whenever the data node is: the registry's blobs and the campaign index are
     # hostPath-backed unless a class says otherwise, so an unpinned pod would come back on
@@ -543,7 +543,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
 
     # An existing `robovast` pod is deliberately KEPT on a 409 (see
     # `kubernetes.apply_manifests`), so a live pod that lacks the registry or the index --
-    # or still carries an object store -- does not change here. Refuse now, naming the
+    # or carries an object store -- does not change here. Refuse now, naming the
     # destructive remedy, rather than deploying a service whose registry route and index
     # DSN point at containers that do not exist, or whose campaigns sit in a store nothing
     # reads.

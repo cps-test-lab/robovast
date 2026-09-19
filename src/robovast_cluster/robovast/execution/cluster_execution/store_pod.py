@@ -57,7 +57,7 @@ STORE_POD_NAME = "robovast"
 STORE_SERVICE_NAME = "robovast"
 STORE_POD_SELECTOR = {"role": "robovast"}
 
-#: The container name of an object store a live ``robovast`` pod may still carry. Named so
+#: The container name of an object store a live ``robovast`` pod may carry. Named so
 #: such a pod is refused (:func:`carries_an_object_store`): campaigns live on the service's
 #: results volume, and a pod holding a store nothing reads is a deployment whose campaigns
 #: are somewhere the service does not look.
@@ -217,7 +217,7 @@ def carries_an_object_store(pod) -> bool:
     """Whether a **live** pod runs an object-store container beside the registry and index.
 
     Campaigns live on the service's results volume, and nothing reads such a store: a
-    deployment whose pod still carries one keeps its campaigns where the service does not
+    deployment whose pod carries one keeps its campaigns where the service does not
     look. The same 409 that keeps a live pod keeps that container, so the pod has to be
     recreated -- and the campaigns in that store are not migrated, which is why the caller
     refuses rather than proceeds.

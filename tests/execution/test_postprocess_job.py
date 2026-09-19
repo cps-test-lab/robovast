@@ -299,8 +299,8 @@ def test_the_stage_hands_the_tree_to_the_pods_group():
 def test_the_pod_reaches_the_data_plane_with_a_scoped_token_and_nothing_else():
     """The two robovast containers carry the address, the campaign id and the campaign's
     token -- the token from the campaign's Secret, never inline in a spec `kubectl get`
-    prints back -- and no store credential of any kind. The conversion, a stranger's
-    image, carries none of it.
+    prints back. The stage carries exactly that; the conversion, a stranger's image,
+    carries none of it.
     """
     spec = pj.build_manifest("c1", "img:1", _CMDS, "ns")["spec"]["template"]["spec"]
     containers = {c["name"]: c for c in spec["initContainers"] + spec["containers"]}
@@ -313,8 +313,9 @@ def test_the_pod_reaches_the_data_plane_with_a_scoped_token_and_nothing_else():
         assert "value" not in token
         assert token["valueFrom"]["secretKeyRef"] == {
             "name": pod_access.campaign_secret_name("c1"), "key": pod_access.TOKEN_KEY}
-        assert not [n for n in env if n.startswith("S3_")], name
-        assert not [n for n in env if "CLUSTER_CONFIG" in n], name
+
+    assert _env_names(containers[pj.STAGE_CONTAINER]) == {
+        pod_access.DATA_URL_ENV, pod_access.CAMPAIGN_ID_ENV, pod_access.TOKEN_ENV}
 
     convert_env = _env_names(containers[pj.CONVERT_CONTAINER])
     assert pod_access.TOKEN_ENV not in convert_env

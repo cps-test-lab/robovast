@@ -1838,7 +1838,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
       container that does not exist and the DSN would name a port nothing listens on -- an
       ImagePullBackOff on the next campaign's job pods and an IndexUnreachableError on the
       next query;
-    * a pod that still carries an object-store container: campaigns live on the service's
+    * a pod that carries an object-store container: campaigns live on the service's
       results volume, so every campaign in that store is one the service cannot see.
 
     Both have one remedy, ``vast cluster cleanup`` followed by ``vast cluster setup``, which

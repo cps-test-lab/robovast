@@ -1209,12 +1209,11 @@ is this pod's Service.
    does not come to match it by re-running setup, and ``vast cluster setup`` and ``vast
    service upgrade`` both refuse rather than deploying a service whose ``/v2`` route and
    index DSN point at containers that are not there. Two shapes are refused: a pod missing
-   the registry or the index, and a pod that still carries an object-store container —
-   nothing reads such a store, so every campaign in it is one the service cannot see. The
-   remedy for both is ``vast cluster cleanup`` followed by ``vast cluster setup``. The
-   campaigns in an object store are **not migrated**, and nothing else holds a complete
-   copy of them: archive what matters from the deployment that can still read them,
-   before the cleanup.
+   the registry or the index, and a pod that carries an object-store container — nothing
+   reads such a store, so every campaign in it is one the service cannot see. The remedy
+   for both is ``vast cluster cleanup`` followed by ``vast cluster setup``. Campaigns in an
+   object store are **not migrated**, and nothing after the cleanup reads them: archive what
+   matters to a share first, and import it from there (``vast campaign import``).
 
 .. _campaign-home:
 
@@ -1223,8 +1222,8 @@ Where a campaign lives, and how pods reach it
 
 A cluster campaign is a directory on the service's results volume,
 ``<results_root>/<campaign_id>/`` — exactly what a local campaign is, in exactly the same
-layout. There is no object store and no second copy: ``campaign.db``, ``_execution/`` and
-every run's output are written into that one tree, and downloads, re-postprocessing, the
+layout, and the only copy: ``campaign.db``, ``_execution/`` and every run's output are
+written into that one tree, and downloads, re-postprocessing, the
 index and ``vast share`` all read it there.
 
 Pods move bytes as tar streams
@@ -1251,11 +1250,10 @@ twice on the pod and nothing is buffered on the service.
   ``<results_root>/_staged/<slot>/``: scratch beside the campaigns, sharing their disk and
   their meter, and discarded with the work that used it.
 
-Pods carry no storage credentials
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+What a pod is given
+^^^^^^^^^^^^^^^^^^^
 
-There is nothing for one to carry: no bucket, no key, no endpoint. A campaign's pods get
-three values — ``ROBOVAST_DATA_URL`` (the service's in-cluster address plus ``/data``,
+A campaign's pods get three values, and nothing else that reaches the campaign — ``ROBOVAST_DATA_URL`` (the service's in-cluster address plus ``/data``,
 assembled from the Service name and the namespace, so no pod holds a name that resolves in
 one cluster only), ``ROBOVAST_CAMPAIGN_ID`` and ``ROBOVAST_TOKEN``.
 
@@ -1306,10 +1304,6 @@ volume stats, against ``used + available`` rather than the reported capacity —
 with no size limit reports the whole node filesystem as its capacity, which is headroom
 that is not there. A ``hostPath`` deployment has no per-volume figure at all: the kubelet
 reports none for one, and the **Disk** row is that same filesystem (see :doc:`web_ui`).
-
-**An existing deployment moves onto this** with ``vast cluster cleanup`` followed by
-``vast cluster setup``, which recreates the ``robovast`` pod — see the warning above for
-what that costs a deployment whose campaigns are still in an object store.
 
 
 .. _cluster-admission:
@@ -2101,9 +2095,8 @@ GCP (Google Kubernetes Engine)
 **Config name:** ``gcp``
 
 The same deployment as everywhere — the ``robovast`` pod for the registry and the campaign
-index, campaigns on the service's results volume. There is no bucket to provide and no
-cloud-storage credential to mint: what is provider-specific here is how the cluster answers
-for itself (which GKE cluster a context names, how far its node pools may autoscale, how a
+index, campaigns on the service's results volume. What is provider-specific here is how
+the cluster answers for itself (which GKE cluster a context names, how far its node pools may autoscale, how a
 node reports its machine type) and how the volumes are backed.
 
 **Prerequisites:**
