@@ -210,14 +210,14 @@ def pod_workload_containers(pod) -> list:
     **native sidecar**, which kubelet starts before the regular containers and stops only
     after the last one exits. It is a workload container that happens to be declared in
     ``initContainers`` — the opposite of what the field name suggests. Ordinary init
-    containers (``s3-init``, which populates ``/config`` and exits) are one-shot staging
-    and excluded.
+    containers (``fetch-inputs``, which populates ``/config`` and exits) are one-shot
+    staging and excluded.
 
     Anything asking "which containers does this pod actually run?" must ask it here.
-    Three places answered it from ``spec.containers`` alone and each was wrong in the same
-    way once the simulator and the system under test became sidecars: resource accounting
-    dropped the two biggest reservations, image pinning pinned every role to the scenario's
-    digest, and the job log showed one container out of three.
+    Answered from ``spec.containers`` alone it misses the simulator and the system under
+    test, which are sidecars: resource accounting would drop the two biggest reservations,
+    image pinning would pin every role to the scenario's digest, and the job log would
+    show one container out of three.
 
     Returns the container *specs*, not names — callers need ``.resources`` as often as
     ``.name``.

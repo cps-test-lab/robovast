@@ -231,8 +231,7 @@ def test_the_cluster_flag_reaches_the_containers_command(monkeypatch):
     monkeypatch.setenv(DSN_ENV, "host=index.example.com dbname=robovast")
 
     manifest = build_manifest(
-        "camp", "img", [{"plugins": [{"type": "rosout_to_csv"}]}],
-        ("ep", "ak", "sk", "bucket", "camp/"), "default",
+        "camp", "img", [{"plugins": [{"type": "rosout_to_csv"}]}], "default",
         tolerate_under=["_jobs/batch-0/job-125"])
     # The conversion is an initContainer of a one-pod Job -- Kubernetes runs it before the
     # host container -- so the command has to be looked for in both lists.

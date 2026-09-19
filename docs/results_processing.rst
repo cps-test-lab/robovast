@@ -982,9 +982,9 @@ service::
 
 The path after the campaign id is exactly the path in the tree — ``_execution/
 outcome.json``, ``<config-name>/<run>/test.xml`` — so what a listing shows is what
-you can read. Campaign results are **read-only**: they are the record of a run,
-and on the cluster they are object-store objects that a local write could not
-change. Workspace *inputs* live in the writable half of the same address space,
+you can read. Campaign results are **read-only**: they are the record of a run, and a
+rewritten record is one nobody can check the figures drawn over it against. Workspace
+*inputs* live in the writable half of the same address space,
 ``/sources/<workspace_id>/<path>`` (see :ref:`web-ui-config`).
 
 .. code-block:: bash
@@ -1004,8 +1004,9 @@ writes one ``.tar.gz`` and does nothing else with it).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
 and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
-:ref:`mcp-files`. Reading a campaign on this machine needs no running service;
-against a cluster service the read fetches that one object, not the campaign.
+:ref:`mcp-files`. Reading a campaign on this machine needs no running service; against a
+cluster service the read serves that one file off the service's results volume, not the
+campaign.
 
 If the service runs on your own machine, ``get_service_info`` also reports a
 ``results_root`` you can open directly with your own tools; it is absent whenever
@@ -1291,9 +1292,7 @@ A genuine failure is **kept, as a failed campaign**, and the refusal names what 
 missing rather than which check noticed. Deleting the half-imported tree was tried and
 was strictly worse: registering the campaign is what makes it visible while it arrives,
 so the entry outlives the failure either way and removing the directory only took away
-the ``import.log`` and ``import.json`` that explained it. On a lane whose durable home is
-an object store the campaign's ``_execution/`` is published so the account is readable
-where the campaign is read, not left on a pod's scratch. Remove it with
+the ``import.log`` and ``import.json`` that explained it. Remove it with
 ``vast campaign delete``, or import again with ``--force``.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no

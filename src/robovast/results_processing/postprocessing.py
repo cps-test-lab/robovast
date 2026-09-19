@@ -808,8 +808,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
 
     # Make the campaign's declared `plugins:` importable for postprocessing (entry-point
     # plugins and the deps of local file-ref plugins), installing them into the
-    # campaign's own .robovast_plugins/ if absent — so a re-run in a fresh process /
-    # fetched campaign (post-restart) resolves them, not just the original run.
+    # campaign's own .robovast_plugins/ if absent — so a re-run in a fresh process (after
+    # a service restart, or in a postprocessing pod working on the copy it fetched)
+    # resolves them, not just the original run.
     from robovast.common.config_plugins import ensure_plugins_importable
     ensure_plugins_importable(campaign_dir, vast_path=vast_path)
 
@@ -959,14 +960,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
     _record_campaign_providers(campaign_dir, output)
 
 
-    # Load the campaign into the central index. This is what used to write a per-campaign
-    # data.db -- a 1.1 GB SQLite file that then had to be uploaded and downloaded again on
-    # the first cold query, and that could only ever answer about one campaign.
+    # Load the campaign into the central index: one index answers across campaigns, where
+    # a per-campaign SQLite file could only ever answer about one.
     #
     # A failure here fails postprocessing, deliberately and without a fallback. The run
-    # artifacts are untouched in the object store and re-ingest is the ordinary path, so
-    # nothing is lost -- the campaign is simply not queryable until postprocessing is
-    # re-run. Continuing quietly would be worse: "finished" would stop meaning "queryable",
+    # artifacts are untouched in the campaign directory and re-ingest is the ordinary
+    # path, so nothing is lost -- the campaign is simply not queryable until postprocessing
+    # is re-run. Continuing quietly would be worse: "finished" would stop meaning "queryable",
     # and the difference would surface only when somebody asked a question and got nothing
     # back. See ``common.index_db`` on why there is no degraded mode anywhere on this path.
     if skip_db:

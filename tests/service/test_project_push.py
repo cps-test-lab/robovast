@@ -159,7 +159,7 @@ def test_sync_echo_reports_each_change(client, project):
 # -- sync: campaign results are not project input ---------------------------
 
 
-def _campaign_dir(root, name):
+def campaign_dir(root, name):
     """A directory that looks like campaign output because it CONTAINS the markers.
 
     Named after a campaign id rather than "results", which is the case the name-based
@@ -176,7 +176,7 @@ def _campaign_dir(root, name):
 
 
 def test_sync_skips_a_results_tree_named_after_its_campaign(client, project):
-    _campaign_dir(project, "demo-2026-08-21-09291829")
+    campaign_dir(project, "demo-2026-08-21-09291829")
     wid = _wid(client)
     stats = sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
 
@@ -186,7 +186,7 @@ def test_sync_skips_a_results_tree_named_after_its_campaign(client, project):
 
 
 def test_sync_reports_what_it_skipped_and_how_to_include_it(client, project):
-    _campaign_dir(project, "demo-2026-08-21-09291829")
+    campaign_dir(project, "demo-2026-08-21-09291829")
     wid = _wid(client)
     lines = []
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
@@ -198,7 +198,7 @@ def test_sync_reports_what_it_skipped_and_how_to_include_it(client, project):
 
 
 def test_include_results_uploads_them_anyway(client, project):
-    _campaign_dir(project, "demo-2026-08-21-09291829")
+    campaign_dir(project, "demo-2026-08-21-09291829")
     wid = _wid(client)
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
                                 include_results=True)

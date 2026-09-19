@@ -40,8 +40,7 @@ def local_results_root(workspaces_root: Path | None = None) -> Path:
     ``vast serve --results-dir DIR``, which the transport honours ahead of this.
 
     Pure path resolution: the directory need not exist, and asking never creates it, so a
-    caller whose campaigns live in an object store (the cluster lane) does not leave a
-    stray local directory behind.
+    caller that only needs the path does not leave a stray directory behind.
 
     Args:
         workspaces_root: The workspaces store root, when the caller already knows it.

@@ -700,9 +700,9 @@ class CampaignStore:
         **Idempotent by ``name``.** A campaign whose row already exists re-opens it and is
         left exactly as it was, rather than gaining a second row. This is what lets a
         controller be re-entered for a campaign already under way -- the store it is handed
-        may be one restored from the object store, carrying the rows of an earlier life --
-        and the first write is the one kept on purpose: the row records how the campaign was
-        *started*, which a later re-entry did not do and must not restate.
+        may carry the rows of an earlier life -- and the first write is the one kept on
+        purpose: the row records how the campaign was *started*, which a later re-entry did
+        not do and must not restate.
         """
         existing = self._conn.execute(
             "SELECT id FROM campaign WHERE name = ?", (name,)).fetchone()

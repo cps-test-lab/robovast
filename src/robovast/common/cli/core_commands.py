@@ -112,16 +112,6 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
                    "a Kubernetes pod, else 'local' Docker.")
-@click.option('--context', '-x', default=None, metavar='NAME',
-              help='With --backend cluster (run off-cluster): which '
-                   'Kubernetes context (default: the active one). For --backend '
-                   'cluster the cluster config is read from the deployed '
-                   'robovast-service in that cluster — works from any host with '
-                   'kubeconfig access.')
-@click.option('--namespace', '-n', 'k8s_namespace', default='default',
-              show_default=True,
-              help='With --backend cluster: namespace the '
-                   'robovast-service is deployed in.')
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if frontend/ui/dist looks up to date '
                    '(source checkout only).')
@@ -131,9 +121,8 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'tools together. Pass --no-mcp to serve the API without them.')
 @click.option('--results-dir', 'results_dir', default=None, metavar='DIR',
               type=click.Path(file_okay=False),
-              help='Where campaigns this service runs land, on the serve host. Only the '
-                   'local Docker lane has one -- a cluster campaign\'s results live in '
-                   'the object store. Omitted, a service-owned directory beside the '
+              help='Where campaigns this service runs land, on the serve host, whichever '
+                   'lane runs them. Omitted, a service-owned directory beside the '
                    'workspaces store is used, which is stable but not where you were '
                    'looking; name one to choose.')
 @click.option('--workspace-dir', 'workspace_dir', multiple=True,
@@ -147,7 +136,7 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'pin the collection (e.g. a repo root) rather than each project. '
                    'Requires the service to run on this host, so it is refused '
                    'in-pod.')
-def serve(host, port, uds, backend, context, k8s_namespace, rebuild_ui,
+def serve(host, port, uds, backend, rebuild_ui,
           results_dir, workspace_dir, mount_mcp):
     """Make a robovast-service reachable on the local port until Ctrl-C.
 
@@ -161,13 +150,14 @@ def serve(host, port, uds, backend, context, k8s_namespace, rebuild_ui,
     * **local** (default off-cluster) — runs the app in-process: local Docker +
       local filesystem. Run it on your machine or a remote VM reached
       over an SSH tunnel.
-    * **cluster** (default in-pod) — runs the app in-process, driving each
-      campaign against Kubernetes Jobs; this is what the in-cluster
-      ``robovast-service`` Deployment runs. Run it **off-cluster** with
-      ``--backend cluster -x <context>`` to debug the driver locally while
-      scenarios execute in that cluster — the cluster config is read from the
-      deployed robovast-service in that cluster, so it works from any host with
-      kubeconfig access (no local setup needed).
+    * **cluster** (in-pod only) — runs the app in-process, driving each campaign
+      against Kubernetes Jobs; this is what the in-cluster ``robovast-service``
+      Deployment runs. It reads which cluster from its own pod, and is refused
+      outside one: the campaigns' pods deliver their results back to this process,
+      which they cannot do across a developer's machine. To debug the driver against
+      a real cluster, run this command in the cluster's network with the Service's
+      traffic steered to it (``mirrord exec --target deployment/robovast-service
+      --steal -- vast serve --backend cluster``).
 
     Security: every request needs the shared token (``ROBOVAST_AUTH_TOKEN``). When
     none is configured one is generated at startup and printed as a login URL you
@@ -178,11 +168,10 @@ def serve(host, port, uds, backend, context, k8s_namespace, rebuild_ui,
     """
     from robovast.service.app import serve as _serve
 
-    # The campaign driver runs in this same process (local backend, or an off-cluster
-    # '--backend cluster' driver), so everything it reads from os.environ comes from
-    # the ./.env the group callback loaded: share credentials for '--upload-to-share',
-    # the registry, ROBOVAST_PROJECT. In-pod there is neither a project .env nor a user
-    # config, so the deployment env is the whole environment.
+    # The campaign driver runs in this same process, so everything it reads from
+    # os.environ comes from the ./.env the group callback loaded: share credentials for
+    # '--upload-to-share', the registry, ROBOVAST_PROJECT. In-pod there is neither a
+    # project .env nor a user config, so the deployment env is the whole environment.
     # Build the SPA the service serves, so a source checkout needs one command
     # (no-op for a packaged/in-cluster install — see ensure_ui_built).
     ensure_ui_built(rebuild=rebuild_ui)
@@ -191,15 +180,8 @@ def serve(host, port, uds, backend, context, k8s_namespace, rebuild_ui,
     if backend == 'auto':
         backend = 'cluster' if in_pod else 'local'
 
-    if context is not None and backend != 'cluster':
-        raise click.ClickException(
-            "--context/-x only applies to '--backend cluster' — it selects which "
-            "Kubernetes context to dispatch campaigns into.")
-
     # Pinning uses the directory in place, so it needs the service to run on the host
-    # that holds it. That rules out a pod (no such directory) but NOT an off-cluster
-    # '--backend cluster' driver, which runs here and reads project inputs from this
-    # filesystem exactly as the local lane does.
+    # that holds it, which rules out a pod: there is no such directory there.
     if workspace_dir and in_pod:
         raise click.ClickException(
             "--workspace-dir pins a directory on the serve host, and a Kubernetes "
@@ -215,7 +197,7 @@ def serve(host, port, uds, backend, context, k8s_namespace, rebuild_ui,
     if backend == 'cluster':
         from robovast.service.workspaces import WorkspaceStore
         store = WorkspaceStore(workspace_dir=workspace_dir)
-    impl = lane.build(in_pod=in_pod, context=context, namespace=k8s_namespace,
+    impl = lane.build(in_pod=in_pod,
                       store=store, workspace_dir=workspace_dir,
                       results_dir=os.path.abspath(results_dir) if results_dir else None)
     storage = lane.storage

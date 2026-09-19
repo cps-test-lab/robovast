@@ -47,9 +47,10 @@ def _campaign(root, campaign_id=_CAMPAIGN):
     return campaign
 
 
-def _tar(members) -> bytes:
+def _tar(members, *, gz: bool = False) -> bytes:
+    """A tar of *members*, plain as a pod sends it, or gzipped with *gz*."""
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    with tarfile.open(fileobj=buf, mode="w:gz" if gz else "w") as tar:
         for name, payload in members:
             info = tarfile.TarInfo(name)
             info.size = len(payload)
@@ -57,8 +58,13 @@ def _tar(members) -> bytes:
     return buf.getvalue()
 
 
-def _names(payload: bytes):
-    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _names(payload: bytes, *, gz: bool = False):
+    """The members of *payload*, which must be gzipped exactly when *gz* says so."""
+    assert payload.startswith(_GZIP_MAGIC) == gz, "compressed" if not gz else "plain"
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz" if gz else "r:") as tar:
         return {m.name: m for m in tar.getmembers()}
 
 
@@ -100,7 +106,7 @@ def test_inputs_land_flat_and_a_cells_file_lands_on_the_campaigns(client):
     assert "campaign.vast" in members and "job-1.params.yaml" in members
     assert not any(n.startswith("_config") for n in members)
     # The cell's copy is the later member, so it wins on extraction.
-    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:") as tar:
         copies = [m for m in tar.getmembers() if m.name == "campaign.vast"]
         assert len(copies) == 2
         assert tar.extractfile(copies[-1]).read() == b"configuration:\n  name: cell-a\n"
@@ -154,12 +160,13 @@ def test_the_archive_narrows_to_what_a_postprocess_pod_reads(client, root):
     (campaign / "_jobs" / "batch-2" / "job-0" / "sysinfo.yaml").write_text("n: 1\n")
     (campaign / "_execution" / "postprocessing.log").write_text("previous attempt\n")
 
-    everything = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content)
+    everything = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content, gz=True)
     assert f"{_CAMPAIGN}/_calibration/probe.mcap" in everything
 
     staged = _names(client.get(Routes.campaign_archive(_CAMPAIGN),
                                params={"stage": "true", "skip_bags": "true",
-                                       "batch_jobs": "batch-2"}).content)
+                                       "batch_jobs": "batch-2",
+                                       "uncompressed": "true"}).content)
     assert f"{_CAMPAIGN}/_calibration/probe.mcap" not in staged
     assert f"{_CAMPAIGN}/_jobs/batch-1/job-0/rosbag2/a.mcap" not in staged
     assert f"{_CAMPAIGN}/_execution/postprocessing.log" not in staged
@@ -172,12 +179,12 @@ def test_the_standalone_plane_reads_liveness_from_the_tree(standalone, root):
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
     resp = standalone.get(Routes.campaign_archive(_CAMPAIGN))
     assert "incomplete" in resp.headers["content-disposition"]
-    assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" in _names(resp.content)
+    assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" in _names(resp.content, gz=True)
 
     write_execution_outcome(root / _CAMPAIGN, Status(phase=Phase.FINISHED))
     resp = standalone.get(Routes.campaign_archive(_CAMPAIGN))
     assert resp.headers["content-disposition"] == f'attachment; filename="{_CAMPAIGN}.tar.gz"'
-    assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" not in _names(resp.content)
+    assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" not in _names(resp.content, gz=True)
 
 
 def test_a_staged_slot_round_trips_and_is_confined(client, root):
@@ -256,3 +263,30 @@ def test_the_control_plane_mints_tokens_the_data_plane_honours(root):
     with TestClient(build_data_app(root, "a-configured-secret"),
                     headers={"Authorization": f"Bearer {token}"}) as client:
         assert client.get(Routes.campaign_inputs(_CAMPAIGN)).status_code == 200
+
+
+def test_only_an_archive_that_leaves_the_cluster_is_compressed(client, root):
+    """gzip costs a core per stream and saves little on run output, so every stream a pod
+    reads is a plain tar; a download keeps gzip, and names its file for what it is."""
+    resp = client.get(Routes.campaign_archive(_CAMPAIGN))
+    assert resp.headers["content-type"] == "application/gzip"
+    assert resp.headers["content-disposition"].endswith('.tar.gz"')
+    _names(resp.content, gz=True)
+
+    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"uncompressed": "true"})
+    assert resp.headers["content-type"] == "application/x-tar"
+    assert resp.headers["content-disposition"].endswith('.tar"')
+    assert f"{_CAMPAIGN}/_config/campaign.vast" in _names(resp.content)
+
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN))
+    assert resp.headers["content-type"] == "application/x-tar"
+    _names(resp.content)
+
+
+def test_an_upload_is_read_compressed_or_not(client, root):
+    """The reader detects the format, so a pod's plain tar and a gzipped one both land."""
+    for n, gz in ((1, False), (2, True)):
+        resp = client.put(Routes.campaign_outputs(_CAMPAIGN),
+                          content=_tar([(f"cell-a/{n}/test.xml", b"<testsuite/>")], gz=gz))
+        assert resp.status_code == 200, resp.text
+        assert (root / _CAMPAIGN / "cell-a" / str(n) / "test.xml").exists()

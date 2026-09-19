@@ -689,11 +689,10 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
 def delete_cmd(campaign, yes, namespace, context):
     """Permanently delete one CAMPAIGN wholesale.
 
-    Removes the campaign's durable home -- its directory under the results root on a local
-    service, or its object-store data (plus any leftover Kubernetes Jobs and the service's
-    cache) on a cluster service. This is the full "forget this campaign" action; ``vast
-    cluster store-cleanup`` only frees object-store buckets, and ``vast share remove`` only
-    touches the external share, which this command leaves untouched.
+    Removes the campaign's directory under the service's results root, plus, on a cluster
+    service, any leftover Kubernetes Jobs. This is the full "forget this campaign" action;
+    ``vast share remove`` only touches the external share, which this command leaves
+    untouched.
 
     The service refuses a campaign that is still running -- stop it first. This is
     irreversible.

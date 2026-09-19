@@ -87,12 +87,12 @@ def test_a_full_cluster_is_waited_out_rather_than_failed():
 
 
 def test_the_wait_says_the_results_are_not_at_risk():
-    """A campaign's runs are already published when this step runs, so a message that reads
-    like data loss would send someone re-running trials that are fine."""
+    """A campaign's runs are complete and on the service when this step runs, so a message
+    that reads like data loss would send someone re-running trials that are fine."""
     admission = AdmissionController(_Provider(free_cpu=0.5), budget_ttl=0.0)
     _ok, _node, message = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
                                              timeout=0.05, poll=0.01)
-    assert "runs are published" in message
+    assert "runs are complete" in message
     assert "re-run postprocessing" in message
 
 
