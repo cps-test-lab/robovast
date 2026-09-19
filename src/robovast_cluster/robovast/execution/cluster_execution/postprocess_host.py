@@ -377,6 +377,10 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 - the delivery below is the only record of this
         failure = e
         message = f"{type(e).__name__}: {e}"
+        # The traceback, into the campaign's POSTPROCESSING section while its handler is
+        # still attached: the pod is deleted after this, and "TypeError: '<' not supported"
+        # alone names neither the file nor the line that raised it.
+        logger.exception("Host postprocessing failed")
     finally:
         # What this step cost, before the log handler closes so the figure lands in the
         # POSTPROCESSING section. Its memory peak is the peak up to *here* and so excludes
