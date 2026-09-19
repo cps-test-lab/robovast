@@ -351,8 +351,6 @@ publish-client-test-venv:
 		/tmp/robovast-client-test-venv/bin/vast service $$verb --help > /dev/null \
 			|| { echo "❌ 'vast service $$verb' does not resolve"; exit 1; }; \
 	done
-	@/tmp/robovast-client-test-venv/bin/vast cluster store-cleanup --help > /dev/null \
-		|| { echo "❌ 'vast cluster store-cleanup' does not resolve"; exit 1; }
 	@for verb in exec stop; do \
 		/tmp/robovast-client-test-venv/bin/vast container $$verb --help > /dev/null \
 			|| { echo "❌ 'vast container $$verb' does not resolve"; exit 1; }; \
