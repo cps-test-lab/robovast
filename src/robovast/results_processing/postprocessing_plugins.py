@@ -1131,8 +1131,21 @@ def _read_table_rows(path: Path) -> list:
         return reader(records) if reader else []
     try:
         with open(path, encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
+            # A `#` preamble before the header is how a producer states what its columns
+            # mean -- the frame a wrench is in, the unit of a column -- and numpy and pandas
+            # both read past it. Taken as the header instead, its comma-split words became
+            # the columns and every real row was ragged.
+            reader = csv.DictReader(line for line in handle if not line.startswith("#"))
+            rows = list(reader)
     except Exception:  # pylint: disable=broad-except
+        return []
+    if any(None in row for row in rows):
+        # A row longer than the header. DictReader files the surplus under the key None,
+        # which no column can be named after, and the one file used to take the whole
+        # campaign's index down with it -- from a TypeError in a sort, naming nothing.
+        logger.warning(
+            "index: skipping %s: a row has more fields than its header (%d columns). Its "
+            "rows are not indexed; every other file still is.", path, len(reader.fieldnames or ()))
         return []
     _derive_yaw(rows)
     return rows
