@@ -29,15 +29,19 @@ from robovast.execution.cluster_execution.pod_upload import uploader_script
 _SHELLS = (["sh"], ["bash", "--posix"])
 
 
+def _has_pipefail(candidate: list) -> bool:
+    if shutil.which(candidate[0]) is None:
+        return False
+    probe = subprocess.run(candidate + ["-c", "set -o pipefail"], check=False,
+                           capture_output=True)
+    return probe.returncode == 0
+
+
 def _shell() -> list:
-    for candidate in _SHELLS:
-        if shutil.which(candidate[0]) is None:
-            continue
-        probe = subprocess.run(candidate + ["-c", "set -o pipefail"], check=False,
-                               capture_output=True)
-        if probe.returncode == 0:
-            return candidate
-    pytest.skip("no POSIX shell with pipefail on this host")
+    found = next((c for c in _SHELLS if _has_pipefail(c)), None)
+    if found is None:
+        pytest.skip("no POSIX shell with pipefail on this host")
+    return found
 
 
 #: A ``curl`` that follows a plan: one word per call, in order, and the last word for every

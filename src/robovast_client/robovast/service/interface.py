@@ -42,7 +42,7 @@ operations extend :class:`RobovastInterface` in later phases.
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
