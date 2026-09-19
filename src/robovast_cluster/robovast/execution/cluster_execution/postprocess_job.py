@@ -56,6 +56,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from urllib.parse import quote
@@ -403,31 +404,24 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
         f"results_processing.resources.")
 
 
-def rosbag_commands_for(vast_path: str, skip=None, skip_rosout: bool = False) -> list:
-    """The batched ``rosbags_process`` invocations a campaign's ``.vast`` asks for.
+def image_commands_for(campaign_root: str, skip=None, skip_rosout: bool = False) -> list:
+    """The steps of a campaign's postprocessing that run in its execution image, in order.
 
-    Reuses the same batching the local path uses (``_batch_rosbags_commands`` merges
-    every ``rosbags_*`` entry into one ``rosbags_process`` call with a group per
-    ``bag_dir``), so the Job runs exactly what ``vast campaign postprocess`` dispatches.
-    Returns a list of ``rosbags_process`` parameter dicts (``groups``, or ``plugins`` with
-    ``bag_dir``, and optionally ``workers``) — empty when the campaign configures no
-    rosbag conversion (then no Job is needed).
+    Taken from the same list the local lane runs
+    (:func:`~robovast.results_processing.postprocessing.campaign_postprocessing_commands`),
+    so the Job's image container runs exactly what ``vast campaign postprocess`` would run in
+    a container, and the host step then runs the rest. Which steps those are is each
+    plugin's own answer (``needs_execution_image``), not a list kept here. Empty when the
+    campaign has none -- then the Job has no image container.
     """
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
-        _batch_rosbags_commands, get_postprocessing_commands)
+        campaign_postprocessing_commands, needs_execution_image)
 
-    commands = get_postprocessing_commands(vast_path)
-    skip_set = set(skip or ())
-    if skip_set:
-        commands = [
-            c for c in commands
-            if (c if isinstance(c, str) else list(c.keys())[0]) not in skip_set
-        ]
-    out = []
-    for cmd in _batch_rosbags_commands(commands, skip_rosout=skip_rosout, skip=skip_set):
-        if isinstance(cmd, dict) and "rosbags_process" in cmd:
-            out.append(cmd["rosbags_process"] or {})
-    return out
+    vast_path = campaign_vast(campaign_root)
+    config_dir = os.path.dirname(vast_path)
+    return [command for command in
+            campaign_postprocessing_commands(vast_path, skip=skip, skip_rosout=skip_rosout)
+            if needs_execution_image(command, config_dir)]
 
 
 def campaign_execution_image(campaign_dir) -> str:
@@ -444,7 +438,6 @@ def campaign_execution_image(campaign_dir) -> str:
     to now — and falls back to the tag rather than refusing. Raises only when there is neither,
     rather than converting in the wrong image.
     """
-    import os  # noqa: PLC0415
 
     from robovast.common.campaign_data import (campaign_image_record,  # noqa: PLC0415
                                                image_is_pullable)
@@ -492,7 +485,6 @@ def _write_failure_log(campaign_id: str, log_path: str, message: str) -> None:
     is returned (:func:`await_job`), so this is reached when the pod itself was gone or
     the API would not answer for it.
     """
-    import os  # noqa: PLC0415
 
     # The message still carries POINTER_SLOT: the pointer is decided after this file is
     # written, precisely BY whether it was. Inside the file the slot has nothing to say --
@@ -534,13 +526,12 @@ def campaign_vast(campaign_root) -> str:
 
 
 def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False) -> tuple:
-    """``(rosbag_cmds, image, tolerate_under, convert_resources)`` from the campaign tree.
+    """``(image_cmds, image, tolerate_under, convert_resources)`` from the campaign tree.
 
     The four facts the manifest needs about a campaign, and all four come from files in
-    its directory on the service: the ``.vast`` says whether a conversion is configured at
-    all and how much it may use, ``execution.yaml`` names the image its rosbags
-    deserialize in, and the intervention ledger names the runs whose bags were cut short
-    mid-write.
+    its directory on the service: the ``.vast`` says which steps run in the execution image
+    and how much they may use, ``execution.yaml`` names that image, and the intervention
+    ledger names the runs whose output was cut short mid-write.
     """
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
         postprocess_convert_resources)
@@ -548,8 +539,8 @@ def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False
         _interrupted_job_dirs)
 
     vast_path = campaign_vast(campaign_root)
-    rosbag_cmds = rosbag_commands_for(vast_path, skip=skip, skip_rosout=skip_rosout)
-    if not rosbag_cmds:
+    image_cmds = image_commands_for(campaign_root, skip=skip, skip_rosout=skip_rosout)
+    if not image_cmds:
         # No image is resolved at all for a host-only campaign: nothing in the pod pulls
         # one, so a campaign whose execution image has since gone from the registry still
         # postprocesses. The sizing goes the same way: with no conversion container there is
@@ -558,7 +549,7 @@ def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False
     # The same seam the local lane reads, for the same reason: a bag belonging to a job
     # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
     # must not fail the conversion for every job that finished.
-    return (rosbag_cmds, campaign_execution_image(campaign_root),
+    return (image_cmds, campaign_execution_image(campaign_root),
             tuple(_interrupted_job_dirs(campaign_root)),
             postprocess_convert_resources(vast_path))
 
@@ -603,13 +594,13 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  
     rather than doubling it. What a cancelled campaign never has is the provenance record
     that says it carries derived data, because that is written after everything else.
     """
-    rosbag_cmds, image, tolerate_under, convert_resources = _read_submit_inputs(
+    image_cmds, image, tolerate_under, convert_resources = _read_submit_inputs(
         campaign_root, skip=skip, skip_rosout=skip_rosout)
-    if not rosbag_cmds:
-        logger.info("Campaign %s configures no rosbag conversion; the Job runs its host "
+    if not image_cmds:
+        logger.info("Campaign %s has no step in its execution image; the Job runs its host "
                     "steps only, and stages the campaign without its rosbags", campaign_id)
     ok, message = run_conversion_job(
-        cluster_config, campaign_id, campaign_root, namespace, image, rosbag_cmds, token=token,
+        cluster_config, campaign_id, campaign_root, namespace, image, image_cmds, token=token,
         force=force, kube_context=kube_context, tolerate_under=tolerate_under, skip=skip,
         convert_resources=convert_resources, admission=admission,
         should_stop=should_stop)
@@ -634,7 +625,6 @@ def record_job_outputs(campaign_id: str, campaign_root: str, ok: bool, message: 
     deleted (see :func:`await_job`). The flag latches, so it still answers here; asking it
     rather than matching the message keeps a wording from becoming a contract.
     """
-    import os  # noqa: PLC0415
 
     log_path = os.path.join(str(campaign_root), *_POSTPROC_LOG_REL.split("/"))
     if ok:
@@ -671,11 +661,11 @@ def record_job_outputs(campaign_id: str, campaign_root: str, ok: bool, message: 
 
 def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = False,
                             skip=None, state=None) -> tuple:
-    """Stage 2 — everything after the ROS conversion (index ingest, metadata).
+    """Stage 2 — everything that does not run in the execution image (index ingest, metadata).
 
     Pure Python, so it runs wherever robovast is installed (the controller pod, the
-    service pod). Reuses the *normal* pipeline with the rosbag steps skipped — the
-    conversion Job already did those — so there is no second implementation of the
+    service pod). Reuses the *normal* pipeline with the execution-image steps skipped — the
+    Job's image container already ran those — so there is no second implementation of the
     postprocessing sequence. Returns ``(ok, message)``.
 
     *state*, when given, also receives each step's line as the live ``stage`` marker — the
@@ -688,12 +678,11 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
     instead, which is the function both lists share.
     """
     from robovast.execution.control_server import stage_output_callback  # noqa: PLC0415
-    from robovast.results_processing.postprocessing import ROSBAG_JOB_NAMES  # noqa: PLC0415
     from robovast.results_processing.postprocessing import run_postprocessing
 
     return run_postprocessing(
         results_dir=results_dir, campaign=campaign_id, force=force,
-        skip=sorted(set(skip or ()) | set(ROSBAG_JOB_NAMES)),
+        skip=sorted(set(skip or ())), skip_image_steps=True,
         output_callback=stage_output_callback(state, logger.info))
 
 
@@ -706,14 +695,13 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
 #: writes the pod's own log to the same path.
 _POSTPROC_LOG_REL = "_execution/postprocessing.log"
 
-#: Campaign-relative path where the conversion records what it produced from what.
+#: Campaign-relative path where the image steps record what they produced from what.
 #:
-#: The conversion must pass ``--provenance-file``: the host steps run with the ``rosbags_*``
-#: steps *skipped*, so they have nothing to record for them, and a campaign whose conversion
-#: passed none carries a ``postprocessing_steps`` table naming only the host's own steps
-#: while the conversion's had run. The local lane passes one, so without this the provenance
-#: a campaign carries would depend on the lane it ran on.
-_ROSBAG_PROVENANCE_REL = "_execution/rosbags_provenance.json"
+#: The host steps run with the image steps *skipped*, so they have nothing to record for
+#: them, and a campaign whose image steps recorded nothing carries a ``postprocessing_steps``
+#: table naming only the host's own steps while the others had run. The local lane records
+#: them, so without this the provenance a campaign carries would depend on its lane.
+_IMAGE_PROVENANCE_REL = "_execution/image_provenance.json"
 
 
 def campaign_dir(campaign_id: str) -> str:
@@ -788,52 +776,57 @@ def _stage_script(campaign_id: str, skip_bags: bool, batch_jobs: str) -> str:
             f"-exec chmod g+rwX {{}} +")
 
 
-def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=(),
-                       campaign_id: str = "") -> str:
-    """The conversion initContainer's shell: convert each batch, in place.
+def image_steps_for(campaign_id: str, campaign_root: str, image_cmds: list,
+                    force: bool = False, tolerate_under=()) -> list:
+    """*image_cmds* as this Job's image container runs them: each plugin's own command,
+    for the campaign tree at :func:`campaign_dir` and the provenance file the host reads.
+
+    Plugins resolve against the directory of the campaign's own ``.vast``, where a local
+    ``./plugin.py:Class`` reference and its copied files live.
+    """
+    from robovast.results_processing.postprocessing import image_steps  # noqa: PLC0415
+    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+        ImageContext)
+
+    if not image_cmds:
+        return []
+    root = campaign_dir(campaign_id)
+    ctx = ImageContext(campaign_dir=root,
+                       provenance_file=f"{root}/{_IMAGE_PROVENANCE_REL}",
+                       force=force, tolerate_under=tuple(tolerate_under))
+    return image_steps(image_cmds, os.path.dirname(campaign_vast(campaign_root)), ctx)
+
+
+def _conversion_script(steps: list, campaign_id: str = "") -> str:
+    """The image container's shell: run each image step, in order, on the campaign tree.
 
     Reads and writes the shared campaign mount and nothing else. **No token and no
     upload:** this container runs an arbitrary user image (the system under test's), and
     the host container that follows it is what talks to the data plane, so there is
     nothing here for a credential to be needed for.
 
-    ``--output-root`` is the campaign tree itself, so every output lands at its
-    campaign-relative path and the host container can deliver it to its canonical path
-    without a mapping step.
+    Each step's command is its plugin's own
+    (:meth:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin.image_command`),
+    run through ``ros2_exec.sh`` from the scripts mount -- the same command the local lane
+    runs through ``docker_exec.sh``.
 
-    All setup and conversion stdout/stderr is teed into the campaign's
-    ``postprocessing.log`` so it becomes the POSTPROCESSING section of the unified campaign
-    log; the host container appends to the same file. ``pipefail`` preserves the
-    conversion's exit status through the ``tee`` pipe.
+    All setup and step stdout/stderr is teed into the campaign's ``postprocessing.log`` so
+    it becomes the POSTPROCESSING section of the unified campaign log; the host container
+    appends to the same file. ``pipefail`` preserves a step's exit status through the
+    ``tee`` pipe.
     """
+    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+        IMAGE_SCRIPTS_DIR)
+
+    from .postprocess_host import IMAGE_STEPS_MARKER  # noqa: PLC0415
+
     root = campaign_dir(campaign_id)
     log = f"{root}/{_POSTPROC_LOG_REL}"
-    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
-        conversion_groups)
-
     convert = []
-    for params in rosbag_cmds:
-        groups = conversion_groups(params.get("plugins"), params.get("bag_dir"),
-                                   params.get("groups"))
-        args = [
-            "/scripts/ros2_exec.sh", "/scripts/rosbags_process.py",
-            "--config", _shquote(json.dumps({"groups": groups})),
-            "--output-root", _shquote(root),
-            "--provenance-file", _shquote(f"{root}/{_ROSBAG_PROVENANCE_REL}"),
-        ]
-        if params.get("workers") is not None:
-            args += ["--workers", str(int(params["workers"]))]
-        if force:
-            args.append("--force")
-        # A job an operator stopped by hand (or the runner invalidated) was SIGKILLed
-        # mid-write, so its rosbag is unfinalized and can never be opened. Without these
-        # the whole campaign's conversion exits non-zero on that one bag, costing the
-        # metrics of every job that DID finish -- see `_interrupted_job_dirs`, which is the
-        # shared seam for this rule and which both lanes consult.
-        for job_dir in tolerate_under:
-            args += ["--tolerate-under", _shquote(str(job_dir))]
-        args.append(_shquote(root))
-        convert.append(" ".join(args))
+    for step in steps:
+        script, *args = step.argv
+        convert.append(" ".join(_shquote(part) for part in (
+            f"{IMAGE_SCRIPTS_DIR}/ros2_exec.sh", f"{IMAGE_SCRIPTS_DIR}/{script}", *args)))
 
     lines = [
         "set -eo pipefail",
@@ -842,6 +835,9 @@ def _conversion_script(rosbag_cmds: list, force: bool, tolerate_under=(),
         # unwritable campaign tree aborts before the conversion's own output, and the
         # campaign is then pointed at a POSTPROCESSING section that does not exist.
         f"mkdir -p $(dirname {log}) || exit 1",
+        # Before the first step: what the host container delivers as this container's
+        # output is every file changed after this (postprocess_host._image_step_outputs).
+        f"touch {CAMPAIGN_MOUNT}/{IMAGE_STEPS_MARKER} || exit 1",
         "rc=0",
         "(",
         "  set -e",
@@ -900,7 +896,7 @@ def _scripts_cm_name(campaign_id: str, discriminator: str = "") -> str:
 
 
 def scripts_configmap_manifest(campaign_id: str, namespace: str,
-                               discriminator: str = "") -> dict:
+                               discriminator: str = "", steps=()) -> dict:
     """A ConfigMap carrying the *driver's own* conversion scripts.
 
     Built from ``robovast.results_processing.data`` — the same package dir the local
@@ -911,6 +907,9 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
     exec variant. The scripts are self-contained (stdlib + ROS2 libs + one sibling, no
     ``robovast`` import) and small (well under the 1 MiB ConfigMap limit), so a plain
     text ConfigMap suffices.
+
+    The files each of *steps* ships (``image_files``) are added beside them, so a step's
+    command finds them where the local lane's ``docker_exec.sh`` mount puts them.
     """
     from importlib.resources import files  # noqa: PLC0415
 
@@ -934,6 +933,15 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
     # is not what `--once` runs -- so it works in an image that has no psutil.
     sampler = files("robovast.execution.data") / "monitor_resources.py"
     payload["monitor_resources.py"] = sampler.read_text(encoding="utf-8")
+    for step in steps:
+        for extra in step.files:
+            name = os.path.basename(str(extra))
+            text = (extra.read_text(encoding="utf-8") if hasattr(extra, "read_text")
+                    else open(extra, encoding="utf-8").read())  # pylint: disable=consider-using-with
+            if payload.get(name, text) != text:
+                raise ValueError(f"{step.name} ships {name!r}, which would replace a "
+                                 "different file of the same name in the scripts directory")
+            payload[name] = text
     return {
         "apiVersion": "v1",
         "kind": "ConfigMap",
@@ -1042,7 +1050,6 @@ def with_log_pointer(message: str, log_path) -> str:
     A message without the slot is returned unchanged, which is what keeps a blocked pod's
     or a timeout's own explanation intact.
     """
-    import os  # noqa: PLC0415
     if POINTER_SLOT not in message:
         return message
     pointer = LOG_POINTER if os.path.isfile(log_path) else NO_LOG_POINTER
@@ -1212,7 +1219,6 @@ def publish_live_log(core, campaign_root, namespace: str, job_name: str) -> bool
     Best-effort throughout: this is a read for someone watching, and it must not fail the
     postprocess it is watching.
     """
-    import os  # noqa: PLC0415
 
     from kubernetes import client  # noqa: PLC0415
 
@@ -1349,7 +1355,6 @@ def _index_env(namespace: str) -> list:
     and then cannot authenticate, which is worse than a credential in a spec the operator
     configured themselves.
     """
-    import os  # noqa: PLC0415
 
     from robovast.common.index_db import DSN_ENV  # noqa: PLC0415
 
@@ -1375,9 +1380,9 @@ def _index_env(namespace: str) -> list:
     ]
 
 
-def build_manifest(campaign_id: str, image, rosbag_cmds: list, namespace: str,
+def build_manifest(campaign_id: str, image, steps: list, namespace: str,
                    force: bool = False, pull_secret_name: str = "", discriminator: str = "",
-                   tolerate_under=(), skip=None, batch_commands=None,
+                   skip=None, batch_commands=None,
                    convert_resources=None, stage_bytes=None) -> dict:
     """Build the postprocessing Job manifest.
 
@@ -1385,19 +1390,16 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, namespace: str,
         campaign_id: The campaign to postprocess.
         image: **The campaign's execution image** (the SUT image from
             ``_execution/execution.yaml``) — required for its custom ROS2 types, and
-            required *only* for them. Ignored when *rosbag_cmds* is empty: a campaign with
-            no rosbag conversion needs no conversion container, so its execution image is
-            never pulled and an image that has since gone from the registry does not stop
-            it being postprocessed.
-        rosbag_cmds: :func:`rosbag_commands_for` output. Empty means no conversion
-            container at all.
+            required *only* for them. Ignored when *steps* is empty: a campaign with no
+            step in its execution image needs no image container, so its execution image
+            is never pulled and an image that has since gone from the registry does not
+            stop it being postprocessed.
+        steps: The image steps (:func:`image_steps_for`), run in order in the image
+            container. Empty means no image container at all.
         namespace: Kubernetes namespace; also where the service's data plane is addressed
             (:func:`pod_access.data_url`).
-        force: Bypass the per-rosbag caches, and replace what the host step already wrote.
-        tolerate_under: Campaign-relative artifact dirs of jobs that were cut short
-            (:func:`~robovast.results_processing.postprocessing_plugins._interrupted_job_dirs`).
-            Their bags are unreadable by construction, so the conversion reports them and
-            succeeds instead of failing the campaign.
+        force: Replace what the host step already wrote. (The image steps carry their own
+            ``force`` in their commands.)
         skip: Postprocessing steps the host step must not run.
         convert_resources: ``{"cpu": …, "memory": …}`` the conversion step runs at, from
             :func:`~robovast.results_processing.postprocessing.postprocess_convert_resources`
@@ -1469,7 +1471,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, namespace: str,
             # rosbags, which is the bulk of a campaign by orders of magnitude. Staging them
             # anyway would spend the whole download and the whole node disk on data
             # nothing in the pod reads.
-            skip_bags=not rosbag_cmds,
+            skip_bags=not steps,
             # One batch's job artifacts, for a per-batch Job. The bags are the bulk of a
             # campaign and every batch's sit under the same tree, so without this a search
             # stages every earlier batch again on every batch.
@@ -1485,8 +1487,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, namespace: str,
         # ros2_exec.sh sources /opt/ros + /ws/install.
         "image": image,
         "command": ["/bin/bash", "-c",
-                    _conversion_script(rosbag_cmds, force, tolerate_under,
-                                       campaign_id=campaign_id)],
+                    _conversion_script(steps, campaign_id=campaign_id)],
         # **No token, deliberately.** This container reads and writes the shared campaign
         # mount and nothing else, and it is an arbitrary user image -- the campaign's own
         # -- so it is the one container in this pod that must hold nothing that would let
@@ -1524,7 +1525,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, namespace: str,
     }
 
     init_containers = [stage]
-    if rosbag_cmds:
+    if steps:
         init_containers.append(convert)
     # initContainers run sequentially to completion in declaration order and the main
     # containers start only after they all succeed. That ordering IS the orchestration
@@ -1540,7 +1541,7 @@ def build_manifest(campaign_id: str, image, rosbag_cmds: list, namespace: str,
         # One copy of the campaign, shared by every container.
         {"name": "campaign", "emptyDir": {}},
     ]
-    if rosbag_cmds:
+    if steps:
         # Scratch for the conversion, which is the only container that mounts it. Declared
         # with that container rather than always: a volume nothing mounts is a volume a
         # reader of this spec has to work out the purpose of.
@@ -1814,7 +1815,7 @@ def reattach_conversion_job(campaign_id: str, campaign_root: str, namespace: str
 
 
 def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
-                       namespace: str, image, rosbag_cmds: list, *, token: str,
+                       namespace: str, image, image_cmds: list, *, token: str,
                        force: bool = False,
                        timeout: int = _DEFAULT_TIMEOUT, kube_context=None,
                        discriminator: str = "", tolerate_under=(), skip=None,
@@ -1839,9 +1840,15 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
     pod's own images need (:func:`~.cluster_execution.resolve_pull_secret`); nothing about
     where the campaign's bytes are comes from it.
 
-    *image* is the campaign's execution image, and is needed only for the conversion: an
-    empty *rosbag_cmds* builds a Job that never pulls it. Callers that cannot know in
-    advance whether it is needed should pass ``None`` and let *rosbag_cmds* decide, so a
+    *image_cmds* are the postprocessing entries that run in the execution image
+    (:func:`image_commands_for`), in order; each is turned into its command here, for this
+    Job's paths, by its own plugin. *tolerate_under* names the jobs whose output was cut
+    short (:func:`~robovast.results_processing.postprocessing_plugins._interrupted_job_dirs`),
+    which the image steps report instead of failing on.
+
+    *image* is the campaign's execution image, and is needed only for the image steps: an
+    empty *image_cmds* builds a Job that never pulls it. Callers that cannot know in
+    advance whether it is needed should pass ``None`` and let *image_cmds* decide, so a
     campaign whose image has gone from the registry still postprocesses.
 
     *batch_commands* makes this a per-batch Job -- see :func:`build_manifest`. With an
@@ -1863,14 +1870,21 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
     campaign-level name, where the 409 fallthrough is right: a retry of a single conversion
     should wait on the Job already in flight rather than launch a second copy.
     """
-    if not rosbag_cmds and batch_commands is not None and not batch_commands:
-        return True, "no rosbag conversion configured; nothing to run"
-    if rosbag_cmds and not image:
+    if not image_cmds and batch_commands is not None and not batch_commands:
+        return True, "no postprocessing step configured; nothing to run"
+    if image_cmds and not image:
         # Refused rather than defaulted: converting in the wrong image deserializes the
         # campaign's custom message types against a stranger's definitions, and what comes
         # out of that is wrong data rather than an error.
-        return False, ("no execution image for the campaign's rosbag conversion; its "
-                       "custom ROS2 types deserialize in no other image")
+        return False, ("no execution image for the campaign's image steps; its custom ROS2 "
+                       "types deserialize in no other image")
+    # Before anything is submitted: a step that cannot say what to run in the image is a
+    # configuration fault, and finding it here costs nothing.
+    try:
+        steps = image_steps_for(campaign_id, campaign_root, image_cmds, force=force,
+                                tolerate_under=tolerate_under)
+    except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError) as e:
+        return False, f"postprocessing cannot run its execution-image steps: {e}"
     if not token:
         # The pod can reach the data plane with nothing else, and a Job submitted without
         # it would stage nothing and then sit in CreateContainerConfigError on a Secret
@@ -1896,11 +1910,11 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
     core = client.CoreV1Api()
     batch = client.BatchV1Api()
     manifest = build_manifest(
-        campaign_id, image, rosbag_cmds, namespace, force=force,
+        campaign_id, image, steps, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
-        discriminator=discriminator, tolerate_under=tolerate_under, skip=skip,
+        discriminator=discriminator, skip=skip,
         batch_commands=batch_commands, convert_resources=convert_resources,
-        stage_bytes=_stage_bytes(campaign_root, skip_bags=not rosbag_cmds,
+        stage_bytes=_stage_bytes(campaign_root, skip_bags=not steps,
                                  batch_jobs=discriminator if batch_commands is not None else ""))
     name = manifest["metadata"]["name"]
 
@@ -1970,8 +1984,9 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
             return False, f"postprocessing cannot be scheduled: {e}"
         except ApiException as e:
             return False, f"could not write the campaign's data-plane token Secret: {e}"
-    if rosbag_cmds and not adopted:
-        cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator)
+    if steps and not adopted:
+        cm = scripts_configmap_manifest(campaign_id, namespace, discriminator=discriminator,
+                                        steps=steps)
         cm_name = cm["metadata"]["name"]
         try:
             with api_transport_errors("submitting the postprocessing job"):
@@ -2016,7 +2031,7 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
                     return False, (f"postprocessing job {name} already exists and could "
                                    f"not be replaced; retry once it has been removed")
             logger.info("Postprocessing job %s created (conversion image=%s)", name,
-                        image if rosbag_cmds else "none needed")
+                        image if steps else "none needed")
             # A Job now mounts these scripts, so they stop being this attempt's to delete
             # -- whether or not the cluster accepts the ownerReference, and whether the Job
             # is the one just created or one that raced us to the name. Cleared before the

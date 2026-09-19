@@ -282,18 +282,6 @@ _AUTO_INFRA_HANDLERS: Tuple[str, ...] = ("rosbags_rosout_to_csv", "rosbags_clock
 #: otherwise it rejects configs the runtime would happily execute.
 ROSBAG_BATCH_NAMES: frozenset = frozenset(_ROSBAG_BATCH_MAP)
 
-#: Everything the cluster lane's postprocessing **Job** runs, and therefore everything the in-pod
-#: pass must skip. The aliases above plus ``rosbags_process`` itself, which a ``.vast`` may name
-#: directly (:class:`~robovast.results_processing.postprocessing_plugins.RosbagsProcess` documents
-#: that spelling) and which ``postprocess_job.rosbag_commands_for`` already collects for the Job.
-#:
-#: Without ``rosbags_process`` here the two sides disagree and a directly-authored call runs TWICE:
-#: once in the Job, correctly, and once in the controller pod through ``docker_exec.sh`` -- which
-#: shells out to ``docker run`` and cannot work there, so the compat check reads an empty string and
-#: the campaign fails with "container image provides: <missing>" against an image that carries the
-#: file. The data is already correct by then, which is what makes the failure so misleading.
-ROSBAG_JOB_NAMES: frozenset = ROSBAG_BATCH_NAMES | {"rosbags_process"}
-
 #: Commands that register a video in a run's ``videos`` table (``rosbags_process.VIDEOS_CSV``),
 #: which is what the run view's ``camera`` panel and ``get_camera_frame`` read.
 #:
@@ -587,11 +575,11 @@ def postprocess_convert_resources(config_path, resolver=None) -> dict:
     return resolved
 
 
-#: Written by a conversion that ran elsewhere -- the cluster lane's postprocessing Job --
-#: and carried back with its outputs. Named here and in
-#: ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
+#: Written by the execution-image steps that ran elsewhere -- the image container of the
+#: cluster lane's postprocessing Job -- and carried back with their outputs. Named here and
+#: in ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
 #: half.
-STAGED_PROVENANCE = "_execution/rosbags_provenance.json"
+STAGED_PROVENANCE = "_execution/image_provenance.json"
 
 
 def _staged_provenance_entries(campaign_dir: str) -> List[dict]:
@@ -723,6 +711,88 @@ def is_postprocessing_needed(
     return bool(commands)
 
 
+def _name_and_params(command) -> Tuple[str, dict]:
+    """``(plugin name, parameters)`` of a postprocessing entry, in either spelling."""
+    if isinstance(command, str):
+        return command, {}
+    if not isinstance(command, dict) or len(command) != 1:
+        raise ValueError(f"a postprocessing entry is a name or a one-key mapping, got {command!r}")
+    name = next(iter(command))
+    params = command[name] or {}
+    if not isinstance(params, dict):
+        raise ValueError(f"{name}: parameters must be a mapping, got {params!r}")
+    return name, dict(params)
+
+
+def campaign_postprocessing_commands(vast_path: str, skip=None, skip_rosout: bool = False,
+                                     output=None) -> List:
+    """The ordered steps a campaign's postprocessing runs: the one list both lanes execute.
+
+    The ``.vast``'s ``results_processing.postprocessing``, less the names in *skip*, with
+    the ``rosbags_*`` shorthand batched into one ``rosbags_process`` (see
+    :func:`_batch_rosbags_commands`) and the :data:`AUTO_PLUGINS` appended. *output*, when
+    given, is told about each skipped entry.
+    """
+    commands = get_postprocessing_commands(vast_path)
+    skip_set = set(skip or ())
+    if skip_rosout:
+        skip_set.add("rosbags_rosout_to_csv")
+    kept = []
+    for command in commands:
+        name = command if isinstance(command, str) else next(iter(command))
+        if name in skip_set:
+            if output is not None:
+                output(f"Skipping: {name}")
+            continue
+        kept.append(command)
+    return _append_auto_plugins(_batch_rosbags_commands(kept, skip=skip_set), skip_set)
+
+
+def needs_execution_image(command, config_dir: str, plugins=None) -> bool:
+    """Whether *command* runs in the campaign's execution image -- the plugin's own answer.
+
+    See :attr:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin.needs_execution_image`.
+    A command that cannot be resolved is not: it fails loudly where it runs, which is a
+    better message than one invented here.
+    """
+    name, _ = _name_and_params(command)
+    if name in ROSBAG_BATCH_NAMES:
+        return True
+    try:
+        plugin = resolve_postprocessing_plugin(name, config_dir, plugins)
+    except (KeyError, ValueError, ImportError, FileNotFoundError, AttributeError):
+        return False
+    return bool(getattr(plugin, "needs_execution_image", False))
+
+
+def image_steps(commands, config_dir: str, ctx) -> list:
+    """The commands to run in the execution image for *commands*, as the lane in *ctx* sees it.
+
+    Every entry must be a step that needs the image, and every such step must name its
+    command (:meth:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin.image_command`).
+    A plugin that declares ``needs_execution_image`` without one is refused here, before any
+    compute is spent: a lane without Docker has no other way to run it.
+    """
+    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+        ExecutionImagePlugin, ImageStep)
+
+    steps = []
+    for command in commands:
+        name, params = _name_and_params(command)
+        plugin = resolve_postprocessing_plugin(name, config_dir)
+        if not isinstance(plugin, ExecutionImagePlugin):
+            raise ValueError(
+                f"{name} is not a step of the execution image. A plugin that needs the "
+                "image derives from ExecutionImagePlugin and names the command to run there "
+                "with image_command().")
+        try:
+            argv = plugin.image_command(ctx, **params)
+        except TypeError as e:
+            raise ValueError(f"{name}: {e}") from e
+        steps.append(ImageStep(name=name, argv=list(argv), files=list(plugin.image_files())))
+    return steps
+
+
 def run_postprocessing(  # pylint: disable=too-many-return-statements
         results_dir: str,
         output_callback=None,
@@ -735,6 +805,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip_metadata: bool = False,
         campaign: Optional[str] = None,
         should_stop=None,
+        skip_image_steps: bool = False,
 ):
     """Run postprocessing commands on **one campaign's** run results.
 
@@ -758,6 +829,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         skip: List of plugin names to skip entirely (e.g. ``['rosbags_to_webm']``).
         campaign: Which campaign directory to process. ``None`` uses the most
             recent one.
+        skip_image_steps: Leave out every step that runs in the execution image, because
+            something else already ran them -- a cluster postprocessing Job's image
+            container, before this runs beside it.
         should_stop: Predicate polled to abandon the work early, for a campaign whose
             operator stopped it while this was running. Checked between steps *and*
             handed to the steps that can honour it mid-flight (the containerised rosbag
@@ -860,40 +934,15 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         except (yaml.YAMLError, OSError):
             pass
 
-    # Get postprocessing commands
-    commands = get_postprocessing_commands(vast_path)
-
     if force:
         output("Force mode: per-rosbag caches will be ignored")
 
-    # Build unified skip set
-    skip_set: set = set(skip) if skip else set()
-    if skip_rosout:
-        skip_set.add("rosbags_rosout_to_csv")
-
-    # Filter out explicitly skipped plugins before batching
-    if skip_set:
-        filtered = []
-        for cmd in commands:
-            name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
-            if name in skip_set:
-                output(f"Skipping: {name}")
-            else:
-                filtered.append(cmd)
-        commands = filtered
-
-    # Load plugins
     plugins = load_postprocessing_plugins()
-
-    # Batch all batchable rosbags_* commands into a single rosbags_process call
-    # (reads each rosbag once instead of once per plugin). rosout_to_csv is always
-    # included unless skipped.
-    commands = _batch_rosbags_commands(commands, skip=skip_set)
-
-    # The log merge, appended so it runs after the bag conversions it reads (rosout.csv and
-    # clock_map.csv). Auto-injected for the same reason those are: a run whose output cannot
-    # be read afterwards cannot be explained, and nobody should have to ask for that.
-    commands = _append_auto_plugins(commands, skip_set)
+    commands = campaign_postprocessing_commands(vast_path, skip=skip, skip_rosout=skip_rosout,
+                                                output=output)
+    if skip_image_steps:
+        commands = [c for c in commands
+                    if not needs_execution_image(c, config_dir, plugins)]
 
     # Validate all commands first
     for command in commands:
