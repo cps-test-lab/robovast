@@ -102,7 +102,7 @@ cooperative-stop flag is only checked *between* batches (or search generations),
 ``ClusterService.stop`` also tears down that campaign's in-flight Jobs — reusing the
 campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
 ``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
-loop (``get_remaining_jobs`` treats a gone Job as finished) so the campaign winds
+loop (``running_jobs`` treats a gone Job as finished) so the campaign winds
 down promptly. The deletions are label-scoped to the one campaign, so other
 queued/running campaigns are untouched, and to its Jobs: a campaign's aux pod belongs to
 the composition span that created it and is deleted when that span ends, so a stop leaves

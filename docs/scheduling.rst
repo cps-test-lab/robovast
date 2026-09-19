@@ -163,9 +163,13 @@ Because a paused campaign never reaches the placement walk, ``drain`` records it
 separately -- a campaign waiting for a machine and one waiting for a person need opposite
 responses, and leaving the last "no node has that free" standing would confuse them.
 
-Two traps the loop must respect, both of which cost a live campaign when they were missed:
+Scenario runs and postprocessing submit and track their Jobs through one helper,
+:class:`~robovast.execution.cluster_execution.admitted_jobs.AdmittedJobs`: one ``submit`` with a
+create callback per Job, then a ``poll`` per round that drains the queue, reads which created
+Jobs still run in one listing, releases the finished ones, and times the ones that cannot start.
+It respects two traps:
 
-* **Only CREATED names may be asked about.** ``get_remaining_jobs`` treats a 404 as finished,
+* **Only CREATED names may be asked about.** ``running_jobs`` treats a 404 as finished,
   which is right for a reaped Job and catastrophic for one not yet created — the batch
   "finishes" on its first poll having produced nothing.
 * **``waiting_for_capacity`` comes from ``states()``, not from pods.** A queued campaign has

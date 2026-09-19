@@ -65,28 +65,32 @@ def test_a_planned_job_is_not_mistaken_for_a_finished_one():
     """
     asked = []
     c = AdmissionController(_Provider(cpu=2.0), clock=lambda: 0.0)
+    tracker = _tracker(c, lambda names: asked.extend(names) or list(names))
     sizing = JobSizing(2.0, MIB)
-    c.submit("camp", [(f"j-{i}", sizing, lambda _n=None: None) for i in range(3)],
-             started_at=campaign_start_key("camp-2026-07-17-120000"))
-    c.drain()
-    states = c.states("camp")
-    created = [n for n, s in states.items() if s == kb._ADMIT_CREATED]
-    planned = [n for n, s in states.items() if s == kb._ADMIT_PLANNED]
-    asked.extend(created)
-    assert len(created) == 1 and len(planned) == 2
-    assert set(asked).isdisjoint(planned), "a planned job must never be asked about"
+    tracker.submit([(f"j-{i}", sizing, lambda _n=None: None) for i in range(3)],
+                   started_at=campaign_start_key("camp-2026-07-17-120000"))
+    rnd = tracker.poll()
+    assert len(rnd.created) == 1 and rnd.planned == 2
+    assert set(asked) == set(rnd.created), "a planned job must never be asked about"
 
 
 def test_the_loop_keeps_going_while_jobs_are_still_only_planned():
     """Even with nothing running, a batch with planned work is not done."""
     c = AdmissionController(_Provider(cpu=2.0), clock=lambda: 0.0)
+    tracker = _tracker(c, lambda names: [])   # nothing running: the created one just finished
     sizing = JobSizing(2.0, MIB)
-    c.submit("camp", [(f"j-{i}", sizing, lambda _n=None: None) for i in range(3)], started_at=0.0)
-    c.drain()
-    states = c.states("camp")
-    planned = sum(1 for s in states.values() if s == kb._ADMIT_PLANNED)
-    remaining = []                      # nothing running: the created one just finished
-    assert not (not remaining and not planned), "must not exit with work still queued"
+    tracker.submit([(f"j-{i}", sizing, lambda _n=None: None) for i in range(3)], started_at=0.0)
+    rnd = tracker.poll()
+    assert rnd.planned == 2 and not rnd.over, "must not exit with work still queued"
+
+
+def _tracker(admission, list_remaining):
+    from robovast.execution.cluster_execution.admitted_jobs import AdmittedJobs
+    tracker = AdmittedJobs(admission=admission, owner="camp", batch_api=None, core_api=None,
+                           namespace="ns", label_selector="jobgroup=x",
+                           list_remaining=list_remaining)
+    tracker._blocked = lambda created: ({}, {}, "")  # pylint: disable=protected-access
+    return tracker
 
 
 def test_creation_is_paced_by_capacity_not_by_the_plan_size():
