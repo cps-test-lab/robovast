@@ -1164,6 +1164,16 @@ class LocalTransport(RobovastInterface):
         from robovast.service.data_app import DataPlane  # pylint: disable=import-outside-toplevel
         return DataPlane(self._campaigns_root())
 
+    def start_serving(self) -> None:
+        """Hook: the service is about to answer; adopt what a previous process left.
+
+        Nothing here -- a local campaign's driver dies with the process that held it, so
+        there is nothing to adopt. :class:`ClusterService` overrides it: its campaigns are
+        Kubernetes Jobs that outlive the driver. Called by ``build_app`` after
+        :meth:`bind_auth_token` and before the port is bound, which is the one window in
+        which an adopted campaign can mint its pods' token and no launch can race it.
+        """
+
     def bind_auth_token(self, token: str) -> None:
         """The shared secret this service verifies, so it can mint scoped tokens for pods.
 

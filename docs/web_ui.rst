@@ -327,9 +327,11 @@ re-attaches to them. What the service refuses is the narrower case its own resum
 cannot answer for -- the campaigns that could *not* be picked up again -- and the refusal
 names each one with the reason it gives, which is what an operator would have to act on.
 Only then does the page offer to force, quoting that refusal; the first confirmation is not
-an override, because at that point there is nothing yet to override. Kubernetes starts the
-new pod before stopping the old, so the API stays up, and the page waits for the running
-digest to change rather than trusting the request it just made.
+an override, because at that point there is nothing yet to override. The old pod stops
+before the new one starts -- the campaigns are on a volume one node may mount at a time --
+so the API is away for a few seconds, and longer where the replacement has campaigns to
+pick up; the page waits for the running digest to change rather than trusting the request
+it just made.
 
 Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
 cluster from outside it — there is no button, just the reason. The chart and the log work

@@ -139,3 +139,22 @@ def test_a_missing_name_stays_missing():
 def test_an_unauthenticated_principal_is_not_trusted_with_a_name():
     principal = auth.principal_from_headers({"x-robovast-user": "Fred"}, TOKEN)
     assert not principal.authenticated
+
+
+def test_the_app_binds_the_secret_before_the_service_adopts_anything(monkeypatch):
+    """``build_app`` is where a transport learns the secret its pods' tokens are minted
+    from, and where a cluster service adopts the campaigns a restart interrupted. The
+    order is the whole point: adopting first leaves the adopted campaigns unable to mint."""
+    order = []
+
+    class _Impl:
+        store = None
+
+        def bind_auth_token(self, token):
+            order.append(("bind", token))
+
+        def start_serving(self):
+            order.append(("start", None))
+
+    build_app(_Impl(), mount_mcp=False, auth_token="secret-1")
+    assert order == [("bind", "secret-1"), ("start", None)]
