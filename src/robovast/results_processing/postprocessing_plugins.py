@@ -406,9 +406,10 @@ def conversion_groups(plugins: Optional[List[dict]] = None, bag_dir: Optional[st
                       groups: Optional[List[dict]] = None) -> List[dict]:
     """The ``groups`` a ``rosbags_process`` entry converts, from either way it is written.
 
-    ``plugins`` (with an optional ``bag_dir``) is one group; ``groups`` is several, each
-    ``{"bag_dir": …, "plugins": […]}``, converted in one pass. Both lanes build the
-    script's ``--config`` from this, so an entry means the same thing wherever it runs.
+    ``plugins`` (with an optional ``bag_dir``) is one group, as a ``.vast`` entry writes it;
+    ``groups`` is several, each ``{"bag_dir": …, "plugins": […]}``, as the orchestrator
+    passes a campaign's combined entries. Both lanes build the script's ``--config`` from
+    this, so an entry means the same thing wherever it runs.
 
     Raises ``ValueError`` when both or neither are given, or ``bag_dir`` is given with
     ``groups`` -- an argument that would otherwise be dropped.
@@ -454,18 +455,11 @@ class RosbagsProcess(BasePostprocessingPlugin):
                 - type: to_csv
                   topics: [/cmd_vel, /odom]
 
-    ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). To convert several
-    kinds of bag in one pass -- one scan, one worker pool -- give ``groups`` instead:
-
-    .. code-block:: yaml
-
-        postprocessing:
-          - rosbags_process:
-              groups:
-                - bag_dir: rosbag2
-                  plugins: [{type: tf_to_csv, frames: [base_link]}]
-                - bag_dir: logs/rosout_bag
-                  plugins: [{type: rosout_to_csv}]
+    ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). The orchestrator
+    combines every ``rosbags_process`` entry and ``rosbags_*`` name of a campaign into one
+    call, one group per bag directory, and adds the ``logs/rosout_bag`` handlers to it
+    (``_batch_rosbags_commands``), so every kind of bag is converted in one scan and one
+    worker pool. That combined call is what arrives here as ``groups``.
 
     **How much of the machine it uses is not set here.** The step converts one bag per
     process, and how many run at once follows the CPU the conversion is allowed -- which is
@@ -509,7 +503,8 @@ class RosbagsProcess(BasePostprocessingPlugin):
                 matches ``results_processing.resources.cpu`` on either lane. Set it only to
                 override that.
             bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
-            groups: Several ``{"bag_dir": …, "plugins": […]}`` converted in one pass.
+            groups: Several ``{"bag_dir": …, "plugins": […]}`` converted in one pass: what the
+                orchestrator passes after combining a campaign's entries.
             provenance_file: Optional path for provenance JSON.
             execution_image: Optional Docker image override.
             debug: If True, print all per-bag output; otherwise show only progress/summary.

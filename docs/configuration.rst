@@ -1969,19 +1969,12 @@ To list all available plugins and their descriptions:
               - type: to_csv
                 topics: [/cmd_vel, /odom]
 
-   ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). To convert
-   several kinds of bag in one pass, give ``groups`` instead, one entry per bag
-   directory:
-
-   .. code-block:: yaml
-
-      postprocessing:
-        - rosbags_process:
-            groups:
-              - bag_dir: rosbag2
-                plugins: [{type: tf_to_csv, frames: [base_link]}]
-              - bag_dir: logs/rosout_bag
-                plugins: [{type: rosout_to_csv}]
+   ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). Every
+   ``rosbags_process`` entry and every ``rosbags_*`` name in the list is combined into
+   the one conversion, bag directory by bag directory, and the ``logs/rosout_bag``
+   handlers (``rosout_to_csv``, ``clock_to_csv``) are added to it unless an entry
+   declares them itself or they are skipped — so write an entry per bag directory
+   whose handlers you set, and nothing for the rest.
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 

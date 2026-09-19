@@ -64,6 +64,46 @@ def test_with_everything_skipped_there_is_no_conversion():
     assert commands == ["run_log"]
 
 
+def test_rosbags_process_entries_and_shorthands_become_one_conversion():
+    """A user writes an entry per bag directory, or several; they are one conversion."""
+    commands = _batch_rosbags_commands([
+        {"rosbags_process": {"plugins": [{"type": "tf_to_csv", "frames": ["base_link"]}]}},
+        "run_log",
+        {"rosbags_process": {"plugins": [{"type": "to_csv", "topics": ["/a"]}]}},
+        {"rosbags_to_csv": {"topics": ["/b"]}},
+    ])
+    assert commands[1:] == ["run_log"]
+    groups = {g["bag_dir"]: [p["type"] for p in g["plugins"]] for g in _groups_of(commands)}
+    assert groups == {"rosbag2": ["tf_to_csv", "to_csv", "to_csv"],
+                      "logs/rosout_bag": ["rosout_to_csv", "clock_to_csv"]}
+
+
+def test_the_infrastructure_handlers_are_added_unless_an_entry_declares_them():
+    groups = _groups_of(_batch_rosbags_commands([{"rosbags_process": {
+        "bag_dir": "logs/rosout_bag",
+        "plugins": [{"type": "rosout_to_csv", "min_severity": "warn"}]}}]))
+    assert groups == [{"bag_dir": "logs/rosout_bag",
+                       "plugins": [{"type": "rosout_to_csv", "min_severity": "warn"},
+                                   {"type": "clock_to_csv"}]}]
+
+
+def test_a_skipped_handler_leaves_a_rosbags_process_entry_too():
+    groups = _groups_of(_batch_rosbags_commands(
+        [{"rosbags_process": {"plugins": [{"type": "to_csv"}, {"type": "rosout_to_csv"}],
+                              "bag_dir": "rosbag2"}}], skip_rosout=True))
+    assert [p["type"] for g in groups for p in g["plugins"]] == ["to_csv", "clock_to_csv"]
+
+
+def test_one_workers_figure_is_carried_and_two_are_refused():
+    one = _batch_rosbags_commands([{"rosbags_process": {"plugins": [{"type": "to_csv"}],
+                                                        "workers": 3}}])
+    assert one[0]["rosbags_process"]["workers"] == 3
+    with pytest.raises(ValueError, match="workers"):
+        _batch_rosbags_commands([
+            {"rosbags_process": {"plugins": [{"type": "to_csv"}], "workers": 3}},
+            {"rosbags_process": {"plugins": [{"type": "tf_to_csv"}], "workers": 5}}])
+
+
 # -- the plugin's two spellings -------------------------------------------------
 
 def test_plugins_is_one_group_in_the_default_bag_dir():

@@ -368,17 +368,22 @@ def _failure_summary(message: object) -> str:
 
 def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
                             skip: "set | None" = None) -> List:
-    """Replace all batchable rosbags_* plugin calls with one rosbags_process call.
+    """Replace every rosbag conversion in *commands* with one ``rosbags_process`` call.
 
-    Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
-    their ``bag_dir`` (the subdirectory name to search for rosbags), and emits a
-    single ``rosbags_process`` command carrying one group per distinct ``bag_dir``,
-    so every kind of bag is converted in one scan and one worker pool. It is inserted
-    at the position of the first batchable command; all other batchable commands are
-    removed. Non-batchable commands keep their original order.
+    Every ``rosbags_*`` shorthand (``_ROSBAG_BATCH_MAP``) and every ``rosbags_process``
+    entry is merged into a single ``rosbags_process`` command carrying one group per
+    distinct ``bag_dir`` (the subdirectory searched for rosbags), so every kind of bag is
+    converted in one scan and one worker pool, and a bag is read once however many entries
+    name it. The command sits at the position of the first rosbag entry; the others are
+    removed. Non-rosbag commands keep their original order.
 
     The infrastructure-bag handlers (:data:`_AUTO_INFRA_HANDLERS`) are always added unless
-    named in *skip* (or, for rosout, *skip_rosout*).
+    named in *skip* (or, for rosout, *skip_rosout*) or already declared. A skipped name
+    also drops its handler from a ``rosbags_process`` entry that lists it.
+
+    Raises ``ValueError`` when two ``rosbags_process`` entries ask for different
+    ``workers``: one conversion runs with one pool, and choosing either would drop the
+    other's argument.
 
     Args:
         commands: Raw list of postprocessing commands from the .vast config.
@@ -389,20 +394,40 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
             declined by name without a dedicated flag per handler.
 
     Returns:
-        New command list with batchable commands replaced by one rosbags_process call.
+        New command list with the rosbag conversions replaced by one rosbags_process call.
     """
+    from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
+        conversion_groups)
+
     skip_names = set(skip or ())
     if skip_rosout:
         skip_names.add("rosbags_rosout_to_csv")
+    skipped_types = {handler for name, (handler, _dir) in _ROSBAG_BATCH_MAP.items()
+                     if name in skip_names}
     # bag_dir → list of handler dicts for that bag dir
     bag_dir_plugins: Dict[str, List[dict]] = {}
+    # What rosbags_process entries asked for the pool, to carry onto the one conversion
+    workers = set()
     # Index in result where the one conversion lives, once a batchable command is seen
     slot: "int | None" = None
     result: List = []
 
     for cmd in commands:
         plugin_name = cmd if isinstance(cmd, str) else list(cmd.keys())[0]
-        if plugin_name in _ROSBAG_BATCH_MAP:
+        if plugin_name == "rosbags_process":
+            if plugin_name in skip_names:
+                continue
+            params = dict({} if isinstance(cmd, str) else (cmd[plugin_name] or {}))
+            if params.get("workers") is not None:
+                workers.add(int(params.pop("workers")))
+            params.pop("workers", None)
+            for group in conversion_groups(**params):
+                bag_dir_plugins.setdefault(group["bag_dir"], []).extend(
+                    p for p in group["plugins"] if p.get("type") not in skipped_types)
+            if slot is None:
+                slot = len(result)
+                result.append(None)
+        elif plugin_name in _ROSBAG_BATCH_MAP:
             handler_type, default_bag_dir = _ROSBAG_BATCH_MAP[plugin_name]
             if plugin_name in skip_names:
                 continue
@@ -432,6 +457,10 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
 
     if slot is None:
         return result
+    if len(workers) > 1:
+        raise ValueError(f"rosbags_process entries ask for different workers "
+                         f"({sorted(workers)}); they run as one conversion with one pool, "
+                         f"so give workers once")
     # Within a group the auto-injected infrastructure handlers come last, so an explicitly
     # configured handler's output is in place first.
     auto_types = {_ROSBAG_BATCH_MAP[n][0] for n in _AUTO_INFRA_HANDLERS}
@@ -439,8 +468,10 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
     for bag_dir, plugins in bag_dir_plugins.items():
         auto = [p for p in plugins if p.get("type") in auto_types]
         others = [p for p in plugins if p.get("type") not in auto_types]
-        groups.append({"bag_dir": bag_dir, "plugins": others + auto})
-    result[slot] = {"rosbags_process": {"groups": groups}}
+        if others + auto:
+            groups.append({"bag_dir": bag_dir, "plugins": others + auto})
+    result[slot] = {"rosbags_process": {"groups": groups, **(
+        {"workers": workers.pop()} if workers else {})}}
     return result
 
 
