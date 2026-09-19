@@ -80,6 +80,11 @@ ENV_COMMANDS = "ROBOVAST_POSTPROCESS_COMMANDS"
 #: every campaign for a cache no later reader can use.
 NOT_CAMPAIGN_DATA = frozenset({".robovast_rosbags_process_cache"})
 
+#: Touched by the image container, beside the campaign directory on the shared mount, before
+#: its first step: the moment after which a file in the campaign tree is that container's
+#: output. See :func:`_image_step_outputs`.
+IMAGE_STEPS_MARKER = ".image-steps-started"
+
 #: How many times the delivery is attempted, and the backoff step between attempts: attempt
 #: *n* is followed by ``n * _DELIVERY_RETRY_S`` seconds. The scenario pods' uploader's
 #: schedule, and for its reasons (:data:`pod_upload.UPLOAD_ATTEMPTS`): a service being rolled
@@ -97,9 +102,9 @@ def _snapshot(root: str) -> dict:
     stage's output. That is what keeps the delivery proportional to what was produced rather
     than to the campaign that was staged.
 
-    It cannot identify the CONVERSION's output, though: that container finishes before this
-    one starts, so its CSVs are already on disk when this is taken and read as staged data.
-    :func:`_conversion_outputs` is the other half of the answer, and the two are what
+    It cannot identify the IMAGE STEPS' output, though: that container finishes before this
+    one starts, so its files are already on disk when this is taken and read as staged
+    data. :func:`_image_step_outputs` is the other half of the answer, and the two are what
     :func:`_upload_derived` delivers.
 
     Broken symlinks are skipped -- an interrupted campaign can leave a ``job`` link whose
@@ -117,28 +122,30 @@ def _snapshot(root: str) -> dict:
     return seen
 
 
-def _conversion_outputs(campaign_root: str) -> set:
-    """Campaign-relative paths the conversion container derived from the bags.
+def _image_step_outputs(campaign_root: str) -> set:
+    """Campaign-relative paths the image container wrote or changed.
 
-    These have to be named rather than diffed. The conversion runs as an initContainer, so
-    it has already written its CSVs by the time this container takes its snapshot -- while
+    These have to be found rather than diffed. The image steps run in an initContainer, so
+    they have written their files by the time this container takes its snapshot -- while
     the service has never held them, because that container carries no token and delivers
     nothing. Diffed alone, every one of them reads as staged data and stays in a pod that is
-    about to be deleted: ``poses.csv``, the per-action feedback and status tables, the
-    costmaps and the raw behaviour-tree transitions would be ingested into the index and then
-    dropped, so a campaign's own download held none of the tables its analysis reads.
+    about to be deleted.
 
-    Read from the record the conversion writes for this purpose, at
-    :data:`~robovast.results_processing.postprocessing.STAGED_PROVENANCE`, whose ``output``
-    paths are relative to the campaign root -- the same base the delivery keys on. Empty
-    when there was no conversion (a campaign with no bags, or a per-batch Job), which is a
-    campaign for which the diff alone is the whole answer.
+    The image container touches :data:`IMAGE_STEPS_MARKER` beside the campaign before its
+    first step (:func:`~.postprocess_job._conversion_script`). Staged files carry the
+    modification times the archive gave them, which precede it; anything an image step
+    wrote carries a later one. So this needs nothing from the steps themselves -- a step
+    that records no provenance still has its outputs delivered. Empty when there was no
+    image container, a campaign for which the diff alone is the whole answer.
     """
-    from robovast.results_processing.postprocessing import \
-        _staged_provenance_entries  # noqa: PLC0415
-
-    return {entry["output"] for entry in _staged_provenance_entries(campaign_root)
-            if entry.get("output")}
+    marker = os.path.join(os.path.dirname(campaign_root), IMAGE_STEPS_MARKER)
+    try:
+        started = os.stat(marker).st_mtime_ns
+    except OSError:
+        return set()
+    return {os.path.relpath(path, campaign_root).replace(os.sep, "/")
+            for path, (_size, mtime_ns) in _snapshot(campaign_root).items()
+            if mtime_ns >= started}
 
 
 def _never_sent() -> tuple:
@@ -161,8 +168,8 @@ def _never_sent() -> tuple:
 def derived_paths(campaign_root: str, before: dict) -> list:
     """Campaign-relative paths of what this Job derived, sorted.
 
-    Everything that differs from the snapshot **or** the conversion named it
-    (:func:`_conversion_outputs`) -- those two together being what this Job derived, and
+    Everything that differs from the snapshot **or** the image container wrote
+    (:func:`_image_step_outputs`) -- those two together being what this Job derived, and
     nothing else, so the staged run data is not written back over itself. ``_execution/``
     is under the same rule and no other: the diff carries ``postprocessing.log``, the
     conversion's provenance and the usage record, which this Job wrote, and leaves
@@ -171,7 +178,7 @@ def derived_paths(campaign_root: str, before: dict) -> list:
     was given its copy.
     """
     denied_names, denied_paths = _never_sent()
-    converted = _conversion_outputs(campaign_root)
+    converted = _image_step_outputs(campaign_root)
     out = []
     for path, stamp in _snapshot(campaign_root).items():
         rel = os.path.relpath(path, campaign_root).replace(os.sep, "/")

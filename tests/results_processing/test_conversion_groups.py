@@ -8,7 +8,6 @@ groups lets the second kind's bags fill the workers the first kind would leave i
 """
 
 import json
-import shlex
 
 import pytest
 
@@ -169,13 +168,12 @@ def test_bag_bytes_sums_every_file_of_the_bag(tmp_path):
     assert bag_bytes(str(bag)) == 15
 
 
-def test_the_cluster_job_passes_the_groups_and_no_bag_dir_flag():
-    from robovast.execution.cluster_execution import postprocess_job as pj
+def test_the_command_passes_the_groups_and_no_bag_dir_flag():
+    from robovast.results_processing.postprocessing_plugins import ImageContext, RosbagsProcess
 
     groups = [{"bag_dir": "rosbag2", "plugins": [{"type": "tf_to_csv"}]},
               {"bag_dir": "logs/rosout_bag", "plugins": [{"type": "rosout_to_csv"}]}]
-    script = pj._conversion_script([{"groups": groups}], force=False, campaign_id="c1")
-    line = next(l for l in script.splitlines() if "rosbags_process.py" in l)
-    argv = shlex.split(line)
+    argv = RosbagsProcess().image_command(ImageContext(campaign_dir="/campaign/c1"),
+                                          groups=groups)
     assert json.loads(argv[argv.index("--config") + 1]) == {"groups": groups}
     assert "--bag-dir" not in argv

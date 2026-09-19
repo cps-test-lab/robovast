@@ -18,6 +18,8 @@ import pytest
 
 from robovast.execution.cluster_execution import postprocess_job as pj
 
+from .image_steps_helper import steps
+
 from robovast.common.index_db import DSN_ENV
 from robovast.execution.cluster_execution.node_placement import CAMPAIGN_NODE_TOLERATIONS
 from robovast.execution.cluster_execution import pod_access
@@ -27,7 +29,7 @@ from robovast.execution.cluster_execution.postprocess_job import (CAMPAIGN_MOUNT
                                                                   STAGE_CONTAINER,
                                                                   build_manifest)
 
-_CMDS = [{"plugins": [{"type": "rosout_to_csv"}]}]
+_CMDS = steps("camp-2026-08-27-12000000")
 
 
 @pytest.fixture(autouse=True)

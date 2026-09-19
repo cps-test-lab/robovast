@@ -12,6 +12,8 @@ from unittest import mock
 
 import pytest
 
+from .image_steps_helper import CMDS, stub_image_steps
+
 # -- A1: the auxiliary container a composition needs -------------------------
 
 # Whether a composition needs an auxiliary container is answered by asking for one, so there is no
@@ -215,7 +217,7 @@ def test_load_kube_config_prefers_in_cluster():
 # exception out of the conversion step. The load-bearing detail is that the very first
 # call touching the API server is the one that has to translate the transport error.
 
-def test_unreachable_cluster_only_ends_postprocessing():
+def test_unreachable_cluster_only_ends_postprocessing(monkeypatch):
     """The runs are already published when postprocessing chains, so an unreachable
     cluster is a reported, re-runnable postprocessing failure -- never an exception out
     of the conversion step."""
@@ -240,6 +242,7 @@ def test_unreachable_cluster_only_ends_postprocessing():
     # The Job's host container is the index ingest, so the manifest is not built at all
     # without a DSN in the submitting process -- and this test is about the transport to
     # the API server, not about that refusal.
+    stub_image_steps(monkeypatch)
     with mock.patch.dict("os.environ",
                          {DSN_ENV: "host=index.example.com dbname=robovast"}), \
          mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
@@ -248,7 +251,7 @@ def test_unreachable_cluster_only_ends_postprocessing():
          mock.patch("robovast.execution.cluster_execution.cluster_execution."
                     "resolve_pull_secret", return_value=""):
         ok, message = postprocess_job.run_conversion_job(
-            cluster_config, "camp", "/results/camp", "ns", "img", [{"plugins": [{"type": "rosout_to_csv"}]}],
+            cluster_config, "camp", "/results/camp", "ns", "img", CMDS,
             token="campaign:camp.0123abcd")
 
     assert ok is False

@@ -1149,7 +1149,38 @@ Postprocessing plugins are Python functions that process run result directories 
 
 **Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each run folder (``<campaign-name>-<timestamp>/<config>/<run-number>/``).
 
-**Provenance for container scripts:** Plugins that run scripts inside Docker (e.g. via ``docker_exec.sh``) cannot return data directly. The orchestrator passes a **provenance file** path to each plugin (optional kwarg ``provenance_file``). Container-invoking plugins must pass this to ``docker_exec.sh`` as ``--provenance-file HOST_PATH``; ``docker_exec.sh`` mounts the directory at ``/provenance`` in the container and the script receives ``--provenance-file /provenance/<basename>``. The script should write a JSON file at that path with format ``{"entries": [{"output": "...", "sources": [...], "plugin": "...", "params": {}}]}`` (paths relative to the results/input directory). Use the helper ``write_provenance_entry`` from ``rosbags_common`` (same directory as the scripts, so it works in the container) to append entries; the script gets the path from ``--provenance-file`` and uses its own plugin name when calling the helper.
+**Steps that run in the campaign's execution image:** some work can only happen in the image the
+runs used — deserializing a bag needs the message definitions of the custom types it recorded. Such
+a plugin derives from
+:class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` and names the
+command to run there instead of implementing ``__call__``:
+
+.. code-block:: python
+
+    import os
+    from robovast.results_processing.postprocessing_plugins import ExecutionImagePlugin
+
+    class DecodeCamera(ExecutionImagePlugin):
+        def image_command(self, ctx, topic="/camera"):
+            # A file in the scripts directory, then its arguments. ctx says where the
+            # campaign is inside the container, and whether to force or be verbose.
+            argv = ["decode_camera.py", "--topic", topic]
+            if ctx.provenance_file:
+                argv += ["--provenance-file", ctx.provenance_file]
+            return argv + [ctx.campaign_dir]
+
+        def image_files(self):
+            # Shipped beside the conversion scripts, under their own names.
+            return [os.path.join(os.path.dirname(__file__), "decode_camera.py")]
+
+Every lane runs exactly that command from ``/scripts`` through ``ros2_exec.sh``: the local lane with
+``docker_exec.sh`` against the campaign's execution image, a cluster postprocessing Job in its image
+container. A parameter the command does not take fails the step. The script runs **without**
+``robovast`` — only the standard library, what the image provides, and the files beside it
+(``rosbags_common`` among them). It writes its outputs into the campaign tree; on the cluster, every
+file it writes is delivered back, whether or not it records provenance. To record provenance it
+appends ``{"output", "sources", "plugin", "params"}`` entries (paths relative to the campaign) to
+``--provenance-file`` with ``rosbags_common.write_provenance_entry``.
 
 **Creating a Postprocessing Plugin:**
 
@@ -2581,11 +2612,15 @@ completion in declaration order:
   Nothing of ours sits between the socket and the disk, so its memory is the pipe. Calibration
   probes and the log this Job will write are never staged, and where no conversion is
   configured neither are the rosbags — nothing else in the pod opens one.
-* ``convert`` (initContainer, the campaign's execution image) runs the ``rosbags_*`` → CSV step
-  against the same mount. It exists only where the campaign declares a plugin needing that image.
+* ``convert`` (initContainer, the campaign's execution image) runs every step that needs that
+  image — the ``rosbags_*`` → CSV conversion and any other
+  :class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` — in order,
+  each as its plugin's own ``image_command``, against the same mount. It touches a marker beside
+  the campaign first; every file changed after it is this container's output. It exists only where
+  the campaign has such a step.
 * ``host`` (container, controller image,
-  :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything after the
-  conversion — the index ingest and metadata — and is what delivers: one tar of what the Job
+  :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything else — the other
+  plugins, the index ingest and metadata — and is what delivers: one tar of what the Job
   derived, ``PUT`` to the data plane, which writes it into the campaign's directory on the
   results volume. It is the only container given the campaign's token.
 
@@ -2595,19 +2630,18 @@ only. Further:
 
 * **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
   not a silent wrong-image conversion);
-* the conversion scripts are delivered as a per-campaign **ConfigMap** built from the driver's own
-  ``robovast.results_processing.data`` and mounted read-only at ``/scripts`` — the K8s analog of the
-  local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
+* the conversion scripts, and the files each image step ships, are delivered as a per-campaign
+  **ConfigMap** built from the driver's own ``robovast.results_processing.data`` and mounted
+  read-only at ``/scripts`` — the K8s analog of the local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
   *driver* rather than from a separately-versioned controller image guarantees the in-cluster
   scripts match the driver that generates the conversion command, so an off-cluster/dev driver
   running ahead of a published image cannot skew them (a skew surfaces as a spurious
   ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
   ``robovast`` import) and small; nothing is ever baked into the user's image;
-* ``rosbags_process.py --output-root`` is the shared campaign tree itself, so every output lands
-  at its campaign-relative path and goes to its canonical key with no mapping step. Its default is
-  the input root, i.e. "beside the bag", so the local path is unchanged.
+* each image step runs over the shared campaign tree itself, so every output lands at its
+  campaign-relative path and goes to its canonical key with no mapping step.
 
-The host stage is pure Python and reuses the normal pipeline with the rosbag steps skipped
+The host stage is pure Python and reuses the normal pipeline with the image steps skipped
 (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence — the
 same function the local lane calls, run beside the data instead of fetching it.
 

@@ -86,6 +86,8 @@ def test_postprocess_job_loads_the_given_context(monkeypatch):
         raise _Stop
 
     monkeypatch.setattr(kube_client, "load_kube_config", _load)
+    # The steps are rendered from the campaign's own `.vast`, which this test has none of.
+    monkeypatch.setattr(postprocess_job, "image_steps_for", lambda *a, **k: [])
 
     with pytest.raises(_Stop):
         postprocess_job.run_conversion_job(
