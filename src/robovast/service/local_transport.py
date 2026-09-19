@@ -1194,7 +1194,7 @@ class LocalTransport(RobovastInterface):
         return auth.scoped_token(token, scope)
 
     def campaign_tar_stream(self, campaign_id: str,
-                            selection: "ArchiveSelection | None" = None):
+                            selection: Optional[ArchiveSelection] = None):
         """Tar this host's campaign directory straight into the response.
 
         ``_postproc/`` is left out with ``.cache`` -- it is postprocessing's staging, not
