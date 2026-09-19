@@ -338,3 +338,75 @@ def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch)
         archive_path=str(_archive(tmp_path, runs=26))))
     status = _wait_done(service, ref.campaign_id)
     assert status.runs.total == 26
+
+
+def _object_store_archive(tmp_path, staged: Path, name: str) -> Path:
+    """An archive in the shape the cluster lane exported while campaigns lived in a bucket.
+
+    Built member by member, as that exporter did: regular files only -- a bucket has no
+    directories -- each mode read from the object's ``executable`` metadata, and the
+    ``job`` symlinks synthesised at the end from ``_transient/job_links.yaml``, because a
+    bucket holds no links either. Shares still hold archives made this way, and importing
+    them is how a campaign from a deployment with an object store reaches one without.
+    """
+    import os
+    import yaml as _yaml
+    out = tmp_path / name
+    with tarfile.open(out, "w:gz") as tar:
+        for path in sorted(p for p in staged.rglob("*") if p.is_file()):
+            rel = path.relative_to(staged).as_posix()
+            info = tarfile.TarInfo(name=f"{staged.name}/{rel}")
+            info.size = path.stat().st_size
+            info.mode = 0o755 if os.access(path, os.X_OK) else 0o644
+            with open(path, "rb") as body:
+                tar.addfile(info, body)
+        manifest = staged / "_transient" / "job_links.yaml"
+        for link, target in (_yaml.safe_load(manifest.read_text()) or {}).items():
+            info = tarfile.TarInfo(name=f"{staged.name}/{link}")
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            info.mode = 0o777
+            tar.addfile(info)
+    return out
+
+
+def test_an_archive_exported_from_an_object_store_imports(service, tmp_path):
+    """Campaigns that lived in a bucket are carried over through a share, not migrated.
+
+    So their archives must import: no directory members, links added after the files they
+    point at, executables marked by mode alone -- and the files only a bucket-backed
+    campaign carried (a conversion output list, archived log sections) are data like any
+    other, not a reason to refuse.
+    """
+    import shutil
+    import yaml as _yaml
+    staged = tmp_path / "staged" / _SOURCE.name
+    shutil.copytree(_SOURCE, staged)
+    (staged / "_jobs" / "batch-0" / "job-0").mkdir(parents=True, exist_ok=True)
+    (staged / "_jobs" / "batch-0" / "job-0" / "controller.log").write_text("ran\n")
+    (staged / "_transient").mkdir(exist_ok=True)
+    (staged / "_transient" / "job_links.yaml").write_text(_yaml.safe_dump(
+        {"config-a/0/job": "../../_jobs/batch-0/job-0"}))
+    (staged / "config-a" / "0").mkdir(parents=True, exist_ok=True)
+    script = staged / "_config" / "files" / "prepare.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/bin/sh\necho prepared\n")
+    script.chmod(0o755)
+    exec_dir = staged / "_execution"
+    (exec_dir / "sections").mkdir(parents=True, exist_ok=True)
+    (exec_dir / "controller.log").write_text("ran the campaign\n")
+    (exec_dir / "sections" / "0001-postprocessing.log").write_text("first postprocess\n")
+    (exec_dir / "postprocessing.log").write_text("second postprocess\n")
+    (exec_dir / "conversion_outputs.txt").write_text("config-a/0/poses.csv\n")
+
+    archive = _object_store_archive(tmp_path, staged, "from-a-bucket.tar.gz")
+    ref = service.import_campaign(ImportCampaignRequest(archive_path=str(archive)))
+    status = _wait_done(service, ref.campaign_id)
+
+    assert status.phase == Phase.FINISHED, status.error
+    landed = service.campaign_dir(ref.campaign_id)
+    link = landed / "config-a" / "0" / "job"
+    assert link.is_symlink() and (link / "controller.log").read_text() == "ran\n"
+    assert (landed / "_config" / "files" / "prepare.sh").stat().st_mode & 0o111
+    log = service.get_campaign_logs(ref.campaign_id, 0).text
+    assert log.index("first postprocess") < log.index("second postprocess")
