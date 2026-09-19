@@ -368,14 +368,14 @@ def _failure_summary(message: object) -> str:
 
 def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
                             skip: "set | None" = None) -> List:
-    """Replace all batchable rosbags_* plugin calls with rosbags_process calls.
+    """Replace all batchable rosbags_* plugin calls with one rosbags_process call.
 
     Groups every command whose plugin name appears in ``_ROSBAG_BATCH_MAP`` by
-    their ``bag_dir`` (the subdirectory name to search for rosbags).  One
-    ``rosbags_process`` command is emitted per distinct ``bag_dir``.  Each batch
-    is inserted at the position of the first batchable command sharing that
-    ``bag_dir``; all other batchable commands are removed.  Non-batchable
-    commands keep their original order.
+    their ``bag_dir`` (the subdirectory name to search for rosbags), and emits a
+    single ``rosbags_process`` command carrying one group per distinct ``bag_dir``,
+    so every kind of bag is converted in one scan and one worker pool. It is inserted
+    at the position of the first batchable command; all other batchable commands are
+    removed. Non-batchable commands keep their original order.
 
     The infrastructure-bag handlers (:data:`_AUTO_INFRA_HANDLERS`) are always added unless
     named in *skip* (or, for rosout, *skip_rosout*).
@@ -389,15 +389,15 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
             declined by name without a dedicated flag per handler.
 
     Returns:
-        New command list with batchable commands replaced by rosbags_process calls.
+        New command list with batchable commands replaced by one rosbags_process call.
     """
     skip_names = set(skip or ())
     if skip_rosout:
         skip_names.add("rosbags_rosout_to_csv")
     # bag_dir → list of handler dicts for that bag dir
     bag_dir_plugins: Dict[str, List[dict]] = {}
-    # bag_dir → index in result where the placeholder lives
-    bag_dir_slot: Dict[str, int] = {}
+    # Index in result where the one conversion lives, once a batchable command is seen
+    slot: "int | None" = None
     result: List = []
 
     for cmd in commands:
@@ -411,8 +411,8 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
             params = dict(params)
             bag_dir = params.pop("bag_dir", default_bag_dir)
             bag_dir_plugins.setdefault(bag_dir, []).append({"type": handler_type, **params})
-            if bag_dir not in bag_dir_slot:
-                bag_dir_slot[bag_dir] = len(result)
+            if slot is None:
+                slot = len(result)
                 result.append(None)  # reserve slot
         else:
             result.append(cmd)
@@ -426,19 +426,21 @@ def _batch_rosbags_commands(commands: List, skip_rosout: bool = False,
         if name in skip_names or handler_type in present:
             continue
         bag_dir_plugins.setdefault(bag_dir, []).append({"type": handler_type})
-        if bag_dir not in bag_dir_slot:
-            bag_dir_slot[bag_dir] = len(result)
+        if slot is None:
+            slot = len(result)
             result.append(None)
 
-    # Fill placeholder slots with the batch commands; the auto-injected infrastructure
-    # handlers run last, so an explicitly configured handler's output is in place first.
+    if slot is None:
+        return result
+    # Within a group the auto-injected infrastructure handlers come last, so an explicitly
+    # configured handler's output is in place first.
     auto_types = {_ROSBAG_BATCH_MAP[n][0] for n in _AUTO_INFRA_HANDLERS}
-    for bag_dir, slot_idx in bag_dir_slot.items():
-        plugins = bag_dir_plugins[bag_dir]
+    groups = []
+    for bag_dir, plugins in bag_dir_plugins.items():
         auto = [p for p in plugins if p.get("type") in auto_types]
         others = [p for p in plugins if p.get("type") not in auto_types]
-        result[slot_idx] = {"rosbags_process": {"plugins": others + auto, "bag_dir": bag_dir}}
-
+        groups.append({"bag_dir": bag_dir, "plugins": others + auto})
+    result[slot] = {"rosbags_process": {"groups": groups}}
     return result
 
 

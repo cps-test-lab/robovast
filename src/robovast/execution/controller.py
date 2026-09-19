@@ -1391,7 +1391,7 @@ def _conversion_job_runner():
 
 
 def unwrap_conversion_commands(commands) -> list:
-    """The shape ``run_conversion_job`` takes: the inner ``{plugins, bag_dir}`` dicts.
+    """The shape ``run_conversion_job`` takes: the inner ``rosbags_process`` parameter dicts.
 
     The local runner takes ``{'rosbags_process': {...}}``; the Job takes what is inside it.
     The campaign-level path has always unwrapped here (``rosbag_commands_for`` ends in

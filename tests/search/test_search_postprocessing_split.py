@@ -71,11 +71,12 @@ def test_a_mixed_list_is_split_and_order_within_each_half_is_kept():
     assert _names(local) == ['nav2_bt_tree', 'search/nav_metrics.py:NavMetrics']
 
 
-def test_the_rosbag_commands_are_batched_one_pass_per_bag():
-    """Same batching the campaign-level path uses: one rosbags_process per bag_dir, so a
-    bag is read once rather than once per handler.
+def test_the_rosbag_commands_are_batched_into_one_pass():
+    """Same batching the campaign-level path uses: one rosbags_process with a group per
+    bag_dir, so a bag is read once rather than once per handler, and every kind of bag
+    shares one scan and one worker pool.
 
-    Two passes, not one: the run's own bag carries the three handlers asked for, and the
+    Two groups: the run's own bag carries the three handlers asked for, and the
     infrastructure bag (logs/rosout_bag, recorded in wall time for the container's whole
     life) is auto-injected exactly as it is for a campaign. A search gets the same
     treatment as the block it is modelled on rather than a quietly different one.
@@ -85,9 +86,9 @@ def test_the_rosbag_commands_are_batched_one_pass_per_bag():
         {'rosbags_to_csv': {'topics': ['/collision', '/clearance']}},
         {'rosbags_nav2bt_to_csv': {}},
     ])
-    by_bag = {(c['rosbags_process'] or {}).get('bag_dir'):
-              [p.get('type') for p in (c['rosbags_process'] or {}).get('plugins', [])]
-              for c in container}
+    assert len(container) == 1, container
+    by_bag = {group['bag_dir']: [p.get('type') for p in group['plugins']]
+              for group in container[0]['rosbags_process']['groups']}
     assert set(by_bag) == {'rosbag2', 'logs/rosout_bag'}
     assert by_bag['rosbag2'] == ['tf_to_csv', 'to_csv', 'nav2_bt_to_csv']
 
@@ -163,7 +164,7 @@ def test_an_unresolvable_command_is_left_local_rather_than_guessed(tmp_path):
 # -- the shape the conversion Job expects ------------------------------------
 
 def test_container_commands_unwrap_to_what_the_conversion_job_takes():
-    """`run_conversion_job` takes the INNER dicts -- ``{plugins, bag_dir}`` -- not the
+    """`run_conversion_job` takes the INNER dicts -- ``{groups}`` -- not the
     ``{'rosbags_process': {...}}`` wrapper the local runner takes.
 
     The campaign-level path unwraps them (`rosbag_commands_for` ends in
@@ -182,7 +183,7 @@ def test_container_commands_unwrap_to_what_the_conversion_job_takes():
     assert unwrapped, 'nothing to convert'
     for cmd in unwrapped:
         assert 'rosbags_process' not in cmd, 'still wrapped'
-        assert 'plugins' in cmd, f'expected {{plugins, bag_dir}}, got {sorted(cmd)}'
+        assert 'groups' in cmd, f'expected {{groups}}, got {sorted(cmd)}'
 
 
 def test_unwrapping_leaves_a_non_rosbag_container_command_alone():

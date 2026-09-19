@@ -248,7 +248,7 @@ def test_unreachable_cluster_only_ends_postprocessing():
          mock.patch("robovast.execution.cluster_execution.cluster_execution."
                     "resolve_pull_secret", return_value=""):
         ok, message = postprocess_job.run_conversion_job(
-            cluster_config, "camp", "/results/camp", "ns", "img", [{"plugins": []}],
+            cluster_config, "camp", "/results/camp", "ns", "img", [{"plugins": [{"type": "rosout_to_csv"}]}],
             token="campaign:camp.0123abcd")
 
     assert ok is False

@@ -696,3 +696,62 @@ class BagResult(NamedTuple):
         defect in the conversion, and the step describes it and carries on.
         """
         return self.total == UNREADABLE
+
+
+class ConversionGroup(NamedTuple):
+    """One kind of bag and the handlers every bag of that kind is converted with."""
+
+    #: The bag directory looked for below each run, as :func:`find_rosbags` takes it.
+    bag_dir: str
+    #: Handler configs, each a dict with a ``type``.
+    plugins: List[dict]
+
+
+def parse_conversion_groups(config_text: str) -> List[ConversionGroup]:
+    """The groups a ``--config`` names: ``{"groups": [{"bag_dir": …, "plugins": […]}, …]}``.
+
+    Several groups share one scan and one worker pool, so a campaign whose runs carry two
+    kinds of bag is converted in one pass rather than one pass per kind -- the second
+    kind's bags fill the workers the first kind's long tail would otherwise leave idle.
+
+    Raises ``ValueError`` naming what is wrong. A ``bag_dir`` may appear only once: two
+    groups over the same bags would convert each bag twice and race on its outputs.
+    """
+    try:
+        config = json.loads(config_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--config is not JSON: {exc}") from exc
+    groups = config.get("groups") if isinstance(config, dict) else None
+    if not isinstance(groups, list) or not groups:
+        raise ValueError('--config must be {"groups": [{"bag_dir": ..., "plugins": [...]}, ...]} '
+                         "with at least one group")
+    parsed: List[ConversionGroup] = []
+    seen = set()
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            raise ValueError(f"group {index} is not an object")
+        bag_dir = group.get("bag_dir")
+        plugins = group.get("plugins")
+        if not isinstance(bag_dir, str) or not bag_dir:
+            raise ValueError(f"group {index} has no bag_dir")
+        if bag_dir in seen:
+            raise ValueError(f"bag_dir {bag_dir!r} is named by more than one group")
+        if not isinstance(plugins, list) or not plugins:
+            raise ValueError(f"group {index} ({bag_dir}) has no plugins")
+        if not all(isinstance(p, dict) and isinstance(p.get("type"), str) for p in plugins):
+            raise ValueError(f"group {index} ({bag_dir}): every plugin needs a 'type'")
+        seen.add(bag_dir)
+        parsed.append(ConversionGroup(bag_dir, plugins))
+    return parsed
+
+
+def bag_bytes(bag_path: str) -> int:
+    """Total size of the files of one bag, for ordering the work largest first."""
+    total = 0
+    for root, _, names in os.walk(bag_path):
+        for name in names:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
