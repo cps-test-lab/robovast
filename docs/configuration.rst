@@ -1953,9 +1953,11 @@ To list all available plugins and their descriptions:
    ``rosbags_process`` — the one that shows up in ``vast configuration plugins``
    and the ``list_plugins`` MCP tool. When several ``rosbags_*`` commands appear
    in a config, they are transparently batched into one ``rosbags_process`` call
-   so each rosbag is read only once. You can keep using the individual
-   ``rosbags_*`` names (they remain valid), or write ``rosbags_process`` directly
-   with a list of handler ``type`` entries when you need finer control:
+   so each rosbag is read only once, and every kind of bag — a run's own ``rosbag2``
+   and the infrastructure ``logs/rosout_bag`` — is converted in the same scan and
+   worker pool. You can keep using the individual ``rosbags_*`` names (they remain
+   valid), or write ``rosbags_process`` directly with a list of handler ``type``
+   entries when you need finer control:
 
    .. code-block:: yaml
 
@@ -1966,6 +1968,20 @@ To list all available plugins and their descriptions:
                 frames: [base_link]
               - type: to_csv
                 topics: [/cmd_vel, /odom]
+
+   ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). To convert
+   several kinds of bag in one pass, give ``groups`` instead, one entry per bag
+   directory:
+
+   .. code-block:: yaml
+
+      postprocessing:
+        - rosbags_process:
+            groups:
+              - bag_dir: rosbag2
+                plugins: [{type: tf_to_csv, frames: [base_link]}]
+              - bag_dir: logs/rosout_bag
+                plugins: [{type: rosout_to_csv}]
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 
