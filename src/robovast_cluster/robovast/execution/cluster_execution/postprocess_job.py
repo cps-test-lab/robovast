@@ -66,8 +66,7 @@ from robovast.common.quantity import to_bytes, to_cores
 
 from . import pod_access, postprocess_usage
 from .kube_client import api_transport_errors
-from .node_placement import (CAMPAIGN_NODE_TOLERATIONS, job_node_pool,
-                             job_node_selector)
+from .campaign_job import campaign_job_manifest, pin_campaign_job
 
 logger = logging.getLogger(__name__)
 
@@ -307,23 +306,6 @@ def pod_sizing(manifest: dict):
 
     return JobSizing(cpu=_charge("cpu", to_cores),
                      memory=int(_charge("memory", to_bytes)))
-
-
-def _pin_to(manifest: dict, node_id) -> dict:
-    """Confine the pod to the operator's node pool, then to the node admission granted.
-
-    The pin is what makes the grant mean something: the queue found room on a particular
-    machine, and a pod free to land anywhere can still arrive at a full one -- which is the
-    ``Unschedulable`` this path exists to avoid. The pool must reach the pod for the reason
-    the trial path gives: the budget provider counts only nodes inside it, so a pod outside
-    would run on capacity nothing reserved. The same merge the trial path uses
-    (:func:`~.node_placement.job_node_selector`), so the two cannot disagree about it.
-    """
-    spec = manifest["spec"]["template"]["spec"]
-    selector = job_node_selector(spec.get("nodeSelector"), node_id, job_node_pool())
-    if selector:
-        spec["nodeSelector"] = selector
-    return manifest
 
 
 def await_admission(admission, campaign_id: str, name: str, manifest: dict,
@@ -1434,7 +1416,6 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
     ``-v <scripts>:/scripts`` — so the script version always matches the driver. It is
     mounted, and the ConfigMap volume declared, only where a conversion container exists.
     """
-    from .cluster_execution import _label_safe_campaign  # noqa: PLC0415
     from .postprocess_host import (ENV_COMMANDS, ENV_FORCE,  # noqa: PLC0415
                                    ENV_SKIP, ENV_STAGE_DEST)
 
@@ -1445,7 +1426,6 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
     convert_resources_block = step_resources(sized["cpu"], sized["memory"])
     host_block = step_resources(**raised_to(POSTPROCESS_HOST_FLOOR, sized))
 
-    safe = _label_safe_campaign(campaign_id)
     # The two containers that run Python and whose output the campaign log is read from
     # (see publish_live_log): stdout here is a pipe rather than a terminal, and Python
     # block-buffers a pipe, so without this a step's output reaches the log in ~8 KB clumps
@@ -1553,46 +1533,20 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
                            "configMap": {"name": _scripts_cm_name(campaign_id,
                                                                   discriminator),
                                          "defaultMode": 0o755}})
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {
-            "name": _short_job_name("robovast-postproc-", campaign_id, discriminator),
-            "namespace": namespace,
-            "labels": {
-                "jobgroup": POSTPROCESS_JOBGROUP,
-                "campaign-id": safe,
-            },
-        },
-        "spec": {
-            "backoffLimit": 0,
-            "ttlSecondsAfterFinished": 300,
-            "template": {
-                "metadata": {
-                    "labels": {"jobgroup": POSTPROCESS_JOBGROUP, "campaign-id": safe},
-                },
-                "spec": {
-                    "restartPolicy": "Never",
-                    # Campaign nodes are where this is allowed to run; without the
-                    # toleration a deployment that dedicates its nodes to campaigns has
-                    # nowhere to put this at all, and the Job sits Pending until its
-                    # three-hour timeout. The toleration is what gets it onto those nodes;
-                    # `await_admission` is what waits until one of them has room.
-                    # One tree, written by containers that run as different users -- see
-                    # CAMPAIGN_TREE_GID. supplementalGroups covers an execution image whose
-                    # own user is not the family's.
-                    "securityContext": {"fsGroup": CAMPAIGN_TREE_GID,
-                                        "supplementalGroups": [CAMPAIGN_TREE_GID]},
-                    "tolerations": list(CAMPAIGN_NODE_TOLERATIONS),
-                    **({"imagePullSecrets": [{"name": pull_secret_name}]}
-                       if pull_secret_name else {}),
-                    "volumes": volumes,
-                    "initContainers": init_containers,
-                    "containers": containers,
-                },
-            },
-        },
-    }
+    return campaign_job_manifest(
+        name=_short_job_name("robovast-postproc-", campaign_id, discriminator),
+        namespace=namespace, jobgroup=POSTPROCESS_JOBGROUP, campaign_id=campaign_id,
+        ttl_seconds=300, pull_secret=pull_secret_name,
+        pod_spec={
+            # One tree, written by containers that run as different users -- see
+            # CAMPAIGN_TREE_GID. supplementalGroups covers an execution image whose own
+            # user is not the family's.
+            "securityContext": {"fsGroup": CAMPAIGN_TREE_GID,
+                                "supplementalGroups": [CAMPAIGN_TREE_GID]},
+            "volumes": volumes,
+            "initContainers": init_containers,
+            "containers": containers,
+        })
 
 
 def _cancel_job(batch, namespace: str, name: str) -> str:
@@ -1956,7 +1910,7 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
         # `execution.kubernetes.jobs.node`, deliberately. Postprocessing has no calibration to
         # stay comparable with, it is the largest single pod a campaign asks for, and on its
         # campaign's node it would queue behind that campaign's own trials.
-        _pin_to(manifest, node_id)
+        pin_campaign_job(manifest, node_id)
 
     # The campaign's token Secret, before the Job: the pod's `secretKeyRef` names it, and a
     # pod whose Secret does not exist waits in CreateContainerConfigError with the Job

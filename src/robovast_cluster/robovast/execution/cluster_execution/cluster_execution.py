@@ -70,8 +70,8 @@ def job_phase(job, pod_phases=None) -> str:
     seconds after the pod itself reached ``Succeeded``. Reading "active, and its pod is
     not Running" as ``pending`` therefore sent every finishing job *backwards* — a
     finished run showed up as not-yet-started for as long as the controller lagged.
-    Trusting the pod is sound here because the scenario Job template (see
-    :data:`~.manifests.JOB_TEMPLATE`) is ``backoffLimit: 0`` with the default
+    Trusting the pod is sound here because a campaign Job (see
+    :func:`~.campaign_job.campaign_job_manifest`) is ``backoffLimit: 0`` with the default
     ``completions``/``parallelism`` of 1: one pod, never retried, so that pod's verdict
     *is* the Job's and the Job status is only slower to say so.
     """
