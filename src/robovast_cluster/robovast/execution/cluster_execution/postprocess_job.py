@@ -741,11 +741,13 @@ def _stage_query(skip_bags: bool, batch_jobs: str) -> str:
     """The archive route's query for what this pod reads (:class:`ArchiveSelection`).
 
     ``stage`` always: it drops the calibration probes, the log this pod is about to write
-    and the archived log sections. ``skip_bags`` when nothing in the pod opens a bag, and
-    ``batch_jobs`` for a per-batch Job. Quoted here because :func:`pod_access.fetch_command`
-    appends its query verbatim.
+    and the archived log sections. ``uncompressed`` always: the pod is in the cluster, so a
+    plain tar is what it extracts at disk speed. ``skip_bags`` when nothing in the pod opens
+    a bag, and ``batch_jobs`` for a per-batch Job. Quoted here because
+    :func:`pod_access.fetch_command` appends its query verbatim.
     """
-    parts = ["stage=true", f"skip_bags={'true' if skip_bags else 'false'}"]
+    parts = ["stage=true", "uncompressed=true",
+             f"skip_bags={'true' if skip_bags else 'false'}"]
     if batch_jobs:
         parts.append(f"batch_jobs={quote(batch_jobs, safe='')}")
     return "&".join(parts)

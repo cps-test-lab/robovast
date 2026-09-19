@@ -50,8 +50,8 @@ from .pod_access import deliver_command
 #: the results are home, and failed when they could not be delivered.
 UPLOADER_CONTAINER = "uploader"
 
-#: What a ``tar | curl`` of a results tree needs: a little CPU for gzip and a bounded
-#: heap, whatever the tree's size, because both stream.
+#: What a ``tar | curl`` of a results tree needs: a little CPU and a bounded heap, whatever
+#: the tree's size, because both stream and neither compresses.
 UPLOADER_RESOURCES = {
     "requests": {"cpu": "100m", "memory": "64Mi"},
     "limits": {"memory": "256Mi"},

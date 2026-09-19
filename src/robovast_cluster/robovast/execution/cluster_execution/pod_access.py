@@ -161,12 +161,12 @@ def fetch_command(route: str, dest: str, query: str = "") -> str:
     """
     url = f"${DATA_URL_ENV}{route}" + (f"?{query}" if query else "")
     return (f'mkdir -p {shlex.quote(dest)} && {_CURL} {_FETCH_RETRY} "{url}" | '
-            f'tar -xz -C {shlex.quote(dest)}')
+            f'tar -x -C {shlex.quote(dest)}')
 
 
 def deliver_command(src: str, route: str, exclude: "tuple[str, ...]" = (),
                     *, keep_name: bool = False) -> str:
-    """Shell that streams *src* as a gzip tar into ``PUT $ROBOVAST_DATA_URL<route>``.
+    """Shell that streams *src* as a plain tar into ``PUT $ROBOVAST_DATA_URL<route>``.
 
     ``tar`` writes to the pipe and ``curl -T -`` reads it as a chunked body: the tree is
     never written a second time on the pod. Re-run for a retry, because a streamed body
@@ -181,7 +181,7 @@ def deliver_command(src: str, route: str, exclude: "tuple[str, ...]" = (),
     url = f"${DATA_URL_ENV}{route}"
     if keep_name:
         parent, name = os.path.split(os.path.normpath(src))
-        tar = f'tar -C {shlex.quote(parent or "/")}{excludes} -czf - {shlex.quote(name)}'
+        tar = f'tar -C {shlex.quote(parent or "/")}{excludes} -cf - {shlex.quote(name)}'
     else:
-        tar = f'tar -C {shlex.quote(src)}{excludes} -czf - .'
-    return f'{tar} | {_CURL} -X PUT -T - -H "Content-Type: application/gzip" "{url}"'
+        tar = f'tar -C {shlex.quote(src)}{excludes} -cf - .'
+    return f'{tar} | {_CURL} -X PUT -T - -H "Content-Type: application/x-tar" "{url}"'

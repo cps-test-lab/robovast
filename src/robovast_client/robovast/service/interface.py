@@ -1594,11 +1594,16 @@ class ArchiveSelection(BaseModel):
     does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch. The selection is
     made where the bytes are, not where they land: what the pod is never given it cannot
     convert, cannot fail on and does not pay to download.
+
+    ``uncompressed`` asks for a plain tar rather than a ``tar.gz``: right for a reader in
+    the cluster, where gzip costs a core per stream and saves almost nothing on run
+    output, and wrong for a download that crosses a slow link.
     """
 
     stage: bool = False
     skip_bags: bool = False
     batch_jobs: str = ""
+    uncompressed: bool = False
 
 
 class OutputsIngested(BaseModel):

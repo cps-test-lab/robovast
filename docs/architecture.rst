@@ -575,6 +575,13 @@ symlinks natively, so nothing has to be restored on the other side — which is 
 a per-object protocol keeps getting wrong, because the metadata travels beside the bytes
 rather than in them.
 
+**Compressed only where it leaves the cluster.** A stream between a pod and the service is
+a plain tar. Run output is mostly recordings that barely compress, so gzip there buys
+almost no size and costs a core per stream: a single ``gzip`` holds a transfer near
+70 MB/s where the plain tar moves at the disk's speed, and on the pod side that core is
+taken from the scenario whose output it is. A download for a person keeps gzip, compressed
+on every core by ``pigz``, because it may cross a link where the size is what matters.
+
 **One delivery per pod, not per container.** A scenario pod's containers share ``/out``,
 so each of them uploading would walk and send the same tree. Instead every container
 writes a done marker on the shared ``/ipc`` volume when its own files are complete, and a
