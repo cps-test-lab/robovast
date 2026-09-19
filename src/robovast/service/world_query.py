@@ -263,6 +263,12 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
     a different block — a campaign may vary its world per configuration, and the one that
     does is precisely where a typo hides in a single cell.
 
+    The default is a world only when some configuration runs it: one that authors no
+    ``sim:`` of its own, or a campaign with no configurations at all. A campaign whose
+    every configuration overrides the block never loads the default as authored -- a
+    world that names its mesh per configuration and deliberately none by default is the
+    common shape -- and a verdict on it would be a verdict on a world no run opens.
+
     Deduplicated by the resolved block, because what a world offers depends on the world
     and not on the configuration: describing it once per cell would multiply the cost by
     the sweep for one answer.
@@ -290,9 +296,11 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
         seen.add(key)
         found.append((name, block))
 
-    _add(None, campaign_sim_block(execution))
-    for config in (parameters.get("configuration") or []):
-        if not isinstance(config, dict) or not channel(config, SIM):
+    configs = [c for c in (parameters.get("configuration") or []) if isinstance(c, dict)]
+    if not configs or not all(channel(c, SIM) for c in configs):
+        _add(None, campaign_sim_block(execution))
+    for config in configs:
+        if not channel(config, SIM):
             continue
         try:
             resolved = merge_sim_block(

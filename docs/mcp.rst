@@ -193,6 +193,12 @@ variation's auxiliary one. That is why it can be the cheap tier and still settle
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
 
+It checks every world a run would load, once each: the campaign's ``simulation`` block
+when some configuration runs it as authored, and each distinct block a configuration's own
+``sim:`` resolves to. A campaign whose every configuration overrides the block -- a world
+naming its mesh per configuration and none by default -- is checked on those configurations'
+worlds only, because no run opens the default as authored.
+
 ``check_scenario`` is the second such check, on the same pool but in the **scenario** container
 (``service/scenario_query.py``): does the scenario parse there, imports resolved? Only that
 image can answer — ``import osc.<library>`` resolves against the
