@@ -60,7 +60,8 @@ from robovast.common.store import read_campaign_created_at, read_campaign_descri
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_scope_for_phase)
-from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
+from robovast.service.interface import (ActionResult, ArchiveSelection, CampaignOrigin, CampaignRef,
+                                        OutputsIngested,
                                         UpgradeInfo,
                                         CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
@@ -1159,28 +1160,72 @@ class LocalTransport(RobovastInterface):
             return archive_name(campaign_id, INCOMPLETE)
         return f"{campaign_id}.tar.gz"
 
-    def campaign_tar_stream(self, campaign_id: str):
+    # -- the data plane, in-process --
+    #
+    # The five tar operations are the data plane's (:mod:`robovast.service.data_app`),
+    # which reads the results tree directly; this transport delegates to one over its own
+    # root so that ``vast serve``'s single process and the cluster's separate data
+    # container answer with the same code. What this transport adds is what it knows and
+    # the tree does not: whether a campaign is live, from its registry.
+
+    def _data_plane(self):
+        from robovast.service.data_app import DataPlane  # pylint: disable=import-outside-toplevel
+        return DataPlane(self._campaigns_root())
+
+    def bind_auth_token(self, token: str) -> None:
+        """The shared secret this service verifies, so it can mint scoped tokens for pods.
+
+        Set by ``build_app`` from the token the gate enforces -- the ephemeral one it mints
+        included -- so a token this transport hands a pod is one the gate will honour.
+        """
+        self._auth_token = token
+
+    def scoped_token(self, scope: str) -> str:
+        """A bearer token reaching *scope*'s data routes and nothing else.
+
+        Raises when no secret was bound: a token minted against a guess would be refused
+        by every gate, and a pod that cannot deliver its outputs should fail to launch,
+        not to upload.
+        """
+        from robovast.service import auth  # pylint: disable=import-outside-toplevel
+        token = getattr(self, "_auth_token", None)
+        if not token:
+            raise RuntimeError("no auth token bound to this service; build it with build_app")
+        return auth.scoped_token(token, scope)
+
+    def campaign_tar_stream(self, campaign_id: str,
+                            selection: Optional[ArchiveSelection] = None):
         """Tar this host's campaign directory straight into the response.
 
-        The local counterpart of the cluster's object-store tar: same exclusions, same
-        streaming, so a caller cannot tell which lane answered. ``_postproc/`` is left
-        out with ``.cache`` -- it is postprocessing's staging, not part of the campaign.
-
-        A campaign that is still running is tarred *tolerantly* and carries a snapshot
-        marker (see ``campaign_archive.iter_campaign_tar``): the directory is being written
-        to under the walk, so a file that vanishes mid-archive must cost one member rather
-        than the download -- past the first byte the status line is already 200 and a
-        failure reaches the caller as a truncated body.
+        ``_postproc/`` is left out with ``.cache`` -- it is postprocessing's staging, not
+        part of the campaign. A campaign that is still running carries a snapshot marker
+        (see ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for
+        a finished one; liveness is this transport's knowledge, from its registry.
         """
-        from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
-        campaign_dir = self._campaign_dir(campaign_id)
-        if not campaign_dir.is_dir():
-            raise KeyError(f"no campaign {campaign_id!r} on this service")
         live = self.campaign_is_live(campaign_id)
-        return campaign_archive.iter_campaign_tar(
-            str(campaign_dir),
-            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"},
-            snapshot=self._snapshot_facts(campaign_id) if live else None)
+        return self._data_plane().campaign_tar_stream(
+            campaign_id, selection, live=live,
+            facts=self._snapshot_facts(campaign_id) if live else None)
+
+    def campaign_inputs_tar_stream(self, campaign_id: str,
+                                   config_files: "list[tuple[str, str]] | None" = None):
+        return self._data_plane().campaign_inputs_tar_stream(campaign_id, config_files)
+
+    def ingest_campaign_outputs(self, campaign_id: str, stream) -> "OutputsIngested":
+        return self._data_plane().ingest_campaign_outputs(campaign_id, stream)
+
+    def staged_tar_stream(self, slot: str, path: str = ""):
+        return self._data_plane().staged_tar_stream(slot, path)
+
+    def ingest_staged(self, slot: str, stream) -> "OutputsIngested":
+        return self._data_plane().ingest_staged(slot, stream)
+
+    def staged_dir(self, slot: str) -> Path:
+        """Where this service stages *slot* for a pod to fetch (see ``DataPlane.staged_dir``)."""
+        return self._data_plane().staged_dir(slot)
+
+    def discard_staged(self, slot: str) -> bool:
+        return self._data_plane().discard_staged(slot)
 
     def create_archive_upload(self) -> UploadGrant:
         # At the grant, so a refusal comes before a multi-gigabyte upload rather than after.

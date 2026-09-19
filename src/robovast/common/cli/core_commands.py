@@ -104,6 +104,10 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
 @click.option('--port', default=DEFAULT_PORT, show_default=True, type=int,
               help='Port to listen on. The conventional one, which every client probes '
                    'before falling back to a stored login.')
+@click.option('--uds', default=None, metavar='SOCKET',
+              help='Listen on this Unix socket instead of --host/--port. The in-cluster '
+                   'layout: a front owns the port and routes here, and the data routes '
+                   'to their own process (vast serve-data).')
 @click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
               default='auto', show_default=True,
               help="Execution backend. 'auto' picks 'cluster' when running inside "
@@ -143,7 +147,7 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'pin the collection (e.g. a repo root) rather than each project. '
                    'Requires the service to run on this host, so it is refused '
                    'in-pod.')
-def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
+def serve(host, port, uds, backend, context, k8s_namespace, rebuild_ui,
           results_dir, workspace_dir, mount_mcp):
     """Make a robovast-service reachable on the local port until Ctrl-C.
 
@@ -217,12 +221,41 @@ def serve(host, port, backend, context, k8s_namespace, rebuild_ui,
     storage = lane.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
-    click.echo(f"Starting robovast-service on http://{host}:{port} "
+    click.echo(f"Starting robovast-service on {uds or f'http://{host}:{port}'} "
                f"(OpenAPI at /docs{mcp_note})")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
     if workspace_dir:
         click.echo(f"Pinned read-only workspace: {workspace_dir}")
-    _serve(impl, host=host, port=port, mount_mcp=mount_mcp)
+    _serve(impl, host=host, port=port, mount_mcp=mount_mcp, uds=uds)
+
+
+@click.command(name='serve-data')
+@click.option('--results-dir', 'results_dir', required=True, metavar='DIR',
+              type=click.Path(file_okay=False),
+              help='The results root this plane reads and writes: the same directory '
+                   'the control plane serves campaigns from.')
+@click.option('--uds', default=None, metavar='SOCKET',
+              help='Listen on this Unix socket, behind the front that owns the port.')
+@click.option('--host', default='127.0.0.1', show_default=True,
+              help='With --port: interface to bind.')
+@click.option('--port', default=None, type=int, metavar='PORT',
+              help='Listen on a TCP port by itself, for a data plane run without a front.')
+def serve_data(results_dir, uds, host, port):
+    """Serve the data plane on its own: the tar routes under /data, nothing else.
+
+    The in-cluster service pod runs this beside ``vast serve``, so a pod delivering
+    gigabytes of run output never shares a process with the run view or the admission
+    loop. It verifies the same ``ROBOVAST_AUTH_TOKEN`` the control plane enforces and
+    refuses to start without one. A ``vast serve`` on its own already serves these
+    routes in-process; this command exists for the layout where a front splits them off.
+    """
+    from robovast.service.data_app import serve_data as _serve_data
+    if not uds and port is None:
+        raise click.ClickException("pass --uds SOCKET or --port PORT")
+    try:
+        _serve_data(os.path.abspath(results_dir), uds=uds, host=host, port=port)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.command()
