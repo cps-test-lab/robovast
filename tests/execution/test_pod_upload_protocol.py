@@ -202,10 +202,10 @@ def test_running_out_of_attempts_is_a_failed_container(tmp_path):
     assert "giving up after 3 attempts" in out
 
 
-@pytest.mark.parametrize("status", ["400", "404", "507"])
+@pytest.mark.parametrize("status", ["400", "404"])
 def test_a_response_that_would_not_change_stops_the_retries(tmp_path, status):
     """curl's ``-f`` turns an HTTP failure into exit 22 with the status in its message; a
-    4xx or a full volume is read out of it and ends the attempts at once."""
+    4xx is read out of it and ends the attempts at once."""
     pod = _Pod(tmp_path, f"http{status}")
     proc = pod.start(uploader_script("c-1", [], grace_s=1, attempts=5, backoff_s=0))
     pod.mark("main")
@@ -213,6 +213,19 @@ def test_a_response_that_would_not_change_stops_the_retries(tmp_path, status):
     assert rc != 0
     assert pod.calls() == 1, "a terminal status was retried"
     assert f"HTTP {status} would not change on a retry" in out
+
+
+def test_a_full_results_volume_is_retried_until_space_is_freed(tmp_path):
+    """A 507 says the output is sound and the disk is not: space freed within the window is
+    space the upload lands in, so the run's compute is not thrown away -- and the log says
+    what it is waiting for."""
+    pod = _Pod(tmp_path, "http507 http507 ok")
+    proc = pod.start(uploader_script("c-1", [], grace_s=1, attempts=5, backoff_s=0))
+    pod.mark("main")
+    rc, out = _finish(proc)
+    assert rc == 0, out
+    assert pod.calls() == 3
+    assert "results volume is full" in out
 
 
 def test_a_service_being_rolled_is_retried(tmp_path):

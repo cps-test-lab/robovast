@@ -1027,18 +1027,28 @@ lives in the ``run_data`` MCP plugin):
 cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
-refusal and the meters are one measurement. With no reserve configured nothing is read; a
+refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
 reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
-launch never depends on the permissions the capacity reading needs. Nothing that continues
-accepted work is guarded:
-resuming a live campaign after a restart would otherwise be abandoned, and stop and delete are
-what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — the status a write
-that already failed for lack of space is also given.
+launch never depends on the permissions the capacity reading needs. A refusal is
+``InsufficientStorageError``, a 507 over HTTP — the status a write that already failed for lack
+of space is also given.
+
+**Accepted work is never refused, but on a cluster it stops starting Jobs at the reserve.**
+Admission alone would not keep the node clear of its eviction threshold: a campaign accepted
+above the reserve goes on creating Jobs, and every one writes its results into the same disk.
+So the admission queue asks a space gate before each drain
+(``AdmissionController(space_gate=...)``), which measures the filesystem the campaigns land
+on with ``robovast.common.disk_reserve.disk_shortfall`` -- on a node-directory deployment,
+the node's own disk. While it is short, nothing is created: every waiting campaign's refusal
+reads ``waiting for disk space: ...`` in its log and on its ``stage``, the no-progress
+deadline treats it as queued, and a postprocessing Job that times out waiting says so rather
+than that the cluster was full. Jobs already running go on and deliver -- the reserve is the
+room their results land in -- and admission resumes by itself once space is freed. Stop and
+delete are never guarded: they are what free space.
 
 **The caches a clear may empty are copies of durable data, and nothing else.**
-``service_cache`` / ``clear_service_cache`` sweep the scene cache, on both lanes, through
-the ``_lane_cache_sweeps`` hook; the results directory is the durable home and is never
-offered. That the clear has nothing else to offer is the point: a campaign's bytes exist
+``service_cache`` / ``clear_service_cache`` sweep the scene cache, on both lanes; the
+results directory is the durable home and is never offered. That the clear has nothing else to offer is the point: a campaign's bytes exist
 in exactly one place, so no copy of them can go stale, be swept mid-read, or need a lock
 that a reader of them would have to respect.
 

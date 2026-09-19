@@ -92,18 +92,19 @@ _GC_MIN_FREE_FLOOR_GB = 50.0
 def default_gc_min_free() -> str:
     """The free space the cache keeps unless a budget says otherwise: the service's reserve.
 
-    The reserve (:mod:`robovast.service.storage_reserve`) is the margin the service refuses new
-    work to protect. A cache allowed to fill past it would take that margin back one build at a
-    time, on the node the service may share -- so by default the two are one number, never below
-    :data:`_GC_MIN_FREE_FLOOR_GB`. BuildKit reads ``GB`` as 2^30 bytes, so the floor it keeps is
-    never less than a reserve stated in 10^9.
+    The reserve (:mod:`robovast.common.disk_reserve`) is the margin the service protects. A
+    cache allowed to fill past it would take that margin back one build at a time, on the node
+    the service may share -- so a reserve the operator states in gigabytes is the cache's too,
+    never below :data:`_GC_MIN_FREE_FLOOR_GB`. An unset reserve is a fraction of the *service's*
+    disk, which says nothing about the builder's, so the cache keeps the floor. BuildKit reads
+    ``GB`` as 2^30 bytes, so the floor it keeps is never less than a reserve stated in 10^9.
 
     Read from the environment of the command that renders the config -- ``setup`` or ``upgrade``,
     with the operator's ``.env`` -- unless ``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` states its own.
     """
-    from robovast.service.storage_reserve import \
-        reserve_gb  # pylint: disable=import-outside-toplevel
-    return f"{max(reserve_gb(), _GC_MIN_FREE_FLOOR_GB):g}GB"
+    from robovast.common.disk_reserve import \
+        configured_reserve_gb  # pylint: disable=import-outside-toplevel
+    return f"{max(configured_reserve_gb() or 0, _GC_MIN_FREE_FLOOR_GB):g}GB"
 
 
 #: What the daemon reserves. Unlike the warm DaemonSet's near-nothing, this is a real workload:

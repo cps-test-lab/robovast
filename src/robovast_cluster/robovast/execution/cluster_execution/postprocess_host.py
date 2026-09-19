@@ -37,7 +37,7 @@ import tarfile
 import threading
 import time
 
-from . import pod_access, postprocess_usage
+from . import pod_access, pod_upload, postprocess_usage
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +80,14 @@ ENV_COMMANDS = "ROBOVAST_POSTPROCESS_COMMANDS"
 #: every campaign for a cache no later reader can use.
 NOT_CAMPAIGN_DATA = frozenset({".robovast_rosbags_process_cache"})
 
-#: How many times the delivery is attempted, and how long between attempts. A streamed body
-#: cannot be replayed by the client library, so a retry is the whole pipeline again -- and
-#: worth it, because the one failure this meets in practice is the service being rolled
-#: while a long postprocess runs, which is over in seconds.
-_DELIVERY_ATTEMPTS = 5
-_DELIVERY_RETRY_S = 3.0
+#: How many times the delivery is attempted, and the backoff step between attempts: attempt
+#: *n* is followed by ``n * _DELIVERY_RETRY_S`` seconds. The scenario pods' uploader's
+#: schedule, and for its reasons (:data:`pod_upload.UPLOAD_ATTEMPTS`): a service being rolled
+#: may take its whole startup budget to answer, and a full results volume takes the delivery
+#: once space is freed. A streamed body cannot be replayed by the client library, so a retry
+#: is the whole pipeline again.
+_DELIVERY_ATTEMPTS = pod_upload.UPLOAD_ATTEMPTS
+_DELIVERY_RETRY_S = pod_upload.UPLOAD_BACKOFF_S
 
 
 def _snapshot(root: str) -> dict:
@@ -229,10 +231,10 @@ def _deliver(campaign_root: str, rels: list, data_url: str, token: str,
              campaign_id: str) -> None:
     """``PUT`` the tar of *rels* to the campaign's outputs route; raise if it never landed.
 
-    Retried whole on a transient failure -- a connection refused or reset, a 5xx -- because
-    a streamed body cannot be replayed and the service being rolled mid-postprocess is
-    exactly what these meet. A 4xx is not retried: the route refused what was sent, and
-    sending it again changes nothing.
+    Retried whole on a transient failure -- a connection refused or reset, a 5xx, a full
+    results volume (507) -- because a streamed body cannot be replayed and the service being
+    rolled mid-postprocess is exactly what these meet. A 4xx is not retried: the route
+    refused what was sent, and sending it again changes nothing.
     """
     import requests  # noqa: PLC0415
 
@@ -264,7 +266,7 @@ def _deliver(campaign_root: str, rels: list, data_url: str, token: str,
             logger.warning("Delivery attempt %d/%d failed on the service side: %s",
                            attempt, _DELIVERY_ATTEMPTS, last)
         if attempt < _DELIVERY_ATTEMPTS:
-            time.sleep(_DELIVERY_RETRY_S)
+            time.sleep(attempt * _DELIVERY_RETRY_S)
     raise RuntimeError(f"could not deliver the outputs after {_DELIVERY_ATTEMPTS} "
                        f"attempts: {last}")
 

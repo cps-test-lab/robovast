@@ -267,11 +267,20 @@ def data_router(source):
         if error is not None:
             if isinstance(error, HTTPException):
                 raise error
+            # Three answers a sender acts on differently. A full disk is 507 -- the request
+            # is fine, and it lands once space is freed. A stream that is not a readable tar
+            # is 400 -- sending it again changes nothing. Any other failure to write is the
+            # service's, and 500 says so: an uploader retries it, where a 400 would have it
+            # give up on output that was never the problem.
             if is_storage_full(error):
                 raise HTTPException(status_code=507, detail=STORAGE_FULL_DETAIL) from error
-            if isinstance(error, (OSError, EOFError)) or _is_tar_error(error):
+            if _is_unreadable_upload(error):
                 raise HTTPException(status_code=400,
                                     detail=f"the upload is not a readable tar: {error}") from error
+            if isinstance(error, OSError):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"the service could not write the upload: {error}") from error
             raise error
         return result
 
@@ -282,7 +291,8 @@ def data_router(source):
         """Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
 
         Backs ``vast campaign download``, the web UI's download button and the
-        postprocessing pod's stage -- which asks for the plain tar, being in the cluster. What comes out is the campaign as this service holds
+        postprocessing pod's stage, which asks for the plain tar, being in the cluster.
+        What comes out is the campaign as this service holds
         it -- postprocessed if it has been, raw if it has not; derived data is an addition
         to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
         ``batch_jobs`` narrow it to what a postprocessing pod reads
@@ -353,9 +363,17 @@ def _drain(reader) -> None:
         pass
 
 
-def _is_tar_error(error: BaseException) -> bool:
+def _is_unreadable_upload(error: BaseException) -> bool:
+    """Whether *error* says the uploaded bytes are not a tar this route can read.
+
+    A stream cut short surfaces here too, as a tar that ends mid-member. gzip's own error is
+    an ``OSError`` subclass, which is why it is named rather than left to the ``OSError``
+    every failure to write also is.
+    """
+    import gzip  # pylint: disable=import-outside-toplevel
     import tarfile  # pylint: disable=import-outside-toplevel
-    return isinstance(error, tarfile.TarError)
+    import zlib  # pylint: disable=import-outside-toplevel
+    return isinstance(error, (tarfile.TarError, EOFError, gzip.BadGzipFile, zlib.error))
 
 
 def build_data_app(results_root, auth_token: "str | None" = None):

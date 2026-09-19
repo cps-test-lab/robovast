@@ -7219,7 +7219,7 @@
     },
     "/data/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.\n\nBacks ``vast campaign download``, the web UI's download button and the\npostprocessing pod's stage -- which asks for the plain tar, being in the cluster. What comes out is the campaign as this service holds\nit -- postprocessed if it has been, raw if it has not; derived data is an addition\nto a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and\n``batch_jobs`` narrow it to what a postprocessing pod reads\n(:class:`ArchiveSelection`).\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "description": "Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.\n\nBacks ``vast campaign download``, the web UI's download button and the\npostprocessing pod's stage, which asks for the plain tar, being in the cluster.\nWhat comes out is the campaign as this service holds\nit -- postprocessed if it has been, raw if it has not; derived data is an addition\nto a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and\n``batch_jobs`` narrow it to what a postprocessing pod reads\n(:class:`ArchiveSelection`).\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
         "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
         "parameters": [
           {

@@ -1038,7 +1038,8 @@ export interface paths {
          * @description Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
          *
          *     Backs ``vast campaign download``, the web UI's download button and the
-         *     postprocessing pod's stage -- which asks for the plain tar, being in the cluster. What comes out is the campaign as this service holds
+         *     postprocessing pod's stage, which asks for the plain tar, being in the cluster.
+         *     What comes out is the campaign as this service holds
          *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
          *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
          *     ``batch_jobs`` narrow it to what a postprocessing pod reads

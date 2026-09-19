@@ -880,10 +880,19 @@ class ClusterService(LocalTransport):
                 # promise room on nodes the pods may not use.
                 from .node_placement import job_node_pool
 
-                self._admission = AdmissionController(ClusterBudgetProvider(
-                    _core, node_selector=job_node_pool(),
-                    cluster_config=self._cluster_config(),
-                    kube_context=self.kube_context))
+                # The disk every campaign's results land on, measured where this process
+                # mounts it: on a node-directory deployment that is the node's own
+                # filesystem, the one the kubelet evicts on.
+                from robovast.common.disk_reserve import \
+                    disk_shortfall  # pylint: disable=import-outside-toplevel
+                campaigns_root = self._campaigns_root()
+                self._admission = AdmissionController(
+                    ClusterBudgetProvider(
+                        _core, node_selector=job_node_pool(),
+                        cluster_config=self._cluster_config(),
+                        kube_context=self.kube_context),
+                    space_gate=lambda: disk_shortfall(campaigns_root,
+                                                      label="the results volume"))
             return self._admission
 
     def _run_options(self, request):
