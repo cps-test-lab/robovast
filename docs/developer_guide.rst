@@ -512,6 +512,17 @@ module does.
    declare it under ``plugins:``; if you need a data file, name it in
    ``execution.run_files``.
 
+**How a failure in your plugin is reported.** A refusal your plugin *means* — a
+:class:`~robovast.common.variation.base_variation.VariationConfigError` for parameters
+outside what it accepts, a
+:class:`~robovast.common.variation.base_variation.VariationInfeasibleError` for a draw no
+arrangement realizes — is reported as its message alone, naming the plugin and the config
+block. Any other exception escaping ``variation()`` is a bug, and is reported as
+``Variation failed. <Class>: <exception>`` followed by the tail of the traceback: the file,
+line and source of the frame it was raised in. That text is the same on the CLI, in the MCP
+tools (``validate_project``, ``preview_configurations``) and in the web UI's config editor,
+so the line to fix is in front of whoever is authoring the plugin.
+
 .. note::
 
    **Packaging a variation plugin as its own distribution.** If your variation
