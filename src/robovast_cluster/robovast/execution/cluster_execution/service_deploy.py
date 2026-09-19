@@ -363,10 +363,15 @@ def _service_rbac_manifests(namespace):
                 # the service creates and tears down.
                 {"apiGroups": [""], "resources": ["pods", "pods/log"],
                  "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
-                # The registry push Secret: read to authenticate the "is this image
-                # already pushed?" probe (see ClusterService._resolve_registry_objects).
-                # Read-only, by name -- nothing here ever writes a Secret.
-                {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
+                # Secrets, three verbs and no more. ``get``: the registry push Secret,
+                # read to authenticate the "is this image already pushed?" probe (see
+                # ClusterService._resolve_registry_objects). ``create`` and ``delete``:
+                # each campaign's data-plane token Secret, made before its first Job
+                # and removed with the campaign (pod_access.ensure_campaign_secret /
+                # delete_campaign_secret) -- without them no campaign starts a Job.
+                # Nothing lists, watches or rewrites a Secret, so nothing may.
+                {"apiGroups": [""], "resources": ["secrets"],
+                 "verbs": ["get", "create", "delete"]},
                 # ConfigMaps are NOT read-only, unlike the Secret above: besides reading
                 # the private-CA ConfigMap, postprocessing ships its scripts into the
                 # postprocess Job as a ConfigMap it creates, replaces on a re-run and

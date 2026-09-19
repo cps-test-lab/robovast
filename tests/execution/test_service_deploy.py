@@ -416,7 +416,28 @@ def test_service_rbac_can_write_the_postprocessing_configmap():
 
     secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
                     for v in rule["verbs"]}
-    assert secret_verbs == {"get"}, "widening configmaps must not widen secrets"
+    assert secret_verbs == {"get", "create", "delete"}, (
+        "widening configmaps must not widen secrets")
+
+
+def test_service_rbac_can_make_and_remove_a_campaigns_token_secret():
+    """Every campaign's pods read their data-plane token from a Secret the service creates
+    before the first Job and deletes with the campaign. Without the verbs, every cluster
+    campaign fails before its first Job with a 403 -- and nothing about the RBAC list says
+    so, which is why the calls and the grant are held together here."""
+    import inspect
+
+    from robovast.execution.cluster_execution import pod_access
+
+    ms = sd.service_manifests(namespace="default", image="x")
+    role = next(m for m in ms if m["kind"] == "Role")
+    secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
+                    for v in rule["verbs"]}
+    source = inspect.getsource(pod_access)
+    for call, verb in (("create_namespaced_secret", "create"),
+                       ("delete_namespaced_secret", "delete")):
+        assert call in source, f"pod_access no longer calls {call}; revisit this grant"
+        assert verb in secret_verbs, f"the service calls {call} but the Role lacks {verb!r}"
 
 
 # The family variables are applied with a strategic-merge patch, whose merge key for

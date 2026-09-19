@@ -829,8 +829,9 @@ class ClusterService(LocalTransport):
         from .kubernetes_backend import KubernetesBackend
         # The campaign's data-plane token, minted here because this process holds the
         # secret the gate verifies. A backend built for no campaign (a share upload) carries
-        # none: nothing it launches needs one.
-        campaign_id = getattr(state, "campaign_id", None)
+        # none: nothing it launches needs one. The id is read from the state's status --
+        # the controller state keeps it there, not as an attribute of its own.
+        campaign_id = state.snapshot().campaign_id if state is not None else None
         token = self.scoped_token(pod_access.campaign_scope(campaign_id)) if campaign_id else ""
         return KubernetesBackend(cluster_config=self._cluster_config(),
                                  namespace=self.namespace,

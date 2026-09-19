@@ -54,6 +54,34 @@ def test_cluster_config_requires_name():
         cs._cluster_config()
 
 
+def test_a_campaigns_backend_carries_the_campaigns_data_plane_token():
+    """Built from the controller state the campaign worker hands over, as the worker does.
+
+    Without the token no pod of the campaign can fetch its inputs or deliver its outputs,
+    and the backend refuses to start one -- so a state whose campaign id is not read here
+    fails every campaign before its first Job.
+    """
+    from robovast.execution.cluster_execution import pod_access
+    from robovast.execution.control_server import ControllerState
+
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=False)
+    cs.bind_auth_token("master-secret")
+    cs._admission_controller = lambda: None
+    backend = cs._build_backend(state=ControllerState(campaign_id="camp-2026-01-01-000000"))
+    assert backend.data_token
+    assert backend.data_token == cs.scoped_token(
+        pod_access.campaign_scope("camp-2026-01-01-000000"))
+
+
+def test_a_backend_for_no_campaign_carries_no_token():
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=False)
+    cs.bind_auth_token("master-secret")
+    cs._admission_controller = lambda: None
+    assert cs._build_backend(state=None).data_token == ""
+
+
 def test_build_backend_threads_kube_context():
     """The context this service was built with must reach the K8s backend."""
     cs = ClusterService(namespace="ns2", cluster_config_name="rke2",

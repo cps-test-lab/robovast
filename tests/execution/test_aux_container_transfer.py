@@ -535,6 +535,32 @@ def test_the_pod_mounts_its_slot_where_the_service_has_it(staged):
     assert {v["name"] for v in m["containers"][0]["volumeMounts"]} <= declared
 
 
+def test_every_volume_name_is_one_kubernetes_accepts_however_deep_the_scratch_is():
+    """A volume name is a DNS label, at most 63 characters, and the API server rejects the
+    whole pod otherwise -- so an aux pod that cannot be created fails every variation that
+    needs one. The workspace is mounted at the service's own scratch path, which in the
+    deployed layout is deep under the results root; its name must not follow that path."""
+    import re
+
+    from robovast.execution.cluster_execution.service_deploy import RESULTS_DATA_DIR
+
+    def stage_dir(slot):
+        return f"{RESULTS_DATA_DIR}/_staged/{slot}"
+
+    spec = ContainerSpec(image="example/img:1")
+    m = build_aux_pod_manifest("metamorphic-big-map-2026-09-19-141738", [spec], "ns",
+                               stage_dir=stage_dir, token_for=lambda scope: "tok",
+                               pod_name="robovast-exec-q73431e4cff")["spec"]
+    label = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+    names = [v["name"] for v in m["volumes"]]
+    names += [mount["name"] for c in m["containers"] for mount in c["volumeMounts"]]
+    for name in names:
+        assert len(name) <= 63 and label.match(name), name
+    declared = {v["name"] for v in m["volumes"]}
+    for container in m["containers"]:
+        assert {mount["name"] for mount in container["volumeMounts"]} <= declared
+
+
 def test_the_transfer_container_carries_the_slots_access_and_nothing_else_does(staged):
     """What a pod is given to reach the data plane: its address and a token scoped to the
     pod's own slot, on the transfer container and nowhere else."""
