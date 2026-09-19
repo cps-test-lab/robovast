@@ -264,8 +264,8 @@ if ! docker info >/dev/null 2>&1; then
     echo "  It runs containers directly, so it belongs on a machine with Docker -- not"
     echo "  inside a cluster pod, where the conversion runs as a Job instead."
     echo "  If you are seeing this from a campaign, the step was dispatched to the wrong"
-    echo "  lane: rosbag conversion on a cluster is the Job's work, and the in-pod pass"
-    echo "  must skip it (results_processing.postprocessing.ROSBAG_JOB_NAMES)."
+    echo "  lane: a step that needs the execution image is the cluster Job's work, and the"
+    echo "  in-pod pass must skip it."
     exit 1
 fi
 

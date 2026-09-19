@@ -95,23 +95,24 @@ def _upload(campaign, before):
 
 
 def _convert(campaign, *outputs):
-    """Write *outputs* and the record naming them, as the conversion initContainer does.
+    """Write *outputs* as the image container does: after its start marker.
 
-    Before the snapshot, because that is the ordering: the conversion is an initContainer
-    and the host container starts only once it has exited.
+    Before the snapshot, because that is the ordering: the image steps run in an
+    initContainer and the host container starts only once it has exited. The staged files
+    carry the modification times their archive gave them, which precede the marker.
     """
-    from robovast.results_processing.postprocessing import STAGED_PROVENANCE
+    import os
+    import time
 
+    past = time.time() - 60
+    for path in campaign.rglob("*"):
+        if path.is_file():
+            os.utime(path, (past, past))
+    (campaign.parent / postprocess_host.IMAGE_STEPS_MARKER).touch()
     for rel in outputs:
         path = campaign / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x,y\n")
-    record = campaign / STAGED_PROVENANCE
-    record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(json.dumps({"entries": [
-        {"output": rel, "sources": ["cfg/0/rosbag2"], "plugin": "rosbags_process/to_csv"}
-        for rel in outputs
-    ]}))
 
 
 def test_the_provenance_marker_is_delivered(plane, campaign):

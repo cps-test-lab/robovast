@@ -13,6 +13,8 @@ from robovast.common.quantity import to_bytes, to_cores
 from robovast.execution.cluster_execution import pod_access
 from robovast.results_processing.postprocessing import POSTPROCESS_CONVERT_DEFAULTS
 
+from .image_steps_helper import CMDS, steps, stub_image_steps
+
 
 @pytest.fixture(autouse=True)
 def _the_index_is_configured(monkeypatch):
@@ -32,11 +34,16 @@ def _the_index_is_configured(monkeypatch):
 _TOKEN = "campaign:camp.0123abcd"
 
 
+@pytest.fixture(autouse=True)
+def _steps_without_a_campaign_tree(monkeypatch):
+    stub_image_steps(monkeypatch)
+
+
 def _inputs(monkeypatch, rosbag_cmds=None):
     """The four facts the manifest needs, without a campaign tree to read them from."""
     monkeypatch.setattr(pj, "_read_submit_inputs",
                         lambda root, skip=None, skip_rosout=False:
-                        ([{"plugins": [{"type": "rosout_to_csv"}]}] if rosbag_cmds is None else rosbag_cmds,
+                        (CMDS if rosbag_cmds is None else rosbag_cmds,
                          "img", (), None))
 
 
@@ -87,7 +94,7 @@ def test_the_submit_reads_its_inputs_from_the_campaigns_directory(tmp_path):
 # a pod that cannot start
 # ---------------------------------------------------------------------------
 
-_CMDS = [{"plugins": [{"rosbags_tf_to_csv": {"frames": "all"}}], "bag_dir": "rosbag2"}]
+_CMDS = steps("c1", plugins=[{"type": "tf_to_csv", "frames": "all"}])
 
 
 def test_the_conversion_pod_can_pull_its_own_images():
@@ -185,7 +192,7 @@ def test_two_conversions_of_one_campaign_get_different_job_names():
     wrong as soon as one campaign converts more than once, so the Job's identity has to say
     WHICH conversion it is.
     """
-    names = {pj.build_manifest("camp-2026-08-25-1234", "img", [{"plugins": [{"type": "rosout_to_csv"}]}], "ns",
+    names = {pj.build_manifest("camp-2026-08-25-1234", "img", steps(), "ns",
                                discriminator=d)["metadata"]["name"]
              for d in ("batch-0", "batch-1", "batch-2")}
     assert len(names) == 3, f"batches collided on one Job name: {names}"
@@ -195,7 +202,7 @@ def test_the_same_conversion_keeps_a_stable_name():
     """So a genuine retry of one conversion still waits on the in-flight Job instead of
     launching a second copy of it -- the behaviour the 409 fallthrough exists for."""
     def name(disc):
-        return pj.build_manifest("camp-x", "img", [{"plugins": [{"type": "rosout_to_csv"}]}], "ns",
+        return pj.build_manifest("camp-x", "img", steps(), "ns",
                                  discriminator=disc)["metadata"]["name"]
     assert name("batch-3") == name("batch-3")
 
@@ -203,7 +210,7 @@ def test_the_same_conversion_keeps_a_stable_name():
 def test_no_discriminator_leaves_the_campaign_level_name_unchanged():
     """The campaign-level path converts once and its Job name is part of what an operator
     looks for; nothing about it should move because a search needed more names."""
-    plain = pj.build_manifest("camp-x", "img", [{"plugins": [{"type": "rosout_to_csv"}]}], "ns")["metadata"]["name"]
+    plain = pj.build_manifest("camp-x", "img", steps(), "ns")["metadata"]["name"]
     assert plain == "robovast-postproc-camp-x"
 
 
@@ -214,7 +221,7 @@ def test_long_campaign_ids_stay_within_the_label_limit_and_stay_distinct():
     long_id = "nav-search-adaptive-reps-2026-08-25-13573569-with-a-long-suffix"
     names = set()
     for disc in ("batch-0", "batch-1", "batch-10", "batch-1-reps-3", "batch-1-reps-5"):
-        n = pj.build_manifest(long_id, "img", [{"plugins": [{"type": "rosout_to_csv"}]}], "ns",
+        n = pj.build_manifest(long_id, "img", steps(), "ns",
                               discriminator=disc)["metadata"]["name"]
         assert len(n) <= 63, f"{n} is {len(n)} chars"
         names.add(n)
@@ -330,12 +337,14 @@ def test_the_conversion_writes_the_campaign_tree_and_uploads_nothing():
 
     The conversion reaches the data plane not at all: it reads and writes the one shared
     mount, and the host container that follows it is what delivers. That is what lets this
-    container be an arbitrary user image, and it is why ``--output-root`` is the campaign
-    tree itself rather than a separate output volume.
+    container be an arbitrary user image: the conversion runs over the campaign tree in the
+    mount and writes beside each bag, with no separate output volume.
     """
-    script = pj._conversion_script([{"plugins": [{"type": "rosout_to_csv"}]}], force=False, campaign_id="c1")
+    script = pj._conversion_script(steps(), campaign_id="c1")
+    step = next(line for line in script.splitlines() if "rosbags_process.py" in line)
 
-    assert f"--output-root {pj.CAMPAIGN_MOUNT}/c1" in script
+    assert step.rstrip().endswith(f"{pj.CAMPAIGN_MOUNT}/c1")
+    assert "--output-root" not in step
     assert script.rstrip().endswith("exit $rc")
     for absent in ("curl", pod_access.TOKEN_ENV, pod_access.DATA_URL_ENV):
         assert absent not in script, absent
@@ -760,7 +769,7 @@ def _pod_charge(manifest, resource):
 
 
 def _manifest(**kwargs):
-    return pj.build_manifest("camp", "img:1", [{"plugins": [{"type": "to_csv"}]}], "ns",
+    return pj.build_manifest("camp", "img:1", steps("camp", plugins=[{"type": "to_csv"}]), "ns",
                              **kwargs)
 
 
@@ -983,7 +992,7 @@ def _submit(monkeypatch, core, batch, tmp_path):
     monkeypatch.setattr("kubernetes.client.BatchV1Api", lambda: batch)
     monkeypatch.setattr(pj, "publish_live_log", lambda *a, **k: None)
     return pj.run_conversion_job(object(), "camp", str(tmp_path), "ns", "img",
-                                 [{"plugins": [{"type": "rosout_to_csv"}]}], token=_TOKEN)
+                                 CMDS, token=_TOKEN)
 
 
 def test_adopting_a_live_job_does_not_touch_the_scripts_it_mounts(monkeypatch, tmp_path):
@@ -1090,7 +1099,7 @@ def test_a_submit_without_a_token_is_refused_before_anything_is_written(tmp_path
     the caller can read it."""
     with pytest.raises(ValueError, match="token"):
         pj.run_conversion_job(object(), "camp", str(tmp_path), "ns", "img",
-                              [{"plugins": [{"type": "rosout_to_csv"}]}], token="")
+                              CMDS, token="")
 
 
 # -- Unknown is not failure --------------------------------------------------
@@ -1137,7 +1146,7 @@ def _run_the_wait(monkeypatch, batch, core=None, **kwargs):
         for patch in _waiting_on_a_job(monkeypatch, batch, core):
             stack.enter_context(patch)
         return pj.run_conversion_job(mock.Mock(), "camp", "/nonexistent", "ns", "img",
-                                     [{"plugins": [{"type": "rosout_to_csv"}]}], token=_TOKEN, **kwargs)
+                                     CMDS, token=_TOKEN, **kwargs)
 
 
 def test_a_job_status_that_cannot_be_read_is_unknown_not_failed(monkeypatch):
@@ -1228,7 +1237,7 @@ def test_a_failed_jobs_log_is_published_before_its_verdict_is_returned(monkeypat
         monkeypatch.setattr(pj, "publish_live_log",
                             lambda core, root, ns, name: published.append(root) or True)
         ok, _message = pj.run_conversion_job(mock.Mock(), "camp", "/results/camp", "ns",
-                                             "img", [{"plugins": [{"type": "rosout_to_csv"}]}], token=_TOKEN)
+                                             "img", CMDS, token=_TOKEN)
 
     assert ok is False
     # Once as the wait began and once more on the failure, both to the campaign's root.
