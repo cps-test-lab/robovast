@@ -15,50 +15,32 @@ from __future__ import annotations
 class ClusterServeBackend:
     """Service driving Kubernetes Jobs, in-pod or from a developer's machine."""
 
-    storage = "object store"
+    storage = "the service's results volume"
 
-    def build(self, *, in_pod: bool, context: str | None, namespace: str, store,
-              workspace_dir=None, results_dir=None):
-        """In-pod the config comes from the pod env; off-cluster it is read from the
-        deployed service, which is the authoritative record -- so no local setup is
-        needed, on any host with kubeconfig access.
+    def build(self, *, in_pod: bool, store, workspace_dir=None, results_dir=None):
+        """In-pod only: the config comes from the pod env, and the campaigns live on the
+        results volume the deployment mounts (``service_deploy.RESULTS_DATA_DIR``).
 
-        ``results_dir`` is honoured here, not ignored. A cluster campaign's *durable* home is
-        the object store, but the one being driven has a local working root all the same: each
-        batch downloads its own results into it, per-run extraction reads it through a path
-        (``search.extractor.Extractor.extract``), and postprocessing reads it to derive the
-        campaign's results. Leaving that on the container's writable layer meant every restart discarded it --
-        and, because resume rebuilds it before the port is bound, a restart could never finish.
-        The deployment names the directory it mounts (``service_deploy.RESULTS_DATA_DIR``).
+        A driver outside the cluster is refused. Every pod a campaign runs delivers its
+        outputs to the service's data plane over the cluster network, and a process on a
+        developer's machine is not reachable from there. The developer loop that keeps a
+        local debugger against a real cluster is to run this same process *inside* the
+        cluster's network with its Service's traffic steered to it::
+
+            mirrord exec --target deployment/robovast-service --steal -- \\
+                vast serve --backend cluster
+
+        which needs no cluster-side install and resolves the pods' address to this process.
         """
         import click  # pylint: disable=import-outside-toplevel
 
         from .cluster_service import ClusterService  # pylint: disable=import-outside-toplevel
-        if in_pod:
-            return ClusterService(kube_context=context, store=store,
-                                  results_dir=results_dir)
-
-        from .service_deploy import \
-            read_service_config_from_cluster  # pylint: disable=import-outside-toplevel
-        name, kwargs = read_service_config_from_cluster(namespace, context)
-        if not name:
-            for_ctx = f" in context {context!r}" if context else ""
+        if not in_pod:
             raise click.ClickException(
-                f"no robovast-service found{for_ctx} (namespace {namespace!r}) to read "
-                f"the cluster config from — deploy one with 'vast cluster setup "
-                f"<cluster-config>{f' -x {context}' if context else ''}', or check "
-                "--context/--namespace.")
-        # Off-cluster the driver reaches the cluster's object store through a kubectl
-        # port-forward, which is fragile under the large per-file result transfers a big
-        # campaign produces. This mode is a dev convenience; the deployed in-cluster
-        # service reads the store directly (no tunnel).
-        click.secho(
-            "WARNING: running the cluster backend off-cluster — campaigns are "
-            "driven from this host through a kubectl port-forward to the cluster "
-            "object store, which is fragile under large result transfers. This "
-            "mode is a dev convenience; run large campaigns via the deployed "
-            "in-cluster robovast-service.",
-            fg="yellow")
-        return ClusterService(namespace=namespace, cluster_config_name=name,
-                              cluster_config_kwargs=kwargs, kube_context=context,
-                              store=store, results_dir=results_dir)
+                "the cluster backend runs inside the cluster: a campaign's pods deliver "
+                "their outputs to this service over the cluster network, which cannot reach "
+                "a process on this host. To debug the driver against a real cluster, run it "
+                "in the cluster's network with the Service's traffic steered to it: "
+                "'mirrord exec --target deployment/robovast-service --steal -- vast serve "
+                "--backend cluster'.")
+        return ClusterService(store=store, results_dir=results_dir)

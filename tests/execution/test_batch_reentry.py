@@ -3,9 +3,9 @@
 """Re-entering a batch that is already partly done.
 
 A campaign whose service process went away keeps running: its Jobs are not children of
-that process and they write their results to the object store. What the successor must not
-do is plan the batch from scratch and run the finished half a second time, overwriting
-results that are already correct.
+that process, and each one's uploader delivers its results into the campaign. What the
+successor must not do is plan the batch from scratch and run the finished half a second
+time, overwriting results that are already correct.
 
 The property is stated so that it is also true of a campaign starting now, which is what
 keeps it from being a mode: "plan against the campaign root you were given". A fresh root
@@ -81,21 +81,8 @@ def test_jobs_are_matched_by_their_own_config_and_run(tmp_path):
 
 # -- what the batch actually creates ----------------------------------------------------
 
-class _NoStorage:
-    """Storage stub: records nothing, uploads and downloads nothing."""
-
-    def upload_dir(self, local_dir, bucket, prefix=""):
-        return 0
-
-    def download_prefix(self, bucket, prefix, local_dir, force=False, on_file=None):
-        return 0
-
-
 def _runner(monkeypatch, jobs, created):
     """A ``BatchJobRunner`` stubbed down to its job-creation decision."""
-    from robovast.execution.cluster_execution import in_pod_storage
-
-    monkeypatch.setattr(in_pod_storage, "storage_client_for", lambda cfg: _NoStorage())
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
         lambda out_dir, data, cluster=False, instance_type_command=None: None)
@@ -108,7 +95,8 @@ def _runner(monkeypatch, jobs, created):
     r._batch_tag = "batch-0"
     r.campaign_data = {"execution": {}}
     r._ensure_k8s_initialized = lambda: None
-    r._s3_settings = lambda: ("ep", "ak", "sk", "bkt", "")
+    r.k8s_client = types.SimpleNamespace(
+        create_namespaced_secret=lambda namespace, body: None)
     r._write_job_param_files = lambda out_dir, campaign_root=None: None
     r._build_jobs = lambda: jobs
     r.create_job_manifest = lambda job, total, node_figures=None: {"job": job.index}
@@ -130,8 +118,7 @@ def test_only_the_unfinished_jobs_are_created(monkeypatch, tmp_path):
     _verdict(tmp_path, "cfg-a", 2)
     created = []
 
-    _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path),
-                                                         whole_campaign=True)
+    _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path), "tok")
 
     assert created == [1]
 
@@ -141,8 +128,7 @@ def test_a_fresh_batch_creates_every_job(monkeypatch, tmp_path):
     jobs = [_job(0, ("cfg-a", 0)), _job(1, ("cfg-a", 1))]
     created = []
 
-    _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path),
-                                                         whole_campaign=True)
+    _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path), "tok")
 
     assert created == [0, 1]
 
@@ -153,8 +139,7 @@ def test_a_fully_finished_batch_creates_nothing(monkeypatch, tmp_path):
     _verdict(tmp_path, "cfg-a", 0)
     created = []
 
-    _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path),
-                                                         whole_campaign=True)
+    _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path), "tok")
 
     assert created == []
 
@@ -164,8 +149,9 @@ def test_a_fully_finished_batch_creates_nothing(monkeypatch, tmp_path):
 def test_the_campaign_row_is_idempotent_by_name(tmp_path):
     """A re-entered controller re-opens the row rather than adding a second one.
 
-    The store it is handed may be one restored from the object store, carrying the rows of
-    an earlier life. Two rows for one campaign would double every count read through them.
+    The store it is handed is the one on the results volume, carrying the rows of an earlier
+    life of this campaign. Two rows for one campaign would double every count read through
+    them.
     """
     from robovast.common.store import STORE_FILENAME, CampaignStore
 

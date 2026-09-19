@@ -40,10 +40,8 @@ Token economics drive the file API (see the plan):
   create_upload` → a TTL-scoped token; the client ``curl``s the bytes straight in),
   so run files, notebooks and binaries never enter the token stream.
 
-Executability is preserved end-to-end by reusing the *existing* mechanism: the
-bit is set here (explicit flag or shebang auto-detect) and
-``in_pod_storage._is_executable``/``_EXECUTABLE_META`` already carry it through
-the object store (S3 ``x-amz-meta-executable`` / GCS blob metadata).
+Executability is preserved end-to-end: the bit is set here (explicit flag or shebang
+auto-detect), and a pod that is handed the workspace receives it as a tar member's mode.
 
 The registry is one JSON file guarded by an ``fcntl`` lock and replaced by an
 atomic temp-file rename.
@@ -502,8 +500,8 @@ class WorkspaceStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         if grant["executable"] or _has_shebang(data):
-            # From here the existing _is_executable/_EXECUTABLE_META machinery
-            # carries the bit through the object store and into the campaign.
+            # From here the file's mode carries the bit: a pod handed the workspace
+            # receives it as the tar member's mode, and the campaign copies it from there.
             target.chmod(target.stat().st_mode | 0o111)
         return {"workspace_id": grant["workspace_id"],
                 **self._file_meta(target, grant["path"])}

@@ -27,6 +27,12 @@ One place produces the campaign archive for both directions of "share":
   the ``/data/campaigns/{id}/archive`` download, both of which run against ~1TB
   campaigns where materialising a compressed copy would blow the pod's scratch.
 
+**Compression is for bytes that leave the cluster.** A stream a pod fetches or delivers
+is a plain tar (``compress=False``): run output is mostly recordings that barely
+compress, so gzip there buys almost no size and costs a core per stream -- a single
+``gzip`` caps a transfer near 70 MB/s where the plain tar runs at disk speed, and on the
+pod side that core is taken from the scenario it belongs to.
+
 All of them read a **local directory** -- the campaign's home on every lane is the
 service's results tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
 symlink members (``dereference=False``) and not recursed into, so the archive is
@@ -145,25 +151,29 @@ def _make_filter(exclude, on_member=None, include=None):
     return _filter
 
 
-def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
+def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE, include=None) -> int:
     """Sum the payload bytes :func:`campaign_tar_stream` would read from *campaign_root*.
 
-    The denominator for a streamed upload's progress. Deliberately a metadata-only
-    walk -- `os.scandir` carries the size, so this is one directory read per level and
-    no file is opened -- because it runs *before* an upload that will read every one of
-    those bytes anyway.
+    The denominator for a streamed upload's progress, and the figure a postprocessing pod's
+    disk is reserved from. Deliberately a metadata-only walk -- `os.scandir` carries the
+    size, so this is one directory read per level and no file is opened -- because it
+    runs *before* a transfer that will read every one of those bytes anyway.
 
-    Mirrors the archiver's two rules exactly, or the bar would end somewhere other
-    than 100%: an excluded name prunes its whole subtree, and symlinks are members
-    rather than paths to follow (``dereference=False``), so they are not recursed
-    into and contribute nothing.
+    Mirrors the archiver's rules exactly, or the bar would end somewhere other than
+    100%: an excluded name prunes its whole subtree, symlinks are members rather than
+    paths to follow (``dereference=False``), so they are not recursed into and contribute
+    nothing, and *include* -- a :func:`stage_include`-shaped predicate over the
+    campaign-relative path -- prunes a refused directory whole, as
+    :func:`iter_campaign_tar` does.
     """
     exclude = frozenset(exclude or ())
     total = 0
-    stack = [os.path.normpath(str(campaign_root))]
+    root = os.path.normpath(str(campaign_root))
+    stack = [(root, "")]
     while stack:
+        path, rel = stack.pop()
         try:
-            entries = list(os.scandir(stack.pop()))
+            entries = list(os.scandir(path))
         except OSError:
             # A campaign is live until it is not; a directory that vanished under the
             # walk costs the bar some accuracy and must not cost the upload its run.
@@ -171,10 +181,14 @@ def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
         for entry in entries:
             if entry.name in exclude:
                 continue
+            child = f"{rel}/{entry.name}" if rel else entry.name
+            is_dir = entry.is_dir(follow_symlinks=False)
+            if include is not None and not include(child, is_dir):
+                continue
             if entry.is_symlink():
                 continue
-            if entry.is_dir(follow_symlinks=False):
-                stack.append(entry.path)
+            if is_dir:
+                stack.append((entry.path, child))
                 continue
             try:
                 total += entry.stat(follow_symlinks=False).st_size
@@ -328,77 +342,93 @@ def make_campaign_tarball(campaign_root: str, archive_dir: str,
 
 
 class _TarPipe:
-    """A running ``tar | pigz`` pipe: a writer thread tars into ``pigz`` stdin, and
-    ``stdout`` is a readable stream of the compressed archive.
+    """A running tar stream: a writer thread tars into a pipe, and ``stdout`` reads it.
 
-    *add_members* is a callable ``(tarfile.TarFile) -> None`` that adds every member —
-    from a local directory (upload-to-share) or streamed from the object store
-    (download). Neither source ever materialises a compressed copy on disk.
+    With *compress* the pipe is ``pigz``, so ``stdout`` is a gzip stream compressed on
+    every core; without, it is an OS pipe carrying the plain tar.
+
+    *add_members* is a callable ``(tarfile.TarFile) -> None`` that adds every member
+    from a local directory. No source ever materialises a copy on disk.
     """
 
-    def __init__(self, add_members):
+    def __init__(self, add_members, *, compress: bool = True):
         self._add_members = add_members
         self._error: list = []
-        # nosec B603 B607 - fixed binary, no shell, trusted args
-        self._pigz = subprocess.Popen(
-            ["pigz", "-c"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self._pigz = None
+        if compress:
+            # nosec B603 B607 - fixed binary, no shell, trusted args
+            self._pigz = subprocess.Popen(
+                ["pigz", "-c"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            self._sink, self._stdout = self._pigz.stdin, self._pigz.stdout
+        else:
+            read_fd, write_fd = os.pipe()
+            self._sink, self._stdout = os.fdopen(write_fd, "wb"), os.fdopen(read_fd, "rb")
         self._writer = threading.Thread(
             target=self._write_tar, name="campaign-tar-writer", daemon=True)
         self._writer.start()
 
     @property
     def stdout(self):
-        return self._pigz.stdout
+        return self._stdout
 
     def _write_tar(self) -> None:
         try:
-            with tarfile.open(fileobj=self._pigz.stdin, mode="w|") as tar:
+            with tarfile.open(fileobj=self._sink, mode="w|") as tar:
                 self._add_members(tar)
         except BaseException as exc:  # pylint: disable=broad-except
             self._error.append(exc)
         finally:
             try:
-                self._pigz.stdin.close()
+                self._sink.close()
             except OSError:
                 pass
 
     def close(self) -> None:
-        """Join the writer, reap ``pigz``, and re-raise any producer/compressor error."""
+        """Join the writer, reap ``pigz`` if any, and re-raise a producer/compressor error.
+
+        Closing the read end first is what unblocks a writer the reader abandoned: its
+        next write fails with a broken pipe instead of waiting for a reader that is gone.
+        """
         try:
-            self._pigz.stdout.close()
+            self._stdout.close()
         except OSError:
             pass
         self._writer.join()
-        self._pigz.wait()
+        if self._pigz is not None:
+            self._pigz.wait()
         if self._error:
-            raise self._error[0]
-        if self._pigz.returncode not in (0, None):
+            error = self._error[0]
+            if isinstance(error, BrokenPipeError):
+                return  # the reader stopped early -- its choice, not a failure here
+            raise error
+        if self._pigz is not None and self._pigz.returncode not in (0, None):
             raise RuntimeError(f"pigz exited with code {self._pigz.returncode}")
 
 
 @contextlib.contextmanager
-def tar_stream(add_members):
-    """Context manager yielding a **readable** gzip stream produced by *add_members*.
+def tar_stream(add_members, *, compress: bool = True):
+    """Context manager yielding a **readable** tar stream produced by *add_members*.
 
-    No archive is written to disk. The yielded object is a binary file-like
-    (``pigz`` stdout); read it to completion inside the ``with`` block. On exit the
-    writer thread is joined and any tar/pigz failure is re-raised.
+    gzip-compressed with *compress*, plain without. No archive is written to disk. The
+    yielded object is a binary file-like; read it to completion inside the ``with``
+    block. On exit the writer thread is joined and any tar/pigz failure is re-raised.
     """
-    pipe = _TarPipe(add_members)
+    pipe = _TarPipe(add_members, compress=compress)
     try:
         yield pipe.stdout
     finally:
         pipe.close()
 
 
-def iter_tar(add_members, chunk_size: int = _CHUNK):
-    """Generator yielding gzip-archive bytes produced by *add_members*.
+def iter_tar(add_members, chunk_size: int = _CHUNK, *, compress: bool = True):
+    """Generator yielding the bytes of a tar produced by *add_members*.
 
-    Owns the pipe lifecycle across the whole iteration — cleanup (and error
-    propagation) happens when the generator is exhausted or closed, which is what a
-    streaming HTTP response needs (the body is produced after the route returns).
+    gzip-compressed with *compress*, plain without. Owns the pipe lifecycle across the
+    whole iteration — cleanup (and error propagation) happens when the generator is
+    exhausted or closed, which is what a streaming HTTP response needs (the body is
+    produced after the route returns).
     """
-    pipe = _TarPipe(add_members)
+    pipe = _TarPipe(add_members, compress=compress)
     try:
         while True:
             chunk = pipe.stdout.read(chunk_size)
@@ -418,8 +448,11 @@ def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE, on_member=N
 
 
 def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: int = _CHUNK,
-                      snapshot: "dict | None" = None, include=None):
-    """Generator yielding gzip-archive bytes of the local directory *campaign_root*.
+                      snapshot: "dict | None" = None, include=None, compress: bool = True):
+    """Generator yielding the tar of the local directory *campaign_root*.
+
+    gzip-compressed unless *compress* is false: a download leaves the cluster, a
+    postprocessing pod's fetch does not.
 
     *snapshot* — a dict of facts, possibly empty — says the campaign is **still running**:
     the tree is then read tolerantly (:func:`_add_live_tree`) and :data:`SNAPSHOT_MEMBER`
@@ -442,16 +475,18 @@ def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: i
         if snapshot is not None:
             add_snapshot_marker(tar, campaign_id, **snapshot)
 
-    return iter_tar(_add, chunk_size)
+    return iter_tar(_add, chunk_size, compress=compress)
 
 
 def iter_tree_tar(root: str, chunk_size: int = _CHUNK):
-    """Generator yielding gzip-archive bytes of *root*'s contents, relative to *root*.
+    """Generator yielding a plain tar of *root*'s contents, relative to *root*.
 
     No top-level segment: what a pod extracts into a mount point lands at the mount
-    point. Tolerant like :func:`iter_inputs_tar`, and for the same reason.
+    point. Tolerant like :func:`iter_inputs_tar`, and for the same reason. Uncompressed,
+    because its reader is always a pod in the cluster.
     """
-    return iter_tar(lambda tar: _add_tree_flat(tar, os.path.normpath(str(root))), chunk_size)
+    return iter_tar(lambda tar: _add_tree_flat(tar, os.path.normpath(str(root))), chunk_size,
+                    compress=False)
 
 
 #: Directory names holding rosbags, excluded by :func:`stage_include` when the conversion
@@ -526,7 +561,7 @@ def stage_include(skip_bags: bool = False, batch_jobs: str = ""):
 
 
 def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CHUNK):
-    """Generator yielding the gzip tar a job pod extracts into its ``/config``.
+    """Generator yielding the plain tar a job pod extracts into its ``/config``.
 
     The campaign's :data:`INPUT_DIRS` with that leading segment stripped, so ``_config/x``
     lands at ``x``; then, for each ``(config_name, rel)`` in *config_files*, the cell's
@@ -562,7 +597,7 @@ def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CH
             except OSError:
                 logger.debug("Skipping %s: not present when the inputs were staged", src)
 
-    return iter_tar(_add, chunk_size)
+    return iter_tar(_add, chunk_size, compress=False)
 
 
 def _add_tree_flat(tar: tarfile.TarFile, src: str) -> None:

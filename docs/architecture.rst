@@ -89,7 +89,7 @@ that deployment:
 
 There is **no separate per-campaign controller pod**. The service is already a
 long-lived, in-cluster process with the cluster config, the Kubernetes API, the
-object store and the workspace (plugins installed) — so it hosts the driver
+campaigns' own volume and the workspace (plugins installed) — so it hosts the driver
 directly instead of staging the project out and launching a second process to do
 it. ``stop`` and live status are therefore in-process operations the service
 exposes over the interface, not a network hop to a controller. Two things a
@@ -121,16 +121,12 @@ is not, and it never was a good way to say it — the cooperative stop persists 
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
-A stopped campaign is reported as a **clean terminal**, not a failure. Ctrl+C also
-tears down the storage port-forward (it shares the process group), so the driver's
-finish work — upload-to-share (when enabled), postprocessing, finalize upload — would
-otherwise fail against a dead endpoint and dump misleading tracebacks. Instead, the batch wait loop
-raises ``CampaignStopped`` the moment it sees the cooperative-stop flag (before any
-download), the controller sets phase ``"stopped"``, and the builders' finish tail
-(``_finish_campaign``) is skipped — the per-run results the jobs already uploaded are
+A stopped campaign is reported as a **clean terminal**, not a failure. The batch wait
+loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag, the
+controller sets phase ``"stopped"``, and the builders' finish tail
+(``_finish_campaign``) is skipped — the per-run results the pods already delivered are
 left as the campaign's output. The ``"stopped"`` outcome is persisted like a failure
-(``_record_controller_outcome`` writes ``_execution/outcome.json`` and, on the cluster,
-publishes it to the object store when the tunnel is still up — a Stop-button stop), so
+(``_record_controller_outcome`` writes ``_execution/outcome.json``), so
 the phase survives a service restart instead of reconstructing as an ambiguous
 ``"finished"``. Every terminal-phase filter (listings, the ``--wait-and-download``
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
@@ -173,11 +169,8 @@ asks for the re-run that settles it.
 
 Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
 handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
-clock starts, and the layers that would otherwise fight the teardown consult it. Two
-of them do. The driver's S3 client does not restart the ``kubectl port-forward`` on
-a timeout that is simply the shutdown itself — and ``ClusterService`` refuses to open
-one at all once the flag is up, so a read still in flight cannot resurrect the tunnel
-and leak a ``kubectl`` child past exit. The SSE streams do not *wait* for their
+clock starts, and the layers that would otherwise fight the teardown consult it. The
+SSE streams do not *wait* for their
 next pull either: a watchdog closes the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
 response task canceled and the cancellation logged as an "Exception in ASGI
@@ -191,8 +184,8 @@ application" traceback with the server already gone.
           ┌────────────────────┼──────────────────────────────┐
      LocalTransport      HTTPTransport → single-host service   HTTPTransport → cluster service
      (in-process,        (`vast serve`, localhost or VM,       (in-cluster Deployment,
-      DockerBackend,      DockerBackend, local FS)              KubernetesBackend, object store)
-      local FS)
+      DockerBackend,      DockerBackend, local FS)              KubernetesBackend,
+      local FS)                                                 results volume)
 
 The service core is **backend-agnostic**: it dispatches execution to
 ``DockerBackend`` (local) or ``KubernetesBackend`` (cluster). See
@@ -414,10 +407,10 @@ campaign's ``_config/`` is one. From there the staging is identical:
 the image resolves from that project's ``.vast`` exactly as a run resolves it.
 
 **The entrypoint is rendered, never inherited.** ``prepare_campaign_configs`` substitutes
-lane-specific init and post-run blocks into ``entrypoint.sh`` (``fixuid`` locally, config
-fetch and S3 mirroring in-cluster), so a script rendered for one lane is wrong on the
-other. Reusing a cluster campaign's staged entrypoint for a local exec would run cluster
-post-run logic on a developer's machine. ``render_entrypoint`` exists so the bare-image
+lane-specific init and post-run blocks into ``entrypoint.sh`` (``fixuid`` locally; in a
+pod, the hand-off that tells the pod's uploader this container has finished writing), so
+a script rendered for one lane is wrong on the other. Reusing a cluster campaign's staged
+entrypoint for a local exec would run cluster post-run logic on a developer's machine. ``render_entrypoint`` exists so the bare-image
 case can have that script without expanding a config tree it does not need.
 
 **Why reuse the entrypoint at all**, rather than building an environment: the environment a
@@ -454,15 +447,13 @@ pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``
 ``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
 engine may not import ``robovast.service``).
 
-**The diagnostic stages the way a run stages.** In-cluster, ``/config`` is uploaded to the
-object store and mirrored down by an ``mc`` init container on the shared sidecar image —
-the same transport a campaign Job and an image-build context use. This replaced a
-ConfigMap, which was simpler but capped the tree at ~900 KiB and answered "too big" with
-"run it as a campaign instead", the exact expense this tool exists to save. It is
-deliberately not the aux pod's tar-over-``pods/exec`` either: that needs the pod *running*
-before its files exist, and needs ``tar``/``base64`` in an image we do not control, while
-``mc`` is already required of every cluster experiment image. The deeper reason is that a
-diagnostic with its own staging path can pass on a config the run would fail to stage.
+**The diagnostic stages the way a run stages.** In-cluster, ``/config`` is written as a
+staged tree on the service's disk and fetched from its data plane by an init container on
+the shared sidecar image, with a token scoped to that one slot — the same transport a
+campaign Job and an image-build context use. A ConfigMap would be simpler but caps the
+tree at ~900 KiB and answers "too big" with "run it as a campaign instead", the exact
+expense this tool exists to save. The deeper reason is that a diagnostic with its own
+staging path can pass on a config the run would fail to stage.
 
 Staging fits an init container because it happens exactly once per pod: the manager
 discards a redundant staging when it reuses a held pod, and replaces the pod outright when
@@ -470,22 +461,21 @@ the identity changes, so ``/config`` never needs refreshing under a live pod. A 
 is torn down with its pod; a tree left by a dead service process is reaped at the next
 stop, since nothing else would.
 
-**A composition's aux pod stages the same way**, so there is one in-cluster transport
-rather than three. Its contract is harder than the exec lane's — a *bidirectional* mirror
-around every ``run()`` on a kept-alive pod, which an init container running once before
-the pod starts cannot serve — so the init container injects ``mc`` into an ``emptyDir``
-instead of fetching anything, and the runner mirrors through the store on each call. The
-binary has to be injected because the aux image belongs to a plugin author and is not ours
-to add tools to; that is the trick the rosbag postprocess Job already used to run ``mc``
-inside the system-under-test's own image.
+**A composition's aux pod moves its workspace the same way**, so there is one in-cluster
+transport rather than three. Its contract is harder than the exec lane's — a
+*bidirectional* transfer around every ``run()`` on a kept-alive pod, which an init
+container running once before the pod starts cannot serve — so the pod carries a
+``transfer`` container from the sidecar image that idles beside the aux container, sharing
+its emptyDirs and holding the slot's token, and the runner execs the fetch and the delivery
+there. It has to be a container of ours because the aux image belongs to a plugin author
+and is not ours to add tools to, and so no credential reaches that image either. The
+runner's workspace *is* its slot's directory on the service's disk, mounted in the pod at
+the same absolute path, so nothing is copied on the service side in either direction.
 
-What this replaced was a base64 tarball piped through ``pods/exec``. It worked, but the
-exec channel is a text websocket the client cannot half-close, so a receiver waiting for
-EOF waited forever — observed for 2m47s against a live pod, on an *empty* workspace. Going
-through the store needs no stdin at all, which removes that failure mode by construction
-along with the ~1.33x encoding overhead and the whole-tarball buffering in the service.
-The cost is that campaign *composition* now needs the object store reachable; it fails
-loudly rather than falling back, since a second transport is the thing being removed.
+Nothing but the commands themselves goes through ``pods/exec``: the exec channel is a text
+websocket the client cannot half-close, so a receiver waiting for EOF there waits forever.
+The cost is that campaign *composition* needs the data plane reachable from the pod; it
+fails loudly rather than falling back, since a second transport is the thing not wanted.
 
 .. _file-address-space:
 
@@ -504,7 +494,7 @@ that serves it — the string a caller passes to ``read_file`` is the string it 
      - Root
      - Writable
    * - ``/results/<campaign_id>/<path>``
-     - the campaign directory (on the cluster, its object-store prefix)
+     - the campaign directory
      - **no**
    * - ``/sources/<workspace_id>/<path>``
      - the workspace's project directory
@@ -521,13 +511,12 @@ namespaces make "no reserved words, ever" true by construction.
 
 **The namespace is the permission**, dispatched once rather than checked per operation:
 there is no ``PUT``/``POST``/``DELETE`` route under ``/results`` at all, so a write there
-is a 405 from the router. Results are immutable — on the cluster the local tree is a
-cache of object-store objects, so a write would be a cache edit that silently vanishes.
-Each namespace is confined against **its own** root via
+is a 405 from the router. Results are what a campaign produced, and the one writer of a
+campaign directory is the campaign — a pod delivers its own output through the data
+plane's control route (:ref:`the data plane <data-plane>`), which is why that route is not
+a write verb here. Each namespace is confined against **its own** root via
 ``robovast.client.safe_path.safe_join``; a results address must never resolve inside a
-workspace, or the read-only tree would inherit the writable one's permissions. The
-cluster's results lane has no filesystem to resolve against, so it uses ``check_relative``
-— the substrate-independent half of the same check — before composing an object key.
+workspace, or the read-only tree would inherit the writable one's permissions.
 
 **The path is the real on-disk path.** ``<config_name>/<run_id>/<file>`` for a run
 artifact; ``_config/``, ``_execution/``, ``_transient/``, ``_jobs/`` by their actual
@@ -549,77 +538,73 @@ resource fetching siblings by relative URL resolves within its own directory);
 ``?as=text`` returns a paginated, binary-refusing text view. Paging happens **server
 side** — reading 100 lines of a cluster log transfers 100 lines.
 
-On the cluster, ``/results`` is served straight from the object store: a read is
-``StorageClient.read_object`` (one object, not ``fetch_campaign``'s whole-prefix
-download), and a non-recursive listing is a *delimited* ``list_entries``, so it is
-non-recursive at the store and not merely in the response.
+Both lanes serve ``/results`` from that directory, with ``FileResponse``: ``Range`` and
+``ETag`` come free, a byte range is a seek rather than a transfer, and a listing is a
+``scandir``. That is what the cluster lane's campaigns being *on the service's own volume*
+buys, and it is why there is no "which part of the campaign do you need?" seam anywhere in
+the read path: every part of it is a file the service can open.
 
-.. _fetch-what-the-caller-needs:
+.. _data-plane:
 
-Fetch what the caller needs, not the campaign
-----------------------------------------------
+The data plane: tar streams, in their own process
+--------------------------------------------------
 
-``ClusterService`` makes a caller **say which part of a campaign it needs**, because the
-same answer is a directory read locally and an object-store transfer on the cluster:
+A campaign's *readers* hold a directory; its *producers* are pods on other machines. That
+is the one boundary bytes still have to cross, and everything crossing it is a tar stream
+over HTTP:
 
-``_query_dir``
-    Nothing at all: a query reads the central index, so it needs only the campaign the
-    path *names*. This returns the cache dir unfetched. Used by
-    ``describe_campaign_data`` and ``query_campaign_data_sql``. It stayed an override
-    only because the inherited one goes through the refused ``_data_dir``.
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
 
-``_config_dir``
-    The frozen ``_config`` snapshot: a handful of small objects. Used by the cheap
-    readers — declared plots, panel assets, visualization workloads.
+   * - Route
+     - What crosses
+   * - ``GET /data/campaigns/{id}/inputs``
+     - what a scenario Job extracts into ``/config``: the campaign's ``_config/`` and
+       ``_transient/`` flattened, plus each cell's own declared files on top
+   * - ``PUT /data/campaigns/{id}/outputs``
+     - a pod's whole ``/out``, delivered once, extracted into the campaign
+   * - ``GET /data/campaigns/{id}/archive``
+     - the campaign, whole or narrowed to what a postprocessing pod reads
+   * - ``GET``/``PUT /data/staged/{slot}``
+     - the scratch trees a build, exec or auxiliary pod is handed and hands back
 
-``_whole_campaign_dir`` → ``fetch_campaign``
-    The whole prefix, downloaded into ``/tmp/robovast-campaigns/<id>``. For the callers
-    that genuinely cannot know which files they will read: notebook rendering against run
-    outputs, the ``/results`` address space, and the endpoint plugins reached via
-    ``resolve_data_dir``.
+**A tar, rather than a file API.** One stream is one request, so a pod's entire output
+tree costs one round trip instead of one per file; and a tar carries executable bits and
+symlinks natively, so nothing has to be restored on the other side — which is exactly what
+a per-object protocol keeps getting wrong, because the metadata travels beside the bytes
+rather than in them.
 
-``_data_dir``
-    **Refused on this lane.** It is the local transport's "the campaign's directory",
-    which on the cluster has no cheap answer.
+**Compressed only where it leaves the cluster.** A stream between a pod and the service is
+a plain tar. Run output is mostly recordings that barely compress, so gzip there buys
+almost no size and costs a core per stream: a single ``gzip`` holds a transfer near
+70 MB/s where the plain tar moves at the disk's speed, and on the pod side that core is
+taken from the scenario whose output it is. A download for a person keeps gzip, compressed
+on every core by ``pigz``, because it may cross a link where the size is what matters.
 
-The refusal is the design. While ``_data_dir`` silently meant ``fetch_campaign``, every
-*inherited* method that touched it became a whole-campaign download — and nothing errored,
-so the only symptom was slowness. A query arrived that way, so ``SELECT COUNT(*)`` pulled
-every rosbag the campaign produced, inside an HTTP request whose client timeout was 30 s;
-the web UI survived it only because ``fetch`` sets no timeout at all. Narrowing that to the
-campaign's databases removed most of the cost, and the central index removed the rest:
-there is now no per-campaign file a query has to have. ``list_campaign_plots`` arrived that
-way too, and the Results page calls it *per
-campaign*, so opening the UI moved gigabytes to render a list of plot names.
+**One delivery per pod, not per container.** A scenario pod's containers share ``/out``,
+so each of them uploading would walk and send the same tree. Instead every container
+writes a done marker on the shared ``/ipc`` volume when its own files are complete, and a
+single ``uploader`` container waits for the markers and delivers once
+(:mod:`~robovast.execution.cluster_execution.pod_upload`). It is a *regular* container, so
+the Job is complete only when the results are home and fails when they could not be
+delivered — which is what lets the driver read a finished Job as delivered results rather
+than polling for them.
 
-Fixing those one at a time left the trap armed for the next method. Now a caller that
-reaches for ``_data_dir`` fails immediately, naming the three alternatives, instead of
-quietly moving a terabyte in production.
+**Its own process.** The routes are a separate app
+(:mod:`robovast.service.data_app`) over a class that knows directories, tokens and tar and
+nothing else — no transport, no campaign registry, liveness read from the campaign's own
+terminal record. In the cluster Deployment it runs as its own container with its own
+limits, behind an nginx front that owns the pod's single port and routes ``/data/`` to it
+unbuffered; a ``vast serve`` mounts the same routes into its one process, because there
+the isolation buys nothing and a second port would cost every client. The point of the
+split is that a dozen pods delivering gigabytes at once slow each other down and nothing
+else: bulk bytes never share an event loop with the run view or the admission queue.
 
-Two properties of the narrow path are load-bearing for the seams that still transfer
-something (``_config_dir``, ``_record_dir``, the ``/results`` file reads):
-
-* **The cached copy is validated by size, not existence.** ``outcome.json`` is rewritten in
-  place by re-postprocessing, and an existence check would pin the first version a service
-  ever saw and serve it indefinitely.
-* **It writes through** ``_download_atomic`` **and under the campaign's fetch lock**, so one
-  request never reads a file another is still streaming.
-
-They write into the *same* cache directory as the whole-campaign fetch, so a later one finds
-those objects already at the right size and skips them, and ``delete_campaign`` still clears
-one place.
-
-The data-status probe (``GET /campaigns/{id}/data-status``, exposed as ``describe_campaign_data(preflight_only=True)``) reports whether a query would
-transfer anything and what it would cost, so a caller can explain the wait *before* it waits.
-On both lanes the answer is now "nothing": the rows are in the index, and the probe says so
-from memory rather than probing the store — a probe that costs a round-trip to warn about a
-transfer that no longer happens is pure loss. It is a **control** route, not a ``/results``
-path: every segment there is a user-chosen file name, so a literal ``data-status`` under it
-would shadow a campaign file of that name.
-
-``get_service_info`` publishes both address templates, plus ``results_root`` /
-``sources_root`` filesystem paths — but only when the service is local-filesystem *and*
-the request came from loopback, so a caller is never handed a path it cannot open.
+**What a pod is given.** An address (``ROBOVAST_DATA_URL``), the campaign it is working on,
+and a token scoped to that campaign's — or that slot's — data routes and refused
+everywhere else (:doc:`http_api`, "Who may call it"). No storage credential of any kind
+exists in a pod, so reading a pod spec discloses nothing beyond which campaign it serves.
 
 Token-efficient file transfer
 ------------------------------
@@ -638,22 +623,20 @@ twice — once to generate, once per later turn), the file API is split:
 Data flow and result access
 ---------------------------
 
-For cluster campaigns, results live in the **object store** (the durable home);
-the service is a stateless gateway that streams finished campaigns from it —
-``GET /data/campaigns/{id}/archive`` tars the campaign's objects **on the fly** into the
-response (no scratch on the service, nothing buffered in memory), which is what
-``vast campaign download`` and the web UI **Download** button use. A local ``vast
-serve`` answers the same route by tarring its own directory: the durable home differs,
-the operation does not. Refusing there with a 409 — "the results are already on this
-host's filesystem" — asserts something true of a caller on that host and false of
-everyone else, so a service reached over the network could not be downloaded from at
-all.
+A campaign's durable home is the service's results volume, on either lane:
+``<results_root>/<campaign_id>/``, one directory, written by the campaign and read by
+everything else. ``GET /data/campaigns/{id}/archive`` tars it **on the fly** into the
+response (no scratch, nothing buffered in memory), which is what ``vast campaign
+download`` and the web UI **Download** button use. Refusing there with a 409 — "the
+results are already on this host's filesystem" — asserts something true of a caller on
+that host and false of everyone else, so a service reached over the network could not be
+downloaded from at all.
 
 The external ``tar.gz`` share is a **separate system**, with its own credentials and
 its own lifetime, reached through ``vast share``. It is opt-in at launch
 (``upload_to_share``): when set, the driver streams the campaign to the share the
 moment the runs finish, *before* postprocessing — so the shared copy is the minimal
-``raw`` snapshot while the object store carries the derived data. Which variant an
+``raw`` snapshot while the campaign carries the derived data. Which variant an
 archive is rides in its name (``<campaign-id>.raw.tar.gz`` /
 ``…postprocessed.tar.gz``) and is read off the campaign rather than passed in, so the
 campaign-end upload and a later ``vast share export`` cannot disagree.
@@ -1025,11 +1008,9 @@ lives in the ``run_data`` MCP plugin):
   registered, without polling. ``list_campaigns`` stays the authoritative pull for
   MCP and the CLI. Both draw from one rule: a campaign tracked in the in-process
   registry reports its live ``ControllerState``; an untracked one is reconstructed
-  from its recorded facts (``reconstruct_status_from_disk`` over ``_record_dir``) — the
-  same precedence ``get_status`` uses. Which campaigns *exist* is the union of three
-  sources: the results directory, the registries of what is being driven, and — for a
-  lane whose durable home is not that directory — an object-store index
-  (:ref:`campaign-discovery`).
+  from its recorded facts (``reconstruct_status_from_disk`` over ``campaign_dir``) — the
+  same precedence ``get_status`` uses. Which campaigns *exist* is the union of
+  the results directory and the registries of what is being driven, on either lane.
 * **Postprocessing** — ``get_postprocessing`` / ``update_postprocessing`` /
   ``run_postprocessing``. The structured ``*_postprocessing`` pair is the programmatic
   API (MCP, CLI); ``get_postprocessing_source`` / ``update_postprocessing_source`` are
@@ -1045,7 +1026,7 @@ lives in the ``run_data`` MCP plugin):
 ``run_postprocessing`` each call ``LocalTransport._admit_storage`` first, on both lanes (the
 cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
-``disk`` and ``store`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
+``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
 refusal and the meters are one measurement. With no reserve configured nothing is read; a
 reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
 launch never depends on the permissions the capacity reading needs. Nothing that continues
@@ -1055,25 +1036,11 @@ what free space. A refusal is ``InsufficientStorageError``, a 507 over HTTP — 
 that already failed for lack of space is also given.
 
 **The caches a clear may empty are copies of durable data, and nothing else.**
-``service_cache`` / ``clear_service_cache`` sweep the scene cache on both lanes and, on the
-cluster lane, the object-store fetch cache (``/tmp/robovast-campaigns``, one directory per
-campaign) through the ``_lane_cache_sweeps`` hook; a local lane's results directory is the
-durable home and is never offered. A reader of the fetch cache is handed a *path* and opens
-files under it after the fetch lock is released, so no lock a clear could take covers it.
-What makes the clear safe beside them is what it keeps: a campaign that is still running, a
-directory an operation pinned with ``_holding_cache`` (``run_share``, which edits the outcome
-there and publishes it long after the fetch), and one handed to a reader within the last hour
-(``_mark_cache_read``, recorded under the fetch lock). Each removal takes that campaign's fetch
-lock and checks again, so a fetch in flight finishes first and its reader is then recent
-enough to keep.
-
-When a directory was last read is its own modification time, stamped by ``_mark_cache_read``, so
-the record lives exactly as long as the files and survives a restart of a service running off
-the cluster. The same record drives **expiry**: a thread started with the service
-(``_start_cache_expiry``) removes, once an hour, each directory unread for
-``ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS``
-(:mod:`robovast.execution.cluster_execution.fetch_cache`), through the same keep rules and
-the same re-check under the fetch lock as a clear.
+``service_cache`` / ``clear_service_cache`` sweep the scene cache, on both lanes, through
+the ``_lane_cache_sweeps`` hook; the results directory is the durable home and is never
+offered. That the clear has nothing else to offer is the point: a campaign's bytes exist
+in exactly one place, so no copy of them can go stale, be swept mid-read, or need a lock
+that a reader of them would have to respect.
 
 .. _image-resolution:
 

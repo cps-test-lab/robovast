@@ -142,7 +142,7 @@ class ContainerRunnerServer:
         """Stop serving and release any runner the worker did not close itself.
 
         A worker that raised mid-composition leaves its runners open; each holds a temp
-        workspace and, on the cluster, a mirrored prefix in the object store. The parent
+        workspace and, on the cluster, a staged slot on the service's disk. The parent
         is the only side still running by then, so it is the side that must let go.
 
         Live connections are shut down rather than waited on: a handler blocked reading

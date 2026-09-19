@@ -34,8 +34,8 @@ optional in any statement below.
 
 **Files, through the address space.** Maps, videos and the resolved scenario parameters are
 artifacts with no table behind them. They are reached by their ``/results/<campaign_id>/…``
-address via the service, not by building a local path: a cluster campaign's durable home is
-the object store, and a local-path read reported every one of them as "not found".
+address via the service, not by building a local path: the campaign's directory is the
+service's, on whatever host it runs, and a local-path read finds none of them.
 """
 
 from __future__ import annotations
@@ -811,7 +811,7 @@ def draw_map(
     if not image_name:
         raise NavDataError(f"map {yaml_name!r} declares no 'image' to draw.")
 
-    # The visualizer opens a path, and a cluster campaign's map is an object store entry.
+    # The visualizer opens a path, and the map is read from the service over HTTP.
     # Both files land in one temp dir under their own names so the YAML's relative
     # ``image:`` reference still resolves.
     with _materialized(campaign_id, prefix, [yaml_name, image_name]) as root:

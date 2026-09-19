@@ -303,23 +303,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/campaigns/cleanup-data": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cleanup Campaign Data */
-        post: operations["cleanup_campaign_data_campaigns_cleanup_data_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/campaigns/events": {
         parameters: {
             query?: never;
@@ -397,31 +380,6 @@ export interface paths {
         };
         /** Run data from the 'costmap' endpoint plugin. */
         get: operations["route_campaigns__campaign_id__costmap_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/campaigns/{campaign_id}/data-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Campaign Data Status
-         * @description Whether querying this campaign transfers data first — ask *before* the wait.
-         *
-         *     Cheap by contract (two metadata lookups). On a cluster campaign whose databases
-         *     are not cached yet, a first ``/describe`` or ``/query`` fetches them from the
-         *     object store inside the request; this says so in advance, so a client can show
-         *     why instead of appearing to hang.
-         */
-        get: operations["campaign_data_status_campaigns__campaign_id__data_status_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1077,10 +1035,10 @@ export interface paths {
         };
         /**
          * Download Campaign Archive
-         * @description Stream a ``tar.gz`` of the campaign.
+         * @description Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
          *
          *     Backs ``vast campaign download``, the web UI's download button and the
-         *     postprocessing pod's stage. What comes out is the campaign as this service holds
+         *     postprocessing pod's stage -- which asks for the plain tar, being in the cluster. What comes out is the campaign as this service holds
          *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
          *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
          *     ``batch_jobs`` narrow it to what a postprocessing pod reads
@@ -1153,7 +1111,7 @@ export interface paths {
         };
         /**
          * Download Staged
-         * @description Stream a staged slot, or *path* within it, as a ``tar.gz``.
+         * @description Stream a staged slot, or *path* within it, as a plain tar.
          */
         get: operations["download_staged_data_staged__slot__get"];
         /**
@@ -1931,57 +1889,6 @@ export interface components {
             size_bytes: number;
         };
         /**
-         * CampaignDataStatus
-         * @description Whether querying this campaign has to transfer anything first, and what it costs.
-         *
-         *     Exists so a caller can say *why* it is about to wait, **before** it waits. As with
-         *     :class:`ResourceUsage`, the local↔cluster difference is resolved inside the service, so
-         *     a consumer reads the same fields either way and never branches on the backend:
-         *     ``fetch_required`` false means the question does not apply.
-         *
-         *     Deliberately cheap — two metadata lookups, never an enumeration of the campaign prefix
-         *     — because the point is to answer *before* the expensive thing, and a probe that itself
-         *     cost a listing would only move the cost.
-         */
-        CampaignDataStatus: {
-            /** Cached */
-            cached: boolean;
-            /** Campaign Id */
-            campaign_id: string;
-            /**
-             * Db Bytes
-             * @default 0
-             */
-            db_bytes: number;
-            /**
-             * Fetch In Progress
-             * @default false
-             */
-            fetch_in_progress: boolean;
-            /** Fetch Required */
-            fetch_required: boolean;
-            /** Last Fetch Bytes */
-            last_fetch_bytes: number | null;
-            /** Last Fetch Seconds */
-            last_fetch_seconds: number | null;
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-            progress: components["schemas"]["WorkProgress"] | null;
-            /**
-             * Source
-             * @enum {string}
-             */
-            source: "local-disk" | "object-store";
-            /**
-             * Transfer
-             * @enum {string}
-             */
-            transfer: "none" | "cluster-network" | "port-forward";
-        };
-        /**
          * CampaignOrigin
          * @description Where a campaign's configuration came from. **A record, never a link.**
          *
@@ -2212,25 +2119,6 @@ export interface components {
             campaign_id: string;
             /** Workloads */
             workloads: components["schemas"]["CampaignVisualization"][];
-        };
-        /**
-         * CleanupDataRequest
-         * @description Which campaign result buckets to delete from the object store.
-         *
-         *     The service holds the cluster config (object-store credentials) and knows which
-         *     campaigns are live, so bucket cleanup runs server-side — the CLI never needs
-         *     cluster credentials. ``campaign_id`` None removes **all** finished campaigns
-         *     (live ones are always skipped); a given id removes just that one, and ``force``
-         *     removes it even if the service still considers it live.
-         */
-        CleanupDataRequest: {
-            /** Campaign Id */
-            campaign_id?: string | null;
-            /**
-             * Force
-             * @default false
-             */
-            force: boolean;
         };
         /**
          * CreateCampaignRequest
@@ -3369,7 +3257,7 @@ export interface components {
          *     scheduler reasons about capacity — pods still queued for a node are reported by
          *     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
          *
-         *     ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
+         *     ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
          *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
          *     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
          *     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
@@ -3377,9 +3265,8 @@ export interface components {
          *     the service pod, deliberately not a sum over the node set -- the workspaces are a
          *     ``hostPath`` there, so that is the disk which decides whether a campaign can be
          *     written, and a total would read as tens of terabytes free while it filled. Locally it
-         *     is the campaign results root's filesystem. ``store`` is the results store, which on the
-         *     cluster is a different thing from ``disk`` -- often on a different node -- and only
-         *     some providers can measure.
+         *     is the campaign results root's filesystem. ``results`` is the volume the campaigns
+         *     live on, reported only where it is a separately measurable claim.
          *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
          *     scenario runs execute one at a time (local Docker is single-flight), ``True``
@@ -3445,11 +3332,9 @@ export interface components {
             query_containers: {
                 [key: string]: components["schemas"]["ExecContainerState"];
             };
+            results: components["schemas"]["DiskSpace"] | null;
             /** Storage Refusal */
             storage_refusal: string | null;
-            store: components["schemas"]["DiskSpace"] | null;
-            /** Store Node */
-            store_node: string | null;
         };
         /**
          * RetriggerAxis
@@ -3659,8 +3544,7 @@ export interface components {
          * SceneStatus
          * @description Whether this run's 3D geometry is ready, and if not, what is happening about it.
          *
-         *     The same job as :class:`CampaignDataStatus`, for the same reason — *say why you are about to wait,
-         *     before you wait* — so the fields deliberately reuse its names rather than inventing synonyms. A
+         *     *Say why you are about to wait, before you wait.* A
          *     scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
          *     the first viewer of a given world pays for it and everyone after reads it from disk.
          *
@@ -4532,50 +4416,6 @@ export interface components {
              */
             workspace_id: string;
         };
-        /**
-         * WorkProgress
-         * @description How far along the blocking work behind a campaign request currently is.
-         *
-         *     Exists because the two waits a caller actually sits through — pulling the campaign out of
-         *     the object store, then executing the notebook — are both minutes long and were both
-         *     reported as nothing at all. The counts live only in memory (see
-         *     :attr:`CampaignDataStatus.progress`), so reading them costs no round-trip and a client can
-         *     poll once a second without competing with the transfer it is describing.
-         *
-         *     One shape for both phases rather than one model each: a caller renders ``done``/``total``
-         *     the same way regardless, and ``unit`` is what makes the sentence read right.
-         */
-        WorkProgress: {
-            /**
-             * Bytes Done
-             * @default 0
-             */
-            bytes_done: number;
-            /** Bytes Total */
-            bytes_total: number | null;
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
-            /**
-             * Done
-             * @default 0
-             */
-            done: number;
-            /**
-             * Phase
-             * @enum {string}
-             */
-            phase: "listing" | "downloading" | "executing";
-            /** Total */
-            total: number | null;
-            /**
-             * Unit
-             * @enum {string}
-             */
-            unit: "files" | "cells";
-        };
         /** WorkspaceInfo */
         WorkspaceInfo: {
             /** Created At */
@@ -5059,39 +4899,6 @@ export interface operations {
             };
         };
     };
-    cleanup_campaign_data_campaigns_cleanup_data_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["CleanupDataRequest"] | null;
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ActionResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     stream_campaigns_campaigns_events_get: {
         parameters: {
             query?: never;
@@ -5194,37 +5001,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    campaign_data_status_campaigns__campaign_id__data_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CampaignDataStatus"];
                 };
             };
             /** @description Validation Error */
@@ -6429,6 +6205,7 @@ export interface operations {
                 stage?: boolean;
                 skip_bags?: boolean;
                 batch_jobs?: string;
+                uncompressed?: boolean;
             };
             header?: never;
             path: {

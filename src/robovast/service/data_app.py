@@ -68,6 +68,12 @@ DRIVER_OWNED = ("_execution/controller.log", "_execution/variation.log",
 #: past a handful, concurrent writers only make each other seek.
 UPLOAD_WORKERS = 8
 
+#: What the tar routes answer with. A plain tar for every stream a pod reads, a gzip one
+#: only for an archive that leaves the cluster -- see
+#: :mod:`robovast.execution.campaign_archive`. Uploads may be either: the reader detects it.
+TAR_MEDIA_TYPE = "application/x-tar"
+GZIP_MEDIA_TYPE = "application/gzip"
+
 
 class DataPlane:
     """The filesystem behind the data routes: one results root, read and written directly."""
@@ -122,7 +128,7 @@ class DataPlane:
 
     def campaign_tar_stream(self, campaign_id: str, selection: "ArchiveSelection | None" = None,
                             *, live: "bool | None" = None, facts: "dict | None" = None):
-        """The campaign as a gzip tar stream; see the interface method of the same name.
+        """The campaign as a tar stream; see the interface method of the same name.
 
         *live* is whether the campaign is still being written -- a caller that knows says
         so and gives the *facts* the snapshot marker records; left ``None`` the tree
@@ -142,7 +148,8 @@ class DataPlane:
         return campaign_archive.iter_campaign_tar(
             str(campaign_dir),
             exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"},
-            snapshot=snapshot, include=include)
+            snapshot=snapshot, include=include,
+            compress=not (selection is not None and selection.uncompressed))
 
     def campaign_inputs_tar_stream(self, campaign_id: str,
                                    config_files: "list[tuple[str, str]] | None" = None):
@@ -270,11 +277,12 @@ def data_router(source):
 
     @router.get(Routes.campaign_archive("{campaign_id}"))
     def download_campaign_archive(campaign_id: str, stage: bool = False,
-                                  skip_bags: bool = False, batch_jobs: str = ""):
-        """Stream a ``tar.gz`` of the campaign.
+                                  skip_bags: bool = False, batch_jobs: str = "",
+                                  uncompressed: bool = False):
+        """Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
 
         Backs ``vast campaign download``, the web UI's download button and the
-        postprocessing pod's stage. What comes out is the campaign as this service holds
+        postprocessing pod's stage -- which asks for the plain tar, being in the cluster. What comes out is the campaign as this service holds
         it -- postprocessed if it has been, raw if it has not; derived data is an addition
         to a campaign, never the condition for reading one. ``stage``, ``skip_bags`` and
         ``batch_jobs`` narrow it to what a postprocessing pod reads
@@ -283,14 +291,17 @@ def data_router(source):
         Nothing is buffered and no scratch is used: the tree is tarred into the response
         as it is read. Decisive for campaigns that run to terabytes.
         """
-        selection = ArchiveSelection(stage=stage, skip_bags=skip_bags, batch_jobs=batch_jobs)
+        selection = ArchiveSelection(stage=stage, skip_bags=skip_bags, batch_jobs=batch_jobs,
+                                     uncompressed=uncompressed)
         # The name before the stream: a running campaign is offered as
         # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
         # -- which saves whatever this says and never sees the marker inside the archive.
         name = _guard(lambda: source.campaign_archive_name(campaign_id))
+        if uncompressed:
+            name = name.removesuffix(".gz")
         return StreamingResponse(
             _guard(lambda: source.campaign_tar_stream(campaign_id, selection)),
-            media_type="application/gzip",
+            media_type=TAR_MEDIA_TYPE if uncompressed else GZIP_MEDIA_TYPE,
             headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @router.get(Routes.campaign_inputs("{campaign_id}"))
@@ -310,7 +321,7 @@ def data_router(source):
             pairs.append((config_name, rel))
         return StreamingResponse(
             _guard(lambda: source.campaign_inputs_tar_stream(campaign_id, pairs)),
-            media_type="application/gzip")
+            media_type=TAR_MEDIA_TYPE)
 
     @router.put(Routes.campaign_outputs("{campaign_id}"), response_model=OutputsIngested)
     async def upload_campaign_outputs(campaign_id: str, request: Request) -> OutputsIngested:
@@ -324,10 +335,10 @@ def data_router(source):
 
     @router.get(Routes.staged("{slot:path}"))
     def download_staged(slot: str, path: str = ""):
-        """Stream a staged slot, or *path* within it, as a ``tar.gz``."""
+        """Stream a staged slot, or *path* within it, as a plain tar."""
         return StreamingResponse(
             _guard(lambda: source.staged_tar_stream(slot, path)),
-            media_type="application/gzip")
+            media_type=TAR_MEDIA_TYPE)
 
     @router.put(Routes.staged("{slot:path}"), response_model=OutputsIngested)
     async def upload_staged(slot: str, request: Request) -> OutputsIngested:

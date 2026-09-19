@@ -14,95 +14,17 @@
 # and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
-import io
+"""AKS: a managed node pool, whose machines are replaced rather than repaired.
+
+Nothing here is provider-specific beyond how a node reports its VM size. What matters on
+AKS is how the volumes are backed: a node directory goes with the node, so the README
+says to pass a StorageClass for each tenant (``managed-csi`` is the stock one).
+"""
 import logging
 
-import yaml
-from kubernetes import client
-
-from robovast.execution.cluster_execution.kube_client import load_kube_config
-
-from ..cluster_execution import store_pod
-from ..cluster_execution.kubernetes import apply_manifests, delete_manifests
 from .base_config import BaseConfig
 
-MINIO_MANIFEST_AZURE = """---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: robovast-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: {storage_size}
-  storageClassName: managed-csi
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: robovast
-  labels:
-    role: robovast
-spec:
-  containers:
-  - name: minio
-    image: minio/minio:latest
-    args: ["server", "/data", "--console-address", ":9001"]
-    env:
-    - name: MINIO_ROOT_USER
-      value: "minioadmin"
-    - name: MINIO_ROOT_PASSWORD
-      value: "minioadmin"
-    ports:
-    - name: s3
-      containerPort: 9000
-    - name: console
-      containerPort: 9001
-    volumeMounts:
-    - mountPath: /data
-      name: minio-storage
-    resources:
-      # A floor, not an estimate: every milli-core requested here is capacity campaign jobs
-      # cannot be admitted against, so the request covers an idle server. The LIMIT is a
-      # different quantity and has to be sized against the peak: MinIO streams objects, but
-      # a batch mirrors dozens of multi-part transfers at once, and each carries buffers the
-      # request knows nothing about. Sized well above idle on purpose -- a store that is
-      # OOM-killed mid-batch takes that batch's bag conversion with it, and the campaign then
-      # fails in postprocessing with no conversion log to explain it. No CPU limit --
-      # throttling the store slows every upload and download with no visible cause.
-      requests:
-        cpu: "50m"
-        memory: "256Mi"
-      limits:
-        memory: "4Gi"
-    readinessProbe:
-      httpGet:
-        path: /minio/health/ready
-        port: 9000
-      initialDelaySeconds: 10
-      periodSeconds: 5
-  volumes:
-  - name: minio-storage
-    persistentVolumeClaim:
-      claimName: robovast-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: robovast
-spec:
-  ports:
-  - name: s3
-    port: 9000
-    targetPort: 9000
-  - name: console
-    port: 9001
-    targetPort: 9001
-  selector:
-    role: robovast
-"""
+logger = logging.getLogger(__name__)
 
 
 class AzureClusterConfig(BaseConfig):
@@ -111,96 +33,33 @@ class AzureClusterConfig(BaseConfig):
     #: See :attr:`BaseConfig.governor_is_settable`.
     governor_is_settable = False
 
-    def setup_cluster(self, storage_size="10Gi", **kwargs):
-        """Set up MinIO S3 server for Azure cluster.
+    def prepare_setup_cluster(self, output_dir, **kwargs):
+        """Write the ``robovast`` pod manifest and the README for a manual setup."""
+        self.write_store_pod_manifest(output_dir, **kwargs)
+        readme_content = """# Azure Cluster Setup Instructions
 
-        Args:
-            storage_size (str): Size of the persistent volume (default: "10Gi")
-            **kwargs: Additional cluster-specific options (kube_context, namespace,
-                control_node_labels)
-        """
-        control_node_labels = kwargs.pop('control_node_labels', None)
-        logging.info("Setting up RoboVAST MinIO S3 server in Azure cluster...")
-        logging.info(f"Storage size: {storage_size}")
+Finished campaigns live on the service's **results volume**, beside the workspaces; the
+`robovast` pod in this manifest holds the container registry and the campaign index.
 
-        load_kube_config(context=kwargs.get('kube_context'))
-        k8s_client = client.ApiClient()
+On AKS, back every volume with a StorageClass rather than a node directory: a managed
+node pool replaces machines, and a hostPath goes with the machine. `managed-csi` is the
+stock class:
 
-        try:
-            yaml_objects = list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_AZURE.format(storage_size=storage_size))))
-        except yaml.YAMLError as e:
-            raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
+```bash
+vast cluster setup azure \\
+    --workspaces-class managed-csi \\
+    --index-class managed-csi \\
+    --registry-class managed-csi \\
+    --buildkit-class managed-csi
+```
 
-        namespace = kwargs.get('namespace', 'default')
-        # The registry and the campaign index ride in this pod: setup-lifetime
-        # infrastructure, created once here rather than in the service Deployment that
-        # every upgrade rolls. See `cluster_execution.store_pod`.
-        yaml_objects = store_pod.attach_infrastructure(
-            yaml_objects, namespace,
-            index_storage_path=kwargs.get('index_storage_path', ''),
-            index_storage_class=kwargs.get('index_storage_class', ''),
-            index_storage_size=kwargs.get('index_storage_size', ''),
-            registry_storage_path=kwargs.get('registry_storage_path', ''),
-            registry_storage_class=kwargs.get('registry_storage_class', ''),
-            registry_authenticated=kwargs.get('registry_authenticated', False),
-            ingress_class=kwargs.get('ingress_class', ''))
-        yaml_objects = self._apply_pod_node_selector(yaml_objects, control_node_labels)
-        try:
-            apply_manifests(k8s_client, iter(yaml_objects), namespace=namespace)
-        except Exception as e:
-            raise RuntimeError(f"Error applying MinIO manifest: {str(e)}") from e
-
-        logging.info(f"MinIO S3 server available at: {self.get_s3_endpoint()}")
-
-    def cleanup_cluster(self, storage_size="10Gi", **kwargs):
-        """Clean up MinIO S3 server for Azure cluster.
-
-        Args:
-            storage_size (str): Size of the persistent volume (default: "10Gi")
-            **kwargs: Additional cluster-specific options (ignored)
-        """
-        logging.debug("Cleaning up RoboVAST MinIO in Azure cluster...")
-        load_kube_config(context=kwargs.get('kube_context'))
-        core_v1 = client.CoreV1Api()
-
-        try:
-            yaml_objects = yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_AZURE.format(storage_size=storage_size)))
-        except yaml.YAMLError as e:
-            raise RuntimeError(f"Failed to parse MinIO manifest YAML: {str(e)}") from e
-
-        namespace = kwargs.get('namespace', 'default')
-        yaml_objects = store_pod.attach_infrastructure(list(yaml_objects), namespace)
-        delete_manifests(core_v1, store_pod.infrastructure_claims(namespace) + yaml_objects,
-                         namespace=namespace)
-        logging.debug("MinIO manifest deleted successfully!")
-
-    def prepare_setup_cluster(self, output_dir, storage_size="10Gi", **kwargs):
-        """Prepare any prerequisites before setting up the cluster.
-
-        Args:
-            output_dir (str): Directory where setup files will be written
-            storage_size (str): Size of the persistent volume (default: "10Gi")
-            **kwargs: Cluster-specific options (control_node_labels)
-        """
-        control_node_labels = kwargs.pop('control_node_labels', None)
-        docs = store_pod.attach_infrastructure(
-            list(yaml.safe_load_all(io.StringIO(
-                MINIO_MANIFEST_AZURE.format(storage_size=storage_size)))),
-            kwargs.get('namespace', 'default'))
-        docs = self._apply_pod_node_selector(docs, control_node_labels)
-        manifest_to_write = "---\n".join(
-            yaml.dump(d, default_flow_style=False) for d in docs if d is not None
-        )
-        with open(f"{output_dir}/robovast-manifest.yaml", "w") as f:
-            f.write(manifest_to_write)
-
-        readme_content = f"""# Azure Cluster Setup Instructions
-
-Uses MinIO backed by an Azure managed-csi PVC ({storage_size}).
+`--workspaces-class` backs the workspaces and the results with it, which is where the
+campaigns are. Keeping those disks is the operator's snapshot schedule, which RoboVAST
+does not manage.
 
 ## Setup Steps
 
-### 1. Apply the RoboVAST MinIO Manifest
+### 1. Apply the RoboVAST manifest
 
 ```bash
 kubectl apply -f robovast-manifest.yaml
@@ -212,8 +71,8 @@ kubectl apply -f robovast-manifest.yaml
 kubectl wait --for=condition=ready pod/robovast --timeout=120s
 ```
 
-MinIO S3 API is available at `http://robovast:9000` (cluster-internal).
-MinIO console is available at port 9001.
+The registry answers on `/v2` of the service's published host; the index on port 5432 of
+the `robovast` Service, from inside the cluster only.
 """
         with open(f"{output_dir}/README_azure.md", "w") as f:
             f.write(readme_content)

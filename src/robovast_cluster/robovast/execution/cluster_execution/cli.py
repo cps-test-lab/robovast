@@ -30,8 +30,7 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.execution.cluster_execution import data_paths
 from robovast.client.service_target import detected_service_url
-from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
+from robovast.client.service_target import target_options
 from robovast.client.status import (Phase, Status, budget_positions, stall_report,
                                     stopping_soon_report)
 
@@ -532,9 +531,9 @@ def _echo_placement(placement):
     }
     data, build = placement.get("data_node"), placement.get("build_node")
     if not data:
-        click.echo("  node-local data: nothing pinned (a StorageClass or bucket backs it)")
+        click.echo("  node-local data: nothing pinned (a StorageClass backs it)")
         return
-    click.echo(f"  workspaces, registry and store on {data} "
+    click.echo(f"  workspaces, results, index and registry on {data} "
                f"({reason.get(placement.get('data_source'), 'decided')})")
     if build and build != data:
         click.echo(f"  build cache on {build}")
@@ -655,45 +654,38 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    'machine. It does NOT place a campaign job\'s scratch: that is an '
                    'emptyDir under the kubelet root, which is the node\'s configuration '
                    'rather than this deployment\'s.')
-@click.option('--store-path', default='', metavar='PATH',
-              envvar='ROBOVAST_STORE_PATH',
-              help='Host directory holding the object store, which is where finished '
-                   f'campaigns live (default: {data_paths.DEFAULT_STORE_HOST_PATH}). The '
-                   'campaign index is placed beside it and needs no flag of its own. Only '
-                   'for providers that mount the store from a volume; one backed by a bucket '
-                   'refuses it.')
-@click.option('--store-class', default='', metavar='NAME',
-              envvar='ROBOVAST_STORE_CLASS',
-              help='Back the object store and the campaign index with PVCs from this '
-                   'StorageClass instead of hostPaths. Preferred where the cluster can '
-                   'provision volumes; stock RKE2 cannot, which is why hostPath is the '
-                   'default.')
-@click.option('--store-size', default='', metavar='SIZE',
-              envvar='ROBOVAST_STORE_SIZE',
-              help='Size of the object store PVC (default: 500Gi). Needs --store-class: '
-                   'without one the store is a directory on the node, bounded by that disk.')
-@click.option('--index-class', 'index_storage_class', default='', metavar='NAME',
-              envvar='ROBOVAST_INDEX_CLASS',
-              help='Back the campaign index with a PVC from this StorageClass. Only for a '
-                   'provider whose campaigns live in a bucket: where the store is a volume '
-                   'this deployment places, --store-class already backs the index beside it, '
-                   'and naming a second class would separate an index from the campaigns it '
-                   'was ingested from.')
-@click.option('--index-size', 'index_storage_size', default='', metavar='SIZE',
-              envvar='ROBOVAST_INDEX_SIZE',
-              help='Size of the campaign index PVC (default: 20Gi). Needs --index-class: '
-                   'without one the index is a directory on the node and there is no volume '
-                   'to size.')
 @click.option('--workspaces-path', default='', metavar='PATH',
               envvar='ROBOVAST_WORKSPACES_PATH',
               help='Host directory holding the service\'s workspaces '
                    f'(default: {data_paths.DEFAULT_WORKSPACES_HOST_PATH}). The campaign '
-                   'results root is placed beside it and needs no flag of its own.')
+                   'results root -- where finished campaigns live -- is placed beside it, '
+                   'and the campaign index beside that; neither needs a flag of its own.')
 @click.option('--workspaces-class', default='', metavar='NAME',
               envvar='ROBOVAST_WORKSPACES_CLASS',
               help='Back the workspaces and the campaign results with PVCs from this '
                    'StorageClass instead of hostPaths, which also unpins the service pod. '
-                   'Stock RKE2 provisions nothing, which is why hostPath is the default.')
+                   'The campaign index follows unless --index-class says otherwise. Stock '
+                   'RKE2 provisions nothing, which is why hostPath is the default.')
+@click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
+              envvar='ROBOVAST_RESULTS_SIZE',
+              help='Size of the campaign results PVC (default: 500Gi) -- the volume every '
+                   'campaign lives on. Needs --workspaces-class, which is what backs it: '
+                   'without one the results are a directory on the data node, bounded by '
+                   'that disk, and there is no volume to size. The same flag on '
+                   "'vast service upgrade' raises an existing claim.")
+@click.option('--index-class', 'index_storage_class', default='', metavar='NAME',
+              envvar='ROBOVAST_INDEX_CLASS',
+              help='Back the campaign index with a PVC from this StorageClass. Without it '
+                   'the index takes the results\' backing: a PVC of the workspaces\' class '
+                   'where one is given, else a directory beside the results on the data '
+                   'node. Its own flag because Postgres is a different workload from the '
+                   'bulk of the results, and on a managed node pool the index is what a '
+                   'replaced node would otherwise take with it.')
+@click.option('--index-size', 'index_storage_size', default='', metavar='SIZE',
+              envvar='ROBOVAST_INDEX_SIZE',
+              help='Size of the campaign index PVC (default: 20Gi). Needs a class, its own '
+                   'or the workspaces\': without one the index is a directory on the node '
+                   'and there is no volume to size.')
 @click.option('--registry-class', 'registry_storage_class', default='', metavar='NAME',
               envvar='ROBOVAST_REGISTRY_CLASS',
               help='Back the built-in container registry with a PVC from this '
@@ -706,13 +698,13 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    f'(default: {data_paths.DEFAULT_REGISTRY_HOST_PATH}).')
 @click.option('--data-node', default='', metavar='NODE',
               help='Hold this deployment\'s node-local data on this node: the workspaces, '
-                   'the registry, the results store and, unless --buildkit-node says '
+                   'the results, the index, the registry and, unless --buildkit-node says '
                    'otherwise, the build cache. Rarely needed -- setup picks the node with '
                    'the most free space the first time and records the choice as a node '
                    'label, so later runs stay put without any flag. Naming a node moves the '
                    'placement off whatever node holds it now and says so; the bytes are NOT '
-                   'migrated, so the new node starts empty -- including the store, which is '
-                   'where finished campaigns live.')
+                   'migrated, so the new node starts empty -- including the results, which '
+                   'is where finished campaigns live.')
 @click.option('--buildkit-class', 'buildkit_storage_class', default='', metavar='NAME',
               envvar='ROBOVAST_BUILDKIT_CLASS',
               help='Back the shared build daemon\'s cache with a PVC from this '
@@ -763,9 +755,8 @@ def _echo_job_node_aliases(changes, *, whole=False):
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
-          data_root, store_path, store_class, store_size,
-          index_storage_class, index_storage_size,
-          workspaces_path, workspaces_class,
+          data_root, index_storage_class, index_storage_size,
+          workspaces_path, workspaces_class, results_storage_size,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
           buildkit_node, performance_governor, tailnet,
@@ -773,8 +764,10 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           cluster_config):
     """Set up the Kubernetes cluster for execution.
 
-    Deploys a MinIO S3 server in the Kubernetes cluster. The server is used
-    to store run configurations and results for individual scenario execution jobs.
+    Deploys the ``robovast`` pod (the container registry and the campaign index), the
+    ``robovast-service`` Deployment that drives campaigns and keeps their results on its
+    results volume, the shared build daemon, and the cluster-wide pieces they need (RBAC,
+    the GPU device plugin, the placement labels).
 
     This command should be run once before executing scenarios
     on the cluster for the first time.
@@ -836,25 +829,20 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     # cannot reach three of them and miss the fourth. Refused before anything is applied:
     # an argument error must not leave a half-set-up cluster behind it.
     stated = {
-        'store_path': store_path, 'store_class': store_class,
         'workspaces_path': workspaces_path, 'workspaces_class': workspaces_class,
+        # No index path: it is placed beside the results it was ingested from, derived
+        # rather than stated. Only its class is a separate question.
+        'index_class': index_storage_class,
         'registry_path': registry_storage_path, 'registry_class': registry_storage_class,
         'buildkit_path': buildkit_storage_path, 'buildkit_class': buildkit_storage_class,
     }
     try:
         data_paths.refuse_conflicts(stated, data_root=data_root,
                                     sizes={'buildkit': buildkit_storage_size,
-                                           'store': store_size})
+                                           'index': index_storage_size,
+                                           'results': results_storage_size})
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    # Outside `stated` because the index has no path of its own: it is placed beside the
-    # object store it was ingested from, derived rather than stated. Only the class is a
-    # separate question, and only where the store is a bucket -- which is what makes this
-    # one check rather than another tenant.
-    if index_storage_size and not index_storage_class:
-        click.echo("Error: --index-size sizes a claim nothing will create. Pass "
-                   "--index-class, or drop it.", err=True)
         sys.exit(1)
     placements = data_paths.resolve(stated, data_root=data_root)
     # The build daemon's tuning comes from the environment (a `.env`), like every standing
@@ -877,12 +865,13 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         'registry_storage_path': placements['registry'].path,
         'workspaces_storage_class': placements['workspaces'].storage_class,
         'workspaces_storage_path': placements['workspaces'].path,
-        # Popped by setup_server and handed to the provider: the store is in its pod, not
-        # in the service Deployment.
-        'store_storage_class': placements['store'].storage_class,
-        'store_storage_path': placements['store'].path,
-        'store_storage_size': store_size,
-        'index_storage_class': index_storage_class,
+        # Sized rather than placed: results follows the workspaces' class and directory
+        # (`data_paths.TENANTS`), and only how much it may grow to is its own question.
+        'results_storage_size': results_storage_size,
+        # Popped by setup_server and handed to the provider: the index is in the
+        # `robovast` pod, not in the service Deployment.
+        'index_storage_class': placements['index'].storage_class,
+        'index_storage_path': placements['index'].path,
         'index_storage_size': index_storage_size,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
@@ -938,10 +927,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 @click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
-@click.option('--data', is_flag=True,
-              help='Also delete the campaign result bucket(s) from the object store (via the service).')
-@click.option('--force', is_flag=True,
-              help='With --data: delete a named campaign even if the service still considers it live.')
 @target_options
 @click.option('--vast', 'vast', default=None, metavar='FILE',
               type=click.Path(exists=True, dir_okay=False),
@@ -949,22 +934,19 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
                    'refuse when it declares per-cluster resource lists for several '
                    'contexts and --context was not given -- which would otherwise pick '
                    'a cluster by accident. Optional, and read only for that check.')
-def run_cleanup(campaign, data, force, namespace, context, vast):
+def run_cleanup(campaign, namespace, context, vast):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution Jobs and their pods directly (using your kubeconfig
     — the ``-x`` context, ``-n`` namespace). By default removes all campaigns; use
     ``--campaign`` for one.
 
-    Use ``--data`` to **also** delete the campaign result bucket(s) from the object
-    store. That step goes **through the robovast-service** (which holds the
-    object-store credentials), resolved on the conventional local port or from the
-    ``vast login`` record — no local credentials needed.
+    The campaign's results are untouched: they live with the service, and
+    ``vast campaign delete`` is what removes a campaign.
 
     \b
     Usage: vast cluster jobs-cleanup
     Usage: vast cluster jobs-cleanup --campaign campaign-2025-02-27-123456
-    Usage: vast cluster jobs-cleanup --campaign campaign-2025-02-27-123456 --data
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
@@ -981,45 +963,25 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
             click.echo(f"✗ Error: {k8s_msg}", err=True)
             sys.exit(1)
 
-        skip_job_cleanup = False
         if campaign:
             per_run = get_cluster_job_counts_per_campaign(namespace, context=context)
             label_safe = _label_safe_campaign(campaign)
             if label_safe not in per_run:
                 available = sorted(per_run.keys())
-                if data:
-                    # Jobs already gone — warn but continue to bucket cleanup
-                    click.echo(f"Campaign '{campaign}' not found in cluster (jobs already cleaned up).", err=True)
-                    skip_job_cleanup = True
+                if available:
+                    click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
+                    click.echo("Available campaign-ids:", err=True)
+                    for rid in available:
+                        click.echo(f"  - {rid}", err=True)
                 else:
-                    if available:
-                        click.echo(f"Campaign '{campaign}' not found in cluster.", err=True)
-                        click.echo("Available campaign-ids:", err=True)
-                        for rid in available:
-                            click.echo(f"  - {rid}", err=True)
-                    else:
-                        click.echo("No scenario run jobs in cluster.", err=True)
-                    sys.exit(1)
-            if not skip_job_cleanup:
-                click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
+                    click.echo("No scenario run jobs in cluster.", err=True)
+                sys.exit(1)
+            click.echo(f"Cleaning up jobs and pods for campaign '{campaign}'...")
         else:
             click.echo("Cleaning up all scenario run jobs and pods...")
 
-        if not skip_job_cleanup:
-            cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=context)
-            click.echo("✓ Job/pod cleanup completed successfully!")
-
-        if data:
-            # Bucket cleanup runs server-side: the service owns the object-store
-            # credentials and the authoritative live-campaign guard.
-            from robovast.service.interface import CleanupDataRequest
-            with service_client(namespace, context) as (client, target):
-                _echo_target(target)
-                res = client.cleanup_campaign_data(
-                    CleanupDataRequest(campaign_id=campaign, force=force))
-                if not res.ok:
-                    raise click.ClickException(res.message or "cleanup-data failed")
-                click.echo(f"✓ {res.message}")
+        cleanup_cluster_campaign(namespace=namespace, campaign=campaign, context=context)
+        click.echo("✓ Job/pod cleanup completed successfully!")
 
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
     # usage and setting the exit code, so they must pass the broad handler below rather than be
@@ -1048,10 +1010,18 @@ def run_cleanup(campaign, data, force, namespace, context, vast):
                    'queues, the registry ingress route -- then stop. For granting a '
                    'permission the RUNNING version is missing without a version change or '
                    'an API blip, e.g. while a campaign is in flight.')
+@click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
+              envvar='ROBOVAST_RESULTS_SIZE',
+              help='Raise the campaign results PVC to this size -- the volume every '
+                   'campaign lives on. Expanded online by every StorageClass this '
+                   'deployment targets, so no campaign is interrupted. A claim cannot be '
+                   'shrunk, and a deployment whose results are a directory on the data '
+                   'node has no volume to size; both are refused rather than reported as '
+                   'done.')
 @click.option('--yes', '-y', is_flag=True, default=False,
               help='Do not ask before rolling over live campaigns. For scripts; without it '
                    'a non-interactive run aborts rather than rolling silently.')
-def upgrade(namespace, kube_context, timeout, no_restart, yes):
+def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_size):
     """Move a running instance to a new RoboVAST version.
 
     Rolls the Deployment onto the resolved image, reconciles RBAC, and waits for the
@@ -1122,12 +1092,12 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
                      the environment (git, share, ntfy, registry). Recovers this
                      cluster's config and ingress host from the cluster itself, so it
                      cannot lose them. The access token is preserved.
-      setup --force  re-provisions: the object store, the registry storage. It
+      setup --force  re-provisions: the registry/index pod, the storage placement. It
                      takes its options as *arguments*, so a re-run without the original
                      flags re-provisions with different ones. Also re-mints the access
                      token when asked (--rotate-token), logging everyone out.
 
-    Campaign data lives in the object store and survives both.
+    Campaign data lives on the service's results volume and survives both.
     """
     from .cluster_setup import apply_controller_rbac
     from .service_deploy import (deploy_service, ensure_registry_htpasswd, published_url,
@@ -1169,10 +1139,10 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         public_origin = published_url(namespace, kube_context)
         ingress_host = public_origin.split("://", 1)[-1] if public_origin else ""
 
-        # Before anything is changed. This upgrade renders a service pod that no longer
-        # contains the registry or the index -- they belong to the store pod now -- so on a
-        # cluster whose store pod predates the move it would take both away and put neither
-        # back. That cluster needs cleanup + setup, and must hear so before the roll.
+        # Before anything is changed. The service pod this upgrade renders reaches the
+        # registry and the index in the `robovast` pod, so a cluster whose pod lacks them --
+        # or carries an object store nothing reads -- needs cleanup + setup, and must
+        # hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
 
         # Every alias the environment states, checked against the pool the service will have --
@@ -1283,7 +1253,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes):
         deploy_service(namespace=namespace, kube_context=kube_context,
                        config_name=config_name, config_kwargs=config_kwargs,
                        registry_host=ingress_host, registry_password=registry_password,
-                       public_origin=public_origin, job_node_labels=jobs_node_labels)
+                       public_origin=public_origin, job_node_labels=jobs_node_labels,
+                       results_storage_size=results_storage_size)
         _echo_job_node_pool(jobs_node_labels)
         # Converge the build daemon too, or an upgrade would leave the cluster running a
         # service that has nothing to build with.
@@ -1446,9 +1417,9 @@ def cluster_token(namespace, kube_context, quiet):
 @click.option('--context', '-x', 'kube_context', default=None,
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--delete-data', is_flag=True,
-              help="Also empty this deployment's data directories on the node: the object "
-                   'store, the campaign index, the workspaces, the results and the registry. '
-                   'Cleanup keeps them by default, because the store holds every finished '
+              help="Also empty this deployment's data directories on the node: the "
+                   'workspaces, the results, the campaign index and the registry. Cleanup '
+                   'keeps them by default, because the results hold every finished '
                    'campaign and a teardown is a very expensive way to discover that. '
                    'Irreversible, and no archive is taken first -- use vast share or vast '
                    'campaign download for anything worth keeping.')
@@ -1467,8 +1438,9 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement,
             delete_data, vast):
     """Clean up the Kubernetes cluster setup.
 
-    Removes the NFS server pod and service from the Kubernetes cluster
-    by deleting the NFS manifest configuration.
+    Removes the ``robovast`` pod (registry and index), the ``robovast-service``
+    Deployment, the build daemon and the cluster-wide pieces setup installed. The data
+    directories on the node are kept unless ``--delete-data`` asks otherwise.
 
     This command can be run after completing all scenario executions
     to clean up cluster infrastructure resources (different from jobs-cleanup
@@ -1515,7 +1487,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement,
             click.echo(f"  emptied {path} on the data node")
         kept = removed.get("data_kept") or []
         if kept:
-            click.echo("  kept on the data node (the store holds finished campaigns): "
+            click.echo("  kept on the data node (the results hold finished campaigns): "
                        + ", ".join(kept))
             click.echo("  a later setup on this node finds them again; "
                        "--delete-data empties them instead")

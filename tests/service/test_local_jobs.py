@@ -242,7 +242,7 @@ def test_this_lane_measures_and_reserves_nothing(transport):
 def test_usage_reports_the_results_filesystem(transport):
     """Disk is the filesystem campaigns are written to, and it is reported as a pair.
 
-    ``store`` stays None on this lane on purpose: the results store IS that filesystem,
+    ``results`` stays None on this lane on purpose: the results root IS that filesystem,
     so a second identical meter would say nothing.
     """
     transport._usage_cache = None
@@ -251,7 +251,7 @@ def test_usage_reports_the_results_filesystem(transport):
     assert usage.disk is not None and usage.disk_unavailable is None
     assert usage.disk.capacity_bytes > 0
     assert 0 <= usage.disk.used_bytes <= usage.disk.capacity_bytes
-    assert usage.store is None
+    assert usage.results is None
 
 
 def test_usage_reports_disk_before_the_results_dir_exists(transport):

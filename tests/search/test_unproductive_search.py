@@ -46,8 +46,7 @@ class _Backend(ExecutionBackend):
         self.produces = produces
         self.batches = 0
 
-    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options,
-                  whole_campaign=False):
+    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options):
         self.batches += 1
         if not self.produces:
             return

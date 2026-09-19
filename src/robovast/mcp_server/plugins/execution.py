@@ -576,12 +576,11 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
 
-    # Ask the service, which knows where this campaign's log actually lives: on the
-    # cluster the durable copy is in the object store and the live one is pod scratch
-    # (ClusterService.get_campaign_logs serves both), neither of which is on this
-    # filesystem. Reading the local results dir here reported an empty log for every
-    # cluster campaign. The local disk path stays as the serviceless fallback so an
-    # archived results tree is still readable with no service running.
+    # Ask the service, which knows where this campaign's log actually lives: its
+    # results tree, which is not on this filesystem when the service runs on another
+    # host. Reading the local results dir here reported an empty log for every such
+    # campaign. The local disk path stays as the serviceless fallback so an archived
+    # results tree is still readable with no service running.
     client = service_access.service_client()
     if client is not None:
         try:
@@ -984,7 +983,7 @@ def get_resource_usage() -> dict:
     Returns:
         ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
         memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
-        jobs_pending, disk, disk_node, store, store_node, disk_unavailable,
+        jobs_pending, disk, disk_node, results, disk_unavailable,
         storage_refusal}`` — cores and bytes — or ``{error}``.
 
         **Size a sweep against ``*_reserved``, judge a finished one against
@@ -992,10 +991,11 @@ def get_resource_usage() -> dict:
         consumed. ``cpu_used`` aliases whichever the lane leads with. ``null`` in either
         pair is "no such reading", never zero; ``metrics_unavailable`` says why.
 
-        ``disk`` (what runs write into) and ``store`` (the results store) are
-        ``{capacity_bytes, used_bytes}``, or **null: not reported, never an empty disk**.
-        On a cluster ``disk`` is ONE node's filesystem (``disk_node``), not a sum;
-        ``store_node`` is often another. Set, ``storage_refusal`` says why new work is
+        ``disk`` (what runs write into) and ``results`` (the volume the campaigns live
+        on) are ``{capacity_bytes, used_bytes}``, or **null: not reported, never an empty
+        disk**. On a cluster ``disk`` is ONE node's filesystem (``disk_node``), not a sum,
+        and ``results`` is reported only where that volume is separately measurable. Set,
+        ``storage_refusal`` says why new work is
         refused for disk space. ``jobs_running``/``jobs_pending`` is
         work already queued across every campaign; ``exec_container``, a held
         ``exec_in_container`` container and its memory.

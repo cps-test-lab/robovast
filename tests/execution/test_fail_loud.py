@@ -225,7 +225,6 @@ def test_unreachable_cluster_only_ends_postprocessing():
     from robovast.execution.cluster_execution import postprocess_job
 
     cluster_config = mock.Mock()
-    cluster_config.get_s3_credentials.return_value = ("key", "secret")
     boom = urllib3.exceptions.MaxRetryError(
         pool=mock.Mock(), url="/api/v1/namespaces/ns/configmaps",
         reason=urllib3.exceptions.ConnectTimeoutError("connect timed out"))
@@ -243,15 +242,14 @@ def test_unreachable_cluster_only_ends_postprocessing():
     # the API server, not about that refusal.
     with mock.patch.dict("os.environ",
                          {DSN_ENV: "host=index.example.com dbname=robovast"}), \
-         mock.patch("robovast.execution.cluster_execution.in_pod_storage."
-                    "campaign_storage_location", return_value=("bucket", "prefix/")), \
          mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch("kubernetes.client.CoreV1Api", return_value=core), \
          mock.patch("kubernetes.client.BatchV1Api", return_value=batch), \
          mock.patch("robovast.execution.cluster_execution.cluster_execution."
                     "resolve_pull_secret", return_value=""):
         ok, message = postprocess_job.run_conversion_job(
-            cluster_config, "camp", "ns", "img", [{"plugins": []}])
+            cluster_config, "camp", "/results/camp", "ns", "img", [{"plugins": []}],
+            token="campaign:camp.0123abcd")
 
     assert ok is False
     assert "unreachable" in message

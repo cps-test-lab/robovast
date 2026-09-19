@@ -549,7 +549,7 @@ export function AdminPage() {
               'Every MCP tool call this deployment served \u2014 the ranking, and the calls '
               + 'behind it with what each was given and what it answered, truncated to a few '
               + 'lines. Kept in the central index, so it outlives this process but not the '
-              + 'results store.'
+              + 'results volume.'
             }
           >
             <span>MCP tools</span>

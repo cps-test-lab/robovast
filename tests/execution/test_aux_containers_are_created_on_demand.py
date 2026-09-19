@@ -57,27 +57,34 @@ def _kube(monkeypatch):
     return SimpleNamespace(core=_Core(), events=events)
 
 
-def _session(kube):
-    return AuxPodSession("c-2026-09-08-120000", "ns", core_v1=kube.core)
+def _staging(tmp_path):
+    """The service's staging over a temp root; what every session here is given."""
+    return {"stage_dir": lambda slot: tmp_path / "_staged" / slot,
+            "discard_staged": lambda slot: False,
+            "token_for": lambda scope: "tok"}
+
+
+def _session(kube, tmp_path):
+    return AuxPodSession("c-2026-09-08-120000", "ns", core_v1=kube.core, **_staging(tmp_path))
 
 
 # -- the session creates what it is asked for, and nothing else ----------------------
 
 
-def test_entering_creates_nothing(kube):
+def test_entering_creates_nothing(kube, tmp_path):
     """What makes an unconditional factory affordable.
 
     A pod created on entry would have to be a pod somebody decided was needed, which is the
     prediction this replaces.
     """
-    with _session(kube):
+    with _session(kube, tmp_path):
         pass
     assert kube.events == []
 
 
-def test_asking_for_a_spec_creates_its_pod_and_addresses_the_runner_at_it(kube):
+def test_asking_for_a_spec_creates_its_pod_and_addresses_the_runner_at_it(kube, tmp_path):
     spec = ContainerSpec(image="family:robovast-roqsim")
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         runner = session.runner_factory()(spec)
         try:
             expected = aux_pod_name("c-2026-09-08-120000", spec.container_name())
@@ -88,13 +95,13 @@ def test_asking_for_a_spec_creates_its_pod_and_addresses_the_runner_at_it(kube):
             runner.close()
 
 
-def test_a_spec_no_caller_declared_is_served_all_the_same(kube):
+def test_a_spec_no_caller_declared_is_served_all_the_same(kube, tmp_path):
     """The invariant, rather than a list of askers.
 
     A variation, an input generator, a simulator backend's world query: the factory does not
     know which asked, and does not have to.
     """
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         factory = session.runner_factory()
         runner = factory(ContainerSpec(image="ghcr.io/example/some-tool:1"))
         try:
@@ -103,10 +110,10 @@ def test_a_spec_no_caller_declared_is_served_all_the_same(kube):
             runner.close()
 
 
-def test_the_same_spec_twice_is_one_pod(kube):
+def test_the_same_spec_twice_is_one_pod(kube, tmp_path):
     """A composition asking a second time must not pay a second create and image pull."""
     spec = ContainerSpec(image="family:robovast-roqsim")
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         factory = session.runner_factory()
         first, second = factory(spec), factory(spec)
         try:
@@ -118,7 +125,7 @@ def test_the_same_spec_twice_is_one_pod(kube):
             second.close()
 
 
-def test_two_different_specs_get_two_pods(kube):
+def test_two_different_specs_get_two_pods(kube, tmp_path):
     """A pod's container set is fixed when it is created, so the second spec needs its own.
 
     Their names differ, which is what keeps the second from colliding with the first: a
@@ -126,7 +133,7 @@ def test_two_different_specs_get_two_pods(kube):
     """
     specs = [ContainerSpec(image="family:robovast-roqsim"),
              ContainerSpec(image="ghcr.io/example/builder")]
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         factory = session.runner_factory()
         runners = [factory(s) for s in specs]
         try:
@@ -138,10 +145,10 @@ def test_two_different_specs_get_two_pods(kube):
                 runner.close()
 
 
-def test_every_pod_it_created_is_deleted_on_the_way_out(kube):
+def test_every_pod_it_created_is_deleted_on_the_way_out(kube, tmp_path):
     specs = [ContainerSpec(image="family:robovast-roqsim"),
              ContainerSpec(image="ghcr.io/example/builder")]
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         factory = session.runner_factory()
         for spec in specs:
             factory(spec).close()
@@ -150,7 +157,7 @@ def test_every_pod_it_created_is_deleted_on_the_way_out(kube):
     assert deleted == created
 
 
-def test_a_pod_that_never_came_up_is_still_deleted(kube, monkeypatch):
+def test_a_pod_that_never_came_up_is_still_deleted(kube, monkeypatch, tmp_path):
     """On-demand moved the ready wait inside the span, and the delete has to follow it.
 
     An image this cluster cannot pull leaves a pod backing off on a node for the whole ready
@@ -164,7 +171,7 @@ def test_a_pod_that_never_came_up_is_still_deleted(kube, monkeypatch):
 
     spec = ContainerSpec(image="ghcr.io/example/unpullable:1")
     with pytest.raises(RuntimeError, match="ImagePullBackOff"):
-        with _session(kube) as session:
+        with _session(kube, tmp_path) as session:
             session.runner_factory()(spec)
 
     created = {name for kind, name in kube.events if kind == "create"}
@@ -172,7 +179,7 @@ def test_a_pod_that_never_came_up_is_still_deleted(kube, monkeypatch):
     assert created and deleted == created, kube.events
 
 
-def test_a_failed_create_is_not_memoised_as_a_working_pod(kube, monkeypatch):
+def test_a_failed_create_is_not_memoised_as_a_working_pod(kube, monkeypatch, tmp_path):
     """The delete list and the memo are different questions about the same pod.
 
     A composition that carries on past one failure -- a sweep resolving the next
@@ -190,7 +197,7 @@ def test_a_failed_create_is_not_memoised_as_a_working_pod(kube, monkeypatch):
         "robovast.execution.cluster_execution.kube_client.wait_pod_ready", flaky)
 
     spec = ContainerSpec(image="ghcr.io/example/slow:1")
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         with pytest.raises(RuntimeError):
             session.runner_factory()(spec)
         runner = session.runner_factory()(spec)
@@ -200,14 +207,14 @@ def test_a_failed_create_is_not_memoised_as_a_working_pod(kube, monkeypatch):
             runner.close()
 
 
-def test_a_caller_holding_the_spec_may_create_it_up_front(kube):
+def test_a_caller_holding_the_spec_may_create_it_up_front(kube, tmp_path):
     """``provision`` is not the prediction: a scene build knows the one image it compiles.
 
     It pays the pull where it can report it as a stage of the build, and gets the same pod the
     factory would have made.
     """
     spec = ContainerSpec(image="ghcr.io/example/exporter:1")
-    with _session(kube) as session:
+    with _session(kube, tmp_path) as session:
         pod = session.provision(spec)
         runner = session.runner_factory()(spec)
         try:
@@ -304,7 +311,7 @@ def test_the_lane_hands_a_campaigns_stop_flag_to_its_session(monkeypatch):
     assert built["should_stop"] is stop
 
 
-def test_the_ready_wait_is_given_the_campaigns_stop_flag(kube, monkeypatch):
+def test_the_ready_wait_is_given_the_campaigns_stop_flag(kube, monkeypatch, tmp_path):
     """The pull happens inside this wait, so this is where a stop has to be seen.
 
     Nothing else in a composition blocks for minutes, and a stop answered only when the
@@ -319,7 +326,7 @@ def test_the_ready_wait_is_given_the_campaigns_stop_flag(kube, monkeypatch):
         return False
 
     with AuxPodSession("c-2026-09-08-120000", "ns", core_v1=kube.core,
-                       should_stop=stop) as session:
+                       should_stop=stop, **_staging(tmp_path)) as session:
         runner = session.runner_factory()(ContainerSpec(image="family:robovast-roqsim"))
         runner.close()
 
