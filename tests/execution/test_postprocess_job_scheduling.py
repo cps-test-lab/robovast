@@ -97,7 +97,7 @@ def test_a_batch_job_has_the_same_shape_and_is_told_not_to_complete():
     cells.
     """
     cmds = [{"nav2_bt_tree": {"bt_xml": "files/bt.xml"}}]
-    spec = _pod_spec(batch_commands=cmds)
+    spec = _pod_spec(role=pj.JobRole.search_batch("", cmds))
 
     assert [c["name"] for c in spec["initContainers"]] == [STAGE_CONTAINER, "convert"]
     assert [c["name"] for c in spec["containers"]] == [HOST_CONTAINER]
@@ -297,7 +297,7 @@ def test_a_batch_stages_only_its_own_jobs():
     the batch's runs were already written under, so there is one naming of a batch rather
     than two.
     """
-    spec = _pod_spec(batch_commands=[{"nav2_bt_tree": {}}], discriminator="batch-3/reps-5")
+    spec = _pod_spec(role=pj.JobRole.search_batch("batch-3/reps-5", [{"nav2_bt_tree": {}}]))
 
     fetch = _by_name(spec)[STAGE_CONTAINER]["command"][-1]
     assert "batch_jobs=batch-3%2Freps-5" in fetch

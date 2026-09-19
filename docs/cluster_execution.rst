@@ -1242,9 +1242,10 @@ twice on the pod and nothing is buffered on the service.
   the shared ``/ipc`` volume. The uploader is a regular container, and that is the point:
   **a Job is complete only when its results are in the campaign**, and a delivery that
   could not be made is a failed Job rather than a quiet one.
-* A **postprocessing Job** fetches the campaign — narrowed by ``stage``, ``skip_bags`` and
-  ``batch_jobs`` to what it will actually read — and delivers its derived files back the
-  same way.
+* A **postprocessing Job** fetches the campaign — narrowed by ``stage``, ``skip_bags``,
+  ``batch_jobs`` and, for one part of a split postprocess
+  (:ref:`deployment-postprocess-parallel`), ``part`` to what it will actually read — and
+  delivers its derived files back the same way.
 * **Aux, exec and build pods** work on a **staged slot** instead
   (``GET``/``PUT /data/staged/<slot>``), which the service stages under
   ``<results_root>/_staged/<slot>/``: scratch beside the campaigns, sharing their disk and
@@ -1528,7 +1529,11 @@ recorded an ending is never restarted. What is owed here is a verdict, not work.
 The live Jobs are found with one labelled listing (``jobgroup=postprocessing``) and the
 label's campaign resolved against the campaign directories on the results volume, then confirmed against the
 campaign-level Job name -- a *discriminated* Job is a search's per-batch conversion and is
-owed to its batch's driver, not to any campaign record. The waiter creates and replaces
+owed to its batch's driver, not to any campaign record. A part of a split postprocess is
+neither: the split recorded its parts and options beside them
+(``_execution/postprocess_parts/plan.json``), and a live part makes the service start that
+postprocess again with those options -- it waits for the parts still running, runs the
+rest, and completes the campaign. The waiter creates and replaces
 nothing (the Job already mounts the scripts it was created with), publishes the live log
 while it waits, and records nothing at all when the Job cannot be read: a campaign whose
 conversion succeeded must never be marked failed because the API server was unreadable.

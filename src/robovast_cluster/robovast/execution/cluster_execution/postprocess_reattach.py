@@ -38,7 +38,10 @@ has no reason to guess at.
 campaign directories on the service's results volume are the vocabulary it is matched
 against, and the Job's name must equal the campaign-level name
 (``postprocess_job.campaign_job_name``) — a *discriminated* Job is a search's per-batch
-conversion, owed to its batch's driver and to no campaign record at all.
+conversion, owed to its batch's driver and to no campaign record at all — or be a part of
+the split the campaign recorded (``postprocess_parts.read_plan``). A split is resumed
+rather than waited for: the postprocess is started again with the options it recorded,
+waits for the parts still running, and then completes the campaign.
 """
 
 import logging
@@ -64,12 +67,8 @@ def _campaign_ids(service) -> list:
     return sorted(e.name for e in entries if e.is_dir() and is_campaign_dir(e.name))
 
 
-def live_campaign_postprocessing(service) -> dict:
-    """``{campaign_id: job name}`` for the campaign-level postprocessing Jobs still active.
-
-    Empty when the cluster cannot be read: that is not a verdict about any campaign, and
-    this only ever adds waiters.
-    """
+def _live_by_campaign(service) -> dict:
+    """``{campaign_id: [live postprocessing job name, ...]}`` for campaigns held here."""
     from . import postprocess_job
     from .cluster_execution import _label_safe_campaign  # noqa: PLC2701 - same package
 
@@ -77,11 +76,39 @@ def live_campaign_postprocessing(service) -> dict:
                                               kube_context=service.kube_context)
     if not live:
         return {}
+    return {campaign_id: live[_label_safe_campaign(campaign_id)]
+            for campaign_id in _campaign_ids(service)
+            if _label_safe_campaign(campaign_id) in live}
+
+
+def live_campaign_postprocessing(service) -> dict:
+    """``{campaign_id: job name}`` for the campaign-level postprocessing Jobs still active.
+
+    Empty when the cluster cannot be read: that is not a verdict about any campaign, and
+    this only ever adds waiters.
+    """
+    from . import postprocess_job
+
     found = {}
-    for campaign_id in _campaign_ids(service):
-        job_name = live.get(_label_safe_campaign(campaign_id))
-        if job_name and job_name == postprocess_job.campaign_job_name(campaign_id):
+    for campaign_id, names in _live_by_campaign(service).items():
+        job_name = postprocess_job.campaign_job_name(campaign_id)
+        if job_name in names:
             found[campaign_id] = job_name
+    return found
+
+
+def live_split_postprocessing(service) -> dict:
+    """``{campaign_id: recorded plan}`` for split postprocesses with a part still running."""
+    from .postprocess_parts import Part, read_plan, part_job_names
+
+    found = {}
+    for campaign_id, names in _live_by_campaign(service).items():
+        plan = read_plan(str(service.campaign_dir(campaign_id)))
+        if plan is None:
+            continue
+        parts = [Part(name=n) for n in plan["parts"]]
+        if set(part_job_names(campaign_id, parts)) & set(names):
+            found[campaign_id] = plan
     return found
 
 
@@ -112,6 +139,12 @@ def reattach_all(service) -> dict:
         logger.warning("Could not check for postprocessing jobs left running by a previous "
                        "service process, so none is being waited on: %s", e, exc_info=True)
         return {}
+    try:
+        splits = live_split_postprocessing(service)
+    except Exception as e:  # noqa: BLE001 - as above, and it must not cost the waiters
+        logger.warning("Could not check for split postprocessing left running by a previous "
+                       "service process, so none is being resumed: %s", e, exc_info=True)
+        splits = {}
     attached = {}
     for campaign_id, job_name in live.items():
         try:
@@ -120,6 +153,16 @@ def reattach_all(service) -> dict:
         except Exception as e:  # noqa: BLE001 - one campaign must not stop the others
             logger.warning("Could not re-attach to postprocessing job %s for campaign %s: "
                            "%s", job_name, campaign_id, e, exc_info=True)
+    for campaign_id, plan in splits.items():
+        if campaign_id in attached:
+            continue
+        try:
+            if service.resume_postprocessing(campaign_id, force=plan.get("force", False),
+                                             skip=plan.get("skip") or ()):
+                attached[campaign_id] = f"{len(plan['parts'])} part(s)"
+        except Exception as e:  # noqa: BLE001 - one campaign must not stop the others
+            logger.warning("Could not resume the split postprocessing of campaign %s: %s",
+                           campaign_id, e, exc_info=True)
     if attached:
         logger.info("Re-attached to %d postprocessing job(s) still running from a previous "
                     "service process: %s", len(attached), ", ".join(sorted(attached)))

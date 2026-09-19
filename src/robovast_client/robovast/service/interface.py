@@ -1591,7 +1591,8 @@ class ArchiveSelection(BaseModel):
     The default is the whole campaign, minus staging. A postprocessing pod asks for what its
     conversion reads: ``stage`` drops the calibration probes, the log this pod will write
     and the archived log sections; ``skip_bags`` drops the rosbags when the conversion
-    does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch. The selection is
+    does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch; ``part`` to the runs
+    a split postprocess gave one of its Jobs. The selection is
     made where the bytes are, not where they land: what the pod is never given it cannot
     convert, cannot fail on and does not pay to download.
 
@@ -1604,6 +1605,9 @@ class ArchiveSelection(BaseModel):
     skip_bags: bool = False
     batch_jobs: str = ""
     uncompressed: bool = False
+    #: A part of a split postprocess: only its runs and their jobs, and everything that is
+    #: neither (see ``campaign_archive.part_include``).
+    part: str = ""
 
 
 class OutputsIngested(BaseModel):

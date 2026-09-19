@@ -1970,6 +1970,13 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     # was configured rather than leaving the variable absent and ambiguous.
     for var in (BOOTSTRAP_CPU_ENV, BOOTSTRAP_MEMORY_ENV):
         env.append({"name": var, "value": os.environ.get(var, "").strip()})
+    # Into how many Jobs a campaign's postprocessing may be split: the operator's, from the
+    # same `.env`, for the same reason. Checked here so a value the service could not use
+    # refuses the deploy instead of every postprocess after it.
+    from .postprocess_parts import MAX_PARALLEL_ENV, max_parallel  # noqa: PLC0415
+    max_parallel()
+    env.append({"name": MAX_PARALLEL_ENV,
+                "value": os.environ.get(MAX_PARALLEL_ENV, "").strip()})
     # How large this cluster may get, asked HERE rather than in the pod that reads it: the
     # answer comes from the provider's own CLI, which this command has and the service image
     # does not. Written on every deploy, empty included, so a cluster that stopped being able

@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 USAGE_REL = "_execution/postprocess_system_usage.csv"
 
 
-def record(campaign_dir: str, step: str) -> dict:
-    """Append *step*'s container-level counters to the campaign's record.
+def record(campaign_dir: str, step: str, rel: str = USAGE_REL) -> dict:
+    """Append *step*'s container-level counters to the campaign's record at *rel*.
 
     Returns ``{column: value}`` for what was written, empty when nothing could be.
 
@@ -56,7 +56,7 @@ def record(campaign_dir: str, step: str) -> dict:
     try:
         from robovast.execution.data import monitor_resources  # noqa: PLC0415
 
-        path = os.path.join(campaign_dir, *USAGE_REL.split("/"))
+        path = os.path.join(campaign_dir, *rel.split("/"))
         probes = monitor_resources.start_probes()
         columns = [monitor_resources.ONCE_LABEL_COLUMN] + [
             column for _, cols in probes for column in cols]
@@ -109,7 +109,7 @@ def summary_line(row: dict) -> str:
     return ", ".join(parts)
 
 
-def shell_record(campaign_dir: str, step: str) -> str:
+def shell_record(campaign_dir: str, step: str, rel: str = USAGE_REL) -> str:
     """Shell that records *step*, for the container this package cannot run in.
 
     The conversion container is the campaign's **own** image -- an arbitrary user image -- so
@@ -121,7 +121,7 @@ def shell_record(campaign_dir: str, step: str) -> str:
     Ends in ``true`` and swallows its own failure: a conversion whose outputs are correct must
     not fail because the record of what it cost could not be written.
     """
-    path = os.path.join(campaign_dir, *USAGE_REL.split("/"))
+    path = os.path.join(campaign_dir, *rel.split("/"))
     return (f"python3 /scripts/monitor_resources.py --once {_shquote(path)} "
             f"{_shquote(step)} || true")
 

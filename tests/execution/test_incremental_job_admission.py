@@ -86,11 +86,9 @@ def test_the_loop_keeps_going_while_jobs_are_still_only_planned():
 
 def _tracker(admission, list_remaining):
     from robovast.execution.cluster_execution.admitted_jobs import AdmittedJobs
-    tracker = AdmittedJobs(admission=admission, owner="camp", batch_api=None, core_api=None,
-                           namespace="ns", label_selector="jobgroup=x",
-                           list_remaining=list_remaining)
-    tracker._blocked = lambda created: ({}, {}, "")  # pylint: disable=protected-access
-    return tracker
+    return AdmittedJobs(admission=admission, owner="camp", batch_api=None, core_api=None,
+                        namespace="ns", label_selector="jobgroup=x",
+                        list_remaining=list_remaining, read_blocked=lambda: ({}, {}))
 
 
 def test_creation_is_paced_by_capacity_not_by_the_plan_size():

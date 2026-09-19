@@ -2911,6 +2911,24 @@ class ClusterService(LocalTransport):
         from . import postprocess_reattach
         return postprocess_reattach.start_reattach(self)
 
+    def resume_postprocessing(self, campaign_id: str, *, force: bool = False,
+                              skip=()) -> bool:
+        """Resume a split postprocess an earlier process started. False if busy.
+
+        Started again with the options it recorded, it waits for the part Jobs still
+        running rather than creating them again, runs the parts that are not, and then
+        completes the campaign (``postprocess_job.postprocess_campaign``).
+        """
+        campaign_dir = self.campaign_dir(campaign_id)
+
+        def work(state):
+            ok, message = self._postprocess_campaign(
+                campaign_id, campaign_dir, force=force, skip=list(skip or []), state=state)
+            self._record_postprocess_outcome(campaign_id, state, ok, message)
+
+        result = self._dispatch_background(campaign_id, phase=Phase.POSTPROCESSING, work=work)
+        return bool(result.ok)
+
     def reattach_postprocessing(self, campaign_id: str, job_name: str) -> bool:
         """Wait for *job_name* in the background and record its outcome. False if busy.
 

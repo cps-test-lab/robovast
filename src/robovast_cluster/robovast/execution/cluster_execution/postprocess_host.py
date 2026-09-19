@@ -49,10 +49,20 @@ ENV_STAGE_DEST = "ROBOVAST_STAGE_DEST"
 #: ``"1"`` bypasses the step caches, re-deriving what a previous run already produced.
 ENV_FORCE = "ROBOVAST_POSTPROCESS_FORCE"
 
-#: Comma-separated postprocessing step names to skip, on top of the rosbag steps
-#: :func:`postprocess_job.run_host_postprocessing` always skips (the conversion container
-#: owns those).
+#: Comma-separated postprocessing step names to skip, on top of the execution-image steps
+#: :func:`postprocess_job.run_host_postprocessing` always skips (the image container owns
+#: those).
 ENV_SKIP = "ROBOVAST_POSTPROCESS_SKIP"
+
+#: The part of a split postprocess this pod is, when it is one. Its commands arrive in
+#: :data:`ENV_COMMANDS`; what differs is where it writes the files every part would write
+#: -- its log, its provenance record, its usage record -- which are named for it
+#: (``campaign_archive.part_file``), so the parts' deliveries never replace each other's.
+ENV_PART = "ROBOVAST_POSTPROCESS_PART"
+
+#: ``"1"`` on the Job that completes a split postprocess: the campaign-level pass, less the
+#: steps every part already ran on its part (``split_postprocessing``).
+ENV_SKIP_MAP = "ROBOVAST_POSTPROCESS_SKIP_MAP"
 
 #: JSON list of ``search.postprocessing`` commands to run instead of the campaign-level
 #: pass. Set only on a per-batch Job.
@@ -310,7 +320,7 @@ def _derive_batch(campaign_root: str, commands: list, force: bool) -> tuple:
 
     Nothing here completes the campaign: this function has no ingest and no provenance
     record to skip, which is the reason a batch runs it rather than the campaign-level pass
-    with steps turned off.
+    with steps turned off. Returns ``(ok, message, provenance entries)``.
     """
     from robovast.common.config_plugins import ensure_plugins_importable  # noqa: PLC0415
     from robovast.common.results_utils import campaign_vast  # noqa: PLC0415
@@ -321,10 +331,10 @@ def _derive_batch(campaign_root: str, commands: list, force: bool) -> tuple:
     # its staged config, exactly as they do on the controller.
     config_dir = os.path.join(campaign_root, "_config")
     ensure_plugins_importable(campaign_root, vast_path=str(campaign_vast(campaign_root)))
-    ok, _entries = run_postprocessing_commands(
+    ok, entries = run_postprocessing_commands(
         commands, results_dir=campaign_root, config_dir=config_dir,
         output=logger.info, force=force)
-    return ok, ("batch derived" if ok else "a batch postprocessing step failed")
+    return ok, ("batch derived" if ok else "a batch postprocessing step failed"), entries
 
 
 def _required(name: str) -> str:
@@ -357,12 +367,18 @@ def main() -> int:
     force = os.environ.get(ENV_FORCE) == "1"
     skip = [s for s in (os.environ.get(ENV_SKIP) or "").split(",") if s.strip()]
     batch_commands = os.environ.get(ENV_COMMANDS)
+    part = os.environ.get(ENV_PART) or ""
+    skip_map = os.environ.get(ENV_SKIP_MAP) == "1"
     campaign_root = os.path.join(dest, campaign_id)
+
+    from robovast.execution.campaign_archive import (NOT_STAGED_LOG,  # noqa: PLC0415
+                                                     in_part, part_file)
 
     # Appended to (the handler opens in mode "a"), never truncated: the conversion container
     # has already written its half of this file, and the two stages are one ordered
     # POSTPROCESSING section in the campaign log.
-    log_path = os.path.join(campaign_root, "_execution", "postprocessing.log")
+    log_path = os.path.join(campaign_root,
+                            *in_part(NOT_STAGED_LOG, part, "postprocessing.log").split("/"))
     handler = None
     try:
         handler = add_campaign_log_handler(log_path)
@@ -378,9 +394,20 @@ def main() -> int:
             # names the campaign inside it, which is why staging lands the campaign one
             # level down.
             ok, message = run_host_postprocessing(
-                dest, campaign_id, force=force, skip=skip)
+                dest, campaign_id, force=force, skip=skip, skip_map=skip_map)
         else:
-            ok, message = _derive_batch(campaign_root, json.loads(batch_commands), force)
+            ok, message, entries = _derive_batch(campaign_root, json.loads(batch_commands),
+                                                 force)
+            if part:
+                # What this part's host steps produced, for the Job that completes the
+                # campaign: it writes the provenance record, and it did not run these.
+                from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+                    PART_PROVENANCE_SUFFIX)
+                record = os.path.join(campaign_root, *part_file(
+                    part, f"host.{PART_PROVENANCE_SUFFIX}").split("/"))
+                os.makedirs(os.path.dirname(record), exist_ok=True)
+                with open(record, "w", encoding="utf-8") as f:
+                    json.dump({"entries": entries}, f)
     except Exception as e:  # noqa: BLE001 - the delivery below is the only record of this
         failure = e
         message = f"{type(e).__name__}: {e}"
@@ -395,7 +422,9 @@ def main() -> int:
         # this step's work, and the delivery streams rather than accumulating.
         try:
             logger.info("%s", postprocess_usage.summary_line(
-                postprocess_usage.record(campaign_root, "host")))
+                postprocess_usage.record(
+                    campaign_root, "host",
+                    in_part(postprocess_usage.USAGE_REL, part, "system_usage.csv"))))
         except Exception:  # pylint: disable=broad-except
             logger.warning("Could not record what the host step used.", exc_info=True)
         # Before the delivery, so the log file holds everything this stage logged.

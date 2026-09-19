@@ -161,6 +161,8 @@ class Nav2BtTree(BasePostprocessingPlugin):
     definition, writes ``nav2_behaviors.csv`` in the shared ``behaviors`` schema.
     """
 
+    scope = "run"
+
     def __call__(self, results_dir: str, config_dir: str,
                  bt_xml: Optional[str] = None, file: str = "nav2_behaviors.csv",
                  raw: str = "nav2_behavior_tree.csv", force: bool = False,

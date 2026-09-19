@@ -130,6 +130,19 @@ class BasePostprocessingPlugin:
     #: non-zero, and everything downstream then reads files that were never written.
     needs_execution_image: bool = False
 
+    #: What one run's output may depend on.
+    #:
+    #: ``"run"``: only that run's own directory, the scenario jobs it links, the other runs
+    #: of those jobs (a packed job's timeline is shared out between its runs), and the
+    #: campaign-level inputs (``_config``, ``_execution``, ``_transient``). Such a step can
+    #: be run on a campaign tree holding any set of whole jobs with their runs, and the union
+    #: of the outputs is the whole campaign's -- which is what lets a cluster split it
+    #: across Jobs.
+    #:
+    #: ``"campaign"``: anything, so it runs once over the whole tree. The default: a step
+    #: that says nothing is never split, and costs only the speed-up.
+    scope: str = "campaign"
+
     def __call__(
         self,
         results_dir: str,
@@ -651,6 +664,7 @@ def _image_scripts_dir(extra_files):
 
 class RosbagsProcess(ExecutionImagePlugin):
     # Reads rosbags, so it needs the image whose message definitions wrote them.
+    # One bag at a time, each written beside itself.
     """Unified single-pass rosbag processor with internal plugin system.
 
     Reads each rosbag exactly once and dispatches messages to all configured
@@ -699,6 +713,7 @@ class RosbagsProcess(ExecutionImagePlugin):
     """
 
     progress_prefix = "Processing rosbags"
+    scope = "run"
 
     def image_command(self, ctx: ImageContext,  # pylint: disable=arguments-differ
                       plugins: Optional[List[dict]] = None,
@@ -763,6 +778,8 @@ class RunLog(BasePostprocessingPlugin):
          - run_log:
              min_severity: warn
     """
+
+    scope = "run"
 
     def __call__(
         self,
@@ -901,6 +918,8 @@ class ResourceUsage(BasePostprocessingPlugin):
     is a ``WHERE`` clause the reader already has, and one applied at write time cannot be
     undone without re-running postprocessing.
     """
+
+    scope = "run"
 
     def __call__(
         self,

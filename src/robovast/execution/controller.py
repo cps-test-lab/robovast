@@ -1262,7 +1262,7 @@ class CampaignController:
         from robovast.results_processing.postprocessing import postprocess_convert_resources
         from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
         try:
-            run_job, image_for, complete_message = _conversion_job_runner()
+            run_job, image_for, complete_message, job_role = _conversion_job_runner()
             ok, message = run_job(
                 cluster_config, self.campaign_id, self.campaign_root,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
@@ -1272,12 +1272,11 @@ class CampaignController:
                 # built with it by the service, the one process holding the secret.
                 token=getattr(self.backend, "data_token", ""),
                 kube_context=getattr(self.backend, "kube_context", None),
-                discriminator=tag,
+                # This batch's own conversion, and its own half of the pipeline run in the
+                # pod. Deriving beside the data is what keeps the per-run tracks off the
+                # wire: what comes back is the few rows per run the search scores next.
+                role=job_role.search_batch(tag, local_cmds),
                 tolerate_under=_interrupted_job_dirs(self.campaign_root),
-                # This batch's own half of the pipeline, run in the pod. Deriving beside
-                # the data is what keeps the per-run tracks off the wire: what comes back
-                # is the few rows per run the search scores next.
-                batch_commands=local_cmds,
                 # The same sizing the campaign-level conversion uses. A search converts
                 # once per batch, so a conversion left at the default here would be the
                 # one place a campaign's declared figure did not apply -- and it is the
@@ -1368,7 +1367,7 @@ def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
 
 
 def _conversion_job_runner():
-    """The three cluster helpers a batch conversion needs, resolved in one place.
+    """The four cluster helpers a batch conversion needs, resolved in one place.
 
     A seam rather than three imports at the call site: it keeps the cluster package out
     of the import path on a local run, and lets a test substitute the whole set without a
@@ -1379,8 +1378,8 @@ def _conversion_job_runner():
     account has been published.
     """
     from robovast.execution.cluster_execution.postprocess_job import (
-        campaign_execution_image, run_conversion_job, with_log_pointer)
-    return run_conversion_job, campaign_execution_image, with_log_pointer
+        JobRole, campaign_execution_image, run_conversion_job, with_log_pointer)
+    return run_conversion_job, campaign_execution_image, with_log_pointer, JobRole
 
 
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,

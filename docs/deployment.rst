@@ -375,6 +375,37 @@ Where a node setting comes from decides what each command does with it:
 A ``.env`` entry is the standing statement, so both commands apply it whole — run them from the
 shell that has the deployment's ``.env``.
 
+.. _deployment-postprocess-parallel:
+
+Splitting a campaign's postprocessing
+-------------------------------------
+
+On a cluster, a campaign's postprocessing can run in several Jobs at once instead of one. The
+steps that work run by run — the rosbag conversion, ``run_log``, ``resource_usage`` and every
+other step whose plugin declares it (:ref:`extending-postprocessing`) — run in one Job per
+*part* of the campaign's runs, each staging only its own runs; the admission queue places
+them wherever the cluster has room. One more Job then runs the remaining steps and the index
+ingest over the whole campaign.
+
+**Nothing has to be set for this.** By default a campaign is cut into as many parts as the
+cluster could run at once: its recorded size (``ROBOVAST_CLUSTER_MAX_CPU``, written by
+``setup``) divided by the CPU one conversion reserves, which is the campaign's own
+``results_processing.resources``. A cluster that cannot say how large it is gets eight. How
+many of those Jobs run at the same time is, as for a campaign's runs, the admission queue's
+decision.
+
+Set a cap when you want one:
+
+.. code-block:: bash
+
+   # .env on the machine you run setup/upgrade from
+   ROBOVAST_POSTPROCESS_MAX_PARALLEL=8
+
+It is then the most Jobs one campaign's postprocessing is split into; ``1`` keeps the whole
+postprocessing in one Job. A campaign with fewer scenario jobs gets fewer parts either way.
+``vast cluster setup`` and ``vast service upgrade`` carry the value into the Deployment and
+refuse one that is not a whole number of at least 1.
+
 .. _deployment-disk-reserve:
 
 Keeping free space
