@@ -29,7 +29,6 @@ import {
 } from '@/lib/robovastClient'
 import { FailureBox } from '@/components/StatusView'
 import { useToasts } from '@/components/ToastProvider'
-import { formatDataFetchLabel } from '@/lib/format'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
@@ -114,22 +113,6 @@ export function DataBrowser({
     enabled: !!campaignId,
     retry: false,
   })
-  // Why a query may be slow, asked alongside it: on a cluster campaign the first one fetches
-  // the databases from the object store inside the request. Cheap and advisory — a failure
-  // (an older service has no such route) just means no label.
-  const dataStatus = useQuery({
-    queryKey: ['data-status', campaignId],
-    queryFn: () => robovast.campaignDataStatus(campaignId),
-    enabled: !!campaignId,
-    retry: false,
-    staleTime: 60_000,
-    // Poll only while a query is outstanding: the label carries live transfer counts, so a
-    // single fetch would freeze it at whatever the first sample said.
-    // `isFetching`, not `isPending`: a disabled query (no SQL entered yet) stays pending
-    // forever, which would poll an idle tab for the life of the session.
-    refetchInterval: describe.isFetching || result.isFetching ? 1000 : false,
-  })
-  const fetchLabel = formatDataFetchLabel(dataStatus.data)
   // A failed campaign never produces derived data — surface *why* it failed (the same
   // reason the Monitor shows) instead of an endless "run postprocessing" prompt.
   const status = useQuery({
@@ -344,13 +327,6 @@ export function DataBrowser({
                   title={result.data.note ?? undefined}
                 >
                   {result.data.row_count} rows{result.data.truncated ? ' (truncated)' : ''}
-                </Typography>
-              ) : null}
-              {/* While a query runs, say if the wait is an object-store fetch rather than
-                  the query itself — otherwise a multi-minute first load looks like a hang. */}
-              {result.isFetching && fetchLabel ? (
-                <Typography variant="caption" color="text.secondary">
-                  {fetchLabel}
                 </Typography>
               ) : null}
             </Stack>

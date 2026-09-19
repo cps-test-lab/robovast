@@ -25,9 +25,12 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
 * **Cluster service** — ``vast cluster setup --ingress-host …`` deploys and
   publishes it (mode 2); users then reach it in a browser, or with ``vast login
   <url>`` for the CLI and MCP. **No kubeconfig, no kubectl, nothing to hold open.**
-  In-pod, the Deployment runs ``vast serve --backend cluster``; run ``vast serve
-  --backend cluster -x <context>`` off-cluster to debug the driver locally against a
-  real cluster.
+  In-pod, the Deployment runs ``vast serve --backend cluster``. That backend runs only
+  inside the cluster — a campaign's pods deliver their outputs to the service over the
+  cluster network, which cannot reach a process on your host — so debugging the driver
+  against a real cluster means running it *in* that network with the Service's traffic
+  steered to it: ``mirrord exec --target deployment/robovast-service --steal -- vast
+  serve --backend cluster``.
 * **Your own tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800
   <host>`` or ``kubectl port-forward svc/robovast-service 8800:8800`` puts a service
   on the conventional port, and every client finds it there. That is the break-glass
@@ -66,7 +69,8 @@ The three modes
     ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +
     ClusterIP Service. It **drives each campaign in-process** (one worker thread
     per campaign) over the Kubernetes backend, creating the scenario Jobs itself,
-    and stores results in the **object store**. There is no per-campaign controller
+    and keeps each campaign as a directory on the service's **results volume**, exactly
+    as a local one lives under the local results root. There is no per-campaign controller
     pod. In-pod, ``vast serve`` auto-detects the cluster backend
     (``--backend auto`` → ``cluster`` when ``KUBERNETES_SERVICE_HOST`` is set).
 
@@ -254,6 +258,15 @@ that makes a changed Secret take effect: the pod reads them through ``envFrom`` 
 container start. The cost is a few seconds of API downtime, during which open MCP
 connections and log streams are dropped; campaigns run as their own Jobs and keep going.
 
+**The old pod goes before the new one starts.** The Deployment's strategy is
+``Recreate``, not the default rolling overlap, because the campaigns are on a
+ReadWriteOnce volume that one node may mount at a time: a replacement scheduled on
+another node while the old pod still held it would never start, and the upgrade would
+wait out its timeout on a Multi-Attach that the Deployment reports as merely
+"progressing". A pod finishing a run during those seconds finds nothing listening and
+retries its delivery for long enough to outlast the replacement coming up — including
+the time it spends resuming campaigns before it binds its port.
+
 RBAC reconciliation is not decoration. The ``/usage`` endpoint (cluster CPU/memory,
 shown in the web UI top bar and by the ``resource_usage`` MCP tool) once needed a new
 cluster-scoped ``ClusterRole`` over ``nodes``/``pods``; a service deployed before that
@@ -330,8 +343,16 @@ The lifecycle verbs are deliberately distinct:
    * - ``vast cluster cleanup``
      - Removes the deployment entirely.
 
-Campaign data lives in the object store and survives all three. Plain ``setup`` over
-a live service is refused (``Cluster is already set up``).
+Campaign data lives on the results volume and survives all three — ``vast cluster
+cleanup`` keeps the data directories unless ``--delete-data`` asks otherwise. Plain
+``setup`` over a live service is refused (``Cluster is already set up``).
+
+That volume is a directory on the service pod's node where the cluster provisions nothing
+(rke2, minikube) and a provisioned ``ReadWriteOnce`` claim where it can
+(:ref:`cluster-node-local-storage`). Either way it is **one disk and not a backup**:
+anything that must survive the machine belongs in an archive (``vast share``, or ``vast
+campaign download``), and keeping the disk itself is the operator's snapshot schedule,
+which RoboVAST neither takes nor manages.
 
 Where a node setting comes from decides what each command does with it:
 
@@ -359,8 +380,8 @@ shell that has the deployment's ``.env``.
 Keeping free space
 ------------------
 
-The service can keep a **free-space reserve**: while its disk or its results store has less
-free space than that, it refuses to *start* a campaign, a re-run, an image build, an import or
+The service can keep a **free-space reserve**: while its disk or its results volume has
+less free space than that, it refuses to *start* a campaign, a re-run, an image build, an import or
 a postprocessing run, with a 507 naming the meter and the amounts. Work already running
 continues, and stopping or deleting campaigns is never refused. The web UI's sidebar and
 ``get_resource_usage`` (``storage_refusal``) show the same verdict. If clearing the service's
@@ -387,14 +408,6 @@ disk (``nodefs.available``), so convert it for your disk. Read it from the node:
 ``vast service restart`` does not. The build cache keeps the same reserve free unless
 ``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` says otherwise (see :ref:`the build daemon's settings
 <buildkit-settings>`).
-
-On a cluster the service also removes the campaign files it fetched from the object store once
-nobody has read them for a week, checking hourly and keeping anything in use. Set the age in
-the same ``.env``; setup and upgrade apply it the same way:
-
-.. code-block:: bash
-
-   ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS=7    # the default; 0 keeps them until the cache is cleared
 
 Checking a deployment
 ---------------------

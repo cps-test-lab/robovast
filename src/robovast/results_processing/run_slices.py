@@ -331,8 +331,8 @@ def iter_run_slices(campaign_path: Path, stats: SliceStats) -> Iterator[RunSlice
     """Every run of a campaign, with its job, its clock and its share of the timeline.
 
     Job resolution goes through ``_transient/job_links.yaml`` and never through the ``job``
-    symlink: the symlink is only created once a job has finished, and cannot exist in an
-    object store at all — which is precisely the cluster case this has to work in.
+    symlink: the symlink is only created once a job has finished, and a running job is
+    precisely the case this has to work in.
 
     The clock map is loaded once per job and reused, with a per-RUN fallback for a non-ROS
     run that recorded its own map beside its output.

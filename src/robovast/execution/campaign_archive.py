@@ -145,25 +145,29 @@ def _make_filter(exclude, on_member=None, include=None):
     return _filter
 
 
-def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
+def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE, include=None) -> int:
     """Sum the payload bytes :func:`campaign_tar_stream` would read from *campaign_root*.
 
-    The denominator for a streamed upload's progress. Deliberately a metadata-only
-    walk -- `os.scandir` carries the size, so this is one directory read per level and
-    no file is opened -- because it runs *before* an upload that will read every one of
-    those bytes anyway.
+    The denominator for a streamed upload's progress, and the figure a postprocessing pod's
+    disk is reserved from. Deliberately a metadata-only walk -- `os.scandir` carries the
+    size, so this is one directory read per level and no file is opened -- because it
+    runs *before* a transfer that will read every one of those bytes anyway.
 
-    Mirrors the archiver's two rules exactly, or the bar would end somewhere other
-    than 100%: an excluded name prunes its whole subtree, and symlinks are members
-    rather than paths to follow (``dereference=False``), so they are not recursed
-    into and contribute nothing.
+    Mirrors the archiver's rules exactly, or the bar would end somewhere other than
+    100%: an excluded name prunes its whole subtree, symlinks are members rather than
+    paths to follow (``dereference=False``), so they are not recursed into and contribute
+    nothing, and *include* -- a :func:`stage_include`-shaped predicate over the
+    campaign-relative path -- prunes a refused directory whole, as
+    :func:`iter_campaign_tar` does.
     """
     exclude = frozenset(exclude or ())
     total = 0
-    stack = [os.path.normpath(str(campaign_root))]
+    root = os.path.normpath(str(campaign_root))
+    stack = [(root, "")]
     while stack:
+        path, rel = stack.pop()
         try:
-            entries = list(os.scandir(stack.pop()))
+            entries = list(os.scandir(path))
         except OSError:
             # A campaign is live until it is not; a directory that vanished under the
             # walk costs the bar some accuracy and must not cost the upload its run.
@@ -171,10 +175,14 @@ def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
         for entry in entries:
             if entry.name in exclude:
                 continue
+            child = f"{rel}/{entry.name}" if rel else entry.name
+            is_dir = entry.is_dir(follow_symlinks=False)
+            if include is not None and not include(child, is_dir):
+                continue
             if entry.is_symlink():
                 continue
-            if entry.is_dir(follow_symlinks=False):
-                stack.append(entry.path)
+            if is_dir:
+                stack.append((entry.path, child))
                 continue
             try:
                 total += entry.stat(follow_symlinks=False).st_size

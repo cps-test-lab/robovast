@@ -34,14 +34,17 @@ The four images
      - The service: ``vast serve``, the REST API and the web UI. ``python:3.12-slim``, with
        no ROS and no GL — deliberately, so the long-lived Deployment stays small.
    * - ``robovast-sidecar``
-     - An alpine helper (``mc`` + ``boto3``) for object-store init containers and the
-       postprocessing Job. Also the init container of an **experiment-image build** Job,
-       which is why that Job carries the deployment's registry pull Secret: on a private
-       registry a credential-less build pod cannot fetch its own helper, and the build
-       fails before it has read a line of the project.
+     - An alpine helper carrying ``curl`` and GNU ``tar`` — the two halves of every
+       ``curl | tar`` fetch and ``tar | curl`` delivery a pod makes against the service's
+       data plane. It is the init container that lands a job's inputs, the ``uploader``
+       that delivers its ``/out``, the ``stage`` step of the postprocessing Job, and the
+       context fetch of an **experiment-image build** Job — which is why that Job carries
+       the deployment's registry pull Secret: on a private registry a credential-less
+       build pod cannot fetch its own helper, and the build fails before it has read a
+       line of the project.
 
 They are four rather than fewer because their contents barely overlap. ``robovast`` and
-``robovast-controller`` share only ``mc``, ``curl`` and the compat marker; merging them
+``robovast-controller`` share only ``curl`` and the compat marker; merging them
 would put a ROS desktop image into the service pod and the scientific stack into every job
 pod, and would tie two independent release cadences together.
 ``robovast-roqsim`` is ``FROM robovast``, so the pair is one layer chain rather than a
@@ -328,7 +331,7 @@ Moving a cluster's images
 configuration and ingress host *from the cluster*, then touches only the Deployment's
 image, RBAC and the credential Secrets, and always restarts the pod — which is the only way
 ``envFrom`` Secrets are re-read. ``setup`` **provisions**: it re-runs the GPU device-plugin
-install, the object store and the registry storage, and it takes its options as arguments, so a re-run
+install, the results volume and the registry storage, and it takes its options as arguments, so a re-run
 without the original flags re-provisions with different ones.
 
 

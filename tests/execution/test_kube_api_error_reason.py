@@ -185,7 +185,9 @@ def _lane_refusing_to_create(monkeypatch, reason):
 
     from robovast.service.container_exec import ExecSpec
 
-    lane = kube_exec_lane.KubeExecLane("ns")
+    lane = kube_exec_lane.KubeExecLane("ns", stage_dir=lambda slot: pathlib.Path("/nonexistent") / slot,
+                                       discard_staged=lambda slot: False,
+                                       token_for=lambda scope: "tok")
 
     class _Core:
         @staticmethod

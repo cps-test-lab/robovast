@@ -62,8 +62,7 @@ const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 
 // What a PREVIEW mounts: the panels that read a run's own artifacts rather than the index. A running
 // campaign has no rows there, so every other panel would issue a query per run change that cannot
-// answer -- and on the cluster the first of them fetches databases from the object store inside the
-// request, against the very service that is driving the campaign. They are left out rather than
+// answer, against the very service that is driving the campaign. They are left out rather than
 // mounted empty: a wall of identical errors says less than the one sentence on the preview chip.
 //
 // `scene3d` replays from `capture/capture.json`, which the simulator writes at the run's clean stop.
@@ -307,9 +306,9 @@ export function RunView({
   // answers from its output directories instead, in the same row shape.
   //
   // A preview's rows GROW while it is open, so they are re-read — but only while the picker is
-  // actually open, the same "poll while somebody is looking" gate the tree uses for its data-status
-  // probe. Growth only ever appends a run, so a refresh cannot move the selection out from under a
-  // reader; and once the campaign finishes, the key changes and the indexed rows are fetched.
+  // actually open, so a run nobody is looking at polls nothing. Growth only ever appends a run, so
+  // a refresh cannot move the selection out from under a reader; and once the campaign finishes,
+  // the key changes and the indexed rows are fetched.
   const runs = useQuery({
     ...runsQuery(summary),
     enabled: available,

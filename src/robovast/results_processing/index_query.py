@@ -173,11 +173,11 @@ def run_counts(campaign_id: str) -> "dict | None":
     """Per-run pass/fail tallies for *campaign_id* from the index, or ``None``.
 
     The same shape ``common.store.read_run_counts`` returns from a campaign's own
-    ``campaign.db``, and read for the same summary. It exists because that file is not
-    always on the machine doing the summarising: an imported campaign is extracted,
-    ingested, published to the object store and its local copy removed, after which the
-    only local answer is a directory walk over a directory that is not there -- which
-    reports zero runs for a campaign that has two.
+    ``campaign.db``, and read for the same summary. It exists because that file does not
+    always hold the answer: a store predating the ``run`` table, or a campaign whose
+    ``campaign.db`` is absent, leaves only a directory walk -- which reports zero runs for
+    a campaign that has two. Importing ingests, so an imported campaign's rows are in the
+    index either way.
 
     ``None`` on any failure, including an unreachable index. This is the 1 Hz listing
     path, and a campaign listing must not stop working because the index is down; the

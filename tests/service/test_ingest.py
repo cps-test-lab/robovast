@@ -259,13 +259,10 @@ def test_the_export_refuses_what_the_import_would_refuse(campaign):
     assert ingest_campaign(campaign)["ok"] is False
 
 
-def test_the_export_check_reads_object_keys_as_readily_as_a_tree():
-    """Paths, not a directory: the cluster lane exports from an object store.
-
-    It has no tree to stat, so a predicate written against the filesystem would simply not
-    be asked there -- which is the lane where the campaign that produced the bad archive
-    lives. Both callers hand over campaign-relative paths and get the same answer.
-    """
+def test_the_export_check_reads_a_list_of_paths_as_readily_as_a_tree():
+    """Paths, not a directory: an export decides what it is about to write from the member
+    list it is about to write, before there is a tree anywhere to stat. Both callers hand
+    over campaign-relative paths and get the same answer."""
     assert missing_for_import(["_execution/controller.log", "config1/1/test.xml"]), \
         "no _config/ at all is the shape a campaign that died before setup exports as"
     assert missing_for_import(["_config/", "_config/scenario.osc"]), \
@@ -435,7 +432,6 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
     ran = []
     monkeypatch.setattr(transport, "_postprocess_campaign",
                         lambda *a, **k: ran.append(a) or (True, ""))
-    monkeypatch.setattr(transport, "_publish_imported_campaign", lambda *a, **k: None)
 
     transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
 
@@ -458,7 +454,6 @@ def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
     ran = []
     monkeypatch.setattr(transport, "_postprocess_campaign",
                         lambda *a, **k: ran.append(a) or (True, ""))
-    monkeypatch.setattr(transport, "_publish_imported_campaign", lambda *a, **k: None)
 
     transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
 

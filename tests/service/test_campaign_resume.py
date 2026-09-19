@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Picking a campaign back up after the service process driving it went away.
 
-The Jobs survive a pod replacement -- they are not children of that process and they write
-their own results to the object store -- so what has to be restored is the driver. This is
+The Jobs survive a pod replacement -- they are not children of that process and each one's
+uploader delivers its results into the campaign -- so what has to be restored is the driver. This is
 done by re-launching the campaign under its own id, which is why there is so little here:
 everything that makes that safe is a property tested elsewhere (the job partition, the
 idempotent campaign row, ``WorkspaceTarget.campaign_id``). What is left is finding the
@@ -23,55 +23,35 @@ from robovast.execution.cluster_execution import campaign_resume
 class _FakeService:
     """A ClusterService stubbed down to what the resume touches."""
 
-    def __init__(self, tmp_path, index, endings=(), store=None):
-        self.root = tmp_path
-        self._index = dict(index)
-        self._endings = set(endings)
-        #: The object store's copy of one campaign, as a directory. ``None`` where a test
-        #: pre-places the records on disk and only the fetch's *scope* is of interest.
-        self.store = store
+    def __init__(self, tmp_path):
+        self.root = Path(tmp_path)
         self.launched = []
-        self.fetched = []
-        self.includes = []
 
     # -- what campaign_resume reads
-    def _campaign_index(self):
-        # The pair ClusterService._campaign_index returns, not the bare map: a stub that
-        # answers a shape the real collaborator never returns tests nothing. This one
-        # returned a plain dict, so every test here passed while the deployed service
-        # raised TypeError on its first candidate and resumed nothing.
-        return dict(self._index), {cid: "ended" for cid in self._endings}
+    def _campaigns_root(self):
+        return self.root
 
-    def _campaign_dir(self, campaign_id):
+    def campaign_dir(self, campaign_id):
         return self.root / campaign_id
-
-    def fetch_campaign(self, campaign_id, force=False, dest=None, include=None):
-        # The predicate is recorded, not just accepted: what resume declines to fetch is the
-        # difference between a restart that takes seconds and one the liveness probe kills.
-        self.fetched.append((campaign_id, str(dest)))
-        self.includes.append(include)
-        # And, where a store is given, honoured: what the fetch leaves behind is what the
-        # plan is then made from, so a fake that accepts the predicate and copies nothing
-        # cannot tell a correct scope from one that fetches the wrong half.
-        for src in sorted(self.store.rglob("*") if self.store is not None else []):
-            rel = src.relative_to(self.store).as_posix()
-            if not src.is_file() or (include is not None and not include(rel)):
-                continue
-            (Path(dest) / rel).parent.mkdir(parents=True, exist_ok=True)
-            (Path(dest) / rel).write_bytes(src.read_bytes())
-        return dest
 
     def _launch_campaign(self, request, target):
         self.launched.append((request, target))
         return types.SimpleNamespace(campaign_id=target.campaign_id)
 
 
-@pytest.fixture(name="no_store")
-def _no_store(monkeypatch):
-    """Answer "does this campaign have an ending?" from the fake's own set."""
-    def _terminal(service, campaign_id):
-        return campaign_id in service._endings
+@pytest.fixture(name="endings")
+def _endings(monkeypatch):
+    """The set of campaigns that recorded an ending, as discovery reads it.
+
+    Patched rather than written as an ``outcome.json`` per campaign so a discovery test
+    states only what it is about: which ids came back, and in which order.
+    """
+    ended: set = set()
+
+    def _terminal(campaign_root):
+        return Path(campaign_root).name in ended
     monkeypatch.setattr(campaign_resume, "_terminal_outcome", _terminal)
+    return ended
 
 
 def _vast(search=None):
@@ -86,8 +66,13 @@ def _vast(search=None):
     return doc
 
 
+#: Ids are campaign-shaped because discovery recognises a campaign by its name.
+_A = "camp-a-2026-07-17-120000"
+_B = "camp-b-2026-07-18-120000"
+
+
 def _campaign(tmp_path, cid, *, vast=None, launch=None):
-    root = tmp_path / cid
+    root = Path(tmp_path) / cid
     (root / "_config").mkdir(parents=True)
     (root / "_config" / "pilot.vast").write_text(yaml.safe_dump(vast or _vast()))
     (root / "_config" / "scenario.osc").write_text("scenario pilot:\n")
@@ -99,35 +84,49 @@ def _campaign(tmp_path, cid, *, vast=None, launch=None):
 
 # -- discovery --------------------------------------------------------------------------
 
-def test_a_campaign_with_no_ending_is_owed_work(tmp_path, no_store):
-    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17", "camp-b": "2026-07-18"},
-                       endings={"camp-b"})
-    assert campaign_resume.owed_work(svc) == ["camp-a"]
+def test_a_campaign_with_no_ending_is_owed_work(tmp_path, endings):
+    _campaign(tmp_path, _A, launch={"runs": 1})
+    _campaign(tmp_path, _B, launch={"runs": 1})
+    endings.add(_B)
+
+    assert campaign_resume.owed_work(_FakeService(tmp_path)) == [_A]
 
 
-def test_the_newest_is_picked_up_first(tmp_path, no_store):
+def test_the_newest_is_picked_up_first(tmp_path, endings):
     """A service coming back should move the campaign someone is watching first."""
-    svc = _FakeService(tmp_path, {"old": "2026-07-01", "new": "2026-07-20",
-                                  "mid": "2026-07-10"})
-    assert campaign_resume.owed_work(svc) == ["new", "mid", "old"]
+    ids = ["p-2026-07-01-120000", "p-2026-07-20-120000", "p-2026-07-10-120000"]
+    for cid in ids:
+        _campaign(tmp_path, cid, launch={"runs": 1})
+
+    assert campaign_resume.owed_work(_FakeService(tmp_path)) == sorted(ids, reverse=True)
+
+
+def test_a_directory_no_driver_launched_is_not_owed_work(tmp_path, endings):
+    """An import in progress, or a tree put there by hand: nothing says what to run."""
+    _campaign(tmp_path, _A, launch=None)
+
+    assert campaign_resume.owed_work(_FakeService(tmp_path)) == []
 
 
 def test_one_unreadable_campaign_does_not_hide_the_others(tmp_path, monkeypatch):
     """A service has to start with whatever it can see."""
-    def _terminal(service, campaign_id):
-        if campaign_id == "bad":
-            raise RuntimeError("bucket gone")
+    bad, good = "bad-2026-07-20-120000", "good-2026-07-10-120000"
+    _campaign(tmp_path, bad, launch={"runs": 1})
+    _campaign(tmp_path, good, launch={"runs": 1})
+
+    def _terminal(campaign_root):
+        if Path(campaign_root).name == bad:
+            raise RuntimeError("unreadable")
         return False
     monkeypatch.setattr(campaign_resume, "_terminal_outcome", _terminal)
 
-    svc = _FakeService(tmp_path, {"bad": "2026-07-20", "good": "2026-07-10"})
-    assert campaign_resume.owed_work(svc) == ["good"]
+    assert campaign_resume.owed_work(_FakeService(tmp_path)) == [good]
 
 
 def test_a_fault_in_discovery_does_not_block_startup(tmp_path, monkeypatch):
-    svc = _FakeService(tmp_path, {})
+    svc = _FakeService(tmp_path)
     monkeypatch.setattr(campaign_resume, "owed_work",
-                        lambda s: (_ for _ in ()).throw(RuntimeError("no store")))
+                        lambda s: (_ for _ in ()).throw(RuntimeError("unreadable root")))
     assert campaign_resume.resume_all(svc) == {}
 
 
@@ -138,7 +137,7 @@ def test_a_fault_in_discovery_is_reported_as_an_error(tmp_path, monkeypatch, cap
     a routine store outage -- so a service that had picked up no campaign at all looked
     like a service that had come back clean.
     """
-    svc = _FakeService(tmp_path, {})
+    svc = _FakeService(tmp_path)
     monkeypatch.setattr(campaign_resume, "owed_work",
                         lambda s: (_ for _ in ()).throw(TypeError("wrong shape")))
     with caplog.at_level(logging.ERROR, logger=campaign_resume.__name__):
@@ -146,38 +145,26 @@ def test_a_fault_in_discovery_is_reported_as_an_error(tmp_path, monkeypatch, cap
     assert [r for r in caplog.records if r.levelno >= logging.ERROR and r.exc_info]
 
 
-def test_discovery_reads_the_index_pair_the_service_returns(tmp_path, no_store):
-    """Pins ``owed_work`` to ClusterService._campaign_index's real ``(created, finished)``.
-
-    The regression this file missed: iterating that pair as if it were one map raises
-    TypeError on the first candidate, and resume_all swallowed it into a start that picked
-    up nothing.
-    """
-    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
-    assert isinstance(svc._campaign_index(), tuple)
-    assert campaign_resume.owed_work(svc) == ["camp-a"]
-
-
 # -- the decision -----------------------------------------------------------------------
 
 def test_a_batch_campaign_with_its_records_is_picked_up(tmp_path):
-    root = _campaign(tmp_path, "camp-a",
+    root = _campaign(tmp_path, _A,
                      launch={"runs": 2, "config_filter": "pilot*", "postprocess": True,
                              "images": {"scenario": "reg.example.com/e@sha256:a"}})
-    svc = _FakeService(tmp_path, {})
+    svc = _FakeService(tmp_path)
 
-    target, request, refusal = campaign_resume.plan_for(svc, "camp-a", root)
+    target, request, refusal = campaign_resume.plan_for(svc, _A, root)
 
     assert refusal is None
-    assert target.campaign_id == "camp-a"          # adopted, not minted
+    assert target.campaign_id == _A               # adopted, not minted
     assert target.pinned_images == {"scenario": "reg.example.com/e@sha256:a"}
     assert request.runs == 2 and request.config_filter == "pilot*"
 
 
 def test_a_campaign_with_no_launch_record_is_left_alone(tmp_path):
     """Launched by a service that published no records; nothing says what to run."""
-    root = _campaign(tmp_path, "camp-a", launch=None)
-    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+    root = _campaign(tmp_path, _A, launch=None)
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
     assert "launch.yaml" in refusal and "import" in refusal
 
 
@@ -186,7 +173,7 @@ def test_a_campaign_with_no_frozen_config_is_left_alone(tmp_path):
     (root / "_execution").mkdir(parents=True)
     (root / "_execution" / "launch.yaml").write_text(yaml.dump({"runs": 1}))
 
-    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
     assert "_config/" in refusal
 
 
@@ -199,12 +186,12 @@ def _search(seed=7, strategy="random"):
 
 def test_a_seeded_search_is_picked_up(tmp_path):
     """It resumes by re-driving its strategy through the batches its store recorded."""
-    root = _campaign(tmp_path, "camp-a", launch={"runs": 2}, vast=_vast(search=_search()))
+    root = _campaign(tmp_path, _A, launch={"runs": 2}, vast=_vast(search=_search()))
 
-    target, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+    target, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
 
     assert refusal is None
-    assert target.campaign_id == "camp-a"
+    assert target.campaign_id == _A
 
 
 def test_an_unseeded_search_is_left_alone_and_says_why(tmp_path):
@@ -213,10 +200,10 @@ def test_an_unseeded_search_is_left_alone_and_says_why(tmp_path):
     Which is worse than a campaign that plainly says it crashed: nothing downstream would
     ever report that the second half stopped being the same experiment as the first.
     """
-    root = _campaign(tmp_path, "camp-a", launch={"runs": 2},
+    root = _campaign(tmp_path, _A, launch={"runs": 2},
                      vast=_vast(search=_search(seed=None)))
 
-    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
 
     assert "search.seed" in refusal and "different search" in refusal
 
@@ -226,104 +213,58 @@ def test_a_strategy_that_declares_itself_unresumable_is_left_alone(tmp_path, mon
     from robovast.search.strategies import random_search
 
     monkeypatch.setattr(random_search.RandomSearch, "RESUMABLE", False, raising=False)
-    root = _campaign(tmp_path, "camp-a", launch={"runs": 2}, vast=_vast(search=_search()))
+    root = _campaign(tmp_path, _A, launch={"runs": 2}, vast=_vast(search=_search()))
 
-    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
 
     assert "not resumable" in refusal and "random" in refusal
 
 
 # -- the same decision, asked before a deliberate roll ------------------------------------
 
-def _running_campaign(tmp_path, cid, **launch):
-    """A campaign as it exists mid-flight: launch record on disk, ``_config/`` in the store.
+def test_a_live_campaign_with_its_records_is_not_lost_by_a_roll(tmp_path):
+    """The verdict before the roll has to be the one the successor reaches afterwards, so it
+    plans through the same ``plan_for`` over the same campaign directory."""
+    _campaign(tmp_path, _A, launch={"runs": 2,
+                                    "images": {"scenario": "reg.example.com/e@sha256:a"}})
 
-    The split is the lane's, not the test's. ``_execution/launch.yaml`` is written into the
-    campaign root when the campaign is launched, while the config tree is staged into a
-    temporary directory and uploaded (``KubernetesBackend.run_batch_in_pod``); it reaches the
-    root only when the first batch's results are downloaded. Every campaign is in this state
-    from its launch until then.
-    """
-    root = tmp_path / cid
-    (root / "_execution").mkdir(parents=True)
-    (root / "_execution" / "launch.yaml").write_text(yaml.dump(
-        {"runs": 2, "images": {"scenario": "reg.example.com/e@sha256:a"}, **launch}))
-    store = tmp_path / "store" / cid
-    (store / "_config").mkdir(parents=True)
-    (store / "_config" / "pilot.vast").write_text(yaml.safe_dump(_vast()))
-    (store / "_config" / "scenario.osc").write_text("scenario pilot:\n")
-    (store / "campaign.db").write_bytes(b"the store's older copy")
-    return root, store
+    assert campaign_resume.would_be_lost(_FakeService(tmp_path), _A) is None
 
 
-def test_a_campaign_in_its_first_batch_is_not_lost_by_a_roll(tmp_path):
-    """The regression: refusing to roll over campaigns nothing was wrong with.
-
-    Planning against whatever the campaign root happens to hold reported every campaign
-    before its first batch as unresumable -- for a frozen config that was not missing, only
-    still in the object store -- and told the operator that rolling would stop live
-    campaigns for good.
-    """
-    root, store = _running_campaign(tmp_path, "camp-a")
-    svc = _FakeService(tmp_path, {}, store=store)
-
-    assert campaign_resume.would_be_lost(svc, "camp-a") is None
-    assert (root / "_config" / "pilot.vast").is_file(), (
-        "the check restores what it plans from, where the successor will look for it")
-
-
-def test_the_check_leaves_the_store_of_a_running_campaign_alone(tmp_path):
-    """``campaign.db`` is open, and being written, in the process asking the question.
-
-    Planning never reads it — a missing store costs the description and nothing else — so
-    the fetch that answers "would a roll lose this?" must not drop the object store's older
-    copy on top of the live file.
-    """
-    root, store = _running_campaign(tmp_path, "camp-a")
-    (root / "campaign.db").write_bytes(b"the live store")
-    svc = _FakeService(tmp_path, {}, store=store)
-
-    assert campaign_resume.would_be_lost(svc, "camp-a") is None
-    assert (root / "campaign.db").read_bytes() == b"the live store"
-
-
-def test_a_campaign_with_no_records_anywhere_is_still_reported_as_lost(tmp_path):
+def test_a_campaign_with_no_records_is_reported_as_lost(tmp_path):
     """The refusal has to keep firing where it is right: nothing to re-launch from."""
-    store = tmp_path / "store" / "camp-a"
-    store.mkdir(parents=True)
-    svc = _FakeService(tmp_path, {}, store=store)
+    (tmp_path / _A).mkdir(parents=True)
 
-    assert "launch.yaml" in campaign_resume.would_be_lost(svc, "camp-a")
+    assert "launch.yaml" in campaign_resume.would_be_lost(_FakeService(tmp_path), _A)
 
 
 # -- end to end through the fake --------------------------------------------------------
 
-def test_the_root_is_restored_before_the_campaign_is_re_launched(tmp_path, no_store):
-    """Restored into the driver's own root, not the scratch cache.
-
-    That is what lets the controller and the batch runner read it as the campaign's
-    working directory and adopt the jobs that already finished.
-    """
-    _campaign(tmp_path, "camp-a", launch={"runs": 1})
-    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
+def test_a_campaign_is_re_launched_under_its_own_id(tmp_path, endings):
+    """Adopted rather than minted: the campaign directory is the working directory the
+    controller and the batch runner read, so the jobs that already finished are adopted."""
+    _campaign(tmp_path, _A, launch={"runs": 1})
+    svc = _FakeService(tmp_path)
 
     outcomes = campaign_resume.resume_all(svc)
 
-    assert outcomes == {"camp-a": None}
-    assert svc.fetched == [("camp-a", str(tmp_path / "camp-a"))]
-    assert svc.launched[0][1].campaign_id == "camp-a"
+    assert outcomes == {_A: None}
+    assert svc.launched[0][1].campaign_id == _A
 
 
-def test_a_refused_campaign_does_not_stop_the_others(tmp_path, no_store):
-    _campaign(tmp_path, "camp-good", launch={"runs": 1})
-    _campaign(tmp_path, "camp-bad", launch=None)
-    svc = _FakeService(tmp_path, {"camp-good": "2026-07-10", "camp-bad": "2026-07-20"})
+def test_a_refused_campaign_does_not_stop_the_others(tmp_path, endings):
+    good, bad = "good-2026-07-10-120000", "bad-2026-07-20-120000"
+    _campaign(tmp_path, good, launch={"runs": 1})
+    # A launch record is what discovery reads; without a frozen config the plan refuses.
+    bad_root = _campaign(tmp_path, bad, launch={"runs": 1})
+    (bad_root / "_config" / "pilot.vast").unlink()
+    svc = _FakeService(tmp_path)
 
     outcomes = campaign_resume.resume_all(svc)
 
-    assert outcomes["camp-good"] is None
-    assert outcomes["camp-bad"] is not None
-    assert [t.campaign_id for _, t in svc.launched] == ["camp-good"]
+    assert outcomes[good] is None
+    assert outcomes[bad] is not None
+    assert [t.campaign_id for _, t in svc.launched] == [good]
 
 
 def test_a_config_this_service_cannot_read_is_a_refusal_not_a_crash(tmp_path):
@@ -333,43 +274,9 @@ def test_a_config_this_service_cannot_read_is_a_refusal_not_a_crash(tmp_path):
     the campaign's finished jobs ran the config as written, so migrating it mid-flight
     would make the second half a different experiment from the first.
     """
-    root = _campaign(tmp_path, "camp-a", launch={"runs": 1},
+    root = _campaign(tmp_path, _A, launch={"runs": 1},
                      vast={"version": 4, "metadata": {"name": "p"}})
 
-    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path, {}), "camp-a", root)
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
 
     assert refusal is not None and "different experiment" in refusal
-
-
-# --- what a restore actually takes -----------------------------------------------------
-
-
-def test_only_the_control_plane_is_restored(tmp_path, no_store):
-    """Resume fetches what it needs to RE-ENTER a campaign, not what it needs to analyse one.
-
-    This runs inside ``ClusterService.__init__``, before ``vast serve`` binds its port, so
-    every object fetched here is time the service spends unreachable. Taking the whole prefix
-    made a restart with live campaigns impossible: a campaign's artifacts are gigabytes, the
-    liveness probe allows ~75 s, and each killed attempt began again from an empty directory.
-
-    The rest arrives at ``ExecutionBackend.ensure_campaign_root_complete``, which runs where
-    it is first read.
-    """
-    _campaign(tmp_path, "camp-a", launch={"runs": 1})
-    svc = _FakeService(tmp_path, {"camp-a": "2026-07-17"})
-
-    campaign_resume.resume_all(svc)
-
-    include = svc.includes[0]
-    assert include is not None, "a whole-prefix restore is what made restarts unsurvivable"
-    # Everything plan_for reads, the store a resumed search replays out of, and the verdict
-    # the batch runner adopts finished jobs on.
-    assert include("launch.yaml")
-    assert include("campaign.db")
-    assert include("_config/campaign.vast")
-    assert include("_execution/outcome.json")
-    assert include("cfg-abc/0/test.xml")
-    # ...and none of the bulk it does not read until postprocessing.
-    assert not include("cfg-abc/0/run.npz")
-    assert not include("cfg-abc/0/poses.csv")
-    assert not include("cfg-abc/0/rosbag2_0.mcap")

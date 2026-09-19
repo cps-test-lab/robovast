@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The registry RoboVAST runs for itself, in the object-store pod.
+"""The registry RoboVAST runs for itself, in the ``robovast`` pod.
 
 The load-bearing constraint is that an image ref is ONE string used by two different
 resolvers: BuildKit pushes to it from a pod, and the kubelet pulls it on the node. The
@@ -10,20 +10,13 @@ Ingress host is what makes one string satisfy both, and most of what these tests
 that the pieces of that arrangement stay consistent.
 """
 
-import io
-
-import yaml
-
 from robovast.execution.cluster_execution import registry_deploy as rd
 from robovast.execution.cluster_execution import service_deploy as sd
 from robovast.execution.cluster_execution import store_pod
 
 
 def _store_docs(namespace="default", **kwargs):
-    from robovast.execution.cluster_config.rke2 import MINIO_MANIFEST_RKE2
-
-    return store_pod.attach_infrastructure(
-        list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2))), namespace, **kwargs)
+    return store_pod.attach_infrastructure([], namespace, **kwargs)
 
 
 def _pod(**kwargs):
@@ -39,7 +32,7 @@ def test_the_registry_runs_in_the_store_pod_not_the_service_pod():
 
     Every ``vast service upgrade`` rolls the service Deployment, so a registry there
     restarted on each version bump and kept its blobs on a volume that followed the
-    Deployment. The store pod is created once at setup and torn down only by cleanup.
+    Deployment. The ``robovast`` pod is created once at setup and torn down only by cleanup.
     """
     service_pod = sd._deployment_manifest(
         "default", "img:latest")["spec"]["template"]["spec"]
@@ -51,7 +44,7 @@ def test_the_registry_runs_in_the_store_pod_not_the_service_pod():
         sd.SERVICE_NAME, front_deploy.DATA_CONTAINER_NAME, front_deploy.FRONT_CONTAINER_NAME]
 
     assert [c["name"] for c in _pod()["containers"]] == [
-        "minio", rd.REGISTRY_CONTAINER_NAME, "index"]
+        rd.REGISTRY_CONTAINER_NAME, "index"]
 
 
 def test_the_registry_has_somewhere_durable_to_keep_blobs():

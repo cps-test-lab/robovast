@@ -29,8 +29,8 @@ returned tail, repeat) is stable across polls.
 This module is the single seam every surface (web UI / HTTP service, MCP,
 cmdline) reads through, so the phase set and the divider format live in exactly
 one place. The byte source is injected (``get_bytes``) so the same
-concatenation/offset logic serves a local disk read, a cluster pod-scratch read,
-and an object-store read without duplication.
+concatenation/offset logic serves a disk read and any other byte source without
+duplication.
 """
 
 import re
@@ -252,9 +252,8 @@ def split_phases(text: str) -> list[tuple[str, str]]:
 def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes]]:
     """A ``get_bytes`` that reads phase files from ``<campaign_dir>/_execution/``.
 
-    Used by every surface that has the campaign on a local filesystem: the local
-    service, the cluster service while it is still driving the campaign (pod
-    scratch), MCP, and the cmdline. A missing file yields ``None``.
+    Used by every surface that has the campaign on a local filesystem: the service
+    of either lane, MCP, and the cmdline. A missing file yields ``None``.
     """
     exec_dir = Path(campaign_dir) / EXECUTION_DIR
 
@@ -267,72 +266,22 @@ def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes
     return _read
 
 
-def layered_by_writer(
-    local: Callable[[str], Optional[bytes]],
-    remote: Callable[[str], Optional[bytes]],
-    remote_written: "frozenset[str]" = frozenset(),
-) -> Callable[[str], Optional[bytes]]:
-    """A ``get_bytes`` asking, per phase file, whoever writes it first.
-
-    A local copy is preferred by default because a process appending to a phase file runs
-    ahead of the durable one. *remote_written* names the phase files for which that is
-    false -- the ones an operation writes somewhere other than where it is tracked, so the
-    local copy is an earlier attempt's. Present, frozen and wrong is the one combination an
-    absence-only fallback cannot see past, and it inverts the answer: a postprocess that
-    succeeded then reads as the failure that preceded it.
-
-    **Empty by default, and named by the caller that knows.** Which files those are is a
-    fact about one operation on one lane, not about the phase: the same postprocessing log
-    is written into the tracked root on the local lane and into a fetched one on the
-    cluster. A set fixed here would make every reader pay for the one case it applies to --
-    two store round-trips per poll behind an SSE stream that re-polls while a user watches.
-
-    Both directions remain :func:`layered_get_bytes`, so either source still covers the
-    other's absence: what changes is which is believed when both have the file, never
-    whether a phase is served at all. And the choice is constant for a phase over a
-    campaign's life, so the assembled stream cannot shrink between polls -- which the byte
-    offset protocol requires.
-    """
-    local_first = layered_get_bytes(local, remote)
-    remote_first = layered_get_bytes(remote, local)
-
-    def _read(filename: str) -> Optional[bytes]:
-        source = remote_first if filename in remote_written else local_first
-        return source(filename)
-
-    return _read
-
-
-def layered_get_bytes(
-    *sources: Callable[[str], Optional[bytes]]
-) -> Callable[[str], Optional[bytes]]:
-    """A ``get_bytes`` serving each phase file from the first source that HAS it.
-
-    Phases are produced by different processes, which do not all write to the same
-    place: on the cluster the controller's phase files land in the service's scratch
-    while postprocessing runs against its own fetched campaign root and publishes to
-    the object store. Reading one location alone therefore drops whole phases —
-    silently, since a missing phase file is also the normal "has not run yet".
-
-    The fallback is on **absence only** (``None``), never on "this copy is shorter".
-    A live phase file still being appended to must keep winning over a frozen durable
-    copy: the streaming protocol rests on the assembled stream growing monotonically
-    (see :func:`assemble_log`), and a poll that returned fewer bytes than the last one
-    would leave the client's offset past the end. An existing but empty file is
-    *present* and wins for the same reason.
-    """
-    def _read(filename: str) -> Optional[bytes]:
-        for source in sources:
-            data = source(filename)
-            if data is not None:
-                return data
-        return None
-
-    return _read
-
-
 def assemble_log_from_dir(
     campaign_dir: "Path | str", offset: int = 0, eof: bool = False
 ) -> tuple[str, int, bool]:
-    """Convenience wrapper: :func:`assemble_log` over an on-disk campaign dir."""
-    return assemble_log(disk_get_bytes(campaign_dir), offset=offset, eof=eof)
+    """:func:`assemble_log` over an on-disk campaign dir, archived sections included.
+
+    The order comes from what is on disk (:func:`disk_section_names` ->
+    :func:`ordered_sections`) rather than the fixed :data:`INFRA_PHASES` list, because a
+    campaign that ran a repeatable phase twice has a section the fixed list cannot place:
+    it names the two live filenames and nothing under ``sections/``. Reading it that way
+    would drop every earlier run of a phase from the stream -- and shorten the stream the
+    moment one of them was archived, under a reader that had already consumed past it.
+
+    A campaign that never repeated a phase has no sections, and the order this produces is
+    then exactly the fixed one -- which is what keeps every campaign recorded before
+    archiving existed readable at the offsets it was read at.
+    """
+    return assemble_log(disk_get_bytes(campaign_dir),
+                        offset=offset, eof=eof,
+                        sections=ordered_sections(disk_section_names(campaign_dir)))

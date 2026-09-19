@@ -5,7 +5,6 @@ import {
   isPreviewable, robovast, RobovastError, type CampaignSummary,
 } from '@/lib/robovastClient'
 import { configDirs, previewRunRows, replayableRunIds } from '@/lib/previewRuns'
-import { formatDataFetchLabel } from '@/lib/format'
 import {
   ancestorIds,
   buildCampaignChildren,
@@ -128,32 +127,6 @@ export function ResultsTree({
   })
   const runByCampaign = new Map(expandedCampaigns.map((id, i) => [id, runQueries[i]]))
 
-  // Why the query above may be slow, asked in parallel with it. On a cluster campaign the
-  // first `CAMPAIGN_RUNS_SQL` fetches the databases from the object store inside the request, so an
-  // unexplained "Loading…" can sit there for minutes. Cheap (two metadata lookups, and none
-  // at all while a transfer is running — the service then answers from memory) and advisory:
-  // a failure just means the placeholder stays generic.
-  //
-  // Re-asked while the runs query is outstanding, because the answer is a live count: fetched
-  // once, the placeholder would name the wait and then sit as still as the "Loading…" it
-  // replaced. Once loaded it stops, so an idle tree polls nothing.
-  //
-  // Not asked at all for a campaign being previewed: it describes the transfer of databases that a
-  // running campaign does not have yet, so the answer could only ever be "nothing to fetch" — and
-  // it would be re-asked every second, per expanded campaign, against the service that is at that
-  // moment driving the campaign.
-  const statusQueries = useQueries({
-    queries: expandedCampaigns.map((id, i) => ({
-      queryKey: ['data-status', id],
-      queryFn: () => robovast.campaignDataStatus(id),
-      retry: false,
-      staleTime: 60_000,
-      enabled: !isPreviewable(byId.get(id)!),
-      refetchInterval: runQueries[i]?.isFetching ? 1000 : false,
-    })),
-  })
-  const statusByCampaign = new Map(expandedCampaigns.map((id, i) => [id, statusQueries[i]]))
-
   // Every campaign carries children so its expand arrow shows; the children are the real subtree
   // once loaded, otherwise a single placeholder (loading / no-data hint).
   const items: ResultsTreeItem[] = campaigns.map((c) => {
@@ -164,12 +137,11 @@ export function ResultsTree({
     let children: ResultsTreeItem[]
     const q = runByCampaign.get(c.campaign_id)
     if (!q || q.isPending) {
-      const fetching = formatDataFetchLabel(statusByCampaign.get(c.campaign_id)?.data)
-      children = [placeholderChild(c.campaign_id, fetching ?? 'Loading…')]
+      children = [placeholderChild(c.campaign_id, 'Loading…')]
     } else if (q.isError) {
       const msg = (q.error as Error).message
       // `run_view` needs no measurements, only the ingested campaign record, so this is a campaign
-      // with no store to read at all (a deleted result dir, an unreachable object store) — not one
+      // with no store to read at all (a deleted result dir) — not one
       // whose metrics are merely absent, which is how a tree built from the postprocessed `runs`
       // table would read it. A campaign still running never reaches here: its rows come from the
       // listing, which answers an empty tree rather than failing.

@@ -37,9 +37,8 @@ such pod needs to agree on with the service:
 Pods carry nothing else that reaches storage: no bucket, no key, no endpoint.
 """
 
+import os
 import shlex
-
-from robovast.service.auth import scope_for_campaign, scope_for_staged
 
 #: Environment the pod reads its access from.
 DATA_URL_ENV = "ROBOVAST_DATA_URL"
@@ -107,10 +106,15 @@ def delete_campaign_secret(core, namespace: str, campaign_id: str) -> None:
 
 
 def campaign_scope(campaign_id: str) -> str:
+    # Deferred like every other reach into the service layer here: this module is part of
+    # the execution engine, which composes below the service and must not pull it into
+    # memory at import (``tests/execution/test_layering.py``).
+    from robovast.service.auth import scope_for_campaign  # pylint: disable=import-outside-toplevel
     return scope_for_campaign(campaign_id)
 
 
 def staged_scope(slot: str) -> str:
+    from robovast.service.auth import scope_for_staged  # pylint: disable=import-outside-toplevel
     return scope_for_staged(slot)
 
 
@@ -160,14 +164,24 @@ def fetch_command(route: str, dest: str, query: str = "") -> str:
             f'tar -xz -C {shlex.quote(dest)}')
 
 
-def deliver_command(src: str, route: str, exclude: "tuple[str, ...]" = ()) -> str:
+def deliver_command(src: str, route: str, exclude: "tuple[str, ...]" = (),
+                    *, keep_name: bool = False) -> str:
     """Shell that streams *src* as a gzip tar into ``PUT $ROBOVAST_DATA_URL<route>``.
 
     ``tar`` writes to the pipe and ``curl -T -`` reads it as a chunked body: the tree is
     never written a second time on the pod. Re-run for a retry, because a streamed body
     cannot be replayed; the caller decides how often.
+
+    The plain form lands *src*'s contents at the slot's root. With *keep_name* the
+    members start with *src*'s own basename, so the tree lands under that name inside
+    the slot: what several trees delivered to one slot need to stay apart, when one pod
+    -- and so one token, scoped to one slot -- serves them all.
     """
     excludes = "".join(f" --exclude={shlex.quote(pattern)}" for pattern in exclude)
     url = f"${DATA_URL_ENV}{route}"
-    return (f'tar -C {shlex.quote(src)}{excludes} -czf - . | '
-            f'{_CURL} -X PUT -T - -H "Content-Type: application/gzip" "{url}"')
+    if keep_name:
+        parent, name = os.path.split(os.path.normpath(src))
+        tar = f'tar -C {shlex.quote(parent or "/")}{excludes} -czf - {shlex.quote(name)}'
+    else:
+        tar = f'tar -C {shlex.quote(src)}{excludes} -czf - .'
+    return f'{tar} | {_CURL} -X PUT -T - -H "Content-Type: application/gzip" "{url}"'

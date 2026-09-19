@@ -76,7 +76,8 @@ def storage_refusal(usage) -> Optional[str]:
     reserve = reserve_gb()
     if reserve <= 0:
         return None
-    for label, space in (("the service's disk", usage.disk), ("the results store", usage.store)):
+    for label, space in (("the service's disk", usage.disk),
+                         ("the results volume", usage.results)):
         if space is None or space.capacity_bytes <= 0:
             continue
         free = max(0, space.capacity_bytes - space.used_bytes)
