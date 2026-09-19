@@ -68,7 +68,6 @@ commands=(
     "vast cluster setup"
     "vast cluster cleanup"
     "vast cluster monitor"
-    "vast cluster store-cleanup"
     "vast container"
     "vast container exec"
     "vast results"
