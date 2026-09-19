@@ -54,6 +54,37 @@ def test_cluster_config_requires_name():
         cs._cluster_config()
 
 
+def test_nothing_is_adopted_before_the_auth_token_is_bound():
+    """A resumed campaign mints its pods' data-plane token, and the secret it is minted
+    from is bound to this object AFTER it is constructed. Adopting in the constructor
+    failed every campaign a restart picked up with "no auth token bound to this service"
+    -- which is exactly the campaign that had already spent its compute."""
+    calls = []
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=True)
+    cs.reap_orphans = lambda: calls.append("reap")
+    cs.resume_interrupted_campaigns = lambda: calls.append("resume") or {}
+    cs.reattach_live_postprocessing = lambda: calls.append("reattach")
+
+    assert calls == [], "the constructor adopted before anything could bind the secret"
+    cs.bind_auth_token("master-secret")
+    cs.start_serving()
+    assert calls == ["reap", "resume", "reattach"]
+    assert cs.scoped_token("campaign:c-1")
+
+    cs.start_serving()
+    assert calls == ["reap", "resume", "reattach"], "adopted twice"
+
+
+def test_a_service_that_adopts_nothing_stays_quiet():
+    calls = []
+    cs = ClusterService(namespace="ns2", cluster_config_name="rke2",
+                        cluster_config_kwargs={}, reap_on_start=False)
+    cs.reap_orphans = lambda: calls.append("reap")
+    cs.start_serving()
+    assert calls == []
+
+
 def test_a_campaigns_backend_carries_the_campaigns_data_plane_token():
     """Built from the controller state the campaign worker hands over, as the worker does.
 

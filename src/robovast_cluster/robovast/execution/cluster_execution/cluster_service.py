@@ -282,14 +282,12 @@ class ClusterService(LocalTransport):
         # Not ``_usage_lock``: that one is held across a reading that talks to every kubelet
         # in turn, and the job listing must not wait behind it.
         self._pod_metrics_lock = threading.Lock()
-        if reap_on_start:
-            self.reap_orphans()
-            self.resume_interrupted_campaigns()
-            # After the resume, and separately from it: a campaign whose postprocess is
-            # still running has recorded an ending, so the resume above passes over it by
-            # design. Only a waiter writes what that Job did, so without this the previous
-            # attempt's verdict stands over a conversion that succeeded.
-            self.reattach_live_postprocessing()
+        #: Whether :meth:`start_serving` picks up what a previous process was driving.
+        #: Deferred to that call rather than done here, because a resumed campaign mints
+        #: its pods' data-plane token and the secret it is minted from is bound to this
+        #: object after it is constructed (``build_app``). Resuming in the constructor
+        #: failed every adopted campaign with "no auth token bound to this service".
+        self._reap_on_start = reap_on_start
 
     # -- version ------------------------------------------------------------
 
@@ -408,11 +406,13 @@ class ClusterService(LocalTransport):
         from .service_deploy import patch_restart_annotation
         stamped = patch_restart_annotation(self.namespace, self.kube_context)
         return ActionResult(ok=True, message=(
-            f"rolling robovast-service (restartedAt {stamped}). Kubernetes starts the new "
-            f"pod before stopping this one, so the API stays up; watch the running digest "
-            f"for the handover. RBAC, the registry route, the env "
-            f"Secrets and the build daemon are NOT reconciled -- "
-            f"'vast service upgrade' is what does that."))
+            f"rolling robovast-service (restartedAt {stamped}). The old pod stops before "
+            f"the new one starts -- the campaigns are on a volume one node may mount at a "
+            f"time -- so the API is away for a few seconds and longer if the replacement "
+            f"has campaigns to pick up; watch the running digest for the handover. Jobs "
+            f"already running are unaffected: they deliver their results to the new pod. "
+            f"RBAC, the registry route, the env Secrets and the build daemon are NOT "
+            f"reconciled -- 'vast service upgrade' is what does that."))
 
     def _api_server_url(self) -> "str | None":
         """The API server this lane targets, read from config only — never dialled.
@@ -2660,6 +2660,25 @@ class ClusterService(LocalTransport):
             if refusal is not None:
                 blocked[cid] = refusal
         return blocked
+
+    def start_serving(self) -> None:
+        """Adopt what a previous process left behind, before this one answers anything.
+
+        Called by ``build_app`` once the auth token is bound and before the port is, so a
+        resumed campaign can mint its pods' token and no launch over the API can race a
+        campaign about to be adopted -- the two properties the constructor used to hold
+        one of each.
+        """
+        if not self._reap_on_start:
+            return
+        self._reap_on_start = False  # adopt once, however often a caller builds an app
+        self.reap_orphans()
+        self.resume_interrupted_campaigns()
+        # After the resume, and separately from it: a campaign whose postprocess is
+        # still running has recorded an ending, so the resume above passes over it by
+        # design. Only a waiter writes what that Job did, so without this the previous
+        # attempt's verdict stands over a conversion that succeeded.
+        self.reattach_live_postprocessing()
 
     def resume_interrupted_campaigns(self) -> dict:
         """Pick up the campaigns a previous service process was driving.

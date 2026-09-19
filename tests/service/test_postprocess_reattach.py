@@ -258,8 +258,10 @@ def test_startup_reattaches_to_what_it_finds(monkeypatch):
     monkeypatch.setattr(ClusterService, "reattach_postprocessing",
                         lambda self, cid, job: attached.append((cid, job)) or True)
 
-    ClusterService(namespace="ns", cluster_config_name="x", cluster_config_kwargs={},
-                   reap_on_start=True)
+    service = ClusterService(namespace="ns", cluster_config_name="x",
+                             cluster_config_kwargs={}, reap_on_start=True)
+    assert attached == [], "adopted before the app could bind the secret"
+    service.start_serving()
 
     assert attached == [(_CAMPAIGN, "robovast-postproc-x")]
 
@@ -280,6 +282,7 @@ def test_a_reattach_that_throws_does_not_stop_the_service_coming_up(monkeypatch)
 
     service = ClusterService(namespace="ns", cluster_config_name="x",
                              cluster_config_kwargs={}, reap_on_start=True)
+    service.start_serving()
 
     assert service.version().backend == "kubernetes"
 

@@ -372,6 +372,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         binder = None
     if binder is not None:
         binder(auth_token)
+    # After the secret, before the port: an adopted campaign mints its pods' token from
+    # what was just bound, and registering it here is what stops a launch over the API
+    # racing a campaign about to be adopted.
+    try:
+        start_serving = impl.start_serving
+    except Exception:  # noqa: BLE001 - as for the binder above: an impl may refuse any attribute
+        start_serving = None
+    if start_serving is not None:
+        start_serving()
 
     def _record_auth_refusal(path: str, detail: str, status: int) -> None:
         """A caller turned away by the gate, before any route could see it.
