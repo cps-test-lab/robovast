@@ -141,8 +141,19 @@ TRANSFER_CONTAINER = "transfer"
 AUX_MOUNTABLE_PATHS = ("/config", "/aux")
 
 
+#: The volume holding the runners' workspaces. A fixed name rather than one derived from its
+#: mount path: that path is the service's own scratch directory, mirrored so a generator sees
+#: one path on both sides, and it is as deep as the deployment's results root makes it -- far
+#: past the 63 characters a volume name may have.
+WORKSPACE_VOLUME = "aux-workspace"
+
+
 def _mount_volume_name(path: str) -> str:
-    """A DNS-label volume name for a mountable absolute path (``/config`` -> ``aux-config``)."""
+    """A DNS-label volume name for a mountable absolute path (``/config`` -> ``aux-config``).
+
+    Only for :data:`AUX_MOUNTABLE_PATHS`, a fixed list of short paths; the workspace root has
+    :data:`WORKSPACE_VOLUME`.
+    """
     return "aux-" + re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")
 
 
@@ -289,8 +300,8 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
     # nothing else; and declared here rather than at ``expose`` time because a Pod's
     # mounts are fixed when it is created.
     shared_paths = (workspace_root, *AUX_MOUNTABLE_PATHS)
-    shared_mounts = [{"name": _mount_volume_name(path), "mountPath": path}
-                     for path in shared_paths]
+    shared_mounts = [{"name": WORKSPACE_VOLUME, "mountPath": workspace_root}] + [
+        {"name": _mount_volume_name(path), "mountPath": path} for path in AUX_MOUNTABLE_PATHS]
 
     containers = []
     for spec in specs:
