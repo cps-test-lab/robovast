@@ -43,6 +43,7 @@ def _runner_for_batch_test(configs):
     # Stub every side-effecting step so only the batch's own bookkeeping runs.
     r._ensure_k8s_initialized = lambda: None
     r.k8s_client = _FakeCore()
+    r.k8s_batch_client = _FakeBatchClient()
     r._write_job_param_files = lambda out_dir, campaign_root=None: None
     r._build_jobs = lambda: []          # no jobs → submission loop is empty
     r.get_remaining_jobs = lambda names: []  # wait loop breaks immediately
@@ -205,7 +206,7 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
         "robovast.execution.cluster_execution.kubernetes_backend.previous_container_log",
         lambda core, ns, pod, container, tail_lines=400: ("boom\ntraceback\n", "captured"))
     monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend"
+        "robovast.execution.cluster_execution.admitted_jobs"
         ".blocked_and_contended_reasons", lambda core, ns, label: ({}, {}))
     # The wait loop derives a job's name rather than reading it back off a rendered manifest
     # (under admission the manifest does not exist until there is room). Patch the derivation
@@ -376,7 +377,7 @@ def _blocked_runner(monkeypatch, tmp_path, jobs, blocked, *, contended=None,
         "robovast.execution.cluster_execution.kubernetes_backend.restarted_job_forensics",
         lambda core, ns, label, job_names=None: {})
     monkeypatch.setattr(
-        "robovast.execution.cluster_execution.kubernetes_backend"
+        "robovast.execution.cluster_execution.admitted_jobs"
         ".blocked_and_contended_reasons",
         lambda core, ns, label: (dict(blocked), dict(contended or {})))
     # See the note in _restart_runner: names are derived, not read off the manifest.
