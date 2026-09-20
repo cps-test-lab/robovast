@@ -1062,3 +1062,21 @@ def test_memory_is_taken_at_the_maximum_for_every_role():
     for percentile in (50, 95, 100):
         got = container_cpu_profile_from_billing(rows, percentile=percentile)
         assert got["memory_peak"] == 800 * 1024 ** 2, "the max, whatever the CPU percentile"
+
+
+# -- runs lost to memory this campaign measured ------------------------------------------
+
+def test_the_campaign_counts_every_run_it_loses_to_a_measured_figure():
+    """The tally is the campaign's: a search meets the same figure round after round, and a
+    count that restarted per batch would keep reporting the first loss."""
+    cal = NodeCalibration()
+    assert cal.record_oom_at_measured("n1", "sut", 134217728, 104857600) == 1
+    assert cal.record_oom_at_measured("n2", "sut", 134217728, 104857600) == 2
+    assert [c for _n, c, _l, _m in cal.oom_at_measured()] == ["sut", "sut"]
+
+
+def test_memory_has_the_floor_cpu_always_had():
+    """A container given too little CPU runs slowly; one given too little memory is killed --
+    so the resource that needed a floor most was the one without one."""
+    assert nc.MIN_MEMORY_BYTES == 500 * 1024 ** 2
+    assert nc.MIN_CPU == 0.25

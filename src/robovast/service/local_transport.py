@@ -5704,6 +5704,11 @@ class LocalTransport(RobovastInterface):
             # From the same snapshot as everything above, so a row cannot show a size that
             # belongs to a different reading of the campaign than its phase does.
             results_bytes=snap.results_bytes,
+            # What the campaign is saying while it keeps running. On the row because that is
+            # the view somebody has open during a sweep, and from the same snapshot for the
+            # same reason as the rest: a listing must not pair one reading's phase with
+            # another's warning.
+            attention=snap.attention or "",
             # The queue's own answer, and only for a campaign it still holds: a finished
             # campaign has no standing with it, and reporting a rank for one would describe
             # something nothing can act on.

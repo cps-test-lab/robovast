@@ -485,6 +485,13 @@ class CampaignSummary(BaseModel):
     #: deliberate hold looking like a full cluster.
     priority: int = 0
     paused: bool = False
+    #: What this campaign wants a person to know while it runs, or ``""``. A campaign losing
+    #: runs to something an author can fix -- memory it measured too low, so far -- says so
+    #: here rather than only in a log nobody is reading: it keeps running either way, and
+    #: whoever is watching decides whether to let it. Carried on the listing because that is
+    #: the view somebody has open while a sweep is going, and read from the campaign's own
+    #: status, so the CLI, the MCP tools and the web UI cannot disagree about it.
+    attention: str = ""
     #: How the campaign was run: ``'search'`` (a closed ask/tell loop, one batch per round)
     #: or ``'batch'`` (one batch of enumerated configurations). ``""`` when unrecorded,
     #: which a reader must treat as "not a search" rather than guessing -- an old store may

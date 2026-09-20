@@ -329,6 +329,11 @@ class Status(BaseModel):
     # reconstructed from disk -- the same caveat ``batch_since`` carries.
     search_since: Optional[float] = None
     stage: Optional[str] = None
+    #: What the campaign wants a person to know while it keeps running: a fault an author can
+    #: fix, stated with the numbers it was measured from. Distinct from ``error``, which is
+    #: why a campaign ENDED, and from ``stage``, which a phase change clears -- this outlives
+    #: the batch that found it, because so does what it is about.
+    attention: Optional[str] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None
     batch: int = 0                       # current batch index (0-based)

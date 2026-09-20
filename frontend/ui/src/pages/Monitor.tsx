@@ -21,6 +21,7 @@ import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
 import LowPriorityRoundedIcon from '@mui/icons-material/LowPriorityRounded'
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
+import PriorityHighRoundedIcon from '@mui/icons-material/PriorityHighRounded'
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // Postprocessing recomputes metrics from the preserved rosbags, so it gets the
@@ -56,6 +57,7 @@ import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { useCampaignStream } from '@/components/CampaignStreamProvider'
 import { useToasts } from '@/components/ToastProvider'
+import { attentionFor } from '@/lib/campaignAttention'
 import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
@@ -342,6 +344,23 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // The campaign's standing with the cluster queue. Ordering only: nothing already running
   // stops, which is why these are offered on a LIVE campaign where every other act-on entry
   // is not — they change what happens next without touching what the campaign has produced.
+  // What the campaign is saying while it runs, or null. One question, asked in
+  // `lib/campaignAttention` and answered here: the card shows a "!", and clicking it gives the
+  // reader the campaign's own sentence -- which is what they act on, and where.
+  const attention = attentionFor(summary)
+  const showAttention = () => {
+    if (!attention) return
+    void confirm({
+      title: attention.title,
+      message: (
+        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+          {attention.detail}
+        </Typography>
+      ),
+      confirmLabel: 'Close',
+    })
+  }
+
   const setScheduling = useMutation({
     mutationFn: (opts: { priority?: number; paused?: boolean }) =>
       robovast.setScheduling(id, opts),
@@ -999,6 +1018,19 @@ function CampaignCard({ summary, newest, openedByLink }: {
               title="Which campaign the cluster queue admits first. Higher goes first."
               sx={{ flexShrink: 0 }}
             />
+          ) : null}
+          {attention ? (
+            <Tooltip title={`${attention.title} — click to read it`}>
+              <IconButton
+                size="small"
+                color="warning"
+                aria-label="why this campaign paused itself"
+                onClick={(e) => { e.stopPropagation(); showAttention() }}
+                sx={{ flexShrink: 0 }}
+              >
+                <PriorityHighRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
           ) : null}
           {!collapsed && running && summary.paused ? (
             <Chip

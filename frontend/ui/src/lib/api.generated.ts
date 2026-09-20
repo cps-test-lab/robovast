@@ -2011,6 +2011,11 @@ export interface components {
          *     from a link (see that class).
          */
         CampaignSummary: {
+            /**
+             * Attention
+             * @default
+             */
+            attention: string;
             /** Campaign Id */
             campaign_id: string;
             /**
@@ -3889,6 +3894,8 @@ export interface components {
          *     skip.
          */
         StatusResponse: {
+            /** Attention */
+            attention: string | null;
             /**
              * Batch
              * @default 0

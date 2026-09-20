@@ -1117,3 +1117,193 @@ def test_a_left_out_node_reaches_a_watcher_through_the_status():
     assert st.model_dump()["nodes_skipped"] == {
         "n2": "its probe did not run in 2 consecutive batches"}, \
         "carried on the payload every client reads"
+
+
+# -- the floor: what a measurement may never size a container below ----------------------
+
+def test_a_stated_memory_floor_lifts_a_small_measurement():
+    """A probe that did not see the workload measures something smaller than it needs, and
+    headroom cannot answer that: multiplying a wrong figure scales it rather than bounding
+    it."""
+    figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "2Gi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"size_on": 100, "limit": "request",
+                                              "headroom": {"cpu": 1.0, "memory": 1.0},
+                                              "min": {"memory": "1Gi"}})
+    from robovast.common.quantity import to_bytes
+    assert to_bytes(sized["memory"]) == 1024 ** 3, "the floor, not the measurement"
+    assert to_bytes(sized["memory_limit"]) == 1024 ** 3, "memory is never a soft ceiling"
+
+
+def test_a_floor_never_lifts_a_container_past_its_declared_ceiling():
+    """``resources`` stays the most it may have: the floor raises a measurement, it does not
+    overrule the author's ceiling."""
+    figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "512Mi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"headroom": {"memory": 1.0},
+                                              "min": {"memory": "4Gi"}})
+    from robovast.common.quantity import to_bytes
+    assert to_bytes(sized["memory"]) == 512 * 1024 ** 2
+
+
+def test_a_measurement_above_the_floor_is_left_alone():
+    """The floor is a bound, not a target: calibration is free to size anywhere above it."""
+    figures = {"sut": {"cores": 2.0, "memory_peak": 3 * 1024 ** 3, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "8Gi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"headroom": {"memory": 1.0},
+                                              "min": {"memory": "1Gi"}})
+    from robovast.common.quantity import to_bytes
+    assert to_bytes(sized["memory"]) >= 3 * 1024 ** 3
+
+
+def test_a_stated_cpu_floor_lifts_a_small_measurement():
+    figures = {"sut": {"cores": 0.1, "samples": 90}}
+    sized = kb.calibrated_resources({"cpu": 8}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"headroom": {"cpu": 1.0}, "min": {"cpu": 2}})
+    assert float(sized["cpu"]) == 2
+
+
+def test_a_floor_above_the_ceiling_is_refused_rather_than_clipped():
+    """Two lines that cannot both hold: sizing to either one silently gives the author the
+    opposite of what the other says."""
+    from pydantic import ValidationError
+
+    from robovast.common.config import ContainerConfig
+    with pytest.raises(ValidationError, match="no allocation satisfies both"):
+        ContainerConfig(image="x", resources={"memory": "1Gi"},
+                        calibration={"min": {"memory": "2Gi"}})
+    with pytest.raises(ValidationError, match="no allocation satisfies both"):
+        ContainerConfig(image="x", resources={"cpu": 2}, calibration={"min": {"cpu": 4}})
+
+
+def test_a_floor_is_read_off_the_containers_own_block():
+    """Stated in the `.vast`, it has to survive the three-layer merge that resolves a
+    container's calibration, or it is configured in the file and inert in the allocation."""
+    container = type("C", (), {"name": "sut", "roles": ("sut",),
+                               "calibration": {"min": {"memory": "1Gi", "cpu": 3}}})()
+    runner = kb.BatchJobRunner.__new__(kb.BatchJobRunner)
+    settings = runner._calibration_settings(container)
+    assert settings["min"] == {"memory": "1Gi", "cpu": 3}
+
+
+# -- runs killed at a measured figure are reported, and the campaign runs on ------------
+
+def _oom(container="sut", node="n1", limit="128Mi"):
+    """What ``restarted_job_forensics`` hands back for one OOM-killed run."""
+    detail = f"container {container} restarted 1x after OOMKilled (exit 137, SIGKILL)"
+    return {"detail": detail, "node": node,
+            "containers": [{"pod_name": "a-pod", "container": container, "role": container,
+                            "restart_count": 1, "reason": "OOMKilled", "exit_code": 137,
+                            "memory_limit": limit, "invalidating": True, "detail": detail}]}
+
+
+class _State:
+    stage = None
+    attention = None
+
+    def update(self, **fields):
+        for key, value in fields.items():
+            setattr(self, key, value)
+
+
+def _measured_runner(monkeypatch, restarted, *, calibrated=True):
+    """A runner whose node is calibrated and whose cluster reports *restarted*."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    if calibrated:
+        calibration.claim_probe("n1", "probe-1")
+        calibration.record("n1", "probe-1",
+                           {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2,
+                                    "samples": 90}})
+    r = kb.BatchJobRunner()
+    r.campaign, r._batch_tag, r.namespace = "camp-1", "batch-0", "ns"
+    r.k8s_client = object()
+    r._calibration = calibration
+    r._state = _State()
+    r._invalidated = set()
+    r.dropped = []
+    r._drop_job = lambda name, *a, **k: r.dropped.append(name)
+    monkeypatch.setattr(kb, "restarted_job_forensics", lambda *a, **k: restarted)
+    return r, calibration
+
+
+def test_a_run_killed_at_a_measured_figure_is_reported_at_once(monkeypatch, caplog):
+    """Somebody watching can raise the floor and rerun; somebody reading the tally afterwards
+    cannot. So it is said on the first one, with the numbers to act on."""
+    r, calibration = _measured_runner(monkeypatch, {"job-1": _oom()})
+    with caplog.at_level("ERROR"):
+        r._invalidate_restarted_jobs("a-label", ["job-1"], {}, "/campaign")
+    assert len(calibration.oom_at_measured()) == 1
+    assert "MEASURED" in r._state.attention
+    assert "0.12GiB" in r._state.attention, "what it died at"
+    assert "0.10GiB" in r._state.attention, "and what was measured"
+    assert "calibration.min.memory" in r._state.attention, "and what to state"
+    assert "OOM-killed" in caplog.text, "loud in the campaign's own log too"
+
+
+def test_the_campaign_keeps_running(monkeypatch):
+    """A sweep that reaches its end having lost runs is worth more than one held halfway, and
+    which of those somebody wants is not the runner's call."""
+    restarted = {f"job-{i}": _oom() for i in range(5)}
+    r, _cal = _measured_runner(monkeypatch, restarted)
+    r._invalidate_restarted_jobs("a-label", list(restarted), {}, "/campaign")
+    assert sorted(r.dropped) == sorted(restarted), "the runs are dropped, the campaign is not"
+
+
+def test_the_report_counts_every_run_the_campaign_has_lost(monkeypatch):
+    """The tally is the campaign's, not the batch's: a search meets the same figure round
+    after round, and a count that restarted would keep reporting the first loss."""
+    r, calibration = _measured_runner(monkeypatch, {"job-1": _oom()})
+    r._invalidate_restarted_jobs("a-label", ["job-1"], {}, "/campaign")
+    r._invalidated = set()
+    r._invalidate_restarted_jobs("a-label", ["job-1"], {}, "/campaign")
+    assert len(calibration.oom_at_measured()) == 2
+    assert r._state.attention.startswith("2 run(s) lost")
+
+
+def test_a_kill_at_a_figure_nobody_measured_is_not_reported(monkeypatch):
+    """A container killed at what its AUTHOR declared is a campaign asking for too little --
+    theirs to fix, and not something to report as a bad measurement."""
+    r, calibration = _measured_runner(monkeypatch, {"job-1": _oom()}, calibrated=False)
+    r._invalidate_restarted_jobs("a-label", ["job-1"], {}, "/campaign")
+    assert calibration.oom_at_measured() == []
+    assert r._state.attention is None
+
+
+def test_a_crash_that_is_not_an_oom_says_nothing_about_memory(monkeypatch):
+    r, calibration = _measured_runner(
+        monkeypatch, {"job-1": {**_crash(container="sut"), "node": "n1"}})
+    r._invalidate_restarted_jobs("a-label", ["job-1"], {}, "/campaign")
+    assert calibration.oom_at_measured() == []
+
+
+# -- the built-in memory floor -----------------------------------------------------------
+
+def test_a_measurement_is_never_sized_below_the_built_in_floor():
+    """The twin of MIN_CPU, on the resource where under-sizing kills rather than slows: a probe
+    whose run stopped before the stack was up measures a fraction of what every later run needs,
+    and a `.vast` that says nothing about sizing must still get an allocation it can live in."""
+    from robovast.common.quantity import to_bytes
+    from robovast.execution.cluster_execution.node_calibration import MIN_MEMORY_BYTES
+
+    figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "2Gi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"headroom": {"memory": 1.0}})
+    assert to_bytes(sized["memory"]) == MIN_MEMORY_BYTES
+    assert MIN_MEMORY_BYTES == 500 * 1024 ** 2
+
+
+def test_the_floor_never_beats_the_declared_ceiling():
+    """``resources`` stays the most a container may have, whichever floor is under it."""
+    from robovast.common.quantity import to_bytes
+
+    figures = {"sut": {"cores": 2.0, "memory_peak": 10 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "256Mi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True, settings={"headroom": {"memory": 1.0}})
+    assert to_bytes(sized["memory"]) == 256 * 1024 ** 2

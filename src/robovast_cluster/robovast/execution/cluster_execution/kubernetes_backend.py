@@ -74,6 +74,7 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        job_artifact_rel, node_label, read_job_links,
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
+from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
                                          RunOptions, ShareStopped)
@@ -104,6 +105,32 @@ logger = logging.getLogger(__name__)
 #: rather than an explicit list so one ``.vast`` key means the same thing here as on the
 #: Compose lane, which already writes exactly this.
 GPU_DRIVER_CAPABILITIES = "all"
+
+def _measured_memory_report(killed) -> str:
+    """What a campaign says while runs are dying at memory it measured itself.
+
+    **A measurement is a prediction about every run.** The probe sees one run's peak and every
+    other run is sized from it, so a demand the probe did not see is not met once: the same
+    figure meets the next run, and the next. That is worth saying the moment it happens --
+    somebody watching can raise the floor and rerun rather than read the tally afterwards --
+    and it is worth saying with the numbers, because what to state follows from them.
+
+    The campaign is not stopped or re-sized over it: this is a report, and the decision it
+    informs belongs to whoever wrote the ``.vast``.
+    """
+    gib = 1024 ** 3
+    lines = []
+    for node, container, limit, measured in sorted(killed):
+        at = f" at {limit / gib:.2f}GiB" if limit else ""
+        lines.append(f"{container} on node {node}{at} (measured: {measured / gib:.2f}GiB)")
+    return (
+        f"{len(killed)} run(s) lost so far: OOM-killed at memory this campaign MEASURED -- "
+        + "; ".join(lines)
+        + ". The probe measures one run's peak and every other run is sized from it, so this "
+        "meets every run still to come on that node. The campaign keeps going; to bound it, "
+        "state `calibration.min.memory` (a floor calibration may not size below, e.g. '2Gi') "
+        "or raise `resources.memory`, and run again.")
+
 
 def pull_policy_for(image_ref: str) -> str:
     """The ``imagePullPolicy`` a container running *image_ref* must carry.
@@ -367,7 +394,7 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     if not figures:
         return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
 
-    from .node_calibration import MIN_CPU  # noqa: PLC0415
+    from .node_calibration import MIN_CPU, MIN_MEMORY_BYTES  # noqa: PLC0415
 
     settings = settings or {}
     headroom = settings.get("headroom") or {}
@@ -380,9 +407,11 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     out = dict(_with_bootstrap(declared, container_name, roles) if bootstrap else declared)
     ceiling = _declared_cores(declared) or _declared_cores(out)
 
+    floor = settings.get("min") or {}
     cores = figures.get("cores")
     if cores:
-        cpu = max(MIN_CPU, round(cores * float(headroom.get("cpu") or 1.0), 3))
+        cpu = max(MIN_CPU, float(floor.get("cpu") or 0),
+                  round(cores * float(headroom.get("cpu") or 1.0), 3))
         out["cpu"] = min(cpu, ceiling) if ceiling else cpu
         if settings.get("limit") == "request":
             # Request == limit: the container never throttles, and its budget is the same in
@@ -397,6 +426,12 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     peak_bytes = figures.get("memory_peak")
     if peak_bytes:
         sized = _memory_reservation(peak_bytes, float(headroom.get("memory") or 1.0))
+        # The floors first, then the ceiling: a measurement below what a container needs to
+        # exist is the one thing this cannot detect for itself, and unlike CPU the cost of
+        # getting it wrong is the run rather than its speed. The built-in floor is what makes
+        # a `.vast` that says nothing about sizing safe; an author who knows their container
+        # needs more says so, and the ceiling still wins over both.
+        sized = max(sized, MIN_MEMORY_BYTES, to_bytes(floor.get("memory")) or 0)
         declared_bytes = _declared_bytes(declared) or _declared_bytes(out)
         if declared_bytes:
             sized = min(sized, declared_bytes)
@@ -1889,6 +1924,13 @@ class BatchJobRunner:
                 **out["headroom"],
                 **{f: _field(headroom, f) for f in ("cpu", "memory")
                    if _field(headroom, f) is not None}}
+        floor = _field(declared, "min")
+        if floor is not None:
+            # Per field for the same reason, over an empty default: a floor is something an
+            # author states about a container, and no role rule can know it.
+            out["min"] = {**(out.get("min") or {}),
+                          **{f: _field(floor, f) for f in ("cpu", "memory")
+                             if _field(floor, f) is not None}}
         return out
 
     def _calibration_by_container(self) -> dict:
@@ -2743,9 +2785,62 @@ class BatchJobRunner:
             logger.warning("Batch %s: could not check for restarted containers: %s",
                            self._batch_tag, exc)
             return
+        killed_at_measured = []
         for job_name, entry in sorted(restarted.items()):
+            killed_at_measured += self._measured_figures_that_killed_a_run(entry)
             self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
                            campaign_root=campaign_root, forensics=entry)
+        if killed_at_measured:
+            self._report_measured_memory_kills(killed_at_measured)
+
+    def _report_measured_memory_kills(self, killed) -> None:
+        """Say that runs are dying at memory this campaign measured -- loudly, and carry on.
+
+        **The campaign keeps running**: a sweep that reaches its end having lost some runs is
+        worth more than one held halfway, and which of those a person wants is not this code's
+        call. What it owes them is the fact, early and where they already watch -- the
+        campaign's own log, and its live ``stage`` for the UI, the CLI and an agent polling the
+        status.
+
+        Only a figure this campaign MEASURED is reported this way: a container killed at what
+        its author declared is a campaign asking for too little, which the author states and
+        this must not second-guess.
+        """
+        calibration = getattr(self, "_calibration", None)
+        if calibration is None:
+            return
+        for node, container, limit, measured in killed:
+            calibration.record_oom_at_measured(node, container, limit, measured)
+        report = _measured_memory_report(calibration.oom_at_measured())
+        logger.error("Batch %s: %s", self._batch_tag, report)
+        if self._state is not None:
+            self._state.update(attention=report)
+
+    def _measured_figures_that_killed_a_run(self, entry) -> list:
+        """``[(node, container, limit, measured)]`` this campaign MEASURED and then died at.
+
+        Collected before the job is dropped, so the evidence is still on the pod. Only a
+        figure this campaign measured counts: a container killed at what its author declared
+        is a campaign asking for too little, which the author states and this must not
+        second-guess.
+        """
+        # ``getattr``: a runner built for one narrow job may carry no calibration at all, and
+        # this must never crash the handler whose job is to survive a failed run.
+        calibration = getattr(self, "_calibration", None)
+        node = (entry or {}).get("node")
+        figures = calibration.calibrated(node) if calibration and node else None
+        if not figures:
+            return []
+        killed = []
+        for record in (entry or {}).get("containers") or ():
+            if record.get("reason") != "OOMKilled":
+                continue
+            container = record.get("container")
+            measured = (figures.get(container) or {}).get("memory_peak")
+            if measured:
+                killed.append((node, container, to_bytes(record.get("memory_limit")),
+                               measured))
+        return killed
 
     def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name,
                            campaign_root) -> None:

@@ -1556,6 +1556,9 @@ field optional and defaulted from the role and the deployment:
            headroom:
              cpu: 1.4          # margin above the measurement; per resource
              memory: 1.5
+           min:
+             cpu: 1            # the LEAST it may be sized to, whatever was measured
+             memory: 1Gi       # never above `resources`, which stays the ceiling
 
 ``size_on`` is worth knowing about for one reason beyond tuning: *which* statistic the system
 under test is sized on is a decision this substrate asserts rather than a measured fact, and
@@ -1563,6 +1566,31 @@ setting it is how a campaign tests that decision. Doing so costs comparability �
 under test read below its maximum **will** be throttled mid-plan, which
 ``run_validity_view.quota_bound`` flags, and its runs cannot be compared with a campaign sized
 any other way. That is the point when it is the experiment, and a mistake when it is not.
+
+**Neither resource is ever sized below its floor.** CPU keeps a quarter core and memory keeps
+500Mi, whatever a probe measured — a probe whose run stopped before the stack was up measures a
+fraction of what every later run needs, and on memory that fraction becomes the ceiling those
+runs die against. The floors are what let a ``.vast`` say nothing about sizing and still get an
+allocation its containers can live in.
+
+``min`` raises them for a container you know needs more, and answers what headroom cannot: a
+multiplier scales a measurement that is wrong, a floor bounds it. It never lifts a container
+above ``resources`` — a floor stated above that ceiling is refused, because no allocation
+satisfies both.
+
+**A run killed at a measured figure is reported, and the campaign runs on.** Memory is the one
+resource whose under-sizing is fatal rather than slow, so a kill is evidence the measurement was
+too small — and the same figure meets every run still to come on that node. The campaign says so
+on the first one, with what it died at, what was measured and what to state, and keeps going: a
+sweep that reaches its end having lost some runs is worth more than one held halfway, and which
+of those you want is your call rather than the runner's.
+
+It says it where somebody watching will see it: an error in the campaign's own log, and the
+campaign's ``attention`` — carried on its status and on every listing row, so ``vast campaign
+list``, the MCP status tools and the web UI all show it. The web UI marks such a campaign with a
+**"!"** that opens the sentence. Only a *measured* figure is reported this way; a container
+killed at what its author declared is a campaign asking for too little, which is the author's to
+fix.
 
 The block is read only under ``calibrated``; declaring one under ``fixed`` is refused rather
 than ignored, since nothing there would read it.

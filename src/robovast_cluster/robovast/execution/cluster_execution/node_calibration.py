@@ -66,6 +66,17 @@ CALIBRATION_HEADROOM = 1.25
 #: cannot tell "this container genuinely idles" from "this run stopped before it started".
 MIN_CPU = 0.25
 
+#: The same floor for memory, and the resource that needs it more: a container given too little
+#: CPU runs slowly, one given too little memory is killed. A probe that did not see the workload
+#: -- one whose run stopped before the stack was up -- measures a fraction of what every later
+#: run needs, and without a floor that fraction becomes the ceiling those runs die against.
+#:
+#: Chosen as what a container that has genuinely started something uses, so it bounds a
+#: measurement without describing any particular workload: a ``.vast`` that says nothing about
+#: sizing still gets an allocation its containers can live in, and one that needs more says so
+#: with ``calibration.min.memory``.
+MIN_MEMORY_BYTES = 500 * 1024 ** 2
+
 #: Fewest ticks a percentile may be read from. **A statistical floor, and only that.**
 #:
 #: It was 30 -- half a minute at the monitor's ~1 Hz -- and carried a second job it should
@@ -131,6 +142,10 @@ class NodeCalibration:
     #: node_id -> why this campaign left that node out. Distinct from ``_refused``, which is a
     #: probe that RAN and could not be believed; this is one that never got to run.
     _skipped: dict = field(default_factory=dict)
+    #: ``[(node_id, container, limit_bytes, measured_bytes)]`` -- every run this campaign lost
+    #: to an OOM at a figure it measured itself. Campaign-scoped like the figures it judges:
+    #: the share that decides whether to pause is a fact about the campaign, not one batch.
+    _oom_at_measured: list = field(default_factory=list)
     #: node_id -> consecutive batches that ended with it held and unmeasured. Lives here
     #: rather than on the runner because a runner is per batch and this counts batches: a
     #: search builds a fresh one every round, so a tally kept there would read 1 forever.
@@ -356,6 +371,22 @@ class NodeCalibration:
                          if v.get("memory_peak") else "")
                       for k, v in sorted(figures.items())))
         return True
+
+    def record_oom_at_measured(self, node_id, container, limit_bytes=None,
+                               measured_bytes=None) -> int:
+        """Remember one run lost to an OOM at a figure this campaign measured; return the total.
+
+        A measurement is a prediction about every run, so a demand the probe did not see is
+        not met once: the same figure meets the next run, and the next. Counting them is what
+        tells that apart from one genuinely heavy configuration, which is why the caller acts
+        on a share rather than on the first.
+        """
+        self._oom_at_measured.append((node_id, container, limit_bytes, measured_bytes))
+        return len(self._oom_at_measured)
+
+    def oom_at_measured(self) -> list:
+        """Every run lost that way so far, oldest first."""
+        return list(self._oom_at_measured)
 
     def abandon(self, node_id, probe_key) -> None:
         """A probe that will never report -- it died, or the campaign is shutting down.

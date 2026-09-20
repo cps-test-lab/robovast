@@ -549,6 +549,11 @@
       "CampaignSummary": {
         "description": "One row of :meth:`RobovastInterface.list_campaigns`.\n\nCampaigns are workspace-independent: this carries no binding to a workspace, and nothing\nhere is read back to run anything. It does carry an :class:`CampaignOrigin` *record* of\nwhere the configuration came from -- a fact about the past, which is a different thing\nfrom a link (see that class).",
         "properties": {
+          "attention": {
+            "default": "",
+            "title": "Attention",
+            "type": "string"
+          },
           "campaign_id": {
             "title": "Campaign Id",
             "type": "string"
@@ -673,6 +678,7 @@
           }
         },
         "required": [
+          "attention",
           "campaign_id",
           "created_by",
           "description",
@@ -3322,6 +3328,17 @@
       "StatusResponse": {
         "description": ":class:`Status` as the HTTP API serves it: the state, plus the stall verdict.\n\nThe verdict is derived per read (as ``health`` is) and exists only on the wire. It is\ndeliberately NOT a field on :class:`Status`, which is the controller's mutable state and\nis persisted verbatim as the campaign's durable outcome\n(``campaign_data.write_execution_outcome`` / ``read_execution_outcome``): a stored verdict\nwould be read back later as a live accusation against a campaign that has long since\nfinished, which is the one error mode the tri-state exists to prevent.\n\nEvery added field is optional and absent unless :func:`stall_report` produced it, so a\nterminal campaign carries no verdict rather than a null one \u2014 the same shape the MCP\nreturns, for the same reason: a field present on every campaign is one readers learn to\nskip.",
         "properties": {
+          "attention": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attention"
+          },
           "batch": {
             "default": 0,
             "title": "Batch",
@@ -3605,6 +3622,7 @@
           }
         },
         "required": [
+          "attention",
           "batch",
           "batch_since",
           "batches_done",
