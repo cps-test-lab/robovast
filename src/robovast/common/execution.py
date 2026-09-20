@@ -1575,8 +1575,28 @@ DONE_EOF
     }
     trap _finish EXIT
     trap _forward_term TERM INT
+    # A background job in a shell without job control gets SIGINT and SIGQUIT set to SIG_IGN,
+    # and that disposition survives every exec below it: the runner, the scenario's children,
+    # a bag recorder. A recorder that ignores SIGINT is killed rather than closed, and a bag
+    # that was never closed has no metadata.yaml, which makes it unreadable to every
+    # converter -- so the run looks successful and its trajectory is gone. Neither side can
+    # undo it later: exec preserves SIG_IGN, and a non-interactive shell may not reset a
+    # signal that was ignored on entry.
+    #
+    # `env --default-signal` restores exactly those two dispositions for the runner and
+    # everything under it. Job control does the same by giving the job its own process
+    # group, and is the fallback for a coreutils too old for the flag.
+    _RUN_WITH_SIGNALS=""
+    if env --default-signal=INT,QUIT true 2>/dev/null; then
+        _RUN_WITH_SIGNALS="env --default-signal=INT,QUIT"
+    else
+        set -m
+    fi
     run_scenario() {
-        "$@" &
+        # Unquoted, so an empty prefix disappears rather than becoming an argv[0]: the job
+        # must stay a simple command, or $! names a subshell and the TERM above is
+        # forwarded to something that is not the runner.
+        ${_RUN_WITH_SIGNALS} "$@" &
         _scenario_pid=$!
         local _rc=0
         wait "${_scenario_pid}" || _rc=$?
