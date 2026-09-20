@@ -1797,6 +1797,21 @@ def _plugin_specs_of(campaign_data) -> list:
 
 
 
+def _copy_into(src, dst) -> None:
+    """Copy *src* to *dst*, unless they are already the same file.
+
+    A campaign re-entered after a service restart is relaunched from its own frozen
+    ``_config/``, so the project tree and the campaign tree are one directory and each copy
+    below is a file onto itself -- which ``shutil.copy2`` refuses outright
+    (``SameFileError``), failing a campaign whose Jobs are still running. Copying the
+    project into the campaign is what makes the campaign self-contained; where it already
+    is the campaign, that is done.
+    """
+    if os.path.exists(dst) and os.path.samefile(src, dst):
+        return
+    shutil.copy2(src, dst)
+
+
 def _archive_vast_sources(vast_src, campaign_config_dir):
     """Copy the campaign's ``.vast`` and every base it extends into ``_config/``.
 
@@ -1821,7 +1836,7 @@ def _archive_vast_sources(vast_src, campaign_config_dir):
         rel = os.path.relpath(str(src), project_dir)
         dst = os.path.join(campaign_config_dir, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copy2(str(src), dst)
+        _copy_into(str(src), dst)
         own_dst = dst
     write_campaign_pointer(campaign_config_dir, own_dst)
     return own_dst
@@ -1919,7 +1934,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     scenario_rel = os.path.basename(campaign_data["scenario_file"])
     scenario_config_dst = os.path.join(campaign_config_dir, scenario_rel)
     os.makedirs(os.path.dirname(scenario_config_dst), exist_ok=True)
-    shutil.copy2(scenario_file_path_for_hash, scenario_config_dst)
+    _copy_into(scenario_file_path_for_hash, scenario_config_dst)
 
     # Copy the .vast file into _config/, with whatever it is built on.
     #
@@ -1946,7 +1961,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         src_path = os.path.join(vast_file_path, config_file)
         dst_path = os.path.join(campaign_config_dir, config_file)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        shutil.copy2(src_path, dst_path)
+        _copy_into(src_path, dst_path)
 
     # Copy variation input files and analysis notebooks into _config/
     for input_file in campaign_data.get("_input_files", []):
@@ -1969,7 +1984,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                 logger.warning(f"Input file not found, skipping: {src_path}")
             continue
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        shutil.copy2(src_path, dst_path)
+        _copy_into(src_path, dst_path)
 
     # Copy campaign-level transient files into _transient/
     for rel_path, abs_path in campaign_data.get("_transient_files", []):
@@ -1978,7 +1993,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             continue
         dst_path = os.path.join(campaign_transient_dir, rel_path)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        shutil.copy2(abs_path, dst_path)
+        _copy_into(abs_path, dst_path)
 
     # get scenario name
     original_scenario_path = campaign_data.get("scenario_file")
@@ -2053,7 +2068,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                         f"{os.path.join(vast_file_path, '.cache')} and retry.")
                 dst_path = os.path.join(run_config_dir, config_rel_path)
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                shutil.copy2(src_path, dst_path)
+                _copy_into(src_path, dst_path)
 
         # Copy config-level transient files into <config>/_transient/
         config_name = config_data.get("name", "")
@@ -2068,7 +2083,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                 continue
             dst_path = os.path.join(out_dir, config_name, "_transient", rel_path)
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-            shutil.copy2(abs_path, dst_path)
+            _copy_into(abs_path, dst_path)
 
         # The simulation channel's record, beside the scenario channel's. A record, not an
         # input: what the run reads is the per-job overrides file plus the world on argv.

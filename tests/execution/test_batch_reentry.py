@@ -175,3 +175,34 @@ def test_a_different_campaign_still_gets_its_own_row(tmp_path):
     a = store.create_campaign("camp-a", {}, mode="batch")
     b = store.create_campaign("camp-b", {}, mode="batch")
     assert a != b
+
+
+def test_preparing_a_campaign_from_its_own_config_copies_nothing_onto_itself(tmp_path):
+    """A re-entered campaign is relaunched from the ``_config/`` it froze, so the project
+    tree and the campaign tree are one directory and every staging copy is a file onto
+    itself. ``shutil.copy2`` refuses that outright, which failed a campaign whose Jobs were
+    still running and had already delivered results."""
+    from robovast.common.execution import prepare_campaign_configs
+
+    campaign = tmp_path / "camp-2026-01-01-000000"
+    config_dir = campaign / "_config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "scenario.osc").write_text(
+        "import osc.helpers\n\nscenario test_scenario:\n    timeout(10s)\n"
+        "    do serial:\n        wait elapsed(1s)\n")
+    (config_dir / "camp.vast").write_text("version: 4\n")
+    (config_dir / "files").mkdir()
+    (config_dir / "files" / "params.yaml").write_text("a: 1\n")
+
+    data = {
+        "scenario_file": str(config_dir / "scenario.osc"),
+        "vast": str(config_dir / "camp.vast"),
+        "_run_files": ["files/params.yaml"],
+        "configs": [{"name": "cfg-a"}],
+        "execution": {},
+    }
+    # The campaign's own directory as the project: what a resume hands the backend.
+    prepare_campaign_configs(str(campaign), dict(data), cluster=True)
+
+    assert "test_scenario" in (config_dir / "scenario.osc").read_text()
+    assert (config_dir / "files" / "params.yaml").read_text() == "a: 1\n"

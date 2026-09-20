@@ -1283,8 +1283,9 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
         run_dir: Path to the run directory (e.g. ``campaign-<id>/<config>/0``).
 
     Returns:
-        Dictionary with keys: passed (bool), duration_sec (float),
-        start_time (ISO string), errors (int), failures (int), tests (int).
+        Dictionary with keys: success (bool), duration_sec (float), start_time (ISO
+        string), start_epoch (float), errors (int), failures (int), tests (int),
+        failure_message (str or None).
 
     Raises:
         FileNotFoundError: If test.xml does not exist.

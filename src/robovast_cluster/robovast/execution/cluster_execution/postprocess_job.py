@@ -2142,7 +2142,6 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
                          "nor the outputs route")
 
     from kubernetes import client  # noqa: PLC0415
-    from kubernetes.client.rest import ApiException  # noqa: PLC0415
 
     from robovast.common.errors import ClusterUnreachableError  # noqa: PLC0415
 
