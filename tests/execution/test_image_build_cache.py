@@ -178,6 +178,40 @@ def test_credentials_garbage_is_none():
     assert credentials_for("not json", "h") is None
 
 
+def test_a_credential_is_not_handed_to_a_registry_it_was_not_issued_for():
+    """The entry is matched on the HOST its key names, not on the key's text.
+
+    The lookup used to fall back to ``key.rstrip("/").endswith(host)``, and a suffix test
+    has no boundary: an entry for ``not-example.com`` reads as an entry for
+    ``example.com``, so the username and password for one registry were presented to a
+    different one that merely ends with the same letters.
+    """
+    cfg = json.dumps({"auths": {"https://not-example.com": {"username": "u", "password": "p"}}})
+    assert credentials_for(cfg, "example.com") is None
+    assert credentials_for(cfg, "not-example.com") == ("u", "p"), "the real host still matches"
+
+
+def test_docker_hubs_legacy_index_key_is_found():
+    """The case the suffix fallback was written for, and the one it could never match.
+
+    ``docker login`` keys Docker Hub by ``https://index.docker.io/v1/`` while an image ref
+    names ``docker.io``. The old test asked whether the key ENDED with the host: it ends
+    with ``/v1``, so it matched nothing, the pull went out anonymous, and the 401 came back
+    as "the registry would not say" rather than as a credential that was never found.
+    """
+    cfg = json.dumps({"auths": {"https://index.docker.io/v1/":
+                                {"username": "u", "password": "p"}}})
+    for host in ("docker.io", "index.docker.io", "registry-1.docker.io"):
+        assert credentials_for(cfg, host) == ("u", "p"), host
+
+
+def test_a_key_carrying_a_repository_path_matches_its_host():
+    """``docker login example.com/team`` writes the path into the key; the host is what the
+    v2 API is dialled on."""
+    cfg = json.dumps({"auths": {"example.com/team": {"username": "u", "password": "p"}}})
+    assert credentials_for(cfg, "example.com") == ("u", "p")
+
+
 # ---------------------------------------------------------------------------
 # manifest_exists — must fail closed
 # ---------------------------------------------------------------------------

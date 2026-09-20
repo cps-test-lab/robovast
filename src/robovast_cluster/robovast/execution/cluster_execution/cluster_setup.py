@@ -498,6 +498,17 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # Only now is the cluster actually set up. Returning at "Deployment created"
     # reported success for a pod that may never start.
     wait_for_service_ready(namespace=namespace, kube_context=kube_context)
+    # What identifies this deployment, and what a floating-tag warning was only
+    # approximating: the ref says what was asked for, the digest says which bytes the
+    # kubelet actually pulled. Only meaningful once the pod is serving, hence here rather
+    # than beside the resolution. Reporting, so a field it cannot read costs a line and
+    # not a setup (both helpers return "" instead of raising).
+    from .service_deploy import (  # pylint: disable=import-outside-toplevel
+        deployment_image_ref, running_image_digest)
+    ref, _denied = deployment_image_ref(namespace, kube_context)
+    digest = running_image_digest(namespace, kube_context)
+    if ref or digest:
+        logger.info("robovast-service running %s (%s)", ref or "?", digest or "digest unknown")
     # A fresh deployment is maximally cold: no node holds any family image, so the first
     # campaign would pay a full pull of robovast-roqsim before running anything. Last,
     # and fire-and-forget, because setup has already succeeded by this point.

@@ -92,8 +92,38 @@ def split_image_ref(image_ref: str) -> "tuple[str, str, str]":
     return host, repository, tag
 
 
+#: The addresses Docker Hub is written as, all naming one registry. ``docker login`` writes
+#: its legacy v1 index URL, while an image ref names ``docker.io`` -- so the entry and the
+#: host asked for never match on their text, and the credential can only be found by knowing
+#: the two are the same place. The ONLY alias set here: every other registry is keyed by the
+#: host its own refs use, and inventing further equivalences would be guessing about somebody
+#: else's deployment.
+_DOCKER_HUB_HOSTS = frozenset({"docker.io", "index.docker.io", "registry-1.docker.io"})
+
+
+def _auth_host(key: str) -> str:
+    """The registry host a dockerconfigjson key names -- no scheme, no path, port kept.
+
+    A key is an *address*, not a host: ``docker login`` writes schemes
+    (``https://index.docker.io/v1/``), and a key may carry a repository path
+    (``example.com/team``). Parsing it is what makes an equality test possible, which is the
+    whole point -- see :func:`credentials_for` for what comparing the raw text did instead.
+    """
+    return key.split("://", 1)[-1].split("/", 1)[0]
+
+
 def credentials_for(dockerconfigjson: str, host: str) -> "Optional[tuple[str, str]]":
-    """Pull ``(username, password)`` for *host* out of a dockerconfigjson blob."""
+    """Pull ``(username, password)`` for *host* out of a dockerconfigjson blob.
+
+    Entries are matched on the **host each key names**, never on the text of the key. A
+    substring test was both wrong ways round at once. It read ``https://not-example.com`` as
+    an entry for ``example.com``, so one registry's credential was presented to a different
+    registry that merely ends with the same letters -- a credential sent somewhere it was
+    never issued for. And the Docker Hub case it was written for never fired: the
+    conventional key is ``https://index.docker.io/v1/``, which ends in ``/v1`` and so ends
+    with no host at all, leaving a Hub pull looking anonymous and reporting the 401 as
+    "the registry would not say".
+    """
     try:
         auths = json.loads(dockerconfigjson).get("auths", {})
     except (ValueError, AttributeError):
@@ -101,9 +131,9 @@ def credentials_for(dockerconfigjson: str, host: str) -> "Optional[tuple[str, st
         return None
     entry = auths.get(host)
     if entry is None:
-        # Docker Hub is conventionally keyed by its legacy index URL rather than the host.
+        wanted = _DOCKER_HUB_HOSTS if host in _DOCKER_HUB_HOSTS else {host}
         for key, value in auths.items():
-            if key.rstrip("/").endswith(host):
+            if _auth_host(key) in wanted:
                 entry = value
                 break
     if entry is None:

@@ -152,11 +152,30 @@ def test_shutdown_dropped_is_reported_even_when_nothing_was_dropped():
 
 
 def test_the_two_exclusions_stay_separable_in_the_accounting():
-    """`lines + dropped + shutdown_dropped == lines_total`. Folding the teardown into
+    """`matched + dropped + shutdown_dropped == lines_total`. Folding the teardown into
     `dropped` would report a grep that matched everything it was shown as having cut it."""
     view = view_log(_SHUTDOWN_TEXT, hide_shutdown=True, grep="goal reached")
     assert view["lines_total"] == 5
-    assert view["lines"] == 1 and view["dropped"] == 2 and view["shutdown_dropped"] == 2
+    assert view["matched"] == 1 and view["dropped"] == 2 and view["shutdown_dropped"] == 2
+    assert view["matched"] + view["dropped"] + view["shutdown_dropped"] == view["lines_total"]
+
+
+def test_tail_narrows_the_page_without_rewriting_what_matched():
+    """`lines` is the page, `matched` is what it is a page of.
+
+    Reporting only `lines` made a `tail=1` read of a five-line log say one line matched,
+    and broke the tie-out above on exactly the reads that need it -- a tail is what a
+    caller chasing a failure asks for.
+    """
+    view = view_log(_SHUTDOWN_TEXT, hide_shutdown=False, tail=1)
+    assert view["lines"] == 1 and view["truncated"] is True
+    assert view["matched"] == 5
+    assert view["matched"] + view["dropped"] + view["shutdown_dropped"] == view["lines_total"]
+
+
+def test_matched_equals_lines_when_nothing_is_tailed():
+    view = view_log(_SHUTDOWN_TEXT)
+    assert view["matched"] == view["lines"] == 5
 
 
 def test_hide_shutdown_runs_before_tail_so_a_tail_ends_at_the_trial():

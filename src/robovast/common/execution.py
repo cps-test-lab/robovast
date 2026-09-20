@@ -312,7 +312,8 @@ def default_image_tag() -> str:
 
 
 def resolve_family_image(image: str, *, project: str | None = None,
-                         tag: str | None = None, role: str = "container image") -> str:
+                         tag: str | None = None, role: str = "container image",
+                         warn: bool = True) -> str:
     """Resolve a ``family:<member>`` ref to ``<project>/<member>:<tag>``.
 
     *project* and *tag* come from the campaign when there is one (so a single campaign
@@ -324,11 +325,19 @@ def resolve_family_image(image: str, *, project: str | None = None,
     """
     member = family_member(image)
     resolved = f"{project or default_image_project()}/{member}:{tag or default_image_tag()}"
-    if resolved.endswith(f":{FLOATING_IMAGE_TAG}"):
+    if warn and resolved.endswith(f":{FLOATING_IMAGE_TAG}"):
         # The spirit of the pinning rule this replaced: a run whose image is a floating
         # tag is not reproducible, and the person who has to know that is the one
         # starting it. Not an error -- a floating tag is the right answer for a dev loop
         # and for an editable install, which has no release tag to match.
+        #
+        # *warn* exists because that reasoning is about starting a run. The cluster
+        # lifecycle commands start none, and floating is the mode they are built for:
+        # `upgrade` restarts unconditionally *because* a floating tag leaves the
+        # Deployment spec byte-identical, and reports the digest it landed on; the warm
+        # DaemonSet forces the re-pull a floating tag would otherwise skip. There the
+        # digest is the honest report and the warning is noise -- four copies of it on
+        # one `cluster setup`, all derived from the same `default_image_tag()`.
         logger.warning(
             "%s resolved to %r, a floating tag: what this runs against is whatever was "
             "last pushed there. Set ROBOVAST_PROJECT_TAG to pin it.", role, resolved)
@@ -361,7 +370,8 @@ def resolve_family_images_in_containers(containers: dict | None, *,
 
 def _resolve_image(member: str | None, *, explicit: str | None = None,
                    config_image: str | None = None, project: str | None = None,
-                   tag: str | None = None, role: str = "container image") -> str:
+                   tag: str | None = None, role: str = "container image",
+                   warn: bool = True) -> str:
     """Resolve a container image with a fixed precedence.
 
     Precedence (highest first): *explicit* (e.g. a ``--image`` flag) → *config_image*
@@ -399,7 +409,8 @@ def _resolve_image(member: str | None, *, explicit: str | None = None,
             "built (build_experiment_image / the start_campaign preflight) before "
             "it can be used as a container image")
     if is_family_image_ref(resolved):
-        resolved = resolve_family_image(resolved, project=project, tag=tag, role=role)
+        resolved = resolve_family_image(resolved, project=project, tag=tag, role=role,
+                                        warn=warn)
     return resolved
 
 
@@ -442,9 +453,14 @@ def resolve_controller_image(explicit: str | None = None,
     Cluster-side and never per-campaign: this image is chosen when the service is
     deployed, so it takes the project from the environment ``vast cluster
     upgrade`` runs in.
+
+    No floating-tag warning (``warn=False``): the callers are ``setup`` and ``upgrade``,
+    which report the digest the pod actually landed on once the rollout has converged.
+    That is the fact the warning was approximating, and it is available here where it is
+    not at campaign-composition time.
     """
     return _resolve_image(MEMBER_CONTROLLER, explicit=explicit,
-                          config_image=config_image, role="controller image")
+                          config_image=config_image, role="controller image", warn=False)
 
 
 #: BuildKit secret id for the git token, and the one name both sides of a build agree on: the
