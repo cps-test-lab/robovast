@@ -36,7 +36,9 @@ def test_plugin_parameter_schema_variation():
     fields = plugin_parameter_schema("robovast.variation_types", "ParameterVariationList")
     # `name` is refused before validation rather than declared, so it must NOT appear
     # here: a schema advertising a key that is always an error is worse than no schema.
-    assert {f["name"] for f in fields} == {"scenario", "sim", "sut", "values"}
+    # `reads` does appear, on every variation: what a plugin may read is part of the shape
+    # an agent binds, the same way its three destination channels are.
+    assert {f["name"] for f in fields} == {"scenario", "sim", "sut", "reads", "values"}
 
 
 def test_plugin_parameter_schema_describes_every_channel():

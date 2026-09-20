@@ -1,79 +1,43 @@
 # robovast-client
 
-Talk to a running [RoboVAST](https://github.com/cps-test-lab/robovast) service — upload a
-project, launch a campaign, wait for it, fetch the results — without installing RoboVAST.
+**Test your robot software at scale, from the command line.**
+
+[RoboVAST](https://cps-test-lab.github.io/robovast/) runs your robotics stack — a Nav2
+navigation setup, a manipulation pipeline, whatever drives your robot — through hundreds of
+simulated runs that differ in the ways that matter: different floorplans, start and goal
+poses, obstacles, sensor noise, parameters. Every run is recorded, every result is queryable,
+and the whole campaign is reproducible. `robovast-client` is the `vast` command that puts
+that in your terminal:
 
 ```bash
 pip install robovast-client
-vast login https://robovast.example.org
+vast login https://robovast.example.org          # a RoboVAST service your team runs
+vast workspace run my-experiment --wait-and-download
 ```
 
-## What it is for
+Push your project, launch the campaign, get the results back. The simulations run on the
+service — a Docker host or a Kubernetes cluster — so your machine needs nothing but Python.
 
-RoboVAST runs simulation campaigns: a scenario, a sweep of configurations, repeated runs,
-recorded provenance. That work happens **on the service**, on a Docker host or a
-Kubernetes cluster. If you are the person *driving* it rather than the person *hosting*
-it, this is all you need.
+## Is this the package for me?
 
-The full `robovast` distribution pulls in a simulator stack, an array library and a
-dataframe library — 88 packages, around 290 MB — because it can execute campaigns itself.
-This one is three dependencies (`pydantic`, `click`, `requests`) and about 30 MB, because
-it only talks to something that can.
+**Yes, if someone runs a RoboVAST service and you want to use it.** You have a robot software
+project and a `.vast` file that says how to vary it; you want the campaign to run and the
+results to come back. That is what this does, and it is small enough to live on a laptop, a
+CI runner or a teammate's machine without a second thought.
 
-> **Not yet on PyPI.** Install it from a checkout with `pip install src/robovast_client`.
-
-## What you get
-
-`vast` grows commands as capability is installed; with only the client, it is:
-
-| Command | Does |
-|---|---|
-| `vast login <url>` / `vast logout` | store or forget the service credentials |
-| **`vast workspace run`** | **launch a campaign** — pushes the project and starts it; `--wait-and-download` blocks and fetches the results |
-| `vast campaign stop/stop-job/log` | stop a campaign, kill one wedged job, read its infrastructure log |
-| `vast workspace init/update/list/delete` | push a project directory to the service |
-| `vast files get/put` | move a single file by address |
-| `vast image build/wait/status/log` | have the service build a project's derived images |
-| `vast campaign wait <campaign-id>` | block until a campaign is genuinely over |
-| `vast doctor` | check the login, the service and your PATH |
-
-`vast cluster` and `vast service` are partly here on purpose: a subcommand exists exactly
-when something that can perform it is installed. The verbs above only drive a service, so
-they are complete here. `vast cluster setup/cleanup/jobs-cleanup/monitor` and `vast service
-upgrade/token` need a kubeconfig and come with `robovast-cluster`. So `vast cluster --help`
-lists `store-cleanup` and not `setup` — nothing is stubbed and nothing fails on use.
-
-Both groups spanning two distributions is the design: a group is named after the **object**
-it acts on, not after what you installed.
-
-There is no ambient project. Every command names its own input, and a campaign runs a
-*workspace's* project — `vast workspace run <workspace> [vast]`.
-
-An LLM agent reaches the same service through its MCP endpoint, which needs nothing
-installed at all. `vast login` prints the `claude mcp add` line that registers it. The
-control verbs are deliberately on both sides; each side additionally owns what only it can
-do — bulk bytes and long waits here, results queries and diff-based authoring there.
-
-## Waiting for a campaign
-
-A campaign can run for days, so nothing blocks a request on one. `vast campaign wait` polls
-the service and exits when the campaign is genuinely finished — past postprocessing, not
-merely past its last run:
-
-```bash
-vast campaign wait basic-nav-2026-08-16-101500
-```
-
-Its **exit code is the answer**: `0` finished, `1` failed, `2` you interrupted the wait,
-and a distinct code for "no such campaign" so a typo cannot be mistaken for a failed run.
-Run it as the whole command — chaining anything after it makes the shell report the
-wrapper's status instead, which turns a failed campaign into a reported success.
+**Not yet, if you want to run the simulations yourself.** Then install
+[`robovast`](https://pypi.org/project/robovast/), which is the service: it executes campaigns
+on a Docker host, serves the web UI and an endpoint for AI agents, and stores the results. Add
+[`robovast-cluster`](https://pypi.org/project/robovast-cluster/) to run them across a
+Kubernetes cluster instead. Either one includes this client.
 
 ## What it is not
 
-No simulator, no Kubernetes client, no Docker, no MuJoCo, no ROS. It cannot execute a
-campaign or build an image itself, only ask a service to. If you need to *run* campaigns on your own machine,
-install `robovast`; to host them on a cluster, add `robovast-cluster`.
+No simulator, no Kubernetes client, no Docker, no MuJoCo, no ROS. It cannot execute a campaign
+or build an image itself; it asks a service to. Three dependencies (`pydantic`, `click`,
+`requests`) and nothing else.
+
+Documentation: [cps-test-lab.github.io/robovast](https://cps-test-lab.github.io/robovast/).
 
 ## Licence
 

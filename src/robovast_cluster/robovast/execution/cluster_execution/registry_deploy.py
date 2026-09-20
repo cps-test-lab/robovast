@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The container registry RoboVAST runs for itself, in the object-store pod.
+"""The container registry RoboVAST runs for itself, in the ``robovast`` pod.
 
 Experiment images (a project's ``build:`` section) have to be pushed somewhere the
 cluster can pull them back from. Requiring an external registry made that a site
@@ -30,7 +30,7 @@ setup and discarded only by ``vast cluster cleanup``.
 
 Moving it changes **no image ref**. The prefix is still the service's published Ingress
 host (see below); what moved is the Ingress' ``/v2`` backend, from the service's Service
-to the store pod's. Push and pull both go on resolving the same public name.
+to the ``robovast`` pod's. Push and pull both go on resolving the same public name.
 
 **Why it rides the service's own Ingress rather than a Service DNS name.** An image ref
 is a single string used twice: BuildKit pushes to it from inside a pod (pod network,
@@ -68,11 +68,11 @@ from . import data_paths
 logger = logging.getLogger(__name__)
 
 #: The registry listens here inside the pod. Not 5000-on-the-host: nothing publishes this
-#: port directly, it is reached through the store pod's Service and the Ingress' ``/v2``
+#: port directly, it is reached through the ``robovast`` pod's Service and the Ingress' ``/v2``
 #: rule.
 REGISTRY_PORT = 5000
 
-#: Container name inside the store pod.
+#: Container name inside the ``robovast`` pod.
 REGISTRY_CONTAINER_NAME = "registry"
 
 #: Upstream registry. Pinned to a major tag rather than a digest because it is
@@ -90,7 +90,7 @@ REGISTRY_VOLUME_NAME = "registry-data"
 #:
 #: Load-bearing once auth is on: the probes used to read ``/v2/``, which then answers 401,
 #: and an ``httpGet`` probe counts anything outside 200-399 as a failure. The container
-#: would never become Ready, the store pod would never come up, and nothing about the
+#: would never become Ready, the ``robovast`` pod would never come up, and nothing about the
 #: message would point at authentication. Not published by any Service -- it is reachable
 #: only from the kubelet on the pod's own address.
 REGISTRY_DEBUG_PORT = 5001
@@ -184,7 +184,7 @@ def registry_prefix(ingress_host):
 
 
 def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH, authenticated=False):
-    """The registry container to run in the object-store pod.
+    """The registry container to run in the ``robovast`` pod.
 
     *storage_path* is unused here (the volume carries it) and accepted so callers read
     as a pair with :func:`registry_volume`.
@@ -228,7 +228,7 @@ def registry_container(storage_path=DEFAULT_REGISTRY_HOST_PATH, authenticated=Fa
 def registry_volume(storage_path=DEFAULT_REGISTRY_HOST_PATH, storage_class=""):
     """The volume backing the registry: a PVC when one can be provisioned, else hostPath.
 
-    ``emptyDir`` is not offered: any restart of the store pod would discard every built
+    ``emptyDir`` is not offered: any restart of the ``robovast`` pod would discard every built
     image, and campaign Jobs already submitted against those refs would go straight to
     ImagePullBackOff rather than fail honestly. Upgrades no longer restart this pod, but a
     crash, an eviction and a node reboot still do.
@@ -240,7 +240,7 @@ def registry_volume(storage_path=DEFAULT_REGISTRY_HOST_PATH, storage_class=""):
 
     hostPath is the default because a stock RKE2 cluster ships no StorageClass at all, so
     a PVC there stays Pending forever. It pins the registry's data to one node, which is
-    why the store pod carries the ``robovast.io/data-node`` selector
+    why the ``robovast`` pod carries the ``robovast.io/data-node`` selector
     (:mod:`.node_placement`).
     """
     if storage_class:
@@ -292,7 +292,7 @@ REGISTRY_INGRESS_ANNOTATIONS = {
 #: backend or container-native load balancing, and this annotation asks for the second.
 #:
 #: **Every** Service the Ingress names, not just the first one. The Ingress fronts two -- the
-#: service's own on ``/`` and the store pod's on ``/v2`` -- and a backend without this simply
+#: service's own on ``/`` and the ``robovast`` pod's on ``/v2`` -- and a backend without this simply
 #: never becomes healthy, with the reason visible in the load balancer rather than anywhere a
 #: RoboVAST user would look. So the annotation is decided in one place and both callers use
 #: it, because "one of the two Services got it" is exactly the shape of that bug.
@@ -317,7 +317,7 @@ def registry_ingress_path():
     no ``/v2`` route, and nginx picks the path before either backend sees the request, so
     the UI's root mount is unaffected.
 
-    The backend is the **store pod's** Service, which is where the registry now runs. One
+    The backend is the **``robovast`` pod's** Service, which is where the registry runs. One
     Ingress can front two Services on one hostname -- the rule names a backend per path --
     so the published name, its certificate and every image ref built from it are unchanged
     by the move. A deployment created before it carries a ``/v2`` rule pointing at the

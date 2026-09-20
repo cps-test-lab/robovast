@@ -181,6 +181,18 @@ class ExecLane(Protocol):
     def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides *slot*'s idle PID 1 is still running."""
 
+    def held_container_alive(self, slot: str = SLOT_USER) -> bool:
+        """True while *slot*'s container exists and is running.
+
+        Distinct from :meth:`held_workload_running`, which asks whether anything is *busy*
+        inside a container it already assumes is there -- and which answers "busy" when it
+        cannot tell, so that an unanswerable probe never reaps a live run. That rule makes
+        it useless for this question, which is the opposite one: a held container carries a
+        deadline of its own and dies when it reaches it, so a record saying one is held is
+        not evidence that it still is. Exec'ing into what is left fails in a way that reads
+        as the deployment being unable to exec at all.
+        """
+
     def sweep_held(self) -> list:
         """Remove **every** exec container this lane owns; return what went.
 
@@ -404,8 +416,8 @@ def stage(vast_file: str, config_name: str, *,
 
     The entrypoint is always rendered **for the lane this exec runs on** — never copied
     from a campaign. ``prepare_campaign_configs`` substitutes lane-specific init and
-    post-run blocks, so a cluster campaign's entrypoint carries cluster init and
-    S3-mirroring logic that would be wrong to run locally.
+    post-run blocks, so a cluster campaign's entrypoint carries cluster init and the
+    done-marker hand-off to the pod's uploader, which would be wrong to run locally.
     """
     from robovast.common import load_config
     from robovast.execution.controller import build_campaign_data, filter_configs_by_name
@@ -569,7 +581,7 @@ class ContainerExecManager:
                 return None
             running = self._workload_running_locked(slot)
             idle_in = None
-            if not running:
+            if not running and not held["holders"]:
                 idle_in = max(0, int(held["idle_deadline"] - time.monotonic()))
             return ExecContainerState(
                 kept=True, reused=held["reused"], image=held["image"],
@@ -595,7 +607,8 @@ class ContainerExecManager:
     # -- the two operations ----------------------------------------------
 
     def run(self, spec: ExecSpec, limit_s: int, *, keep_alive: bool,
-            identity: tuple, query: bool = False) -> tuple[int, str, str, bool]:
+            identity: tuple, query: bool = False,
+            fresh: bool = False) -> tuple[int, str, str, bool]:
         """Run *spec*, holding the container afterwards when asked.
 
         Takes ownership of *spec*'s staging directory: a held container bind-mounts it
@@ -606,9 +619,16 @@ class ContainerExecManager:
         is a read-only introspection of the image, it is always held (a one-shot would
         throw away the only thing worth keeping), and it never touches
         :data:`SLOT_USER`'s container.
+
+        *fresh* stops this call joining a container that is already held, so one is
+        created and the image is fetched under the lane's pull policy. It is deliberately
+        not part of *identity*: the caller is replacing what that identity addresses, not
+        addressing something else, so the next ordinary call reuses what this one made.
         """
         if query:
             slot = query_slot(identity)
+            if fresh:
+                self.stop(slot)
             self._evict_query_over_cap(keep=slot)
             reused = self._ensure_held(spec, limit_s, identity, slot)
             with self._lock:
@@ -620,6 +640,7 @@ class ContainerExecManager:
 
         if not keep_alive:
             # One-shot means a clean container, so a previously held one goes first —
+            # which is `fresh` already, and why it takes no separate branch here.
             # otherwise "one-shot" would quietly inherit whatever state was left there.
             # Scoped to this slot: it must not reach into the query pool, whose whole
             # purpose is to survive calls like this one.
@@ -629,6 +650,8 @@ class ContainerExecManager:
             finally:
                 spec.close()
 
+        if fresh:
+            self.stop(SLOT_USER)
         reused = self._ensure_held(spec, limit_s, identity, SLOT_USER)
         with self._lock:
             if SLOT_USER in self._held:
@@ -661,6 +684,7 @@ class ContainerExecManager:
         with self._lock:
             if slot in self._held:
                 self._held[slot]["reused"] = reused
+                self._held[slot]["holders"] += 1
         self._touch(slot)
         return slot
 
@@ -671,7 +695,17 @@ class ContainerExecManager:
         container, and the reaper owns its death. Stopping here would also make two
         concurrent holders of one slot destroy each other's container, which is exactly the
         failure a per-call session had.
+
+        The idle window starts here: a held container is in use for as long as anything
+        holds it, whether or not a command is running in it at the moment the reaper looks.
+        Its commands do not pass through this manager -- the runner execs into the container
+        directly -- so between two of them nothing here can tell it from an idle one. The hard
+        deadline still bounds a holder that never lets go.
         """
+        with self._lock:
+            held = self._held.get(slot)
+            if held is not None:
+                held["holders"] = max(0, held["holders"] - 1)
         self._touch(slot)
 
     def stop(self, slot: str = SLOT_USER) -> ExecStopResult:
@@ -740,12 +774,19 @@ class ContainerExecManager:
         """Start, reuse, or replace *slot*'s container. True if reused."""
         with self._lock:
             held = self._held.get(slot)
-            if held and held["identity"] == identity:
-                # The live container already has the right /config mounted; this call's
-                # freshly staged copy is redundant.
-                spec.close()
-                return True
-            if held:
+            matches = bool(held and held["identity"] == identity)
+        # Probed outside the lock, and probed at all because the record is not the
+        # container: a held one reaches its own deadline and dies, leaving a record that
+        # still says it is there. Reusing that sends the next command into a corpse, which
+        # fails as though nothing on this deployment could exec.
+        if matches and self._still_up(slot):
+            # The live container already has the right /config mounted; this call's
+            # freshly staged copy is redundant.
+            spec.close()
+            return True
+        with self._lock:
+            held = self._held.get(slot)
+            if held and not matches:
                 # Replacing would silently kill whatever is running in there — a
                 # destructive act inferred from a changed argument rather than asked
                 # for. Refuse and name the way through. Unreachable for a query slot,
@@ -766,7 +807,7 @@ class ContainerExecManager:
             self._held[slot] = {
                 "identity": identity, "image": spec.image_identity,
                 "config": spec.config_name, "slot": slot,
-                "reused": False, "started": now,
+                "reused": False, "started": now, "holders": 0,
                 "idle_deadline": now + self._idle_reap_s(slot),
                 "deadline": now + deadline,
                 # Kept so the mounted /config outlives this call and is removed with
@@ -801,6 +842,36 @@ class ContainerExecManager:
             logger.debug("could not probe %s workload: %s", container_name(slot), exc)
             return True
 
+    def _still_up(self, slot: str = SLOT_USER) -> bool:
+        """Whether *slot*'s container can be reused; ``False`` when the probe cannot say.
+
+        The opposite default to :meth:`_container_alive_locked`, for the opposite decision.
+        Replacing a container is safe -- ``start_held`` stops whatever is there and creates
+        it again -- while reusing one that has died sends the next command into a corpse.
+        So ignorance replaces here and spares there, and neither case propagates a probe
+        failure to a caller who asked only for a container to run in.
+        """
+        try:
+            return self._lane.held_container_alive(slot)
+        except Exception as exc:  # noqa: BLE001 - unanswerable means replace, never reuse
+            logger.debug("could not confirm %s is still up; replacing it: %s",
+                         container_name(slot), exc)
+            return False
+
+    def _container_alive_locked(self, slot: str = SLOT_USER) -> bool:
+        """Whether *slot*'s container is still up; ``True`` when the probe cannot say.
+
+        Unanswerable reads as alive for the same reason an unanswerable busyness probe
+        reads as busy: this decides whether to tear a container down, and a lane that
+        cannot answer is not evidence that there is nothing there.
+        """
+        try:
+            return self._lane.held_container_alive(slot)
+        except Exception as exc:  # noqa: BLE001 - a probe failure must not reap a live one
+            logger.debug("could not probe whether %s is still up: %s",
+                         container_name(slot), exc)
+            return True
+
     def _start_reaper(self) -> None:
         if self._reaper and self._reaper.is_alive():
             return
@@ -817,9 +888,14 @@ class ContainerExecManager:
                 now = time.monotonic()
                 due = []
                 for slot, held in self._held.items():
-                    if now >= held["deadline"]:
+                    if not self._container_alive_locked(slot):
+                        # Its own deadline killed it, or something else did. The record and
+                        # the stopped container both outlive it until someone says so.
+                        due.append((slot, "its container is gone"))
+                    elif now >= held["deadline"]:
                         due.append((slot, "hard deadline reached"))
-                    elif (not self._workload_running_locked(slot)
+                    elif (not held["holders"]
+                            and not self._workload_running_locked(slot)
                             and now >= held["idle_deadline"]):
                         due.append((slot, "idle"))
             # Outside the lock: stop() takes it, and a lane teardown is slow enough that
@@ -842,7 +918,10 @@ def result_from(exec_out: tuple[int, str, str, bool], *, spec: ExecSpec,
         exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=timed_out,
         duration_s=round(duration_s, 3), limit_s=limit_s, limit_source=limit_source,
         log_path=spec.log_path,
-        container=container or ExecContainerState())
+        # A one-shot holds nothing, but it still ran an image, and "which one?" is the
+        # question a check of the image is asking. Reporting it only for a held container
+        # would answer it in the one case the caller did not need it.
+        container=container or ExecContainerState(image=spec.image_identity))
 
 
 __all__ = [

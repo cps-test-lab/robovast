@@ -71,6 +71,9 @@ class FakeLane:
     def held_workload_running(self, slot=ce.SLOT_USER):
         return self.busy
 
+    def held_container_alive(self, slot=ce.SLOT_USER):
+        return bool(self.live.get(slot, False))
+
     def sweep_held(self):
         gone = sorted(self.live)
         self.live.clear()
@@ -331,6 +334,58 @@ def test_the_same_source_reuses_the_container():
     assert len(lane.starts) == 1
 
 
+def test_fresh_replaces_a_container_the_same_source_would_have_reused():
+    """The question reuse cannot answer: have the bytes behind this tag changed?
+
+    Identity keys on the image REF, and a floating tag does not change when what it
+    points at does. So a caller checking whether a republished image has landed is
+    answered from the copy the held container already has -- correctly, by the rules,
+    and uselessly. Creating a container is what fetches the image, so `fresh` asks for
+    exactly that and nothing else.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",), fresh=True)
+
+    assert mgr.state().reused is False, "a replaced container is not a reused one"
+    assert len(lane.starts) == 2
+
+
+def test_fresh_is_not_part_of_the_identity():
+    """It replaces what an identity addresses; it does not address something else.
+
+    Were it folded into the identity, the container a `fresh` call created would be
+    unreachable by every ordinary call after it -- so each check would strand a
+    container, and the next plain call would build a third.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",), fresh=True)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+
+    assert mgr.state().reused is True, "the container a fresh call made is reusable"
+    assert len(lane.starts) == 1
+
+
+def test_fresh_replaces_a_query_pool_container_too():
+    """The pool is where an image check actually lands, so it is the case that matters.
+
+    A query is held for minutes precisely so repeating it is cheap; that is what makes
+    it the wrong instrument for asking whether the image moved, unless it can be told
+    to start over.
+    """
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True)
+    starts_after_first = len(lane.starts)
+    mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True)
+    assert len(lane.starts) == starts_after_first, "a repeated query reuses the pool"
+
+    mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True, fresh=True)
+    assert len(lane.starts) == starts_after_first + 1
+
+
 def test_a_different_source_replaces_an_idle_container_and_says_so():
     lane = FakeLane()
     mgr = ce.ContainerExecManager(lane)
@@ -377,6 +432,73 @@ def test_a_stray_container_is_stopped_even_without_a_record():
     lane.alive = True
     mgr = ce.ContainerExecManager(lane)
     assert mgr.stop().stopped is True
+
+
+# -- a record is not a container --------------------------------------------
+
+
+def test_a_slot_whose_container_died_is_not_reused():
+    """A held container carries a deadline of its own and dies when it reaches it, leaving
+    a record behind that still says it is held. Trusting the record sends the next command
+    into a corpse, and the exec that fails there reports that nothing on this deployment
+    can exec at all -- a verdict about the cluster drawn from one dead pod."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    assert len(lane.starts) == 1
+
+    lane.alive = False                      # its deadline killed it; the record remains
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+
+    assert len(lane.starts) == 2, "a dead container was reused instead of replaced"
+
+
+def test_the_reaper_drops_a_slot_whose_container_is_gone():
+    """The other half: nothing else notices. The reaper's two clocks both assume the
+    container is there, so a slot that died on its own stayed in the map -- and its stopped
+    container stayed on the lane -- until the service restarted."""
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    lane.alive = False
+
+    deadline = time.monotonic() + 5
+    while mgr.state() is not None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert mgr.state() is None, "a slot whose container is gone was kept"
+
+
+def test_a_probe_that_cannot_answer_replaces_rather_than_reuses():
+    """The reuse decision takes the opposite default to the reaper's, because the risks are
+    not symmetric: replacing a container that was in fact fine costs a restart, while
+    reusing one that has died sends the next command into a corpse and reports that as the
+    deployment being unable to exec."""
+
+    class Unanswerable(FakeLane):
+        def held_container_alive(self, slot=ce.SLOT_USER):
+            raise RuntimeError("the lane could not be asked")
+
+    lane = Unanswerable()
+    mgr = ce.ContainerExecManager(lane)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    assert len(lane.starts) == 2, "an unconfirmable container was reused"
+
+
+def test_a_probe_that_cannot_answer_does_not_reap_a_live_container():
+    """Unanswerable reads as alive, for the same reason an unanswerable busyness probe
+    reads as busy: this decides whether to tear a container down, and a lane that cannot
+    answer is not evidence that there is nothing there."""
+
+    class Unanswerable(FakeLane):
+        def held_container_alive(self, slot=ce.SLOT_USER):
+            raise RuntimeError("the lane could not be asked")
+
+    lane = Unanswerable()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
+    time.sleep(0.3)
+    assert mgr.state() is not None, "a live container was reaped on a failed probe"
 
 
 # -- the reaper's two clocks ------------------------------------------------
@@ -519,6 +641,22 @@ def test_staging_is_cleaned_up_and_survives_a_held_container():
     assert os.path.isdir(staging)
     mgr.stop()
     assert not os.path.exists(staging), "the held container's /config leaked"
+
+
+def test_a_result_names_the_image_it_ran_even_without_a_held_container():
+    # The usual image check is a one-shot, and a project resolved from a stale checkout
+    # produces output indistinguishable from a current one. The identity is the only thing
+    # that separates them, so it cannot depend on --keep-alive.
+    spec, _data, _limit, _src = _staged("minimal", "ls")
+    spec.image_identity = "build:exp@abc123"
+    try:
+        result = ce.result_from((0, "", "", False), spec=spec, limit_s=300,
+                                limit_source=ce.LIMIT_SOURCE_COMMAND, duration_s=0.1,
+                                container=None)
+        assert result.container.image == "build:exp@abc123"
+        assert result.container.kept is False
+    finally:
+        spec.close()
 
 
 def test_a_one_shot_cleans_up_its_own_staging():
@@ -735,6 +873,27 @@ def test_a_held_aux_container_is_reaped_on_idleness_like_a_query_one():
     slot = mgr.hold(_held_aux(), ("aux", "preview-abc", "aux-builder"), 300)
     assert mgr._idle_reap_s(slot) == ce.QUERY_IDLE_REAP_S
     assert mgr._idle_cap_s(slot) == ce.QUERY_IDLE_WAIT_CAP_S
+
+
+def test_a_held_container_is_not_idle_until_its_last_holder_lets_go(monkeypatch):
+    """A holder's commands do not pass through the manager -- the runner execs into the
+    container directly -- so between two of them nothing distinguishes it from an idle one.
+    Idleness is measured from the release, however long the hold."""
+    monkeypatch.setattr(ce, "QUERY_IDLE_REAP_S", 0.2)
+    lane = FakeLane()
+    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    identity = ("aux", "preview-abc", "aux-builder")
+    outer = mgr.hold(_held_aux(), identity, 300)
+    inner = mgr.hold(_held_aux(), identity, 300)
+    assert mgr.state(outer).idle_expires_in_s is None, "no idle countdown while held"
+    mgr.release_hold(inner)
+    time.sleep(0.6)
+    assert lane.live.get(outer) is True, "one holder is still composing against it"
+    mgr.release_hold(outer)
+    deadline = time.monotonic() + 5
+    while mgr.state(outer) is not None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert mgr.state(outer) is None, "released by every holder, it is idle and reaped"
 
 
 # -- one container's /config is one configuration's -------------------------------------

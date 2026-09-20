@@ -165,3 +165,62 @@ def test_build_campaign_store_idempotent_and_force(tmp_path):
     # force rebuilds.
     forced = build_campaign_store(campaign, force=True)
     assert forced.exists()
+
+
+def _declare(campaign, names):
+    """Write the composition record a staged campaign leaves in ``_transient``."""
+    transient = campaign / "_transient"
+    transient.mkdir(parents=True, exist_ok=True)
+    (transient / "configurations.yaml").write_text(
+        "configs:\n" + "".join(f"- name: {n}\n" for n in names))
+
+
+def test_a_declared_configuration_that_produced_nothing_is_recorded_as_missing(tmp_path):
+    """The shortfall the summary reports has to exist as a row first.
+
+    A sweep whose cells are lost -- never dispatched, or lost between the cluster and the
+    results tree -- leaves a tree that is indistinguishable from a smaller sweep that ran
+    perfectly, because the tree states only what came back. The composition record states
+    what was asked for, and is the only thing that can tell the two apart.
+    """
+    campaign = _make_campaign(tmp_path, {"ca": [0], "cb": [0]})
+    _declare(campaign, ["ca", "cb", "cc", "cd"])
+
+    with CampaignStore(build_campaign_store(campaign)) as store:
+        batch = store.batches(store.list_campaigns()[0]["id"])[0]
+        units = {u["config_name"]: u for u in store.units(batch["id"])}
+
+    assert set(units) == {"ca", "cb", "cc", "cd"}
+    assert units["cc"]["status"] == "missing"
+    assert units["cd"]["status"] == "missing"
+    assert units["cc"]["n_samples"] == 0
+    assert units["ca"]["status"] == "passed"
+
+
+def test_no_composition_record_declares_no_shortfall(tmp_path):
+    """"Cannot say" is not "nothing was declared".
+
+    An archive that dropped ``_transient`` has no record of the design, and inventing a
+    complete one from the directories present is the same wrong answer the shortfall is
+    there to prevent -- just in the direction nobody would notice.
+    """
+    campaign = _make_campaign(tmp_path, {"ca": [0]})
+
+    with CampaignStore(build_campaign_store(campaign)) as store:
+        batch = store.batches(store.list_campaigns()[0]["id"])[0]
+        units = {u["config_name"]: u for u in store.units(batch["id"])}
+
+    assert set(units) == {"ca"}
+    assert units["ca"]["status"] == "passed"
+
+
+def test_a_configuration_that_ran_is_not_re_recorded(tmp_path):
+    """Every declared name is in the record once, whether or not it came back."""
+    campaign = _make_campaign(tmp_path, {"ca": [0], "cb": [1]})
+    _declare(campaign, ["ca", "cb"])
+
+    with CampaignStore(build_campaign_store(campaign)) as store:
+        batch = store.batches(store.list_campaigns()[0]["id"])[0]
+        names = [u["config_name"] for u in store.units(batch["id"])]
+
+    assert sorted(names) == ["ca", "cb"]

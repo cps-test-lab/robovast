@@ -436,8 +436,11 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     # post-v1 expectations silently answers "builds nothing" and the retrigger takes the wrong
     # branch. Strict loading would instead refuse outright, making every campaign older than
     # the current version un-retriggerable -- which is the case this exists for.
+    # Lenient, like the archive read inside `load_config`: `load_config` returns the raw
+    # document, and validating that strictly would refuse a key the campaign ran without.
     try:
-        campaign_config = validate_config(load_config(str(vast_path), upgrade=True))
+        campaign_config = validate_config(load_config(str(vast_path), upgrade=True),
+                                          strict=False)
     except UnmigratableConfig as e:
         # Not a dead end: the ladder got part of the way and marked what it could not carry, so
         # the useful move is to hand that to a person. The message names the command that does it
@@ -489,6 +492,10 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
         logger.info("retrigger of %s: migrated its config %s -> %s (%s); the archived copy is "
                     "unchanged", source_id, config_migration["from"], config_migration["to"],
                     ", ".join(config_migration["steps"]))
+    for dropped in strip_archived_kubernetes_keys(staged_vast):
+        logger.info("retrigger of %s: removed %s from its staged config, which is not a "
+                    "campaign setting and did not affect the run; the archived copy is "
+                    "unchanged", source_id, dropped)
 
     def _discard() -> None:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -502,6 +509,39 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
         materialize=lambda: stage_project(source_dir, staging_dir, campaign_config),
         discard=_discard,
     )
+
+
+def strip_archived_kubernetes_keys(vast_path) -> list[str]:
+    """Remove what :func:`~robovast.common.config.archived_kubernetes_drops` names from the
+    ``.vast`` at *vast_path*, keeping its comments; return the dotted paths removed.
+
+    A staged or seeded copy is launched through the strict path, which refuses those keys by
+    name. The lenient read already dropped them from the config it was reconstructed from, so
+    the file has to agree, or the relaunch fails on a key the source campaign ran without.
+    """
+    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.config import \
+        archived_kubernetes_drops  # pylint: disable=import-outside-toplevel
+
+    vast_path = Path(vast_path)
+    ruamel = YAML()
+    ruamel.preserve_quotes = True
+    ruamel.width = 4096
+    with open(vast_path, "r", encoding="utf-8") as handle:
+        documents = list(ruamel.load_all(handle))
+    if not documents or documents[0] is None:
+        return []
+    drops = archived_kubernetes_drops(documents[0])
+    for path in drops:
+        parent = documents[0]
+        for key in path[:-1]:
+            parent = parent[key]
+        del parent[path[-1]]
+    if drops:
+        with open(vast_path, "w", encoding="utf-8") as handle:
+            ruamel.dump_all(documents, handle)
+    return [".".join(path) for path in drops]
 
 
 def _config_migration_of(vast_path: Path) -> dict:
@@ -617,6 +657,14 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
         show_gui=False,
         postprocess=bool(launch.get("postprocess", True)),
         upload_to_share=bool(launch.get("upload_to_share", False)),
+        # Replayed for the reason the filter and the run count are: the record says what this
+        # campaign is, and a repeat of a campaign that ran behind everything else should not
+        # come back ahead of it.
+        priority=int(launch.get("priority", 0)),
+        # Not replayed. A hold is a decision about the campaign that was held, and a retrigger
+        # is a new one -- launching it already held would leave it waiting on a resume nobody
+        # knew to give it.
+        paused=False,
         description=description,
     )
 

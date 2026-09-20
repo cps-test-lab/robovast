@@ -13,6 +13,7 @@ Set ``ROBOVAST_TEST_PG_DSN`` to run these; without it they skip.
 import json
 import os
 import sqlite3
+import threading
 
 import pytest
 
@@ -66,6 +67,7 @@ def _index(monkeypatch, tmp_path):
     db.execute("INSERT INTO batch VALUES (1, 1, 0)")
     db.execute("INSERT INTO unit VALUES (1, 1, 'goal-1', 'ps-1', '{}', 0.5, 'evaluated')")
     db.execute("INSERT INTO unit VALUES (2, 1, '', 'ps-2', '{}', NULL, 'composition_failed')")
+    db.execute("INSERT INTO unit VALUES (3, 1, 'goal-2', 'goal-2', '{}', NULL, 'missing')")
     db.execute("INSERT INTO job VALUES (1, 1, '_jobs/job-0', '{}')")
     db.execute("INSERT INTO run VALUES (1, 1, 0, 'passed', 1, 9.5, 0, 0, 1, 't', NULL, 1)")
     db.commit()
@@ -155,16 +157,20 @@ def test_run_view_joins_the_config_name_onto_every_run(index):
                                "batch": 0, "job_dir": "_jobs/job-0"}]
 
 
-def test_run_view_keeps_a_draw_that_never_ran(index):
-    """A composition-failed unit has no run rows, so the join alone drops it.
+def test_run_view_keeps_a_cell_that_never_ran(index):
+    """A unit with no run rows is dropped by the join alone, whatever kept it from running.
 
-    Without the UNION ALL a search campaign silently reports only the draws that worked.
+    Without the UNION ALL a search reports only the draws it could build and a sweep only
+    the configurations that came back -- in both cases as if that had been the design.
     """
     result = index_query.query_index(
-        "SELECT config_name, run_id, status FROM run_view WHERE run_id IS NULL")
+        "SELECT config_name, run_id, status FROM run_view WHERE run_id IS NULL "
+        "ORDER BY config_name")
 
-    assert result["rows"] == [{"config_name": "ps-2", "run_id": None,
-                               "status": "composition_failed"}]
+    assert result["rows"] == [
+        {"config_name": "goal-2", "run_id": None, "status": "missing"},
+        {"config_name": "ps-2", "run_id": None, "status": "composition_failed"},
+    ]
 
 
 def test_run_view_carries_the_campaign_so_it_can_span_them(index):
@@ -207,3 +213,70 @@ def test_views_are_created_for_what_the_index_actually_has(index):
         names = set(index_views.campaign_view_sql(conn))
 
     assert {"run_view", "config_view"} <= names
+
+
+def _rebuild_views_concurrently(writers: int, rounds: int) -> list:
+    """Rebuild the views from *writers* connections at once; return what they raised."""
+    failures = []
+    at_once = threading.Barrier(writers, timeout=30)
+
+    def rebuild():
+        try:
+            with index_query.open_index(readonly=False) as conn:
+                at_once.wait()
+                for _ in range(rounds):
+                    index_views.create_views(conn)
+        except Exception as exc:  # noqa: BLE001 - the thread's failure is the assertion
+            failures.append(exc)
+
+    threads = [threading.Thread(target=rebuild) for _ in range(writers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    return failures
+
+
+def test_two_campaigns_can_be_ingested_at_once(index):
+    """Every ingest rebuilds the views, and the index is shared by every campaign.
+
+    Two postprocessing jobs finishing together therefore issue the same ``CREATE VIEW``
+    concurrently, which Postgres refuses with a duplicate key on ``pg_type`` rather than
+    with anything naming a view -- taking down a postprocessing run that had already done
+    all of its work.
+    """
+    failures = _rebuild_views_concurrently(writers=4, rounds=5)
+
+    assert not failures, f"concurrent ingests failed: {failures[:2]}"
+    assert index_query.query_index("SELECT count(*) AS n FROM run_view")["rows"]
+
+
+def test_a_reader_never_finds_the_views_missing(index):
+    """The rebuild drops before it creates, and a panel reads the index while it runs.
+
+    Between the two statements ``run_view`` does not exist, so a reader gets "relation
+    does not exist" -- which reads as a campaign with no runs rather than as a rebuild in
+    progress.
+    """
+    reads = []
+    done = threading.Event()
+
+    def read():
+        try:
+            while not done.is_set():
+                index_query.query_index("SELECT count(*) FROM run_view")
+                reads.append(None)
+        except Exception as exc:  # noqa: BLE001 - the thread's failure is the assertion
+            reads.append(exc)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    try:
+        failures = _rebuild_views_concurrently(writers=2, rounds=10)
+    finally:
+        done.set()
+        reader.join(timeout=120)
+
+    assert not failures
+    assert not [r for r in reads if r is not None], (
+        f"a reader saw the index mid-rebuild: {[r for r in reads if r is not None][:2]}")

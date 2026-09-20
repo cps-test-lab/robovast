@@ -284,7 +284,9 @@ def _as_line(row: dict) -> str:
     return f"[{level}] [{when}] [{node}]: {head}"
 
 
-async def search_run_logs(
+# A plain ``def``: every step below queries the service or the index, and FastMCP runs a
+# sync tool on a worker thread -- an ``async def`` with nothing to await runs on the loop.
+def search_run_logs(
     campaign_id: str,
     grep: str = "",
     min_severity: str = "",

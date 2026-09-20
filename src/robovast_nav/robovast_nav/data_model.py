@@ -55,6 +55,39 @@ class Pose:
             return NotImplemented
         return self.position == other.position and self.orientation == other.orientation
 
+    @classmethod
+    def from_any(cls, value) -> "Pose":
+        """A pose however it arrived: already a :class:`Pose`, or the mapping YAML gives.
+
+        One config key carries both. A campaign stating a pose in its ``parameters:`` block gets
+        the mapping through untouched, while a variation that produced the pose writes this
+        class -- so whoever reads the key second sees whichever the campaign happened to use.
+        Coercing here rather than in each reader is what lets a consumer stop caring.
+
+        ``orientation`` is optional and defaults to zero yaw: a 2-D placement states where, and
+        a campaign that does not care which way the robot faces should not have to write it.
+
+        .. code-block:: python
+
+            Pose.from_any({'position': {'x': 1.0, 'y': 2.0}})
+            Pose.from_any({'position': {'x': 1.0, 'y': 2.0}, 'orientation': {'yaw': 0.5}})
+        """
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict) or 'position' not in value:
+            raise ValueError(
+                f"not a pose: {value!r}. Expected a mapping with a 'position' of 'x' and 'y', "
+                "and optionally an 'orientation' of 'yaw'")
+        position = value['position']
+        orientation = value.get('orientation') or {}
+        try:
+            return cls(
+                position=Position(x=float(position['x']), y=float(position['y'])),
+                orientation=Orientation(yaw=float(orientation.get('yaw', 0.0))),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"not a pose: {value!r} ({exc})") from exc
+
 
 @dataclass
 class StaticObject:

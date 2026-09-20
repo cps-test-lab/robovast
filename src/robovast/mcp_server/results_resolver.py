@@ -30,8 +30,8 @@ def _campaigns_root() -> Path:
     """Where local campaigns live — :func:`local_results_root`, shared with the service.
 
     One implementation, so this reader and a ``vast serve`` cannot disagree about where a
-    campaign is. This is a **local** root: a cluster campaign's home is the object store,
-    so results there are reached through the service, not here.
+    campaign is. This is a **local** root: a campaign run by a service on another host
+    lives in that service's results tree and is reached through the service, not here.
     """
     return local_results_root()
 
@@ -51,8 +51,8 @@ def resolve_results_dir() -> Path:
     path = _campaigns_root()
     if not path.is_dir():
         raise ValueError(
-            f"No local results directory at {path}. Campaigns run by a cluster "
-            "service live in the object store and are read through the service "
+            f"No local results directory at {path}. Campaigns run by a service on "
+            "another host live in its results tree and are read through the service "
             "(check 'get_service_info' / 'list_workspaces'); pass an absolute "
             "campaign directory to analyze one directly.")
     return path

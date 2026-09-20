@@ -469,8 +469,9 @@ jobs:
             echo "::error::$img reports $got on a $host runner -- foreign content labelled ${{ matrix.platform }}" >&2
             exit 1
           fi
+          # Every robot package roqsim ships imports, the legged and aerial platforms included.
           docker run --rm --entrypoint python3 "$img" -c \
-            'import platform, mujoco, roqsim; print("mujoco", mujoco.__version__, "on", platform.machine())'
+            'import platform, mujoco, roqsim, roqsim_mobile, roqsim_mobile_manipulation, roqsim_aerial, roqsim_humanoid, roqsim_quadruped; print("mujoco", mujoco.__version__, "on", platform.machine())'
 
       - name: Record the digest for merge-roqsim
         run: |

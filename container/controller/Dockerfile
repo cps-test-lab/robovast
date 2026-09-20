@@ -3,9 +3,11 @@
 # Hosts the in-cluster CampaignController for `vast workspace run` (search and
 # batch). It contains robovast and its Python dependencies so the controller can
 # compose, postprocess, evaluate and drive the search loop from inside the
-# cluster — reading per-batch results from S3 in-cluster instead of round-tripping
-# them to the laptop. Storage access (targz_to_s3.py / targz_to_gcs.py) uses the
-# boto3 / google-cloud-storage already pulled in as robovast dependencies.
+# cluster — reading per-batch results from the service's own results volume
+# instead of round-tripping them to the laptop. Beyond Python it carries `curl`
+# (the service's own probes and the data-plane checks), `pigz` (the streamed
+# campaign archive, robovast/execution/campaign_archive.py) and `git` (resolving
+# a campaign's VCS-pinned plugins); `tar` ships in the base image.
 #
 # It does NOT contain the ROS runtime: scenario execution and rosbag postprocessing
 # run in the ROS robovast image (job pods / a ROS-enabled container), not here.
@@ -83,16 +85,10 @@ RUN npm run build          # -> /build/src/robovast_nav/robovast_nav/web/dist
 # it is. Refresh both with: make refresh-build-pins
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
-# BuildKit supplies TARGETARCH, but only where it is declared. Without this the mc
-# download below interpolates an empty string and 404s -- so it is declared here
-# rather than left to the automatic build arg.
-ARG TARGETARCH
+# A pipe reports the LAST command's status without this, so a checksum piped into a verifier
+# passes when the thing producing it failed. Stated for the stage rather than per RUN.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# mc (MinIO client) + curl, for parity with the storage tooling used elsewhere.
-# pigz: parallel gzip used by the in-controller upload-to-share compression
-# (s3_to_targz.py / gcs_to_targz.py), which now runs here instead of in the
-# removed archiver sidecar. tar ships in the base image.
-#
 # No X/GL shared objects here, deliberately. Eight of them (libglib2.0-0, libegl1,
 # libfontconfig1, libx11-6, libxkbcommon0, libgl1, libfreetype6, libdbus-1-3) would
 # be needed for no display at all: they are the minimal set
@@ -105,9 +101,7 @@ ARG TARGETARCH
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates pigz git \
- && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL "https://dl.min.io/client/mc/release/linux-${TARGETARCH}/mc" -o /usr/local/bin/mc \
- && chmod +x /usr/local/bin/mc
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/robovast
 
@@ -159,9 +153,9 @@ RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks
 # The Kubernetes execution lane. It is a separate distribution that depends on robovast --
 # not an extra of it -- so it cannot join the --extras string above and needs its own step.
 # Without it the pod starts, serves, and then fails every create_campaign for want of a
-# lane: the service comes up looking healthy and can run nothing. Its three dependencies
-# (kubernetes, boto3, google-cloud-storage) resolve here rather than in layer 1, which
-# costs a little cache; they are small next to the scientific stack layer 1 protects.
+# lane: the service comes up looking healthy and can run nothing. Its dependencies
+# resolve here rather than in layer 1, which costs a little cache; they are small next to
+# the scientific stack layer 1 protects.
 # Kept as its own layer against DL3059: consolidating with the RUN above is exactly what the
 # comment rules out -- layer 1 exists to keep the scientific stack out of the cache key of
 # everything that changes more often, and merging the two would put it back. The directive

@@ -37,10 +37,9 @@ from typing import NamedTuple
 #: Default host paths, one per tenant. These are what a deployment given no placement flags
 #: has always used, and they must stay that way: a cluster re-run with a changed default
 #: would point at a fresh empty directory beside its data and report success.
-DEFAULT_STORE_HOST_PATH = "/var/lib/robovast-store"
-DEFAULT_INDEX_HOST_PATH = "/var/lib/robovast-index"
 DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
 DEFAULT_RESULTS_HOST_PATH = "/var/lib/robovast-results"
+DEFAULT_INDEX_HOST_PATH = "/var/lib/robovast-index"
 DEFAULT_REGISTRY_HOST_PATH = "/var/lib/robovast-registry"
 DEFAULT_BUILDKITD_HOST_PATH = "/data/robovast-buildkit"
 
@@ -48,9 +47,10 @@ DEFAULT_BUILDKITD_HOST_PATH = "/data/robovast-buildkit"
 class Tenant(NamedTuple):
     """One thing this deployment keeps on disk, and how it is placed.
 
-    *derived_from* names the tenant this one sits beside. A derived tenant takes no flags of
-    its own: it follows its parent's directory and its parent's backing, which is what makes
-    "these two are always together" structural instead of a rule someone has to enforce.
+    *derived_from* names the tenant this one sits beside. A derived tenant has no path flag
+    of its own: it follows its parent's directory, and its parent's backing unless a class is
+    stated for it, which is what makes "these two are always together" structural instead of
+    a rule someone has to enforce.
     """
 
     name: str
@@ -62,24 +62,28 @@ class Tenant(NamedTuple):
         return bool(self.derived_from)
 
 
-#: Every tenant, in the order an operator meets them. Two are derived, and in both cases for
-#: the same reason: one pod holds the pair, and separating them would leave derived data
-#: without the source it was derived from. ``results`` follows ``workspaces`` because the
-#: service pod mirrors a campaign between them; ``index`` follows ``store`` because every row
-#: in the index was ingested from a campaign in the store.
+#: Every tenant, in the order an operator meets them -- and a parent before what derives
+#: from it, which :func:`resolve` relies on. Two are derived, and for the same reason:
+#: separating them would leave derived data without the source it was derived from.
+#: ``results`` follows ``workspaces`` because the service pod holds both and a deployment
+#: that provisioned one and left the other on the node's root disk is the split this
+#: prevents; ``index`` follows ``results`` because every row in the index was
+#: ingested from a campaign on the results volume. The index takes a class of its own where
+#: one is stated (``--index-class``): its Postgres is a different workload from the bulk of
+#: the results, and on a managed node pool the one thing this deployment keeps that a
+#: replaced node would take with it.
 TENANTS = (
-    Tenant("store", DEFAULT_STORE_HOST_PATH),
-    Tenant("index", DEFAULT_INDEX_HOST_PATH, derived_from="store"),
     Tenant("workspaces", DEFAULT_WORKSPACES_HOST_PATH),
     Tenant("results", DEFAULT_RESULTS_HOST_PATH, derived_from="workspaces"),
+    Tenant("index", DEFAULT_INDEX_HOST_PATH, derived_from="results"),
     Tenant("registry", DEFAULT_REGISTRY_HOST_PATH),
     Tenant("buildkit", DEFAULT_BUILDKITD_HOST_PATH),
 )
 
 TENANTS_BY_NAME = {t.name: t for t in TENANTS}
 
-#: The tenants an operator can place directly. The derived ones are absent on purpose -- a
-#: flag for one could only ever agree with its parent or be refused.
+#: The tenants an operator can place directly, by path or class. The derived ones are absent
+#: on purpose -- a path flag for one could only ever agree with its parent or be refused.
 PLACEABLE = tuple(t.name for t in TENANTS if not t.is_derived)
 
 
@@ -106,7 +110,7 @@ def derive_sibling(path: str, of: str, to: str) -> str:
     final component, so a deployment that renamed its directories keeps its own convention
     rather than having ours imposed halfway down the path.
 
-    A final component naming no tenant (``/mnt/minio``) gets a suffix instead of a silent
+    A final component naming no tenant (``/mnt/data``) gets a suffix instead of a silent
     guess, so the two still land beside each other and the result still says which is which.
     """
     tail = PurePosixPath(path)
@@ -157,8 +161,11 @@ def resolve(explicit=None, *, data_root: str = "") -> dict:
             path = f"{data_root.rstrip('/')}/{tenant.name}"
         placements[tenant.name] = Placement(path, stated(tenant.name, "class"))
 
-    # After the parents, because a derived tenant is a function of one -- including when the
-    # parent is unplaced, where the derived one is unplaced too and both take their defaults.
+    # After the parents, in table order, because a derived tenant is a function of one that
+    # may itself be derived -- including when the parent is unplaced, where the derived one
+    # is unplaced too and both take their defaults. A stated class is the one thing a
+    # derived tenant may say for itself: it opts that tenant out of its parent's disk without
+    # moving it off its parent's node.
     for tenant in TENANTS:
         if not tenant.is_derived:
             continue
@@ -166,7 +173,7 @@ def resolve(explicit=None, *, data_root: str = "") -> dict:
         placements[tenant.name] = Placement(
             derive_sibling(parent.path, tenant.derived_from, tenant.name)
             if parent.path else "",
-            parent.storage_class)
+            stated(tenant.name, "class") or parent.storage_class)
     return placements
 
 
@@ -179,7 +186,8 @@ def refuse_conflicts(explicit=None, *, data_root: str = "", sizes=None) -> None:
     same failure one step smaller: it sizes a claim that will not be created.
 
     *sizes* maps a tenant to the size requested for its claim; only tenants that have a size
-    flag appear in it.
+    flag appear in it. The class a size is checked against is the *resolved* one, so a
+    derived tenant sized under its parent's class passes: that claim is created.
     """
     explicit = explicit or {}
     sizes = sizes or {}
@@ -191,14 +199,15 @@ def refuse_conflicts(explicit=None, *, data_root: str = "", sizes=None) -> None:
                 f"--{name}-path and --{name}-class both place the {name}, and they cannot "
                 f"both apply: a class provisions a volume, a path names a directory on the "
                 f"node. Pass one.")
-    for name, size in sizes.items():
-        if (size or "").strip() and not (explicit.get(f"{name}_class") or "").strip():
-            raise ValueError(
-                f"--{name}-size asks for a {size} volume, but without --{name}-class the "
-                f"{name} is a directory on the node and nothing provisions a volume to size. "
-                f"Its bound is the node's disk.")
     if data_root and not data_root.startswith("/"):
         raise ValueError(
             f"--data-root must be an absolute path on the node; got {data_root!r}. It is "
             f"resolved by the kubelet on whichever node holds this deployment's data, not "
             f"relative to where 'vast' runs.")
+    placements = resolve(explicit, data_root=data_root)
+    for name, size in sizes.items():
+        if (size or "").strip() and not placements[name].storage_class:
+            raise ValueError(
+                f"--{name}-size asks for a {size} volume, but without --{name}-class the "
+                f"{name} is a directory on the node and nothing provisions a volume to size. "
+                f"Its bound is the node's disk.")

@@ -28,9 +28,8 @@ trigger_distance can be a single float or a list of floats.  When a list is prov
 output configuration is produced per value (multiplied with the normal count/in_configs fan-out).
 """
 
-import copy
 import random
-from typing import List, Optional, Union
+from typing import List, Union
 
 import numpy as np
 from pydantic import ConfigDict, field_validator, model_validator
@@ -38,8 +37,7 @@ from pydantic import ConfigDict, field_validator, model_validator
 from robovast.common import convert_dataclasses_to_dict
 
 from .. import config_view
-from ..data_model import Orientation, Pose, Position
-from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig
+from .obstacle_variation import ObstacleVariation, ObstacleVariationConfig, resting_z
 
 # ---------------------------------------------------------------------------
 # Config model
@@ -52,9 +50,6 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     - the ``trigger_point`` / ``trigger_threshold`` output slots, bound by the campaign.
     - trigger_distance:        arc-length (m) before the obstacle; a single float or a list
                                of floats (one output config per value).
-    - start_pose:              optional explicit start pose (dict).
-    - goal_pose:               optional explicit goal pose (dict); only for scenarios
-                               declaring the singular parameter.
 
     Exactly one obstacle must be configured (i.e. a single ObstacleConfig entry with amount=1).
     """
@@ -64,11 +59,9 @@ class ObstacleVariationWithDistanceTriggerConfig(ObstacleVariationConfig):
     #: Two further outputs, so the same binding form covers them: where the obstacle sits and
     #: how far along the path the trial should act on it. As config keys whose *values*
     #: were parameter names they would be slot bindings without saying so.
-    SLOTS = ("objects", "trigger_point", "trigger_threshold")
+    OUTPUT_SLOTS = ("objects", "trigger_point", "trigger_threshold")
 
     trigger_distance: Union[float, List[float]]
-    start_pose: Optional[dict] = None
-    goal_pose: Optional[dict] = None
 
     @field_validator('trigger_distance', mode='before')
     @classmethod
@@ -115,7 +108,8 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     Expected parameters:
 
-    - ``name``: Name of the parameter to store the placed obstacle.
+    - ``reads`` (optional): Which parameter each input is read from, as
+      ``{start: <parameter>, goal: <parameter>}`` -- see :class:`ObstacleVariation`.
     - ``trigger_point`` (slot): receives the obstacle's spawn
       pose position.
     - ``trigger_threshold`` (slot): receives the trigger
@@ -130,14 +124,10 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
     - ``robot_diameter``: Diameter of the robot for collision checking in meters.
     - ``map_file``: Optional map file path (uses scenario default if omitted).
     - ``count``: Number of obstacle configurations to generate (default: ``1``).
-    - ``start_pose``: Optional explicit start pose (dict with ``x``, ``y``, ``yaw``).
-    - ``goal_pose``: Optional explicit goal pose (dict with ``x``, ``y``, ``yaw``).
-      Applies to scenarios declaring the singular ``goal_pose`` parameter; a
-      scenario taking ``goal_poses`` gets its list from the config unchanged.
 
     Generated outputs:
 
-    - ``<name>``: Placed obstacle with spawn pose and model information.
+    - ``objects``: Placed obstacle with spawn pose and model information.
     - ``trigger_point``: Position of the placed obstacle.
     - ``trigger_threshold``: The trigger distance value that was applied.
 
@@ -163,12 +153,16 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
 
     CONFIG_CLASS = ObstacleVariationWithDistanceTriggerConfig
 
-    #: None: this obstacle is REVEALED partway through the run -- parked out of the
-    #: way and teleported in when the robot comes within the trigger distance -- so
-    #: it is the one placement that must keep the simulator's movable default.
-    #: SetEntityState refuses an entity with no free joint, so welding it here would
-    #: fail the trial on its first call.
-    SIM_INSTANCES_MOTION = None
+    #: ``driven``: this obstacle is REVEALED partway through the run -- parked out of the way and
+    #: teleported in when the robot comes within the trigger distance -- so it needs a pose the
+    #: trial can write, which welded scenery has not. ``driven`` is that and nothing more: the
+    #: body has no degrees of freedom, so the solver never owns its pose.
+    #:
+    #: Not ``physics``, whose free body IS owned by the solver from the next step. The pose is the
+    #: campaign's variable here, and a solver-owned obstacle stops holding it in two ways: the
+    #: robot that reaches it pushes it off the placement the search selected, and a placement that
+    #: overlaps other geometry is answered by ejecting it at speed. Those look like results.
+    SIM_INSTANCES_MOTION = "driven"
 
     @classmethod
     def config_view_data(cls, config, base_path):
@@ -188,10 +182,9 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
                     seed = self.parameters.seed + td_idx * n_expanded + exp_idx
                     np.random.seed(seed)
                     random.seed(seed)
-                    effective_config = self._inject_poses(config)
                     for _ in range(self.parameters.count):
                         result = self._generate_obstacles_for_config(
-                            self.base_path, effective_config, list(expanded_configs)
+                            self.base_path, config, list(expanded_configs)
                         )
                         # Propagate spawn trigger point to a private key for GUI access.
                         # Read back from the destination the campaign BOUND the slot to, the
@@ -208,58 +201,6 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         return results
 
     # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _dict_to_pose(d) -> Pose:
-        """Convert a pose dict (from YAML parameters) to a Pose dataclass.
-
-        Accepts dicts of the form::
-
-            {'position': {'x': 1.0, 'y': 2.0}}          # no orientation
-            {'position': {'x': 1.0, 'y': 2.0},
-             'orientation': {'yaw': 0.5}}                # with orientation
-
-        If *d* is already a Pose instance it is returned unchanged.
-        """
-        if isinstance(d, Pose):
-            return d
-        pos = d['position']
-        orientation_dict = d.get('orientation', {})
-        return Pose(
-            position=Position(x=float(pos['x']), y=float(pos['y'])),
-            orientation=Orientation(yaw=float(orientation_dict.get('yaw', 0.0))),
-        )
-
-    def _inject_poses(self, config):
-        """Return a deep copy of *config* with its poses converted to Pose objects.
-
-        Conversion is in place: whichever spelling the config already carries
-        (``goal_pose`` or ``goal_poses``) is the one written back. Neither key is
-        added nor removed — the scenario's own parameter set decides which exists,
-        and injecting the other spelling makes the OSC reject an undeclared
-        parameter at startup. Explicit variation parameters override the config
-        values; YAML-sourced poses arrive as dicts and must be converted, since the
-        base class plans the path itself when no path variation ran before it.
-        """
-        effective = copy.deepcopy(config)
-
-        raw_start = self.parameters.start_pose or effective['config'].get('start_pose')
-        if raw_start is not None:
-            effective['config']['start_pose'] = self._dict_to_pose(raw_start)
-
-        raw_goal = self.parameters.goal_pose or effective['config'].get('goal_pose')
-        if raw_goal is not None:
-            effective['config']['goal_pose'] = self._dict_to_pose(raw_goal)
-
-        raw_goals = effective['config'].get('goal_poses')
-        if raw_goals:
-            effective['config']['goal_poses'] = [self._dict_to_pose(g) for g in raw_goals]
-
-        return effective
-
-    # ------------------------------------------------------------------
     # Hooks (override ObstacleVariation base hooks)
     # ------------------------------------------------------------------
 
@@ -267,22 +208,29 @@ class ObstacleVariationWithDistanceTrigger(ObstacleVariation):
         """Keep all obstacles at least trigger_distance ahead on the path."""
         return self._current_trigger_distance
 
-    def _post_process(self, obstacle_objects, obstacle_anchors, path) -> dict:
+    def _post_process(self, obstacle_objects, obstacle_anchors, path, obstacle_geometry) -> dict:
         """The two extra outputs, by SLOT -- the campaign names their destinations.
 
         * ``trigger_point``     — the spawn pose position of the single placed obstacle.
         * ``trigger_threshold`` — the current trigger distance value.
+
+        ``trigger_point`` is a whole POSITION, z included, because a scenario revealing the
+        obstacle has to state one: the distance test that fires the trigger is planar and reads
+        only x and y, but the teleport that follows it places a body. Reporting z as 0.0 -- a
+        height the obstacle is never at -- left the scenario to invent one, and the value near
+        to hand is the robot's, which seats a floor-standing obstacle inside the floor.
         """
         if not obstacle_objects:
             return {}
 
         obj_dict = convert_dataclasses_to_dict([obstacle_objects[0]])[0]
         pos = obj_dict['spawn_pose']['position']
+        _, size = obstacle_geometry[0] if obstacle_geometry else (None, None)
         return {
             'trigger_point': {
                 'x': pos['x'],
                 'y': pos['y'],
-                'z': 0.0,
+                'z': resting_z(size),
             },
             'trigger_threshold': self._current_trigger_distance,
         }

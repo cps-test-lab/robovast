@@ -128,6 +128,9 @@ class NodeCalibration:
     #: the caller can name the reason in the failure it raises: the refusal is decided here,
     #: but what it MEANS for a campaign is not this store's business.
     _refused: dict = field(default_factory=dict)
+    #: node_id -> why this campaign left that node out. Distinct from ``_refused``, which is a
+    #: probe that RAN and could not be believed; this is one that never got to run.
+    _skipped: dict = field(default_factory=dict)
     #: node_id -> consecutive batches that ended with it held and unmeasured. Lives here
     #: rather than on the runner because a runner is per batch and this counts batches: a
     #: search builds a fresh one every round, so a tally kept there would read 1 forever.
@@ -151,8 +154,30 @@ class NodeCalibration:
         return self._by_node.get(node_id)
 
     def outcome(self) -> dict:
-        """``{"calibrated": [node_id, ...], "refused": {node_id: reason}}``."""
-        return {"calibrated": sorted(self._by_node), "refused": dict(self._refused)}
+        """``{"calibrated": [...], "refused": {node: reason}, "skipped": {node: reason}}``."""
+        return {"calibrated": sorted(self._by_node), "refused": dict(self._refused),
+                "skipped": dict(self._skipped)}
+
+    def skip(self, node_id, reason: str) -> None:
+        """Leave *node_id* out of this campaign: never probed again, never given work.
+
+        **The campaign stays comparable, and that is the whole point.** What may not happen is
+        one node's runs sized from a measurement while another's run at the seed; a node that
+        takes no work at all breaks nothing, because every run there is a run that did not
+        happen. So an unmeasurable node costs capacity rather than validity, and capacity is
+        not worth ending a campaign over.
+
+        Recorded rather than only logged, so ``outcome`` can say which machines the campaign
+        did not use -- a shorter campaign that says so is the honest outcome, and one that
+        quietly used fewer machines is the thing this exists to prevent.
+        """
+        self._skipped.setdefault(node_id, reason)
+        self._probes.pop(node_id, None)
+        self._unmeasured_batches.pop(node_id, None)
+
+    def skipped(self) -> dict:
+        """``{node_id: why}`` for the nodes this campaign has left out."""
+        return dict(self._skipped)
 
     def claim_probe(self, node_id, probe_key) -> bool:
         """Start measuring *node_id*, unless it is measured or being measured already.
@@ -160,10 +185,14 @@ class NodeCalibration:
         **At most one outstanding per node**, which is the whole reason this is a claim rather
         than a flag: without it every job of the first wave becomes a probe and the campaign
         pays for its calibration once per job instead of once per node.
+
+        A skipped node is refused for the same reason a calibrated one is: the question of
+        what it would measure has been settled, and re-probing it would re-open a wait the
+        campaign has already decided not to spend.
         """
         if not self.enabled or node_id is None or node_id in self._by_node:
             return False
-        if node_id in self._probes:
+        if node_id in self._probes or node_id in self._skipped:
             return False
         self._probes[node_id] = probe_key
         return True
@@ -179,8 +208,12 @@ class NodeCalibration:
         A node needing a probe it has not been given yet DOES accept work, and that is not a
         contradiction: calibration is disabled for such a campaign (a pilot), or the node is
         unlabelled and cannot be sized per node anyway.
+
+        A SKIPPED node never accepts work again, which is what makes skipping safe: the
+        campaign gave up on measuring it, so anything placed there would be sized from the
+        seed while the rest ran on measured figures.
         """
-        return node_id not in self._probes
+        return node_id not in self._probes and node_id not in self._skipped
 
     def record(self, node_id, job_key, measured: dict, *, completed: bool = True,
                percentiles=None, min_samples: int = None, tick_ratio=None) -> bool:

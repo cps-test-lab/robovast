@@ -167,12 +167,12 @@ def test_the_plugin_passes_no_flag_for_an_untouched_campaign(tmp_path, monkeypat
 
 # -- the CLUSTER lane, which is where this rule was silently absent ------------------------------
 #
-# The two lanes build the conversion command in two places: the local one through
-# `RosbagsProcess` (above), the cluster one by assembling the container's argv in
-# `postprocess_job._conversion_script`. Only the first consulted the ledger, so on Kubernetes a
-# hand-stopped job failed the whole campaign's postprocessing -- the exact outcome the flag exists
-# to prevent, on the lane that actually runs the long campaigns. The tests below are deliberately
-# the mirror image of the two above, so the pair cannot drift apart again unnoticed.
+# Both lanes build the conversion command from `RosbagsProcess.image_command`, but each lane
+# hands it the jobs to tolerate: the local one in `ExecutionImagePlugin.__call__` (above), the
+# cluster one in `postprocess_job.image_steps_for`. On Kubernetes a hand-stopped job that
+# was not handed over failed the whole campaign's postprocessing -- the exact outcome the flag
+# exists to prevent, on the lane that actually runs the long campaigns. The tests below are
+# deliberately the mirror image of the two above, so the pair cannot drift apart unnoticed.
 
 
 #: The campaign the cluster-lane helper below builds a command for. The conversion reads
@@ -181,10 +181,22 @@ def test_the_plugin_passes_no_flag_for_an_untouched_campaign(tmp_path, monkeypat
 _CAMPAIGN = "camp-2026-08-27-12000000"
 
 
+def _cluster_steps(tolerate_under=()):
+    import tempfile
+
+    from robovast.execution.cluster_execution.postprocess_job import image_steps_for
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "_config"))
+        with open(os.path.join(root, "_config", "c.vast"), "w", encoding="utf-8") as f:
+            f.write("version: 1\n")
+        return image_steps_for(_CAMPAIGN, root,
+                               [{"rosbags_process": {"plugins": [{"type": "rosout_to_csv"}]}}],
+                               tolerate_under=tolerate_under)
+
+
 def _cluster_script(tolerate_under=()):
     from robovast.execution.cluster_execution.postprocess_job import _conversion_script
-    return _conversion_script([{"plugins": [{"type": "rosout_to_csv"}]}], False,
-                              tolerate_under, campaign_id=_CAMPAIGN)
+    return _conversion_script(_cluster_steps(tolerate_under), campaign_id=_CAMPAIGN)
 
 
 def _input_root():
@@ -231,9 +243,7 @@ def test_the_cluster_flag_reaches_the_containers_command(monkeypatch):
     monkeypatch.setenv(DSN_ENV, "host=index.example.com dbname=robovast")
 
     manifest = build_manifest(
-        "camp", "img", [{"plugins": [{"type": "rosout_to_csv"}]}],
-        ("ep", "ak", "sk", "bucket", "camp/"), "default",
-        tolerate_under=["_jobs/batch-0/job-125"])
+        _CAMPAIGN, "img", _cluster_steps(["_jobs/batch-0/job-125"]), "default")
     # The conversion is an initContainer of a one-pod Job -- Kubernetes runs it before the
     # host container -- so the command has to be looked for in both lists.
     spec = manifest["spec"]["template"]["spec"]

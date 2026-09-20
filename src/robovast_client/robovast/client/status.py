@@ -360,6 +360,20 @@ class Status(BaseModel):
     # runs are the deliverable) and is re-triggerable from disk (service ``run_share``).
     # Cleared on a successful (re-)triggered upload.
     share_error: Optional[str] = None
+    # Total bytes the campaign's results occupy in their durable home -- the local results
+    # tree, or the object store on a cluster lane. Bounded state written once, at the end of
+    # the run, by the backend hook that knows where that home is
+    # (``ExecutionBackend.campaign_results_bytes``); this payload's rule permits a counter,
+    # not a series, and this is one number set once.
+    #
+    # ``None`` means **not recorded** -- a campaign that ended before this was measured, or
+    # one whose measurement failed -- which is a different fact from a campaign of zero
+    # bytes, and the reason a reader omits the figure rather than showing ``0 B``.
+    #
+    # It does not count the control-plane publish that carries it (``campaign.db`` and
+    # ``_execution/``, kilobytes against a results tree): the number is written before that
+    # upload, so it cannot include itself.
+    results_bytes: Optional[int] = None
     extra: dict = Field(default_factory=dict)
     # What the running jobs' own simulators currently report about themselves. **Attached on
     # read and never persisted**: the controller does not write this, nothing in the results
@@ -376,6 +390,17 @@ class Status(BaseModel):
     # and the first reads as a clean bill of health. A robot-motion check with no roster is exactly
     # that case: nothing is wrong, and nothing looked.
     health_skipped: list[str] = Field(default_factory=list)
+    # ``{node_id: why}`` for machines this campaign has left out: their calibration probe never
+    # ran, so nothing may be placed there -- work sized from the seed beside work sized from a
+    # measurement is the one thing calibration exists to prevent.
+    #
+    # **Written by the controller, unlike ``health``**, because it is a decision the campaign
+    # took rather than a diagnostic gathered on read: the campaign is smaller from here on, and
+    # it stays smaller whether or not anyone is watching. ``_execution/execution.yaml`` carries
+    # the same fact for a reader who arrives after it ends; this is for one watching now.
+    #
+    # Empty is the norm and means every node is in play.
+    nodes_skipped: dict = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
 
 
@@ -710,7 +735,10 @@ def failure_detail(exc: BaseException, tail_lines: int = 20) -> str:
     The exception message first (it carries the actionable part — e.g. the
     "Available configs:" list), then the tail of the traceback for genuine bugs.
     Shared by the local worker and the in-process cluster worker so both record
-    failures the same way.
+    failures the same way. Also what a raising site uses to make a message complete
+    where no one surface will render the frames (a plugin bug caught in composition
+    reaches the CLI, the MCP tools and the service alike as a bare message): the
+    exception it then raises opts out below, so the frames are carried once.
 
     The frames are formatted *without* the trailing ``Type: message`` line, because
     that line is the message already printed above it: appending the raw

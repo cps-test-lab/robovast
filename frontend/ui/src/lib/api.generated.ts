@@ -4,6 +4,32 @@
  */
 
 export interface paths {
+    "/admin/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Service Cache
+         * @description What the service's rebuildable caches hold, and what a clear would keep and why.
+         */
+        get: operations["service_cache_admin_cache_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Clear Service Cache
+         * @description Remove every cache entry nothing may still be using, and say what that freed.
+         *
+         *     Only copies of durable data: the cost is the time to rebuild what is next asked for.
+         */
+        delete: operations["clear_service_cache_admin_cache_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/config": {
         parameters: {
             query?: never;
@@ -277,23 +303,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/campaigns/cleanup-data": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cleanup Campaign Data */
-        post: operations["cleanup_campaign_data_campaigns_cleanup_data_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/campaigns/events": {
         parameters: {
             query?: never;
@@ -362,43 +371,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/campaigns/{campaign_id}/archive": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Download Campaign Archive
-         * @description Stream a ``tar.gz`` of the campaign, on either lane.
-         *
-         *     Backs ``vast campaign download`` and the web UI's download button. What comes
-         *     out is the campaign as this service holds it -- postprocessed if it has been,
-         *     raw if it has not, and a campaign whose postprocessing failed downloads like any
-         *     other: derived data is an addition to a campaign, never the condition for reading
-         *     one, so nothing on this path waits on it. Internal ``_postproc/`` staging is
-         *     excluded so the archive is the clean campaign layout.
-         *
-         *     Nothing is buffered and no scratch is used, on either lane: the cluster fetches
-         *     objects from the store and tars them on the fly, the local lane tars its own
-         *     directory into the response. Decisive for ~1TB campaigns.
-         *
-         *     Refusing this on a local service with a 409 -- "the results are already on this
-         *     host's filesystem" -- asserts something true of a caller on that host and false
-         *     of everyone else: a ``vast serve`` reached over the network could not be
-         *     downloaded from at all, and the web UI would have to hide its own button on that
-         *     lane. The lane is not what decides whether a caller can read a file.
-         */
-        get: operations["download_campaign_archive_campaigns__campaign_id__archive_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/campaigns/{campaign_id}/costmap": {
         parameters: {
             query?: never;
@@ -408,31 +380,6 @@ export interface paths {
         };
         /** Run data from the 'costmap' endpoint plugin. */
         get: operations["route_campaigns__campaign_id__costmap_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/campaigns/{campaign_id}/data-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Campaign Data Status
-         * @description Whether querying this campaign transfers data first — ask *before* the wait.
-         *
-         *     Cheap by contract (two metadata lookups). On a cluster campaign whose databases
-         *     are not cached yet, a first ``/describe`` or ``/query`` fetches them from the
-         *     object store inside the request; this says so in advance, so a client can show
-         *     why instead of appearing to hang.
-         */
-        get: operations["campaign_data_status_campaigns__campaign_id__data_status_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -501,8 +448,10 @@ export interface paths {
         };
         /**
          * Stream Job Log
-         * @description Server-sent events: one running job's log, tailed live (``Last-Event-ID``
-         *     resumes). A finished job whose pod was garbage-collected has no live log.
+         * @description Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
+         *
+         *     A **finished** job is served too, not only a running one. What the events mean,
+         *     and which residual case is still an error, is ``_sse_log_stream``'s to say.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -927,6 +876,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/scheduling": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Campaign Scheduling
+         * @description Set how the queue treats a campaign: its rank, whether it admits new runs, or both. Ordering only — nothing already running stops.
+         */
+        post: operations["set_campaign_scheduling_campaigns__campaign_id__scheduling_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/screenshot": {
         parameters: {
             query?: never;
@@ -1050,6 +1019,107 @@ export interface paths {
         /** Get Config Schema */
         get: operations["get_config_schema_config_schema_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Campaign Archive
+         * @description Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
+         *
+         *     Backs ``vast campaign download``, the web UI's download button and the
+         *     postprocessing pod's stage, which asks for the plain tar, being in the cluster.
+         *     What comes out is the campaign as this service holds
+         *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
+         *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags``,
+         *     ``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads
+         *     (:class:`ArchiveSelection`).
+         *
+         *     Nothing is buffered and no scratch is used: the tree is tarred into the response
+         *     as it is read. Decisive for campaigns that run to terabytes.
+         */
+        get: operations["download_campaign_archive_data_campaigns__campaign_id__archive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/inputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Campaign Inputs
+         * @description Stream the tar a job pod extracts into its ``/config``.
+         *
+         *     ``config_file`` names a cell's own input as ``<config_name>:<rel>``, repeated
+         *     once per file; each lands at ``<rel>`` on top of the campaign's copy.
+         */
+        get: operations["download_campaign_inputs_data_campaigns__campaign_id__inputs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/outputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upload Campaign Outputs
+         * @description Take a tar of run outputs into the campaign. Streamed, never buffered.
+         *
+         *     A campaign that is not here is a 404, reached before any member is written: the
+         *     source resolves the directory before it reads the stream.
+         */
+        put: operations["upload_campaign_outputs_data_campaigns__campaign_id__outputs_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/staged/{slot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Staged
+         * @description Stream a staged slot, or *path* within it, as a plain tar.
+         */
+        get: operations["download_staged_data_staged__slot__get"];
+        /**
+         * Upload Staged
+         * @description Take a tar into the staged slot *slot*, creating it.
+         */
+        put: operations["upload_staged_data_staged__slot__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1740,6 +1810,11 @@ export interface components {
         /** Body_validate_project_workspaces__workspace_id__validate_post */
         Body_validate_project_workspaces__workspace_id__validate_post: {
             /**
+             * Check Scenario
+             * @default true
+             */
+            check_scenario: boolean;
+            /**
              * Check World
              * @default true
              */
@@ -1797,55 +1872,22 @@ export interface components {
             workspace_id: string;
         };
         /**
-         * CampaignDataStatus
-         * @description Whether querying this campaign has to transfer anything first, and what it costs.
-         *
-         *     Exists so a caller can say *why* it is about to wait, **before** it waits. As with
-         *     :class:`ResourceUsage`, the local↔cluster difference is resolved inside the service, so
-         *     a consumer reads the same fields either way and never branches on the backend:
-         *     ``fetch_required`` false means the question does not apply.
-         *
-         *     Deliberately cheap — two metadata lookups, never an enumeration of the campaign prefix
-         *     — because the point is to answer *before* the expensive thing, and a probe that itself
-         *     cost a listing would only move the cost.
+         * CacheSize
+         * @description One cache the service keeps, and what it holds now.
          */
-        CampaignDataStatus: {
-            /** Cached */
-            cached: boolean;
-            /** Campaign Id */
-            campaign_id: string;
+        CacheSize: {
             /**
-             * Db Bytes
+             * Entries
              * @default 0
              */
-            db_bytes: number;
+            entries: number;
+            /** Name */
+            name: string;
             /**
-             * Fetch In Progress
-             * @default false
+             * Size Bytes
+             * @default 0
              */
-            fetch_in_progress: boolean;
-            /** Fetch Required */
-            fetch_required: boolean;
-            /** Last Fetch Bytes */
-            last_fetch_bytes: number | null;
-            /** Last Fetch Seconds */
-            last_fetch_seconds: number | null;
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-            progress: components["schemas"]["WorkProgress"] | null;
-            /**
-             * Source
-             * @enum {string}
-             */
-            source: "local-disk" | "object-store";
-            /**
-             * Transfer
-             * @enum {string}
-             */
-            transfer: "none" | "cluster-network" | "port-forward";
+            size_bytes: number;
         };
         /**
          * CampaignOrigin
@@ -2020,6 +2062,11 @@ export interface components {
             num_runs: number;
             origin: components["schemas"]["CampaignOrigin"] | null;
             /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /**
              * Phase
              * @default unknown
              */
@@ -2034,6 +2081,13 @@ export interface components {
              * @default
              */
             postprocessing_error: string;
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
+            /** Results Bytes */
+            results_bytes: number | null;
             /**
              * Share Error
              * @default
@@ -2066,25 +2120,6 @@ export interface components {
             campaign_id: string;
             /** Workloads */
             workloads: components["schemas"]["CampaignVisualization"][];
-        };
-        /**
-         * CleanupDataRequest
-         * @description Which campaign result buckets to delete from the object store.
-         *
-         *     The service holds the cluster config (object-store credentials) and knows which
-         *     campaigns are live, so bucket cleanup runs server-side — the CLI never needs
-         *     cluster credentials. ``campaign_id`` None removes **all** finished campaigns
-         *     (live ones are always skipped); a given id removes just that one, and ``force``
-         *     removes it even if the service still considers it live.
-         */
-        CleanupDataRequest: {
-            /** Campaign Id */
-            campaign_id?: string | null;
-            /**
-             * Force
-             * @default false
-             */
-            force: boolean;
         };
         /**
          * CreateCampaignRequest
@@ -2139,10 +2174,20 @@ export interface components {
              */
             image_project_tag: string;
             /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /**
              * Postprocess
              * @default true
              */
             postprocess: boolean;
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
             /**
              * Runs
              * @default 1
@@ -2347,6 +2392,11 @@ export interface components {
              * @default
              */
             container: string;
+            /**
+             * Fresh
+             * @default false
+             */
+            fresh: boolean;
             /**
              * Keep Alive
              * @default false
@@ -2830,6 +2880,23 @@ export interface components {
             /** Memory Request Bytes */
             memory_request_bytes: number | null;
         };
+        /**
+         * KeptCacheEntry
+         * @description An entry a clear leaves in place, and why.
+         */
+        KeptCacheEntry: {
+            /** Cache */
+            cache: string;
+            /** Name */
+            name: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Size Bytes
+             * @default 0
+             */
+            size_bytes: number;
+        };
         /** ListCampaignsResponse */
         ListCampaignsResponse: {
             /** Campaigns */
@@ -3016,6 +3083,24 @@ export interface components {
             reason: string;
         };
         /**
+         * OutputsIngested
+         * @description What a streamed tar of outputs left in a campaign or a staged slot.
+         */
+        OutputsIngested: {
+            /**
+             * Bytes
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Files
+             * @default 0
+             */
+            files: number;
+            /** Refused */
+            refused: string[];
+        };
+        /**
          * PanelsSource
          * @description The run-view ``visualization:`` block as editable YAML text.
          */
@@ -3173,7 +3258,7 @@ export interface components {
          *     scheduler reasons about capacity — pods still queued for a node are reported by
          *     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
          *
-         *     ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
+         *     ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
          *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
          *     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
          *     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
@@ -3181,9 +3266,8 @@ export interface components {
          *     the service pod, deliberately not a sum over the node set -- the workspaces are a
          *     ``hostPath`` there, so that is the disk which decides whether a campaign can be
          *     written, and a total would read as tens of terabytes free while it filled. Locally it
-         *     is the campaign results root's filesystem. ``store`` is the results store, which on the
-         *     cluster is a different thing from ``disk`` -- often on a different node -- and only
-         *     some providers can measure.
+         *     is the campaign results root's filesystem. ``results`` is the volume the campaigns
+         *     live on, reported only where it is a separately measurable claim.
          *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
          *     scenario runs execute one at a time (local Docker is single-flight), ``True``
@@ -3249,9 +3333,9 @@ export interface components {
             query_containers: {
                 [key: string]: components["schemas"]["ExecContainerState"];
             };
-            store: components["schemas"]["DiskSpace"] | null;
-            /** Store Node */
-            store_node: string | null;
+            results: components["schemas"]["DiskSpace"] | null;
+            /** Storage Refusal */
+            storage_refusal: string | null;
         };
         /**
          * RetriggerAxis
@@ -3461,8 +3545,7 @@ export interface components {
          * SceneStatus
          * @description Whether this run's 3D geometry is ready, and if not, what is happening about it.
          *
-         *     The same job as :class:`CampaignDataStatus`, for the same reason — *say why you are about to wait,
-         *     before you wait* — so the fields deliberately reuse its names rather than inventing synonyms. A
+         *     *Say why you are about to wait, before you wait.* A
          *     scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
          *     the first viewer of a given world pays for it and everyone after reads it from disk.
          *
@@ -3578,6 +3661,30 @@ export interface components {
             };
             /** Markers */
             markers: components["schemas"]["SceneMarker"][];
+        };
+        /**
+         * ServiceCache
+         * @description The service's caches: copies it can rebuild from durable data, and nothing else.
+         *
+         *     Clearing one loses nothing but the time to rebuild what is next asked for. An entry that
+         *     may still be in use is never removed; ``kept`` names each and why. After a clear,
+         *     ``freed_bytes`` and ``removed_entries`` say what it did and ``caches`` is what remains.
+         */
+        ServiceCache: {
+            /** Caches */
+            caches: components["schemas"]["CacheSize"][];
+            /**
+             * Freed Bytes
+             * @default 0
+             */
+            freed_bytes: number;
+            /** Kept */
+            kept: components["schemas"]["KeptCacheEntry"][];
+            /**
+             * Removed Entries
+             * @default 0
+             */
+            removed_entries: number;
         };
         /**
          * ServiceConfig
@@ -3812,6 +3919,10 @@ export interface components {
             health_skipped: string[];
             /** Mode */
             mode: string | null;
+            /** Nodes Skipped */
+            nodes_skipped: {
+                [key: string]: unknown;
+            };
             /**
              * Phase
              * @default initializing
@@ -3832,6 +3943,8 @@ export interface components {
             progress_deadline_s: number | null;
             /** Progress Since */
             progress_since: number;
+            /** Results Bytes */
+            results_bytes: number | null;
             runs: components["schemas"]["RunProgress"];
             /** Search Since */
             search_since: number | null;
@@ -4043,6 +4156,16 @@ export interface components {
          *
          *     ``stage`` is the check that failed (``file``/``parse``/``schema``/
          *     ``scenario``/``generation``/plugin-ref/…); ``config``/``field`` locate it.
+         *
+         *     ``severity`` states which of three answers this is, because a caller acts on them
+         *     differently and the text alone cannot be branched on:
+         *
+         *     - ``error`` — the campaign is wrong. It makes ``valid`` false.
+         *     - ``advice`` — a checked fact worth saying (a large build context, a container with
+         *       no memory limit). ``valid`` stays true; the campaign runs.
+         *     - ``unchecked`` — a check this report covers could not run here, so *nothing* was
+         *       learned about it either way. It makes ``valid`` false without being a defect in
+         *       the file, and its message names what would settle it.
          */
         ValidationProblem: {
             /** Config */
@@ -4055,6 +4178,11 @@ export interface components {
              */
             message: string;
             /**
+             * Severity
+             * @default error
+             */
+            severity: string;
+            /**
              * Stage
              * @default
              */
@@ -4063,6 +4191,24 @@ export interface components {
         /**
          * ValidationReport
          * @description Collect-all validation result (mirrors ``validate_project_file``).
+         *
+         *     ``valid`` means every check this report covers ran **and** passed, so a caller may
+         *     act on that one boolean — which is the only thing a boolean is good for. A check
+         *     that could not run makes it false and appears as an ``unchecked`` problem: "I could
+         *     not look" and "it is fine" are different answers, and a caller that reads only
+         *     ``valid`` must not be handed the second when the first is true.
+         *
+         *     ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks a
+         *     caller *asks* for: ``True`` it ran and passed, ``False`` it was asked for and could not
+         *     run, ``None`` it was not asked for (``check_world`` / ``check_scenario`` false, or --
+         *     for the scenario -- no scenario file to parse).
+         *
+         *     They are not the only things here that need a container: composing the file runs an
+         *     ``execution.generate`` generator and any variation declaring a helper image. Those carry
+         *     no flag of their own because there is no request to answer -- nothing asks for them and
+         *     they are never skipped on request, so two of the three states could not arise. When one
+         *     cannot run it is reported the same way every unrunnable check is, as an ``unchecked``
+         *     problem that makes ``valid`` false.
          */
         ValidationReport: {
             /**
@@ -4077,6 +4223,8 @@ export interface components {
              * @default 0
              */
             runs_per_config: number;
+            /** Scenario Checked */
+            scenario_checked: boolean | null;
             /**
              * Total Trials
              * @default 0
@@ -4087,6 +4235,8 @@ export interface components {
              * @default false
              */
             valid: boolean;
+            /** World Checked */
+            world_checked: boolean | null;
         };
         /**
          * VariationPreview
@@ -4267,50 +4417,6 @@ export interface components {
              */
             workspace_id: string;
         };
-        /**
-         * WorkProgress
-         * @description How far along the blocking work behind a campaign request currently is.
-         *
-         *     Exists because the two waits a caller actually sits through — pulling the campaign out of
-         *     the object store, then executing the notebook — are both minutes long and were both
-         *     reported as nothing at all. The counts live only in memory (see
-         *     :attr:`CampaignDataStatus.progress`), so reading them costs no round-trip and a client can
-         *     poll once a second without competing with the transfer it is describing.
-         *
-         *     One shape for both phases rather than one model each: a caller renders ``done``/``total``
-         *     the same way regardless, and ``unit`` is what makes the sentence read right.
-         */
-        WorkProgress: {
-            /**
-             * Bytes Done
-             * @default 0
-             */
-            bytes_done: number;
-            /** Bytes Total */
-            bytes_total: number | null;
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
-            /**
-             * Done
-             * @default 0
-             */
-            done: number;
-            /**
-             * Phase
-             * @enum {string}
-             */
-            phase: "listing" | "downloading" | "executing";
-            /** Total */
-            total: number | null;
-            /**
-             * Unit
-             * @enum {string}
-             */
-            unit: "files" | "cells";
-        };
         /** WorkspaceInfo */
         WorkspaceInfo: {
             /** Created At */
@@ -4398,6 +4504,46 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    service_cache_admin_cache_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceCache"];
+                };
+            };
+        };
+    };
+    clear_service_cache_admin_cache_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceCache"];
+                };
+            };
+        };
+    };
     service_config_admin_config_get: {
         parameters: {
             query?: never;
@@ -4754,39 +4900,6 @@ export interface operations {
             };
         };
     };
-    cleanup_campaign_data_campaigns_cleanup_data_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["CleanupDataRequest"] | null;
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ActionResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     stream_campaigns_campaigns_events_get: {
         parameters: {
             query?: never;
@@ -4871,37 +4984,6 @@ export interface operations {
             };
         };
     };
-    download_campaign_archive_campaigns__campaign_id__archive_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     route_campaigns__campaign_id__costmap_get: {
         parameters: {
             query?: never;
@@ -4920,37 +5002,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    campaign_data_status_campaigns__campaign_id__data_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CampaignDataStatus"];
                 };
             };
             /** @description Validation Error */
@@ -5895,6 +5946,40 @@ export interface operations {
             };
         };
     };
+    set_campaign_scheduling_campaigns__campaign_id__scheduling_post: {
+        parameters: {
+            query?: {
+                priority?: number | null;
+                paused?: boolean | null;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     campaign_screenshot_campaigns__campaign_id__screenshot_post: {
         parameters: {
             query?: {
@@ -6111,6 +6196,171 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    download_campaign_archive_data_campaigns__campaign_id__archive_get: {
+        parameters: {
+            query?: {
+                stage?: boolean;
+                skip_bags?: boolean;
+                batch_jobs?: string;
+                uncompressed?: boolean;
+                part?: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_campaign_inputs_data_campaigns__campaign_id__inputs_get: {
+        parameters: {
+            query?: {
+                config_file?: string[];
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_campaign_outputs_data_campaigns__campaign_id__outputs_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutputsIngested"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_staged_data_staged__slot__get: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path: {
+                slot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_staged_data_staged__slot__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutputsIngested"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

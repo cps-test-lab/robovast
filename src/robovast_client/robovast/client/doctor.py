@@ -308,6 +308,18 @@ def check_deployment(namespace: str = "default",
                       "or pass -n <namespace> if it is deployed elsewhere.",
                       optional=True)]
 
+    return (_check_build_registry(namespace, context)
+            + _check_job_placement(namespace, context))
+
+
+def _check_build_registry(namespace: str, context: str | None) -> list[Check]:
+    """The ``build registry`` row and, when it is green, the route and daemon rows.
+
+    See :func:`check_deployment`; the service is known to exist here.
+    """
+    from robovast.execution.cluster_execution import \
+        service_deploy  # pylint: disable=import-outside-toplevel
+
     try:
         prefix = service_deploy.deployed_registry_prefix(namespace, context)
         host = service_deploy.published_host(namespace, context)
@@ -333,6 +345,89 @@ def check_deployment(namespace: str = "default",
     checks = [Check("build registry", True, prefix)]
     checks.extend(_check_registry_route(namespace, context))
     checks.extend(_check_build_daemon(namespace, context))
+    return checks
+
+
+def _check_job_placement(namespace: str, context: str | None) -> list[Check]:
+    """Whether campaign jobs have anywhere to go, and every job node alias somewhere to point.
+
+    :func:`_check_capacity` lists every node, so a job node pool that matches none -- a
+    typo in ``ROBOVAST_JOB_NODE_LABELS``, a relabelled node pool -- still reads green there while
+    admission counts zero capacity and no campaign ever starts. The pool is read from the
+    live Deployment, the only place it is recorded.
+
+    Each registered alias is resolved exactly as a campaign that names it would be, so a
+    red row here is the refusal that campaign would get: unregistered, on several nodes,
+    unschedulable, outside the pool, or on a node with no identity label. Not optional:
+    either fault stops campaigns, unlike a deployment that merely cannot build. The node
+    is shown beside its alias -- this command is run by the operator who registered it.
+    """
+    try:
+        from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+        from robovast.execution.cluster_execution import \
+            node_placement  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution import \
+            service_deploy  # pylint: disable=import-outside-toplevel
+        from robovast.execution.cluster_execution.kube_client import \
+            load_kube_config  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return []  # client-only install; see check_deployment's note
+
+    try:
+        load_kube_config(context)
+        pool = service_deploy.job_node_pool_from_cluster(namespace, context)
+    except ValueError as exc:
+        return [Check("job node pool", False, str(exc)[:120],
+                      "The service's recorded pool cannot be parsed, so admission refuses "
+                      "to guess. Fix ROBOVAST_JOB_NODE_LABELS in the deployment's .env "
+                      "and run 'vast service upgrade'.")]
+    except Exception:  # noqa: BLE001 - an unreachable cluster is check_cluster's to report
+        return []
+
+    described = ", ".join(f"{k}={v}" for k, v in pool.items()) or "every node"
+    try:
+        core = client.CoreV1Api()
+        matching = core.list_node(
+            label_selector=",".join(f"{k}={v}" for k, v in pool.items()) or None).items
+        eligible = node_placement.eligible_nodes(
+            core, node_placement.CAMPAIGN_NODE_TOLERATIONS, extra_labels=pool)
+        registry = node_placement.registered_aliases(core)
+    except Exception:  # noqa: BLE001 - same reason as above
+        return []
+
+    if not matching:
+        checks = [Check(
+            "job node pool", False, f"{described}: matches no node",
+            "Admission counts capacity only inside the pool, so no campaign job can start. "
+            "'kubectl get nodes --show-labels' shows what the nodes carry; set "
+            "ROBOVAST_JOB_NODE_LABELS in the deployment's .env to a pool that matches and run "
+            "'vast service upgrade'.")]
+    elif not eligible:
+        checks = [Check(
+            "job node pool", False,
+            f"{described}: {len(matching)} node(s), none schedulable",
+            "Every node in the pool is cordoned, not Ready, or carries a taint a job pod "
+            "does not tolerate, so no campaign job can start. 'kubectl get nodes' shows "
+            "which.")]
+    else:
+        checks = [Check("job node pool", True,
+                        f"{described}: {len(eligible)} schedulable node(s)")]
+
+    for alias, nodes in registry.items():
+        name = f"job node alias {alias}"
+        try:
+            node_placement.resolve_job_node_alias(core, alias, pool=pool)
+        except node_placement.AliasUnresolved as exc:
+            checks.append(Check(
+                name, False, f"{exc.cause} ({', '.join(nodes)})",
+                f"{exc} Campaigns naming it are refused. Correct or remove it in "
+                f"{node_placement.JOB_NODE_ALIASES_ENV} and run 'vast service upgrade "
+                "--no-restart' to reconcile the labels."))
+        except Exception:  # noqa: BLE001 - an unreadable node list is not a verdict
+            continue
+        else:
+            checks.append(Check(name, True, nodes[0]))
     return checks
 
 

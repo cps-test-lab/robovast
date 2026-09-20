@@ -1,165 +1,326 @@
 name: Publish to PyPI
 
+# Five distributions from one tree, released as one set: a `v*` tag publishes them to PyPI,
+# and `workflow_dispatch` publishes the same set to TestPyPI, which is where every release is
+# tried by hand before it is real. Nothing but the tag reaches PyPI.
+#
+# Everything is built and checked in one job before the first upload, because an upload
+# cannot be taken back -- a version can be yanked, never replaced, and pip still installs a
+# yanked wheel when pinned exactly. So every failure with a cause inside this repository
+# (a missing frontend bundle, a path dependency that reached the metadata, a lock that does
+# not match) happens in `build`, where it costs nothing. The publish jobs download what
+# `build` made and upload it, in the order the dependency edges require, and `skip-existing`
+# lets a re-run of the same tag after a transient failure continue past the wheels already
+# on the index instead of failing at the first one.
+
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish to TestPyPI, e.g. 2.1.0rc1 (PEP 440)'
+        required: true
+        type: string
 
 permissions: read-all
 
 jobs:
-  # First: `robovast` depends on it, so the version this tag releases has to be on the
-  # index before the wheel that requires it is uploaded. It has no dependency of ours in
-  # the other direction -- that is the property the split exists to keep -- so nothing
-  # precedes it.
-  publish-robovast-client:
-    name: Build and publish robovast-client to PyPI
+  build:
+    name: Build and check all five wheels
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/robovast-client
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      target: ${{ steps.version.outputs.target }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/checkout@v5
         with:
-          python-version: '3.12'
+          persist-credentials: false
 
-      - name: Install Poetry
-        run: curl -sSL https://install.python-poetry.org | python3 -
-
-      - name: Add Poetry to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Set version from tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          cd src/robovast_client && poetry version "$TAG"
-
-      - name: Build package
-        run: cd src/robovast_client && poetry build
-
-      - name: Publish to PyPI
+      # One place for the version and the index: the tag without its `v` goes to PyPI, a
+      # dispatched version goes to TestPyPI. Stamped into all five distributions below, so
+      # the set requires itself at exactly this number.
+      - name: Resolve the version and the index
+        id: version
         env:
-          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
-        run: cd src/robovast_client && poetry publish
-
-  publish-robovast:
-    name: Build and publish robovast to PyPI
-    runs-on: ubuntu-latest
-    needs: publish-robovast-client
-    environment:
-      name: pypi
-      url: https://pypi.org/p/robovast
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+          TAG: ${{ github.ref_name }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            echo "target=pypi" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$REQUESTED" >> "$GITHUB_OUTPUT"
+            echo "target=testpypi" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
+      # Pinned to the version the images install with (Makefile: check-lock), since a check by
+      # a different poetry is not the check that matters.
       - name: Install Poetry
-        run: curl -sSL https://install.python-poetry.org | python3 -
+        run: pip install --quiet poetry==1.8.2
 
-      - name: Add Poetry to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Before any version stamping: `poetry version` rewrites pyproject.toml and the lock's
+      # content hash with it, so this is the last moment the pair can be compared as committed.
+      - name: The lock describes the manifest
+        run: make check-lock
 
-      - name: Set version from tag
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            frontend/ui/package-lock.json
+            src/robovast_nav/web/package-lock.json
+
+      # Both bundles are package data that git ignores: nothing in a Python build makes them,
+      # and a wheel built without them installs a UI that serves the API alone and nav panel
+      # types with no assets behind them. The nav tree first, so that check-mf-runtime (run by
+      # ui-stage) finds its node_modules and compares the two runtimes instead of skipping.
+      - name: Build the nav panel remote
+        run: cd src/robovast_nav/web && npm ci && npm run build
+
+      - name: Build the web UI
+        run: cd frontend/ui && npm ci && npm run build
+
+      - name: Stage the web UI into the package
+        run: make ui-stage
+
+      - name: Stamp the version into all five distributions
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          poetry version "$TAG"
+          for dir in . src/robovast_client src/robovast_nav src/robovast_cluster src/robovast_sim_roqsim; do
+            (cd "$dir" && poetry version "${{ steps.version.outputs.version }}")
+          done
 
-      # A path dependency reaches the built metadata as a *direct reference*
-      # (`robovast-client @ file:///home/...`), which PyPI refuses to accept and which
-      # would name a directory on the build machine even if it did. The siblings are
-      # developed in this tree and released by this workflow from the same tag, so the
-      # version to require is the one being published. Fails if a name stops matching:
-      # a rewrite that silently does nothing hands the upload straight back to the bug.
       - name: Require the released siblings, not the paths they are developed at
+        run: python tools/pin_released_siblings.py "${{ steps.version.outputs.version }}"
+
+      - name: Build the wheels
         run: |
-          python - "${GITHUB_REF_NAME#v}" <<'EOF'
-          import pathlib, re, sys
+          poetry build
+          for dir in src/robovast_client src/robovast_nav src/robovast_cluster src/robovast_sim_roqsim; do
+            (cd "$dir" && poetry build)
+          done
 
-          tag = sys.argv[1]
-          manifest = pathlib.Path("pyproject.toml")
-          text = manifest.read_text(encoding="utf-8")
-          for name in ("robovast-client", "robovast-nav", "robovast-sim-roqsim"):
-              pattern = re.compile(
-                  rf'^(?P<head>{re.escape(name)} = \{{[^}}\n]*?)path = "[^"]+"', re.M)
-              text, count = pattern.subn(rf'\g<head>version = "=={tag}"', text)
-              if count != 1:
-                  sys.exit(f"{name}: expected one path dependency, rewrote {count}")
-              print(next(line for line in text.splitlines()
-                         if line.startswith(f"{name} = ")))
-          manifest.write_text(text, encoding="utf-8")
-          EOF
-
-      - name: Build package
-        run: poetry build
-
-      # The check the rewrite above exists to pass, asked of the artifact rather than of
-      # the manifest: an upload rejected by PyPI is found here, before the client half of
-      # the release has already gone out and cannot be taken back.
-      - name: The wheel names no directory on this machine
+      # The checks the rewrite and the frontend steps exist to pass, asked of the artifacts
+      # rather than of the tree: an upload the index would reject, or a wheel that installs
+      # without what its package data promises, is found here and not by a user.
+      - name: The wheels name no directory on this machine, and carry their bundles
         run: |
           python - <<'EOF'
           import glob, zipfile
 
-          wheel = glob.glob("dist/*.whl")[0]
-          archive = zipfile.ZipFile(wheel)
-          metadata = archive.read(next(n for n in archive.namelist()
-                                       if n.endswith(".dist-info/METADATA"))).decode()
-          direct = [line for line in metadata.splitlines()
-                    if line.startswith("Requires-Dist") and "@" in line]
-          if direct:
-              raise SystemExit("direct references PyPI will reject:\n" + "\n".join(direct))
-          print(f"{wheel}: no direct references")
+          def wheel(dist_dir):
+              (path,) = glob.glob(f"{dist_dir}/*.whl")
+              return path, zipfile.ZipFile(path)
+
+          expected_files = {
+              ".": ["robovast/_ui/index.html"],
+              "src/robovast_nav": ["robovast_nav/web/dist/remoteEntry.js"],
+              "src/robovast_client": [],
+              "src/robovast_cluster": [],
+              "src/robovast_sim_roqsim": [],
+          }
+          failed = False
+          for root, files in expected_files.items():
+              path, archive = wheel(f"{root}/dist")
+              names = archive.namelist()
+              metadata = archive.read(next(n for n in names
+                                           if n.endswith(".dist-info/METADATA"))).decode()
+              direct = [line for line in metadata.splitlines()
+                        if line.startswith("Requires-Dist") and "@" in line]
+              if direct:
+                  failed = True
+                  print(f"{path}: direct references the index will reject:\n  "
+                        + "\n  ".join(direct))
+              missing = [f for f in files if f not in names]
+              if missing:
+                  failed = True
+                  print(f"{path}: missing package data: {missing}")
+              if not direct and not missing:
+                  print(f"{path}: ok")
+          raise SystemExit(1 if failed else 0)
           EOF
 
-      - name: Publish to PyPI
-        env:
-          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
-        run: poetry publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-robovast
+          path: dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-robovast-client
+          path: src/robovast_client/dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-robovast-nav
+          path: src/robovast_nav/dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-robovast-cluster
+          path: src/robovast_cluster/dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-robovast-sim-roqsim
+          path: src/robovast_sim_roqsim/dist/
+
+  # The publish jobs authenticate by OpenID Connect (PyPI's trusted publishing): each index
+  # holds one publisher per distribution naming this repository, this workflow and the
+  # environment, and no API token exists anywhere. A distribution not yet on the index is
+  # created by its first upload through a pending publisher. `id-token: write` is granted per
+  # job, since a job's permissions replace the workflow's read-only default.
+  #
+  # Order follows the dependency edges: `robovast` requires `robovast-client` and pins
+  # `robovast-sim-roqsim` at exactly this version, so both precede it; `robovast-nav` and
+  # `robovast-cluster` require `robovast ^2`, so they follow it.
+
+  publish-robovast-client:
+    name: Publish robovast-client
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.build.outputs.target }}
+      url: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/p/robovast-client' || 'https://test.pypi.org/p/robovast-client' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-robovast-client
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: true
+
+  publish-robovast-sim-roqsim:
+    name: Publish robovast-sim-roqsim
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.build.outputs.target }}
+      url: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/p/robovast-sim-roqsim' || 'https://test.pypi.org/p/robovast-sim-roqsim' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-robovast-sim-roqsim
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: true
+
+  publish-robovast:
+    name: Publish robovast
+    needs: [build, publish-robovast-client, publish-robovast-sim-roqsim]
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.build.outputs.target }}
+      url: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/p/robovast' || 'https://test.pypi.org/p/robovast' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-robovast
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: true
 
   publish-robovast-nav:
-    name: Build and publish robovast-nav to PyPI
+    name: Publish robovast-nav
+    needs: [build, publish-robovast]
     runs-on: ubuntu-latest
-    needs: publish-robovast
     environment:
-      name: pypi
-      url: https://pypi.org/p/robovast-nav
-
+      name: ${{ needs.build.outputs.target }}
+      url: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/p/robovast-nav' || 'https://test.pypi.org/p/robovast-nav' }}
+    permissions:
+      id-token: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-robovast-nav
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: true
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+  publish-robovast-cluster:
+    name: Publish robovast-cluster
+    needs: [build, publish-robovast]
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.build.outputs.target }}
+      url: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/p/robovast-cluster' || 'https://test.pypi.org/p/robovast-cluster' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-robovast-cluster
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: true
+
+  # Installs the whole set from the index it just went to, in a venv that holds nothing
+  # else. It can undo nothing; it exists so that a break which reached the index is named by
+  # this workflow rather than by a user's traceback. Third-party dependencies come from PyPI
+  # either way -- TestPyPI does not carry them.
+  verify-installs:
+    name: The published set installs from the index
+    needs: [build, publish-robovast-nav, publish-robovast-cluster]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      INDEX: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/simple/' || 'https://test.pypi.org/simple/' }}
+    steps:
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-
-      - name: Install Poetry
-        run: curl -sSL https://install.python-poetry.org | python3 -
-
-      - name: Add Poetry to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Set version from tag
+      - name: Install the set from the index
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          cd src/robovast_nav && poetry version "$TAG"
+          python -m venv venv
+          # The index's CDN can serve the listing from before the upload for a short while;
+          # --no-cache-dir so a retry asks again instead of reading pip's copy of that listing.
+          for attempt in 1 2 3 4 5 6; do
+            if venv/bin/pip install --no-cache-dir \
+                --index-url "$INDEX" --extra-index-url https://pypi.org/simple/ \
+                "robovast[nav,roqsim]==$VERSION" "robovast-cluster==$VERSION"; then
+              break
+            fi
+            test "$attempt" -lt 6 || exit 1
+            echo "not yet on the index; retrying in 30s"; sleep 30
+          done
+      - name: What was installed is what was published
+        run: |
+          venv/bin/python - <<'EOF'
+          import importlib.metadata as m, importlib.resources as r, os
 
-      - name: Build package
-        run: cd src/robovast_nav && poetry build
-
-      - name: Publish to PyPI
-        env:
-          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_API_TOKEN }}
-        run: cd src/robovast_nav && poetry publish
+          version = os.environ["VERSION"]
+          for name in ("robovast", "robovast-client", "robovast-nav", "robovast-cluster",
+                       "robovast-sim-roqsim"):
+              assert m.version(name) == version, (name, m.version(name), version)
+          assert r.files("robovast").joinpath("_ui/index.html").is_file(), "web UI missing"
+          assert r.files("robovast_nav").joinpath("web/dist/remoteEntry.js").is_file(), \
+              "nav panel remote missing"
+          groups = m.entry_points()
+          assert "roqsim" in [e.name for e in groups.select(group="robovast.simulators")]
+          assert "cluster" in [e.name for e in groups.select(group="robovast.execution_backends")]
+          print(f"robovast {version}: five distributions, both bundles, both entry points")
+          EOF
+      - name: The client answers
+        run: venv/bin/vast --version && venv/bin/vast cluster setup --help >/dev/null

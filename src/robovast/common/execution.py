@@ -146,8 +146,9 @@ MEMBER_ROBOVAST = "robovast"
 MEMBER_ROQSIM = "robovast-roqsim"
 #: The service/API/UI host (``vast serve``). Python only -- no ROS, no GL.
 MEMBER_CONTROLLER = "robovast-controller"
-#: The small alpine helper (mc + boto3) used by object-store init containers and the
-#: postprocessing Job.
+#: The small alpine helper (``curl`` + GNU ``tar``) that moves a pod's bytes through the
+#: service's data plane: the init container that lands a job's inputs, the container that
+#: delivers its outputs, and the context fetch of an image build.
 MEMBER_SIDECAR = "robovast-sidecar"
 
 #: Every member of the published set. A member is a *repository* name under the project,
@@ -500,12 +501,13 @@ GIT_TOKEN_SECRET_ID = "git_token"
 
 
 def resolve_sidecar_image(explicit: str | None = None) -> str:
-    """Resolve the robovast-sidecar image (object-store init + postprocessing Job).
+    """Resolve the robovast-sidecar image: the data-plane transfers of every pod.
 
-    Resolved *inside* the service (the s3-init container, the mc-tools aux container,
-    the postprocessing Job, campaign Jobs and the image-build Job all call this from
-    there), so the project it uses is the one carried into the service pod's
-    environment — see :func:`~...service_deploy.service_manifests`.
+    Resolved *inside* the service (a campaign Job's ``fetch-inputs`` and ``uploader``
+    containers, an aux pod's transfer container, the postprocessing Job's ``stage``, and
+    the image-build Job's context fetch all call this from there), so the project it uses
+    is the one carried into the service pod's environment — see
+    :func:`~...service_deploy.service_manifests`.
     """
     return _resolve_image(MEMBER_SIDECAR, explicit=explicit, role="sidecar image")
 
@@ -1266,10 +1268,10 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
 
 _LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid not found in container image. Please rebuild the image.' >&2; exit 1; }; eval $(fixuid -q)\nEXTRA_REQUIRED_TOOLS=\"fixuid\""
 
-# Cluster runs mirror output to S3 in a post-run step (and pull config via an
-# mc-based init container), so 'mc' must be present. Declared here so the
-# entrypoint's tool check fails fast instead of crashing after a full run.
-_CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"mc\""
+# A cluster run needs no tool beyond the base set: its inputs are landed by the pod's init
+# container and its outputs are delivered by the pod's uploader container, both from the
+# sidecar image, so the experiment image carries nothing that reaches storage.
+_CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"\""
 
 # Used when the caller has no cluster provider to ask: a local Docker run is not an
 # instance of anything, so the recorded instance_type is empty (which ingests as NULL).
@@ -1401,6 +1403,26 @@ log() {
     echo "[${level}] [$(_now)] [entrypoint]: ${msg}"
 }"""
 
+#: The emptyDir every container of a cluster pod shares, mounted at this path in each of
+#: them: the sockets the scenario drives its sidecars over, and the done markers below.
+IPC_DIR = "/ipc"
+
+#: The name the scenario container signs its marker with. A sidecar signs with its own
+#: ``CONTAINER_NAME``.
+MAIN_CONTAINER = "main"
+
+
+def done_marker(container: str) -> str:
+    """The file a container touches once it has finished writing into ``/out``.
+
+    The one convention the three parties agree on: the scenario container writes
+    ``done.main`` as its last post-run step, each sidecar stops its workload on seeing that
+    and writes ``done.<name>`` once its own monitor has stopped, and the uploader delivers
+    ``/out`` once every marker it was told to wait for exists.
+    """
+    return f"{IPC_DIR}/done.{container}"
+
+
 _LOCAL_POST_RUN_BLOCK = """\
     # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
     BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
@@ -1439,7 +1461,13 @@ CLEANUP_EOF
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
-    fi"""
+    fi
+
+    # The runner replaces this shell. /out is a bind mount onto the host here, so nothing has
+    # to happen after the runner is gone: what it wrote is already where it is read.
+    run_scenario() {
+        exec "$@"
+    }"""
 
 _CLUSTER_POST_RUN_BLOCK = """\
     # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
@@ -1498,69 +1526,82 @@ echo "[cleanup] Cleanup finished."
 CLEANUP_EOF
     chmod +x "${BUILTIN_CLEANUP_SCRIPT}"
 
-    # Build the S3 upload script; output is mirrored to the S3 bucket after the run
-    S3_UPLOAD_SCRIPT="/tmp/s3_upload.sh"
-    cat > "${S3_UPLOAD_SCRIPT}" << 'UPLOAD_EOF'
+    # The marker every other container of the pod waits for. The sidecars stop their
+    # workloads on seeing it, and the uploader delivers /out once every container's marker
+    # exists (see robovast.execution.cluster_execution.pod_upload). Written as the LAST
+    # post-run step, so the cleanup above has stopped this container's monitor and rosbag
+    # before anything reads their files.
+    IPC_DIR="${IPC_DIR:-/ipc}"
+    MARK_DONE_SCRIPT="/tmp/robovast_done.sh"
+    cat > "${MARK_DONE_SCRIPT}" << 'DONE_EOF'
 #!/bin/bash
-set -e
-echo "[s3-upload] Starting S3 upload..."
-echo "[s3-upload] Setting up mc alias for S3 endpoint..."
-mc alias set mystore "${S3_ENDPOINT}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" --quiet
-# Normalize the destination: S3_PREFIX may be empty (packed jobs on per-campaign
-# buckets mirror to the bucket root) or carry a trailing slash; strip it so we
-# never produce a "bucket//" double slash (which S3 treats as a leading-slash key).
-S3_DEST="mystore/${S3_BUCKET}/${S3_PREFIX}"
-S3_DEST="${S3_DEST%/}"
-echo "[s3-upload] Mirroring /out/ to ${S3_DEST}/..."
-# --overwrite, because every container in the job mirrors the SAME shared /out/ to the
-# SAME prefix, in finishing order. Without it mc refuses an object whose size already
-# differs ("Overwrite not allowed ... (size)") -- and it is always the LATER, more
-# complete copy that gets refused: the main container uploads logs/system*.log and
-# resource_usage_*.csv while they are still being appended, so every sidecar's upload of
-# the finished file is rejected and the store keeps the earliest truncated snapshot -- an
-# archived system.log then ends mid-sentence on its own "Mirroring /out/..." line.
-# Later is strictly more complete here (a container only uploads after its workload
-# and its resource monitor have stopped), so last-writer-wins is the correct resolution
-# and not a race. Payload each container uniquely owns was never affected -- mc skips
-# same-size objects, so this costs no extra transfer for the bag or the capture.
-#
-# --exclude '*.part' keeps IN-PROGRESS files out of the store. The suffix is roqsim's live
-# sample stream (roqsim.capture.STREAM_SUFFIX): the recorder appends to run.npz.part as the
-# run goes, and packs it into run.npz at close, unlinking the stream. But the containers
-# above upload in FINISHING order, so one that stops while the simulator is still recording
-# mirrors the half-written stream -- and mc mirror does not delete (no --remove), so the
-# object survives the unlink that removed the file. Every successful run was leaving a
-# permanent second copy of its samples behind: one measured campaign held 336 of them,
-# 158 MB, one beside every run.npz it had.
-#
-# Safe to drop wholesale rather than by name: nothing reads a .part. roqsim documents the
-# one left by a hard kill as forensics whose signal is the ARCHIVE'S ABSENCE, not the
-# stream's presence, so excluding it loses no evidence -- and a run's own container removes
-# its stream before uploading anyway, which is why this only ever catches another
-# container's snapshot of a file still being written.
-mc mirror --overwrite --exclude '*.part' /out/ "${S3_DEST}/"
-echo "[s3-upload] Mirror complete. Re-tagging executable files..."
-# Re-tag executable files with x-amz-meta-executable metadata
-_exec_count=0
-find /out/ -type f -executable -not -name '*.part' | while IFS= read -r f; do
-    rel="${f#/out/}"
-    mc cp --attr "x-amz-meta-executable=yes" "${S3_DEST}/${rel}" "${S3_DEST}/${rel}" --quiet
-    _exec_count=$((_exec_count + 1))
-done
-echo "[s3-upload] S3 upload finished."
-UPLOAD_EOF
-    chmod +x "${S3_UPLOAD_SCRIPT}"
+_marker="${IPC_DIR:-/ipc}/done.main"
+touch "${_marker}"
+echo "[done] Wrote ${_marker}: the scenario container has finished writing."
+DONE_EOF
+    chmod +x "${MARK_DONE_SCRIPT}"
 
-    POST_COMMAND_PARAM="--post-run ${BUILTIN_CLEANUP_SCRIPT} --post-run ${S3_UPLOAD_SCRIPT}"
+    POST_COMMAND_PARAM="--post-run ${BUILTIN_CLEANUP_SCRIPT} --post-run ${MARK_DONE_SCRIPT}"
     if [ -n "${POST_COMMAND}" ]; then
         if [ -e "${POST_COMMAND}" ]; then
-            POST_COMMAND_PARAM="--post-run ${POST_COMMAND} --post-run ${BUILTIN_CLEANUP_SCRIPT} --post-run ${S3_UPLOAD_SCRIPT}"
-            log "Post-command '${POST_COMMAND}' will run before built-in cleanup and S3 upload."
+            POST_COMMAND_PARAM="--post-run ${POST_COMMAND} --post-run ${BUILTIN_CLEANUP_SCRIPT} --post-run ${MARK_DONE_SCRIPT}"
+            log "Post-command '${POST_COMMAND}' will run before built-in cleanup."
         else
             log "ERROR: Post-command '${POST_COMMAND}' does not exist."
             exit 1
         fi
-    fi"""
+    fi
+
+    # The runner is a CHILD of this shell here, not an exec over it, because the marker has
+    # to be written however the runner ends. Its --post-run hooks run only after a scenario
+    # that produced a result; a runner that crashes, is OOM-killed or is torn down by the
+    # kubelet runs none of them, and without the marker the uploader never starts. So the
+    # EXIT trap repeats the
+    # two post-run steps: cleanup first (idempotent -- a daemon already stopped has no
+    # pidfile), then the marker, so it is written after this container's files are complete.
+    #
+    # tini forwards the kubelet's TERM to this shell only, so the shell forwards it to the
+    # runner; `wait` returns when the trap has run, and the loop is what reaps.
+    _scenario_pid=""
+    _finish() {
+        "${BUILTIN_CLEANUP_SCRIPT}" || true
+        "${MARK_DONE_SCRIPT}" || true
+    }
+    # `|| true`, because this runs under `set -e`: a TERM that arrives once the runner is
+    # gone would otherwise end the shell inside its own trap, with a status that is not
+    # the runner's.
+    _forward_term() {
+        if [ -n "${_scenario_pid}" ]; then kill -TERM "${_scenario_pid}" 2>/dev/null || true; fi
+    }
+    trap _finish EXIT
+    trap _forward_term TERM INT
+    run_scenario() {
+        "$@" &
+        _scenario_pid=$!
+        local _rc=0
+        wait "${_scenario_pid}" || _rc=$?
+        while kill -0 "${_scenario_pid}" 2>/dev/null; do
+            wait "${_scenario_pid}" || _rc=$?
+        done
+        exit "${_rc}"
+    }"""
+
+
+def job_node_alias(campaign_data) -> str | None:
+    """The node alias this campaign's cluster jobs are confined to, or ``None`` for the pool.
+
+    The single reader of ``execution.kubernetes.jobs.node``. The alias narrows the cluster's
+    job pool to the one node registered under it; resolving it to that node is the cluster
+    lane's job, and the local lane never asks.
+
+    Accepts either the raw mapping or a validated model at each level, matching the two
+    shapes callers already pass around.
+    """
+    def field(obj, name):
+        return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+    node = field(field(field(field(campaign_data, "execution"), "kubernetes"), "jobs"), "node")
+    return node or None
 
 
 def local_parameter_overrides(campaign_data, *, gui: bool) -> list:
@@ -1658,12 +1699,22 @@ def check_campaign_inputs(campaign_data):
         raise missing_input_error(missing)
 
 
+def render_secondary_entrypoint(*, cluster=False) -> str:
+    """The sidecar entrypoint as it is shipped to a campaign: the shared blocks substituted."""
+    content = files('robovast.execution.data').joinpath('secondary_entrypoint.sh').read_text(
+        encoding='utf-8')
+    content = content.replace('# @@INIT_BLOCK@@',
+                              _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK)
+    content = content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
+    return content.replace('# @@ROS_SETUP_BLOCK@@', ROS_SETUP_BLOCK)
+
+
 def render_entrypoint(*, cluster=False, instance_type_command=None):
     """The container entrypoint script, with its lane-specific blocks substituted.
 
     The template carries three markers whose content depends on *where* the container
     runs: the init block (``fixuid`` locally, config fetch in-cluster), the post-run
-    block (local cleanup vs mirroring results to S3), and the instance-type probe. A
+    block (how the runner is started and what runs after it), and the instance-type probe. A
     script rendered for one lane is therefore wrong on the other — which is why a
     campaign's staged ``entrypoint.sh`` must never be reused by something running
     elsewhere, and why container-exec renders its own instead of copying one.
@@ -1784,23 +1835,14 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     campaign_transient_dir = os.path.join(out_dir, "_transient")
     os.makedirs(campaign_transient_dir, exist_ok=True)
 
-    init_block = _CLUSTER_INIT_BLOCK if cluster else _LOCAL_INIT_BLOCK
     entrypoint_dst = os.path.join(campaign_transient_dir, "entrypoint.sh")
     with open(entrypoint_dst, 'w', encoding='utf-8') as f:
         f.write(render_entrypoint(cluster=cluster,
                                  instance_type_command=instance_type_command))
 
-    # Copy secondary_entrypoint.sh into _transient/ (with init block replacement)
-    secondary_entrypoint_src = str(files('robovast.execution.data').joinpath('secondary_entrypoint.sh'))
-    with open(secondary_entrypoint_src, 'r', encoding='utf-8') as f:
-        secondary_entrypoint_content = f.read()
-    secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@INIT_BLOCK@@', init_block)
-    secondary_entrypoint_content = secondary_entrypoint_content.replace('# @@LOG_BLOCK@@', _LOG_BLOCK)
-    secondary_entrypoint_content = secondary_entrypoint_content.replace(
-        '# @@ROS_SETUP_BLOCK@@', ROS_SETUP_BLOCK)
     secondary_entrypoint_dst = os.path.join(campaign_transient_dir, "secondary_entrypoint.sh")
     with open(secondary_entrypoint_dst, 'w', encoding='utf-8') as f:
-        f.write(secondary_entrypoint_content)
+        f.write(render_secondary_entrypoint(cluster=cluster))
 
     # Copy collect_sysinfo.py into _transient/
     collect_sysinfo_src = str(files('robovast.execution.data').joinpath('collect_sysinfo.py'))
@@ -2199,6 +2241,33 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
         yaml.dump(links, f, default_flow_style=False, sort_keys=True)
 
 
+#: The job-link manifest's location inside a campaign, as one path rather than two joins.
+#: A reader that has the campaign's bytes rather than its directory -- the cluster lane's
+#: object store -- needs the same address, and deriving it twice is how the two drift.
+JOB_LINKS_MANIFEST_REL = os.path.join("_transient", JOB_LINKS_MANIFEST)
+
+
+def resolve_job_artifact_rel(links: dict, job_name: str) -> str:
+    """``<config>/<run>`` -> its job-artifact dir, relative to the campaign root.
+
+    The path arithmetic of :func:`job_artifact_dir` without the filesystem: the manifest's
+    target is relative to the link's own directory, so it only becomes a campaign-relative
+    path after being joined with *job_name* and normalised. Split out because the cluster
+    lane resolves the same job against an object-store prefix, where there is no directory
+    to join against and re-deriving the arithmetic would let the two lanes disagree about
+    which job a run's artifacts are in.
+
+    Raises:
+        FileNotFoundError: When *links* has no entry for *job_name* — the artifacts are
+            unlocatable, which must not be reported as "no output".
+    """
+    target = links.get(f"{job_name}/job")
+    if not target:
+        raise FileNotFoundError(
+            f"no {JOB_LINKS_MANIFEST} entry for {job_name!r}")
+    return os.path.normpath(os.path.join(job_name, target))
+
+
 def read_job_links(campaign_dir) -> dict:
     """Load a campaign's ``{link: target}`` job-link manifest ({} when absent)."""
     manifest = os.path.join(campaign_dir, "_transient", JOB_LINKS_MANIFEST)
@@ -2208,7 +2277,7 @@ def read_job_links(campaign_dir) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def job_artifact_dir(campaign_dir, job_name) -> str:
+def job_artifact_dir(campaign_dir, job_name, links=None) -> str:
     """Resolve ``<config>/<run>``'s job-artifact dir (logs, sysinfo, resource monitor).
 
     Those artifacts are written per JOB under ``_jobs/``, never into the run dir, so
@@ -2223,6 +2292,10 @@ def job_artifact_dir(campaign_dir, job_name) -> str:
     Args:
         campaign_dir: The campaign's results directory.
         job_name: ``"<config>/<run>"``.
+        links: The campaign's manifest as :func:`read_job_links` returns it. A caller
+            resolving every run of a campaign passes it: the manifest holds one entry per
+            run, so reading it per call makes the walk quadratic in the run count. Omitted,
+            it is read here.
 
     Returns:
         str: Path to the job's artifact directory, relative to *campaign_dir*'s root
@@ -2233,11 +2306,13 @@ def job_artifact_dir(campaign_dir, job_name) -> str:
             the job's artifacts are unlocatable, which must not be reported as
             "no output".
     """
-    target = read_job_links(campaign_dir).get(f"{job_name}/job")
-    if not target:
-        raise FileNotFoundError(
-            f"no {JOB_LINKS_MANIFEST} entry for {job_name!r} in {campaign_dir!r}")
-    return os.path.normpath(os.path.join(campaign_dir, job_name, target))
+    if links is None:
+        links = read_job_links(campaign_dir)
+    try:
+        rel = resolve_job_artifact_rel(links, job_name)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"{e} in {campaign_dir!r}") from None
+    return os.path.normpath(os.path.join(campaign_dir, rel))
 
 
 def create_job_links(campaign_dir) -> int:
@@ -2440,7 +2515,8 @@ def _carry_forward_provenance(path, execution_data: dict) -> None:
 
 
 def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
-                          image_digest=None, image_digests=None, image_labels=None):
+                          image_digest=None, image_digests=None, image_labels=None,
+                          nodes_skipped=None):
     """Create execution.yaml file with ISO formatted timestamp.
 
     Args:
@@ -2498,6 +2574,13 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     # its exporter live in the SIMULATION image, not the scenario one.
     if image_digests:
         execution_data['image_revisions'] = dict(image_digests)
+
+    # Which machines this campaign did NOT use, and why. Here rather than only in the log
+    # because it is a fact about what the campaign ran on: a reader comparing two campaigns
+    # has to be able to see that one of them was short a node, and a log line is gone by then.
+    # Absent means none was left out, which is the normal case.
+    if nodes_skipped:
+        execution_data['nodes_skipped'] = dict(nodes_skipped)
 
     # What each image was built FROM, as opposed to which bytes it is. A digest is reproducible
     # only for as long as the registry keeps it; this is what a rebuild would start from.

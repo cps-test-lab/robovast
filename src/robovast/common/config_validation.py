@@ -141,7 +141,8 @@ def _build_context_advisories(config_path):
         f"transferred once per built container on every build. The largest entries are: "
         f"{biggest}. Campaign outputs and the standard ignored names are already "
         f"excluded, so anything left is going into the image build on purpose or by "
-        f"accident -- if by accident, move it out of the project directory.")]
+        f"accident -- if by accident, move it out of the project directory.",
+        severity="advice")]
 
 
 def _resource_advisories(config_path):
@@ -190,7 +191,8 @@ def _resource_advisories(config_path):
         "the run's AVAILABLE_MEM (downward API limits.memory) reports the NODE's memory "
         "as its budget, so a process sizing itself from it will size itself to the node. "
         "Declare resources.memory for every container that declares resources.cpu. "
-        "get_campaign_summary on a comparable finished campaign reports what it used.")]
+        "get_campaign_summary on a comparable finished campaign reports what it used.",
+        severity="advice")]
 
 
 def _calibration_role_advisories(config_path):
@@ -239,7 +241,7 @@ def _calibration_role_advisories(config_path):
         "thing under test never throttles mid-plan, and it keys on the name. The name is "
         "also what a scenario's remote(\"ipc:///ipc/<name>\") and exec_in_container use, so "
         "rename those with it.",
-        field="execution.containers")]
+        field="execution.containers", severity="advice")]
 
 
 def _liveness_advisories(config_path):
@@ -268,12 +270,19 @@ def _liveness_advisories(config_path):
         "Set execution.timeout to the longest a single run should legitimately take; "
         "get_campaign_summary on a comparable finished campaign reports what its runs "
         "took.",
-        field="execution.timeout")]
+        field="execution.timeout", severity="advice")]
 
 
-def _problem(stage, message, config=None, field=None):
-    """Build one structured problem entry."""
-    return {"stage": stage, "config": config, "field": field, "message": message}
+def _problem(stage, message, config=None, field=None, severity="error"):
+    """Build one structured problem entry.
+
+    ``severity`` defaults to ``error`` because that is what a check reports when it
+    reports anything; an advisory has to say so (``advice``), and so does a check that
+    could not run (``unchecked``). See ``ValidationProblem``: the three are acted on
+    differently, and only ``advice`` leaves ``valid`` true.
+    """
+    return {"stage": stage, "config": config, "field": field, "message": message,
+            "severity": severity}
 
 
 def _safe_load(config_path):
@@ -918,7 +927,7 @@ def _config_block_problems(config, vast_dir, valid_param_names, declared_plugins
         problems.append(_problem("variation", str(e), config=name, field="variations"))
 
     # Per-variation parameter schema (each plugin's optional CONFIG_CLASS).
-    for variation_class, variation_params in variation_classes:
+    for variation_class, variation_params, _ref in variation_classes:
         config_class = getattr(variation_class, "CONFIG_CLASS", None)
         if config_class is not None and isinstance(variation_params, dict):
             try:
@@ -1394,6 +1403,29 @@ def _message_with_next_step(exc):
     return f"{message} Next: {step}" if step else message
 
 
+def _skipped_generator_problems(records):
+    """One ``unchecked`` problem per ``execution.generate`` entry that did not run.
+
+    A generator declaring a container cannot run where nothing can provide one, and the
+    count this report exists to give does not depend on what it would have written. Saying
+    so is what keeps the reply from reading as a campaign whose inputs are all present.
+    """
+    problems = []
+    for index, record in enumerate(records or []):
+        if not record.get("skipped"):
+            continue
+        name = record.get("name", "?")
+        problems.append(_problem(
+            "generate",
+            f"input generator {name!r} did NOT run: nothing here can provide the container "
+            f"it declares, so {record.get('out')!r} was not produced. Next: nothing about "
+            "the .vast changes this -- the counts below are the file's own expansion, which "
+            "needs no container, but the campaign cannot be run until one can.",
+            field=f"execution.generate[{index}].{name}",
+            severity="unchecked"))
+    return problems
+
+
 def _batch_composition_report(config_path):
     """Compose a batch-mode ``.vast`` and report its counts.
 
@@ -1403,11 +1435,36 @@ def _batch_composition_report(config_path):
     """
     from robovast.common.config_generation import \
         generate_scenario_variations  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import \
+        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
     from robovast.common.variation.base_variation import \
         VariationInfeasibleError  # pylint: disable=import-outside-toplevel
+    unchecked = []
     try:
         campaign_data = generate_scenario_variations(
             variation_file=config_path, output_dir=None)
+    except ExecPathUnavailable as e:
+        # Composed again without the queries that need one, exactly as the world query is
+        # asked again without its overrides: the cartesian expansion this report exists to
+        # count needs no container, and losing it would make a deployment that cannot exec
+        # the least informative case rather than the second-best one. Reported, because a
+        # count that arrived without the run-file query is not the same answer as one that
+        # ran it, and only the caller can know that if it is said.
+        try:
+            campaign_data = generate_scenario_variations(
+                variation_file=config_path, output_dir=None, container_queries=False)
+        except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
+            return {"valid": False,
+                    "problems": [_problem("generation", _message_with_next_step(retry))],
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+        unchecked.extend(_skipped_generator_problems(campaign_data.get("_generated")))
+        unchecked.append(_problem(
+            "generation",
+            f"the simulator's input-files query did NOT run: {e} Next: nothing about the "
+            ".vast changes this -- the configurations below are the file's own expansion, "
+            "which needs no container, but whether a world made of several files brings "
+            "all of them is unanswered until a command can run in one.",
+            severity="unchecked"))
     except VariationInfeasibleError as e:
         # The message already names the config block and the plugin's reason; say
         # explicitly that the rest was never reached, so "one problem" is not read
@@ -1426,8 +1483,9 @@ def _batch_composition_report(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
     configs = campaign_data["configs"]
     runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
-    return {"valid": True,
-            "problems": (_build_context_advisories(config_path)
+    return {"valid": not unchecked,
+            "problems": (unchecked
+                         + _build_context_advisories(config_path)
                          + _resource_advisories(config_path)
                          + _calibration_role_advisories(config_path)
                          + _liveness_advisories(config_path)),
@@ -1446,16 +1504,37 @@ def _search_composition_report(config_path):
     space, and the campaign tolerates it (skipping that param set) rather than
     dying.
     """
+    from robovast.common.errors import \
+        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
     from robovast.search.compose import \
         preview_search_sample  # pylint: disable=import-outside-toplevel
+    unchecked = []
     try:
         sample = preview_search_sample(config_path)
+    except ExecPathUnavailable as e:
+        # As the batch report: the draws this preview exists to compose need no container,
+        # and a deployment that cannot exec should lose the run-file query rather than the
+        # whole preview.
+        try:
+            sample = preview_search_sample(config_path, container_queries=False)
+        except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
+            return {"valid": False,
+                    "problems": [_problem("generation", _message_with_next_step(retry))],
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+        unchecked.extend(_skipped_generator_problems(sample.get("_generated")))
+        unchecked.append(_problem(
+            "generation",
+            f"the simulator's input-files query did NOT run: {e} Next: nothing about the "
+            ".vast changes this -- the sample below is the search space's own expansion, "
+            "which needs no container, but whether a world made of several files brings "
+            "all of them is unanswered until a command can run in one.",
+            severity="unchecked"))
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
                 "problems": [_problem("generation", _message_with_next_step(e))],
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
 
-    problems = []
+    problems = list(unchecked)
     if sample["infeasible"]:
         listed = "; ".join(f"{item['name']} {item['params']}"
                            for item in sample["infeasible"])
@@ -1477,14 +1556,14 @@ def _search_composition_report(config_path):
             "search-composition",
             f"{len(sample['infeasible'])} of {sample['distinct']} distinct parameter "
             f"set(s) could not be composed: {listed}. {outlook}",
-            field="search.search_space"))
+            field="search.search_space", severity="advice"))
 
     # Counts describe one composed batch, not the whole campaign: how many configs a
     # search ultimately evaluates depends on its budget and on how many draws turn out
     # infeasible, neither of which is knowable before it runs.
     configs = sample["composed"]
     runs_per_config = sample["runs_per_config"]
-    return {"valid": True,
+    return {"valid": not unchecked,
             "problems": (problems + _build_context_advisories(config_path)
                          + _resource_advisories(config_path)
                          + _calibration_role_advisories(config_path)

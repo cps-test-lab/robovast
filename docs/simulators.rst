@@ -288,10 +288,10 @@ explicit spelling ``sim: overrides.components....`` stays valid, and is how a wo
 collided with a backend key would be reached.
 
 **Between these two channels, a factor lands where the simulator can still act on it.**
-MuJoCo does not recompile mid-run, and roqsim's ``simulation_interfaces`` serves no
-``SpawnEntity``: *which* entities exist is settled when the model compiles, and a scenario
-only moves and observes them. So the boundary here is the compile -- not "the world" versus
-"the trial", since a world is not static during a run either.
+A backend settles which entities exist when it prepares the world for a run, and
+``simulation_interfaces`` then lets a scenario activate, move and observe them rather than
+add new ones. So the boundary here is that preparation -- not "the world" versus "the
+trial", since a world is not static during a run either.
 
 That rule decides how one artifact splits across ``sim:`` and ``scenario:``; it is not how
 you choose among all three channels. For that, see :ref:`the destination reference
@@ -328,7 +328,10 @@ What is checked before anything runs
 `````````````````````````````````````
 
 A ``sim:`` destination is checked against the **backend's** schema at composition -- an unknown
-key, or a dotted path whose first segment is also a backend key, is refused there.
+key, or a dotted path whose first segment is also a backend key, is refused there. A backend
+that knows its simulator's document shape checks the path's root as well: a roqsim world has
+only ``sim:`` and ``components:``, so a destination rooted anywhere else is refused at
+composition rather than merged into overrides the simulator has nothing to apply them to.
 
 What a backend cannot answer is whether ``components.floorplan.size`` addresses a component
 *this world* has: that needs the world's ``extends`` chain resolved, which needs the simulator. A
@@ -366,11 +369,11 @@ workspace world`` and the ``describe_world`` MCP tool. With a target glob it als
 model values a run may change while it is running, and their current values -- see
 :ref:`mcp-describe-world`.
 
-**Entities the trial drives must be entities the world compiled.** Nothing creates one at run
-time -- roqsim does not recompile mid-run and ``simulation_interfaces`` serves no ``SpawnEntity``
--- so a scenario naming ``obstacle_9`` against a world with four obstacles fails on a service
-call, mid-trial. Which parameters name entities is not guessed: the scenario file declares it
-(``static_objects: list of spawn_entity``), and the values of those parameters carry
+**Entities the trial drives must be entities the world declares.** Nothing creates one at run
+time -- ``SpawnEntity`` activates an entity the world already declares, and refuses a name it
+does not -- so a scenario naming ``obstacle_9`` against a world with four obstacles fails
+on a service call, mid-trial. Which parameters name entities is not guessed: the scenario file
+declares it (``static_objects: list of spawn_entity``), and the values of those parameters carry
 ``entity_name``. Checked against the same description, which then also reports the entities the
 world compiles -- asked for only when a campaign names any, since answering it means building
 the model.
@@ -392,10 +395,26 @@ is described again without them: the plugin-key half never needed them, and losi
 would make an old image the *least* checked case rather than the second-best one. The entity half
 then reports itself unchecked, and the second container is the price of the degraded case only.
 
-The same seam answers the staging question. ``input_files`` may also return a query, which is
-how a world that ``extends`` **another campaign file** stages its whole chain; a world extending
-a *packaged* one, or nothing, is complete in the single file the campaign owns and says so
-without starting a container.
+The same seam answers the staging question. ``input_files`` may also return a query, and for
+roqsim it does for **every** world the campaign owns: the YAML, whatever it ``extends``, the MJCF
+that chain settles on, the meshes and textures that MJCF names, and the files its plugins point
+at -- a floorplan's mesh and the wall colliders beside it, a trajectory CSV. Only the simulator
+holds all of that rule, because a plugin's own config is what no YAML walk can see, so the
+backend states the question rather than answering a part of it from outside. A world that is a
+*package ref* is the one case needing nothing: it travels inside the image, and says so without
+starting a container.
+
+Asking every time rather than only when a cheap test suspects a chain: that test would be a
+second copy of the simulator's rule, free to disagree with it, and wrong in the direction that
+stages too little -- which nothing notices until a run opens the file that never travelled. What
+it costs instead is an exec in a container the caller already holds, since ``validate_project``
+and ``preview_configurations`` compose inside the lane's aux-runner context and keep it warm
+across an authoring loop.
+
+Every world, and each question once: within one composition the answer is memoised on what
+the query asks (image, command, documents). roqsim's query names the world and nothing else,
+so a sweep whose cells differ only in an override -- a mesh swapped per cell -- is one
+question and one container round trip, however many ``sim`` blocks it resolves to.
 
 That query is a container like any other, so it is subject to the same two facts every aux
 container is: it is handed the campaign's files at ``/config`` (the command names the world

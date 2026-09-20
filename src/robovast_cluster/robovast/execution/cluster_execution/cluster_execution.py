@@ -70,8 +70,8 @@ def job_phase(job, pod_phases=None) -> str:
     seconds after the pod itself reached ``Succeeded``. Reading "active, and its pod is
     not Running" as ``pending`` therefore sent every finishing job *backwards* — a
     finished run showed up as not-yet-started for as long as the controller lagged.
-    Trusting the pod is sound here because the scenario Job template (see
-    :data:`~.manifests.JOB_TEMPLATE`) is ``backoffLimit: 0`` with the default
+    Trusting the pod is sound here because a campaign Job (see
+    :func:`~.campaign_job.campaign_job_manifest`) is ``backoffLimit: 0`` with the default
     ``completions``/``parallelism`` of 1: one pod, never retried, so that pod's verdict
     *is* the Job's and the Job status is only slower to say so.
     """
@@ -549,9 +549,11 @@ def pod_invalidating_restart(pod) -> "tuple[str, str] | None":
     What does separate the cases is *how* the container left. A sidecar that finished its
     work exits 0 and the kubelet restarts it because that is what ``Always`` means; the
     trial is untouched and the run's own verdict stands. A sidecar that CRASHED -- non-zero,
-    OOM-killed, or dead on a signal -- takes its state with it, and the scenario carries on
-    against a simulator that no longer remembers the trial. That result is worthless
-    whether it says failed or, worse, passed.
+    OOM-killed, or dead on a signal -- takes its state with it. The instance the kubelet
+    starts in its place runs no workload (``secondary_entrypoint.sh`` refuses a second start
+    in the same pod), so the scenario is left without its simulator or its stack until this
+    reading ends the job. A result from that trial would be worthless whether it said failed
+    or, worse, passed, which is why the job is ended rather than left to time out.
 
     Unknown counts as invalidating: a missing ``last_state`` means the kubelet has not said
     what the previous instance died of, and treating silence as a clean exit is how a
@@ -1111,7 +1113,7 @@ def list_jobs_with_phase(k8s_batch, k8s_core, namespace, label_selector):
     return out
 
 
-def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
+def cleanup_cluster_campaign(namespace="default", campaign=None, context=None, aux=True):
     """Clean up scenario run jobs and pods from the cluster.
 
     Nothing is paused for the duration. Admission measures the cluster each cycle rather
@@ -1123,12 +1125,18 @@ def cleanup_cluster_campaign(namespace="default", campaign=None, context=None):
         namespace: Kubernetes namespace.
         campaign: If given, clean only this run's jobs and pods.
         context: Kubernetes context name to use. ``None`` uses the active context.
+        aux: Also reap the campaign's auxiliary-container pods. A **reaper** wants them
+            (nothing else will collect one whose span is gone); a caller that reaps a
+            campaign its own driver is still composing must not, since that span owns
+            those pods and is exec'ing into them -- see
+            :meth:`~.cluster_service.ClusterService._teardown_campaign_jobs`.
     """
     _cleanup_cluster_campaign_resources(namespace=namespace, campaign=campaign,
-                                        context=context)
+                                        context=context, aux=aux)
 
 
-def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, context=None):
+def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, context=None,
+                                        aux=True):
     """Delete scenario run jobs and pods.
 
     Called by :func:`cleanup_cluster_campaign`.
@@ -1276,6 +1284,14 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     # variations need a helper image has an aux pod. On a full cleanup (campaign is
     # None) reap every aux pod; for a single campaign reap only its pod (label
     # ``campaign-id=<campaign>``) so concurrent campaigns are left untouched.
+    #
+    # Skipped when *aux* is false, because an aux pod has a live owner in the ordinary
+    # case: the ``AuxPodSession`` that created it deletes it when its span ends. Deleting
+    # one under a span that is still composing turns every exec into it into a 404 on the
+    # ``pods/exec`` subresource, which reads as a substrate that cannot serve exec rather
+    # than as a pod somebody removed.
+    if not aux:
+        return
     try:
         from .container_runner import cleanup_aux_pods  # pylint: disable=import-outside-toplevel
         cleanup_aux_pods(namespace=namespace, kube_context=context, campaign=campaign)

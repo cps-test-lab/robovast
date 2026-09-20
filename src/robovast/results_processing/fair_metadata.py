@@ -335,8 +335,10 @@ def _build_vast_config(vast_config, campaign_ns):
             _ID: campaign_ns[config.get("name")],
             _TYPE: [PROV["Entity"], SCENARIOS["LogicalScenario"]],
         }
+        # Read the `.vast` without changing it: configurations may share one variation
+        # list through a YAML alias, which loads as the same objects.
         for variation in config.get("variations", []):
-            var_type, params = variation.popitem()
+            var_type, params = next(iter(variation.items()))
             var_config = {
                 _ID: campaign_ns[config.get("name")+"/variations/"+var_type+"Config"],
                 _TYPE: [PROV["Entity"], ROBOVAST[f"variations/{var_type}Config"]],
@@ -350,10 +352,8 @@ def _build_vast_config(vast_config, campaign_ns):
                 elif k == "floorplans":
                     var_config[k] = [campaign_ns[m] for m in v]
                 elif k == "obstacle_configs":
-                    for p in v:
-                        file_path = p["model"][8:]
-                        p["model"] = campaign_ns[f"_{file_path}"]
-                    var_config[k] = v
+                    var_config[k] = [{**p, "model": campaign_ns[f"_{p['model'][8:]}"]}
+                                     for p in v]
                 elif k == "name":
                     param_name = var_config.setdefault("param_name", [])
                     if isinstance(v, list):
@@ -389,7 +389,7 @@ def _build_vast_config(vast_config, campaign_ns):
                     # TODO Need a better way to handle potentially nested OneOfVariation
                     var_within_var = []
                     for vv_conf in v:
-                        vv_type, vv_params = vv_conf.popitem()
+                        vv_type, vv_params = next(iter(vv_conf.items()))
                         _vvar_config = {
                             _ID: campaign_ns[
                                 config.get("name")
@@ -410,7 +410,12 @@ def _build_vast_config(vast_config, campaign_ns):
 
             logical_scen.setdefault("variations", []).append(var_config[_ID])
             variations.append(var_config)
-            configs.append(logical_scen)
+        # Once per configuration, and outside the loop above: a LogicalScenario exists
+        # because the `.vast` declares the configuration, not because it varies
+        # something. A configuration that varies nothing is still named by the `.vast`
+        # collection's `hadMember` and by its cells' `wasDerivedFrom`, so it needs a node
+        # for those edges to reach.
+        configs.append(logical_scen)
 
     return configs, variations
 
@@ -653,8 +658,13 @@ def generate_prov_metadata(
             "specializationOf": {_ID: abstract_scenario[_ID]},
             "atLocation": campaign_ns[config_path+"_config/scenario.config"],
             "generatedAtTime": config_md.get("created_at"),
-            "wasDerivedFrom": config_md.get("derived_from"),
         }
+        # The authored `.vast` configuration this cell was expanded from. `derived_from`
+        # names it; the IRI is the one `_build_vast_config` gives that LogicalScenario, so
+        # naming it here joins the two nodes instead of adding a dangling literal.
+        derived_from = config_md.get("derived_from")
+        if derived_from:
+            scenario_node["wasDerivedFrom"] = campaign_ns[derived_from]
         graph.append({
             _ID: campaign_ns[config_path+"_config/scenario.config"],
             _TYPE: [PROV["Location"]]

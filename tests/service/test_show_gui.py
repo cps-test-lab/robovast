@@ -178,7 +178,7 @@ def test_changing_show_gui_is_a_different_container(local, monkeypatch):
     calls = []
 
     class _Mgr:
-        def run(self, spec, limit_s, *, keep_alive, identity, query=False):
+        def run(self, spec, limit_s, *, keep_alive, identity, query=False, fresh=False):
             calls.append(identity)
             return (0, "", "", False)
 

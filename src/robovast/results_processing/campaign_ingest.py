@@ -63,6 +63,7 @@ import yaml
 from robovast.common import campaign_data, execution, scenario_markers
 from robovast.common.campaign_data import list_config_dirs, list_run_dirs
 from robovast.common.quantity import to_bytes
+from robovast.common.store import RUNLESS_UNIT_STATUSES
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
                                          index_scope, index_views, resource_usage,
                                          run_health)
@@ -364,14 +365,16 @@ def _shm_info(campaign_path: Path, config_name: str, run_id: int) -> tuple:
     return used, total
 
 
-def _clock_map_info(campaign_path: Path, config_name: str, run_id: int):
+def _clock_map_info(campaign_path: Path, config_name: str, run_id: int, links: dict):
     """What relates this run's wall-stamped log to sim time, and how well.
 
     A run with no map reports :data:`clock_map.SOURCE_NONE`, which is a finding rather than
-    an error: its log is wall-time only.
+    an error: its log is wall-time only. *links* is the campaign's job-link manifest, read
+    once by the caller walking the campaign.
     """
     try:
-        job_dir = execution.job_artifact_dir(str(campaign_path), f"{config_name}/{run_id}")
+        job_dir = execution.job_artifact_dir(str(campaign_path), f"{config_name}/{run_id}",
+                                             links=links)
     except (FileNotFoundError, OSError):
         job_dir = None
     if job_dir:
@@ -384,7 +387,11 @@ def _clock_map_info(campaign_path: Path, config_name: str, run_id: int):
 
 
 def _read_units(store_path: Path) -> tuple:
-    """``(params, channels, objectives, composition_failed)`` by config, from ``campaign.db``.
+    """``(params, channels, objectives, runless)`` by config, from ``campaign.db``.
+
+    ``runless`` is the units that produced no run -- ``(identity, status, params)`` each --
+    kept apart from the rest because they have no runs to be joined to and would otherwise
+    leave the index describing a smaller campaign than the one that was declared.
 
     ``params`` is the scenario channel -- the configuration's ``config`` block, or on a search
     campaign the parameter set the strategy proposed. The ``sim`` and ``sut`` channels come
@@ -399,7 +406,7 @@ def _read_units(store_path: Path) -> tuple:
     params_by_config: dict = {}
     channels_by_config: dict = {}
     objective_by_config: dict = {}
-    composition_failed: list = []
+    runless: list = []
     store = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
     try:
         try:
@@ -427,11 +434,12 @@ def _read_units(store_path: Path) -> tuple:
                 channels = {}
             if not isinstance(channels, dict):
                 channels = {}
-            if status == "composition_failed":
-                # No config_name and no directory on disk: ``paramset_id`` is the only
-                # identity such a draw has. Same rule as ``index_views.run_view``'s
-                # UNION arm, which adds these units back for the same reason.
-                composition_failed.append((config_name or str(paramset_id), params))
+            if status in RUNLESS_UNIT_STATUSES:
+                # No directory on disk, and for a search draw no ``config_name`` either:
+                # ``paramset_id`` is then the only identity it has. Same rule as
+                # ``index_views.run_view``'s UNION arm, which adds these units back for the
+                # same reason.
+                runless.append((config_name or str(paramset_id), status, params))
                 continue
             if not config_name:
                 continue
@@ -445,7 +453,7 @@ def _read_units(store_path: Path) -> tuple:
                        store_path, exc)
     finally:
         store.close()
-    return params_by_config, channels_by_config, objective_by_config, composition_failed
+    return params_by_config, channels_by_config, objective_by_config, runless
 
 
 def _read_outcomes(store_path: Path) -> dict:
@@ -622,11 +630,11 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
     params_by_config: dict = {}
     channels_by_config: dict = {}
     objective_by_config: dict = {}
-    composition_failed: list = []
+    runless: list = []
     outcomes: dict = {}
     if store_path.is_file():
         (params_by_config, channels_by_config, objective_by_config,
-         composition_failed) = _read_units(store_path)
+         runless) = _read_units(store_path)
         outcomes = _read_outcomes(store_path)
 
     # A factor is a column whichever channel it was written on. The sim and sut values are
@@ -651,7 +659,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
     # Every unit's keys, so a run whose params differ from its siblings still gets every
     # sibling's column, NULL where it has no value -- the table is one shape for the whole
     # campaign. A key whose ``param_`` name would collide with a fixed column is skipped.
-    param_sources = [*params_by_config.values(), *(p for _, p in composition_failed)]
+    param_sources = [*params_by_config.values(), *(p for _, _, p in runless)]
     param_keys = sorted({k for p in param_sources for k in p
                          if f"param_{k}" not in fixed
                          and f"param_{k}" not in dict(index_schema.CONTEXT_COLUMNS)})
@@ -669,6 +677,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
             for run_dir in campaign_data.list_run_dirs(config_dir)]
     advance = _walk_progress("building the run table", len(walk),
                              output or logger.info)
+    links = execution.read_job_links(str(root))
 
     rows = []
     for config_name, run_dir in walk:
@@ -679,7 +688,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
         outcome = (outcomes.get(config_name, {}).get(run_id)
                    or campaign_data.read_run_outcome(run_path, root))
         instance_type, node_label, cpu_name, cpus, mem = _sysinfo_fields(outcome)
-        clock = _clock_map_info(root, config_name, run_id)
+        clock = _clock_map_info(root, config_name, run_id, links)
         shm_peak, shm_limit = _shm_info(root, config_name, run_id)
         start_time = outcome["start_time"]
         duration = outcome["duration_s"]
@@ -702,15 +711,15 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
         rows.append(row)
         advance()
 
-    # The draws that never became a configuration. One row each, ``run_id`` NULL (there is
-    # no run to number) and every run-derived column NULL -- the parameters are the whole
-    # point: they are what the search proposed and what turned out to be unrealizable. A
-    # campaign that could not build half of what it proposed must not read as one that
-    # proposed less.
-    for identity, params in composition_failed:
+    # The cells that never became runs. One row each, ``run_id`` NULL (there is no run to
+    # number) and every run-derived column NULL -- what they carry is their identity and,
+    # for a search draw, the parameters that turned out to be unrealizable. A campaign that
+    # could not build half of what it proposed, or got half of what it declared back, must
+    # not read as one that asked for less.
+    for identity, status, params in runless:
         row = {c: None for c in types}
         row.update({"config_name": identity, "run_id": None,
-                    "status": "composition_failed", "passed": 0, "probed": 0})
+                    "status": status, "passed": 0, "probed": 0})
         row.update({f"param_{k}": params.get(k) for k in param_keys})
         rows.append(row)
 
@@ -804,12 +813,15 @@ def build_postprocessing_steps_table(sink, campaign_dir: str, name_map: dict,
 
 
 #: Notes for a table that follows the POSE CONTRACT (see ``docs/results_processing.rst``).
-#: Keyed on the column, and attached to any table carrying a ``stamp`` column rather than to
-#: a list of table names -- the contract is what a table *has*, not what it is called, so a
-#: new producer's table is annotated without registering it here.
+#: Keyed on the column, and attached by what a table *has* rather than by a list of table
+#: names, so a new producer's table is annotated without registering it here.
 #:
-#: These three are exactly where an agent writing SQL against a pose table goes wrong.
-_POSE_CONTRACT_NOTES = {
+#: Split by clock shape, because the contract has two and the advice inverts between them: a
+#: table converted from a transport (``poses``, from /tf) has an arrival clock that must not
+#: be differenced and a ``stamp`` that must, while a table the simulator wrote itself
+#: (``sim_poses``) has one exact clock and no ``stamp`` at all. Annotating the second with the
+#: first's notes would point a reader at a column that is not there.
+_POSE_TRANSPORT_CLOCK_NOTES = {
     "timestamp": (
         "ARRIVAL time, and the join key every other table in this campaign shares -- use it "
         "to read poses against costmaps, behaviors and run_log, and to place a row on the "
@@ -822,6 +834,26 @@ _POSE_CONTRACT_NOTES = {
         "too, since ordering by `timestamp` leaves rows within one arrival tick in arbitrary "
         "order. NULL where the producer could not state one (a latched /tf_static "
         "transform)."),
+}
+
+#: The same two columns for a pose table the SIMULATOR wrote: no transport sat between the pose
+#: and the row, so there is nothing to correct for and no `stamp` to point at.
+_POSE_NATIVE_CLOCK_NOTES = {
+    "timestamp": (
+        "SIMULATED seconds, taken inside the simulator at the moment the pose was true -- this "
+        "is the exact quantity the `poses` table's `stamp` is, not the arrival time that "
+        "table's `timestamp` is. Difference it freely. Better still, do not: twist.linear.* "
+        "and twist.angular.* are the true velocities, with no interval to get wrong."),
+    "wall_time": (
+        "Unix epoch seconds for the same sample, so a row can be placed against anything "
+        "stamped in wall time -- run_log, resource_usage, a container's own log. It is the "
+        "only bridge those have to this table on a run with no rosbag. Do NOT difference it "
+        "or join poses on it: it advances with the host, which under a simulator that does "
+        "not run in real time is not the run's clock. Use `timestamp` for both."),
+}
+
+#: Attached wherever a quaternion was ingested, which is every pose table regardless of clock.
+_POSE_ORIENTATION_NOTES = {
     "orientation.yaw": (
         "DERIVED at ingest from orientation.x/y/z/w, and a planar projection: correct for a "
         "body in the plane, insufficient for one that pitches or rolls (a drone, a tilting "
@@ -842,6 +874,21 @@ _STATIC_COLUMN_NOTES: dict = {
         "summed RSS, so pages shared between a process and its forks are counted more than "
         "once. An upper bound -- read it as a trend, not as an absolute footprint."),
 }
+
+
+def pose_notes_for(columns) -> dict:
+    """The pose-contract notes that apply to a table holding *columns*; ``{}`` if it holds no pose.
+
+    Pure, and separate from :func:`record_column_notes`, because which notes a table earns is the
+    part with a decision in it -- and a decision that silently annotates nothing (the case a
+    simulator-written table used to fall into) is one worth asserting without a database.
+    """
+    if "position.x" not in columns:
+        return {}
+    clock_notes = (_POSE_TRANSPORT_CLOCK_NOTES if "stamp" in columns
+                   else _POSE_NATIVE_CLOCK_NOTES)
+    return {column: note for column, note in {**clock_notes, **_POSE_ORIENTATION_NOTES}.items()
+            if column in columns}
 
 
 def record_column_notes(conn, tables) -> int:
@@ -867,17 +914,11 @@ def record_column_notes(conn, tables) -> int:
                 index_schema.record_note(conn, table, column, note,
                                          kind=index_schema.NOTE_DOC)
                 written += 1
-        # What marks a table as following the pose contract: a measurement clock AND a
-        # position. `stamp` alone is not enough -- rosout carries one too, and would collect
-        # notes that talk about poses. Without `stamp`, the `timestamp` note would point at
-        # a column that is not there.
-        if not {"stamp", "position.x"} <= columns:
-            continue
-        for column, note in _POSE_CONTRACT_NOTES.items():
-            if column in columns:
-                index_schema.record_note(conn, table, column, note,
-                                         kind=index_schema.NOTE_DOC)
-                written += 1
+        # What marks a table as following the pose contract, and which clock notes it earns,
+        # is decided in `pose_notes_for`.
+        for column, note in pose_notes_for(columns).items():
+            index_schema.record_note(conn, table, column, note, kind=index_schema.NOTE_DOC)
+            written += 1
     return written
 
 
@@ -923,6 +964,10 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     metric rows for this campaign are cleared first, so re-ingesting after a re-postprocess
     lands the same rows rather than doubling them.
 
+    A directory carrying neither ``campaign.db`` nor one run directory is refused with
+    :class:`~robovast.common.errors.CampaignNotIngestable` before anything is cleared: a
+    campaign recorded from it would be indistinguishable from one that measured nothing.
+
     *output* receives a line per phase and a throttled counter over each walk. It is the only
     account this step gives of itself: it is postprocessing's longest by a wide margin on a
     campaign of any size, it is the last one to run, and the phase it runs in has no run
@@ -934,6 +979,25 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     output = output or logger.info
     totals = {}
     name_map: dict = {}
+
+    store = root / "campaign.db"
+    walk = [(Path(config_dir).name, run_dir)
+            for config_dir in list_config_dirs(str(root))
+            for run_dir in list_run_dirs(config_dir)]
+
+    # Refused here, above the clear, so a mis-aimed ingest cannot empty a campaign that has
+    # rows and then record the emptiness as its answer. Neither half is an error alone --
+    # see the tolerances below -- but a directory with no record and no run directory is not
+    # a campaign that ended badly, it is not this campaign's data, and recording it would
+    # spend the one distinction the registry exists to make.
+    if not store.is_file() and not walk:
+        from robovast.common.errors import CampaignNotIngestable  # noqa: PLC0415
+        raise CampaignNotIngestable(
+            f"{campaign_id}: {root} holds no campaign to ingest -- neither a campaign.db "
+            "nor a single run directory. Its rows in the index, if any, are left as they "
+            "are rather than replaced by this.",
+            next_step=f"check that {root} is the campaign's results directory and that it "
+            "was extracted completely, then ingest it again")
 
     # Before the write, and on every ingest: this repairs anything the per-table path
     # could not have covered -- relations created before the campaign scope existed, or
@@ -949,7 +1013,6 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
         logger.info("index: cleared %s rows for %s before re-ingest",
                     sum(cleared.values()), campaign_id)
 
-    store = root / "campaign.db"
     if store.is_file():
         output(f"index: reading the campaign record of {campaign_id}")
         totals.update(dimension_ingest.mirror_campaign_record(conn, str(store), campaign_id))
@@ -978,9 +1041,6 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     # everything ingest_run before the first bad file would otherwise have thrown away.
     failed: list = []
 
-    walk = [(Path(config_dir).name, run_dir)
-            for config_dir in list_config_dirs(str(root))
-            for run_dir in list_run_dirs(config_dir)]
     advance = _walk_progress("ingesting run", len(walk), output)
     for config_name, run_dir in walk:
         run_path = Path(run_dir)

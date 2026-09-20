@@ -41,8 +41,7 @@ class _Backend(ExecutionBackend):
         self.failures = failures
         self._watch = watch
 
-    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options,
-                  whole_campaign=False):
+    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options):
         for cfg in campaign_data["configs"]:
             for run in range(runs):
                 _write_test_xml(os.path.join(campaign_root, cfg["name"], str(run)),

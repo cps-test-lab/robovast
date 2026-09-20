@@ -8,6 +8,7 @@ resolved world survives composition, staging, packing and manifest rendering, an
 in the container it belongs to.
 """
 
+import json
 import os
 import textwrap
 
@@ -36,6 +37,38 @@ _WORLD = "sim: {pacing: realtime}\n"
 
 #: Every test here drives a simulator backend end to end.
 pytestmark = pytest.mark.requires_simulator
+
+
+class _InputsRunner:
+    """Answers the backend's ``roqsim scenes inputs`` query as its image would.
+
+    What a world is made of is the simulator's to say, so composing a roqsim campaign asks
+    it -- which needs a container, which a unit test has no business starting. The worlds
+    here are one file each, so the image's answer is that file, named where the query named
+    it: under the mount, since that is the path the command carries.
+    """
+
+    def __init__(self, command_sink):
+        self._sink = command_sink
+
+    def run(self, command, emit):
+        self._sink.append(list(command))
+        emit(json.dumps({"packaged": False, "inputs": [command[-1]]}))
+
+    def close(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _simulator_answers(monkeypatch):
+    """Install that runner for the composition, and hand back what it was asked."""
+    from robovast.common import config_generation
+
+    asked: list = []
+    monkeypatch.setattr(config_generation, "_make_container_runner",
+                        lambda _spec, **_kwargs: _InputsRunner(asked))
+    return asked
+
 
 def _project(tmp_path, configuration):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
@@ -87,17 +120,43 @@ def test_a_world_sweep_gives_each_configuration_its_own_world(tmp_path):
     assert {"worlds/depot.yaml", "worlds/warehouse.yaml"} <= set(data["_run_files"])
 
 
+def test_the_files_a_world_is_made_of_come_from_the_image_that_runs_it(tmp_path,
+                                                                       _simulator_answers):
+    """Every world the campaign owns is asked about, and what comes back travels.
+
+    Not only the ones a test in the backend suspects of being more than one file: which
+    files a world needs is the simulator's rule -- a parent it extends, the MJCF it
+    compiles, a mesh a plugin points at -- and the part of that rule no caller can see is
+    exactly the part that fails silently, by staging too little.
+    """
+    vast = _project(tmp_path, textwrap.indent(textwrap.dedent("""\
+        - name: sweep
+          variations:
+          - ParameterVariationList:
+              sim: config
+              values: [worlds/depot.yaml, worlds/warehouse.yaml]
+        """), "        ").lstrip())
+    data = _compose(vast, tmp_path)
+
+    # Asked of the image, in the spelling the container will resolve: the campaign's files
+    # are mounted at /config, and the authored path is relative to the .vast.
+    assert ["roqsim", "scenes", "inputs", "/config/worlds/depot.yaml"] in _simulator_answers
+    assert ["roqsim", "scenes", "inputs", "/config/worlds/warehouse.yaml"] in _simulator_answers
+    # And the answer is what the campaign stages, translated back out of the mount.
+    assert {"worlds/depot.yaml", "worlds/warehouse.yaml"} <= set(data["_run_files"])
+
+
 def test_an_override_sweep_keeps_one_world_and_varies_inside_it(tmp_path):
     vast = _project(tmp_path, textwrap.indent(textwrap.dedent("""\
         - name: friction
           variations:
           - ParameterVariationList:
-              sim: plugins.floorplan.floor.friction
+              sim: components.floorplan.floor.friction
               values: [0.6, 1.4]
         """), "        ").lstrip())
     data = _compose(vast, tmp_path)
 
-    assert [c["sim"]["overrides"]["plugins"]["floorplan"]["floor"]["friction"]
+    assert [c["sim"]["overrides"]["components"]["floorplan"]["floor"]["friction"]
             for c in data["configs"]] == [0.6, 1.4]
     assert all(c["sim"]["config"] == "worlds/depot.yaml" for c in data["configs"])
 
@@ -107,7 +166,7 @@ def test_a_fixed_sim_block_on_a_configuration_is_merged(tmp_path):
         - name: roofless
           parameters:
             sim:
-              overrides: {plugins: {ceiling: {enabled: false}}}
+              overrides: {components: {ceiling: {enabled: false}}}
           variations:
           - ParameterVariationList:
               scenario: goal_pose
@@ -116,7 +175,7 @@ def test_a_fixed_sim_block_on_a_configuration_is_merged(tmp_path):
     data = _compose(vast, tmp_path)
 
     for config in data["configs"]:
-        assert config["sim"]["overrides"]["plugins"]["ceiling"]["enabled"] is False
+        assert config["sim"]["overrides"]["components"]["ceiling"]["enabled"] is False
         assert config["sim"]["config"] == "worlds/depot.yaml"
 
 
@@ -170,7 +229,7 @@ def test_the_world_reaches_the_container_that_runs_it(tmp_path):
               sim: config
               values: [worlds/depot.yaml, worlds/warehouse.yaml]
           - ParameterVariationList:
-              sim: plugins.floorplan.floor.friction
+              sim: components.floorplan.floor.friction
               values: [0.6]
         """), "        ").lstrip())
     data = _compose(vast, tmp_path)
@@ -183,7 +242,7 @@ def test_the_world_reaches_the_container_that_runs_it(tmp_path):
         # The overrides are a document, not argv: they are structured, and a command line
         # loses that to quoting while a file keeps it in the results.
         assert overlay["document"] == {
-            "plugins": {"floorplan": {"floor": {"friction": 0.6}}}}
+            "components": {"floorplan": {"floor": {"friction": 0.6}}}}
         assert "--override" in overlay["command"]
         assert SIM_OVERRIDES_MOUNT in overlay["command"]
 

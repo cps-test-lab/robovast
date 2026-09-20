@@ -233,6 +233,13 @@ sliced the same way (see :ref:`per-run-resource-usage`). They live here, rather 
 the job artifacts they were built from, because a run is what they describe — and because
 the ingest that turns data files into tables globs run directories.
 
+Every file a ``rosbags_*`` step derives from this run's bag lands here too, for the same
+reason — ``poses.csv``, one ``action_<name>_feedback.csv`` and ``action_<name>_status.csv``
+per converted action, ``nav2_behavior_tree.csv``, the costmap and per-topic CSVs. They are
+the same on both lanes, so a downloaded campaign carries them whether it ran locally or on
+a cluster. Each is named, with what it was derived from, in
+``_transient/postprocessing.yaml``.
+
 A common example of test-specific output is a scenario-recorded ``rosbag2/``
 directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
 recorded topics and message counts). It is present only when the scenario
@@ -290,10 +297,19 @@ that wants both writes one ``UNION ALL``.
      - The named entity, in the producer's own vocabulary: a TF child frame, a MuJoCo body, a
        motion-capture rigid body.
    * - ``timestamp``
-     - **Arrival** time, and the join key described above. Never re-key it.
+     - The join key described above, and never re-keyed. What it *measures* depends on the
+       producer: **arrival** time for a table converted from a transport, which no derivative may
+       be taken from; the **exact simulated** time for one the simulator wrote itself.
    * - ``stamp``
      - **Measurement** time: when the pose was true, from the producer itself. NULL when it cannot
-       state one (a latched ``/tf_static`` transform).
+       state one (a latched ``/tf_static`` transform). Present only where ``timestamp`` is an
+       arrival time — a producer whose ``timestamp`` is already the measurement omits the column
+       rather than duplicating it.
+   * - ``wall_time``
+     - Unix epoch seconds for the same sample, where the producer can state one. Not a pose clock:
+       it exists to join this table to what is stamped in wall time (``run_log``,
+       ``resource_usage``) on a run with no rosbag to relate them otherwise, and it advances with
+       the host rather than with the simulation.
    * - ``position.x/y/z``
      - Meters.
    * - ``orientation.x/y/z/w``
@@ -318,8 +334,10 @@ one campaign: a ground-truth pose published every 18 ms onto a 10 ms grid arrive
 0.214 / 0.428 m/s — the displacement between samples was identical in every bucket, and only the
 denominator was wrong. Making the grid divide the period removes that systematic alias but not the
 delivery jitter; only ``stamp`` removes both. ``calculate_speeds_from_poses`` picks the base for
-you and reports which it used in ``time_base``, so a cross-simulator comparison can assert both
-sides used the same one instead of quietly comparing an exact base against a quantized one.
+you and reports which it used in ``time_base``, so a comparison can assert both sides took their
+derivative from the same column. Read that column together with the table it came from: ``time_base: timestamp``
+is the *exact* base on a simulator-written table and the *degraded* one on a transport-derived
+table that carries no ``stamp``, and the two are not comparable despite the identical label.
 
 **Quaternion in, yaw out.** Producers emit a quaternion and nothing else: roll/pitch/yaw is lossy
 the moment a body pitches or rolls, which rules out a drone, a tilting arm, or a robot on a ramp.
@@ -570,6 +588,34 @@ stopped. That is what the run view's :ref:`shutdown toggle <shutdown-toggle>` an
 success while the harness failed, or the reverse. A NULL row is a run that reached no verdict —
 killed by its deadline, say — and is left untrimmed rather than trimmed to a guess.
 
+``rosbag_attempts`` — the run recorded more than once
+"""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+A recorder that restarts mid-trial writes a second bag beside the first, because
+``ros2 bag record``'s default name carries a timestamp. **The last attempt is the run**:
+everything else in the directory exists once — one run log, one verdict, one set of videos,
+all of it the last attempt's — so converting an earlier bag would put a different attempt's
+trajectory under this run's outcome, and no table would say so. Only one attempt can be
+converted at all, because every output name is derived from the run directory.
+
+So the last attempt is converted, the earlier ones are not, and this table is the record:
+one row per attempt, with ``role`` ``converted`` or ``superseded``, and the start time each
+was dated by. It exists only for a run that recorded more than once, which is why the
+question is a query rather than a search through a postprocessing log::
+
+   SELECT config_name, run_id, bag FROM rosbag_attempts WHERE role <> 'converted'
+
+The attempts are ordered by the start time in each bag's own sidecar, and by the timestamp
+in its name only when a sidecar is missing — never by a mix of the two, since one is epoch
+and the other the recorder's local clock. An attempt with neither — a bag whose name carries
+no timestamp and whose sidecar was never written — leaves them unordered:
+nothing is converted from that directory, every row says ``unordered``, and the step's log
+names the directory to clear. Picking one anyway would be data that looks right.
+
+One run's ambiguity is never the campaign's: every other run converts, and a bag the last
+attempt never finalized is reported as unreadable in the usual way (see
+:ref:`its rosbag is unreadable <results-unreadable-rosbag>`).
+
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
 
@@ -615,6 +661,8 @@ and ``get_campaign_summary``, its own tally in the web UI's Details panel, and
 operator gave (``manually stopped via webui: stuck in nav recovery``), which is the only
 record of *why* — so it is worth giving one.
 
+.. _results-unreadable-rosbag:
+
 Its rosbag is unreadable, and that is not a failure
 """""""""""""""""""""""""""""""""""""""""""""""""""
 
@@ -649,13 +697,39 @@ several runs (``runs_per_job`` > 1), where the earlier ones routinely finish bef
 stops the job — their results are measurement and are never overwritten.
 
 
+A configuration that produced nothing: ``missing``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every status above belongs to a run. ``missing`` belongs to a *configuration*: the campaign
+was composed with it and its results never reached the tree -- never dispatched, or lost
+between the lane and the results root. It appears in ``run_view`` as one row with
+``run_id`` NULL, exactly as ``composition_failed`` does for a search draw that could not be
+built, because a join through ``run`` would otherwise drop it.
+
+**This is what makes a shortfall visible at all.** The results tree states what came back;
+only the composition record (``_transient/configurations.yaml``) states what was asked for,
+and without comparing the two a sweep that lost a seventh of its cells is indistinguishable
+from a smaller sweep that ran perfectly. ``get_campaign_summary`` therefore counts
+``num_configs`` over the *declared* set and reports ``num_missing_configs``,
+``missing_configs`` and a note when they differ; the aggregates beside them are over a
+partial design, which is the one thing a summary must not leave unsaid.
+
+::
+
+   SELECT config_name FROM run_view WHERE status = 'missing'
+
+A campaign whose archive has no ``_transient`` cannot be checked this way, and says so in
+the log rather than reporting a complete design it cannot vouch for.
+
+
 A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``invalid`` means a container the trial ran against **crashed and was restarted under it**.
-The simulator (or the system under test) came back with no memory of the run and the
-scenario carried on regardless, so whatever verdict that trial reached describes a process
-that had lost its state.
+The simulator (or the system under test) took the run's state with it; the container the
+kubelet starts in its place runs no workload, and the runner ends the job as soon as it reads
+the restart off the pod. Whatever verdict the scenario reached in between describes a trial
+that had already lost its process.
 
 **It is the one status that overrides a written verdict**, and that inverts the rule stated
 for ``killed`` just above. The inversion is the whole reason it is a separate kind rather
@@ -779,7 +853,14 @@ run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 ``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
 one row per process per ~1 s, one file per container. For a packed job these span the whole
 job; the ``resource_usage`` post-processing step slices them to each run (see
-:ref:`per-run-resource-usage`).
+:ref:`per-run-resource-usage`). Both files span every *instance* of the container as well: a
+container the kubelet restarts runs the sampler again against the same file, which continues
+the record under its one header rather than replacing it, so the samples of the instance that
+died — the high-water mark climbing towards its limit — are kept beside the ones of the
+instance that came after. The seam shows as the cumulative counters going backwards: the
+calibration reader drops that tick as a cgroup replaced, and a run whose container crashed is
+``invalid`` in the intervention ledger (:doc:`architecture`), so its per-run aggregates are never
+compared with a run that kept one instance throughout.
 
 ``system_usage_*.csv`` is the sibling for figures belonging to the **container as a whole**
 rather than to a process — one row per ~1 s, no ``pid``. It is separate because
@@ -901,9 +982,9 @@ service::
 
 The path after the campaign id is exactly the path in the tree — ``_execution/
 outcome.json``, ``<config-name>/<run>/test.xml`` — so what a listing shows is what
-you can read. Campaign results are **read-only**: they are the record of a run,
-and on the cluster they are object-store objects that a local write could not
-change. Workspace *inputs* live in the writable half of the same address space,
+you can read. Campaign results are **read-only**: they are the record of a run, and a
+rewritten record is one nobody can check the figures drawn over it against. Workspace
+*inputs* live in the writable half of the same address space,
 ``/sources/<workspace_id>/<path>`` (see :ref:`web-ui-config`).
 
 .. code-block:: bash
@@ -923,8 +1004,9 @@ writes one ``.tar.gz`` and does nothing else with it).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
 and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
-:ref:`mcp-files`. Reading a campaign on this machine needs no running service;
-against a cluster service the read fetches that one object, not the campaign.
+:ref:`mcp-files`. Reading a campaign on this machine needs no running service; against a
+cluster service the read serves that one file off the service's results volume, not the
+campaign.
 
 If the service runs on your own machine, ``get_service_info`` also reports a
 ``results_root`` you can open directly with your own tools; it is absent whenever
@@ -941,7 +1023,7 @@ automatically generated after postprocessing completes.  It aggregates
 structural and domain-specific metadata about the entire campaign into a
 single file.
 
-The file is produced by a three-phase pipeline:
+The file is produced by a four-phase pipeline:
 
 1. **Generic metadata** — collected by ``MetadataGenerator``
    (``robovast.common.metadata``).  This includes configurations, test
@@ -962,6 +1044,12 @@ The file is produced by a three-phase pipeline:
    the ``robovast.metadata_processing`` entry-point group and configured
    in the ``.vast`` file (see below).
 
+4. **Derivation** — each configuration entry gets a ``derived_from`` field
+   naming the ``.vast`` configuration it was expanded from, which is also the
+   ``prov:wasDerivedFrom`` edge from the cell to that configuration in
+   ``metadata.prov.json``.  A configuration that records no parent carries no
+   such field.
+
 Example structure of ``metadata.yaml``:
 
 .. code-block:: yaml
@@ -973,6 +1061,7 @@ Example structure of ``metadata.yaml``:
          initial_population: 100
        config_files: []
        created_at: '2026-03-04T16:15:03.212496'
+       derived_from: config
        variations:
          - name: FloorplanGeneration
            started_at: '2026-03-04T16:14:55.123456+00:00'
@@ -1203,9 +1292,7 @@ A genuine failure is **kept, as a failed campaign**, and the refusal names what 
 missing rather than which check noticed. Deleting the half-imported tree was tried and
 was strictly worse: registering the campaign is what makes it visible while it arrives,
 so the entry outlives the failure either way and removing the directory only took away
-the ``import.log`` and ``import.json`` that explained it. On a lane whose durable home is
-an object store the campaign's ``_execution/`` is published so the account is readable
-where the campaign is read, not left on a pod's scratch. Remove it with
+the ``import.log`` and ``import.json`` that explained it. Remove it with
 ``vast campaign delete``, or import again with ``--force``.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no

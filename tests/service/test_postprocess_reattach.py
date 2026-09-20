@@ -31,22 +31,22 @@ _CAMPAIGN = "camp-2026-08-27-120000"
 @pytest.fixture
 def svc():
     return ClusterService(namespace="ns", cluster_config_name="x",
-                          cluster_config_kwargs={}, reap_on_start=False)
+                         cluster_config_kwargs={}, reap_on_start=False)
 
 
 class _FakeService:
     """A ClusterService stubbed down to what discovery and the re-attach loop touch."""
 
-    def __init__(self, index):
+    def __init__(self, results_root, *campaigns):
         self.namespace = "ns"
         self.kube_context = "local"
-        self._index = dict(index)
+        self._root = results_root
+        for campaign_id in campaigns:
+            (results_root / campaign_id).mkdir(parents=True, exist_ok=True)
         self.reattached = []
 
-    def _campaign_index(self):
-        # The pair the real method returns, not a bare map: a double answering a shape the
-        # collaborator never returns tests nothing.
-        return dict(self._index), {}
+    def _campaigns_root(self):
+        return self._root
 
     def reattach_postprocessing(self, campaign_id, job_name):
         self.reattached.append((campaign_id, job_name))
@@ -83,20 +83,21 @@ def listed(monkeypatch):
 # -- discovery ---------------------------------------------------------------
 
 
-def test_live_jobs_are_found_by_label_rather_than_by_guessing_campaign_ids(listed):
-    """One labelled listing is the query; the label is then resolved against the store.
+def test_live_jobs_are_found_by_label_and_resolved_against_the_campaign_directories(
+        listed, tmp_path):
+    """One labelled listing is the query; the label is then resolved against the tree.
 
     Asking the cluster what is running is what answers for a campaign this fresh process
-    has never heard of, and it costs one call whatever the store holds. The label is the
-    *sanitized* id, so it is matched against the campaigns the index lists rather than
-    used as an id.
+    has never heard of, and it costs one call. The label is the *sanitized* id, so it is
+    matched against the campaign directories on the results volume rather than used as an
+    id -- and the tree is all that has to be there for this to answer.
     """
     from robovast.execution.cluster_execution.cluster_execution import _label_safe_campaign
 
     listed["jobs"] = _jobs((_label_safe_campaign(_CAMPAIGN),
                             postprocess_job.campaign_job_name(_CAMPAIGN)))
-    service = _FakeService({_CAMPAIGN: "2026-08-27T12:00:00+00:00",
-                            "other-2026-08-01-120000": "2026-08-01T12:00:00+00:00"})
+    service = _FakeService(tmp_path, _CAMPAIGN, "other-2026-08-01-120000")
+    (tmp_path / "_staged").mkdir()       # not a campaign, whatever its name matches
 
     found = postprocess_reattach.live_campaign_postprocessing(service)
 
@@ -105,7 +106,8 @@ def test_live_jobs_are_found_by_label_rather_than_by_guessing_campaign_ids(liste
     assert listed["namespace"] == "ns"
 
 
-def test_a_campaign_with_a_terminal_outcome_is_still_reattached(listed, monkeypatch):
+def test_a_campaign_with_a_terminal_outcome_is_still_reattached(listed, monkeypatch,
+                                                                tmp_path):
     """The retrigger case, and the reason this is not part of ``campaign_resume``.
 
     A postprocess retriggered on a finished campaign runs against a terminal
@@ -116,15 +118,15 @@ def test_a_campaign_with_a_terminal_outcome_is_still_reattached(listed, monkeypa
     from robovast.execution.cluster_execution import campaign_resume
 
     listed["jobs"] = _jobs((_CAMPAIGN, postprocess_job.campaign_job_name(_CAMPAIGN)))
-    service = _FakeService({_CAMPAIGN: "2026-08-27T12:00:00+00:00"})
-    monkeypatch.setattr(campaign_resume, "_terminal_outcome", lambda svc, cid: True)
+    service = _FakeService(tmp_path, _CAMPAIGN)
+    monkeypatch.setattr(campaign_resume, "_terminal_outcome", lambda root: True)
 
     assert campaign_resume.owed_work(service) == []
     assert postprocess_reattach.live_campaign_postprocessing(service) == {
         _CAMPAIGN: postprocess_job.campaign_job_name(_CAMPAIGN)}
 
 
-def test_a_discriminated_conversion_job_is_not_the_campaigns_postprocess(listed):
+def test_a_discriminated_conversion_job_is_not_the_campaigns_postprocess(listed, tmp_path):
     """A per-batch conversion carries the same labels and answers to its batch's driver.
 
     Its outcome is not the campaign's: a search converts once per repetitions-group, and
@@ -134,12 +136,12 @@ def test_a_discriminated_conversion_job_is_not_the_campaigns_postprocess(listed)
     listed["jobs"] = _jobs((_CAMPAIGN,
                             postprocess_job._short_job_name(  # noqa: SLF001
                                 "robovast-postproc-", _CAMPAIGN, discriminator="g2")))
-    service = _FakeService({_CAMPAIGN: "2026-08-27T12:00:00+00:00"})
+    service = _FakeService(tmp_path, _CAMPAIGN)
 
     assert postprocess_reattach.live_campaign_postprocessing(service) == {}
 
 
-def test_a_finished_job_is_not_reattached_to(listed):
+def test_a_finished_job_is_not_reattached_to(listed, tmp_path):
     """Only ``status.active`` counts: a finished Job's outcome was recorded by its waiter,
     or is a verdict nobody in this process observed."""
     jobs = _jobs((_CAMPAIGN, postprocess_job.campaign_job_name(_CAMPAIGN)))
@@ -147,7 +149,35 @@ def test_a_finished_job_is_not_reattached_to(listed):
     listed["jobs"] = jobs
 
     assert postprocess_reattach.live_campaign_postprocessing(
-        _FakeService({_CAMPAIGN: "2026-08-27T12:00:00+00:00"})) == {}
+        _FakeService(tmp_path, _CAMPAIGN)) == {}
+
+
+def test_a_job_for_a_campaign_this_service_does_not_hold_is_left_alone(listed, tmp_path):
+    """A Job whose campaign has no directory here is nobody's to record: there is no
+    campaign to write a verdict into, and inventing one would register a campaign from a
+    label."""
+    listed["jobs"] = _jobs((_CAMPAIGN, postprocess_job.campaign_job_name(_CAMPAIGN)))
+
+    assert postprocess_reattach.live_campaign_postprocessing(_FakeService(tmp_path)) == {}
+
+
+def test_a_cluster_with_no_jobs_is_a_finished_answer(listed, tmp_path):
+    """Nothing running means nothing to attribute; the tree is not even consulted."""
+    listed["jobs"] = _jobs()
+    service = _FakeService(tmp_path, _CAMPAIGN)
+    service._campaigns_root = lambda: (_ for _ in ()).throw(AssertionError("read the tree"))
+
+    assert postprocess_reattach.reattach_all(service) == {}
+
+
+def test_a_listing_that_throws_does_not_stop_the_service_coming_up(monkeypatch, tmp_path):
+    """A service must start whatever it could not find out about the cluster."""
+    def _boom(service):
+        raise RuntimeError("the cluster said no")
+
+    monkeypatch.setattr(postprocess_reattach, "live_campaign_postprocessing", _boom)
+
+    assert postprocess_reattach.reattach_all(_FakeService(tmp_path, _CAMPAIGN)) == {}
 
 
 # -- what the waiter records -------------------------------------------------
@@ -156,22 +186,19 @@ def test_a_finished_job_is_not_reattached_to(listed):
 def _dispatch_capture(svc, monkeypatch):
     seen = {}
 
-    def _dispatch(campaign_id, *, phase, work, elsewhere_written_phase_files=frozenset()):
-        seen.update(campaign_id=campaign_id, phase=phase, work=work,
-                    elsewhere=frozenset(elsewhere_written_phase_files))
+    def _dispatch(campaign_id, *, phase, work):
+        seen.update(campaign_id=campaign_id, phase=phase, work=work)
         return ActionResult(ok=True, message="dispatched")
 
     monkeypatch.setattr(svc, "_dispatch_background", _dispatch)
     return seen
 
 
-def _recording(svc, monkeypatch):
+def _recording(svc, monkeypatch, tmp_path):
     """Stub everything the recording touches, and report what it recorded."""
     recorded = {}
-    monkeypatch.setattr(svc, "_materialize",
-                        lambda cid, paths, subject, **kw: "/nonexistent")
-    monkeypatch.setattr(svc, "_cluster_config", lambda: object())
-    monkeypatch.setattr(svc, "_publish_execution", lambda cid, root: None)
+    (tmp_path / _CAMPAIGN).mkdir()
+    monkeypatch.setattr(svc, "_campaigns_root", lambda: tmp_path)
     monkeypatch.setattr(svc, "_notifier", lambda cid: MagicMock())
     monkeypatch.setattr(
         "robovast.execution.status_recovery.record_step_outcome",
@@ -180,14 +207,14 @@ def _recording(svc, monkeypatch):
     return recorded
 
 
-def test_a_reattached_job_records_the_outcome_it_waited_for(svc, monkeypatch):
+def test_a_reattached_job_records_the_outcome_it_waited_for(svc, monkeypatch, tmp_path):
     """The verdict of a Job this process never submitted is still written to the campaign.
 
     That is the whole of the fix: the Job finishes either way, and the record is the only
     thing a restart takes away.
     """
     seen = _dispatch_capture(svc, monkeypatch)
-    recorded = _recording(svc, monkeypatch)
+    recorded = _recording(svc, monkeypatch, tmp_path)
     monkeypatch.setattr(postprocess_job, "reattach_conversion_job",
                         lambda *a, **kw: (True, "postprocessing complete"))
 
@@ -196,12 +223,9 @@ def test_a_reattached_job_records_the_outcome_it_waited_for(svc, monkeypatch):
 
     assert recorded == {"postprocessing": (True, "postprocessing complete")}
     assert seen["phase"] == "postprocessing"
-    # The Job writes postprocessing.log into its own staged tree, so the copy under the
-    # tracked root is an earlier attempt's and the campaign log must not believe it.
-    assert seen["elsewhere"] == frozenset({"postprocessing.log"})
 
 
-def test_a_job_that_cannot_be_read_leaves_the_record_alone(svc, monkeypatch):
+def test_a_job_that_cannot_be_read_leaves_the_record_alone(svc, monkeypatch, tmp_path):
     """"Could not establish" is not a verdict.
 
     A campaign whose conversion succeeded must not be marked failed because the API server
@@ -209,7 +233,7 @@ def test_a_job_that_cannot_be_read_leaves_the_record_alone(svc, monkeypatch):
     failure is not.
     """
     seen = _dispatch_capture(svc, monkeypatch)
-    recorded = _recording(svc, monkeypatch)
+    recorded = _recording(svc, monkeypatch, tmp_path)
     monkeypatch.setattr(postprocess_job, "reattach_conversion_job",
                         lambda *a, **kw: (None, "the job could not be read"))
 
@@ -230,12 +254,15 @@ def test_startup_reattaches_to_what_it_finds(monkeypatch):
     monkeypatch.setattr(ClusterService, "resume_interrupted_campaigns", lambda self: {})
     monkeypatch.setattr(postprocess_reattach, "live_campaign_postprocessing",
                         lambda service: {_CAMPAIGN: "robovast-postproc-x"})
+    monkeypatch.setattr(postprocess_reattach, "live_split_postprocessing", lambda service: {})
     attached = []
     monkeypatch.setattr(ClusterService, "reattach_postprocessing",
                         lambda self, cid, job: attached.append((cid, job)) or True)
 
-    ClusterService(namespace="ns", cluster_config_name="x", cluster_config_kwargs={},
-                   reap_on_start=True)
+    service = ClusterService(namespace="ns", cluster_config_name="x",
+                             cluster_config_kwargs={}, reap_on_start=True)
+    assert attached == [], "adopted before the app could bind the secret"
+    service.start_serving()
 
     assert attached == [(_CAMPAIGN, "robovast-postproc-x")]
 
@@ -243,7 +270,7 @@ def test_startup_reattaches_to_what_it_finds(monkeypatch):
 def test_a_reattach_that_throws_does_not_stop_the_service_coming_up(monkeypatch):
     """A service must start whatever it could not find out about the cluster.
 
-    A Job nobody re-attached to still finishes and still uploads what it produced; a
+    A Job nobody re-attached to still finishes and still delivers what it produced; a
     service that will not start takes every campaign with it.
     """
     monkeypatch.setattr(ClusterService, "reap_orphans", lambda self: 0)
@@ -256,86 +283,15 @@ def test_a_reattach_that_throws_does_not_stop_the_service_coming_up(monkeypatch)
 
     service = ClusterService(namespace="ns", cluster_config_name="x",
                              cluster_config_kwargs={}, reap_on_start=True)
+    service.start_serving()
 
     assert service.version().backend == "kubernetes"
 
 
-# -- waiting for the store ---------------------------------------------------
-
-
-def test_jobs_the_store_cannot_place_yet_are_waited_for(listed, monkeypatch):
-    """A restart is exactly when the store may not be up.
-
-    A redeploy brings the object store back alongside this process, so the index read that
-    says which campaign a live Job belongs to is refused for the first seconds. Observed:
-    the service came up, logged that the campaign index was unreachable, found the Job that
-    was running and resolved none of it -- inert in the one situation it exists for.
-
-    Jobs running that resolve to nothing is the signature of a store still starting, and it
-    is the only case worth waiting on.
-    """
-    from robovast.execution.cluster_execution.cluster_execution import _label_safe_campaign
-
-    job = postprocess_job.campaign_job_name(_CAMPAIGN)
-    listed["jobs"] = _jobs((_label_safe_campaign(_CAMPAIGN), job))
-    service = _FakeService({})           # the store answers nothing, as at startup
-    slept = []
-    monkeypatch.setattr(postprocess_reattach.time, "sleep", slept.append)
-
-    def _index_comes_up():
-        service.index = {_CAMPAIGN: "2026-08-27T12:00:00+00:00"}
-        return (service.index, {})
-
-    # Refused twice, then the store is there.
-    calls = {"n": 0}
-
-    def _campaign_index():
-        calls["n"] += 1
-        return ({}, {}) if calls["n"] < 3 else _index_comes_up()
-
-    service._campaign_index = _campaign_index
-
-    found = postprocess_reattach._live_when_the_store_answers(
-        service, postprocess_reattach.time.monotonic() + 60)
-
-    assert found == {_CAMPAIGN: job}, "the wait must outlast a store that is still starting"
-    assert len(slept) == 2, "it waited between attempts rather than spinning"
-
-
-def test_a_cluster_with_no_jobs_is_a_finished_answer(listed, monkeypatch):
-    """Nothing running is not "the store is slow": there is nothing to attribute, so this
-    must return at once rather than hold a thread for minutes on every ordinary restart."""
-    listed["jobs"] = _jobs()
-    slept = []
-    monkeypatch.setattr(postprocess_reattach.time, "sleep", slept.append)
-
-    found = postprocess_reattach._live_when_the_store_answers(
-        _FakeService({}), postprocess_reattach.time.monotonic() + 60)
-
-    assert found == {}
-    assert slept == []
-
-
-def test_giving_up_says_which_verdicts_will_be_missing(listed, monkeypatch, caplog):
-    """The deadline exists, and passing it silently is how this became invisible before:
-    a Job whose verdict nobody will record is worth one line naming what to do."""
-    from robovast.execution.cluster_execution.cluster_execution import _label_safe_campaign
-
-    listed["jobs"] = _jobs((_label_safe_campaign(_CAMPAIGN),
-                            postprocess_job.campaign_job_name(_CAMPAIGN)))
-    monkeypatch.setattr(postprocess_reattach.time, "sleep", lambda _s: None)
-
-    with caplog.at_level("WARNING"):
-        found = postprocess_reattach._live_when_the_store_answers(
-            _FakeService({}), postprocess_reattach.time.monotonic() - 1)
-
-    assert found == {}
-    assert "re-run postprocessing" in caplog.text
-
-
-def test_the_service_does_not_wait_for_the_store_before_answering(monkeypatch):
-    """Identifying a live Job can take minutes; a service that does not answer is worse
-    than a verdict that arrives late, so the discovery runs off the startup path."""
+def test_the_service_does_not_wait_for_the_cluster_before_answering(monkeypatch, tmp_path):
+    """Listing a live Job can take a while against an API server that is itself coming
+    back; a service that does not answer is worse than a verdict that arrives late, so the
+    discovery runs off the startup path."""
     started = {}
 
     def _start(service):
@@ -343,7 +299,50 @@ def test_the_service_does_not_wait_for_the_store_before_answering(monkeypatch):
         return "thread"
 
     monkeypatch.setattr(postprocess_reattach, "start_reattach", _start)
-    service = _FakeService({})
+    service = _FakeService(tmp_path)
 
     assert ClusterService.reattach_live_postprocessing(service) == "thread"
     assert started["service"] is service
+
+
+# -- a split postprocess ------------------------------------------------------
+
+
+def _split_service(tmp_path, campaign, part_names, force=False, skip=()):
+    from robovast.execution.cluster_execution.postprocess_parts import Part, write_plan
+
+    service = _FakeService(tmp_path, campaign)
+    service.campaign_dir = lambda cid: tmp_path / cid
+    write_plan(str(tmp_path / campaign), [Part(name=n) for n in part_names],
+               force=force, skip=skip)
+    service.resumed = []
+    service.resume_postprocessing = (
+        lambda cid, force=False, skip=(): service.resumed.append((cid, force, list(skip)))
+        or True)
+    return service
+
+
+def test_a_split_with_a_part_still_running_is_resumed_with_its_options(listed, tmp_path):
+    """A part is not the campaign's postprocess, but its split is: the postprocess is
+    started again with what it was asked for, and waits for the parts still running."""
+    from robovast.execution.cluster_execution.postprocess_parts import (Part,
+                                                                         part_job_names)
+
+    service = _split_service(tmp_path, _CAMPAIGN, ["m0", "m1"], force=True,
+                             skip=["rosbags_to_webm"])
+    running = part_job_names(_CAMPAIGN, [Part(name="m1")])[0]
+    listed["jobs"] = _jobs((_CAMPAIGN, running))
+
+    assert postprocess_reattach.reattach_all(service) == {_CAMPAIGN: "2 part(s)"}
+    assert service.resumed == [(_CAMPAIGN, True, ["rosbags_to_webm"])]
+    assert service.reattached == []
+
+
+def test_a_recorded_split_with_nothing_running_is_left_alone(listed, tmp_path):
+    """The record outlives the split; only a live part makes it owed."""
+    service = _split_service(tmp_path, _CAMPAIGN, ["m0"])
+    listed["jobs"] = _jobs((_CAMPAIGN, postprocess_job._short_job_name(  # noqa: SLF001
+        "robovast-postproc-", _CAMPAIGN, discriminator="g2")))
+
+    assert postprocess_reattach.reattach_all(service) == {}
+    assert service.resumed == []

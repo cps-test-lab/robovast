@@ -32,7 +32,9 @@ Handler types (specified via --config JSON):
 Usage::
 
     rosbags_process.py INPUT_DIR \\
-        --config '{"plugins": [{"type": "rosout_to_csv"}, {"type": "tf_to_csv"}]}' \\
+        --config '{"groups": [{"bag_dir": "rosbag2", "plugins": [{"type": "tf_to_csv"}]},
+                              {"bag_dir": "logs/rosout_bag",
+                               "plugins": [{"type": "rosout_to_csv"}]}]}' \\
         --workers 4 \\
         --provenance-file /provenance/process_provenance.json
 """
@@ -81,10 +83,12 @@ import rosbag2_py
 import yaml
 from rclpy.serialization import deserialize_message
 from rosbags_common import (CACHED, CLOCK_MAP_FIELDNAMES, CLOCK_MAP_FILENAME, FAILED,
-                            DEFAULT_CLOCK_TOLERANCE_S, UNREADABLE, BagResult, ClockDecimator,
-                            available_cpus, failing_bag_output, find_rosbags, gen_msg_values,
-                            handler_error_pointer, is_under_tolerated_root, register_video,
-                            resolve_tolerated_roots, unreadable_bag_note,
+                            DEFAULT_CLOCK_TOLERANCE_S, UNREADABLE, BagAttempts, BagResult,
+                            ClockDecimator, available_cpus, bag_attempts_note, bag_bytes,
+                            failing_bag_output, find_rosbags, gen_msg_values,
+                            handler_error_pointer, is_under_tolerated_root,
+                            parse_conversion_groups, register_video,
+                            resolve_tolerated_roots, unreadable_bag_note, write_bag_attempts,
                             write_provenance_entry)
 from rosidl_runtime_py.utilities import get_message
 from tf2_py import ConnectivityException, ExtrapolationException, LookupException
@@ -1292,12 +1296,10 @@ def main() -> int:
     parser.add_argument(
         "--config",
         required=True,
-        help='JSON config string: {"plugins": [{"type": "...", ...}, ...]}',
-    )
-    parser.add_argument(
-        "--bag-dir",
-        default="rosbag2",
-        help="Name of the rosbag subdirectory within each run directory (default: rosbag2)",
+        help='JSON: {"groups": [{"bag_dir": "rosbag2", "plugins": [{"type": "...", ...}]}, '
+             '...]}. Each group names the bag directory below a run (it may contain a '
+             '"/", e.g. logs/rosout_bag) and the handlers its bags are converted with. All '
+             'groups share one scan and one worker pool.',
     )
     parser.add_argument(
         "--skip-dir",
@@ -1353,39 +1355,77 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        plugin_configs: List[dict] = json.loads(args.config)["plugins"]
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"Error: invalid --config JSON: {e}")
-        return 1
-
-    if not plugin_configs:
-        print("Error: --config must contain at least one plugin")
+        groups = parse_conversion_groups(args.config)
+    except ValueError as e:
+        print(f"Error: invalid --config: {e}")
         return 1
 
     # Validate handler types up front
-    unknown = [c.get("type") for c in plugin_configs if c.get("type") not in HANDLER_REGISTRY]
+    unknown = [c.get("type") for group in groups for c in group.plugins
+               if c.get("type") not in HANDLER_REGISTRY]
     if unknown:
         print(f"Error: unknown handler type(s): {unknown}. Available: {list(HANDLER_REGISTRY)}")
         return 1
 
-    print(f"Scanning for rosbags ({args.bag_dir})...", end="", flush=True)
-    _t_scan = time.time()
-    rosbag_paths = find_rosbags(args.input, bag_dir_name=args.bag_dir,
-                                skip_names=args.skip_dir)
-    print(f"\r{len(rosbag_paths)} rosbags found in {time.time() - _t_scan:.1f}s{' ' * 20}")
-    if not rosbag_paths:
+    input_root = os.path.abspath(args.input)
+
+    def _out_dir_for_run(run_dir: str) -> Optional[str]:
+        """Mirror a run directory under --output-root, or None (write beside the bag)."""
+        if not args.output_root:
+            return None
+        rel = os.path.relpath(os.path.abspath(run_dir), input_root)
+        return os.path.join(os.path.abspath(args.output_root), rel)
+
+    def _out_dir_for(bag_path: str) -> Optional[str]:
+        """Mirror the bag's location under --output-root, or None (beside the bag)."""
+        return _out_dir_for_run(os.path.dirname(os.path.abspath(bag_path)))
+
+    out_base = os.path.abspath(args.output_root) if args.output_root else input_root
+    # The handler configs each bag is converted with, by bag: groups differ in handlers, and
+    # the aggregation below names each output's handler from this.
+    configs_by_bag: Dict[str, List[dict]] = {}
+    process_args = []
+    for group in groups:
+        print(f"Scanning for rosbags ({group.bag_dir})...", end="", flush=True)
+        _t_scan = time.time()
+        # A run whose recorder restarted mid-trial holds the abandoned attempt's bag as well
+        # as the trial's own. The scan converts the last attempt (see resolve_bag_attempts);
+        # what was left out is recorded per run, in the run's own data, so a reader of the
+        # tables meets it there instead of inferring it from a shorter trajectory.
+        repeat_attempts: List[BagAttempts] = []
+        rosbag_paths = find_rosbags(args.input, bag_dir_name=group.bag_dir,
+                                    skip_names=args.skip_dir,
+                                    on_multiple_attempts=repeat_attempts.extend)
+        print(f"\r{len(rosbag_paths)} rosbags found in {time.time() - _t_scan:.1f}s{' ' * 20}")
+        for attempts in repeat_attempts:
+            print(f"NOTE: {bag_attempts_note(attempts, input_root)}")
+            record = write_bag_attempts(_out_dir_for_run(attempts.run_dir) or attempts.run_dir,
+                                        attempts)
+            sources = ([attempts.converted] if attempts.converted else []) + attempts.superseded
+            write_provenance_entry(
+                args.provenance_file,
+                os.path.relpath(record, out_base),
+                [os.path.relpath(bag, input_root) for bag in sources],
+                "rosbags_process/bag_attempts",
+            )
+        if not rosbag_paths:
+            continue
+        print(f"Handlers: [{', '.join(c.get('type', '?') for c in group.plugins)}]")
+        plugin_configs_hash = hashlib.md5(
+            json.dumps(group.plugins, sort_keys=True).encode()
+        ).hexdigest()
+        for bag_path in rosbag_paths:
+            configs_by_bag[bag_path] = group.plugins
+            process_args.append((bag_path, group.plugins, args.debug, args.force,
+                                 plugin_configs_hash, _out_dir_for(bag_path)))
+    if not process_args:
         return 0
 
-    types_desc = ", ".join(c.get("type", "?") for c in plugin_configs)
-    print(
-        f"Handlers: [{types_desc}]  workers: {args.workers}"
-    )
-
-    plugin_configs_hash = hashlib.md5(
-        json.dumps(plugin_configs, sort_keys=True).encode()
-    ).hexdigest()
-    n_bags = len(rosbag_paths)
-    input_root = os.path.abspath(args.input)
+    # Largest bags first. The pool hands out one bag per free worker in submission order, so
+    # a large bag started last is the conversion's tail with every other worker idle beside it.
+    process_args.sort(key=lambda task: bag_bytes(task[0]), reverse=True)
+    n_bags = len(process_args)
+    print(f"workers: {args.workers}")
 
     # Bags whose failure to open is expected: their job was killed by hand mid-write (see
     # --tolerate-under). The predicate lives in rosbags_common so it is testable on the
@@ -1394,19 +1434,6 @@ def main() -> int:
 
     def _is_tolerated(bag_path: str) -> bool:
         return is_under_tolerated_root(bag_path, _tolerated_roots)
-
-    def _out_dir_for(bag_path: str) -> Optional[str]:
-        """Mirror the bag's location under --output-root, or None (beside the bag)."""
-        if not args.output_root:
-            return None
-        rel = os.path.relpath(os.path.dirname(os.path.abspath(bag_path)), input_root)
-        return os.path.join(os.path.abspath(args.output_root), rel)
-
-    process_args = [
-        (bag_path, plugin_configs, args.debug, args.force, plugin_configs_hash,
-         _out_dir_for(bag_path))
-        for bag_path in rosbag_paths
-    ]
 
     start = time.time()
     total_records = 0
@@ -1477,7 +1504,7 @@ def main() -> int:
                 total_records += record_count
                 bag_had_records = True
             if output_files and args.provenance_file:
-                cfg = plugin_configs[j]
+                cfg = configs_by_bag[bag_path][j]
                 for output_file in output_files:
                     # Relative to wherever the outputs actually went. With
                     # ``--output-root`` (the cluster Job writes to /out while reading
@@ -1519,7 +1546,7 @@ def main() -> int:
     cached_str = f", {cached_bags} cached" if cached_bags else ""
     unreadable_str = f", {len(unreadable_bags)} unreadable" if unreadable_bags else ""
     print(
-        f"Summary: {len(rosbag_paths)} rosbags "
+        f"Summary: {n_bags} rosbags "
         f"({processed_bags} success{cached_str}, {error_bags} errors{unreadable_str}, "
         f"{failed_bags} no-data), {total_records} total records, {elapsed:.2f}s"
     )

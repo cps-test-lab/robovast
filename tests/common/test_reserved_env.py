@@ -45,8 +45,8 @@ _EMITTERS = (
      r'- ([A-Z][A-Z0-9_]{2,})='),                       # compose `environment:` lines
     ("robovast_cluster/robovast/execution/cluster_execution/kubernetes_backend.py",
      r"'name': '([A-Z][A-Z0-9_]{2,})'"),                # container env entries
-    ("robovast_cluster/robovast/execution/cluster_execution/kubernetes_backend.py",
-     r"\('(S3_[A-Z_]+)',"),                             # the upload credentials
+    ("robovast_cluster/robovast/execution/cluster_execution/pod_access.py",
+     r'^[A-Z_]*ENV = "([A-Z][A-Z0-9_]{2,})"'),           # how a pod reaches the data plane
     ("robovast/common/execution.py",
      r"env\['([A-Z][A-Z0-9_]{2,})'\]"),                 # scenario_env
 )
@@ -67,7 +67,7 @@ def _injected() -> set:
     for rel, pattern in _EMITTERS:
         path = _ROOT / rel
         assert path.is_file(), f"emitter moved: {rel}"
-        names |= set(re.findall(pattern, path.read_text(encoding="utf-8")))
+        names |= set(re.findall(pattern, path.read_text(encoding="utf-8"), re.MULTILINE))
     return names
 
 
@@ -99,11 +99,11 @@ def test_the_variables_whose_override_would_misreport_a_run_are_covered():
 
     Each of these produces a run that *works* and reports something untrue: results
     attributed to a configuration whose parameters were never read, written somewhere the
-    campaign will not look, or uploaded with someone else's credentials.
+    campaign will not look, or delivered with someone else's token.
     """
     for name in ("SCENARIO_PARAMETER_FILE", "SCENARIO_FILE", "OUTPUT_DIR",
                  "SCENARIO_OUTPUT_DIR", "RUN_OUTPUT_DIR", "CAMPAIGN_ID",
-                 "S3_ACCESS_KEY", "S3_SECRET_KEY"):
+                 "ROBOVAST_TOKEN", "ROBOVAST_DATA_URL"):
         assert name in RESERVED_ENV_NAMES, f"{name} must not be overridable"
 
 

@@ -23,6 +23,7 @@ import { useActiveView } from '@/lib/activeView'
 import { acceptRevision, revisionChanged } from '@/lib/servedRevision'
 import { robovast, RobovastError, type UpgradeInfo } from '@/lib/robovastClient'
 import { formatAge, formatLocalTime } from '@/lib/time'
+import { ServiceCachePanel } from './ServiceCachePanel'
 import { ServiceConfigPanel } from './ServiceConfigPanel'
 import { UsageHistoryChart } from './UsageHistoryChart'
 
@@ -100,6 +101,7 @@ export function AdminPage() {
   // on the flag, so an unopened panel costs nothing.
   const [restarted, setRestarted] = useState(false)
   const [eventsOpen, setEventsOpen] = useState(false)
+  const [cacheOpen, setCacheOpen] = useState(false)
   // Collapsed, like the two above: this answers "which tools do agents actually use, and
   // what happened when they did?", which is a question somebody arrives with rather than
   // one the page owes on every visit. Its two queries are gated on the flag.
@@ -496,6 +498,26 @@ export function AdminPage() {
       </CollapsibleBox>
 
       <CollapsibleBox
+        open={cacheOpen}
+        onToggle={() => setCacheOpen((v) => !v)}
+        title={
+          <Tooltip
+            placement="right"
+            title={
+              'What this service keeps that it can rebuild from durable data, and a button '
+              + 'that frees it. The thing to reach for when new work is refused for disk space.'
+            }
+          >
+            <span>Service cache</span>
+          </Tooltip>
+        }
+      >
+        {/* Mounted only while open, like the panels around it: measuring walks every
+            cached file, so it happens when somebody asks. */}
+        {cacheOpen ? <ServiceCachePanel /> : null}
+      </CollapsibleBox>
+
+      <CollapsibleBox
         open={eventsOpen}
         onToggle={() => setEventsOpen((v) => !v)}
         title={
@@ -527,7 +549,7 @@ export function AdminPage() {
               'Every MCP tool call this deployment served \u2014 the ranking, and the calls '
               + 'behind it with what each was given and what it answered, truncated to a few '
               + 'lines. Kept in the central index, so it outlives this process but not the '
-              + 'results store.'
+              + 'results volume.'
             }
           >
             <span>MCP tools</span>

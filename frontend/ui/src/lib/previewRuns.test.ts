@@ -172,8 +172,10 @@ describe('isPreviewable', () => {
 
   it('is the complement of hasResults, never an overlap', () => {
     // The Results container admits `hasResults(c) || isPreviewable(c)`; a campaign satisfying both
-    // would be offered two different sets of rows for the same id.
-    for (const phase of ['running', 'finishing', 'postprocessing', 'finished', 'failed']) {
+    // would be offered two different sets of rows for the same id. `stopped` and `crashed` are in
+    // the sweep because hasResults admits them: they are ended, not previewable.
+    for (const phase of ['running', 'finishing', 'postprocessing',
+                         'finished', 'failed', 'stopped', 'crashed']) {
       const c = summary({ phase, num_runs: 2 })
       expect(hasResults(c) && isPreviewable(c)).toBe(false)
     }

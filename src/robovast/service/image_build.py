@@ -255,13 +255,22 @@ def _ros_entry(entry) -> dict:
     A spec is built from a validated config on one path and from a raw mapping on another
     (the pre-flight reads an unvalidated document on purpose), so both are normalized here
     rather than at each of the four sites that read one.
+
+    An omitted ``packages`` stays omitted, and an ill-formed one is passed through unchanged:
+    both are what :func:`~robovast.common.config_validation.ros_packages_problems` reads, and
+    it distinguishes "build every package the repository contains" from an empty list that
+    would mean none. Normalizing either into a list of strings here would answer that question
+    before the check that asks it.
     """
     if not isinstance(entry, dict):
         entry = entry.model_dump() if hasattr(entry, "model_dump") else dict(entry)
-    packages = entry.get("packages") or []
-    return {"git": str(entry.get("git") or "").strip(),
-            "ref": str(entry.get("ref") or "").strip(),
-            "packages": [str(name).strip() for name in packages]}
+    normalized = {"git": str(entry.get("git") or "").strip(),
+                  "ref": str(entry.get("ref") or "").strip()}
+    packages = entry.get("packages")
+    if packages is not None:
+        normalized["packages"] = ([str(name).strip() for name in packages]
+                                  if isinstance(packages, list) else packages)
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -1060,8 +1069,30 @@ def _declares(spec: Optional[BuildSpec], requirement: str) -> bool:
 #: happened to mention "connection refused") is far lower than the cost of the miss it replaces.
 _BUILDER_UNREACHABLE = re.compile(
     r"failed to dial|connection refused|transport: Error while dialing|"
-    r"context deadline exceeded|no such host|connection reset by peer",
+    r"context deadline exceeded|no such host|connection reset by peer|"
+    # The daemon accepted the build and then went away part-way through it: the client's
+    # stream ends rather than being refused, so none of the dial-time wordings above appear.
+    r"failed to receive status|error reading from server: EOF|rpc error: code = Unavailable",
     re.IGNORECASE)
+
+#: Lines about BuildKit's *cache* interaction with the registry, which are not the push and are
+#: routinely not even a failure -- importing a cache manifest for a tag the registry has never
+#: seen answers `401 Unauthorized`, i.e. on every first build of a project. Dropped before the
+#: registry heuristics below run, because those match bare words over the whole log and one such
+#: line was enough to report any failure as a rejected push credential.
+_CACHE_CHATTER = re.compile(r"^.*(?:cache manifest|registry cache (?:importer|exporter)).*$",
+                            re.IGNORECASE | re.MULTILINE)
+
+#: colcon's own per-package verdict, which names the package that failed. Anchored on
+#: colcon's wording rather than on the shell wrapper's, so it reports the PACKAGE the agent
+#: has to act on instead of the RUN line every ``ros_packages`` build shares.
+_COLCON_FAILED = re.compile(r"^.*?Failed\s+<<<\s+(\S+)", re.MULTILINE)
+
+# A toolchain the kernel killed is not code the compiler rejected, and the difference decides who
+# can fix it: no entry in a package list makes a build fit into memory it does not have. Matched on
+# the toolchain's own wording, never on the bare word "killed", which appears in unrelated chatter.
+_BUILD_OOM = re.compile(r"killed signal terminated program|virtual memory exhausted|oomkilled",
+                        re.IGNORECASE)
 
 
 def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBuildError:
@@ -1149,9 +1180,47 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
             message=f"pip found no matching distribution for '{missing}'",
             log_tail=tail)
 
-    low = log.lower()
-    if ("pull access denied" in low or "manifest unknown" in low
-            or "not found: manifest" in low or "failed to resolve source" in low):
+    # `low` drives the substring tests below, and it is the log MINUS BuildKit's cache
+    # chatter: those tests match bare words ("denied", "unauthorized"), and a cache manifest
+    # the registry has never served answers `401 Unauthorized` on every first build of a
+    # project. That line alone was enough to report any failure as a rejected push
+    # credential, i.e. as `fixable_by: infra` with "the build itself succeeded" -- which
+    # sends you to the cluster operator over a missing entry in this container's own
+    # package list, or over a build daemon that died mid-compile.
+    low = _CACHE_CHATTER.sub("", log).lower()
+
+    # A colcon build of `ros_packages` that failed. Before the registry heuristics, because a
+    # source build reaching the registry at all is the exception.
+    if _COLCON_FAILED.search(log):
+        failed = ", ".join(dict.fromkeys(_COLCON_FAILED.findall(log)))
+        # Which package colcon stopped on is still worth naming, but an OOM names the wrong owner
+        # and the wrong repair: it sends the author to `system_packages`, where nothing helps.
+        if _BUILD_OOM.search(log):
+            return ImageBuildError(
+                phase="resource", fixable_by="infra", entry=failed,
+                message=f"the builder ran out of memory while compiling {failed}: the toolchain "
+                        "was killed, not the source rejected. No package list changes this -- "
+                        "the builder needs a bigger ceiling or fewer parallel steps: on a "
+                        "cluster, ROBOVAST_BUILDKIT_MEMORY or ROBOVAST_BUILDKIT_PARALLELISM "
+                        "in the deployment's .env, then 'vast service upgrade'; on a local "
+                        "service, the docker daemon's own memory",
+                log_tail=tail)
+        return ImageBuildError(
+            phase="source-build", fixable_by="agent", entry=failed,
+            message=f"the colcon build of ros_packages failed on: {failed}. `ros_packages` "
+                    "builds `--packages-up-to`, so a repository's own dependencies are built "
+                    "too and a package none of them named can still fail here -- a missing "
+                    "build or test dependency goes in that container's system_packages",
+            log_tail=tail)
+
+    # Everything from here on describes a registry interaction, and a registry interaction
+    # can only be the failure if the image was actually built: BuildKit stops at the first
+    # failing step and says `failed to solve:`, so nothing was pushed and the phrase "the
+    # build itself succeeded" would be a false statement about a build that did not.
+    reached_push = "failed to solve:" not in low
+
+    if reached_push and ("pull access denied" in low or "manifest unknown" in low
+                         or "not found: manifest" in low or "failed to resolve source" in low):
         return ImageBuildError(
             phase="base-pull", fixable_by="infra",
             message="could not pull the base image (server-side registry/base "
@@ -1161,7 +1230,8 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     # know *which* knob — asserting "registry credentials" for every push failure sends
     # you looking for a Secret when the registry host simply does not resolve from inside
     # the cluster.
-    if "failed to push" in low or "error pushing" in low or "denied" in low or "unauthorized" in low:
+    if reached_push and ("failed to push" in low or "error pushing" in low
+                         or "denied" in low or "unauthorized" in low):
         if "no such host" in low or "server misbehaving" in low:
             detail = ("the registry hostname does not resolve from inside the cluster "
                       "(DNS); the build itself succeeded")
@@ -1184,7 +1254,10 @@ def classify_build_error(log: str, spec: Optional[BuildSpec] = None) -> ImageBui
     if "no space left on device" in low or "killed" in low or "oomkilled" in low:
         return ImageBuildError(
             phase="resource", fixable_by="infra",
-            message="the builder ran out of resources (disk/memory)",
+            message="the builder ran out of resources (disk/memory). On a cluster, "
+                    "ROBOVAST_BUILDKIT_MEMORY in the deployment's .env, then "
+                    "'vast service upgrade', moves what memory one build may use; disk is "
+                    "the build cache's, bounded by the daemon's GC budget",
             log_tail=tail)
     if "pip install" in low or "error: subprocess-exited-with-error" in low:
         return ImageBuildError(

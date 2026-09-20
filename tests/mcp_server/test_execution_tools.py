@@ -65,7 +65,8 @@ class _FakeAuthoringClient:
         return ListWorkspacesResponse(
             workspaces=[WorkspaceInfo(workspace_id="ws-ab12", name="demo")])
 
-    def validate_project(self, workspace_id, path="", check_world=True):
+    def validate_project(self, workspace_id, path="", check_world=True,
+                         check_scenario=True):
         from robovast.service.interface import ValidationReport
         self.calls.append(("validate_project", workspace_id, path))
         return ValidationReport(valid=True, configs=3, runs_per_config=2,
@@ -401,7 +402,7 @@ def test_download_offers_the_url_whatever_lane_the_campaign_ran_on(dual_lane, la
     if lane:
         dual_lane["camp-x"] = lane
     result = results_lifecycle.get_campaign_download("camp-x")
-    assert result["url"].endswith("/campaigns/camp-x/archive")
+    assert result["url"].endswith("/data/campaigns/camp-x/archive")
     assert "error" not in result
 
 
@@ -430,8 +431,8 @@ def test_get_campaign_download_cluster_returns_url(monkeypatch):
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("kubernetes"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
-    assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
-    assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
+    assert res["url"] == "http://127.0.0.1:8800/data/campaigns/camp-2026-01-01-000000/archive"
+    assert res["path"] == "/data/campaigns/camp-2026-01-01-000000/archive"
     assert res["next_step"] == "vast campaign download camp-2026-01-01-000000"
     assert "error" not in res
 
@@ -441,7 +442,7 @@ def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("docker"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
-    assert res["url"] == "http://127.0.0.1:8800/campaigns/camp-2026-01-01-000000/archive"
+    assert res["url"] == "http://127.0.0.1:8800/data/campaigns/camp-2026-01-01-000000/archive"
 
 
 def test_get_campaign_download_says_nothing_about_the_share(monkeypatch):
@@ -474,7 +475,7 @@ def test_get_campaign_download_without_a_transport_omits_the_url(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: impl)
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert "url" not in res          # omitted, not empty
-    assert res["path"] == "/campaigns/camp-2026-01-01-000000/archive"
+    assert res["path"] == "/data/campaigns/camp-2026-01-01-000000/archive"
     assert res["next_step"] == "vast campaign download camp-2026-01-01-000000"
     assert "error" not in res
 
@@ -488,7 +489,7 @@ def test_get_campaign_download_uses_the_declared_origin(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: impl)
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
     assert res["url"] == ("https://robovast.example.org"
-                          "/campaigns/camp-2026-01-01-000000/archive")
+                          "/data/campaigns/camp-2026-01-01-000000/archive")
 
 
 def test_get_campaign_download_no_service_errors(monkeypatch):
@@ -883,3 +884,87 @@ def test_a_progressing_campaign_still_gets_no_hint():
 
     assert _campaign_next_step({"status": "running", "postprocessed": False}) == ""
     assert _campaign_next_step({"status": "finished", "postprocessed": True}) == ""
+
+
+def test_the_local_file_lane_does_not_call_an_unchecked_world_a_pass(
+        tmp_path, monkeypatch, authoring_service):
+    """This lane has no service, so it can never run the simulator — and until the verdict
+    covered that, it answered ``valid: true`` for a world nothing had looked at."""
+    from robovast.common import config_validation
+
+    monkeypatch.setattr(config_validation, "validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+    monkeypatch.setattr(authoring, "_unchecked_world_advisory",
+                        lambda _path: [{"stage": "world", "config": None, "field": "f",
+                                        "severity": "unchecked",
+                                        "message": "was NOT checked: no service here"}])
+    report = authoring.validate_project(str(tmp_path / "x.vast"))
+    assert report["lane"] == "local file"
+    assert report["valid"] is False
+    assert report["world_checked"] is False
+    assert not authoring_service.calls
+
+
+def test_a_campaign_with_no_world_is_not_marked_unchecked(
+        tmp_path, monkeypatch, authoring_service):
+    """Nothing to check is not a check that failed: a campaign with no simulator gets a
+    plain pass, and ``world_checked`` claims no verdict either way."""
+    from robovast.common import config_validation
+
+    monkeypatch.setattr(config_validation, "validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+    monkeypatch.setattr(authoring, "_unchecked_world_advisory", lambda _path: [])
+    # The scenario check is a separate question and this test is not about it; asked for,
+    # it would report its own unchecked problem on this lane (see the test below).
+    report = authoring.validate_project(str(tmp_path / "x.vast"), check_scenario=False)
+    assert report["valid"] is True
+    assert report["world_checked"] is None
+
+
+def test_a_scenario_nobody_could_parse_is_not_a_pass(tmp_path, monkeypatch,
+                                                     authoring_service):
+    """The local-file lane has no image, so it cannot answer the question that matters.
+
+    Every campaign has a scenario, and whether it parses depends on what is installed
+    where it runs. Reporting a plain pass here would tell a caller the one thing this lane
+    cannot know -- and it is exactly the failure that otherwise survives to every trial.
+    """
+    from robovast.common import config_validation
+
+    monkeypatch.setattr(config_validation, "validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+    monkeypatch.setattr(authoring, "_unchecked_world_advisory", lambda _path: [])
+    report = authoring.validate_project(str(tmp_path / "x.vast"))
+
+    assert report["valid"] is False, "a check that did not run is not a pass"
+    assert report["scenario_checked"] is False
+    problem = next(p for p in report["problems"] if p["stage"] == "scenario")
+    assert problem["severity"] == "unchecked"
+    assert "/sources/" in problem["message"], "it must name what would settle it"
+
+
+# -- a held campaign is not a wedged one --------------------------------------------------
+
+def test_the_listing_says_when_a_campaign_is_held():
+    """No progress is a fault everywhere except here. Without this an agent reads a campaign
+    somebody parked as one that is stuck, and the reasonable next move is the wrong one."""
+    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.service.interface import CampaignSummary
+
+    entry = _summary_to_dict(CampaignSummary(
+        campaign_id="c-1", phase="running", priority=-3, paused=True))
+    assert entry["paused"] is True
+    assert entry["priority"] == -3
+
+
+def test_an_ordinary_campaign_carries_neither():
+    """Omitted at the default, like description: every campaign reporting "priority 0"
+    spends context on a fact about none of them."""
+    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.service.interface import CampaignSummary
+
+    entry = _summary_to_dict(CampaignSummary(campaign_id="c-1", phase="running"))
+    assert "paused" not in entry and "priority" not in entry

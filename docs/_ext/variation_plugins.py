@@ -80,7 +80,7 @@ def _outputs_lines(cls):
     if not {"scenario", "sim"} <= set(fields):
         return []
 
-    slots = getattr(config_class, "SLOTS", ()) or ()
+    slots = getattr(config_class, "OUTPUT_SLOTS", ()) or ()
     lines = ["", "**Outputs**", ""]
     if slots:
         lines.append(
@@ -99,6 +99,19 @@ def _outputs_lines(cls):
             "the simulator backend, or a path under its dotted root):", "",
             ".. code-block:: yaml", "",
             "    scenario: <parameter>", "    # or", "    sim: <backend key or path>", ""]
+
+    inputs = getattr(config_class, "INPUT_SLOTS", ()) or ()
+    if inputs:
+        lines += [
+            "", "**Inputs**", "",
+            "This variation reads values an earlier variation wrote. Where one did, the name "
+            "it bound is inherited and nothing need be said here. Where the campaign sets the "
+            "value in its own ``parameters:`` block instead, ``reads:`` says which parameter "
+            "holds it:",
+            "", ".. code-block:: yaml", "",
+            "    reads:"]
+        lines += [f"      {name}: <the parameter it is read from>" for name in inputs]
+        lines += ["", "Inputs: " + ", ".join(f"``{s}``" for s in inputs) + ".", ""]
     return lines
 
 

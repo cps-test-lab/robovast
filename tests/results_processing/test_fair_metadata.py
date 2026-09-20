@@ -9,6 +9,7 @@ iterated character by character and lost the whole graph to an AttributeError on
 """
 
 import json
+import re
 
 import pytest
 
@@ -138,6 +139,38 @@ def test_a_campaign_with_no_agents_still_produces_a_graph(campaign):
     ok, _ = generate_prov_metadata(campaign, _metadata([]), generate_visualization=False)
     assert ok
     assert _graph(campaign)
+
+
+def test_configurations_sharing_variations_through_an_anchor_each_get_them(campaign):
+    """A YAML alias loads as the same object, so reading one configuration must not consume it."""
+    (campaign / "_config" / "campaign.vast").write_text("""\
+version: 4
+configuration:
+- name: ca
+  variations: &cells
+  - ParameterVariationList:
+      name: speed
+      values: [1.0, 2.0]
+  - ObstacleVariation:
+      obstacle_configs:
+      - model: file:///box.sdf
+- name: cb
+  variations: *cells
+execution:
+  containers: {scenario: {image: img}}
+  runs: 1
+  scenario_file: scenario.osc
+""")
+    ok, message = generate_prov_metadata(campaign, _metadata([]), generate_visualization=False)
+    assert ok, message
+    graph = json.dumps(_graph(campaign))
+    for config in ("ca", "cb"):
+        assert f"/{config}/variations/ParameterVariationListConfig" in graph
+        assert f"/{config}/variations/ObstacleVariationConfig" in graph
+    # Each configuration rewrites the model path into an IRI once; a second rewrite of the
+    # shared entry would slice the IRI itself.
+    models = re.findall(r'"([^"]*box\.sdf)"', graph)
+    assert models and all(m.endswith("/_box.sdf") for m in models), models
 
 
 @pytest.mark.parametrize("value, expected", [

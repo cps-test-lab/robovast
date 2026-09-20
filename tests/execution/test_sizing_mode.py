@@ -69,7 +69,7 @@ def test_the_role_decides_where_there_is_one():
 
 
 def test_the_limit_is_never_left_empty():
-    """`JOB_TEMPLATE` reads AVAILABLE_CPUS/AVAILABLE_MEM from `limits`, and the downward API
+    """`POD_TEMPLATE` reads AVAILABLE_CPUS/AVAILABLE_MEM from `limits`, and the downward API
     substitutes the NODE's allocatable for an empty limit -- so the container would be told
     it has the whole machine, and /dev/shm, sized from the same place, would turn an overrun
     into a SIGBUS with no reason attached."""
@@ -175,7 +175,7 @@ def test_an_oom_on_the_bootstrap_stops_the_campaign(monkeypatch):
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"oom_kills": 1}})
     with pytest.raises(CampaignConfigError, match="OOM-killed"):
-        r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+        r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 def test_heavy_throttling_on_the_bootstrap_stops_the_campaign(monkeypatch):
@@ -186,7 +186,7 @@ def test_heavy_throttling_on_the_bootstrap_stops_the_campaign(monkeypatch):
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"throttled_ratio": 0.4}})
     with pytest.raises(CampaignConfigError, match="throttled"):
-        r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+        r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 def test_a_calibrated_campaign_is_not_second_guessed(monkeypatch):
@@ -196,7 +196,7 @@ def test_a_calibrated_campaign_is_not_second_guessed(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"oom_kills": 5}})
-    r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")  # must not raise
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")  # must not raise
 
 
 def test_a_fixed_campaign_is_not_second_guessed(monkeypatch):
@@ -206,7 +206,7 @@ def test_a_fixed_campaign_is_not_second_guessed(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"oom_kills": 5}})
-    r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 def test_an_unreadable_counter_is_not_a_verdict(monkeypatch):
@@ -215,7 +215,7 @@ def test_an_unreadable_counter_is_not_a_verdict(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: (_ for _ in ()).throw(OSError("no storage")))
-    r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 # -- what the operator can read afterwards ---------------------------------------------
@@ -287,7 +287,7 @@ def test_the_main_container_takes_the_bootstrap_before_any_node_is_calibrated(mo
     waits for measured figures leaves the main container unsized for exactly the runs the
     bootstrap exists to carry.
 
-    An empty limit is not merely generous. JOB_TEMPLATE reads AVAILABLE_CPUS and
+    An empty limit is not merely generous. POD_TEMPLATE reads AVAILABLE_CPUS and
     AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the downward API substitutes the
     NODE's allocatable for an absent limit -- so the scenario sizes itself to the whole
     machine, and the probe measures a container that was never bounded. Measured on a
@@ -584,7 +584,7 @@ def _sweep_runner(monkeypatch, crashed, probes=None):
 
 
 def _sweep(runner):
-    return runner._fail_on_crashed_probes("a-label", "/campaign", object(), "b", "c/")
+    return runner._fail_on_crashed_probes("a-label", "/campaign")
 
 
 def test_a_probe_that_lost_a_container_fails_the_campaign(monkeypatch):
@@ -785,8 +785,7 @@ def test_a_probe_still_waiting_for_room_is_not_judged():
     r._probe_container_limits = lambda: {}
     r.get_remaining_jobs = lambda names: polled.append(list(names)) or []
 
-    r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
-                      bucket_name="b", campaign_prefix="c/")
+    r._collect_probes("/campaign")
     assert polled == [["probe-a"]], "the planned probe is never asked about"
 
 
@@ -805,8 +804,7 @@ def test_nothing_created_yet_polls_nothing():
                                         finished=lambda name: None)
     r.get_remaining_jobs = lambda names: (_ for _ in ()).throw(
         AssertionError("must not poll a probe that was never created"))
-    r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
-                      bucket_name="b", campaign_prefix="c/")
+    r._collect_probes("/campaign")
 
 
 # -- a campaign that measured its nodes is not on the bootstrap --------------------------
@@ -837,7 +835,7 @@ def test_the_bootstrap_guard_leaves_a_campaign_that_calibrated_alone():
     not using."""
     r = _bootstrap_guard_runner(["n1", "n2"])
     # Returns before reading any artifact: with nodes measured there is no bootstrap to judge.
-    r._refuse_a_bootstrap_that_did_not_hold(None, "bucket", "prefix/", "job-0")
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "job-0")
 
 
 def test_it_still_guards_a_campaign_that_measured_nothing():
@@ -849,10 +847,9 @@ def test_it_still_guards_a_campaign_that_measured_nothing():
     r._probe_container_limits = lambda: {}
     r._container_percentiles = lambda: {}
     r._job_artifact_path = lambda i: f"j{i}"
-    # Reaches the read, which is where a real campaign would fetch counters; an unreadable
-    # one is not a verdict, so this returns rather than raising.
-    r._refuse_a_bootstrap_that_did_not_hold(
-        type("S", (), {"read_object": staticmethod(lambda *a: None)})(), "b", "p/", "job-0")
+    # Reaches the read, which is where a real campaign would read its counters; a file that
+    # is not there is not a verdict, so this returns rather than raising.
+    r._refuse_a_bootstrap_that_did_not_hold("/nonexistent-campaign", "job-0")
 
 
 def test_whether_calibration_applies_is_decided_once_for_the_campaign():
@@ -987,3 +984,136 @@ def test_a_campaign_calibration_never_applied_to_weighs_nothing():
     r._calibration = calibration
     r._probes = {"probe-a": "n1"}
     assert r.weigh_unmeasured_nodes() == {}
+
+
+def test_a_node_that_cannot_be_measured_is_left_out_rather_than_fatal():
+    """A campaign that loses a machine is smaller, not wrong.
+
+    Every run still uses its own node's figures, so nothing is sized two ways -- which is the
+    property the terminal error protected and the only one at stake. What skipping costs is
+    the machine's capacity, and a campaign is not worth ending over that.
+    """
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration._by_node["n1"] = {"sut": {"cores": 1.0}}
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-b": "n2"}
+    r.skip_unmeasured_nodes(["n2"], "its probe did not run in 2 consecutive batches")
+
+    assert calibration.outcome()["skipped"] == {
+        "n2": "its probe did not run in 2 consecutive batches"}, "recorded, not only logged"
+    assert not calibration.accepts_work("n2"), \
+        "a skipped node must take no work, or its runs would be sized from the seed"
+    assert calibration.accepts_work("n1"), "the measured node is unaffected"
+    assert r.has_usable_node(), "a calibrated node remains, so the campaign carries on"
+
+
+def test_a_skipped_node_is_never_probed_again():
+    """Re-probing it would re-open the wait the campaign has already decided not to spend."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration.skip("n2", "its probe did not run in 2 consecutive batches")
+
+    assert calibration.claim_probe("n2", "probe-c") is False, "settled, so not re-asked"
+    assert calibration.claim_probe("n3", "probe-d") is True, "an untouched node still is"
+
+
+def test_skipping_every_node_leaves_nowhere_to_run():
+    """The one case that is still terminal: a smaller campaign is fine, an empty one is not."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-a": "n1"}
+    r.skip_unmeasured_nodes(["n1"], "its probe did not run in 2 consecutive batches")
+
+    assert not r.has_usable_node(), \
+        "no node is calibrated and none is still being measured, so no run can be placed"
+
+
+def test_skipping_clears_the_unmeasured_tally():
+    """The tally asks whether to give up; once given up it has no further question to answer."""
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration._by_node["n1"] = {"sut": {"cores": 1.0}}
+
+    r = kb.BatchJobRunner()
+    r._calibration_applies = True
+    r._calibration = calibration
+    r._probes = {"probe-b": "n2"}
+    assert r.weigh_unmeasured_nodes() == {"n2": 1}
+
+    r.skip_unmeasured_nodes(["n2"], "its probe did not run in 2 consecutive batches")
+    assert r.weigh_unmeasured_nodes() == {}, "a node left out is no longer sitting out"
+
+
+def test_a_left_out_node_reaches_the_campaign_record(tmp_path, monkeypatch):
+    """A log line is gone by the time two campaigns are compared; the record is not.
+
+    The complaint this whole path exists for is a campaign that ran on fewer machines than it
+    had and said nothing, so "which ones" has to survive into what the campaign leaves behind.
+    """
+    import yaml
+
+    from robovast.common import execution as execution_mod
+    from robovast.common.execution import create_execution_yaml
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    monkeypatch.setattr(execution_mod, "_get_cluster_info", lambda context=None: None)
+
+    calibration = NodeCalibration()
+    calibration.applies = True
+    calibration.skip("n2", "its probe did not run in 2 consecutive batches")
+
+    r = kb.BatchJobRunner()
+    r._calibration = calibration
+    assert r.skipped_nodes() == {"n2": "its probe did not run in 2 consecutive batches"}
+
+    create_execution_yaml(1, str(tmp_path), nodes_skipped=r.skipped_nodes())
+    written = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
+    assert written["nodes_skipped"] == {
+        "n2": "its probe did not run in 2 consecutive batches"}, "the record names it and why"
+
+
+def test_a_campaign_that_used_every_node_records_nothing(tmp_path, monkeypatch):
+    """Absent means none was left out -- the normal case must not grow an empty key."""
+    import yaml
+
+    from robovast.common import execution as execution_mod
+    from robovast.common.execution import create_execution_yaml
+
+    monkeypatch.setattr(execution_mod, "_get_cluster_info", lambda context=None: None)
+    create_execution_yaml(1, str(tmp_path), nodes_skipped=None)
+    written = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
+    assert "nodes_skipped" not in written
+
+
+def test_a_left_out_node_reaches_a_watcher_through_the_status():
+    """The record answers after the campaign ends; a watcher needs it while it runs.
+
+    A campaign short of a machine is slower than its plan and otherwise looks entirely
+    healthy -- every run it does place passes, the progress bar simply moves less -- so
+    nothing else it publishes would say why.
+    """
+    from robovast.client.status import Status
+
+    st = Status()
+    assert st.nodes_skipped == {}, "empty is the norm: every node in play"
+
+    st.nodes_skipped = {"n2": "its probe did not run in 2 consecutive batches"}
+    assert st.model_dump()["nodes_skipped"] == {
+        "n2": "its probe did not run in 2 consecutive batches"}, \
+        "carried on the payload every client reads"

@@ -57,20 +57,38 @@ def _summary_to_dict(summary) -> dict:
     ``description`` and ``finished_at`` are omitted when empty rather than reported as
     ``""``/null: a campaign started without a description has none, which is not the same
     fact as "the description is the empty string".
+
+    ``paused`` and ``priority`` are carried the same way -- only when they are not the
+    default -- because a held campaign is the one case where no progress is not a fault.
+    Without them a campaign somebody parked is indistinguishable here from one that is
+    wedged, and the reasonable next move (diagnose it, or start it again) is the wrong one.
+
+    ``mode`` is carried because this listing is the only view an agent has: without it a
+    search and a sweep are indistinguishable here, and a search is read with different
+    queries (``run_view``'s ``batch``/``objective``/``paramset_id``). ``num_composition_failed``
+    and ``num_no_sample`` come along for the same reason — a search whose draws never
+    composed, or never scored, has ``num_runs`` telling only part of that.
     """
     entry = {
         "campaign_id": summary.campaign_id,
         "status": summary.phase,
+        "mode": summary.mode,
         "started_at": summary.started_at,
         "postprocessed": summary.postprocessed,
         "num_runs": summary.num_runs,
         "num_passed": summary.num_passed,
         "num_failed": summary.num_failed,
+        "num_composition_failed": summary.num_composition_failed,
+        "num_no_sample": summary.num_no_sample,
     }
     if summary.description:
         entry["description"] = summary.description
     if summary.finished_at:
         entry["finished_at"] = summary.finished_at
+    if summary.paused:
+        entry["paused"] = True
+    if summary.priority:
+        entry["priority"] = summary.priority
     return entry
 
 
@@ -108,8 +126,11 @@ def list_campaigns(limit: int = 20, offset: int = 0,
 
     Returns:
         ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
-        started_at, postprocessed, num_runs, num_passed, num_failed}`` plus
-        ``description`` and ``finished_at`` where recorded — or ``{error}``.
+        mode, started_at, postprocessed, num_runs, num_passed, num_failed,
+        num_composition_failed, num_no_sample}`` plus ``description`` and ``finished_at``
+        where recorded, and ``paused``/``priority`` where either is not the default (a
+        held campaign makes no progress on purpose) — or ``{error}``. ``mode`` is ``search`` or ``batch``; a search is
+        read by its cells (``run_view``'s ``batch``/``paramset_id``/``objective``).
 
         ``description`` is what its launcher said the run was for, and is usually the
         only thing telling two same-day ``campaign-<timestamp>`` ids apart.
@@ -165,6 +186,14 @@ def get_campaign_summary(campaign_id: str) -> dict:
         ``start_campaign(from_campaign=…)``: a ``blocking`` axis names what is missing,
         and ``unknown`` means the campaign predates that record, not that it failed.
 
+        ``num_configs`` is the configurations the campaign was **composed with**, not the
+        ones that came back: a declared configuration that produced no runs is counted
+        here and named in ``missing_configs``, with ``num_missing_configs`` and a ``note``
+        saying the design is short. Without that a lost cell is indistinguishable from a
+        smaller campaign that ran perfectly, and every aggregate below is over a partial
+        design while looking complete. ``num_runs`` counts runs, so those cells add
+        nothing to it.
+
         ``num_killed`` counts runs an operator stopped by hand (``stop_job``). They are
         **not** in ``num_failed``: nobody learned anything about the system under test
         from them, so they are missing measurements rather than negative results, and a
@@ -185,14 +214,21 @@ def get_campaign_summary(campaign_id: str) -> dict:
         Empty when there is nothing worth saying. Each item carries a plain-text ``title``
         and ``detail``, so it can be reported as-is without knowing its ``kind``.
     """
+    # COUNT(run_id), not COUNT(*): run_view carries one run-less row for each cell that
+    # produced nothing, so that a declared configuration is in the record whether or not it
+    # ran. Counting rows would report those as runs and hide the very shortfall they exist
+    # to show.
     per_config = data_access.rows(campaign_id, """
         SELECT config_name,
-               COUNT(*)                                        AS num_runs,
+               COUNT(run_id)                                   AS num_runs,
                SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS success,
                SUM(CASE WHEN status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed,
                SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) AS unknown,
                SUM(CASE WHEN status = 'killed' THEN 1 ELSE 0 END) AS killed,
-               SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) AS invalid
+               SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) AS invalid,
+               SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END) AS missing,
+               SUM(CASE WHEN status = 'composition_failed' THEN 1 ELSE 0 END)
+                                                               AS composition_failed
         FROM run_view GROUP BY config_name ORDER BY config_name
     """)
     container_failures = _container_failures(campaign_id)
@@ -221,6 +257,8 @@ def get_campaign_summary(campaign_id: str) -> dict:
         "unknown": _int(c.get("unknown")),
         **({"killed": _int(c.get("killed"))} if _int(c.get("killed")) else {}),
         **({"invalid": _int(c.get("invalid"))} if _int(c.get("invalid")) else {}),
+        **({"missing": True} if _int(c.get("missing")) else {}),
+        **({"composition_failed": True} if _int(c.get("composition_failed")) else {}),
     } for c in per_config]
 
     result: dict[str, Any] = {
@@ -244,6 +282,18 @@ def get_campaign_summary(campaign_id: str) -> dict:
     num_invalid = sum(c.get("invalid", 0) for c in configs_info)
     if num_invalid:
         result["num_invalid"] = num_invalid
+    # Named as a shortfall rather than left for the reader to notice that a count is
+    # smaller than the design: the two look identical from here, and only one of them is
+    # a campaign to re-run.
+    missing = [c["name"] for c in configs_info if c.get("missing")]
+    if missing:
+        result["num_missing_configs"] = len(missing)
+        result["missing_configs"] = missing[:20]
+        result["note"] = (
+            f"{len(missing)} of {len(configs_info)} declared configurations produced no "
+            "runs at all. They were composed with the campaign and never reached the "
+            "results tree, so every measurement here is over a partial design. "
+            "SELECT config_name FROM run_view WHERE status = 'missing' lists them.")
     if container_failures:
         result["num_container_failures"] = len(container_failures)
         result["container_failures"] = container_failures
@@ -333,28 +383,7 @@ def _retrigger_view(campaign_id: str) -> dict:
     }}
 
 
-async def _announced(ctx, campaign_id: str, call):
-    """Run ``call(preflight)`` off the event loop, saying first if it must fetch.
-
-    The announcement has to precede the wait to be worth anything, so it goes out as an MCP
-    log notification *before* the call starts; the call then runs in a worker thread so that
-    notification actually reaches the client instead of sitting behind a blocked loop.
-    ``ctx`` is None for an in-process caller, which just means no live notification — the
-    reason still arrives with the result, via the warning middleware.
-
-    The probe made here is handed to *call* rather than repeated inside it: probing twice
-    would log the warning twice and, worse, read the post-fetch state as if it were the
-    pre-fetch one.
-    """
-    import anyio
-    preflight = data_access.announce_pending_fetch(campaign_id)
-    if preflight[1] and ctx is not None:
-        await ctx.info(preflight[1])
-    return await anyio.to_thread.run_sync(lambda: call(preflight))
-
-
-async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
-                                 ctx: Context | None = None) -> dict:
+async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -> dict:
     """The schema to write SQL against. Call this before ``query_campaign_data_sql``.
 
     Read the returned ``note`` first — it carries ready-made queries for the common
@@ -364,33 +393,15 @@ async def describe_campaign_data(campaign_id: str, preflight_only: bool = False,
 
     Args:
         campaign_id: Campaign identifier, or an absolute campaign path.
-        preflight_only: Return just the ``fetch`` verdict (two metadata lookups, no
-            schema read). Worth it before a **batch** of queries against a cluster
-            campaign you have not touched yet, so a slow first call is explainable
-            rather than looking like a hang.
 
     Returns:
-        ``{campaign_id, tables, note, fetch}`` — each table
-        ``{schema, table, columns, rows, description}``. With ``preflight_only``,
-        ``{campaign_id, source, fetch_required, cached, transfer, db_bytes,
-        fetch_in_progress, last_fetch_seconds, last_fetch_bytes, note}``. Or ``{error}``.
-
-        ``fetch`` is what this call cost: the first read of a cluster campaign transfers
-        its two databases from the object store, and ``transfer`` separates
-        ``cluster-network`` (fast) from ``port-forward`` (slow). ``fetch_required: false``
-        means the campaign is local and the question does not apply.
+        ``{campaign_id, tables, note}`` — each table
+        ``{schema, table, columns, rows, description}``. Or ``{error}``.
     """
-    if preflight_only:
-        status = data_access.data_status(campaign_id)
-        if status is None:
-            return {"error": (
-                "no robovast-service answered, so there is nothing to fetch from: "
-                "campaign data is read from local disk in this process. (A service too "
-                "old to serve /data-status reports the same.)")}
-        return status
-    return await _announced(
-        ctx, campaign_id,
-        lambda pf: data_access.describe(campaign_id, preflight=pf))
+    import anyio
+    del ctx
+    # Off the event loop: the read goes to the service, or to the index.
+    return await anyio.to_thread.run_sync(lambda: data_access.describe(campaign_id))
 
 
 async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
@@ -412,8 +423,7 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
 
     Returns:
-        ``{campaign_id, columns, rows, row_count, truncated, fetch[, csv_url]}``
-        or ``{error}``. See ``describe_campaign_data`` for what ``fetch`` costs.
+        ``{campaign_id, columns, rows, row_count, truncated[, csv_url]}`` or ``{error}``.
 
     Examples::
 
@@ -426,9 +436,9 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
         SELECT campaign_id, AVG(objective) FROM runs
         WHERE campaign_id IN ('campaign-A', 'campaign-B') GROUP BY campaign_id
     """
-    result = await _announced(
-        ctx, campaign_id,
-        lambda pf: data_access.query(campaign_id, sql, limit, preflight=pf))
+    import anyio
+    del ctx
+    result = await anyio.to_thread.run_sync(lambda: data_access.query(campaign_id, sql, limit))
     # Only when it was actually capped: an uncapped result needs no second way to get it,
     # and offering one anyway trains a reader to ignore the field.
     if result.get("truncated"):

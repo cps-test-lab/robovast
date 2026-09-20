@@ -19,54 +19,38 @@ JOB_KIND_LABEL = "job-kind"
 #: which ``test_the_wire_kind_is_the_cluster_label`` pins.
 CALIBRATION_JOB_KIND = "calibration"
 
-JOB_TEMPLATE = """apiVersion: batch/v1
-kind: Job
-metadata:
-  name: $JOB_NAME
-  namespace: {namespace}
-  labels:
-    jobgroup: scenario-runs
-    campaign-id: $CAMPAIGN_ID
-  annotations:
-    total-job-num: "$TOTAL_JOB_NUM"
-spec:
-  backoffLimit: 0
-  ttlSecondsAfterFinished: 60
-  template:
-    metadata:
-      name: scenario-runs
-      labels:
-        jobgroup: scenario-runs
-        campaign-id: $CAMPAIGN_ID
-      annotations:
-        job-name-full: $JOB_FULL_NAME
-    spec:
-      restartPolicy: Never
-      containers:
-        - name: robovast
-          image: {image}
-          imagePullPolicy: {pull_policy}
-          command: ["/usr/bin/tini", "--", "/bin/bash", "/config/entrypoint.sh"]
-          env:
-          # Which machine ran this trial. The downward API is the only source: a pod
-          # cannot see its own node otherwise, and ``instance_type`` does not answer it
-          # on bare metal, where the provider command is ``uname -m`` and every node
-          # reports the same architecture. Without it, runs from a heterogeneous cluster
-          # cannot be grouped by the hardware they ran on, so a slower node reads as
-          # run-to-run variance.
-          - name: NODE_NAME
-            valueFrom:
-              fieldRef:
-                fieldPath: spec.nodeName
-          - name: AVAILABLE_CPUS
-            valueFrom:
-              resourceFieldRef:
-                resource: limits.cpu
-          - name: AVAILABLE_MEM
-            valueFrom:
-              resourceFieldRef:
-                resource: limits.memory
-          resources:
-            requests: {{}}
-            limits: {{}}
+#: How long a finished scenario Job stays readable. Short: the batch loop reads each Job as
+#: it finishes and its results are delivered before the pod completes.
+SCENARIO_JOB_TTL_SECONDS = 60
+
+#: The scenario pod's spec, which :func:`~.campaign_job.campaign_job_manifest` wraps in the
+#: Job every admitted campaign Job shares. ``{image}`` and ``{pull_policy}`` are filled on
+#: load; the per-job values are stamped on each Job built from it.
+POD_TEMPLATE = """containers:
+  - name: robovast
+    image: {image}
+    imagePullPolicy: {pull_policy}
+    command: ["/usr/bin/tini", "--", "/bin/bash", "/config/entrypoint.sh"]
+    env:
+    # Which machine ran this trial. The downward API is the only source: a pod
+    # cannot see its own node otherwise, and ``instance_type`` does not answer it
+    # on bare metal, where the provider command is ``uname -m`` and every node
+    # reports the same architecture. Without it, runs from a heterogeneous cluster
+    # cannot be grouped by the hardware they ran on, so a slower node reads as
+    # run-to-run variance.
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: AVAILABLE_CPUS
+      valueFrom:
+        resourceFieldRef:
+          resource: limits.cpu
+    - name: AVAILABLE_MEM
+      valueFrom:
+        resourceFieldRef:
+          resource: limits.memory
+    resources:
+      requests: {{}}
+      limits: {{}}
 """

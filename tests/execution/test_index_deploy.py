@@ -8,10 +8,6 @@ regenerated against a data directory that already has one, a probe impatient eno
 a slow first start into a crash loop, and a DSN naming a host that does not exist.
 """
 
-import io
-
-import yaml
-
 from robovast.execution.cluster_execution import index_deploy, service_deploy, store_pod
 
 
@@ -22,33 +18,31 @@ def _pod_spec(**kwargs):
 
 
 def _store_docs(namespace="default", **kwargs):
-    from robovast.execution.cluster_config.rke2 import MINIO_MANIFEST_RKE2
-
-    return store_pod.attach_infrastructure(
-        list(yaml.safe_load_all(io.StringIO(MINIO_MANIFEST_RKE2))), namespace, **kwargs)
+    return store_pod.attach_infrastructure([], namespace, **kwargs)
 
 
 def _store_pod_spec(**kwargs):
     return next(d for d in _store_docs(**kwargs) if d["kind"] == "Pod")["spec"]
 
 
-def test_the_index_runs_in_the_store_pod_not_the_service_pod():
-    """The service Deployment is rolled by every upgrade; the store pod is not.
+def test_the_index_runs_in_the_robovast_pod_not_the_service_pod():
+    """The service Deployment is rolled by every upgrade; the ``robovast`` pod is not.
 
-    Postgres there restarted on each version bump, including one that only bumped the
-    controller image. The store pod is created once at setup, is node-pinned, and already
-    holds the campaign data these rows index.
+    Postgres in the service pod would restart on each version bump, including one that
+    changes nothing but the controller image. The ``robovast`` pod is created once at setup and is
+    node-pinned beside the results these rows index.
     """
-    assert [c["name"] for c in _pod_spec()["containers"]] == [service_deploy.SERVICE_NAME]
+    assert index_deploy.INDEX_CONTAINER_NAME not in [
+        c["name"] for c in _pod_spec()["containers"]]
     assert index_deploy.INDEX_CONTAINER_NAME in [
         c["name"] for c in _store_pod_spec()["containers"]]
 
 
-def test_the_index_answers_on_the_store_pods_own_service():
+def test_the_index_answers_on_the_robovast_pods_own_service():
     """One Service, one selector. A second object would duplicate both for no isolation."""
     services = [d for d in _store_docs() if d["kind"] == "Service"]
 
-    assert len(services) == 1, "the store pod keeps exactly one Service"
+    assert len(services) == 1, "the robovast pod keeps exactly one Service"
     assert index_deploy.INDEX_PORT in [p["port"] for p in services[0]["spec"]["ports"]]
 
 
@@ -60,22 +54,21 @@ def test_the_index_port_is_not_on_the_services_own_service():
     assert index_deploy.INDEX_PORT not in ports
 
 
-def test_the_index_and_the_store_are_never_separated():
+def test_the_index_and_the_results_are_never_separated():
     """The index must not outlive the campaigns it was ingested from, and this is how.
 
-    It shares the store's pod, takes the store's backing and sits at a path derived from the
-    store's, so the two are created, moved and destroyed as one thing. An emptyDir here is the
-    other way of arranging that, and it costs a full re-ingest on every restart of a store
-    that now survives one.
+    It sits at a path derived from the results' and takes their backing, so the two are
+    placed and destroyed as one thing. An emptyDir here is the other way of arranging that,
+    and it costs a full re-ingest on every restart of the pod.
     """
     volume = index_deploy.index_volume("/media/data/index")
 
     assert volume["hostPath"]["path"] == "/media/data/index"
     assert "emptyDir" not in volume, (
-        "an index emptied on every restart re-ingests a corpus the store still holds")
+        "an index emptied on every restart re-ingests a corpus the results still hold")
 
 
-def test_the_index_is_a_claim_exactly_where_the_store_is_one():
+def test_a_class_backs_the_index_with_a_claim():
     volume = index_deploy.index_volume("/media/data/index", "local-path")
 
     assert volume["persistentVolumeClaim"]["claimName"] == index_deploy.INDEX_VOLUME_NAME
@@ -85,8 +78,6 @@ def test_the_index_is_a_claim_exactly_where_the_store_is_one():
 
 
 def test_the_index_claim_takes_the_size_it_is_given():
-    """A bucket-backed provider has no --store-class to size the index with, so the size is
-    its own argument there."""
     assert index_deploy.index_pvc_manifest("default", "premium-rwo", "100Gi")["spec"][
         "resources"]["requests"]["storage"] == "100Gi"
     assert index_deploy.index_pvc_manifest("default", "premium-rwo")["spec"][
@@ -133,8 +124,8 @@ def test_liveness_is_slower_than_readiness_so_a_slow_start_is_not_a_crash_loop()
     assert container["livenessProbe"]["failureThreshold"] > 1
 
 
-def test_the_dsn_names_the_store_service_in_this_namespace():
-    """A different pod now, so the host is a Service name -- assembled, never configured.
+def test_the_dsn_names_the_robovast_service_in_this_namespace():
+    """A different pod from the service, so the host is a Service name -- assembled, never configured.
 
     ``<service>.<namespace>.svc`` resolves in any cluster through the pod's own search
     domain, so no cluster domain and no site-specific host is written into the source. The

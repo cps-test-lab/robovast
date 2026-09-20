@@ -342,6 +342,11 @@
       "Union[list[Union[dict[str, Any], str]], NoneType]"
     ],
     [
+      "kubernetes",
+      false,
+      "Union[KubernetesConfig, NoneType]"
+    ],
+    [
       "mode",
       false,
       "str"
@@ -502,6 +507,30 @@
       "type",
       true,
       "Literal[int]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "JobsConfig": [
+    [
+      "node",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "KubernetesConfig": [
+    [
+      "jobs",
+      false,
+      "Union[JobsConfig, NoneType]"
     ],
     [
       "<extra>",

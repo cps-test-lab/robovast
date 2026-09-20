@@ -25,25 +25,35 @@ runs the plugin's commands inside it via the Kubernetes ``pods/exec`` subresourc
 with the driver would satisfy the plugin contract's "workspace visible at the same
 absolute path on both sides" for free. It is not available: the driver runs inside
 the long-lived ``robovast-service`` pod, and a pod's container set is immutable, so
-a *campaign-specific* sidecar of it is impossible. Instead each campaign gets its
-own aux Pod, and this module **emulates
-the shared workspace** by mirroring it into the pod before every ``run()`` and
+a *campaign-specific* sidecar of it is impossible. Instead each aux container gets
+its own Pod, created the first time something asks for it, and this module **emulates
+the shared workspace** by moving it into the pod before every ``run()`` and
 copying the results back afterwards, at the *same absolute path*.
 
-**How the workspace is mirrored.** Through the **object store**, the same transport a
-campaign Job, an image-build context and the container-exec lane use: the service
-uploads the workspace to a prefix, the container runs ``mc mirror`` to pull it down, and
-the reverse afterwards. ``mc`` is injected into the pod from the sidecar image at
-creation, into an ``emptyDir`` at ``/tools``, because the aux image belongs to a plugin
-author and is not ours to add tools to — the trick the rosbag postprocess Job already
-uses to run ``mc`` inside the system-under-test's own image.
+**Created on demand, never predicted.** :class:`AuxPodSession` is entered for a span
+knowing nothing about what that span will need, and builds a pod when the factory is
+first called for a spec. Three kinds of thing ask -- a variation plugin, an
+``execution.generate`` input generator, and the simulator backend's query that resolves
+what a world is made of -- and the list is open. Deciding in advance instead, by reading
+the ``.vast``, is a second implementation of an enumeration composition already performs:
+whatever it does not cover is a campaign that fails while composing, on a container it
+declared. Asking is the only enumeration that cannot be incomplete.
 
-This replaced piping a base64 tarball through the ``pods/exec`` channel. That worked,
-but the channel is a text websocket the client **cannot half-close**, so a receiver
-waiting for EOF waited forever — observed against a live pod for 2m47s, on a workspace
-with nothing in it. It was fixed by framing the read with ``head -c <n>``; going through
-the store removes the need for stdin at all, so the failure mode is gone by construction,
-along with the ~1.33x base64 inflation and buffering whole tarballs in the service.
+**How the workspace moves.** Through the service's **data plane**, the same transport a
+campaign Job, an image-build context and the container-exec lane use
+(:mod:`.pod_access`): the runner's workspace *is* a staged tree on the service's disk,
+and a ``transfer`` container from the sidecar image fetches it into the pod as one tar
+stream before a command and delivers it back as one afterwards. That container shares
+the pod's emptyDirs with the aux container and carries the slot's token, so nothing is
+assumed about the aux image -- it belongs to a plugin author and is not ours to add tools
+to -- and no credential reaches it.
+
+The workspace sits under the pod's staged slot on the service's disk and is mounted in
+the pod at that same absolute path, so the plugin contract's "one path on both sides"
+holds with no copy in between: the fetch extracts onto the mount, the delivery extracts
+onto the service's own directory. Nothing goes through the ``pods/exec`` channel but the
+commands themselves; that channel is a text websocket the client cannot half-close, so a
+receiver waiting for stdin EOF there waits forever.
 
 Consequences to know:
 
@@ -54,25 +64,33 @@ Consequences to know:
   not see them — only the state at copy-in/copy-out boundaries.
 * An **empty workspace transfers nothing**: a generator whose inputs all live in its own
   image stages no files, and a round trip per ``run()`` for zero bytes is pure latency.
-* Composition now needs the object store to be reachable. That is not a new dependency in
-  practice — the campaign being composed cannot run without it either — but it is a new
-  dependency *at composition time*, and it fails loudly rather than falling back.
+* Composition needs the data plane to be reachable from the pod. That is not a new
+  dependency in practice — the campaign being composed cannot run without it either —
+  but it is a dependency *at composition time*, and it fails loudly rather than falling
+  back.
 * Aux compute is scheduled by Kubernetes as its own pod, so it never competes
   with the service (the control plane) for resources.
 
-Lifecycle: the pod is labeled with its campaign, owned by the service pod (so
+Lifecycle: each pod is labeled with its campaign, owned by the service pod (so
 Kubernetes garbage-collects it if the service is replaced), carries an
-``activeDeadlineSeconds`` backstop, and is deleted when the campaign ends.
+``activeDeadlineSeconds`` backstop, and is deleted when the span that created it ends.
 """
 
 import contextlib
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
-import time
+import threading
+from pathlib import Path
+from urllib.parse import quote
+
+from robovast.common.errors import ExecTargetGone
+
+from . import pod_access
 
 logger = logging.getLogger(__name__)
 
@@ -93,26 +111,24 @@ AUX_EXEC_LIMIT_S = 2 * 60 * 60
 #: normally ends a held pod; this is the backstop for a service that dies holding one.
 AUX_HOLD_LIMIT_S = AUX_EXEC_LIMIT_S
 
-#: Label selector identifying every aux pod (one per campaign that needs one).
+#: Label selector identifying every aux pod (one per aux container a span asked for).
 AUX_LABEL = "app=robovast-aux"
 
-#: Key prefix every mirrored aux workspace lives under, inside the deployment's bucket.
+#: The staged slot every aux pod's workspaces live under, on the service's disk.
 AUX_WORKSPACE_PREFIX = "aux-workspaces"
 
-#: The ``mc`` alias the aux containers address the store by. Same name the campaign job's
-#: init and the build context's fetch use, so all three read alike.
-_MC_ALIAS = "mystore"
-#: Where the sidecar's ``mc`` — and a config dir it can actually write — are injected.
-_TOOLS_MOUNT = "/tools"
-_MC = f"{_TOOLS_MOUNT}/mc"
-_MC_CONFIG = f"{_TOOLS_MOUNT}/mc-config"
+#: The container from the sidecar image that moves the workspace in and out of the pod.
+#: Every file operation the runner needs -- the fetch, the delivery, filling an exposed
+#: mount, removing a finished workspace -- is exec'd here, so the aux image is asked for
+#: nothing but the plugin's own command.
+TRANSFER_CONTAINER = "transfer"
 
 #: Absolute DIRECTORIES an aux container can be asked to expose a staged input at, via
 #: :meth:`ClusterContainerRunner.expose`. A fixed list rather than anything a caller picks,
 #: because the mount has to be declared when the *pod* is built, long before a runner knows
 #: what it will stage -- and a path nobody mounted is not writable in an arbitrary image.
-#: Each one becomes an emptyDir, mounted on every aux container and chmod'ed by the init
-#: container, so a new entry here is all a new fixed mount needs.
+#: Each one becomes an emptyDir, mounted on every aux container and made world-writable by
+#: the transfer container as it starts, so a new entry here is all a new fixed mount needs.
 #:
 #: ``/config`` is where a job mounts a campaign's ``run_files``, so a world's own
 #: ``/config/...`` references resolve there for a rebuild exactly as they did for the run.
@@ -125,221 +141,70 @@ _MC_CONFIG = f"{_TOOLS_MOUNT}/mc-config"
 AUX_MOUNTABLE_PATHS = ("/config", "/aux")
 
 
+#: The volume holding the runners' workspaces. A fixed name rather than one derived from its
+#: mount path: that path is the service's own scratch directory, mirrored so a generator sees
+#: one path on both sides, and it is as deep as the deployment's results root makes it -- far
+#: past the 63 characters a volume name may have.
+WORKSPACE_VOLUME = "aux-workspace"
+
+
 def _mount_volume_name(path: str) -> str:
-    """A DNS-label volume name for a mountable absolute path (``/config`` -> ``aux-config``)."""
+    """A DNS-label volume name for a mountable absolute path (``/config`` -> ``aux-config``).
+
+    Only for :data:`AUX_MOUNTABLE_PATHS`, a fixed list of short paths; the workspace root has
+    :data:`WORKSPACE_VOLUME`.
+    """
     return "aux-" + re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")
 
 
-def aux_workspace_prefix(owner_id: str, workspace_name: str) -> str:
-    """Where one runner's workspace is mirrored.
+def aux_slot(pod_name: str) -> str:
+    """The staged slot holding every workspace moved in and out of *pod_name*.
 
-    Keyed on the runner's own temp-directory name rather than on its container, because
-    a runner is built per *variation*: two variations sharing one aux container would
-    otherwise share a prefix, and whichever finished first would delete the other's
-    files in :meth:`ClusterContainerRunner.close`.
+    Keyed on the pod, because the pod is what carries the token and a token reaches one
+    slot. Each runner's workspace is a directory of its own inside it -- a runner is
+    built per *variation*, and two variations sharing one pod must not share a tree,
+    or whichever finished first would remove the other's files in
+    :meth:`ClusterContainerRunner.close`.
     """
-    return f"{aux_owner_prefix(owner_id)}/{workspace_name}"
+    return f"{AUX_WORKSPACE_PREFIX}/{pod_name}"
 
 
-def aux_owner_prefix(owner_id: str) -> str:
-    """Everything mirrored on behalf of one campaign (or scene build), for the sweep."""
+def aux_workspace_root(stage_dir, pod_name: str) -> Path:
+    """Where *pod_name*'s workspaces live: the slot's directory on the service's disk,
+    and the path the pod mounts its emptyDir at, so a workspace has one address on both
+    sides. *stage_dir* is the service's ``staged_dir(slot)``."""
+    return Path(stage_dir(aux_slot(pod_name)))
+
+
+def aux_pod_name(campaign_id: str, container: str = "") -> str:
+    """Deterministic pod name for *campaign_id*'s aux container.
+
+    One pod per aux *container*, because a pod's container set is fixed when it is
+    created and nothing knows the set in advance -- see the module docstring. *container*
+    is a spec's :meth:`~robovast.common.variation.container_runner.ContainerSpec.container_name`
+    and is appended (its ``aux-`` prefix dropped, already in the name); omitted, this is
+    the campaign's base name, which is what a caller sweeping by name uses.
+
+    Deterministic so a retried span addresses the pod its predecessor left behind rather
+    than accumulating one per attempt; the collision that name causes is handled where the
+    pod is created.
+    """
     from .cluster_execution import _label_safe_campaign
-    return f"{AUX_WORKSPACE_PREFIX}/{_label_safe_campaign(owner_id)}"
-
-
-def mc_host_env(endpoint: str, access_key: str, secret_key: str) -> dict:
-    """``MC_HOST_<alias>``, so no ``mc alias set`` has to run in the aux container.
-
-    An alias command would write to ``$HOME/.mc``, and the aux image is not ours: its
-    ``HOME`` may not exist, may not be writable, and ``run_as_user`` can change who is
-    asking. Credentials in the environment match what every campaign pod already carries.
-    """
-    from urllib.parse import quote, urlsplit
-    parts = urlsplit(endpoint)
-    creds = f"{quote(access_key, safe='')}:{quote(secret_key, safe='')}"
-    return {f"MC_HOST_{_MC_ALIAS}":
-            f"{parts.scheme}://{creds}@{parts.netloc}{parts.path}".rstrip("/")}
-
-
-def aux_pod_name(campaign_id: str) -> str:
-    """Deterministic aux-pod name for *campaign_id*."""
-    from .cluster_execution import _label_safe_campaign
-    return f"robovast-aux-{_label_safe_campaign(campaign_id)}"
-
-
-class AuxDiscoveryError(RuntimeError):
-    """Aux-container discovery could not determine what a campaign needs.
-
-    Raised instead of silently returning an empty spec list, so a campaign that
-    requires a helper image aborts before dispatch rather than launching with no
-    aux pod. An *empty* result is only ever "this campaign declares no aux
-    container", never "we could not tell".
-    """
-
-
-def required_container_specs(config_path):
-    """Collect the distinct auxiliary ContainerSpecs a campaign needs while it composes.
-
-    Asks each declared variation **and each ``execution.generate`` input generator** (via
-    ``get_required_container``) whether it needs a helper image while it runs, and returns
-    a list of ``ContainerSpec`` deduplicated by container name. An empty list means the
-    campaign genuinely declares no aux container. Discovery never *silently* yields an
-    empty list: any failure to load the ``.vast``, resolve a variation or generator, or
-    run the discovery subprocess propagates, so a launch that needs a helper image fails
-    loudly instead of running without it.
-
-    When the ``.vast`` declares ``plugins:`` (or a staged ``.robovast_plugins/`` is
-    present), the variation names resolve only through the plugin's entry points, and
-    those must be imported to call ``get_required_container``. Importing plugin code
-    in this long-lived service is forbidden (its pinned deps — e.g. a forked
-    ``rdflib`` — would win over the service's), so discovery for that case runs in a
-    fresh subprocess (parity with ``config_generation._compose_isolated``). A pure
-    built-in ``.vast`` needs no plugin import and is resolved in-process.
-    """
-    from robovast.common.common import load_config
-    from robovast.common.config_plugins import PLUGIN_DIRNAME
-
-    vast_dir = os.path.dirname(os.path.abspath(config_path))
-    parameters = load_config(config_path)
-
-    needs_plugins = bool(parameters.get("plugins")) or \
-        os.path.isdir(os.path.join(vast_dir, PLUGIN_DIRNAME))
-    if needs_plugins:
-        return _discover_specs_subprocess(config_path)
-    return _discover_specs(config_path)
-
-
-def _discover_specs(config_path):
-    """Resolve the campaign's aux ContainerSpecs in the current process.
-
-    Prepends any declared/staged variation plugins to ``sys.path`` first, so plugin
-    variation names resolve via their entry points. Only safe to call in-process for
-    a built-in-only ``.vast`` (see :func:`required_container_specs`); otherwise it is
-    the body run inside the discovery subprocess (``aux_discovery_worker``).
-    """
-    from robovast.common.common import load_config
-    from robovast.common.config_generation import _get_variation_classes
-    from robovast.common.config_plugins import ensure_workspace_plugins
-
-    vast_dir = os.path.dirname(os.path.abspath(config_path))
-    parameters = load_config(config_path)
-
-    # Put the .vast's variation plugins on sys.path (no-op for a built-in-only .vast:
-    # no ``plugins:`` and no staged dir). A matching ``.installed`` marker makes this
-    # sys.path-only — no pip, no network.
-    ensure_workspace_plugins(vast_dir, parameters.get("plugins"))
-
-    # Batch campaigns declare variations under top-level ``configuration`` blocks;
-    # search campaigns declare them once as ``search.variations`` (compose expands
-    # that template into configuration blocks per generation). Inspect both so the
-    # aux pod is created regardless of campaign type. Unsubstituted ``$name`` search
-    # markers in the template are harmless: get_required_container ignores values.
-    blocks = list(parameters.get("configuration", []) or [])
-    search_variations = (parameters.get("search", {}) or {}).get("variations")
-    if search_variations:
-        blocks.append({"variations": search_variations})
-
-    # A failure to resolve a variation or compute its container requirement aborts
-    # discovery (propagates): we cannot know whether the campaign needs a helper
-    # image, so we must not proceed as if it needs none.
-    specs = {}
-    for config_block in blocks:
-        classes = _get_variation_classes(config_block, vast_dir)
-        for variation_class, variation_parameters in classes:
-            spec = variation_class.get_required_container(variation_parameters)
-            if spec is not None:
-                specs.setdefault(spec.container_name(), spec)
-
-    # ``execution.generate`` asks for a helper image the same way a variation does, and for the
-    # same reason: a generator's tool is routinely absent from the process composing the campaign,
-    # which is the whole point of naming an image there. Omitting these left the caller creating no
-    # aux pod and installing no runner factory, so the campaign failed while composing -- on the
-    # very container it had declared.
-    for spec in _generator_container_specs(parameters, vast_dir):
-        specs.setdefault(spec.container_name(), spec)
-    return list(specs.values())
-
-
-def _generator_container_specs(parameters, vast_dir):
-    """ContainerSpecs the campaign's ``execution.generate`` entries declare.
-
-    Resolution mirrors ``run_input_generators``: the same entry parsing, the same registry, and
-    the same ``./path.py:Class`` file references -- so a generator that will need a container at
-    composition time is the one discovered here. A generator that names no ``image`` returns None
-    and contributes nothing, which is the common case.
-
-    Called from :func:`_discover_specs`, so it inherits that function's process: in the subprocess
-    when the ``.vast`` declares ``plugins:``, in-process otherwise. That is the same treatment a
-    ``./path.py:Class`` VARIATION already gets, and the gate is deliberate -- what may not be
-    imported into the long-lived service is a packaged plugin, whose pinned dependencies would win
-    over the service's own.
-    """
-    from robovast.common.input_generation import (load_input_generators,
-                                                  parse_generate_entry,
-                                                  resolve_input_generator)
-
-    entries = (parameters.get("execution", {}) or {}).get("generate") or []
-    if not entries:
-        return []
-    generators = load_input_generators()
-    specs = []
-    for index, entry in enumerate(entries):
-        name, params = parse_generate_entry(entry, index)
-        generator_class = resolve_input_generator(name, vast_dir, generators)
-        spec = generator_class.get_required_container(params)
-        if spec is not None:
-            specs.append(spec)
-    return specs
-
-
-def _discover_specs_subprocess(config_path):
-    """Run :func:`_discover_specs` in a fresh subprocess and rebuild the specs.
-
-    Isolates plugin imports from the long-lived service. If the worker cannot start,
-    exits non-zero, or yields no readable result, that is raised as
-    :class:`AuxDiscoveryError` — the campaign then fails loudly instead of launching
-    with no aux pod. The worker's captured traceback is included so the real plugin
-    error is visible at the failure site, not deferred to compose time.
-    """
-    import json
-    import sys
-
-    with tempfile.TemporaryDirectory(prefix="robovast_aux_discovery_") as jobdir:
-        result_path = os.path.join(jobdir, "result.json")
-        job_path = os.path.join(jobdir, "job.json")
-        with open(job_path, "w", encoding="utf-8") as f:
-            json.dump({"config_path": os.path.abspath(config_path),
-                       "result_path": result_path}, f)
-
-        cmd = [sys.executable, "-m",
-               "robovast.execution.cluster_execution.aux_discovery_worker", job_path]
-        try:
-            # nosec B603 - fixed module, config-derived job file
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        except Exception as exc:
-            raise AuxDiscoveryError(
-                f"aux-container discovery subprocess could not start: {exc}") from exc
-        if proc.returncode != 0:
-            tail = (proc.stdout + proc.stderr)[-2000:]
-            raise AuxDiscoveryError(
-                f"aux-container discovery failed (exit {proc.returncode}):\n{tail}")
-        try:
-            with open(result_path, encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise AuxDiscoveryError(
-                f"aux-container discovery produced no readable result: {exc}") from exc
-
-    from robovast.common.variation.container_runner import ContainerSpec
-    return [ContainerSpec(**spec) for spec in raw]
+    base = f"robovast-aux-{_label_safe_campaign(campaign_id)}"
+    if not container:
+        return base
+    suffix = container[len("aux-"):] if container.startswith("aux-") else container
+    return f"{base}-{suffix}" if suffix else base
 
 
 def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     """Delete aux pods (label ``app=robovast-aux``). Best-effort.
 
-    With *campaign* given, deletes only that campaign's aux pod so concurrent
-    campaigns are left untouched; otherwise deletes every aux pod. Backs
-    ``vast cluster jobs-cleanup`` (the successor to the controller-pod reap).
+    With *campaign* given, deletes only that campaign's aux pods so concurrent
+    campaigns are left untouched; otherwise deletes every aux pod. Selected by the
+    campaign LABEL rather than by name, so it catches every pod a span created whatever
+    each is called. Backs ``vast cluster jobs-cleanup`` (the successor to the
+    controller-pod reap).
     """
     from kubernetes import client
 
@@ -381,24 +246,26 @@ def _aux_image(image: str) -> str:
     return resolve_family_image(image, role="image for an auxiliary container")
 
 
-def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
+def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
+                           stage_dir, token_for,
                            deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
-                           pull_secret: str = "", s3: tuple | None = None,
-                           pod_name: str = "", container_names=None,
-                           extra_labels: dict | None = None) -> dict:
-    """Manifest for an aux Pod: one kept-alive container per spec.
+                           pull_secret: str = "", pod_name: str = "",
+                           container_names=None, extra_labels: dict | None = None) -> dict:
+    """Manifest for an aux Pod: one kept-alive container per spec, plus the transfer one.
 
     Each container runs the aux image with its one-shot entrypoint overridden by
     the spec's ``keep_alive_command``, so it stays up for the whole span and
     every ``run()`` pays only the exec setup (no per-call create or image re-pull).
 
     Two spans build one manifest here, which is the point: a *campaign*'s pod (named after
-    the campaign, deleted when it ends) and a *held* one owned by the service's exec
-    manager (named after its slot, reaped on idleness). *pod_name*, *container_names* and
-    *extra_labels* are what the second needs — its name and container have to be the ones
-    the exec lane already addresses and sweeps by, and everything else about an aux pod is
-    identical. Forking a second builder for that would have put the ``mc`` init container,
-    the mountable emptyDirs and the pull secret in two places.
+    the campaign and the container it holds, deleted when the span ends) and a *held* one
+    owned by the service's exec manager (named after its slot, reaped on idleness).
+    *pod_name*, *container_names* and *extra_labels* are how each says which — a held pod's
+    name and container have to be the ones the exec lane already addresses and sweeps by —
+    and everything else about an aux pod is identical. Forking a second builder for that
+    would have put the transfer container, the mountable emptyDirs and the pull secret in
+    two places. The campaign label is set either way, so a sweep by campaign finds every
+    pod a span created whatever each is named.
 
     *container_names* maps a spec's ``container_name()`` to the name to use instead;
     unnamed specs keep their own.
@@ -407,55 +274,59 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
     pod when the service is replaced — the same "dies with its parent" guarantee
     the old controller-pod sidecar had.
 
-    *pull_secret* names an image-pull secret. Aux images were originally public
-    (``ghcr.io/secorolab/scenery_builder``), so none was needed; a spec naming the
-    *campaign's own* image points at a private registry, and ``imagePullPolicy:
-    IfNotPresent`` hides that until the first node that has not cached it.
+    *pull_secret* names an image-pull secret, which a spec naming the *campaign's own*
+    image needs: that one points at a private registry, while an aux image may equally be
+    a public one (``ghcr.io/secorolab/scenery_builder``) that needs none.
 
-    *s3* is ``(endpoint, access_key, secret_key)``. Given, the pod gains an init
-    container that injects ``mc`` into an ``emptyDir`` and every aux container mounts it,
-    so the workspace can be mirrored through the object store rather than piped through
-    the exec channel. The binary comes from the sidecar image because the aux image is
-    not ours to add tools to — the same trick the rosbag postprocess Job uses to run
-    ``mc`` inside the system-under-test's own image.
+    *stage_dir* and *token_for* are the service's ``staged_dir(slot)`` and
+    ``scoped_token(scope)``. The pod's slot is :func:`aux_slot` of its name; the
+    ``transfer`` container from the sidecar image carries a token scoped to it
+    (:func:`pod_access.staged_pod_env`) and mounts the slot's directory at the path the
+    service has it, beside every :data:`AUX_MOUNTABLE_PATHS` emptyDir, so a runner's
+    workspace is one address on both sides and the aux image needs no tool of ours.
+    The token is a plain value: the pod lives as long as its slot, and the slot holds
+    nothing but scratch trees deleted with it.
     """
     from robovast.common.execution import resolve_sidecar_image
 
     from .cluster_execution import _label_safe_campaign
+    from .kubernetes_backend import pull_policy_for
 
-    tools_mount = {"name": "aux-tools", "mountPath": _TOOLS_MOUNT}
-    # One emptyDir per mountable path, on every aux container. Empty unless a runner stages
-    # into it, so a generator that never asks pays a volume and nothing else; and it has to
-    # be here rather than at ``expose`` time because a Pod's mounts are fixed when it is
-    # created. Tied to *s3* like the rest of the mirroring: without a store nothing can be
-    # staged into one, so an unusable mount would only be noise in the manifest.
-    config_mounts = [{"name": _mount_volume_name(path), "mountPath": path}
-                     for path in AUX_MOUNTABLE_PATHS] if s3 else []
-    host_env = mc_host_env(*s3) if s3 else {}
+    name = pod_name or aux_pod_name(campaign_id)
+    workspace_root = str(aux_workspace_root(stage_dir, name))
+    # One emptyDir per shared path, on every container of the pod: the workspace root the
+    # runner fetches into, and each mountable path a runner may expose a tree at. Empty
+    # unless a runner stages into it, so a generator that never asks pays a volume and
+    # nothing else; and declared here rather than at ``expose`` time because a Pod's
+    # mounts are fixed when it is created.
+    shared_paths = (workspace_root, *AUX_MOUNTABLE_PATHS)
+    shared_mounts = [{"name": WORKSPACE_VOLUME, "mountPath": workspace_root}] + [
+        {"name": _mount_volume_name(path), "mountPath": path} for path in AUX_MOUNTABLE_PATHS]
 
     containers = []
     for spec in specs:
+        image = _aux_image(spec.image)
         container = {
             "name": (container_names or {}).get(spec.container_name(),
                                                 spec.container_name()),
             # A `family:<member>` ref is SYMBOLIC and must be resolved before it reaches a Pod --
             # kubelet reads an unresolved one as `docker.io/library/family:<member>` and fails the
             # pull with `insufficient_scope`, which reads like a credentials problem rather than an
-            # unresolved reference. Resolved here, in the service, for the same reason the mc-tools
-            # container below calls resolve_sidecar_image(): this process is the one carrying the
-            # deployment's project and tag. The local lane resolves at runner-creation time
-            # instead (config_generation._make_container_runner), which is why a family ref worked
-            # there and not here.
-            "image": _aux_image(spec.image),
-            "imagePullPolicy": "IfNotPresent",
+            # unresolved reference. Resolved here, in the service, for the same reason the
+            # transfer container below calls resolve_sidecar_image(): this process is the one
+            # carrying the deployment's project and tag. The local lane resolves at
+            # runner-creation time instead (config_generation._make_container_runner), which is
+            # why a family ref worked there and not here.
+            "image": image,
+            # From the ref, like every other pod this package writes: see
+            # ``pull_policy_for``. A tag is what a spec names in the ordinary case, and it
+            # is the deployment's own floating one whenever the spec is a `family:` member.
+            "imagePullPolicy": pull_policy_for(image),
             "command": list(spec.keep_alive_command),
+            "volumeMounts": list(shared_mounts),
         }
-        env = dict(spec.env or {})
-        env.update(host_env)
-        if env:
-            container["env"] = [{"name": k, "value": str(v)} for k, v in env.items()]
-        if s3:
-            container["volumeMounts"] = [tools_mount] + list(config_mounts)
+        if spec.env:
+            container["env"] = [{"name": k, "value": str(v)} for k, v in spec.env.items()]
         if spec.run_as_user:
             uid = spec.run_as_user.split(":", 1)[0]
             try:
@@ -464,12 +335,29 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
                 pass
         containers.append(container)
 
+    # Every emptyDir gets the same treatment and for the same reason: it belongs to root,
+    # and a spec's ``run_as_user`` means the container that has to write into it may be
+    # nobody in particular. Done by the transfer container as it starts, which is before
+    # anything execs into the pod.
+    chmods = " && ".join(f"chmod 0777 {shlex.quote(path)}" for path in shared_paths)
+    sidecar = resolve_sidecar_image()
+    containers.append({
+        "name": TRANSFER_CONTAINER, "image": sidecar,
+        "imagePullPolicy": pull_policy_for(sidecar),
+        # Idle for the pod's whole deadline: the pod's own ``activeDeadlineSeconds`` ends
+        # it at the same moment, and a bounded sleep needs nothing of the image's sleep.
+        "command": ["sh", "-c", f"{chmods} && exec sleep {int(deadline_seconds)}"],
+        "env": pod_access.staged_pod_env(namespace, token_for(
+            pod_access.staged_scope(aux_slot(name)))),
+        "volumeMounts": list(shared_mounts),
+    })
+
     # *extra_labels* last, and it may legitimately replace ``app``: a held pod is the exec
     # manager's, so the exec lane's stray sweep must be the one that finds it. Exactly one
     # sweep should own a pod — a held one answering to `cleanup_aux_pods` as well would let
     # a campaign's cleanup delete a container somebody's preview is composing against.
     metadata = {
-        "name": pod_name or aux_pod_name(campaign_id),
+        "name": name,
         "namespace": namespace,
         "labels": {"app": "robovast-aux",
                    "campaign-id": _label_safe_campaign(campaign_id),
@@ -482,23 +370,8 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None,
         # Backstop: even if teardown and the reaper both miss it, it dies.
         "activeDeadlineSeconds": int(deadline_seconds),
         "containers": containers,
+        "volumes": [{"name": mount["name"], "emptyDir": {}} for mount in shared_mounts],
     }
-    if s3:
-        spec["volumes"] = [{"name": "aux-tools", "emptyDir": {}}] + [
-            {"name": mount["name"], "emptyDir": {}} for mount in config_mounts]
-        # Every emptyDir gets the same treatment and for the same reason: it belongs to
-        # root, and a spec's ``run_as_user`` means the container that has to write into it
-        # may be nobody in particular.
-        chmods = " && ".join(f'chmod 0777 {mount["mountPath"]}' for mount in config_mounts)
-        spec["initContainers"] = [{
-            "name": "mc-tools", "image": resolve_sidecar_image(),
-            "imagePullPolicy": "IfNotPresent",
-            "command": ["sh", "-c",
-                        f'cp "$(command -v mc)" {_MC} && chmod 0755 {_MC} && '
-                        f'mkdir -p {_MC_CONFIG} && chmod 0777 {_MC_CONFIG}'
-                        + (f' && {chmods}' if chmods else '')],
-            "volumeMounts": [tools_mount] + list(config_mounts),
-        }]
     if pull_secret:
         spec["imagePullSecrets"] = [{"name": pull_secret}]
     return {
@@ -536,23 +409,37 @@ def service_pod_owner_reference(core_v1, namespace):
 
 
 class AuxPodSession:
-    """Creates a campaign's aux Pod, yields a runner factory, deletes it after.
+    """Provides a span's auxiliary containers on demand, and deletes them after.
 
-    Used as a context manager by the service's per-campaign worker thread, so the
-    pod's lifetime is exactly the campaign's and the runner factory it installs is
-    scoped to that worker (see ``config_generation.set_container_runner_factory``).
-    A campaign with no aux specs creates nothing.
+    Used as a context manager by the service's per-campaign worker thread, so a pod's
+    lifetime is exactly the span's and the runner factory it installs is scoped to that
+    worker (see ``config_generation.set_container_runner_factory``).
+
+    **Nothing is created on entry.** The factory builds a pod the first time it is asked
+    for a spec, and a span that asks for none creates nothing -- so a campaign pays for a
+    helper image exactly when something reaches for one, and no caller has to state in
+    advance what a composition will want (see the module docstring).
+
+    One pod per spec, because a pod's container set is fixed when it is created and the
+    second spec is not known when the first arrives.
+
+    **Not the exec manager's hold**, which provides the same thing on demand for the preview
+    span and owns its lifetime already. Its held containers are a bounded pool
+    (:data:`~robovast.service.container_exec.QUERY_POOL_MAX`), so a concurrent preview can
+    evict a slot -- acceptable for a question that can be asked again, not for a campaign
+    that is midway through composing against the container. A campaign's pod is therefore
+    span-scoped and outside the pool. What the two must not diverge on is the pod itself:
+    both build it through :func:`build_aux_pod_manifest`, and both delete one that never
+    became ready rather than leaving it to the deadline.
     """
 
-    def __init__(self, campaign_id, specs, namespace, core_v1=None,
-                 ready_timeout: float = 300.0, pull_secret: str = "",
-                 storage=None, bucket: str = "", s3: tuple | None = None,
-                 kube_context: str | None = None, on_pending=None):
+    def __init__(self, campaign_id, namespace, core_v1=None, *, stage_dir, discard_staged,
+                 token_for, ready_timeout: float = 300.0, pull_secret: str = "",
+                 kube_context: str | None = None, on_pending=None,
+                 should_stop=None):
         self.campaign_id = campaign_id
         self.pull_secret = pull_secret
-        self.specs = list(specs or [])
         self.namespace = namespace
-        self.pod_name = aux_pod_name(campaign_id)
         self._core_v1 = core_v1
         # Only consulted when no client was handed in. It must still be the *service's*
         # context: falling back to the kubeconfig's current one puts this campaign's aux
@@ -563,105 +450,172 @@ class AuxPodSession:
         # Reported on every poll of the ready wait, so a caller with somebody watching can name
         # what the pod is stuck on rather than only what it timed out on. See `wait_pod_ready`.
         self._on_pending = on_pending
-        self._created = False
-        # All three or none: a pod built with ``mc`` but no client to stage through (or
-        # the reverse) fails at the first ``run()``, deep inside a plugin, instead of
-        # here where the cause is legible.
-        if bool(storage) != bool(bucket) or bool(storage) != bool(s3):
-            raise ValueError(
-                "aux workspace mirroring needs storage, bucket and s3 together; "
-                f"got storage={bool(storage)} bucket={bool(bucket)} s3={bool(s3)}")
-        self._storage = storage
-        self._bucket = bucket
-        self._s3 = s3
+        # Polled by the same wait. A pull this span is waiting out is the one stretch of a
+        # composition long enough for an operator to stop the campaign in, and a stop that
+        # is answered only when the pull ends is one nothing distinguishes from a hang.
+        self._should_stop = should_stop
+        #: Container name -> the READY pod serving it. The memo that keeps a second command
+        #: in the same span from paying a second create and image pull, so only a pod that
+        #: can be exec'd into belongs here: a second ask after a failed create must repeat
+        #: the create rather than be handed a name that never came up.
+        self._pods: dict = {}
+        #: Every pod name this session created, ready or not -- the delete list, kept apart
+        #: from the memo for that reason. A pod whose image this cluster cannot pull exists
+        #: and holds a node's capacity while it backs off, so the span still owns its death;
+        #: leaving it to the deadline backstop is minutes of nothing waiting for it.
+        self._created: set = set()
+        # A variation and a generator compose in the same thread today, but nothing in the
+        # contract says two runners cannot be asked for at once -- and two creates of the
+        # same pod name is a 409 that would be handled as a leftover from a previous span.
+        self._lock = threading.Lock()
+        # The service's ``staged_dir``, ``discard_staged`` and ``scoped_token``: where a
+        # runner's workspace lives, how the slot is dropped, and what the pod is given to
+        # reach it. Required, because a pod built without them fails at the first
+        # ``run()``, deep inside a plugin, instead of here where the cause is legible.
+        self._stage_dir = stage_dir
+        self._discard = discard_staged
+        self._token_for = token_for
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client
-
-            from .kube_client import load_kube_config
-            load_kube_config(context=self._kube_context)
-            self._core_v1 = client.CoreV1Api()
+            from .kube_client import core_v1_client
+            self._core_v1 = core_v1_client(self._kube_context)
         return self._core_v1
 
     def __enter__(self):
-        if not self.specs:
-            return self
+        return self
+
+    def runner_factory(self):
+        """A ``factory(spec) -> ClusterContainerRunner`` over this span's pods.
+
+        Creating the pod is part of *answering*, not of arranging: the factory blocks on
+        the pull and the ready wait the first time a spec is asked for, and returns the
+        runner when there is a container to exec into. A caller that never calls this never
+        waits for anything.
+        """
+        def factory(spec):
+            return ClusterContainerRunner(
+                spec, self._pod_for(spec), self.namespace, self._client(),
+                stage_dir=self._stage_dir, kube_context=self._kube_context,
+                reprovision=self.replace)
+        return factory
+
+    def provision(self, spec):
+        """Create *spec*'s pod now, and return its name.
+
+        For a caller that already holds the spec — the scene cache builds one known image —
+        so the pull and the schedule happen where it can report them rather than inside the
+        first command. Idempotent, and the same pod the factory would have made: a caller
+        that skips this loses nothing but the timing.
+
+        This is not the prediction the module docstring warns about. The difference is who
+        knows: a caller naming the spec it is about to use, against a caller reading a
+        ``.vast`` to guess what a composition will ask for.
+        """
+        return self._pod_for(spec)
+
+    def _pod_for(self, spec):
+        """The name of the running pod holding *spec*'s container, creating it if needed."""
+        name = spec.container_name()
+        with self._lock:
+            existing = self._pods.get(name)
+            if existing:
+                return existing
+            pod_name = self._create_pod(spec, aux_pod_name(self.campaign_id, name))
+            self._pods[name] = pod_name
+            return pod_name
+
+    def replace(self, spec):
+        """Make *spec*'s pod again, after the one handed out went away. Returns its name.
+
+        The memo exists so a second ask in one span costs no create and no image pull, and
+        that is exactly what makes it wrong once the pod it names has ended: every later
+        ask is handed a container nothing can exec into. Forgetting the entry is what turns
+        the next ask back into a create.
+
+        The name is derived from the campaign, so the create meets the remains of the old
+        pod as a 409 — which :meth:`_create_pod` already waits out rather than adopting.
+        """
+        name = spec.container_name()
+        with self._lock:
+            self._pods.pop(name, None)
+        return self._pod_for(spec)
+
+    def _record_created(self, pod_name):
+        """Note that *pod_name* now exists, before anything asks whether it works.
+
+        Called between the create and the ready wait, so a pod that never becomes Running is
+        deleted with the span rather than left to the deadline. Under ``_lock`` already, via
+        the one caller.
+        """
+        self._created.add(pod_name)
+
+    def _create_pod(self, spec, pod_name):
+        """Create *pod_name* holding *spec*'s container and wait for it to be ready."""
         from kubernetes.client.rest import ApiException
 
         from .kube_client import wait_pod_gone, wait_pod_ready
         core = self._client()
         manifest = build_aux_pod_manifest(
-            self.campaign_id, self.specs, self.namespace,
+            self.campaign_id, [spec], self.namespace,
             owner_ref=service_pod_owner_reference(core, self.namespace),
-            pull_secret=self.pull_secret, s3=self._s3)
+            stage_dir=self._stage_dir, token_for=self._token_for,
+            pull_secret=self.pull_secret, pod_name=pod_name)
         try:
             core.create_namespaced_pod(self.namespace, manifest)
         except ApiException as e:
             if e.status != 409:
                 raise RuntimeError(
-                    f"could not create aux pod {self.pod_name}: {e.reason}") from e
+                    f"could not create aux pod {pod_name}: {e.reason}") from e
             # A 409 is not "already exists → reuse it". The name is derived from the
             # campaign id, so the pod it collides with is this campaign's previous one —
             # usually still Terminating, and a Terminating pod never becomes Running
             # again. Adopting it means waiting out the full ready timeout for a corpse.
             # Wait for the delete to land, then create ours.
             logger.info("Aux pod %s still exists; waiting for it to go before recreating",
-                        self.pod_name)
+                        pod_name)
             with contextlib.suppress(ApiException):
-                core.delete_namespaced_pod(self.pod_name, self.namespace,
+                core.delete_namespaced_pod(pod_name, self.namespace,
                                            grace_period_seconds=0)
-            wait_pod_gone(core, self.namespace, self.pod_name,
-                          timeout_s=self._ready_timeout)
+            wait_pod_gone(core, self.namespace, pod_name, timeout_s=self._ready_timeout)
             core.create_namespaced_pod(self.namespace, manifest)
-        self._created = True
-        logger.info("Aux pod %s created (%d container(s)) for campaign %s",
-                    self.pod_name, len(self.specs), self.campaign_id)
+        self._record_created(pod_name)
+        logger.info("Aux pod %s created for %s of campaign %s",
+                    pod_name, spec.container_name(), self.campaign_id)
         # Shared with the container-exec lane so a stuck pod names its reason
         # (ImagePullBackOff, say) instead of timing out with only an elapsed time —
         # which matters now that a spec may name the campaign's own private image.
-        wait_pod_ready(core, self.namespace, self.pod_name,
-                       timeout_s=self._ready_timeout, on_pending=self._on_pending)
-        return self
-
-    def runner_factory(self):
-        """A ``factory(spec) -> ClusterContainerRunner`` bound to this campaign's pod."""
-        def factory(spec):
-            return ClusterContainerRunner(
-                spec, self.pod_name, self.namespace, self._client(),
-                storage=self._storage, bucket=self._bucket,
-                owner_id=self.campaign_id, kube_context=self._kube_context)
-        return factory
+        wait_pod_ready(core, self.namespace, pod_name,
+                       timeout_s=self._ready_timeout, on_pending=self._on_pending,
+                       should_stop=self._should_stop)
+        return pod_name
 
     def _sweep_workspaces(self) -> None:
-        """Drop anything this campaign's runners mirrored.
+        """Drop every pod's staged slot, with whatever its runners left in it.
 
-        Each runner deletes its own prefix in ``close()``; this catches the ones whose
-        close never ran — a composition that raised, or a service that died mid-campaign.
+        Each runner removes its own workspace in ``close()``; this catches the ones whose
+        close never ran — a composition that raised — and the slot directory itself.
         Best-effort, because a leftover copy of a workspace must not fail a campaign that
         otherwise finished.
         """
-        if not self._storage:
-            return
-        try:
-            removed = self._storage.delete_prefix(self._bucket,
-                                                  aux_owner_prefix(self.campaign_id))
-        except Exception as e:  # noqa: BLE001 - cleanup never fails the campaign
-            logger.warning("Could not sweep aux workspaces for %s: %s",
-                           self.campaign_id, e)
-            return
-        if removed:
-            logger.info("Swept %d leftover aux workspace object(s) for %s",
-                        removed, self.campaign_id)
+        for pod_name in sorted(self._created):
+            try:
+                removed = self._discard(aux_slot(pod_name))
+            except Exception as e:  # noqa: BLE001 - cleanup never fails the campaign
+                logger.warning("Could not sweep the aux workspaces of %s: %s", pod_name, e)
+                continue
+            if removed:
+                logger.info("Swept leftover aux workspaces of %s", pod_name)
 
     def __exit__(self, exc_type, exc, tb):
         if not self._created:
             return False
-        try:
-            self._client().delete_namespaced_pod(self.pod_name, self.namespace)
-            logger.info("Aux pod %s deleted", self.pod_name)
-        except Exception as e:  # pylint: disable=broad-except - GC/reaper is the backstop
-            logger.warning("Could not delete aux pod %s: %s", self.pod_name, e)
+        for pod_name in sorted(self._created):
+            try:
+                self._client().delete_namespaced_pod(pod_name, self.namespace)
+                logger.info("Aux pod %s deleted", pod_name)
+            except Exception as e:  # pylint: disable=broad-except - GC/reaper is the backstop
+                logger.warning("Could not delete aux pod %s: %s", pod_name, e)
         self._sweep_workspaces()
         return False
 
@@ -669,16 +623,19 @@ class AuxPodSession:
 class ClusterContainerRunner:
     """Runs a plugin's commands in a campaign's aux Pod via ``pods/exec``.
 
-    ``workspace`` is a **local** directory in the service; it is mirrored into the
-    aux container at the identical absolute path around each :meth:`run`, so the
-    plugin's absolute paths stay valid on both sides (see the module docstring for
-    the one way this differs from the old shared-volume behaviour).
+    ``workspace`` is a directory in the service, inside the pod's staged slot; it is
+    moved into the aux pod at the identical absolute path around each :meth:`run`, so the
+    plugin's absolute paths stay valid on both sides (see the module docstring for the
+    one way this differs from a shared volume).
+
+    *stage_dir* is the service's ``staged_dir(slot)``: it places the workspace where the
+    pod's transfer container fetches it from and delivers it back to.
     """
 
     def __init__(self, spec, pod_name, namespace, core_v1=None,
-                 exec_limit_s: float = AUX_EXEC_LIMIT_S, storage=None,
-                 bucket: str = "", owner_id: str = "",
-                 kube_context: str | None = None, container: str = ""):
+                 exec_limit_s: float = AUX_EXEC_LIMIT_S, *, stage_dir,
+                 kube_context: str | None = None, container: str = "",
+                 reprovision=None):
         self._spec = spec
         self._pod = pod_name
         self._namespace = namespace
@@ -692,12 +649,23 @@ class ClusterContainerRunner:
         # name have to come from the same place or one of them addresses nothing.
         self._container = container or spec.container_name()
         self._exec_limit_s = exec_limit_s
-        self._storage = storage
-        self._bucket = bucket
-        self.workspace = tempfile.mkdtemp(prefix="robovast_aux_")
-        self._prefix = aux_workspace_prefix(owner_id or namespace,
-                                            os.path.basename(self.workspace))
+        # Inside the pod's slot on the service's disk, which the pod mounts at the same
+        # path: the tree the transfer container fetches is this directory, and what it
+        # delivers lands back in it. A name of its own per runner, because two runners
+        # may share one pod (see ``aux_slot``).
+        root = aux_workspace_root(stage_dir, pod_name)
+        root.mkdir(parents=True, exist_ok=True)
+        self.workspace = tempfile.mkdtemp(prefix="robovast_aux_", dir=root)
         self._exposed: dict = {}
+        #: ``reprovision(spec) -> pod name``: make this spec's container again, for a
+        #: :meth:`run` that found the one it was handed gone. Whoever owns the pod's
+        #: lifetime provides it, because only they can replace it; without one a vanished
+        #: container is simply reported, which is what a caller that cannot recover needs.
+        self._reprovision = reprovision
+        #: True once the workspace has been placed in the pod, so ``close`` knows
+        #: whether there is anything there to drop. A runner that never transferred must not
+        #: pay an exec -- and must not need a live pod -- just to remove nothing.
+        self._staged = False
 
     def expose(self, host_path: str, container_path: str) -> None:
         """Also make *host_path* visible at the fixed *container_path* in the aux container.
@@ -714,6 +682,11 @@ class ClusterContainerRunner:
         directory around it can be a volume. Without this the scene build failed on the
         cluster, at the one moment it is least diagnosable -- the run view asking for
         geometry -- while working on the local lane, where a bind mount does not care.
+
+        A *host_path* outside the workspace is copied into it first (:meth:`_stage_into`), so
+        the single transport is a property of this method rather than of every caller's
+        discipline. A local ``docker`` runner bind-mounts whatever it is handed, so nothing
+        there ever needed the tree to be in one particular place.
         """
         container_path = str(container_path)
         if container_path not in AUX_MOUNTABLE_PATHS \
@@ -723,21 +696,47 @@ class ClusterContainerRunner:
                 f"{list(AUX_MOUNTABLE_PATHS)}, or at a file directly inside one of them, "
                 f"not {container_path!r}; a new path has to be added to "
                 f"AUX_MOUNTABLE_PATHS so the Pod declares a volume for it.")
-        self._exposed[container_path] = str(host_path)
+        self._exposed[container_path] = self._stage_into(str(host_path), container_path)
+
+    def _stage_into(self, source: str, container_path: str) -> str:
+        """*source* if the workspace already carries it, otherwise a copy inside it.
+
+        Only ``workspace`` travels, so a tree anywhere else on this host is a path the
+        container does not have: :meth:`_place_exposed` copies *inside* the container, and a
+        source that never arrived fails there with a host path in the message and nothing to
+        say why. Copying it in is what makes the exposure a copy of something that exists
+        on both sides.
+
+        The copy is named after the mount rather than after the source, so the same exposure
+        repeated overwrites its own tree instead of accumulating one per call, and two
+        exposures cannot collide.
+        """
+        workspace = os.path.abspath(self.workspace)
+        absolute = os.path.abspath(source)
+        if absolute == workspace or absolute.startswith(workspace + os.sep):
+            return absolute
+        holder = os.path.join(workspace, "exposed",
+                             re.sub(r"[^A-Za-z0-9]+", "-", container_path).strip("-") or "aux")
+        if os.path.isdir(absolute):
+            shutil.rmtree(holder, ignore_errors=True)
+            shutil.copytree(absolute, holder)
+            return holder
+        os.makedirs(holder, exist_ok=True)
+        staged = os.path.join(holder, os.path.basename(absolute))
+        shutil.copy2(absolute, staged)
+        return staged
 
     def _client(self):
         if self._core_v1 is None:
-            from kubernetes import client
-
-            from .kube_client import load_kube_config
-            load_kube_config(context=self._kube_context)
-            self._core_v1 = client.CoreV1Api()
+            from .kube_client import core_v1_client
+            self._core_v1 = core_v1_client(self._kube_context)
         return self._core_v1
 
     # -- exec plumbing ------------------------------------------------------
 
-    def _exec(self, command, stdin_data=None, progress_update_callback=None):
-        """Exec *command* in the aux container; return collected stdout.
+    def _exec(self, command, stdin_data=None, progress_update_callback=None,
+              container: str = ""):
+        """Exec *command* in the aux container (or *container*); return collected stdout.
 
         Raises ``subprocess.CalledProcessError`` on a non-zero exit, so callers
         (and plugins) see the same failure type as the local ``docker run`` path. A
@@ -750,7 +749,7 @@ class ClusterContainerRunner:
         stderr_sink = progress_update_callback or (
             lambda line: logger.debug("aux stderr: %s", line))
         code, out, err, timed_out = exec_stream(
-            self._client(), self._pod, self._namespace, self._container, command,
+            self._pod, self._namespace, container or self._container, command,
             limit_s=self._exec_limit_s, stdin_data=stdin_data,
             on_stdout_line=progress_update_callback, on_stderr_line=stderr_sink)
         if timed_out:
@@ -764,119 +763,85 @@ class ClusterContainerRunner:
                 code, command, output="\n".join(part for part in (out, err) if part))
         return out
 
-    def _retrying_exec(self, command, **kwargs):
-        """Exec, retrying transient 'container not ready yet' failures."""
-        last_exc = None
-        for attempt in range(10):
-            try:
-                return self._exec(command, **kwargs)
-            except subprocess.CalledProcessError:
-                raise  # a real non-zero exit — don't retry
-            except Exception as exc:  # pylint: disable=broad-except
-                last_exc = exc
-                logger.debug("exec into %s not ready yet (attempt %d): %s",
-                             self._container, attempt + 1, exc)
-                time.sleep(1)
-        raise RuntimeError(
-            f"Could not exec into aux container '{self._container}': {last_exc}")
+    def _transfer(self, script: str) -> str:
+        """Run *script* in the pod's transfer container: every file operation goes there.
 
-    # -- workspace mirroring ------------------------------------------------
-
-    def _require_store(self):
-        if self._storage is None or not self._bucket:
-            raise RuntimeError(
-                "the aux container's workspace is mirrored through the object store, "
-                "and this runner was built without one. That is a service configuration "
-                "problem, not something a plugin can work around.")
-        return self._storage
-
-    def _mirror(self, *, down: bool) -> str:
-        """The ``mc mirror`` argv running inside the aux container.
-
-        ``--overwrite`` because the transport this replaced extracted a tar over the
-        destination: without it ``mc`` skips a file whose size and time already match,
-        which would silently keep a stale copy on a regenerated artifact.
+        The aux image is a plugin author's and may lack a shell tool, a writable home or
+        a user that can read what root wrote; the sidecar has what the transfer needs and
+        runs as root, so what it fetches it can also make writable for whoever the aux
+        container runs as.
         """
-        remote = f"{_MC_ALIAS}/{self._bucket}/{self._prefix}/"
-        local = f"{self.workspace}/"
-        src, dst = (remote, local) if down else (local, remote)
-        return (f"mkdir -p '{self.workspace}' && "
-                f"{_MC} --config-dir {_MC_CONFIG} mirror --overwrite --quiet "
-                f"'{src}' '{dst}'")
+        return self._exec(["sh", "-c", script], container=TRANSFER_CONTAINER)
+
+    # -- workspace transfer ---------------------------------------------------
+
+    @property
+    def _route(self) -> str:
+        """The data-plane route of the pod's slot, after the data prefix."""
+        return f"/staged/{aux_slot(self._pod)}"
+
+    @property
+    def _name(self) -> str:
+        """This workspace's directory name inside the slot."""
+        return os.path.basename(self.workspace)
 
     def _copy_in(self) -> None:
-        """Mirror the local workspace into the container at the same path, via the store.
+        """Fetch the workspace into the pod at the same path, through the data plane.
 
         The bytes do not travel through the exec channel. That channel is a text
-        websocket the client cannot half-close, so the tar-over-stdin version this
-        replaced had to base64-encode its payload (~1.33x) and frame the read by length
-        (``head -c <n>``) — because a receiver waiting for EOF waited forever, which is
-        exactly what it did, for 2m47s against a live pod, on an *empty* workspace.
-        Mirroring needs no stdin at all, so that whole failure mode is gone by
-        construction, and the size ceiling with it.
+        websocket the client cannot half-close, so a transfer over stdin has to frame
+        its own end -- a receiver waiting for EOF there waits forever. A fetch needs no
+        stdin at all, so that failure mode is gone by construction, and the size ceiling
+        with it.
 
-        **A workspace with no files copies nothing.** A generator whose inputs all live
-        inside its image (a world installed from a wheel, say) stages no files, and a
-        round trip per ``run()`` for zero bytes is pure latency.
+        **A workspace with nothing in it transfers nothing.** A generator whose inputs all
+        live inside its image (a world installed from a wheel, say) stages nothing, and a
+        round trip per ``run()`` for zero bytes is pure latency. The directory itself still
+        has to exist in the pod, because the generator was handed that path. Emptiness is
+        measured in entries: a tar carries an empty directory, so a workspace holding only
+        the output directory a two-step generator stages travels whole, and the directory
+        the command was told to write into is there when it runs.
 
-        Emptiness is measured in *files*, matching what ``upload_dir`` actually ships, not
-        in directory entries: ``stage_for_container`` always creates an output directory, so
-        a no-input generator's workspace holds one empty dir and no files. Counting entries
-        would call that non-empty, upload nothing, and then mirror *from a prefix that does
-        not exist* — ``mc`` exits 1, and building a scene descriptor fails with an object
-        storage error.
-
-        **The staged directory skeleton is created in the container either way**, because an
-        object store has no empty directories: ``mc mirror`` recreates only the ones that
-        hold files. Doing it only on the no-files path — on the reasoning that with files
-        present ``mc`` makes the directories itself, true only of the directories it has
-        something to put in — breaks every two-step generator, which stages inputs AND an
-        empty output directory: the workspace arrives missing exactly the directory the
-        command was told to write into, so ``floorplan generate`` validates its ``-o`` path
-        and exits 2 with "Path ... does not exist" while step 1 passed, ``transform``
-        creating its own output directory. The ``mkdir`` rides along with the mirror's own
-        exec, so this costs no extra round trip.
+        What the transfer container extracts it owns as root, so the tree is made
+        writable for everyone afterwards: the aux container may run as any user the spec
+        names, and the command is about to write into it.
         """
-        staged_dirs = [self.workspace]
-        staged_files = 0
-        for root, dirs, names in os.walk(self.workspace):
-            staged_dirs.extend(os.path.join(root, name) for name in dirs)
-            staged_files += len(names)
-        quoted = " ".join(f"'{path}'" for path in staged_dirs)
-        if not staged_files:
-            self._retrying_exec(["sh", "-c", f"mkdir -p {quoted}"])
+        workspace = shlex.quote(self.workspace)
+        if not os.listdir(self.workspace):
+            self._transfer(f"mkdir -p {workspace} && chmod 0777 {workspace}")
+            self._staged = True
             return
-        self._require_store().upload_dir(self.workspace, self._bucket, self._prefix)
-        self._retrying_exec(["sh", "-c", f"mkdir -p {quoted} && " + self._mirror(down=True)])
+        fetch = pod_access.fetch_command(self._route, self.workspace,
+                                         f"path={quote(self._name, safe='')}")
+        self._transfer(f"{fetch} && chmod -R a+rwX {workspace}")
+        self._staged = True
 
     def _copy_out(self) -> None:
-        """Mirror the container's workspace back over the local one, via the store.
+        """Deliver the pod's workspace back onto this one, through the data plane.
 
-        ``force=True`` on the download for the same reason ``--overwrite`` is set going
-        up: a same-size regenerated file is a real case, and the default size check would
-        keep the stale one.
+        Delivered under its own name (see :func:`pod_access.deliver_command`), so it lands
+        in the slot exactly where it was fetched from -- this directory -- and beside any
+        other runner's tree in the same pod. A tar extracts over what is there, so a
+        regenerated file of the same size replaces the stale one.
         """
-        self._retrying_exec(["sh", "-c", self._mirror(down=False)])
-        self._require_store().download_prefix(self._bucket, self._prefix,
-                                              self.workspace, force=True)
+        self._transfer(pod_access.deliver_command(self.workspace, self._route,
+                                                  keep_name=True))
 
     def _place_exposed(self) -> None:
-        """Copy each exposed input from the mirrored workspace into its declared mount.
+        """Copy each exposed input from the fetched workspace into its declared mount.
 
-        After ``_copy_in``, so the source is already in the container. Two shapes, told apart
-        by the target rather than by looking at the filesystem (the source is only guaranteed
-        to exist in the *container*): a tree exposed AT a mountable path fills that mount --
-        the trailing ``/.`` is what keeps it from nesting a directory inside it -- and
-        anything exposed at a path INSIDE one is copied to that exact path, which is the
-        only thing that works for a single staged file (``cp -R 'file/.'`` copies nothing).
+        After ``_copy_in``, so the source is already in the pod, and in the transfer
+        container, which shares every mount. Two shapes, told apart by the target rather
+        than by looking at the filesystem (the source is only guaranteed to exist in the
+        *pod*): a tree exposed AT a mountable path fills that mount -- the trailing ``/.``
+        is what keeps it from nesting a directory inside it -- and anything exposed at a
+        path INSIDE one is copied to that exact path, which is the only thing that works
+        for a single staged file (``cp -R 'file/.'`` copies nothing).
 
-        The mount is an emptyDir the init container made world-writable.
-
-        ``-R``, deliberately not ``-a``: preserving attributes means setting them on the
-        destination *mount point* too, and that inode belongs to root while the aux container
-        may be anyone -- ``cp: preserving times for '/config/.': Operation not permitted``,
-        which fails the whole copy. Only the content is wanted here; the tree is read, not
-        re-published, so its timestamps and ownership carry nothing.
+        ``-R``, deliberately not ``-a``: only the content is wanted here; the tree is read
+        by the aux container, not re-published, so its timestamps and ownership carry
+        nothing -- and a mode copied from a private source would be one the aux user
+        cannot read.
         """
         for container_path, staged in sorted(self._exposed.items()):
             if container_path in AUX_MOUNTABLE_PATHS:
@@ -885,11 +850,49 @@ class ClusterContainerRunner:
             else:
                 script = (f"mkdir -p '{os.path.dirname(container_path)}' && "
                           f"cp -R '{staged}' '{container_path}'")
-            self._retrying_exec(["sh", "-c", script])
+            self._transfer(script)
 
     def run(self, command, progress_update_callback=None) -> None:
+        """Run *command* in the aux container, making that container again if it is gone.
+
+        A pod can end without the span that created it ending — an eviction, a drained
+        node — and then the exec that notices is the one in the middle of a composition
+        that may have been running for hours. Reporting it loses all of that over a
+        container that costs seconds to replace, so the attempt is made a second time
+        against a fresh one.
+
+        **Repeating the whole attempt is what makes it correct**, not just the exec: a new
+        container has an empty workspace and empty mounts, so the transfer has to happen
+        again. And repeating the *command* is sound for this cause alone — the container it
+        ran in no longer exists, so nothing it did survived to be done twice. A command
+        that ran and failed is the caller's answer and is never retried.
+
+        Once. A second vanishing is no longer something to sit out.
+        """
         progress_update_callback = progress_update_callback or logger.debug
         full_cmd = list(self._spec.command_prefix) + list(command)
+        try:
+            self._attempt(full_cmd, progress_update_callback)
+        except ExecTargetGone as gone:
+            if self._reprovision is None:
+                raise
+            logger.warning("Aux container %s/%s is gone (%s); making it again and "
+                           "repeating the command", self._pod, self._container, gone)
+            replacement = self._reprovision(self._spec)
+            # The workspace lives in the pod's slot, so a replacement has to answer to the
+            # same name -- which both providers derive from the spec and the span, never
+            # from the attempt. A different name would leave the tree behind in the old
+            # slot, and the first fetch would report a slot that holds nothing.
+            if replacement != self._pod:
+                raise RuntimeError(
+                    f"aux pod {self._pod} was replaced under the name {replacement}; a "
+                    "runner's workspace is staged in its pod's slot, so a pod can only be "
+                    "made again under its own name") from gone
+            self._staged = False
+            self._attempt(full_cmd, progress_update_callback)
+
+    def _attempt(self, full_cmd, progress_update_callback) -> None:
+        """One transfer-run-transfer against whichever container :attr:`_pod` names."""
         self._copy_in()
         self._place_exposed()
         try:
@@ -903,16 +906,27 @@ class ClusterContainerRunner:
                 logger.warning("Could not copy aux workspace back: %s", e)
 
     def close(self):
-        """Drop this runner's mirrored prefix and its local scratch.
+        """Drop this runner's copy in the pod and its workspace on the service.
 
         The aux pod itself is torn down with the campaign by ``AuxPodSession``. Both of
         these are per-*variation*, though — a search campaign builds a runner per
-        generation — so leaving them would accumulate for the campaign's whole life.
+        configuration it composes — so leaving them would accumulate for the campaign's
+        whole life.
+
+        The pod's copy is the one that accumulates where nothing is watching. Each
+        runner's workspace has a path of its own, so the next one does not overwrite it;
+        that path is on an emptyDir, which is ephemeral storage the Pod reserves none of.
+        A long composition therefore fills the node it landed on and the kubelet evicts
+        the aux Pod out from under the very campaign that is composing against it.
+
+        Best-effort, and for a reason beyond the usual one: the pod may be gone by now
+        (that is one of the ways a composition ends), and a teardown that raised over a
+        container it cannot reach would replace the real failure with its own.
         """
-        if self._storage is not None and self._bucket:
+        if self._staged:
             try:
-                self._storage.delete_prefix(self._bucket, self._prefix)
+                self._transfer(f"rm -rf {shlex.quote(self.workspace)}")
             except Exception as e:  # noqa: BLE001 - cleanup never fails a variation
-                logger.warning("Could not drop the aux workspace mirror %s: %s",
-                               self._prefix, e)
+                logger.warning("Could not drop the aux pod's copy of %s: %s",
+                               self.workspace, e)
         shutil.rmtree(self.workspace, ignore_errors=True)

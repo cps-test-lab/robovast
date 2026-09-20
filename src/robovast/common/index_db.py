@@ -55,6 +55,11 @@ logger = logging.getLogger(__name__)
 #: ``host=localhost port=5432 dbname=robovast user=robovast password=...``.
 DSN_ENV = "ROBOVAST_INDEX_DSN"
 
+#: How long :func:`connect` waits for the server to answer, when the DSN does not say.
+#: Long enough for a Postgres that is starting; short enough that an unanswering one is
+#: reported as unreachable instead of holding its caller.
+CONNECT_TIMEOUT_S = 10
+
 #: Anything that looks like a secret in a DSN, for the endpoint description below. A DSN
 #: is the one config value that carries a credential, and it reaches an error message that
 #: reaches a log and a browser -- so the stripping is part of the contract, not hygiene.
@@ -109,8 +114,15 @@ def connect(dsn: str = None, *, readonly: bool = False,
             "environment. It is a dependency of the robovast package; an image or venv "
             "without it cannot read or write campaign data.") from exc
 
+    # libpq waits for a connection indefinitely unless told otherwise, and a caller that
+    # waits forever holds its thread forever -- so a server that accepts the TCP handshake
+    # and then says nothing, as a stalled one does, would quietly use up the service's
+    # worker threads one request at a time. A DSN that states its own timeout keeps it.
+    from psycopg.conninfo import conninfo_to_dict  # pylint: disable=import-outside-toplevel
+    timeout = {} if "connect_timeout" in conninfo_to_dict(resolved) else {
+        "connect_timeout": CONNECT_TIMEOUT_S}
     try:
-        conn = psycopg.connect(resolved, autocommit=autocommit)
+        conn = psycopg.connect(resolved, autocommit=autocommit, **timeout)
     except psycopg.OperationalError as exc:
         # OperationalError is psycopg's "could not talk to the server at all": refused,
         # timed out, authentication rejected, database absent. A programming error in

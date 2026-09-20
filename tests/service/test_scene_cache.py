@@ -114,7 +114,7 @@ def test_the_key_is_the_world_and_not_the_campaign(tmp_path):
 
 @pytest.mark.parametrize("field,value", [
     ("world", "pkg:other"),
-    ("overrides", {"plugins": {"floorplan": {"size": 4.0}}}),
+    ("overrides", {"components": {"floorplan": {"size": 4.0}}}),
 ])
 def test_the_key_separates_worlds_and_overrides(tmp_path, field, value):
     base = scene_cache.world_identity(_campaign(tmp_path / "a"), _manifest())
@@ -186,7 +186,7 @@ def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
     """
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
-        _manifest(overrides={"plugins": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
+        _manifest(overrides={"components": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
     # The real mount, not a literal: where the file appears is a lane constraint (the cluster
     # only mounts AUX_MOUNTABLE_PATHS), so a test carrying its own path hid a mismatch once.
     cmd = scene_cache._command_for(ident, 1024, scene_cache._OVERRIDES_MOUNT)
@@ -200,7 +200,7 @@ def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
 def test_a_structured_override_survives(tmp_path):
     """The case argv cannot carry: a LIST OF MAPPINGS, i.e. an obstacle population.
 
-    Flattened onto ``--set`` it rendered as ``plugins.boxes.instances=[{"name":...,"pos":...}]``,
+    Flattened onto ``--set`` it rendered as ``components.boxes.instances=[{"name":...,"pos":...}]``,
     which is not a dotlist value -- the exporter read ``"pos"`` as a key with its quotes still
     attached and died with ``KeyError: '"pos"'``. It fails only when somebody opens the run view,
     so it reads as "this campaign has no 3D geometry" rather than as a quoting bug.
@@ -208,11 +208,11 @@ def test_a_structured_override_survives(tmp_path):
     instances = [{"name": "dynamic_0", "pos": [1.03, 0.55], "size": [0.5, 0.5, 1.0]}]
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
-        _manifest(overrides={"plugins": {"dynamic_obstacles": {"instances": instances}}}))
+        _manifest(overrides={"components": {"dynamic_obstacles": {"instances": instances}}}))
     path = scene_cache._overrides_file(ident, "somekey")
     assert path, "overrides present means a document to hand the exporter"
     with open(path, encoding="utf-8") as handle:
-        assert yaml.safe_load(handle)["plugins"]["dynamic_obstacles"]["instances"] == instances
+        assert yaml.safe_load(handle)["components"]["dynamic_obstacles"]["instances"] == instances
 
 
 @pytest.mark.requires_simulator

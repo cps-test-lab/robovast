@@ -21,6 +21,8 @@ from typing import Optional
 from robovast.common import is_scenario_parameter
 from robovast.common.variation import Variation
 
+from ..data_model import Pose
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,3 +148,39 @@ class NavVariation(Variation):
                 "No valid map file path could be determined. Please specify map_file in the YAML configuration or ensure a previous variation provides it.")
 
         return map_file_path
+
+    def get_waypoints(self, config) -> list:
+        """The trial's waypoints -- start first, then every goal -- as :class:`Pose` objects.
+
+        Read through the ``start`` and ``goal`` input slots, so the parameter names are the ones
+        the campaign bound rather than ones this code assumed. A campaign binding its path
+        variation to ``scenario: {start: robot_start}`` needs to say that once: the name travels
+        with the configuration and is inherited here. A configuration that states its poses in
+        its own ``parameters:`` block has no earlier variation to inherit from and says where to
+        read them with ``reads:``.
+
+        Whichever wrote them, they arrive here as :class:`Pose`: a campaign stating poses in its
+        ``parameters:`` block leaves YAML mappings, a variation that generated them leaves the
+        dataclass, and :meth:`Pose.from_any` flattens that difference so a caller never asks which.
+
+        The ``goal`` slot may be bound to a parameter holding one pose or a list of them -- the
+        scenario file decides which it declares -- and both give a list here.
+
+        Read-only: the poses are returned, never written back into *config*. What spelling the
+        scenario declares is the scenario's business, and a resolver that normalised the config
+        in passing would have to decide whether to leave ``goal_pose`` or ``goal_poses`` behind,
+        with an OSC that rejects an undeclared parameter waiting on the other side.
+        """
+        values = {}
+        for slot in ("start", "goal"):
+            name = self.parameters.input_binding(slot, config)
+            value = config.get("config", {}).get(name)
+            if not value:
+                raise ValueError(
+                    f"Config '{config['name']}': '{name}', bound to this variation's '{slot}', "
+                    f"holds no pose. Either state it in 'parameters.scenario', or run a "
+                    f"variation that writes it (such as PathVariationRandom) ahead of this one.")
+            values[slot] = value
+
+        goals = values["goal"] if isinstance(values["goal"], list) else [values["goal"]]
+        return [Pose.from_any(values["start"])] + [Pose.from_any(g) for g in goals]

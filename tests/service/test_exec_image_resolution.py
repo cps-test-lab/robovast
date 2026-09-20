@@ -183,34 +183,18 @@ def test_a_campaign_source_uses_what_the_campaign_recorded(tmp_path, monkeypatch
     assert found.identity == "sha256:deadbeef"
 
 
-def test_the_campaign_dir_is_a_seam_and_not_the_whole_campaign(tmp_path, monkeypatch):
-    """``_data_dir`` refuses on the cluster lane on purpose — while it silently answered "the
-    whole campaign", every inherited caller became a whole-campaign download. So this path
-    names its own objects, and the cluster override materialises exactly those.
-
-    Asserted by inspection because constructing the real thing needs a cluster; what has to
-    exist is the override at all, since inheriting the local answer would read a directory
-    the cluster does not have — the same shape of bug as the one being fixed here.
-    """
-    import inspect
-
-    from robovast.execution.cluster_execution.cluster_service import ClusterService
-    source = inspect.getsource(ClusterService._role_image_source_dir)
-    assert "_retrigger_source_dir" in source, "it must materialise before reading"
-    assert "_data_dir" not in source
-
-
-def test_the_role_image_lookup_reads_the_seams_directory(tmp_path, monkeypatch):
-    """And the caller must actually use it, or the override above is decoration."""
+def test_the_role_image_lookup_reads_the_campaign_directory(tmp_path, monkeypatch):
+    """Both records it needs -- ``_execution/execution.yaml`` for the per-role digests and the
+    frozen ``.vast`` that says whether the role owns a container -- are in the campaign
+    directory, which is the campaign on either lane."""
     t = _transport(tmp_path, _Store(present=True))
     seen = {}
-    t._role_image_source_dir = lambda cid: seen.setdefault("dir", f"/materialised/{cid}")
     monkeypatch.setattr(
         "robovast.common.campaign_data.campaign_role_image",
         lambda campaign_dir, role, resolve_digest=None: (
             seen.setdefault("read", str(campaign_dir)) and "sha256:aa") or "sha256:aa")
     t._resolve_exec_image(_vast(tmp_path), "sut", campaign_id="campaign-1")
-    assert seen["read"] == "/materialised/campaign-1"
+    assert seen["read"] == str(t.campaign_dir("campaign-1"))
 
 
 # -- the simulator's container is a container of its own ----------------------

@@ -32,15 +32,26 @@ open) reachable by omission. Instead :func:`resolve_token` mints an ephemeral to
 none is configured, and ``vast serve`` prints a login URL carrying it, the way Jupyter
 has done for years.
 
-The middleware resolves a :class:`Principal` rather than answering yes/no. Today every
-authenticated caller may do everything, so the distinction buys nothing *yet* — it buys
-that swapping the shared secret for a real identity provider later replaces one function
+The middleware resolves a :class:`Principal` rather than answering yes/no, so that a
+caller's *reach* can differ without touching a route. Two reaches exist:
+
+* **The shared secret** may do everything.
+* **A scoped token** (:func:`scoped_token`) may reach one campaign's, or one staged
+  slot's, data-plane routes and nothing else. It is what a pod carries: a Job that
+  fetches its inputs and delivers its outputs needs exactly that, and handing it the
+  shared secret would let any container in the cluster start campaigns. The token is an
+  HMAC of the scope under the shared secret, so it needs no registry -- every process
+  holding the secret verifies it, a restart forgets nothing, and a scope stops mattering
+  the moment nothing answers for it.
+
+Swapping the shared secret for a real identity provider later replaces one function
 instead of touching every route. ``oauth2-proxy`` in front of the Ingress would set
 ``X-Forwarded-Email``; that is a new branch here and nothing else.
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -105,6 +116,9 @@ class Principal:
     authenticated: bool
     name: str | None = None
     source: str = "anonymous"
+    #: What a scoped token may reach (``campaign:<id>`` / ``staged:<slot>``), or ``None``
+    #: for a caller that may reach everything. See :func:`scope_allows`.
+    scope: str | None = None
 
     @property
     def display_name(self) -> str | None:
@@ -139,6 +153,69 @@ def _token_matches(presented: str, expected: str) -> bool:
     return hmac.compare_digest(presented.encode(), expected.encode())
 
 
+#: Separates a scope from its authenticator in a scoped token. A scope is a kind and an
+#: id joined by ``:`` (:func:`scope_for_campaign`, :func:`scope_for_staged`); a campaign id
+#: and a staged slot carry no ``.``, and an HMAC's hex digest cannot either, so the last
+#: ``.`` in the token is unambiguous.
+_SCOPE_SEP = "."
+
+
+def scope_for_campaign(campaign_id: str) -> str:
+    """The scope reaching one campaign's data-plane routes."""
+    return f"campaign:{campaign_id}"
+
+
+def scope_for_staged(slot: str) -> str:
+    """The scope reaching one staged slot's data-plane routes."""
+    return f"staged:{slot}"
+
+
+def _scope_mac(master: str, scope: str) -> str:
+    return hmac.new(master.encode(), scope.encode(), hashlib.sha256).hexdigest()
+
+
+def scoped_token(master: str, scope: str) -> str:
+    """A bearer token that authenticates *scope* and nothing else.
+
+    ``<scope>.<hmac-sha256(master, scope)>``: the scope travels in the clear, which is what
+    lets the gate know what to check before it checks anything, and the digest is what a
+    caller without *master* cannot produce. Deterministic on purpose -- two processes
+    holding the secret mint and verify the same token with no state between them.
+    """
+    return f"{scope}{_SCOPE_SEP}{_scope_mac(master, scope)}"
+
+
+def _scoped_principal(presented: str, expected: str, name: "str | None") -> "Principal | None":
+    """The scoped :class:`Principal` *presented* authenticates, or ``None``."""
+    scope, sep, mac = presented.rpartition(_SCOPE_SEP)
+    if not sep or not scope or not mac:
+        return None
+    if not hmac.compare_digest(mac.encode(), _scope_mac(expected, scope).encode()):
+        return None
+    return Principal(authenticated=True, name=name, source="scoped-token", scope=scope)
+
+
+def scope_allows(scope: str, path: str) -> bool:
+    """Whether a token scoped to *scope* may reach *path*.
+
+    The data-plane routes for the one campaign or slot the scope names, taken from
+    :class:`~robovast.service.interface.Routes` so this list cannot drift from the
+    routes themselves. Anything else -- another campaign, a control route, the UI -- is
+    outside the scope, whatever the token proves.
+    """
+    from robovast.service.interface import Routes
+    kind, _, subject = scope.partition(":")
+    if not subject:
+        return False
+    if kind == "campaign":
+        return path in {Routes.campaign_archive(subject),
+                        Routes.campaign_inputs(subject),
+                        Routes.campaign_outputs(subject)}
+    if kind == "staged":
+        return path == Routes.staged(subject)
+    return False
+
+
 def _bearer(header_value: str) -> str:
     """The token out of an ``Authorization`` header, or ``""``."""
     prefix = "bearer "
@@ -168,6 +245,10 @@ def principal_from_headers(headers: dict[str, str], expected: str) -> Principal:
     presented = _bearer(headers.get(AUTH_HEADER, ""))
     if presented and _token_matches(presented, expected):
         return Principal(authenticated=True, name=name, source="shared-secret")
+    if presented:
+        scoped = _scoped_principal(presented, expected, name)
+        if scoped is not None:
+            return scoped
 
     cookies = _cookies(headers.get("cookie", ""))
     session = cookies.get(SESSION_COOKIE, "")
@@ -201,12 +282,13 @@ class AuthMiddleware:
     def __init__(self, app, token: str, on_reject=None):
         self.app = app
         self.token = token
-        #: Called with ``(path, detail)`` for each caller turned away with a 401, or ``None``.
+        #: Called with ``(path, detail, status)`` for each caller turned away -- 401 for one
+        #: that did not authenticate, 403 for a scoped token outside its scope -- or ``None``.
         #: The gate runs in front of the app, outside every exception handler that app
         #: installs, so this refusal is the one that reaches a client without passing through
         #: them -- without the hook it is invisible to anything recording what was refused.
         #: A callable rather than a log: this package is the client, and must not learn what
-        #: the service keeps its records in.
+        #: the service keeps its records in. Called on a worker thread, so it may block.
         self.on_reject = on_reject
 
     async def __call__(self, scope, receive, send):
@@ -223,6 +305,12 @@ class AuthMiddleware:
                    for key, value in scope.get("headers") or []}
         principal = principal_from_headers(headers, self.token)
         if principal.authenticated:
+            if principal.scope is not None and not scope_allows(principal.scope, path):
+                # Authenticated, and refused: the token is genuine and this is not what it
+                # is for. A 403 rather than the 401 below, so the caller is not sent to
+                # log in with a token that already proved itself.
+                await self._forbid(send, principal.scope, path)
+                return
             # Carried on the scope so routes can read it without re-parsing headers.
             scope["state"] = dict(scope.get("state") or {})
             scope["state"]["principal"] = principal
@@ -230,6 +318,17 @@ class AuthMiddleware:
             return
 
         await self._reject(scope, send, headers)
+
+    async def _forbid(self, send, token_scope: str, path: str) -> None:
+        detail = f"token scoped to {token_scope!r} may not reach {path}"
+        if self.on_reject is not None:
+            import anyio  # pylint: disable=import-outside-toplevel
+            try:
+                await anyio.to_thread.run_sync(self.on_reject, path, detail, 403)
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("could not report an auth refusal", exc_info=True)
+        await _send_simple(send, 403, json.dumps({"detail": detail}).encode(),
+                           [(b"content-type", b"application/json")])
 
     async def _reject(self, scope, send, headers):
         if wants_html(headers):
@@ -242,8 +341,13 @@ class AuthMiddleware:
         # Only this branch. The html branch above redirects to the login page, which is the
         # sign-in flow working rather than an action anyone was refused.
         if self.on_reject is not None:
+            # On a worker thread: the hook may write to disk, and this runs on the event
+            # loop in front of every request -- a slow write here would stall all of them.
+            # anyio comes with the ASGI server this middleware runs in, not with the client.
+            import anyio  # pylint: disable=import-outside-toplevel
             try:
-                self.on_reject(scope.get("path", ""), UNAUTHENTICATED_DETAIL)
+                await anyio.to_thread.run_sync(
+                    self.on_reject, scope.get("path", ""), UNAUTHENTICATED_DETAIL, 401)
             except Exception:  # pylint: disable=broad-except
                 logger.debug("could not report an auth refusal", exc_info=True)
         await _send_simple(

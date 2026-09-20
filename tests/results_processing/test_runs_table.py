@@ -289,6 +289,29 @@ def test_a_composition_failed_unit_becomes_a_run_less_row(conn, tmp_path):
     assert failed[0]["param_speed"] == 99.0, "the params are the whole point"
 
 
+def test_a_missing_configuration_becomes_a_run_less_row(conn, tmp_path):
+    """A sweep that got half of what it declared back must not read as half a sweep.
+
+    The sibling of the composition-failed case, and the one a batch campaign hits: the
+    configuration was composed, it simply never produced a directory. It carries no
+    parameters -- there is no ``scenario.config`` on disk to read them from -- so its
+    identity is the whole row, which is exactly what a shortfall needs to be countable.
+    """
+    tree = _campaign(
+        tmp_path,
+        units=[("cfg-a", {"speed": 0.5}, 1.0, "ok", "cfg-a"),
+               ("cfg-b", {}, None, "missing", "cfg-b")],
+        runs=[(1, 0, "passed", 1, 0, 0, 1.0, None)])
+    campaign_ingest.ingest_campaign(conn, str(tree), "camp-a")
+
+    rows = _runs(conn)
+    missing = [r for r in rows if r["status"] == "missing"]
+    assert len(missing) == 1
+    assert missing[0]["config_name"] == "cfg-b"
+    assert missing[0]["run_id"] is None and missing[0]["passed"] == 0
+    assert missing[0]["duration_s"] is None
+
+
 def test_probed_is_a_separate_column_and_does_not_touch_the_status(conn, tmp_path):
     """A probed run can still pass; folding a human's action into the outcome is the
     mistake that keeping ``killed`` out of ``num_failed`` avoids."""

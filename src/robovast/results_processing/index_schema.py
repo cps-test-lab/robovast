@@ -56,6 +56,7 @@ real number arrives it is still safe to retype -- but only a reader that knows t
 is ``UNKNOWN`` rather than genuinely textual will do it.
 """
 
+import contextlib
 import logging
 
 from robovast.common.errors import TableColumnLimitExceeded
@@ -121,6 +122,44 @@ _PG_TYPE = {UNKNOWN: "text", INTEGER: "bigint", REAL: "double precision", TEXT: 
 _MAX_TABLE_COLUMNS = 1500
 
 
+#: The advisory-lock key a writer holds while it issues DDL against this index. One index
+#: is shared by every campaign, so two postprocessing runs finishing together issue the
+#: same ``CREATE`` -- and Postgres refuses that with a duplicate key on ``pg_type``, which
+#: names neither the relation nor the concurrency that caused it. The value is arbitrary
+#: but has to be the same in every process, so it is a literal rather than a hash of a
+#: name that could be spelled differently somewhere else.
+_DDL_LOCK_KEY = 0x524F5601
+
+
+@contextlib.contextmanager
+def ddl_lock(conn):
+    """Hold the index's DDL lock for the duration of the block.
+
+    Every ``CREATE``/``DROP``/``ALTER`` against the index goes through here, because none
+    of the forms that look safe are: ``IF NOT EXISTS`` checks the catalog and then creates,
+    ``DROP`` followed by ``CREATE`` leaves a window in between, and both lose the race to
+    another writer rather than yielding to it. Postgres has no ``CREATE`` that waits, so
+    the writers have to agree on a lock.
+
+    Session level, not transaction level, so it spans the several transactions a rebuild
+    opens, and re-entrant: the lock is counted per session, so a nested caller (a table
+    securing itself inside an ``ensure_table``) blocks nobody and releases nothing early.
+    Taken on the connection that is about to do the work, so a writer that dies mid-DDL
+    releases it by disconnecting.
+    """
+    conn.execute("SELECT pg_advisory_lock(%s)", (_DDL_LOCK_KEY,))
+    try:
+        yield
+    finally:
+        try:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_DDL_LOCK_KEY,))
+        except Exception:  # noqa: BLE001 - see below
+            # A connection that cannot release the lock has already lost it: the server
+            # drops a session's advisory locks when the session ends. Raising here would
+            # replace whatever the block failed with -- the thing the caller has to see.
+            logger.debug("index: could not release the DDL lock", exc_info=True)
+
+
 def _quote(identifier: str) -> str:
     """Quote an identifier for DDL, doubling any embedded quote.
 
@@ -164,30 +203,41 @@ def _scope():
     return index_scope
 
 
+#: The bookkeeping tables and what each one holds, in creation order.
+_METADATA_TABLES = (
+    (COLUMN_TYPES_TABLE,
+     "schema_name text NOT NULL DEFAULT '', table_name text NOT NULL, "
+     "column_name text NOT NULL, verdict text NOT NULL, "
+     "PRIMARY KEY (schema_name, table_name, column_name)"),
+    (CAMPAIGNS_TABLE,
+     "campaign_id text PRIMARY KEY, ingested_at timestamptz NOT NULL DEFAULT now()"),
+    (COLUMN_NOTES_TABLE,
+     "table_name text NOT NULL, column_name text NOT NULL, kind text NOT NULL, "
+     "note text NOT NULL, PRIMARY KEY (table_name, column_name, kind)"),
+)
+
+
 def ensure_metadata_tables(conn) -> None:
-    """Create the two bookkeeping tables if they are absent."""
-    # Whether they existed *before* these statements, so the scope is applied exactly once
-    # rather than on every call -- this runs per data file of per run of a campaign.
-    fresh = not conn.execute(
-        "SELECT to_regclass(%s)", (CAMPAIGNS_TABLE,)).fetchone()[0]
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_TYPES_TABLE)} ("
-        "schema_name text NOT NULL DEFAULT '', table_name text NOT NULL, "
-        "column_name text NOT NULL, verdict text NOT NULL, "
-        "PRIMARY KEY (schema_name, table_name, column_name))")
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {_quote(CAMPAIGNS_TABLE)} ("
-        "campaign_id text PRIMARY KEY, ingested_at timestamptz NOT NULL DEFAULT now())")
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {_quote(COLUMN_NOTES_TABLE)} ("
-        "table_name text NOT NULL, column_name text NOT NULL, kind text NOT NULL, "
-        "note text NOT NULL, PRIMARY KEY (table_name, column_name, kind))")
-    if fresh:
-        # ``_campaigns`` carries a campaign_id and is scoped like any other table -- a
-        # scoped session has no business enumerating the corpus. The other two describe
-        # the *index's* schema rather than any campaign's rows and have no key to scope
-        # by, so they only get the read grant; ``secure_table`` decides which is which.
-        for table in (COLUMN_TYPES_TABLE, CAMPAIGNS_TABLE, COLUMN_NOTES_TABLE):
+    """Create whichever bookkeeping tables are absent.
+
+    Which ones are missing is asked first, and nothing is issued when the answer is none.
+    This runs per data file of per run of a campaign, so the common path is three catalog
+    lookups and no DDL at all -- and the DDL, when there is any, is what needs the lock:
+    ``CREATE TABLE IF NOT EXISTS`` decides and then creates, so two ingests starting
+    against a fresh index race, and the loser is refused rather than told it already
+    exists.
+    """
+    missing = [(table, columns) for table, columns in _METADATA_TABLES
+               if not conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0]]
+    if not missing:
+        return
+    with ddl_lock(conn):
+        for table, columns in missing:
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {_quote(table)} ({columns})")
+            # ``_campaigns`` carries a campaign_id and is scoped like any other table -- a
+            # scoped session has no business enumerating the corpus. The other two describe
+            # the *index's* schema rather than any campaign's rows and have no key to scope
+            # by, so they only get the read grant; ``secure_table`` decides which is which.
             _scope().secure_table(conn, table)
 
 
@@ -299,8 +349,6 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
     Returns ``[(column, before, after), ...]``, empty when the table already fitted.
     """
     ensure_metadata_tables(conn)
-    if schema:
-        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote(schema)}")
     name = qualified(table, schema)
     known = read_verdicts(conn, table, schema)
     widened = []
@@ -318,7 +366,14 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
         # campaign's ingest ran its whole-index sweep, and until then every scoped read of
         # the index was refused outright. Rolled back as a unit, the table simply is not
         # there, and the next ingest creates and scopes it properly.
-        with conn.transaction():
+        #
+        # Under the DDL lock as well, because none of the statements in it yields to a
+        # concurrent writer: two campaigns whose runs both write a ``poses.csv`` reach
+        # here together on a stem neither index has yet, and ``IF NOT EXISTS`` checks the
+        # catalog before it creates rather than while it does.
+        with ddl_lock(conn), conn.transaction():
+            if schema:
+                conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote(schema)}")
             conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
             # The one index data.db also built: every read is scoped to a run or a
             # campaign, and a sequential scan of a pose table is the difference between a

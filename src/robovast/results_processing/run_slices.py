@@ -331,27 +331,28 @@ def iter_run_slices(campaign_path: Path, stats: SliceStats) -> Iterator[RunSlice
     """Every run of a campaign, with its job, its clock and its share of the timeline.
 
     Job resolution goes through ``_transient/job_links.yaml`` and never through the ``job``
-    symlink: the symlink is only created once a job has finished, and cannot exist in an
-    object store at all — which is precisely the cluster case this has to work in.
+    symlink: the symlink is only created once a job has finished, and a running job is
+    precisely the case this has to work in.
 
     The clock map is loaded once per job and reused, with a per-RUN fallback for a non-ROS
     run that recorded its own map beside its output.
     """
     from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
         list_config_dirs, list_run_dirs)
-    from robovast.common.execution import \
-        job_artifact_dir  # pylint: disable=import-outside-toplevel
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        job_artifact_dir, read_job_links)
 
     # Two passes: the claim intervals are a property of a job's whole run set, so every run
     # has to be placed before any of them can be yielded.
     located: List[Tuple[str, Path, str, Optional[float], Optional[float]]] = []
     by_job: Dict[str, List[Tuple[str, Optional[float]]]] = {}
     starts_by_job: Dict[str, List[Tuple[str, Optional[float]]]] = {}
+    links = read_job_links(str(campaign_path))
     for config_dir in list_config_dirs(campaign_path):
         for run_dir in list_run_dirs(config_dir):
             job_name = f"{config_dir.name}/{run_dir.name}"
             try:
-                job_dir = job_artifact_dir(str(campaign_path), job_name)
+                job_dir = job_artifact_dir(str(campaign_path), job_name, links=links)
             except FileNotFoundError:
                 # Unlocatable artifacts, reported as such rather than silently as a run
                 # that produced nothing -- they are not the same finding.

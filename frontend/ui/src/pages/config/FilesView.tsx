@@ -93,10 +93,15 @@ export function FilesView({ source }: { source: ConfigSource }) {
       {tree.length ? (
         <TreeList nodes={tree} />
       ) : (
+        // Only a listing that actually came back empty says anything about what is there: while it
+        // is still in flight, and when it failed (the Editor tab's alert carries that), an empty
+        // tree is this pane having nothing to draw yet rather than a fact about the campaign.
         <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>
-          {readOnly
-            ? 'no files — this campaign froze no configuration'
-            : <>no files — drop a project folder here, or author a <code>.vast</code> in the Editor tab</>}
+          {files.isSuccess
+            ? (readOnly
+              ? 'no files — nothing is staged under _config/ for this campaign'
+              : <>no files — drop a project folder here, or author a <code>.vast</code> in the Editor tab</>)
+            : null}
         </Typography>
       )}
 

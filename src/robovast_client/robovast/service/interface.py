@@ -42,7 +42,7 @@ operations extend :class:`RobovastInterface` in later phases.
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -62,6 +62,13 @@ from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401
 #: One line in a campaign listing, not a notebook — anything longer belongs in the
 #: ``.vast`` itself, which is archived with the campaign.
 DESCRIPTION_MAX_LEN = 200
+
+#: Bound on a campaign's scheduling rank (:attr:`CreateCampaignRequest.priority`).
+#: Symmetric so demoting a long campaign and promoting a short one are the same gesture.
+#: Bounded at all because the rank's whole job is to be compared: a value far outside the
+#: range everything else uses says nothing more than the edge of the range does, and a typo
+#: that parks a campaign at the top of the queue forever should be refused where it is typed.
+PRIORITY_LIMIT = 100
 
 
 class CreateCampaignRequest(BaseModel):
@@ -117,6 +124,19 @@ class CreateCampaignRequest(BaseModel):
     #: images, and silently redirecting one would launch something nobody named.
     image_project: str = ""
     image_project_tag: str = ""
+    #: Which campaign the cluster queue admits first when several are waiting. Higher goes
+    #: first; the default 0 is what everything not asked about runs at, so a campaign is
+    #: demoted with a negative value and promoted with a positive one.
+    #:
+    #: Ordering only, and only where there is a queue to order. It never stops a run that has
+    #: started, so a campaign overtaken keeps what it is running and gives up only the slots
+    #: those runs release. The local Docker lane runs one campaign at a time and has no queue,
+    #: so it refuses a non-default value rather than accepting one it cannot act on.
+    priority: int = Field(0, ge=-PRIORITY_LIMIT, le=PRIORITY_LIMIT)
+    #: Launch, but admit nothing until resumed. Carried here because a campaign's scheduling
+    #: is replayed when a service restart adopts it, and a paused campaign must come back
+    #: paused rather than quietly starting to run while nobody is watching.
+    paused: bool = False
 
 
 class CampaignRef(BaseModel):
@@ -276,6 +296,13 @@ class ExecRequest(BaseModel):
     #: and idle-reaped, and ``keep_alive`` does not apply. See ``container_exec``'s module
     #: docstring for why the two are separate at all.
     query: bool = False
+    #: Replace this call's container instead of joining one that is already held, so the
+    #: image is pulled again on the way in. For the question a held container cannot
+    #: answer: *has the image behind this tag changed?* -- reuse keys on the tag, and the
+    #: tag is what moved. An action rather than part of the container's identity, so the
+    #: next ordinary call reuses whatever this one created. ``reused: false`` in the
+    #: result is the confirmation.
+    fresh: bool = False
     #: No ``tail`` here: like the three log operations, this returns the captured text
     #: and the *reading* surface trims it (the MCP tool via ``log_view.view_log``), so a
     #: CLI caller still gets everything.
@@ -293,6 +320,8 @@ class ExecContainerState(BaseModel):
     #: anything running in it, is gone. Load-bearing: an agent that assumed its stack
     #: survived would misread every later observation.
     reused: bool = False
+    #: The ``build:<tag>@<hash>`` this call ran, held container or not — what "which image
+    #: answered?" is read from, and the only image form that may cross the API boundary.
     image: str = ""
     config: str = ""                 # staged config name; "" for a bare-image container
     #: Seconds until the idle reap. Counts only while no process this tool started is
@@ -449,6 +478,13 @@ class CampaignSummary(BaseModel):
     #: see :class:`CampaignOrigin`.
     origin: Optional[CampaignOrigin] = None
     postprocessed: bool = False      # configured postprocessing pipelines have run
+    #: How the queue is treating this campaign: its rank, and whether it is admitting at all.
+    #: Both are the launch defaults unless somebody set them, and both describe only what is
+    #: still queued -- a paused campaign's running jobs are running. Reported so a campaign
+    #: that is admitting nothing says which of the two reasons it is, rather than leaving a
+    #: deliberate hold looking like a full cluster.
+    priority: int = 0
+    paused: bool = False
     #: How the campaign was run: ``'search'`` (a closed ask/tell loop, one batch per round)
     #: or ``'batch'`` (one batch of enumerated configurations). ``""`` when unrecorded,
     #: which a reader must treat as "not a search" rather than guessing -- an old store may
@@ -489,6 +525,16 @@ class CampaignSummary(BaseModel):
     # growth this payload must not take on. The first line is the sentence a notice needs; the
     # card fetches the whole thing from ``get_status`` when someone opens it.
     error: str = ""
+    #: Total bytes the campaign's results occupy in their durable home, as measured once
+    #: when the campaign ended (see ``Status.results_bytes``). ``None`` means **not
+    #: recorded** -- a campaign that ended before this was measured -- which a reader shows
+    #: as no figure rather than as ``0 B``.
+    #:
+    #: It rides this hot payload because it is one integer that was computed once and
+    #: cannot change: the growth this listing must not take on is per-row work or a series,
+    #: and asking storage how big a campaign is would be exactly that. Read from the same
+    #: snapshot as the phase, so it costs nothing beyond the field.
+    results_bytes: Optional[int] = None
 
 
 class ListCampaignsRequest(BaseModel):
@@ -830,19 +876,6 @@ class RunShareRequest(BaseModel):
     campaign_id: str
 
 
-class CleanupDataRequest(BaseModel):
-    """Which campaign result buckets to delete from the object store.
-
-    The service holds the cluster config (object-store credentials) and knows which
-    campaigns are live, so bucket cleanup runs server-side — the CLI never needs
-    cluster credentials. ``campaign_id`` None removes **all** finished campaigns
-    (live ones are always skipped); a given id removes just that one, and ``force``
-    removes it even if the service still considers it live.
-    """
-    campaign_id: Optional[str] = None
-    force: bool = False
-
-
 class LogChunk(BaseModel):
     """An incremental slice of a campaign's ``controller.log``.
 
@@ -1126,7 +1159,7 @@ class ResourceUsage(BaseModel):
     scheduler reasons about capacity — pods still queued for a node are reported by
     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
 
-    ``disk`` and ``store`` are **actual filesystem bytes on both lanes** -- the one place
+    ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
@@ -1134,9 +1167,8 @@ class ResourceUsage(BaseModel):
     the service pod, deliberately not a sum over the node set -- the workspaces are a
     ``hostPath`` there, so that is the disk which decides whether a campaign can be
     written, and a total would read as tens of terabytes free while it filled. Locally it
-    is the campaign results root's filesystem. ``store`` is the results store, which on the
-    cluster is a different thing from ``disk`` -- often on a different node -- and only
-    some providers can measure.
+    is the campaign results root's filesystem. ``results`` is the volume the campaigns
+    live on, reported only where it is a separately measurable claim.
 
     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
     scenario runs execute one at a time (local Docker is single-flight), ``True``
@@ -1197,21 +1229,24 @@ class ResourceUsage(BaseModel):
     #: capacity that halves after a re-setup is not a reading that drifted, it is a
     #: different disk. ``None`` on a backend with no node concept, or an older service.
     disk_node: Optional[str] = None
-    #: The campaign **results store**, when it is separately measurable -- the embedded
-    #: object store's volume on a cluster that hosts one. ``None`` on a provider backed by
-    #: a cloud bucket (object storage has no capacity to fill, so there is no meter to draw
-    #: -- not a failure to draw one), and locally, where the store *is* the filesystem
+    #: The **results volume** -- where campaigns live -- when it is separately measurable:
+    #: a provisioned claim on the service pod. ``None`` where the volume is a directory on
+    #: the service's node (the kubelet reports no per-volume figure for one, and ``disk``
+    #: is then the same filesystem) and locally, where the results root *is* the filesystem
     #: ``disk`` already reports.
-    store: Optional[DiskSpace] = None
-    #: Which node ``store`` was measured on. Often a *different* node from ``disk_node``:
-    #: the store is its own pod and may be pinned elsewhere, so one meter can be comfortable
-    #: while the other is full.
-    store_node: Optional[str] = None
+    results: Optional[DiskSpace] = None
     #: Why there is no ``disk``, when the backend tried and failed. Non-null only when
     #: ``disk`` is None *and* the reason is known -- a service too old to have this field
     #: leaves both absent, which reads identically to "did not try". Names counts and the
     #: fixing command, **never a node name**: this string crosses the interface.
     disk_unavailable: Optional[str] = None
+    #: Why new disk-consuming work -- a campaign, a rerun, an image build, an import,
+    #: postprocessing -- is refused right now: ``disk`` or ``results`` has less free space than
+    #: the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``). ``None`` while there is
+    #: room, and when neither meter could be read. Judged on the two readings above, so this
+    #: and the meters are one measurement; the same sentence is what a refused call carries.
+    #: Names amounts, **never a node or a path**.
+    storage_refusal: Optional[str] = None
     #: The held container-exec container, when one exists. A diagnostic container can
     #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
     #: has no way to discover that its own container is the reason.
@@ -1222,6 +1257,41 @@ class ResourceUsage(BaseModel):
     #: own schedule, and a lane holding three of them while reporting one would read as
     #: having capacity it does not have.
     query_containers: dict[str, ExecContainerState] = Field(default_factory=dict)
+
+
+class CacheSize(BaseModel):
+    """One cache the service keeps, and what it holds now."""
+
+    #: Which cache, in the reader's terms.
+    name: str
+    size_bytes: int = 0
+    entries: int = 0
+
+
+class KeptCacheEntry(BaseModel):
+    """An entry a clear leaves in place, and why."""
+
+    cache: str
+    #: The entry: a world key for the scene cache.
+    name: str
+    size_bytes: int = 0
+    reason: str
+
+
+class ServiceCache(BaseModel):
+    """The service's caches: copies it can rebuild from durable data, and nothing else.
+
+    Clearing one loses nothing but the time to rebuild what is next asked for. An entry that
+    may still be in use is never removed; ``kept`` names each and why. After a clear,
+    ``freed_bytes`` and ``removed_entries`` say what it did and ``caches`` is what remains.
+    """
+
+    caches: list[CacheSize] = Field(default_factory=list)
+    #: Entries a clear leaves (or, in a report, would leave) in place.
+    kept: list[KeptCacheEntry] = Field(default_factory=list)
+    #: What a clear removed. Zero in a report.
+    freed_bytes: int = 0
+    removed_entries: int = 0
 
 
 class UsageSample(BaseModel):
@@ -1515,6 +1585,41 @@ class StagedArchive(BaseModel):
     size: int = 0
 
 
+class ArchiveSelection(BaseModel):
+    """Which part of a campaign an archive carries.
+
+    The default is the whole campaign, minus staging. A postprocessing pod asks for what its
+    conversion reads: ``stage`` drops the calibration probes, the log this pod will write
+    and the archived log sections; ``skip_bags`` drops the rosbags when the conversion
+    does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch; ``part`` to the runs
+    a split postprocess gave one of its Jobs. The selection is
+    made where the bytes are, not where they land: what the pod is never given it cannot
+    convert, cannot fail on and does not pay to download.
+
+    ``uncompressed`` asks for a plain tar rather than a ``tar.gz``: right for a reader in
+    the cluster, where gzip costs a core per stream and saves almost nothing on run
+    output, and wrong for a download that crosses a slow link.
+    """
+
+    stage: bool = False
+    skip_bags: bool = False
+    batch_jobs: str = ""
+    uncompressed: bool = False
+    #: A part of a split postprocess: only its runs and their jobs, and everything that is
+    #: neither (see ``campaign_archive.part_include``).
+    part: str = ""
+
+
+class OutputsIngested(BaseModel):
+    """What a streamed tar of outputs left in a campaign or a staged slot."""
+
+    files: int = 0
+    bytes: int = 0
+    #: Members refused rather than written -- a path leaving the tree, a hard link, a
+    #: file only the driver writes. Named, so a pod whose output vanished can read why.
+    refused: list[str] = Field(default_factory=list)
+
+
 class ImportCampaignRequest(BaseModel):
     """Which campaign archive to take in, and from where. Exactly one source.
 
@@ -1619,18 +1724,54 @@ class ValidationProblem(BaseModel):
 
     ``stage`` is the check that failed (``file``/``parse``/``schema``/
     ``scenario``/``generation``/plugin-ref/…); ``config``/``field`` locate it.
+
+    ``severity`` states which of three answers this is, because a caller acts on them
+    differently and the text alone cannot be branched on:
+
+    - ``error`` — the campaign is wrong. It makes ``valid`` false.
+    - ``advice`` — a checked fact worth saying (a large build context, a container with
+      no memory limit). ``valid`` stays true; the campaign runs.
+    - ``unchecked`` — a check this report covers could not run here, so *nothing* was
+      learned about it either way. It makes ``valid`` false without being a defect in
+      the file, and its message names what would settle it.
     """
 
     stage: str = ""
     config: Optional[str] = None
     field: Optional[str] = None
     message: str = ""
+    severity: str = "error"
 
 
 class ValidationReport(BaseModel):
-    """Collect-all validation result (mirrors ``validate_project_file``)."""
+    """Collect-all validation result (mirrors ``validate_project_file``).
+
+    ``valid`` means every check this report covers ran **and** passed, so a caller may
+    act on that one boolean — which is the only thing a boolean is good for. A check
+    that could not run makes it false and appears as an ``unchecked`` problem: "I could
+    not look" and "it is fine" are different answers, and a caller that reads only
+    ``valid`` must not be handed the second when the first is true.
+
+    ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks a
+    caller *asks* for: ``True`` it ran and passed, ``False`` it was asked for and could not
+    run, ``None`` it was not asked for (``check_world`` / ``check_scenario`` false, or --
+    for the scenario -- no scenario file to parse).
+
+    They are not the only things here that need a container: composing the file runs an
+    ``execution.generate`` generator and any variation declaring a helper image. Those carry
+    no flag of their own because there is no request to answer -- nothing asks for them and
+    they are never skipped on request, so two of the three states could not arise. When one
+    cannot run it is reported the same way every unrunnable check is, as an ``unchecked``
+    problem that makes ``valid`` false.
+    """
 
     valid: bool = False
+    world_checked: Optional[bool] = None
+    #: Did the scenario parse in the image that would run it, imports and all? The
+    #: question has no answer off the image: ``import osc.<library>`` resolves against
+    #: what is installed there, so a scenario that parses on the service's host can die
+    #: at its first line in every trial.
+    scenario_checked: Optional[bool] = None
     problems: list[ValidationProblem] = Field(default_factory=list)
     configs: int = 0
     runs_per_config: int = 0
@@ -1877,86 +2018,10 @@ class DataQueryResult(BaseModel):
     note: Optional[str] = None
 
 
-class WorkProgress(BaseModel):
-    """How far along the blocking work behind a campaign request currently is.
-
-    Exists because the two waits a caller actually sits through — pulling the campaign out of
-    the object store, then executing the notebook — are both minutes long and were both
-    reported as nothing at all. The counts live only in memory (see
-    :attr:`CampaignDataStatus.progress`), so reading them costs no round-trip and a client can
-    poll once a second without competing with the transfer it is describing.
-
-    One shape for both phases rather than one model each: a caller renders ``done``/``total``
-    the same way regardless, and ``unit`` is what makes the sentence read right.
-    """
-
-    #: Which blocking step is running. ``listing`` is the metadata pass that establishes
-    #: ``total`` — brief, but on a large campaign not instant, so it is named rather than
-    #: spent looking idle.
-    phase: Literal["listing", "downloading", "executing"]
-    #: What ``done`` and ``total`` count, so a client need not branch on ``phase`` to word it.
-    unit: Literal["files", "cells"]
-    done: int = 0
-    #: ``None`` while genuinely unknown (during ``listing``, or from a backend that cannot
-    #: count cheaply). A client shows an indeterminate bar rather than inventing a denominator.
-    total: Optional[int] = None
-    #: Bytes are tracked only for transfers; ``0``/``None`` for cell execution.
-    bytes_done: int = 0
-    bytes_total: Optional[int] = None
-    #: Free text naming the concrete thing in flight, e.g. the notebook being executed.
-    detail: str = ""
-
-
-class CampaignDataStatus(BaseModel):
-    """Whether querying this campaign has to transfer anything first, and what it costs.
-
-    Exists so a caller can say *why* it is about to wait, **before** it waits. As with
-    :class:`ResourceUsage`, the local↔cluster difference is resolved inside the service, so
-    a consumer reads the same fields either way and never branches on the backend:
-    ``fetch_required`` false means the question does not apply.
-
-    Deliberately cheap — two metadata lookups, never an enumeration of the campaign prefix
-    — because the point is to answer *before* the expensive thing, and a probe that itself
-    cost a listing would only move the cost.
-    """
-
-    campaign_id: str
-    #: ``"local-disk"`` (files on the service's own disk) or ``"object-store"``.
-    source: Literal["local-disk", "object-store"]
-    #: Can a query have to transfer data before it can answer? False on local, where there
-    #: is nothing to fetch and so nothing to warn about.
-    fetch_required: bool
-    #: The query databases are already cached at their current size, so the next query
-    #: reads them directly. Always True when ``fetch_required`` is False.
-    cached: bool
-    #: How a transfer reaches the store: ``"none"``, ``"cluster-network"`` (in-pod, LAN
-    #: speed) or ``"port-forward"`` (off-cluster driver — the slow one). The two cluster
-    #: modes differ by orders of magnitude, so "object store" alone would not tell a caller
-    #: whether to expect seconds or minutes.
-    transfer: Literal["none", "cluster-network", "port-forward"]
-    #: Size of what a *query* needs (``data.db`` + ``campaign.db``) — not of the campaign,
-    #: which is typically orders of magnitude larger and irrelevant here.
-    db_bytes: int = 0
-    #: Another request is fetching this campaign right now; a query queues behind it rather
-    #: than starting a second transfer.
-    fetch_in_progress: bool = False
-    #: What this service's last completed transfer of this campaign actually cost. ``None``
-    #: before the first one — process-local, so a restart forgets it.
-    last_fetch_seconds: Optional[float] = None
-    last_fetch_bytes: Optional[int] = None
-    #: Live counts for the transfer or render running *right now*, or ``None`` when this
-    #: service is not busy with this campaign. Read from memory, so asking is free even while
-    #: the transfer it describes is saturating the link.
-    progress: Optional[WorkProgress] = None
-    #: One human sentence naming the reason, for a client to show or an agent to repeat.
-    note: str = ""
-
-
 class SceneStatus(BaseModel):
     """Whether this run's 3D geometry is ready, and if not, what is happening about it.
 
-    The same job as :class:`CampaignDataStatus`, for the same reason — *say why you are about to wait,
-    before you wait* — so the fields deliberately reuse its names rather than inventing synonyms. A
+    *Say why you are about to wait, before you wait.* A
     scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
     the first viewer of a given world pays for it and everyone after reads it from disk.
 
@@ -2095,14 +2160,40 @@ class ServiceError(OSError):
     :data:`robovast.mcp_server.data_access._REPORTED`, which relies on it to turn a
     service-side SQL rejection into a reported error rather than a traceback — keeps
     working unchanged.
+
+    ``include_traceback = False``: what the service said is the whole of the report -- a
+    bug on its side already arrives rendered with the frames it broke in -- and the frames
+    on this side are the HTTP transport's, which name nothing.
     """
 
-    def __init__(self, status: int, detail: str, url: str = ""):
+    include_traceback = False
+
+    def __init__(self, status: int, detail: str, url: str = "", code: str = ""):
         self.status = status
         self.detail = detail
         self.url = url
+        #: The refusal's class, from :data:`ERROR_CODE_HEADER`; ``""`` when the service
+        #: named none. What a caller branches on, the detail being what it prints.
+        self.code = code
         super().__init__(detail)
 
+
+#: Header naming the CLASS of a refusal, for the few whose class a caller must act on
+#: rather than print. The message says what happened and is written for a person; a client
+#: that has to *behave* differently -- degrade to "unchecked", report the deployment rather
+#: than the image -- cannot get that from prose without matching on it, and a message
+#: matched on by a client is one nobody may reword.
+#:
+#: A header rather than a field in the body: the body is FastAPI's ``{"detail": ...}`` for
+#: every refusal the service composes, and one shape for all of them is worth more than a
+#: second shape for the handful that carry a code.
+ERROR_CODE_HEADER = "x-robovast-error"
+
+#: No command can be run in a container on this deployment --
+#: :class:`~robovast.common.errors.ExecPathUnavailable` crossing HTTP. Every code is a fact
+#: a client acts on; there is no code for "something went wrong", which is what the status
+#: and the detail already say.
+EXEC_PATH_UNAVAILABLE = "exec_path_unavailable"
 
 API_VERSION = "0"
 
@@ -2141,6 +2232,8 @@ class Routes:
     ADMIN_UPGRADE = "/admin/upgrade"
     #: What this service is configured with, read back out of its own environment.
     ADMIN_CONFIG = "/admin/config"
+    #: The service's rebuildable caches: what they hold (GET), and clearing them (DELETE).
+    ADMIN_CACHE = "/admin/cache"
     #: What this service DID -- durable, unlike the log above it. Cursor-keyed, and its own
     #: route rather than a field on a polled payload, per the tiers in docs/http_api.rst.
     ADMIN_EVENTS = "/admin/events"
@@ -2238,8 +2331,8 @@ class Routes:
 
     @staticmethod
     def campaign(campaign_id: str) -> str:
-        # The campaign resource itself — DELETE removes it wholesale (local dir /
-        # cluster object-store data). GET is not served; use the sub-resources below.
+        # The campaign resource itself — DELETE removes its directory wholesale. GET is
+        # not served; use the sub-resources below.
         return f"/campaigns/{campaign_id}"
 
     @staticmethod
@@ -2259,6 +2352,10 @@ class Routes:
         return f"/campaigns/{campaign_id}/stop"
 
     @staticmethod
+    def campaign_scheduling(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/scheduling"
+
+    @staticmethod
     def campaign_retrigger(campaign_id: str) -> str:
         # Under the SOURCE campaign, because that is what the request identifies; the campaign
         # it creates is new and is named in the response.
@@ -2276,11 +2373,34 @@ class Routes:
         # having it beside the retrigger rather than inside it.
         return f"/campaigns/{campaign_id}/retrigger/check"
 
+    #: The data plane: every route that moves a campaign's or a slot's bytes as a tar
+    #: stream. One prefix, so a front can hand it to its own process and a pod's token can
+    #: be confined to it (``auth.scope_allows``). The paths below carry the prefix in full:
+    #: the data app answers them at the same address whether it is mounted into the
+    #: control plane's app or served on its own behind a front.
+    DATA = "/data"
+
     @staticmethod
     def campaign_archive(campaign_id: str) -> str:
-        # The postprocessed tar.gz, streamed from the object store. Named here like every
+        # The campaign as a tar.gz, streamed from the service's tree. Named here like every
         # other path so the MCP's download link and the route serving it are one string.
-        return f"/campaigns/{campaign_id}/archive"
+        return f"{Routes.DATA}/campaigns/{campaign_id}/archive"
+
+    @staticmethod
+    def campaign_inputs(campaign_id: str) -> str:
+        # What a job pod is given: the campaign's `_config/` and `_transient/`, flattened.
+        return f"{Routes.DATA}/campaigns/{campaign_id}/inputs"
+
+    @staticmethod
+    def campaign_outputs(campaign_id: str) -> str:
+        # Where a pod delivers what it produced. A control route on purpose: `/results`
+        # has no write verb, and must not grow one.
+        return f"{Routes.DATA}/campaigns/{campaign_id}/outputs"
+
+    @staticmethod
+    def staged(slot: str) -> str:
+        # A scratch tree the control plane stages for one pod, by its slot name.
+        return f"{Routes.DATA}/staged/{slot}"
 
     @staticmethod
     def campaign_logs(campaign_id: str) -> str:
@@ -2326,7 +2446,6 @@ class Routes:
 
     #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
     #: because it also serves the "all campaigns" case).
-    CLEANUP_DATA = "/campaigns/cleanup-data"
 
     #: Experiment image builds (declared by a project's ``build:`` section).
     IMAGE_BUILDS = "/image-builds"
@@ -2416,13 +2535,6 @@ class Routes:
         return f"/campaigns/{campaign_id}/query.csv"
 
     @staticmethod
-    def campaign_data_status(campaign_id: str) -> str:
-        # A **control** route, not a ``/results`` path: every segment under ``/results`` is
-        # a user-chosen file name (see :mod:`robovast.client.file_address`), so a literal
-        # ``status`` there would shadow a campaign file actually called that.
-        return f"/campaigns/{campaign_id}/data-status"
-
-    @staticmethod
     def campaign_plots(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/plots"
 
@@ -2462,6 +2574,19 @@ class RobovastInterface(ABC):
 
         ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
         single-backend services offer one lane and ignore it.
+        """
+
+    @abstractmethod
+    def service_cache(self) -> ServiceCache:
+        """What the service's rebuildable caches hold, and what a clear would keep."""
+
+    @abstractmethod
+    def clear_service_cache(self) -> ServiceCache:
+        """Remove every cache entry nothing may still be using; report what was freed.
+
+        Only copies of durable data are touched, so nothing is lost but the time to rebuild
+        it. Kept, and named in ``kept``: a running campaign's files, an entry an operation has
+        pinned, and one read recently enough that its reader may still hold the path.
         """
 
     # -- rolling this service onto newer bytes ------------------------------
@@ -2791,6 +2916,37 @@ class RobovastInterface(ABC):
     def stop(self, campaign_id: str) -> ActionResult:
         """Request a cooperative stop of a running campaign."""
 
+    def set_campaign_scheduling(self, campaign_id: str, priority: Optional[int] = None,
+                                paused: Optional[bool] = None) -> ActionResult:
+        """Set how the queue treats a campaign: its rank, whether it admits, or both.
+
+        One operation rather than two verbs, because it sets one fact -- a campaign's standing
+        with the queue -- and setting half of it must not disturb the other half. ``None``
+        leaves that half alone, so holding a campaign keeps the rank it will resume at.
+
+        **Ordering only.** Neither setting stops a run that has started: a campaign demoted or
+        held keeps the jobs it is running and gives up only the slots they release. That is
+        what makes it safe on a campaign whose results matter -- nothing is discarded, and no
+        partial run is produced.
+
+        Higher ranks are admitted first; ``0`` is what a campaign nobody asked about runs at,
+        so a long campaign is moved out of the way with a negative value and a short one is
+        let past with a positive one. Bounded by :data:`PRIORITY_LIMIT`.
+
+        Takes effect on the next admission pass, and reaches the batches the campaign has not
+        submitted yet as well as the jobs already queued.
+
+        Raises ``ValueError`` when neither argument is given -- a call that asked for nothing
+        is a caller's mistake, and answering it "done" would report a change that never
+        happened. Raises on a lane with no queue to order (the local Docker lane runs one
+        campaign at a time), and on a campaign that is already over.
+
+        Not abstract, for the reason :meth:`exec_in_job` is not: a transport that cannot do
+        this inherits a refusal rather than being made to write one.
+        """
+        del campaign_id, priority, paused
+        raise NotImplementedError("this service does not queue campaigns against each other")
+
     @abstractmethod
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: Optional[str] = None,
@@ -2847,44 +3003,75 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def cleanup_campaign_data(self, request: CleanupDataRequest) -> ActionResult:
-        """Delete campaign result bucket(s) from the object store.
-
-        Runs server-side because the service holds the cluster config (object-store
-        credentials) and the authoritative live-campaign set — so the CLI needs no
-        cluster credentials. Live campaigns are skipped unless ``force`` names one.
-        """
-
-    @abstractmethod
     def delete_campaign(self, campaign_id: str) -> ActionResult:
-        """Permanently delete **one** campaign wholesale — its durable home.
-
-        Locally that is the campaign's directory under the results root; on a
-        cluster it is the campaign's object-store data (plus any leftover Jobs and
-        the service's local cache). Distinct from :meth:`cleanup_campaign_data`,
-        which is a bulk object-store bucket sweep: this removes a single named
-        campaign in full, whatever backend holds it.
+        """Permanently delete **one** campaign wholesale: its directory under the results
+        root, plus, on a cluster, any leftover Jobs and its token Secret.
 
         Refuses a campaign that is still running (raises so it surfaces as a 409);
         stop it first. A campaign that is already gone deletes idempotently. The
         external share copy (if any) is never touched — it is a separate system.
         """
 
+    # -- the data plane: tar streams in and out of the campaign tree --
+    #
+    # These five move bytes and nothing else. They are served by the data app
+    # (:mod:`robovast.service.data_app`), which reads the results tree directly rather
+    # than through a transport, so a pod's upload never shares a process with the
+    # control plane; the HTTP client reaches them under ``Routes.DATA``.
+
     @abstractmethod
-    def campaign_tar_stream(self, campaign_id: str):
-        """Yield the campaign as a ``tar.gz``, in chunks, for ``GET /campaigns/{id}/archive``.
+    def campaign_tar_stream(self, campaign_id: str,
+                            selection: "ArchiveSelection | None" = None):
+        """Yield the campaign as a ``tar.gz``, in chunks, for ``GET .../archive``.
 
         What comes out is the campaign as this service holds it -- postprocessed, if it
         has been -- minus the internal ``_postproc/`` staging, so what lands is the clean
-        campaign layout. Streamed on both lanes and buffered by neither: the cluster tars
-        objects as it fetches them, the local lane tars its own directory into the
-        response.
+        campaign layout. *selection* narrows it (:class:`ArchiveSelection`); ``None`` is
+        the whole campaign. Streamed, never buffered: the tree is tarred into the
+        response as it is read.
 
         On the interface rather than only on the lane that first needed it: this was a
         cluster-only method the HTTP route probed for with ``hasattr``, so a local service
         answered 409 and the web UI hid its download button there. Which lane a service
         runs is not what decides whether a caller can be handed a file.
         """
+
+    @abstractmethod
+    def campaign_inputs_tar_stream(self, campaign_id: str,
+                                   config_files: "list[tuple[str, str]] | None" = None):
+        """Yield the tar a job pod extracts into its ``/config``.
+
+        The campaign's ``_config/`` and ``_transient/`` with those two segments stripped,
+        so the members land where the containers expect them; plus, for each
+        ``(config_name, rel)`` in *config_files*, the cell's ``<config>/_config/<rel>``
+        as ``<rel>`` -- what a configuration declared as its own input, staged under the
+        campaign-wide name the containers read. Executable bits and symlinks are members
+        of the tar, so nothing has to be restored on the other side.
+        """
+
+    @abstractmethod
+    def ingest_campaign_outputs(self, campaign_id: str, stream) -> OutputsIngested:
+        """Extract a tar *stream* of run outputs into the campaign's directory.
+
+        The last writer wins, member by member: the containers of one pod share an
+        output tree and each contributes its own files to it. Refused with a
+        ``KeyError`` for a campaign that is not here and a ``ValueError`` for one that has
+        ended -- outputs arriving after the verdict would change a record nothing reads
+        again. What a pod never writes -- the campaign's own store, the driver's logs --
+        is refused per member and reported, never written.
+        """
+
+    @abstractmethod
+    def staged_tar_stream(self, slot: str, path: str = ""):
+        """Yield a staged slot -- or *path* within it -- as a ``tar.gz``.
+
+        A slot is a scratch tree the control plane puts down for one pod (a build
+        context, an exec pod's workspace); it is named by the caller and read once.
+        """
+
+    @abstractmethod
+    def ingest_staged(self, slot: str, stream) -> OutputsIngested:
+        """Extract a tar *stream* into the staged slot *slot*, creating it."""
 
     def campaign_archive_name(self, campaign_id: str) -> str:
         """The file name :meth:`campaign_tar_stream`'s bytes should be offered under.
@@ -3098,7 +3285,8 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def validate_project(self, workspace_id: str, path: str = "",
-                         check_world: bool = True) -> ValidationReport:
+                         check_world: bool = True,
+                         check_scenario: bool = True) -> ValidationReport:
         """Collect-all validation of a workspace ``.vast`` project.
 
         Wraps ``config_validation.validate_project_file``. ``path`` selects which
@@ -3106,12 +3294,20 @@ class RobovastInterface(ABC):
         there are several — pass ``path``). Empty ``workspace_id`` → the CWD project.
         Returns every problem at once (schema, scenario file, plugin refs) + counts.
 
-        ``check_world`` also asks the simulator whether the world(s) this campaign would
-        load actually load and compile — the one check here that runs a container, and the
-        only thing that catches a world which would fail every trial of the sweep. It runs
-        only once the cheap checks pass, and the container is held, so a repeat validation
-        of the same project pays an exec rather than a container start. Pass ``False``
-        while iterating on YAML to keep the call sub-second.
+        Two checks run a container, and each catches a failure that is otherwise
+        per-trial — discovered after the pull and the schedule, once per run.
+
+        ``check_world`` asks the simulator whether the world(s) this campaign would load
+        actually load and compile. It runs only once the cheap checks pass.
+
+        ``check_scenario`` asks the scenario image to parse the scenario, imports and all.
+        That question has no answer off the image: ``import osc.<library>`` resolves
+        against what is installed there, so a scenario that parses on the service's host
+        can die at its first line in every trial while the campaign still reports finished.
+
+        Both containers are held, so a repeat validation of the same project pays an exec
+        rather than a container start. Pass ``False`` while iterating on YAML to keep the
+        call sub-second.
         """
 
     @abstractmethod
@@ -3201,16 +3397,6 @@ class RobovastInterface(ABC):
         which left a caller who wanted the whole result with nowhere to go. This is that
         somewhere: streamed, so neither end holds it, and cheap enough for an MCP tool to
         hand over the URL rather than spend context on rows.
-        """
-
-    @abstractmethod
-    def campaign_data_status(self, campaign_id: str) -> CampaignDataStatus:
-        """Report whether a query on this campaign must transfer data first, and its cost.
-
-        A **cheap** pre-flight for :meth:`describe_campaign_data` /
-        :meth:`query_campaign_data_sql`: it answers before the wait rather than explaining
-        after it, so a client can say *fetching this campaign's databases* instead of
-        appearing to hang. Must not itself enumerate the campaign.
         """
 
     @abstractmethod
