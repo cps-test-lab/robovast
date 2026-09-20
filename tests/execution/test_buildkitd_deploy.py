@@ -249,7 +249,7 @@ def test_a_private_registry_ca_is_configured_on_the_daemon():
 def _job(**over):
     from robovast.execution.cluster_execution.cluster_image_build import build_job_manifest
     kwargs = {"build_id": "imgbuild-x-abc", "image_ref": "reg.local:5000/x:abc",
-              "campaign_label": "imgbuild-x-abc", "init_env": [],
+              "campaign_label": "imgbuild-x-abc", "token": "tok",
               "push_secret_name": "push", "namespace": "ns",
               "daemon_addr": "tcp://robovast-buildkitd.ns.svc:1234"}
     kwargs.update(over)
@@ -630,7 +630,7 @@ def test_the_cache_keeps_the_services_reserve_free_by_default(monkeypatch):
     margin the service refuses new work to protect."""
     import tomllib
 
-    from robovast.service.storage_reserve import RESERVE_ENV
+    from robovast.common.disk_reserve import RESERVE_ENV
     monkeypatch.setenv(RESERVE_ENV, "150")
     parsed = tomllib.loads(buildkitd_toml())
     assert parsed["worker"]["oci"]["gcpolicy"][0]["minFreeSpace"] == "150GB"
@@ -640,7 +640,7 @@ def test_the_cache_keeps_the_services_reserve_free_by_default(monkeypatch):
 def test_the_cache_never_keeps_less_than_its_own_floor(monkeypatch, reserve):
     """No reserve turns the service's refusals off; it must not let the cache fill the disk."""
     from robovast.execution.cluster_execution.buildkitd_deploy import default_gc_min_free
-    from robovast.service.storage_reserve import RESERVE_ENV
+    from robovast.common.disk_reserve import RESERVE_ENV
     monkeypatch.setenv(RESERVE_ENV, reserve)
     assert default_gc_min_free() == "50GB"
 
@@ -648,7 +648,7 @@ def test_the_cache_never_keeps_less_than_its_own_floor(monkeypatch, reserve):
 def test_a_stated_min_free_wins_over_the_reserve(monkeypatch):
     import tomllib
 
-    from robovast.service.storage_reserve import RESERVE_ENV
+    from robovast.common.disk_reserve import RESERVE_ENV
     monkeypatch.setenv(RESERVE_ENV, "150")
     parsed = tomllib.loads(buildkitd_toml(gc_min_free="300GB"))
     assert parsed["worker"]["oci"]["gcpolicy"][0]["minFreeSpace"] == "300GB"

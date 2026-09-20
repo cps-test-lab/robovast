@@ -500,9 +500,8 @@ export function DetailsBox({
                       value={formatBytes(resultsBytes)}
                       label="results"
                       tip={
-                        'What this campaign occupies in storage, measured once when it ' +
-                        'ended — on the local lane the results tree, on a cluster the ' +
-                        'object store. Recorded at the end, so a campaign that is still ' +
+                        'What this campaign occupies on the results volume, measured once ' +
+                        'when it ended. Recorded at the end, so a campaign that is still ' +
                         'running shows none.'
                       }
                     />

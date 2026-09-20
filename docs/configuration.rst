@@ -1532,6 +1532,11 @@ per *field*, so a ``.vast`` stating only ``cpu`` keeps the deployment's ``memory
 **What it measures.** CPU and memory, both from the same probe. CPU is read at a percentile
 that depends on the container's role; memory is read at the **maximum** for every role,
 because exceeding a CPU reservation slows a container while exceeding a memory one kills it.
+The probe is a run in the job shape, and is treated as one all the way: while somebody is
+watching the campaign, the service asks the probe's simulator for its health exactly as it asks
+a run's (:doc:`mcp`, "How it is asked"). That read is a process started inside the simulator's
+container and charged to its memory, so it is part of what the simulator's limit must clear,
+and a probe spared it would be sized without it.
 
 **How the measurement becomes an allocation** is a per-container ``calibration`` block, every
 field optional and defaulted from the role and the deployment:
@@ -1948,9 +1953,11 @@ To list all available plugins and their descriptions:
    ``rosbags_process`` — the one that shows up in ``vast configuration plugins``
    and the ``list_plugins`` MCP tool. When several ``rosbags_*`` commands appear
    in a config, they are transparently batched into one ``rosbags_process`` call
-   so each rosbag is read only once. You can keep using the individual
-   ``rosbags_*`` names (they remain valid), or write ``rosbags_process`` directly
-   with a list of handler ``type`` entries when you need finer control:
+   so each rosbag is read only once, and every kind of bag — a run's own ``rosbag2``
+   and the infrastructure ``logs/rosout_bag`` — is converted in the same scan and
+   worker pool. You can keep using the individual ``rosbags_*`` names (they remain
+   valid), or write ``rosbags_process`` directly with a list of handler ``type``
+   entries when you need finer control:
 
    .. code-block:: yaml
 
@@ -1961,6 +1968,13 @@ To list all available plugins and their descriptions:
                 frames: [base_link]
               - type: to_csv
                 topics: [/cmd_vel, /odom]
+
+   ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). Every
+   ``rosbags_process`` entry and every ``rosbags_*`` name in the list is combined into
+   the one conversion, bag directory by bag directory, and the ``logs/rosout_bag``
+   handlers (``rosout_to_csv``, ``clock_to_csv``) are added to it unless an entry
+   declares them itself or they are skipped — so write an entry per bag directory
+   whose handlers you set, and nothing for the rest.
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 

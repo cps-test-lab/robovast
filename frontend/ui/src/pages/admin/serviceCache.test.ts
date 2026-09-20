@@ -3,15 +3,15 @@ import { clearableBytes, heldBytes } from './serviceCache'
 
 const report = {
   caches: [
-    { name: 'object-store fetch cache', size_bytes: 10_000, entries: 3 },
-    { name: 'scene cache', size_bytes: 500, entries: 2 },
+    { name: 'scene cache', size_bytes: 10_000, entries: 3 },
+    { name: 'thumbnail cache', size_bytes: 500, entries: 2 },
   ],
   kept: [
     {
-      cache: 'object-store fetch cache',
-      name: 'camp-1',
+      cache: 'scene cache',
+      name: 'world-1',
       size_bytes: 4_000,
-      reason: 'the campaign is still running',
+      reason: 'a viewer is loading it right now',
     },
   ],
   freed_bytes: 0,

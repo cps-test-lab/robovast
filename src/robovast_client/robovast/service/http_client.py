@@ -344,11 +344,6 @@ class HTTPTransport(RobovastInterface):
         return ListCampaignsResponse.model_validate(
             self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset))
 
-    def cleanup_campaign_data(self, request) -> ActionResult:
-        return ActionResult.model_validate(
-            self._post(Routes.CLEANUP_DATA,
-                       {"campaign_id": request.campaign_id, "force": request.force}))
-
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))
 
@@ -516,7 +511,24 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return resp.iter_content(chunk_size=64 * 1024, decode_unicode=True)
 
-    def campaign_tar_stream(self, campaign_id: str):
+    # -- the data plane: tar streams, never held at either end --
+
+    def _stream(self, route: str, **params):
+        resp = self.session.get(f"{self.base_url}{route}", params=params or None,
+                                timeout=self.DATA_TIMEOUT, stream=True)
+        self.raise_for_status(resp)
+        return resp.iter_content(chunk_size=1024 * 1024)
+
+    def _upload(self, route: str, stream):
+        """PUT *stream* (an iterable of bytes, or a file-like) as a chunked body."""
+        from robovast.service.interface import OutputsIngested
+        body = stream if hasattr(stream, "read") else iter(stream)
+        resp = self.session.put(f"{self.base_url}{route}", data=body,
+                                timeout=self.DATA_TIMEOUT)
+        self.raise_for_status(resp)
+        return OutputsIngested.model_validate(resp.json())
+
+    def campaign_tar_stream(self, campaign_id: str, selection=None):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
@@ -524,21 +536,27 @@ class HTTPTransport(RobovastInterface):
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """
-        resp = self.session.get(f"{self.base_url}{Routes.campaign_archive(campaign_id)}",
-                                timeout=self.DATA_TIMEOUT, stream=True)
-        self.raise_for_status(resp)
-        return resp.iter_content(chunk_size=1024 * 1024)
+        params = {}
+        if selection is not None:
+            params = {k: v for k, v in selection.model_dump().items() if v}
+        return self._stream(Routes.campaign_archive(campaign_id), **params)
 
-    def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
-        # Deliberately the *default* timeout: this is the cheap probe, and if it hangs the
-        # answer is "the service is unwell", not "be patient".
-        from robovast.service.interface import CampaignDataStatus
-        return CampaignDataStatus.model_validate(
-            self._get(Routes.campaign_data_status(campaign_id)))
+    def campaign_inputs_tar_stream(self, campaign_id: str, config_files=None):
+        return self._stream(Routes.campaign_inputs(campaign_id),
+                            config_file=[f"{cn}:{rel}" for cn, rel in (config_files or ())])
+
+    def ingest_campaign_outputs(self, campaign_id: str, stream):
+        return self._upload(Routes.campaign_outputs(campaign_id), stream)
+
+    def staged_tar_stream(self, slot: str, path: str = ""):
+        return self._stream(Routes.staged(slot), **({"path": path} if path else {}))
+
+    def ingest_staged(self, slot: str, stream):
+        return self._upload(Routes.staged(slot), stream)
 
     def campaign_scene_status(self, campaign_id: str, config_name: str,
                               run_id: str) -> "SceneStatus":
-        # The default timeout, as for data-status: this is the cheap probe, and it never builds.
+        # The default timeout: this is the cheap probe, and it never builds.
         from robovast.service.interface import SceneStatus
         return SceneStatus.model_validate(self._get(
             Routes.campaign_scene(campaign_id),

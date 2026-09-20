@@ -87,12 +87,12 @@ def test_a_full_cluster_is_waited_out_rather_than_failed():
 
 
 def test_the_wait_says_the_results_are_not_at_risk():
-    """A campaign's runs are already published when this step runs, so a message that reads
-    like data loss would send someone re-running trials that are fine."""
+    """A campaign's runs are complete and on the service when this step runs, so a message
+    that reads like data loss would send someone re-running trials that are fine."""
     admission = AdmissionController(_Provider(free_cpu=0.5), budget_ttl=0.0)
     _ok, _node, message = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
                                              timeout=0.05, poll=0.01)
-    assert "runs are published" in message
+    assert "runs are complete" in message
     assert "re-run postprocessing" in message
 
 
@@ -112,7 +112,7 @@ def test_the_grant_is_pinned_to_the_node_it_was_granted_on():
     """The pin is what makes the grant mean something: the queue found room on a particular
     machine, and a pod free to land anywhere can still arrive at a full one."""
     manifest = _manifest()
-    pj._pin_to(manifest, "node-a")
+    pj.pin_campaign_job(manifest, "node-a")
     selector = manifest["spec"]["template"]["spec"]["nodeSelector"]
     assert selector["robovast.io/node-id"] == "node-a"
 
@@ -120,7 +120,7 @@ def test_the_grant_is_pinned_to_the_node_it_was_granted_on():
 def test_an_unpinned_grant_leaves_no_node_selector():
     """A growable cluster admits unpinned, and a selector naming no node must not appear."""
     manifest = _manifest()
-    pj._pin_to(manifest, None)
+    pj.pin_campaign_job(manifest, None)
     assert "robovast.io/node-id" not in (
         manifest["spec"]["template"]["spec"].get("nodeSelector") or {})
 

@@ -122,6 +122,49 @@ def test_a_probe_that_raises_does_not_take_the_sampler_down():
     assert mon._system_row([(broken, ("x",))]) == [""]
 
 
+def test_a_restarted_sampler_continues_the_record_its_predecessor_left(tmp_path, capsys):
+    """A container the kubelet restarts runs the sampler again against the same output dir. The
+    first instance's samples are the record of why it died -- a high-water mark climbing towards
+    the limit is in nothing else once the container is gone -- so they are continued, under the
+    one header, not replaced by the trace of the instance that survived."""
+    path = tmp_path / "system_usage_simulation.csv"
+    header = ["timestamp", "memory_peak"]
+    with mon.open_record(str(path), header) as handle:
+        handle.write("1.0,100\n")
+    with mon.open_record(str(path), header) as handle:
+        handle.write("2.0,5\n")
+
+    assert path.read_text().splitlines() == ["timestamp,memory_peak", "1.0,100", "2.0,5"]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_new_or_empty_record_gets_its_header(tmp_path):
+    """Emptiness must still mean "this runtime reports nothing", never "no header yet"."""
+    fresh = tmp_path / "fresh.csv"
+    with mon.open_record(str(fresh), ["timestamp", "x"]):
+        pass
+    assert fresh.read_text().splitlines() == ["timestamp,x"]
+
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    with mon.open_record(str(empty), ["timestamp", "x"]):
+        pass
+    assert empty.read_text().splitlines() == ["timestamp,x"]
+
+
+def test_a_record_with_other_columns_is_replaced_and_said_so(tmp_path, capsys):
+    """A header that differs is another runtime's report, not a continuation of this one. Appending
+    to it would produce a CSV the generic ingest cannot type -- the same ragged file the sampler
+    decides its probes once to avoid -- so it is replaced, and the replacement is stated."""
+    path = tmp_path / "system_usage_simulation.csv"
+    path.write_text("timestamp,other\r\n1.0,1\r\n")
+    with mon.open_record(str(path), ["timestamp", "x"]) as handle:
+        handle.write("2.0,2\n")
+
+    assert path.read_text().splitlines() == ["timestamp,x", "2.0,2"]
+    assert "replaced" in capsys.readouterr().err
+
+
 # -- the slicer -------------------------------------------------------------------------
 
 def test_columns_are_carried_through_without_being_named(tmp_path):

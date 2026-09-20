@@ -30,6 +30,18 @@ def test_a_full_index_disk_is_storage_full():
     assert is_storage_full(_DiskFull("could not extend file"))
 
 
+def test_a_full_campaign_store_is_storage_full():
+    """SQLite raises its own error, not the ``OSError`` behind it, so a full results volume
+    reached through ``campaign.db`` has to be read off SQLite's result code."""
+    import sqlite3
+    error = sqlite3.OperationalError("database or disk is full")
+    error.sqlite_errorcode = sqlite3.SQLITE_FULL
+    assert is_storage_full(error)
+    busy = sqlite3.OperationalError("database is locked")
+    busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    assert not is_storage_full(busy)
+
+
 def test_other_io_failures_are_not():
     assert not is_storage_full(OSError(errno.EACCES, "Permission denied"))
     assert not is_storage_full(FileNotFoundError("gone"))

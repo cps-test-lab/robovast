@@ -76,24 +76,27 @@ def test_non_dict_entries_are_dropped(campaign):
 def test_the_job_and_the_reader_agree_on_the_path():
     """Two halves, two files, one constant each. They must name the same location, and
     nothing else checks that they do."""
-    from robovast.execution.cluster_execution.postprocess_job import _ROSBAG_PROVENANCE_REL
+    from robovast.execution.cluster_execution.postprocess_job import _IMAGE_PROVENANCE_REL
 
-    # Both constants are campaign-relative now: the conversion writes into the shared
-    # campaign mount at campaign-relative paths, and the reader resolves the same path
-    # against the campaign root. So they are not two paths that have to correspond -- they
-    # are one path, and this is what keeps them one.
-    assert _ROSBAG_PROVENANCE_REL == STAGED_PROVENANCE
+    # Both constants are campaign-relative: the image steps write into the shared campaign
+    # mount at campaign-relative paths, and the reader resolves the same path against the
+    # campaign root. So they are not two paths that have to correspond -- they are one
+    # path, and this is what keeps them one.
+    assert _IMAGE_PROVENANCE_REL == STAGED_PROVENANCE
 
 
-def test_the_job_actually_passes_a_provenance_file():
+def test_the_job_actually_passes_a_provenance_file(tmp_path):
     """The original bug: the conversion command was assembled without one, so every rosbags_*
     step recorded nothing at all."""
     from robovast.execution.cluster_execution.postprocess_job import (
-        CAMPAIGN_MOUNT, _ROSBAG_PROVENANCE_REL, _conversion_script)
+        CAMPAIGN_MOUNT, _IMAGE_PROVENANCE_REL, _conversion_script, image_steps_for)
 
-    script = _conversion_script([{"plugins": [{"type": "tf_to_csv"}]}], force=False,
-                                campaign_id="camp-1")
+    (tmp_path / "_config").mkdir()
+    (tmp_path / "_config" / "c.vast").write_text("version: 1\n")
+    steps = image_steps_for("camp-1", str(tmp_path),
+                            [{"rosbags_process": {"plugins": [{"type": "tf_to_csv"}]}}])
+    script = _conversion_script(steps, campaign_id="camp-1")
 
     assert "--provenance-file" in script, script
     # Under the campaign tree in the pod, which is what `_upload_derived` sends back.
-    assert f"{CAMPAIGN_MOUNT}/camp-1/{_ROSBAG_PROVENANCE_REL}" in script, script
+    assert f"{CAMPAIGN_MOUNT}/camp-1/{_IMAGE_PROVENANCE_REL}" in script, script

@@ -42,25 +42,26 @@ def _full() -> OSError:
 
 
 class _FullDisk:
-    """Impl whose data-status probe fails the way a write to a full disk fails."""
+    """Impl whose every read fails the way a write to a full disk fails."""
 
     def __init__(self, exc):
         self.exc = exc
 
-    def campaign_data_status(self, campaign_id: str):
+    def get_workspace(self, workspace_id: str):
         raise self.exc
 
     def shutdown(self):
         pass
 
 
-def _status_probe(exc):
+def _guarded_probe(exc):
+    """Any route that wraps an interface call in ``_guard``; this one needs no fixture."""
     with TestClient(build_app(_FullDisk(exc), mount_mcp=False)) as client:
-        return client.get(Routes.campaign_data_status("camp-1"))
+        return client.get(Routes.workspace("ws-1"))
 
 
 def test_a_full_disk_behind_a_guarded_route_is_a_507_with_the_sentence():
-    resp = _status_probe(_full())
+    resp = _guarded_probe(_full())
     assert resp.status_code == 507
     assert resp.json()["detail"] == STORAGE_FULL_DETAIL
     # Where on the service host the write failed is nothing the caller can act on.
@@ -71,7 +72,7 @@ def test_a_full_disk_is_not_reported_as_the_class_a_layer_translated_it_into():
     """Checked ahead of the class-based arms: this ValueError would otherwise be a 400."""
     translated = ValueError("could not extract the archive")
     translated.__cause__ = _full()      # what ``raise ... from`` records
-    assert _status_probe(translated).status_code == 507
+    assert _guarded_probe(translated).status_code == 507
 
 
 def test_a_full_index_disk_is_a_507():
@@ -79,12 +80,12 @@ def test_a_full_index_disk_is_a_507():
         sqlstate = "53100"
 
     # A RuntimeError, which would otherwise be a 409 "conflict".
-    assert _status_probe(_DiskFull("could not extend file")).status_code == 507
+    assert _guarded_probe(_DiskFull("could not extend file")).status_code == 507
 
 
 def test_other_failures_keep_their_mapping():
-    assert _status_probe(ValueError("bad")).status_code == 400
-    assert _status_probe(RuntimeError("busy")).status_code == 409
+    assert _guarded_probe(ValueError("bad")).status_code == 400
+    assert _guarded_probe(RuntimeError("busy")).status_code == 409
 
 
 def test_a_full_disk_outside_any_guard_is_a_507_too():

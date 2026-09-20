@@ -33,9 +33,12 @@ from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
 
+from robovast.client.status import failure_detail
+
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
+from .config_location import variation_line
 from .config_plugins import ensure_workspace_plugins
 from .errors import (ActionableError, AuxContainerUnavailable, ExecPathUnavailable,
                      missing_input_error)
@@ -43,7 +46,7 @@ from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
 from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
-from .variation.base_variation import (VariationConfigError,
+from .variation.base_variation import (VariationConfigError, VariationFailed,
                                        VariationInfeasibleError)
 from .variation.loader import _validate_variation_class
 
@@ -210,10 +213,15 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
         progress_update_callback(msg)
         raise VariationInfeasibleError(msg, config_name=e.config_name) from e
     except Exception as e:
+        # A bug in the plugin. The progress line names it; the exception carries the frames,
+        # rendered here, once: the surfaces it reaches print an exception's message and
+        # nothing else, so the file and line it broke at are only ever seen if the message
+        # holds them (see VariationFailed).
         msg = f"Variation failed. {variation_class.__name__}: {e}"
         logger.error(msg)
         progress_update_callback(msg)
-        raise RuntimeError(msg) from e
+        raise VariationFailed(
+            f"Variation failed. {variation_class.__name__}: {failure_detail(e)}") from e
 
     # Check if configs is None and return empty list
     if configs is None:
@@ -1009,6 +1017,18 @@ def _check_config_file_paths(configs, scenario_file):
                     f"subdirectory, or rename it.")
 
 
+def _query_key(query) -> str:
+    """What a :class:`~robovast.common.simulators.ContainerQuery` asks, as one string.
+
+    Two queries with the same image, command and documents ask the same question of the same
+    simulator and get the same answer; the key is that and nothing more, so a backend whose
+    query does carry a block's overrides is still asked once per distinct set of them.
+    """
+    from dataclasses import asdict  # pylint: disable=import-outside-toplevel
+    return json.dumps({"spec": asdict(query.spec), "command": list(query.command),
+                       "documents": query.documents}, sort_keys=True, default=str)
+
+
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                scenario_parameters=None, *,
                                image_project=None, image_project_tag=None,
@@ -1025,6 +1045,12 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     distinct set of files a block can name (its string values; a numeric override names no
     file), since a campaign varying its world has several and each has to be mounted for the
     simulator to open it, while one varying a number has one world however many levels.
+
+    Where the backend answers with a question for the simulator's image, each distinct
+    question is asked once. A query may depend on less than the block it is asked for -- one
+    naming only the world, while the block also carries an override that swaps a mesh -- and
+    a sweep varying such an override is then one question however many blocks it has. Each
+    ask is a container round trip, which is what makes the distinction worth keeping.
 
     Errors are raised when the campaign actually uses the channel and swallowed when it does
     not: a ``sim:`` path that no backend accepts is a mistake worth failing composition for,
@@ -1067,15 +1093,20 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     # because `sim_input_files` owns both halves. Nothing between the two catches, so the
     # exception the caller re-raises is the original, with whatever next_step it carries.
     query_failed = []
+    answers: dict = {}
 
     def ask(query):
+        key = _query_key(query)
+        if key in answers:
+            return answers[key]
         try:
-            return _run_input_files_query(
+            answers[key] = _run_input_files_query(
                 query, vast_dir, image_project=image_project,
                 image_project_tag=image_project_tag)
         except BaseException:
             query_failed.append(True)
             raise
+        return answers[key]
 
     for block in seen_blocks.values():
         query_failed.clear()
@@ -1290,6 +1321,9 @@ def _get_variation_classes(scenario_config, vast_dir=""):
     entry point or by a local ``<path>.py:<Class>`` file reference resolved
     relative to ``vast_dir`` (parity with search strategies/extractors and
     results postprocessing).
+
+    Returns ``(variation_class, parameters, ref)`` per entry, *ref* being the name as the
+    ``.vast`` wrote it -- what a message quotes to point a reader back into the file.
     """
 
     # Get the variation list from settings
@@ -1331,7 +1365,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
             # Each item in the list should be a dict with one key (the class name)
             for class_name in item.keys():
                 if class_name in available_classes:
-                    variation_classes.append((available_classes[class_name], item[class_name]))
+                    variation_classes.append((available_classes[class_name], item[class_name], class_name))
                 elif is_file_ref(class_name):
                     # Local '<path>.py:<Class>' reference relative to the .vast dir.
                     variation_class = load_ref(class_name, 'robovast.variation_types', vast_dir)
@@ -1339,7 +1373,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
                     if errors:
                         raise ValueError(
                             f"Invalid variation plugin '{class_name}': {'; '.join(errors)}")
-                    variation_classes.append((variation_class, item[class_name]))
+                    variation_classes.append((variation_class, item[class_name], class_name))
                 else:
                     error_msg = f"Unknown variation class '{class_name}' found in variation file.\n"
                     if not available_classes:
@@ -2088,14 +2122,14 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                     )
 
         _check_declared_contracts(
-            config, variation_classes_and_parameters,
+            config, [(cls, params) for cls, params, _ref in variation_classes_and_parameters],
             existing_scenario_parameters, parameters, vast_dir)
 
         current_configs = [{
             'name': config['name'],
             'config': config_dict}]
 
-        for variation_class, variation_parameters in variation_classes_and_parameters:
+        for variation_class, variation_parameters, variation_ref in variation_classes_and_parameters:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             # Auxiliary container: if the plugin declares one, the active backend
@@ -2112,18 +2146,23 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
-            except (VariationInfeasibleError, VariationConfigError) as exc:
-                # Name the config block here -- neither execute_variation nor the plugin
-                # knows it, but it is exactly what a reader needs to act on the message
-                # (which config, not just which plugin/why), whether this propagates
-                # (batch mode) or is only logged before the config is dropped (search).
+            except (VariationInfeasibleError, VariationConfigError, VariationFailed) as exc:
+                # Name the config block and the .vast line here -- neither execute_variation
+                # nor the plugin knows either, and they are exactly what a reader needs to
+                # act on the message (which config, which line, not just which plugin/why),
+                # whether this propagates (batch mode) or is only logged before the config
+                # is dropped (search).
                 #
-                # Both classes, and the type is preserved: a draw a plugin refuses and a
-                # draw no arrangement realizes are equally unrunnable, so a search skips
+                # All three classes, and the type is preserved: a draw a plugin refuses and
+                # a draw no arrangement realizes are equally unrunnable, so a search skips
                 # both -- while a batch, which tolerates neither, still gets the message
-                # that fits its case.
-                named_exc = type(exc)(
-                    f"config '{config['name']}': {exc}", config_name=config['name'])
+                # that fits its case. A plugin that broke is never skipped.
+                line = variation_line(variation_file, config['name'], variation_ref)
+                where = f"{os.path.basename(variation_file)}:{line}: " if line else ""
+                named = f"{where}config '{config['name']}': {exc}"
+                if isinstance(exc, VariationFailed):
+                    raise VariationFailed(named) from exc
+                named_exc = type(exc)(named, config_name=config['name'])
                 if not tolerate_infeasible:
                     raise named_exc from exc
                 # This parameter draw cannot be realized (e.g. ObstacleVariation lost its

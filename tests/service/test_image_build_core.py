@@ -429,7 +429,7 @@ def test_dockerignore_excludes_at_root_and_nested(name):
 # set. Recognised by structure instead: a directory holding `_execution/`.
 # ---------------------------------------------------------------------------
 
-def _campaign_dir(root, name):
+def campaign_dir(root, name):
     """A downloaded campaign: the `_execution/` marker plus a heavy `_jobs/` tree."""
     (root / name / "_execution").mkdir(parents=True)
     (root / name / "_execution" / "build.log").write_text("...")
@@ -439,15 +439,15 @@ def _campaign_dir(root, name):
 
 
 def test_a_campaign_directory_is_recognised_by_structure_not_by_name(tmp_path):
-    campaign = _campaign_dir(tmp_path, "tb4-markerless-2026-08-18-19401887")
+    campaign = campaign_dir(tmp_path, "tb4-markerless-2026-08-18-19401887")
     (tmp_path / "src").mkdir()
     assert is_campaign_output(campaign)
     assert not is_campaign_output(tmp_path / "src")
 
 
 def test_campaign_outputs_are_found_and_not_descended_into(tmp_path):
-    _campaign_dir(tmp_path, "campaign-a")
-    _campaign_dir(tmp_path / "nested", "campaign-b")
+    campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path / "nested", "campaign-b")
     (tmp_path / "src" / "pkg").mkdir(parents=True)
     found = {str(p) for p in campaign_outputs_in(tmp_path)}
     assert found == {"campaign-a", "nested/campaign-b"}
@@ -455,12 +455,12 @@ def test_campaign_outputs_are_found_and_not_descended_into(tmp_path):
 
 def test_campaign_outputs_does_not_walk_into_ignored_names(tmp_path):
     """`results/` is already excluded wholesale; walking it would cost the scan it saves."""
-    _campaign_dir(tmp_path / "results", "campaign-c")
+    campaign_dir(tmp_path / "results", "campaign-c")
     assert campaign_outputs_in(tmp_path) == []
 
 
 def test_dockerignore_lists_the_campaign_directories_found(tmp_path):
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     patterns = render_dockerignore(tmp_path).splitlines()
     assert "campaign-a" in patterns
     # Still a superset of the static set — the computed part only adds.
@@ -471,7 +471,7 @@ def test_both_lanes_skip_the_same_campaign_directory(tmp_path):
     """The staging and the .dockerignore must agree, or the two builders see different trees."""
     from robovast.execution.cluster_execution.cluster_image_build import _copy_tree
 
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     (tmp_path / "plugins").mkdir()
     (tmp_path / "plugins" / "pkg-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
 
@@ -489,7 +489,7 @@ def test_a_campaign_directory_does_not_change_the_build_hash(tmp_path):
     (tmp_path / "plugins" / "pkg-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
     spec = _spec(python_packages=["./plugins/pkg-0.1.0-py3-none-any.whl"])
     before = build_hash(spec, tmp_path, "base@sha256:aaa")
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     assert build_hash(spec, tmp_path, "base@sha256:aaa") == before
 
 
@@ -646,7 +646,7 @@ def test_base_identity_falls_back_to_the_ref(monkeypatch):
 
 def test_the_walk_survives_a_symlink_loop(tmp_path):
     """A link back to an ancestor must not make the scan run forever."""
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
     assert [str(p) for p in campaign_outputs_in(tmp_path)] == ["campaign-a"]
 

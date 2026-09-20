@@ -139,7 +139,8 @@ campaign runs in the background in the cluster:
 
 Campaigns run in parallel and a new one never removes an older one's Jobs. Clear
 them when you are done with ``vast cluster jobs-cleanup`` (add ``--campaign`` for
-one campaign, ``--data`` to drop its result buckets too).
+one campaign). It touches Jobs and pods only; the campaign's results live with the
+service, and ``vast campaign delete`` is what removes a campaign.
 
 Running local container images in minikube
 """""""""""""""""""""""""""""""""""""""""""
@@ -257,6 +258,71 @@ not importable. Anything the client needs must live in the client: a wire consta
 ``COMMAND_LIMIT_S`` belongs in ``interface.py``, not in the server module that enforces it.
 
 
+.. _releasing:
+
+Releasing to PyPI
+-----------------
+
+The five distributions are released as **one set at one version**, because ``robovast``
+requires ``robovast-client`` and ``robovast-sim-roqsim`` at *exactly* the version being
+released, and ``robovast-nav`` and ``robovast-cluster`` require ``robovast``. A version
+that exists for some of them and not the others is a set nobody can install, so the
+version is never edited by hand: ``.github/workflows/publish.yml`` stamps it into every
+manifest from the git tag.
+
+**Every release goes to TestPyPI first, and is tested by hand there.** An upload cannot be
+taken back — a version can be yanked, never replaced, and ``pip`` still installs a yanked
+wheel when pinned exactly — so the only cheap place to find a packaging mistake is an index
+nothing depends on. The two triggers of the workflow are the two halves of that rule:
+
+``workflow_dispatch`` → TestPyPI
+   ``gh workflow run publish.yml -f version=2.1.0rc1`` publishes the whole set as that
+   version to TestPyPI. Pre-release numbers (``rc1``, ``rc2``, …) are the convention, since
+   ``pip`` does not pick them up unless pinned. Install it in a fresh venv and try it:
+
+   .. code-block:: bash
+
+      pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ \
+          "robovast[nav,roqsim]==2.1.0rc1" "robovast-cluster==2.1.0rc1"
+      vast serve          # the web UI must come up, not "API only"
+
+   Something wrong is a fix on ``main`` and ``rc2``; nothing has been consumed.
+
+a ``v*`` tag → PyPI
+   ``git tag v2.1.0 && git push origin v2.1.0``, on the commit the rc was built from. The
+   same workflow, the same wheels, the real index. The tag also produces the versioned
+   container images (``image.yml``), so the wheels and the images a deployment runs carry
+   the same number.
+
+**What the workflow does, and why in that order.** One ``build`` job makes and checks all
+five wheels before anything is uploaded: it verifies the lock against the manifest, builds
+both frontend bundles (``make frontend``) and stages them (``make ui-stage``), stamps the
+version, rewrites the root's path dependencies to ``==<version>``
+(``tools/pin_released_siblings.py`` — a path dependency reaches the metadata as a direct
+reference, which the index refuses), and then opens every wheel to confirm it carries no
+such reference and does carry its package data (``robovast/_ui/index.html``,
+``robovast_nav/web/dist/remoteEntry.js``). Everything that can fail for a reason inside
+this repository fails there, at no cost. The publish jobs then upload the artifacts in
+dependency order — client and sim-roqsim, then robovast, then nav and cluster — with
+``skip-existing`` so that a re-run of the same tag after a transient failure continues past
+the wheels already on the index. A last job installs the set from the index it went to and
+checks the same things in what was installed, so a break that reached the index is named
+by the workflow rather than by a user.
+
+**Authentication is trusted publishing.** Each index holds one publisher per distribution,
+naming this repository, ``publish.yml`` and the ``pypi`` or ``testpypi`` environment; the
+jobs mint a short-lived OIDC token and no API token exists anywhere. A distribution not yet
+on an index is created by its first upload through a *pending* publisher, registered the
+same way.
+
+**Rehearsing without CI.** ``make publish-test`` uploads the set to TestPyPI from your
+checkout, stamped with a post-release of the tree's version that is free on all five
+histories at once (``tools/next_testpypi_version.py``), and ``make publish-test-venv``
+installs it into a fresh venv and checks the bundles, the entry points and the CLI. Every
+manifest is restored afterwards, including on failure. ``DRY_RUN=1`` builds without
+uploading.
+
+
 Container Image Compatibility Version
 -------------------------------------
 
@@ -293,9 +359,9 @@ all, and reading it cost a container start.  It is gone.
 - **Cluster execution**: the **submitter** checks, host-side, immediately after the
   campaign's refs are pinned to digests and before any manifest is written — so the
   verdict is about the exact bytes the pods will run, and a refusal creates no pods.
-  This used to be an init container running *inside* the image; a workload inspecting
-  its own image is not how admission is decided anywhere else, and it could only
-  report a mismatch by failing one init container per job in the batch.
+  It is deliberately not asked of the image itself: a workload inspecting its own image
+  is not how admission is decided anywhere else, and could only report a mismatch by
+  failing one init container per job in the batch.
 - **Postprocessing**: ``docker_exec.sh`` checks before ``docker run``.
 
 The cluster check **fails closed**: if the registry will not say what protocol the
@@ -452,8 +518,8 @@ Keep disk and database I/O off the event loop
 
 The service answers every request, ``/healthz`` included, from one event loop. A route or MCP
 tool declared ``def`` runs on a worker thread and may block; one declared ``async def`` runs
-on the loop, so anything it does that waits on a disk, the index or the object store stalls
-every other request for as long as that takes. A disk that is filling makes every write slow
+on the loop, so anything it does that waits on a disk or on the index stalls every other
+request for as long as that takes. A disk that is filling makes every write slow
 at once, and a stalled loop fails the liveness probe, so the pod is restarted for being short
 of disk.
 
@@ -512,6 +578,20 @@ module does.
    declare it under ``plugins:``; if you need a data file, name it in
    ``execution.run_files``.
 
+**How a failure in your plugin is reported.** A refusal your plugin *means* — a
+:class:`~robovast.common.variation.base_variation.VariationConfigError` for parameters
+outside what it accepts, a
+:class:`~robovast.common.variation.base_variation.VariationInfeasibleError` for a draw no
+arrangement realizes — is reported as its message alone, naming the plugin and the config
+block. Any other exception escaping ``variation()`` is a bug, and is reported as
+``Variation failed. <Class>: <exception>`` followed by the tail of the traceback: the file,
+line and source of the frame it was raised in. Either report is prefixed with the ``.vast``
+line the variation is written on and the config block that ran it
+(``campaign.vast:10: config 'cell1': …``), so the entry to edit is named as well as the
+code. That text is the same on the CLI, in the MCP tools (``validate_project``,
+``preview_configurations``) and in the web UI's config editor, so the line to fix is in
+front of whoever is authoring the plugin.
+
 .. note::
 
    **Packaging a variation plugin as its own distribution.** If your variation
@@ -538,7 +618,7 @@ module does.
      when it composes (``config_plugins.ensure_workspace_plugins``). The install
      runs once, on the credentialed service, so a private-repo clone needs
      credentials only there; the driver then uses the installed plugin directly —
-     there is no staging round-trip through the object store and no separate pod.
+     there is no staging round-trip and no separate pod.
 
    Dependencies come from each package's own metadata into that same environment, so
    the one real constraint is that your plugin must **declare its dependencies
@@ -1069,7 +1149,47 @@ Postprocessing plugins are Python functions that process run result directories 
 
 **Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each run folder (``<campaign-name>-<timestamp>/<config>/<run-number>/``).
 
-**Provenance for container scripts:** Plugins that run scripts inside Docker (e.g. via ``docker_exec.sh``) cannot return data directly. The orchestrator passes a **provenance file** path to each plugin (optional kwarg ``provenance_file``). Container-invoking plugins must pass this to ``docker_exec.sh`` as ``--provenance-file HOST_PATH``; ``docker_exec.sh`` mounts the directory at ``/provenance`` in the container and the script receives ``--provenance-file /provenance/<basename>``. The script should write a JSON file at that path with format ``{"entries": [{"output": "...", "sources": [...], "plugin": "...", "params": {}}]}`` (paths relative to the results/input directory). Use the helper ``write_provenance_entry`` from ``rosbags_common`` (same directory as the scripts, so it works in the container) to append entries; the script gets the path from ``--provenance-file`` and uses its own plugin name when calling the helper.
+**Steps that work run by run:** a plugin whose output for a run depends only on that run, the
+scenario jobs it links, the other runs of those jobs and the campaign-level inputs
+(``_config``, ``_execution``, ``_transient``) declares ``scope = "run"``. A cluster may then run
+it on parts of the campaign in parallel (:ref:`deployment-postprocess-parallel`): every part
+is a set of whole scenario jobs with their runs, and the step must write only into those. The
+default, ``scope = "campaign"``, runs the step once over the whole tree. Only the leading run of
+run-scoped steps is split -- a run-scoped step listed after a campaign-scoped one runs after
+it, over the whole tree.
+
+**Steps that run in the campaign's execution image:** some work can only happen in the image the
+runs used — deserializing a bag needs the message definitions of the custom types it recorded. Such
+a plugin derives from
+:class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` and names the
+command to run there instead of implementing ``__call__``:
+
+.. code-block:: python
+
+    import os
+    from robovast.results_processing.postprocessing_plugins import ExecutionImagePlugin
+
+    class DecodeCamera(ExecutionImagePlugin):
+        def image_command(self, ctx, topic="/camera"):
+            # A file in the scripts directory, then its arguments. ctx says where the
+            # campaign is inside the container, and whether to force or be verbose.
+            argv = ["decode_camera.py", "--topic", topic]
+            if ctx.provenance_file:
+                argv += ["--provenance-file", ctx.provenance_file]
+            return argv + [ctx.campaign_dir]
+
+        def image_files(self):
+            # Shipped beside the conversion scripts, under their own names.
+            return [os.path.join(os.path.dirname(__file__), "decode_camera.py")]
+
+Every lane runs exactly that command from ``/scripts`` through ``ros2_exec.sh``: the local lane with
+``docker_exec.sh`` against the campaign's execution image, a cluster postprocessing Job in its image
+container. A parameter the command does not take fails the step. The script runs **without**
+``robovast`` — only the standard library, what the image provides, and the files beside it
+(``rosbags_common`` among them). It writes its outputs into the campaign tree; on the cluster, every
+file it writes is delivered back, whether or not it records provenance. To record provenance it
+appends ``{"output", "sources", "plugin", "params"}`` entries (paths relative to the campaign) to
+``--provenance-file`` with ``rosbags_common.write_provenance_entry``.
 
 **Creating a Postprocessing Plugin:**
 
@@ -1201,30 +1321,17 @@ with an output directory. It writes the files and the instructions for performin
 steps by hand, without applying anything. There is no CLI verb for it — ``vast cluster setup``
 is the applying path.
 
-**Storage for experiment-image builds.** ``build_context_bucket()``
-(``cluster_execution.cluster_image_build``) decides where a build stages its context,
-from two methods of your config:
+**Staging for experiment-image builds.** A build's context (the project dir plus the
+generated Dockerfile) is a scratch tree on the service's own disk, under the results root's
+``_staged/image-builds/<build-id>/`` slot (``cluster_image_build.context_slot``, written by
+``stage_context``). The build Job's init container fetches it from the service's data plane
+with a token scoped to that slot (``pod_access``), so a cluster config contributes nothing
+here: no storage backend and no credential reaches the Job, only a token that opens one
+slot.
 
-* ``get_s3_bucket()`` non-empty → that shared bucket is used, under the
-  ``image-builds/<build-id>/`` prefix.
-* ``get_s3_bucket()`` returning ``None`` (per-campaign buckets) **and**
-  ``get_storage_backend() == "s3"`` → the dedicated ``BUILD_CONTEXT_BUCKET``
-  (``robovast-image-builds``), created on first upload by the S3 client's
-  ``_ensure_bucket``.
-* ``None`` on any other backend → ``ValueError``. Naming a bucket ourselves is only
-  sound where the namespace belongs to the deployment's own endpoint and the client can
-  create it. GCS satisfies neither: its names are global to all of Google Cloud, and
-  ``_GcsStorageClient`` has no bucket creation, so a guessed name would collide or 403
-  and then not exist. Such a backend must configure its bucket.
-
-So a new config needs no build-specific method — but if it fronts storage with a global
-namespace or a client that cannot create buckets, it must return a bucket from
-``get_s3_bucket()``, and ``get_storage_backend()`` must not claim ``"s3"``.
-
-A staged context is deleted again when the build ends (``cluster_image_build``:
-``discard_context`` / ``staged_context_build_ids``, driven by ``ClusterService``), so a
-new ``StorageClient`` implementation must provide ``delete_prefix`` — refusing an empty
-prefix, since on a shared bucket the campaign results sit beside the contexts.
+A staged context is deleted again when the build ends (``ClusterService`` calls its own
+``discard_staged`` on the slot; ``cluster_image_build.staged_context_build_ids`` lists
+what is still staged for the sweep of contexts whose Job is gone).
 
 **Pod DNS for unresolvable hosts.** ``get_host_aliases()`` parses
 ``ROBOVAST_EXTRA_HOST_ALIASES`` (``<host>=<ip>``, comma-separated, grouped by IP into the
@@ -1239,14 +1346,6 @@ The boundary is worth keeping in mind when adding pod specs: ``hostAliases`` wri
 BuildKit push, or a node inside the scenario. The **image pull** is performed by the
 node's container runtime *before* the pod exists, so no pod-level field can influence it;
 that stays node configuration, exactly like registry TLS trust.
-
-Historically this path instead *required* ``get_s3_bucket()`` to be set, refusing
-per-campaign-bucket deployments with "in-cluster image builds require a fixed S3 bucket
-(external-S3 mode)". That was never a real constraint — the embedded MinIO is an ordinary
-S3 endpoint and the build Job takes bucket/prefix/endpoint/credentials as plain env — and
-the workaround (switching to a shared bucket) silently changed the storage layout of every
-campaign, since ``get_s3_bucket()`` drives ``bucket_ops`` too.
-
 
 Add Share Provider Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1623,7 +1722,7 @@ Who writes it
 * **The post-hoc indexer** ``robovast.common.campaign_index.build_campaign_store(campaign_dir)``
   reconstructs the same store by scanning a finished results tree (reusing the
   ``campaign_data`` readers). It is used for campaign dirs not produced by the
-  controller — e.g. cluster results downloaded from S3 — and is idempotent
+  controller — e.g. one unpacked from an archive somebody else made — and is idempotent
   (mtime-guarded; ``force=True`` to rebuild). Controller-written stores are left
   untouched. It has **no CLI entry point**, so a tree that has no store keeps none. The
   function itself is the register step of ``vast campaign import``: an archive somebody
@@ -1731,7 +1830,7 @@ Status: phase and stage
    * - ``postprocessing``
      - Chained analysis postprocessing (rosbag→CSV Job + index ingest) running.
    * - ``finished``
-     - Done; the campaign is published to the object store. **A post-run step may still
+     - Done; every run's output is on the service's results volume. **A post-run step may still
        have failed:** the runs are the deliverable, so a failed upload-to-share or
        postprocessing keeps the phase ``finished`` and records the reason on
        ``share_error`` / ``postprocessing_error`` (durable, re-triggerable) rather than
@@ -1762,78 +1861,34 @@ makes the standing advice ("a timed-out start is not a failed start; check, neve
 actually true: retrying a start that in fact succeeded creates a second campaign, and the
 only defense is that the first one can be found.
 
-Three things back it. Registration happens *before* the slow work — ``create_campaign``
+Two things back it. Registration happens *before* the slow work — ``create_campaign``
 records the campaign in the lane's registry and returns, and the driver builds the image —
 so the campaign is live from ``t=0`` rather than from whenever its results directory
 appears (see :ref:`campaign-building-phase`). A multi-lane service unions its sibling
 lanes' registries into the listing via ``_extra_live_ids``: ``list_campaigns`` derives its
 id set from the *local* lane's "disk ∪ in-memory" view, so without that a cluster campaign
-was missing from every listing for the whole length of its pre-flight — registered and
+would be missing from every listing for the whole length of its pre-flight — registered and
 addressable by id, but undiscoverable by anyone who did not already know the id, which is
-precisely the caller whose start response was lost. And a campaign whose durable home is
-not this disk is unioned in the same way via ``_durable_campaign_ids``
-(:ref:`campaign-discovery`), which is what keeps the invariant true across a service
-restart rather than only within one process's lifetime.
+precisely the caller whose start response was lost.
 
 .. _campaign-discovery:
 
-Discovering campaigns whose home is the object store
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Discovering campaigns across a service restart
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``list_campaigns`` builds its id set from three sources: the results directory on disk,
-the in-memory registry of what is being driven (plus ``_extra_live_ids`` for a sibling
-lane's), and ``_durable_campaign_ids`` for campaigns **stored** somewhere that is not this
-disk. The last one exists for the cluster lane: a finished cluster campaign lives in the
-object store, and in-pod the service's disk is scratch, so every campaign from a previous
-service life was invisible to a listing that only scanned it.
+``list_campaigns`` builds its id set from two sources: the results root on disk, and the
+in-memory registry of what is being driven (plus ``_extra_live_ids`` for a sibling lane's).
+The first is what survives the process, and it is the whole picture **on both lanes** — a
+cluster campaign is a directory under ``<results_root>/<campaign_id>/`` on the service's
+results volume, exactly as a local one is under the local results root, so a service that
+restarts finds every campaign from every previous life by the same ``iterdir``. There is no
+second home to enumerate and no index of campaigns to keep in step with the tree.
 
-**Why not enumerate buckets.** ``StorageClient`` has no bucket listing; with a
-per-campaign-bucket deployment each campaign *is* a bucket named
-``campaign_id.lower().replace("_","-")``, so recovering the id means inverting a lossy
-transform and returning a *different* id for any name with ``_`` or upper case; and buckets
-should stay internal. Instead each campaign publishes a **marker** under one known prefix,
-and that prefix is what gets listed:
-
-.. code-block:: text
-
-   campaign-index/<campaign_id>/<created_at>      # a zero-byte object
-
-The **key is the whole record** (``in_pod_storage.mark_campaign_indexed``). There is no
-body, so there is nowhere to put a status: ``_execution/outcome.json`` stays the one
-canonical terminal record and the index cannot become a second source of truth for the
-phase. Two details earn their place in the key:
-
-* the id is a segment *verbatim* — nothing was sanitized on the way in, so nothing has to
-  be undone on the way out;
-* ``created_at`` is there because the **listing** needs it. ``list_campaigns`` asks every
-  candidate for its start time to order them *before* it paginates, so a start time that
-  cost an object read would be one round-trip per campaign on every cold listing — with a
-  100-campaign SSE poll behind it. In the key, one cached listing answers the whole
-  ordering pass.
-
-The marker is written by ``_on_campaign_started``, a launch hook called at the top of the
-driver — before the image build and the run — so every later outcome belongs to a campaign
-that can still be found: a failed build, a crash mid-run, a stop, a failed finalize upload.
-It is best-effort with a warning, because a campaign is not worth failing over its index
-entry, and a store broken enough to refuse it will fail the campaign's own uploads with a
-real error moments later. ``delete_campaign`` retires it, wholesale or (``data_only``) its object-store data —
-the latter driven by what the sweep actually removed, so a campaign whose delete *failed*
-keeps its marker and its data stays listed.
-
-**The records themselves come from ``_record_dir``.** Four readers need a campaign's
-recorded facts — ``_summary_for``, ``_started_at_for``, ``_description_for``,
-``_status_from_disk`` — and they go through one seam rather than resolving
-``<results>/<id>`` inline, which would make the cluster lane override all four or none.
-``ClusterService`` overrides just that seam: for a campaign with no local copy it
-materializes exactly two small objects — ``campaign.db`` and ``_execution/outcome.json``
-— into the campaign's cache dir, after which every inherited reader is correct with no
-second implementation. Deliberately
-a **single-object** fetch (``_materialize``) and never
-``fetch_campaign``: a 2 KB record must not drag a 1 TB campaign. It is skipped for a
-campaign this process is driving (its driver owns ``campaign.db``), for one whose local dir
-already has it, and for one the index does not list — that last check is what keeps a
-listing behind an *unreachable* store to one connect timeout for the page instead of one
-per row.
+That is also what makes the records cheap to read. ``_summary_for``, ``_started_at_for``,
+``_description_for`` and ``_status_from_disk`` all resolve the campaign through one seam,
+``campaign_dir``, and read ``campaign.db`` and ``_execution/outcome.json`` from it as
+local files — no fetch, no per-row round trip on a listing, and nothing that can be
+reachable for one reader and not another.
 
 .. _campaign-building-phase:
 
@@ -1896,8 +1951,8 @@ Control operations
   stopped by the same flag — the pipeline polls it and tears down the step in flight — but
   ends as ``finished`` without its derived data rather than as ``stopped``, since its runs
   are complete; see :doc:`architecture`.
-* ``get_campaign_logs`` — serves ``controller.log`` from a byte offset (live file
-  while the campaign runs, the object-store copy afterwards). The web UI polls it to
+* ``get_campaign_logs`` — serves ``controller.log`` from a byte offset, the same file on
+  the service's results volume while the campaign runs and after. The web UI polls it to
   stream the log; ``vast … monitor`` renders live status from ``get_status``.
 * ``upload_to_share`` (launch flag on ``create_campaign``) — when set, the driver
   streams a raw, pre-postprocessing archive of the campaign to the configured share
@@ -1905,8 +1960,8 @@ Control operations
   loses the campaign: it stays ``finished`` and the reason is recorded on
   ``share_error`` (durable). Local backends write the ``tar.gz`` to
   ``<results>/_archives/`` instead; cluster backends stream it to the share provider
-  with no on-disk copy. The download counterpart is the ``/campaigns/{id}/archive``
-  stream (the postprocessed campaign, tarred on the fly from the object store).
+  with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
+  stream (the campaign as the service holds it, tarred on the fly off the results volume).
 * ``run_share`` (``client.run_share``) — re-triggers the upload-to-share on a finished
   campaign, from the stored campaign alone (works after a service restart, no live
   entry). The provider comes from the environment, so adjusting ``ROBOVAST_SHARE_TYPE``
@@ -2325,8 +2380,8 @@ The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sq
 **promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
 helper, :mod:`robovast.results_processing.data_query` (``mode=ro`` + a ``sqlite3`` authorizer,
 ``campaign.db`` attached as schema ``campaign``). Both callers reuse it: the service methods
-resolve the campaign dir per transport (``LocalTransport`` on disk, the cluster service via
-``fetch_campaign`` from the object store), and the MCP ``run_data`` plugin resolves it via
+resolve the campaign dir the same way on both lanes (``campaign_dir`` under the results
+root), and the MCP ``run_data`` plugin resolves it via
 ``results_resolver`` **or delegates to a configured service** — so CLI, MCP, and the web UI query
 results identically, local or cluster. User-declared plots (``visualization.results.data_browser.plots`` in the ``.vast``,
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
@@ -2477,8 +2532,8 @@ plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataCon
 ``data_query.open_data_db``),
 ``ctx.run_dir(config, run)``, ``ctx.params``. Handlers raise ``KeyError``/``ValueError``/
 ``DataQueryError`` → 404/400 via the shared ``_guard``. **Cluster-transparent** because dispatch
-resolves the campaign dir through the public ``impl.resolve_data_dir(campaign_id)`` seam, which
-``ClusterService`` overrides to fetch from the object store — so a plugin endpoint works on both
+resolves the campaign dir through the public ``impl.campaign_dir(campaign_id)`` seam, which is
+a directory under the results root on either lane — so a plugin endpoint works on both
 deployments unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
 collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **Scope:** run-scoped
 GET→JSON only — *binary/large per-run artifacts* are already served by the file address space,
@@ -2560,35 +2615,42 @@ campaign in it. A ``campaign`` ``emptyDir`` mounted at ``/campaign`` in every co
 the tree, and Kubernetes alone orders the containers — initContainers run sequentially to
 completion in declaration order:
 
-* ``stage`` (initContainer, controller image,
-  :mod:`~robovast.execution.cluster_execution.postprocess_stage`) fetches the campaign's recorded
-  run data into that mount, one object at a time, so its memory is a function of page size rather
-  than of the campaign. Calibration probes are never fetched, and where no conversion is
+* ``stage`` (initContainer, sidecar image) fetches the campaign as **one tar stream** from
+  the service's data plane — ``curl | tar`` of ``GET /data/campaigns/<id>/archive``, narrowed
+  by :func:`~robovast.execution.campaign_archive.stage_include` — and lands it on that mount.
+  Nothing of ours sits between the socket and the disk, so its memory is the pipe. Calibration
+  probes and the log this Job will write are never staged, and where no conversion is
   configured neither are the rosbags — nothing else in the pod opens one.
-* ``convert`` (initContainer, the campaign's execution image) runs the ``rosbags_*`` → CSV step
-  against the same mount. It exists only where the campaign declares a plugin needing that image.
+* ``convert`` (initContainer, the campaign's execution image) runs every step that needs that
+  image — the ``rosbags_*`` → CSV conversion and any other
+  :class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` — in order,
+  each as its plugin's own ``image_command``, against the same mount. It touches a marker beside
+  the campaign first; every file changed after it is this container's output. It exists only where
+  the campaign has such a step.
 * ``host`` (container, controller image,
-  :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything after the
-  conversion — the index ingest and metadata — and is what uploads.
+  :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything else — the other
+  plugins, the index ingest and metadata — and is what delivers: one tar of what the Job
+  derived, ``PUT`` to the data plane, which writes it into the campaign's directory on the
+  results volume. It is the only container given the campaign's token.
 
-The conversion container holds **no** object-store or index credentials: it is an arbitrary user
-image and reads and writes the shared mount only. Further:
+The conversion container holds **no** credentials of any kind — not the campaign's data-plane
+token, not the index DSN: it is an arbitrary user image and reads and writes the shared mount
+only. Further:
 
 * **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
   not a silent wrong-image conversion);
-* the conversion scripts are delivered as a per-campaign **ConfigMap** built from the driver's own
-  ``robovast.results_processing.data`` and mounted read-only at ``/scripts`` — the K8s analog of the
-  local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
+* the conversion scripts, and the files each image step ships, are delivered as a per-campaign
+  **ConfigMap** built from the driver's own ``robovast.results_processing.data`` and mounted
+  read-only at ``/scripts`` — the K8s analog of the local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
   *driver* rather than from a separately-versioned controller image guarantees the in-cluster
   scripts match the driver that generates the conversion command, so an off-cluster/dev driver
   running ahead of a published image cannot skew them (a skew surfaces as a spurious
   ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
   ``robovast`` import) and small; nothing is ever baked into the user's image;
-* ``rosbags_process.py --output-root`` is the shared campaign tree itself, so every output lands
-  at its campaign-relative path and goes to its canonical key with no mapping step. Its default is
-  the input root, i.e. "beside the bag", so the local path is unchanged.
+* each image step runs over the shared campaign tree itself, so every output lands at its
+  campaign-relative path and goes to its canonical key with no mapping step.
 
-The host stage is pure Python and reuses the normal pipeline with the rosbag steps skipped
+The host stage is pure Python and reuses the normal pipeline with the image steps skipped
 (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence — the
 same function the local lane calls, run beside the data instead of fetching it.
 
@@ -2620,8 +2682,8 @@ so they work after a service restart.
 
 A post-run step failure is deliberately **not** a campaign failure: the phase stays ``finished`` and
 the reason lives on ``postprocessing_error`` / ``share_error``. After a restart the cluster service
-reconstructs a campaign's status from ``_execution/outcome.json`` in the object store, falling back to
-the on-disk run artifacts (``reconstruct_status_from_disk``) when no outcome was recorded — so a
+reconstructs a campaign's status from the ``_execution/outcome.json`` in its directory, falling
+back to the on-disk run artifacts (``reconstruct_status_from_disk``) when no outcome was recorded — so a
 finished campaign reads as ``finished``, never a bare ``unknown``.
 
 Querying RoboVAST campaigns

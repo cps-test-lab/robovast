@@ -45,9 +45,9 @@ from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageErro
                                     is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
-from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignDataStatus,
+from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
-                                        CampaignVisualizationsResponse, CleanupDataRequest,
+                                        CampaignVisualizationsResponse,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         EditFileRequest, ERROR_CODE_HEADER,
@@ -104,8 +104,7 @@ def _sse_pull_limiter():
     threads. ``_pull_or_exit`` abandons its thread on cancellation, and anyio releases the
     token at that moment while the thread is still inside the blocking call — so a stream
     that keeps dropping and reconnecting can leave more live threads than there are tokens.
-    What actually bounds those is the pull's own timeout budget (see
-    ``in_pod_storage.storage_client_for(interactive=True)``, ~10 s); this limiter's job is
+    What actually bounds those is the pull's own timeout budget; this limiter's job is
     isolation between subsystems, not a hard thread cap.
     """
     import anyio  # pylint: disable=import-outside-toplevel
@@ -363,16 +362,36 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     auth_token, _ephemeral = auth.resolve_token(auth_token)
     app.state.auth_token = auth_token
+    # The transport mints scoped tokens for the pods it launches against the secret this
+    # gate verifies -- the ephemeral one included, so a dev service and its pods agree.
+    # A transport with nothing to bind (a stub, a transport that launches no pods) is not
+    # degraded silently: its `scoped_token` raises at the first launch that needs one.
+    try:
+        binder = impl.bind_auth_token
+    except Exception:  # noqa: BLE001 - as for `impl.store` above: an impl may refuse any attribute
+        binder = None
+    if binder is not None:
+        binder(auth_token)
+    # After the secret, before the port: an adopted campaign mints its pods' token from
+    # what was just bound, and registering it here is what stops a launch over the API
+    # racing a campaign about to be adopted.
+    try:
+        start_serving = impl.start_serving
+    except Exception:  # noqa: BLE001 - as for the binder above: an impl may refuse any attribute
+        start_serving = None
+    if start_serving is not None:
+        start_serving()
 
-    def _record_auth_refusal(path: str, detail: str) -> None:
+    def _record_auth_refusal(path: str, detail: str, status: int) -> None:
         """A caller turned away by the gate, before any route could see it.
 
         Reported through a hook because the gate is ASGI middleware in front of the whole
-        app: its 401 is composed and sent without ever becoming an exception, so no handler
-        below can record it. No actor -- a request that failed to authenticate has said
-        nothing about itself this service is willing to write down as who it was.
+        app: its refusal is composed and sent without ever becoming an exception, so no
+        handler below can record it. No actor -- a request that failed to authenticate, or
+        a scoped token reaching past its scope, has said nothing about itself this service
+        is willing to write down as who it was.
         """
-        _record_refusal(401, detail, method="", path=path)
+        _record_refusal(status, detail, method="", path=path)
 
     app.add_middleware(auth.AuthMiddleware, token=auth_token,
                        on_reject=_record_auth_refusal)
@@ -407,8 +426,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         unhandled exception becomes. Recorded here, exactly those were missing from the
         record, which is to say the ones nobody could otherwise reconstruct.
         """
-        from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
-            ExecPathUnavailable, ObjectStoreUnreachableError)
+        from robovast.common.errors import ExecPathUnavailable  # pylint: disable=import-outside-toplevel
         try:
             try:
                 return fn()
@@ -439,12 +457,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             logger.warning("%s", e)
             raise HTTPException(status_code=503, detail=str(e),
                                 headers={ERROR_CODE_HEADER: EXEC_PATH_UNAVAILABLE}) from e
-        except ObjectStoreUnreachableError as e:
-            # Before the RuntimeError arm it subclasses: nothing about an unanswering
-            # store is a conflict, and a 503 tells a client the call is worth retrying.
-            # The message is already the whole diagnosis, so no traceback is logged.
-            logger.warning("%s", e)
-            raise HTTPException(status_code=503, detail=str(e)) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -1637,11 +1649,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                            force: bool = Body(False, embed=True)) -> CampaignRef:
         return _guard(lambda: impl.retrigger_campaign(campaign_id, force))
 
-    @app.post(Routes.CLEANUP_DATA, response_model=ActionResult, tags=["campaigns"])
-    def cleanup_campaign_data(request: "CleanupDataRequest | None" = None) -> ActionResult:
-        # Body optional: no body means "all finished campaigns" (live ones skipped).
-        return _guard(lambda: impl.cleanup_campaign_data(request or CleanupDataRequest()))
-
     @app.delete(Routes.campaign("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])
     def delete_campaign(campaign_id: str) -> ActionResult:
         # Wholesale delete of one campaign's durable home. Refuses a running
@@ -1677,37 +1684,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def resolve_image(request: ExecRequest) -> ImageResolution:
         return _guard(lambda: impl.resolve_image(request))
 
-    @app.get(Routes.campaign_archive("{campaign_id}"), tags=["results"])
-    def download_campaign_archive(campaign_id: str):
-        """Stream a ``tar.gz`` of the campaign, on either lane.
-
-        Backs ``vast campaign download`` and the web UI's download button. What comes
-        out is the campaign as this service holds it -- postprocessed if it has been,
-        raw if it has not, and a campaign whose postprocessing failed downloads like any
-        other: derived data is an addition to a campaign, never the condition for reading
-        one, so nothing on this path waits on it. Internal ``_postproc/`` staging is
-        excluded so the archive is the clean campaign layout.
-
-        Nothing is buffered and no scratch is used, on either lane: the cluster fetches
-        objects from the store and tars them on the fly, the local lane tars its own
-        directory into the response. Decisive for ~1TB campaigns.
-
-        Refusing this on a local service with a 409 -- "the results are already on this
-        host's filesystem" -- asserts something true of a caller on that host and false
-        of everyone else: a ``vast serve`` reached over the network could not be
-        downloaded from at all, and the web UI would have to hide its own button on that
-        lane. The lane is not what decides whether a caller can read a file.
-        """
-        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
-
-        # The name before the stream: a running campaign is offered as
-        # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
-        # -- which saves whatever this says and never sees the marker inside the archive.
-        name = _guard(lambda: impl.campaign_archive_name(campaign_id))
-        return StreamingResponse(
-            _guard(lambda: impl.campaign_tar_stream(campaign_id)),
-            media_type="application/gzip",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'})
+    # -- the data plane, in this process --
+    #
+    # The tar routes (the campaign download, a pod's inputs and outputs, the staged
+    # trees) are the data app's (:mod:`robovast.service.data_app`), mounted here so a
+    # single-process ``vast serve`` answers them on its one port. The cluster Deployment
+    # serves the same router from its own container behind a front, at the same paths.
+    from robovast.service.data_app import data_router  # pylint: disable=import-outside-toplevel
+    app.include_router(data_router(impl))
 
     @app.get(Routes.campaign_postprocessing("{campaign_id}"), tags=["results"])
     def get_postprocessing(campaign_id: str):
@@ -1743,18 +1727,6 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.campaign_describe("{campaign_id}"), response_model=DataDescribe, tags=["results"])
     def describe_campaign_data(campaign_id: str) -> DataDescribe:
         return _guard(lambda: impl.describe_campaign_data(campaign_id))
-
-    @app.get(Routes.campaign_data_status("{campaign_id}"), response_model=CampaignDataStatus,
-             tags=["results"])
-    def campaign_data_status(campaign_id: str) -> CampaignDataStatus:
-        """Whether querying this campaign transfers data first — ask *before* the wait.
-
-        Cheap by contract (two metadata lookups). On a cluster campaign whose databases
-        are not cached yet, a first ``/describe`` or ``/query`` fetches them from the
-        object store inside the request; this says so in advance, so a client can show
-        why instead of appearing to hang.
-        """
-        return _guard(lambda: impl.campaign_data_status(campaign_id))
 
     @app.post(Routes.campaign_query("{campaign_id}"), response_model=DataQueryResult, tags=["results"])
     def query_campaign_data_sql(
@@ -1873,7 +1845,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # ``GET /campaigns/{id}/<name>?config_name&run_id&…`` → JSON, dispatched to the plugin
     # handler with a RunDataContext. Registered after the core routes and before the SPA
     # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
-    # ``impl.resolve_data_dir`` (ClusterService fetches from the object store).
+    # ``impl.campaign_dir``, which is the campaign itself on either lane.
     from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
         RunDataContext, load_service_endpoints)
 
@@ -1882,7 +1854,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             ctx = RunDataContext(
                 campaign_id=campaign_id,
                 params=dict(request.query_params),
-                data_dir=str(impl.resolve_data_dir(campaign_id)))
+                data_dir=str(impl.campaign_dir(campaign_id)))
             return _guard(lambda: endpoint.handle(ctx))
         return route
 
@@ -2139,7 +2111,7 @@ def _proxy_trust(env) -> tuple:
 
 
 def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-          log_level: str = "info", mount_mcp: bool = True) -> None:
+          log_level: str = "info", mount_mcp: bool = True, uds: "str | None" = None) -> None:
     """Run the service in the foreground (blocking) via uvicorn.
 
     Every request needs the shared token; when none is configured one is minted and
@@ -2149,44 +2121,34 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
 
     ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
     the web UI, the REST API and the tools together.
+
+    ``uds`` listens on a Unix socket instead of *host*:*port*: the cluster Deployment's
+    layout, where a front owns the one port and hands the data routes to their own
+    process. The mounted data routes are still served -- a front that routes ``/data``
+    elsewhere never sends them here, and one that does not gets them from here.
     """
     import uvicorn  # pylint: disable=import-outside-toplevel
-
-    from robovast.common.shutdown import begin_shutdown  # pylint: disable=import-outside-toplevel
-
-    class _Server(uvicorn.Server):
-        """uvicorn server that announces the shutdown before it starts winding down.
-
-        ``handle_exit`` runs in the signal handler — the first moment the process
-        knows a Ctrl+C happened, ahead of the graceful-shutdown clock. Raising the
-        process-wide flag here is what lets blocking I/O several layers down (an S3
-        read retrying over a ``kubectl port-forward``) fail fast instead of repairing
-        a connection this process is about to close; see
-        :mod:`robovast.common.shutdown`.
-        """
-
-        def handle_exit(self, sig, frame):
-            begin_shutdown()
-            super().handle_exit(sig, frame)
 
     token, ephemeral = auth.resolve_token(None)
     app = build_app(impl, mount_mcp=mount_mcp, auth_token=token)
     _enable_thread_dump_signal()
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
-    logger.info("robovast-service listening on %s:%d (OpenAPI at /docs%s)",
-                host, port, mcp_note)
+    logger.info("robovast-service listening on %s (OpenAPI at /docs%s)",
+                uds or f"{host}:{port}", mcp_note)
 
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104
     # The origin this service will report to clients, published the same way a deployed one
     # receives it -- `setdefault`, so a value baked in at setup always wins and this only
     # answers for a service nobody told. Deliberately not written onto *impl*: `serve` takes
-    # a `RobovastInterface`, and the origin is not part of that contract.
+    # a `RobovastInterface`, and the origin is not part of that contract. Behind a front on
+    # a socket there is no origin of its own to bound: the front's is what a client reaches.
     import os  # pylint: disable=import-outside-toplevel
-    os.environ.setdefault(PUBLIC_URL_ENV, bound_origin(host, port))
-    banner = startup_banner(f"http://{display_host}:{port}", token,
-                            ephemeral=ephemeral, mount_mcp=mount_mcp)
-    if banner:
-        print(banner, flush=True)
+    if not uds:
+        os.environ.setdefault(PUBLIC_URL_ENV, bound_origin(host, port))
+        banner = startup_banner(f"http://{display_host}:{port}", token,
+                                ephemeral=ephemeral, mount_mcp=mount_mcp)
+        if banner:
+            print(banner, flush=True)
     if not ephemeral:
         logger.info("authenticating with the configured %s", auth.TOKEN_ENV_VAR)
 
@@ -2209,12 +2171,13 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     # wait) and close their streams instead of hanging it. ``timeout_graceful_
     # shutdown`` is a backstop for any other lingering connection.
     proxy_headers, forwarded_allow_ips = _proxy_trust(os.environ)
-    config = uvicorn.Config(app, host=host, port=port, log_level=log_level,
+    listen = {"uds": uds} if uds else {"host": host, "port": port}
+    config = uvicorn.Config(app, log_level=log_level,
                             log_config=_quiet_access_log_config(),
                             proxy_headers=proxy_headers,
                             forwarded_allow_ips=forwarded_allow_ips,
-                            timeout_graceful_shutdown=5)
-    server = _Server(config)
+                            timeout_graceful_shutdown=5, **listen)
+    server = uvicorn.Server(config)
     app.state.should_exit = lambda: server.should_exit
     server.run()
 

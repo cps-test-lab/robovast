@@ -102,17 +102,14 @@ referring to "item 9" still means item 9.
 as settled designs and both were implemented differently on purpose; the reasoning is
 easier to lose than the code.
 
-* *The index marker is written at driver start, not "at the earliest store write".* The
-  stated reason for the latter was that the entry must predate the failure, so
-  postprocessing-failed / share-failed / stopped / crashed campaigns stay discoverable.
-  Driver start satisfies that strictly better, and it collapses what would have been two
-  best-effort side-writes — in ``kubernetes_backend.run_batch_in_pod`` and in
-  ``controller._record_controller_outcome`` — into one hook in the file that owns the
-  lifecycle. The only new case is a campaign that dies before touching the store at all,
-  which lists as ``unknown`` with no data: the honest record that it existed and produced
-  nothing, and exactly the failed-build campaign the second item wanted inspectable.
+* *Discovery needs no side record at all.* The design called for each campaign to publish
+  an entry a listing could enumerate, so that postprocessing-failed / share-failed /
+  stopped / crashed campaigns stay discoverable. A campaign is a directory under the
+  service's results root on both lanes, so the listing's own ``iterdir`` sees every one of
+  them from the moment the driver creates it, with no entry to publish and no question of
+  when to publish it.
 * *The status does not carry a* ``build_id``. That clause existed to keep the build *log*
-  reachable, and the log is now a ``BUILD`` section of the campaign's own log — reachable
+  reachable, and the log is a ``BUILD`` section of the campaign's own log — reachable
   with the id the caller already has, and durable past the build Job's TTL, which
   ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
   second way to ask the same question.
@@ -152,44 +149,6 @@ has only its streams.
 (The earlier text here claimed ``rosout`` was already a DB table. It never was: the CSV is
 written to the **job** directory, which the index ingest does not glob. That gap is what
 ``run_log`` closes.)
-
-**5b. The file address space's remaining substrate costs.** The address space landed
-(see :ref:`file-address-space`); these are the object-store paths it did **not**
-optimize, each measured rather than guessed.
-
-* *A cluster text read transfers the whole object.* ``read_object`` returns bytes, so
-  paging 200 lines of a 1 GB ``controller.log`` moves 1 GB and peaks around 3.4× that in
-  the service pod — an OOM in a memory-limited deployment, and repeated per page. Both
-  SDKs stream (botocore's ``StreamingBody.iter_lines`` plus ``close()`` to abort the
-  response; GCS ``blob.open("rt")``), which needs one new ``StorageClient`` method and
-  costs the exact ``total_lines`` on a truncated read.
-* *A recursive cluster listing enumerates every key.* ``list_entries(delimited=False)``
-  runs the paginator to exhaustion — ~20 round trips for a 1000-run campaign to show
-  100 names. Both APIs support pushdown (``MaxItems``/``StartingToken``,
-  ``max_results``/``page_token``), which trades the exact ``total`` for an opaque
-  ``next_token``. The non-recursive case is already delimited and does not have this.
-* *A storage client is built per file request.* On S3 that is ~9 ms of CPU; on GCS the
-  fresh credentials mean a **JWT grant exchange per read** (100–250 ms). Memoizing one
-  client per ``(config, endpoint)`` on the service fixes both, but must not weaken
-  ``_resilient``'s reconnect-on-stalled-port-forward path.
-* *Byte reads are fully buffered.* ``vast files get`` on a 2 GB rosbag holds it in the
-  service's RAM. ``FileResponse`` locally (sendfile, plus free ``Range``/``ETag``) and a
-  streamed body on the cluster remove that; the HTTP client would need ``stream=True``
-  to benefit.
-* *``FileEntry.modified``/``executable`` are null on the object store* even though S3
-  returns ``LastModified`` beside ``Size`` and this codebase already writes the
-  executable bit as object metadata. Widening ``list_entries`` to a small record would
-  fill them in.
-
-**5c. One dispatch point for the file namespaces.** ``ClusterService`` overrides three
-methods that each re-open with the same ``if namespace != RESULTS: return super()``, and
-``MultiBackendService`` mirrors each one. Forgetting that guard fails *silently and
-expensively* — the inherited path still returns the right bytes, having fetched the
-entire campaign to do it. A ``FileSpace`` protocol (``list`` / ``read_text`` /
-``read_bytes`` / ``write`` / ``delete``) with a filesystem and an object-store
-implementation would put the namespace comparison in exactly one place, and would also
-close the seam where ``/sources`` writes go through ``WorkspaceStore`` while its reads
-go around it.
 
 **9. A smaller defect found alongside the above.**
 
@@ -240,32 +199,66 @@ runs`` is a machine type rather than ``NULL``. The API versions in particular ag
 
 .. _future-dev-loop:
 
-A faster developer loop, and the tunnel machinery it would retire
-=================================================================
+The developer loop against a real cluster
+=========================================
 
-The off-cluster driver (``vast serve --backend cluster -x <ctx>``) is worth keeping: a
-local debugger against a real cluster is hard to replace. It is also the **sole** reason
-roughly 340 lines of tunnel-resilience exist —
-``ClusterService._minio_port_forward_endpoint`` and its prober thread, the generation
-counters, ``in_pod_storage._resilient``, and the shutdown coupling that stops a stalled
-forward being resurrected mid-teardown. None of it runs in-pod, and none of it runs on
-GCP, where the object store has a real endpoint.
-
-Running that same local driver **inside the cluster's network** would make the machinery
-unnecessary rather than merely unused:
+``vast serve --backend cluster`` runs **inside** the cluster and is refused anywhere else:
+every pod a campaign runs delivers its outputs to the service's data plane over the cluster
+network, which cannot reach a process on a developer's machine. A local debugger against a
+real cluster comes from running that same process in the cluster's network with the
+Service's traffic steered to it:
 
 .. code-block:: bash
 
-   mirrord exec -- vast serve --backend cluster
+   mirrord exec --target deployment/robovast-service --steal -- vast serve --backend cluster
 
-`mirrord <https://mirrord.dev>`_ needs no cluster-side install — it spawns a temporary
-agent pod — while `telepresence <https://telepresence.io>`_ wants a traffic manager. Under
-either, the local process resolves ``robovast:9000`` natively: same debugger, same
-edit-restart loop, no tunnel at all. That is the rare change that makes the loop *faster*
-and deletes code, so it is worth an afternoon's trial before deciding.
+`mirrord <https://mirrord.dev>`_ needs no cluster-side install — it spawns a temporary agent
+pod — while `telepresence <https://telepresence.io>`_ wants a traffic manager. Under either,
+the pods resolve the service's address to this process: same debugger, same edit-restart
+loop, no tunnel. ``--steal`` is what makes it work rather than merely run, because a pod's
+``PUT`` of its outputs must arrive *here* and not at the pod it replaced.
 
-If it holds, the port-forward path in ``bucket_ops`` and the reconnect machinery above can
-go with it.
+What is open is the ergonomics, not the mechanism. A ``--steal`` session takes the whole
+deployment's traffic for as long as it lasts, so a shared cluster serves one debugger at a
+time and everyone else's web UI is answered by it; scoping the steal to a header or a
+namespace-per-developer is the obvious next step.
+
+.. _future-data-plane:
+
+What the data plane does not do
+===============================
+
+Three things the tar-stream data plane (:doc:`deployment`, "What runs in the service pod")
+deliberately does not do.
+
+**A finished campaign is never archived on its own.** The results volume is one disk that
+only grows: nothing moves a campaign that nobody has read in months onto the share, and
+nothing evicts it when the volume fills — the free-space reserve refuses *new* work instead
+(:ref:`deployment-disk-reserve`), which keeps the service honest but does not make room. The
+pieces for the other half already exist — ``vast share`` writes the archive, ``vast campaign
+import`` reads it back — so what is missing is the policy and the marker that says a
+campaign's bytes are on the share and may be dropped here. The hard part is not the sweep;
+it is that a campaign evicted while a figure still cites it must read as *archived*, never
+as absent.
+
+**Pod identity is a shared secret, not the cluster's own.** A pod authenticates with an HMAC
+of its campaign id or slot under the service's access token (``auth.scoped_token``), minted
+by the control plane and verified by the data plane. It is deterministic, needs no state
+between the two processes, and is why a campaign's token can sit in a Secret the service
+creates once. It is also a bearer credential with no expiry that any process reading the
+Secret can replay. Kubernetes offers the honest version: a **projected service-account
+token** with an audience and a lifetime, which the service validates with a ``TokenReview``
+and maps to the pod's own identity. That removes the Secret, the mint and the campaign-id
+scope in one go, at the cost of an API-server call per verification and a lane that must
+work in-pod only.
+
+**Every ``/results`` byte is copied through Python.** The file address space serves a run's
+artifacts through the control plane's ``FileResponse``, so a 2 GB rosbag is read and written
+by the process whose job is to answer the run view. nginx already fronts the pod and already
+has the results volume's shape; an ``auth_request`` to the control plane for the verdict plus
+``sendfile`` for the bytes would take the transfer out of Python entirely and keep the one
+thing Python must decide, which is who may read what. The data routes do not need it — they
+stream tar, which nginx cannot produce — so this is ``/results`` alone.
 
 .. _future-scheduling:
 
@@ -325,7 +318,7 @@ answer in the deployment's environment; what is still open is that the recording
 resized node pool needs an ``upgrade`` before admission knows. Reading the autoscaler's maximum
 from the API server instead -- the ``cluster-autoscaler-status`` ConfigMap names each node
 group's ``maxSize``, in node counts that still have to be turned into cores -- would make it
-live, and would be the same mechanism an ``eks`` provider needs beside S3 results storage.
+live, and would be the same mechanism an ``eks`` provider needs.
 
 Also open: re-apply node identity labels continuously rather than at ``setup``, so a node the
 autoscaler adds can be pinned to and probed.

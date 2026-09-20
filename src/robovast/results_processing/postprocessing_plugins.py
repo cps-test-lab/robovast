@@ -41,6 +41,7 @@ Configuration format:
 """
 import contextlib
 import csv
+import dataclasses
 import glob
 import hashlib
 import json
@@ -48,9 +49,11 @@ import logging
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tarfile
+import tempfile
 import threading
 from importlib.resources import files
 from pathlib import Path
@@ -126,6 +129,19 @@ class BasePostprocessingPlugin:
     #: orchestrating process instead resolves an image against the wrong project and exits
     #: non-zero, and everything downstream then reads files that were never written.
     needs_execution_image: bool = False
+
+    #: What one run's output may depend on.
+    #:
+    #: ``"run"``: only that run's own directory, the scenario jobs it links, the other runs
+    #: of those jobs (a packed job's timeline is shared out between its runs), and the
+    #: campaign-level inputs (``_config``, ``_execution``, ``_transient``). Such a step can
+    #: be run on a campaign tree holding any set of whole jobs with their runs, and the union
+    #: of the outputs is the whole campaign's -- which is what lets a cluster split it
+    #: across Jobs.
+    #:
+    #: ``"campaign"``: anything, so it runs once over the whole tree. The default: a step
+    #: that says nothing is never split, and costs only the speed-up.
+    scope: str = "campaign"
 
     def __call__(
         self,
@@ -312,9 +328,10 @@ def _interrupted_job_dirs(results_dir: str) -> list:
     ``[]`` for every campaign nobody intervened in — the ledger file does not exist — so
     this costs one missing-file check on the normal path and changes nothing about it.
 
-    Read here rather than passed in because the postprocessing pipeline runs where the
-    campaign is (in-cluster, against the object-store mount), and its plugins take their
-    inputs from ``results_dir``; there is no caller in that process holding the kill.
+    Read here rather than passed in because the postprocessing pipeline runs against a
+    campaign directory (on the cluster, the copy a postprocessing pod fetched), and its
+    plugins take their inputs from ``results_dir``; there is no caller in that process
+    holding the kill.
     """
     from robovast.common.campaign_data import (KIND_INVALID, KIND_KILLED,
                                                 read_interventions)
@@ -397,10 +414,257 @@ def _cancelled_by(should_stop, process: "subprocess.Popen"):
         done.set()
 
 
-class RosbagsProcess(BasePostprocessingPlugin):
-    # Reads rosbags, so it needs the image whose message definitions wrote them.
+#: Where a ``rosbags_process`` entry looks for bags when it names none.
+DEFAULT_BAG_DIR = "rosbag2"
+
+
+def conversion_groups(plugins: Optional[List[dict]] = None, bag_dir: Optional[str] = None,
+                      groups: Optional[List[dict]] = None) -> List[dict]:
+    """The ``groups`` a ``rosbags_process`` entry converts, from either way it is written.
+
+    ``plugins`` (with an optional ``bag_dir``) is one group, as a ``.vast`` entry writes it;
+    ``groups`` is several, each ``{"bag_dir": …, "plugins": […]}``, as the orchestrator
+    passes a campaign's combined entries. Both lanes build the script's ``--config`` from
+    this, so an entry means the same thing wherever it runs.
+
+    Raises ``ValueError`` when both or neither are given, or ``bag_dir`` is given with
+    ``groups`` -- an argument that would otherwise be dropped.
+    """
+    if groups is not None:
+        if plugins is not None or bag_dir is not None:
+            raise ValueError("rosbags_process takes either 'groups' or 'plugins' "
+                             "(with an optional 'bag_dir'), not both")
+        if not groups:
+            raise ValueError("rosbags_process 'groups' is empty")
+        return [dict(group) for group in groups]
+    if not plugins:
+        raise ValueError("rosbags_process requires at least one entry under 'plugins'")
+    return [{"bag_dir": bag_dir or DEFAULT_BAG_DIR, "plugins": list(plugins)}]
+
+
+#: The directory every image step's command runs from: the conversion scripts, and whatever
+#: an :class:`ExecutionImagePlugin` ships beside them. The same path on every lane -- the
+#: local lane mounts it, a cluster Job mounts its ConfigMap there.
+IMAGE_SCRIPTS_DIR = "/scripts"
+
+
+@dataclasses.dataclass(frozen=True)
+class ImageStep:
+    """One step as a lane runs it in the execution image: its command and its files."""
+
+    #: The postprocessing entry's plugin name, for the log and for errors.
+    name: str
+    #: A file in the scripts directory, then its arguments.
+    argv: List[str]
+    #: What :meth:`ExecutionImagePlugin.image_files` ships beside the scripts.
+    files: List = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
+class ImageContext:
+    """What an image step is told about where it runs, as the container sees it.
+
+    The lane builds this; the plugin reads it to write its command, so one plugin runs on a
+    developer's Docker and in a cluster Job without knowing which.
+    """
+
+    #: The campaign directory inside the container.
+    campaign_dir: str
+    #: Where the step may record provenance JSON inside the container, or ``None``.
+    provenance_file: Optional[str] = None
+    #: Redo work a step would otherwise find already done.
+    force: bool = False
+    #: Print per-item detail rather than progress only.
+    debug: bool = False
+    #: Campaign-relative job directories whose output was cut short by a stop or an
+    #: invalidation -- see :func:`_interrupted_job_dirs`. Missing data there is expected.
+    tolerate_under: Tuple[str, ...] = ()
+
+
+class ExecutionImagePlugin(BasePostprocessingPlugin):
+    """A postprocessing step that runs **inside the campaign's own execution image**.
+
+    Some work can only happen there: deserializing a bag needs the message definitions the
+    run recorded with, and a custom type exists only in the image that defined it. Such a
+    step is not Python this package runs; it is a command this package runs *in* that
+    image. A subclass says which with :meth:`image_command`, and every lane runs exactly
+    that command:
+
+    * the local lane, through ``docker_exec.sh`` (this class's :meth:`__call__`);
+    * a cluster postprocessing Job, directly in its execution-image container.
+
+    The command runs from :data:`IMAGE_SCRIPTS_DIR`, which holds the conversion scripts of
+    ``robovast.results_processing.data`` and every file :meth:`image_files` names. Nothing
+    there may import ``robovast``: the image does not have it.
+    """
+
     needs_execution_image = True
 
+    #: A line of the command's output that starts with this is progress, redrawn in place
+    #: rather than printed once per update. ``None``: every line is printed.
+    progress_prefix: Optional[str] = None
+
+    def image_command(self, ctx: ImageContext, **params) -> List[str]:
+        """The command to run in the image for *params*: a file in the scripts directory,
+        then its arguments.
+
+        Raises ``ValueError`` for parameters it cannot follow, and ``TypeError`` for one it
+        does not take -- never drops one.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} needs the execution image but names no image_command")
+
+    def image_files(self) -> List:
+        """Files, beyond the conversion scripts, this step's command needs beside it.
+
+        Each is an ``importlib.resources`` traversable or a path, placed in the scripts
+        directory under its own name. Stdlib and what the image carries only, like the
+        scripts themselves.
+        """
+        return []
+
+    def __call__(self, results_dir: str, config_dir: str,
+                 provenance_file: Optional[str] = None,
+                 execution_image: Optional[str] = None,
+                 debug: bool = False, force: bool = False, should_stop=None,
+                 **params) -> Tuple[bool, str]:
+        """Run :meth:`image_command` in the execution image through ``docker_exec.sh``.
+
+        *should_stop* is polled while the command runs; when it turns true the container is
+        torn down and this returns a stated cancellation. An image step is written to be
+        interruptible: it rewrites its outputs rather than appending, so the item it was on
+        is redone next time.
+        """
+        name = type(self).__name__
+        ctx = ImageContext(
+            campaign_dir=_CONTAINER_INPUT,
+            provenance_file=(f"/provenance/{os.path.basename(provenance_file)}"
+                             if provenance_file else None),
+            force=force, debug=debug,
+            tolerate_under=tuple(_interrupted_job_dirs(results_dir)))
+        try:
+            argv = self.image_command(ctx, **params)
+        except ValueError as e:
+            return False, f"{name}: {e}"
+
+        with _image_scripts_dir(self.image_files()) as scripts_dir:
+            cmd = [os.path.join(scripts_dir, "docker_exec.sh"),
+                   "--compat-version", str(COMPAT_VERSION),
+                   "--min-compat-version", str(MIN_IMAGE_COMPAT),
+                   "--input", results_dir]
+            if execution_image:
+                cmd.extend(["--image", execution_image])
+            if provenance_file:
+                cmd.extend(["--provenance-file", provenance_file])
+            # What the step may use, from the campaign's `results_processing.resources` over
+            # the shared defaults -- the same figure the cluster lane reserves for its image
+            # container, so one block means one thing on both lanes.
+            from robovast.results_processing.postprocessing import (  # noqa: PLC0415
+                postprocess_convert_resources)
+            sized = postprocess_convert_resources(
+                _campaign_config_path(results_dir, config_dir))
+            cmd.extend(["--cpus", _docker_cpus(sized["cpu"]),
+                        "--memory", str(to_bytes(sized["memory"]))])
+            cmd.extend(argv)
+            return self._stream(cmd, scripts_dir, debug, should_stop)
+
+    def _stream(self, cmd: List[str], cwd: str, debug: bool, should_stop) -> Tuple[bool, str]:
+        """Run *cmd*, echoing its output as it comes; ``(ok, summary or failure)``."""
+        name = type(self).__name__
+        process = None
+        try:
+            # In a session of its own so the step can be signalled as one group -- see
+            # :func:`_terminate_group`, which is the only thing that can end it early. The
+            # cost of that session is that Ctrl+C no longer arrives here for free, since
+            # this is no longer in the terminal's foreground group; the KeyboardInterrupt
+            # branch below forwards it, so an interactive run tears the container down.
+            process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge stderr into stdout to avoid deadlock
+                text=True,
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+                start_new_session=True,
+            )
+            output_lines: List[str] = []
+            last_was_progress = False
+            with _cancelled_by(should_stop, process):
+                for line in process.stdout:
+                    line = line.rstrip("\n")
+                    output_lines.append(line)
+                    is_progress = bool(self.progress_prefix
+                                       and line.startswith(self.progress_prefix))
+                    if is_progress and not debug:
+                        print(f"\r{line}", end="", flush=True)
+                    else:
+                        if last_was_progress and not debug:
+                            print()
+                        print(line, flush=True)
+                    last_was_progress = is_progress
+                if last_was_progress and not debug:
+                    print()
+                returncode = process.wait()
+            output = "\n".join(output_lines)
+            if returncode != 0:
+                if should_stop is not None and should_stop():
+                    # Named as what it was. The exit code of a step we killed says
+                    # "signalled", and reporting that as a failure would file the operator's
+                    # own stop under faults.
+                    return False, (f"{name} cancelled: the campaign was stopped. Its inputs "
+                                   "are untouched and the item it was on is redone when "
+                                   "postprocessing is re-run.")
+                return False, f"{name} failed with exit code {returncode}\n{output}"
+            summary = next((line for line in output_lines if line.startswith("Summary:")),
+                           next((line for line in reversed(output_lines) if line.strip()),
+                                f"{name} completed"))
+            return True, summary
+        except KeyboardInterrupt:
+            # Only reachable because of the new session above: the interrupt reaches this
+            # process but no longer the step's group, so without forwarding it an
+            # interactive Ctrl+C would leave a container running with nobody reading it.
+            if process is not None:
+                _terminate_group(process)
+            raise
+        except Exception as e:  # pylint: disable=broad-except
+            return False, f"Error executing {name}: {e}"
+
+
+#: Where ``docker_exec.sh --input`` mounts the campaign directory.
+_CONTAINER_INPUT = "/input"
+
+
+@contextlib.contextmanager
+def _image_scripts_dir(extra_files):
+    """The directory an image step runs from: the packaged scripts, plus *extra_files*.
+
+    The packaged directory itself when a step ships nothing of its own; otherwise a
+    temporary copy with the extra files beside the scripts, since ``docker_exec.sh`` mounts
+    the directory it lives in.
+    """
+    packaged = files("robovast.results_processing.data")
+    if not extra_files:
+        yield str(packaged)
+        return
+    with tempfile.TemporaryDirectory(prefix="robovast_image_step_") as staged:
+        for entry in packaged.iterdir():
+            if entry.is_file():
+                target = os.path.join(staged, entry.name)
+                Path(target).write_bytes(entry.read_bytes())
+                shutil.copymode(str(entry), target)
+        for extra in extra_files:
+            target = os.path.join(staged, Path(str(extra)).name)
+            if os.path.exists(target):
+                raise ValueError(f"image file {Path(str(extra)).name!r} would replace a "
+                                 "conversion script of the same name")
+            Path(target).write_bytes(extra.read_bytes() if hasattr(extra, "read_bytes")
+                                     else Path(extra).read_bytes())
+        yield staged
+
+
+class RosbagsProcess(ExecutionImagePlugin):
+    # Reads rosbags, so it needs the image whose message definitions wrote them.
+    # One bag at a time, each written beside itself.
     """Unified single-pass rosbag processor with internal plugin system.
 
     Reads each rosbag exactly once and dispatches messages to all configured
@@ -425,7 +689,12 @@ class RosbagsProcess(BasePostprocessingPlugin):
                   frames: [base_link]
                 - type: to_csv
                   topics: [/cmd_vel, /odom]
-                - type: rosout_to_csv
+
+    ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). The orchestrator
+    combines every ``rosbags_process`` entry and ``rosbags_*`` name of a campaign into one
+    call, one group per bag directory, and adds the ``logs/rosout_bag`` handlers to it
+    (``_batch_rosbags_commands``), so every kind of bag is converted in one scan and one
+    worker pool. That combined call is what arrives here as ``groups``.
 
     **How much of the machine it uses is not set here.** The step converts one bag per
     process, and how many run at once follows the CPU the conversion is allowed -- which is
@@ -443,160 +712,46 @@ class RosbagsProcess(BasePostprocessingPlugin):
     enough that fewer, fatter workers beat one per core.
     """
 
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        plugins: List[dict],
-        workers: Optional[int] = None,
-        bag_dir: Optional[str] = None,
-        provenance_file: Optional[str] = None,
-        execution_image: Optional[str] = None,
-        debug: bool = False,
-        force: bool = False,
-        should_stop=None,
-    ) -> Tuple[bool, str]:
-        """Execute rosbags_process plugin.
+    progress_prefix = "Processing rosbags"
+    scope = "run"
+
+    def image_command(self, ctx: ImageContext,  # pylint: disable=arguments-differ
+                      plugins: Optional[List[dict]] = None,
+                      workers: Optional[int] = None, bag_dir: Optional[str] = None,
+                      groups: Optional[List[dict]] = None) -> List[str]:
+        """``rosbags_process.py`` over the campaign, with the groups this entry names.
 
         Args:
-            results_dir: Path to the campaign-<id> directory to process.
-            config_dir: Directory containing the config file.
-            plugins: List of handler config dicts, each with a ``type`` key.
+            plugins: List of handler config dicts, each with a ``type`` key, for the bags in
+                *bag_dir*. Give either this or *groups*.
             workers: Bags to convert at once. Omitted -- the normal case -- the conversion
                 derives it from the CPU it is actually allowed (its cgroup quota), so it
                 matches ``results_processing.resources.cpu`` on either lane. Set it only to
                 override that.
             bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
-            provenance_file: Optional path for provenance JSON.
-            execution_image: Optional Docker image override.
-            debug: If True, print all per-bag output; otherwise show only progress/summary.
-            should_stop: Predicate polled while the conversion runs; when it turns true the
-                conversion is torn down and this returns a stated cancellation. This is the
-                one postprocessing step long enough to be worth interrupting, and the one
-                that can be interrupted safely: a bag records itself as converted only once
-                its handlers have finished, and every output is rewritten rather than
-                appended, so the bag that was interrupted is simply redone next time.
-
-        Returns:
-            Tuple of (success, message).
+            groups: Several ``{"bag_dir": …, "plugins": […]}`` converted in one pass: what the
+                orchestrator passes after combining a campaign's entries.
         """
-        if not plugins:
-            return False, "rosbags_process requires at least one entry under 'plugins'"
-
-        script_path = str(files('robovast.results_processing.data').joinpath('docker_exec.sh'))
-        config_json = json.dumps({"plugins": plugins})
-
-        cmd = [script_path, "--compat-version", str(COMPAT_VERSION),
-               "--min-compat-version", str(MIN_IMAGE_COMPAT)]
-        if execution_image:
-            cmd.extend(["--image", execution_image])
-        if provenance_file:
-            cmd.extend(["--provenance-file", provenance_file])
-        cmd.append("rosbags_process.py")
-        if provenance_file:
-            cmd.extend(["--provenance-file", f"/provenance/{os.path.basename(provenance_file)}"])
-        cmd.extend(["--config", config_json])
-        # What this conversion may use, from the campaign's `results_processing.resources`
-        # over the shared defaults -- the same figure the cluster lane reserves for its
-        # conversion container, so one block means one thing on both lanes.
-        #
-        # The worker count is deliberately NOT passed with it. rosbags_process reads its own
-        # cgroup quota, so the cap below already decides the fan-out; passing the number a
-        # second time would be a copy that can disagree with the limit actually in force.
-        # `workers` stays available for a campaign that wants to override that.
-        from robovast.results_processing.postprocessing import (  # noqa: PLC0415
-            postprocess_convert_resources)
-
-        sized = postprocess_convert_resources(
-            _campaign_config_path(results_dir, config_dir))
-        cmd.extend(["--cpus", _docker_cpus(sized["cpu"]),
-                    "--memory", str(to_bytes(sized["memory"]))])
+        argv = ["rosbags_process.py",
+                "--config", json.dumps({"groups": conversion_groups(plugins, bag_dir, groups)}),
+                # A calibration probe is deliberately not a run, so its bag is not campaign
+                # data. Only this directory, NOT every reserved one:
+                # `_jobs/<batch>/<job>/logs/rosout_bag` is each job's real log bag.
+                "--skip-dir", PROBE_DIR]
+        if ctx.provenance_file:
+            argv += ["--provenance-file", ctx.provenance_file]
         if workers is not None:
-            cmd.extend(["--workers", str(workers)])
-        if bag_dir is not None:
-            cmd.extend(["--bag-dir", bag_dir])
-        # A calibration probe is deliberately not a run, so its bag is not campaign data.
-        # Converting it cost a bag's work per node, and an interrupted probe's unfinalized
-        # bag failed the whole step outright on something nothing was going to read.
-        #
-        # Only this directory, NOT every reserved one: `_jobs/<batch>/<job>/logs/rosout_bag`
-        # is each job's real log bag, so skipping the set wholesale would silently drop
-        # every /rosout record in the campaign. The names look interchangeable and are not.
-        cmd.extend(["--skip-dir", PROBE_DIR])
-        # A job stopped by an operator, or invalidated by the runner after a container
-        # crashed under it, was SIGKILLed mid-write — so its rosbag is unfinalized and
-        # cannot be opened, ever. Without this the campaign's whole postprocessing step
-        # fails on that one bag, which would mean one interrupted job costs the analysis of
-        # every job that DID finish.
-        for job_dir in _interrupted_job_dirs(results_dir):
-            cmd.extend(["--tolerate-under", job_dir])
-        if debug:
-            cmd.append("--debug")
-        if force:
-            cmd.append("--force")
-        cmd.append(results_dir)
-
-        process = None
-        try:
-            # Stream output line-by-line so progress is visible in real-time.
-            #
-            # In a session of its own so the conversion can be signalled as one group -- see
-            # :func:`_terminate_group`, which is the only thing that can end this step early.
-            # The cost of that session is that Ctrl+C no longer arrives here for free, since
-            # this is no longer in the terminal's foreground group; the KeyboardInterrupt
-            # branch below forwards it, so an interactive run tears the container down as it
-            # always did.
-            process = subprocess.Popen(
-                cmd,
-                cwd=os.path.dirname(script_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # merge stderr into stdout to avoid deadlock
-                text=True,
-                env={**os.environ, 'PYTHONUNBUFFERED': '1'},
-                start_new_session=True,
-            )
-            output_lines: List[str] = []
-            _last_was_progress = False
-            with _cancelled_by(should_stop, process):
-                for line in process.stdout:
-                    line = line.rstrip("\n")
-                    output_lines.append(line)
-                    is_progress = line.startswith("Processing rosbags")
-                    if is_progress and not debug:
-                        print(f"\r{line}", end="", flush=True)
-                    else:
-                        if _last_was_progress and not debug:
-                            print()
-                        print(line, flush=True)
-                    _last_was_progress = is_progress
-                if _last_was_progress and not debug:
-                    print()
-                returncode = process.wait()
-            output = "\n".join(output_lines)
-            if returncode != 0:
-                if should_stop is not None and should_stop():
-                    # Named as what it was. The exit code of a conversion we killed says
-                    # "signalled", and reporting that as a failure would file the operator's
-                    # own stop under faults -- and send whoever reads it to look for a bug in
-                    # a step that was working.
-                    return False, ("rosbags_process cancelled: the campaign was stopped. "
-                                   "The bags are untouched and the bag being converted is "
-                                   "redone when postprocessing is re-run.")
-                return False, f"rosbags_process failed with exit code {returncode}\n{output}"
-            summary = next(
-                (line for line in output_lines if line.startswith("Summary:")),
-                "rosbags processed successfully",
-            )
-            return True, summary
-        except KeyboardInterrupt:
-            # Only reachable because of the new session above: the interrupt reaches this
-            # process but no longer the conversion's group, so without forwarding it an
-            # interactive Ctrl+C would leave a container converting with nobody reading it.
-            if process is not None:
-                _terminate_group(process)
-            raise
-        except Exception as e:
-            return False, f"Error executing rosbags_process: {e}"
+            argv += ["--workers", str(int(workers))]
+        # A job stopped by hand or invalidated by the runner was SIGKILLed mid-write, so its
+        # rosbag is unfinalized and cannot be opened, ever -- expected, not a failure.
+        for job_dir in ctx.tolerate_under:
+            argv += ["--tolerate-under", job_dir]
+        if ctx.debug:
+            argv.append("--debug")
+        if ctx.force:
+            argv.append("--force")
+        argv.append(ctx.campaign_dir)
+        return argv
 
 
 class RunLog(BasePostprocessingPlugin):
@@ -612,9 +767,8 @@ class RunLog(BasePostprocessingPlugin):
     :mod:`robovast.results_processing.run_log`. In outline: the logs are written **per
     job** (``_jobs/<batch>/job-N/logs/``), so each run resolves its job through the
     campaign's ``job_links.yaml`` manifest — not the ``job`` symlink, which only appears
-    once a job has finished and cannot exist in an object store at all. The output lands in
-    the **run** directory, where the index ingest's glob already looks, so the
-    ``run_log`` table needs no ingest code of its own.
+    once a job has finished. The output lands in the **run** directory, where the index
+    ingest's glob already looks, so the ``run_log`` table needs no ingest code of its own.
 
     Example usage in .vast config (only needed to override a default):
 
@@ -624,6 +778,8 @@ class RunLog(BasePostprocessingPlugin):
          - run_log:
              min_severity: warn
     """
+
+    scope = "run"
 
     def __call__(
         self,
@@ -750,9 +906,9 @@ class ResourceUsage(BasePostprocessingPlugin):
     :mod:`robovast.results_processing.resource_usage`. In outline: every container writes
     ``resource_usage_<container>.csv`` per **job** (``_jobs/<batch>/job-N/``), so each run
     resolves its job through the campaign's ``job_links.yaml`` manifest — not the ``job``
-    symlink, which only appears once a job has finished and cannot exist in an object store
-    at all. The output lands in the **run** directory, where the index ingest's glob
-    already looks, so the ``resource_usage`` table needs no ingest code of its own.
+    symlink, which only appears once a job has finished. The output lands in the **run**
+    directory, where the index ingest's glob already looks, so the ``resource_usage``
+    table needs no ingest code of its own.
 
     Unlike ``run_log``, a job's samples are **partitioned** between the runs it served
     rather than given to all of them: another run's CPU is not this run's, and copying it
@@ -762,6 +918,8 @@ class ResourceUsage(BasePostprocessingPlugin):
     is a ``WHERE`` clause the reader already has, and one applied at write time cannot be
     undone without re-running postprocessing.
     """
+
+    scope = "run"
 
     def __call__(
         self,
@@ -1131,8 +1289,21 @@ def _read_table_rows(path: Path) -> list:
         return reader(records) if reader else []
     try:
         with open(path, encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
+            # A `#` preamble before the header is how a producer states what its columns
+            # mean -- the frame a wrench is in, the unit of a column -- and numpy and pandas
+            # both read past it. Taken as the header instead, its comma-split words became
+            # the columns and every real row was ragged.
+            reader = csv.DictReader(line for line in handle if not line.startswith("#"))
+            rows = list(reader)
     except Exception:  # pylint: disable=broad-except
+        return []
+    if any(None in row for row in rows):
+        # A row longer than the header. DictReader files the surplus under the key None,
+        # which no column can be named after, and the one file used to take the whole
+        # campaign's index down with it -- from a TypeError in a sort, naming nothing.
+        logger.warning(
+            "index: skipping %s: a row has more fields than its header (%d columns). Its "
+            "rows are not indexed; every other file still is.", path, len(reader.fieldnames or ()))
         return []
     _derive_yaw(rows)
     return rows

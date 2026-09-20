@@ -17,6 +17,8 @@ from robovast.execution.cluster_execution import postprocess_job as pj
 from robovast.execution.cluster_execution import postprocess_usage as pu
 from robovast.execution.data import monitor_resources
 
+from .image_steps_helper import steps
+
 
 def test_it_is_the_container_level_half_and_says_so():
     """``system_usage``, not ``resource_usage``.
@@ -29,10 +31,10 @@ def test_it_is_the_container_level_half_and_says_so():
     assert pu.USAGE_REL.endswith("postprocess_system_usage.csv")
 
 
-def test_the_record_lands_where_the_upload_already_goes():
-    """``_execution/`` is uploaded wholesale by the host step, so these figures need no
-    upload of their own -- and a file under a *run* directory would be swept into that run's
-    metric tables and read as something the run itself consumed."""
+def test_the_record_lands_where_the_delivery_already_goes():
+    """The host step delivers what the Job wrote, and this file is written by the Job, so
+    the figures need no delivery of their own -- and a file under a *run* directory would be
+    swept into that run's metric tables and read as something the run itself consumed."""
     assert pu.USAGE_REL.startswith("_execution/")
 
 
@@ -53,13 +55,13 @@ def test_the_columns_are_the_samplers_own(tmp_path):
 
 
 def test_each_step_appends_its_own_row(tmp_path):
-    """Three containers in sequence, so no one of them can write the whole file."""
-    for step in ("stage", "convert", "host"):
+    """Two containers in sequence, so neither can write the whole file."""
+    for step in ("convert", "host"):
         pu.record(str(tmp_path), step)
     with open(tmp_path / "_execution" / "postprocess_system_usage.csv",
               encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
-    assert [r["step"] for r in rows] == ["stage", "convert", "host"]
+    assert [r["step"] for r in rows] == ["convert", "host"]
 
 
 def test_recording_never_fails_the_step_it_measures(tmp_path):
@@ -76,12 +78,12 @@ def test_recording_never_fails_the_step_it_measures(tmp_path):
 
 def test_one_shot_writes_a_header_once_and_a_row_per_call(tmp_path):
     path = tmp_path / "usage.csv"
-    monitor_resources.write_once(str(path), "stage")
+    monitor_resources.write_once(str(path), "convert")
     monitor_resources.write_once(str(path), "host")
     lines = path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     assert lines[0].startswith("step,")
-    assert lines[1].startswith("stage,") and lines[2].startswith("host,")
+    assert lines[1].startswith("convert,") and lines[2].startswith("host,")
 
 
 def test_one_shot_takes_only_the_container_level_probes(tmp_path):
@@ -145,7 +147,7 @@ def test_the_conversion_records_its_usage_even_when_it_failed():
     """A conversion killed for exceeding its memory is exactly the case this record exists
     for, so the record sits outside the block whose failure it explains -- and cannot change
     the conversion's own exit status."""
-    script = pj._conversion_script([{"plugins": [{"type": "to_csv"}]}], False,
+    script = pj._conversion_script(steps("c1", plugins=[{"type": "to_csv"}]),
                                    campaign_id="camp-1")
     assert subprocess.run(["bash", "-n"], input=script, text=True, check=False,
                           capture_output=True).returncode == 0
@@ -175,8 +177,8 @@ def test_an_oom_kill_is_called_out_and_a_zero_is_not():
 
 @pytest.mark.parametrize("row", [
     {},
-    {"step": "stage"},
-    {"step": "stage", "memory_peak": "", "memory_max": "", "nr_periods": ""},
+    {"step": "host"},
+    {"step": "host", "memory_peak": "", "memory_max": "", "nr_periods": ""},
 ])
 def test_the_summary_line_survives_what_a_kernel_did_not_report(row):
     """The sampler decides what a container can report, so a counter absent on some kernel

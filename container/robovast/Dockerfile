@@ -22,7 +22,7 @@ ARG ROS_BASE_DIGEST=sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f1724
 # from a clean clone then fails with "fatal: reference is not a tree". A pin whose commit can
 # disappear is not a pin.
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
-ARG SCENARIO_EXECUTION_REF=ada6ce5f5d908484c11214d6f62f79f56ddef764
+ARG SCENARIO_EXECUTION_REF=4c0deb7f447f2faa05484a760aa69aec583e4021
 
 # The scenario-execution *server*, the second source this image bakes. Same idiom deliberately: a
 # pin is only overridable if it is an ARG, and `make release-images-update-versions` finds a pin by
@@ -59,22 +59,20 @@ COPY --from=scenario-execution-clone /src /
 # the base image itself baked in, which no amount of pinning *our* apt calls can reach.
 # The tag is kept beside the digest because a bare digest tells a reader nothing about what
 # it is. Refresh both with: make refresh-build-pins
-# `ros`, the Docker Official image, and NOT `osrf/ros:${ROS_DISTRO}-desktop-full`, which this
-# named until the arm64 build was made real.
+# `ros`, the Docker Official image, and NOT `osrf/ros:${ROS_DISTRO}-desktop-full`.
 #
 # osrf/ros publishes each tag as a single amd64 manifest rather than an index. Docker does not
 # refuse `--platform linux/arm64` against such a tag: it hands back the amd64 bytes and labels the
-# result arm64. That built and pushed without complaint for as long as nothing executed in it --
-# on an amd64 runner nothing is emulated, so even the RUN steps below passed -- and what shipped
-# was an arm64 manifest full of amd64 userland, carrying arm64 `mc` and `fixuid` binaries fetched
-# by TARGETARCH. It died with "Invalid ELF image for this architecture" the moment a real arm64
-# host ran it. container/platforms.env had already recorded this failure for roqsim without the
-# same conclusion being drawn here.
+# result arm64. That builds and pushes without complaint as long as nothing executes in it -- on
+# an amd64 runner nothing is emulated, so even the RUN steps below pass -- and the result is an
+# arm64 manifest full of amd64 userland, carrying an arm64 `fixuid` binary fetched by
+# TARGETARCH, which fails with "Invalid ELF image for this architecture" the moment an arm64 host
+# runs it. container/platforms.env records the same property for roqsim.
 #
 # `ros:${ROS_DISTRO}-ros-base` is a genuine multi-arch index (amd64 + arm64), so each platform's
-# build starts from that platform's bytes. It carries less than desktop-full did; the difference is
+# build starts from that platform's bytes. It carries less than desktop-full; the difference is
 # installed from the pinned snapshot below, which is strictly better for reproducibility -- those
-# packages are now pinned to a dated archive rather than frozen at whenever the base was rebuilt.
+# packages are pinned to a dated archive rather than frozen at whenever the base was rebuilt.
 FROM ros:${ROS_DISTRO}-ros-base@${ROS_BASE_DIGEST}
 ARG ROS_DISTRO
 ARG ROS_BASE_DIGEST
@@ -275,34 +273,6 @@ RUN \
         python3-zmq python3-msgpack && \
     rm -rf /var/lib/apt/lists/*
 
-# Install MinIO client (mc) for S3 upload in post-run script.
-# TARGETARCH (amd64 / arm64), not a hard-coded linux-amd64: this image is built for both,
-# so the fixed URL put an x86 binary into every arm64 image.
-ARG TARGETARCH
-# mc is fetched from the project's GitHub release, PINNED and checksummed, because MinIO
-# stopped serving it: dl.min.io answers 410 Gone for every community build, with "the open-source
-# MinIO Server, MinIO Client (mc) and MinIO KES projects are archived and no longer maintained".
-# That took every image here with it -- the URL had no version in it, so there was nothing to
-# fall back to and nothing that said which build had been installed.
-#
-# The release assets survive the archive, so the fix is also an improvement: this pins a build
-# and verifies it, where the old URL took whatever "latest" meant on the day and checked nothing.
-# See MC_RELEASE / MC_SHA256_* below; both architectures are listed because the digest is what
-# makes the pin worth having, and one sum cannot cover two binaries.
-ARG MC_RELEASE=RELEASE.2025-08-13T08-35-41Z
-ARG MC_SHA256_AMD64=01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
-ARG MC_SHA256_ARM64=14c8c9616cfce4636add161304353244e8de383b2e2752c0e9dad01d4c27c12c
-RUN set -eu; \
-    url="https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-${TARGETARCH}.${MC_RELEASE}"; \
-    case "$TARGETARCH" in \
-      amd64) want="$MC_SHA256_AMD64" ;; \
-      arm64) want="$MC_SHA256_ARM64" ;; \
-      *) echo "no pinned mc checksum for TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "$url" -o /usr/local/bin/mc; \
-    echo "$want  /usr/local/bin/mc" | sha256sum -c - ; \
-    chmod +x /usr/local/bin/mc
-
 RUN mkdir -p /ws/src
 
 # From the ``scenario-execution-src`` stage, which is the pinned clone by default and a local
@@ -439,39 +409,33 @@ RUN USER=ubuntu && \
 # Check that what TARGETARCH fetched matches the userland it landed in.
 #
 # This is the only check that catches an image built for the wrong architecture, because such an
-# image builds, pushes and inspects perfectly and fails when something finally runs it. Every
-# other signal stays green. It is exactly how this image shipped an arm64 manifest full of amd64
-# content for as long as it did.
+# image builds, pushes and inspects perfectly and fails when something finally runs it, while
+# every other signal stays green.
 #
 # Cheap, and it belongs here rather than in CI: on a native runner every RUN above has already
 # exec'd this architecture's binaries, so the base userland is covered by the build itself. What
-# is NOT covered is a binary fetched by TARGETARCH and never run -- mc and fixuid, which were the
-# two that really were arm64 while everything around them was amd64. Also protects a local build,
-# which no CI check reaches.
+# is NOT covered is a binary fetched by TARGETARCH and never run -- fixuid, which is exactly what
+# stays arm64 inside an amd64 userland. Also protects a local build, which no CI check reaches.
 #
 # Compared against /bin/bash rather than against a table of architecture names: the question is
-# whether these binaries match the userland they have to run in, and bash IS that userland. That
+# whether this binary matches the userland it has to run in, and bash IS that userland. That
 # needs no mapping to keep current, and it stays right for an architecture nobody has added yet.
 # ELF e_machine is two little-endian bytes at offset 18 (x86-64 3e00, aarch64 b700); od is in
 # coreutils, so this pulls in nothing.
 #
 # fixuid is inspected rather than run: it is setuid and its job is to change uid/gid and exec, so
-# there is no harmless invocation (it takes only -q, and `-v` fails the flag parse). mc has a real
-# one, so it gets exec'd as well as inspected.
+# there is no harmless invocation (it takes only -q, and `-v` fails the flag parse).
 RUN e_machine() { od -An -t x1 -j 18 -N 2 "$1" | tr -d ' '; } && \
     want=$(e_machine /bin/bash) && \
-    for bin in /usr/local/bin/mc /usr/local/bin/fixuid; do \
-      got=$(e_machine "$bin"); \
-      if [ "$got" != "$want" ]; then \
-        echo "ERROR: $bin is ELF e_machine $got, but this image's userland is $want." >&2; \
-        echo "  A binary was fetched for TARGETARCH=${TARGETARCH} into a rootfs of another" >&2; \
-        echo "  architecture, so the image would carry foreign content under a correct-looking" >&2; \
-        echo "  label and die with 'Invalid ELF image' when run. A base whose tag is a single" >&2; \
-        echo "  manifest rather than a multi-arch index does exactly this." >&2; \
-        exit 1; \
-      fi; \
-    done && \
-    mc --version > /dev/null && \
+    got=$(e_machine /usr/local/bin/fixuid) && \
+    if [ "$got" != "$want" ]; then \
+      echo "ERROR: /usr/local/bin/fixuid is ELF e_machine $got, but this image's userland is $want." >&2; \
+      echo "  A binary was fetched for TARGETARCH=${TARGETARCH} into a rootfs of another" >&2; \
+      echo "  architecture, so the image would carry foreign content under a correct-looking" >&2; \
+      echo "  label and die with 'Invalid ELF image' when run. A base whose tag is a single" >&2; \
+      echo "  manifest rather than a multi-arch index does exactly this." >&2; \
+      exit 1; \
+    fi && \
     echo "architecture check passed: TARGETARCH=${TARGETARCH}, uname -m=$(uname -m), e_machine=${want}"
 
 # The build lock: what this image contains, as opposed to what it was asked for.

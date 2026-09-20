@@ -726,9 +726,10 @@ A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``invalid`` means a container the trial ran against **crashed and was restarted under it**.
-The simulator (or the system under test) came back with no memory of the run and the
-scenario carried on regardless, so whatever verdict that trial reached describes a process
-that had lost its state.
+The simulator (or the system under test) took the run's state with it; the container the
+kubelet starts in its place runs no workload, and the runner ends the job as soon as it reads
+the restart off the pod. Whatever verdict the scenario reached in between describes a trial
+that had already lost its process.
 
 **It is the one status that overrides a written verdict**, and that inverts the rule stated
 for ``killed`` just above. The inversion is the whole reason it is a separate kind rather
@@ -852,7 +853,14 @@ run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 ``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
 one row per process per ~1 s, one file per container. For a packed job these span the whole
 job; the ``resource_usage`` post-processing step slices them to each run (see
-:ref:`per-run-resource-usage`).
+:ref:`per-run-resource-usage`). Both files span every *instance* of the container as well: a
+container the kubelet restarts runs the sampler again against the same file, which continues
+the record under its one header rather than replacing it, so the samples of the instance that
+died — the high-water mark climbing towards its limit — are kept beside the ones of the
+instance that came after. The seam shows as the cumulative counters going backwards: the
+calibration reader drops that tick as a cgroup replaced, and a run whose container crashed is
+``invalid`` in the intervention ledger (:doc:`architecture`), so its per-run aggregates are never
+compared with a run that kept one instance throughout.
 
 ``system_usage_*.csv`` is the sibling for figures belonging to the **container as a whole**
 rather than to a process — one row per ~1 s, no ``pid``. It is separate because
@@ -974,9 +982,9 @@ service::
 
 The path after the campaign id is exactly the path in the tree — ``_execution/
 outcome.json``, ``<config-name>/<run>/test.xml`` — so what a listing shows is what
-you can read. Campaign results are **read-only**: they are the record of a run,
-and on the cluster they are object-store objects that a local write could not
-change. Workspace *inputs* live in the writable half of the same address space,
+you can read. Campaign results are **read-only**: they are the record of a run, and a
+rewritten record is one nobody can check the figures drawn over it against. Workspace
+*inputs* live in the writable half of the same address space,
 ``/sources/<workspace_id>/<path>`` (see :ref:`web-ui-config`).
 
 .. code-block:: bash
@@ -996,8 +1004,9 @@ writes one ``.tar.gz`` and does nothing else with it).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
 and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
-:ref:`mcp-files`. Reading a campaign on this machine needs no running service;
-against a cluster service the read fetches that one object, not the campaign.
+:ref:`mcp-files`. Reading a campaign on this machine needs no running service; against a
+cluster service the read serves that one file off the service's results volume, not the
+campaign.
 
 If the service runs on your own machine, ``get_service_info`` also reports a
 ``results_root`` you can open directly with your own tools; it is absent whenever
@@ -1283,9 +1292,7 @@ A genuine failure is **kept, as a failed campaign**, and the refusal names what 
 missing rather than which check noticed. Deleting the half-imported tree was tried and
 was strictly worse: registering the campaign is what makes it visible while it arrives,
 so the entry outlives the failure either way and removing the directory only took away
-the ``import.log`` and ``import.json`` that explained it. On a lane whose durable home is
-an object store the campaign's ``_execution/`` is published so the account is readable
-where the campaign is read, not left on a pod's scratch. Remove it with
+the ``import.log`` and ``import.json`` that explained it. Remove it with
 ``vast campaign delete``, or import again with ``--force``.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no

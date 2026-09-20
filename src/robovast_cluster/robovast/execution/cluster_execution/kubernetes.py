@@ -83,20 +83,20 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
                     raise
                 # Setup has to be re-runnable: `setup --force` is the documented way to
                 # move a live cluster to a new version, and it re-applies this manifest
-                # over the MinIO pod it created last time. Every re-run died here on
-                # `pods "robovast" already exists` before it reached the service deploy.
+                # over the pod it created last time, which already exists.
                 #
-                # Kept rather than replaced, because the object is a running MinIO pod
-                # holding the campaign store -- recreating it on every setup would be a
-                # far worse default. That does mean a *changed* manifest does not take
-                # effect, which is worth a warning rather than silence: the setup would
-                # otherwise report success while the cluster kept the old spec.
+                # Kept rather than replaced, because the object is a running pod holding
+                # the image registry and the campaign index -- recreating it on every
+                # setup would be a far worse default. That does mean a *changed* manifest
+                # does not take effect, which is worth a warning rather than silence: the
+                # setup would otherwise report success while the cluster kept the old
+                # spec.
                 logger.warning(
                     f"{kind}/{name} already exists and was left as it is; a changed "
                     f"spec does NOT take effect until it is removed -- new node labels, "
                     f"and any container added to it since this one was created. The "
-                    f"{kind.lower()} carries the campaign store, the image registry and "
-                    f"the campaign index, so a version that adds one of those cannot "
+                    f"{kind.lower()} carries the image registry and the campaign "
+                    f"index, so a version that adds one of those cannot "
                     f"reach an existing cluster: `vast cluster cleanup` and then `vast "
                     f"cluster setup` is the only way to pick it up.")
     except ApiException as e:

@@ -53,7 +53,7 @@ from robovast.execution.notify import DEFAULT_SERVER as DEFAULT_NTFY_SERVER
 from robovast.execution.share_providers.sftp import DEFAULT_SFTP_PORT
 
 from .scene_cache import DEFAULT_MAX_CACHE_BYTES
-from .storage_reserve import DEFAULT_RESERVE_GB, RESERVE_ENV
+from robovast.common.disk_reserve import DEFAULT_RESERVE_FRACTION, RESERVE_ENV
 
 #: Only these are reported. A local ``vast serve`` inherits the operator's whole shell, and
 #: enumerating that would put unrelated environment — including other tools' credentials —
@@ -149,9 +149,6 @@ KNOWN: dict[str, Known] = {
         _CLUSTER, "JSON options the cluster flavor was set up with."),
     "ROBOVAST_KUBE_CONNECT_TIMEOUT": Known(
         _CLUSTER, "Seconds before an unreachable cluster gives up connecting."),
-    "ROBOVAST_FETCH_CACHE_MAX_AGE_DAYS": Known(
-        _CLUSTER, "Days a fetched campaign nobody reads is kept before it is removed; "
-        "0 keeps it until the cache is cleared."),
     "ROBOVAST_JOB_NODE_LABELS": Known(
         _CLUSTER, "JSON node labels restricting where campaign Jobs are scheduled. Set in the "
         "operator's .env and applied by 'vast cluster setup' and 'vast service upgrade'."),
@@ -162,6 +159,11 @@ KNOWN: dict[str, Known] = {
         "the service's own environment.", Sensitivity.SERVER_ONLY),
     "ROBOVAST_NODE_CALIBRATION": Known(
         _CLUSTER, "Whether per-node capacity is calibrated rather than assumed."),
+    "ROBOVAST_POSTPROCESS_MAX_PARALLEL": Known(
+        _CLUSTER, "A cap on how many Jobs one campaign's postprocessing is split into; 1 "
+        "runs it in one Job. Unset, it is split into as many parts as the cluster could run "
+        "at once. Set in the operator's .env and applied by 'vast cluster setup' and "
+        "'vast service upgrade'."),
     "ROBOVAST_NODE_HEADROOM_CPU": Known(
         _CLUSTER, "CPU held back on each node when placing campaign Jobs."),
     "ROBOVAST_NODE_HEADROOM_MEMORY": Known(
@@ -261,8 +263,9 @@ KNOWN: dict[str, Known] = {
         default=str(DEFAULT_MAX_CACHE_BYTES)),
     RESERVE_ENV: Known(
         _STORAGE, "Free space, in GB, below which new campaigns, re-runs, image builds, "
-        "imports and postprocessing are refused; 0 keeps none.",
-        default=f"{DEFAULT_RESERVE_GB:g}"),
+        "imports and postprocessing are refused and the cluster starts no new Jobs; 0 keeps "
+        "none.",
+        default=f"{DEFAULT_RESERVE_FRACTION:.0%} of the disk"),
 
     # -- process plumbing, never reported -------------------------------------
     # Set by a container entrypoint, a build, or `vast` itself. An operator did not put

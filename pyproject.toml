@@ -1,10 +1,13 @@
 [tool.poetry]
 name = "robovast"
 version = "2.1.0"
-description = "RoboVast project"
+description = "Variation Automation and Scalable Testing for Robotic Systems: vary a scenario, run the sweep as recorded simulation runs on Docker or Kubernetes, query the results."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast", from = "src"}]
 # The built web UI, staged into the package by `make ui-stage` (which `build`
 # runs). Needs an explicit include because the source is git-ignored and poetry
@@ -155,6 +158,7 @@ env-file = "robovast.common.env_file:load_env_file"
 # results reader. They attach to the client's root group like any other plugin, so a
 # client-only install simply does not have them rather than having them and failing.
 serve = "robovast.common.cli.core_commands:serve"
+serve-data = "robovast.common.cli.core_commands:serve_data"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
 results = "robovast.results_processing.cli:results"

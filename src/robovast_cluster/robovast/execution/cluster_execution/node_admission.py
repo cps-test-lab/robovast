@@ -50,6 +50,11 @@ CREATED = "created"
 #: number on a screen.
 BUDGET_TTL_S = 3.0
 
+#: How a refusal for want of disk space begins, so a reader -- the batch loop putting it on
+#: the campaign's status, a postprocess explaining its timeout -- can tell it from a wait for
+#: a node. The rest is the reserve's own sentence (:mod:`robovast.common.disk_reserve`).
+DISK_WAIT = "waiting for disk space: "
+
 #: How many jobs may be outstanding **unpinned** at once on a cluster that can grow.
 #:
 #: An unpinned job is one admitted against capacity that exists on no node yet, so nothing
@@ -348,8 +353,18 @@ class AdmissionController:
     every campaign's job creation.
     """
 
-    def __init__(self, provider: BudgetProvider, *, clock=None, budget_ttl: float = BUDGET_TTL_S):
+    def __init__(self, provider: BudgetProvider, *, clock=None, budget_ttl: float = BUDGET_TTL_S,
+                 space_gate: "Optional[Callable[[], Optional[str]]]" = None):
         self._provider = provider
+        #: Asked before every drain: the sentence saying the disk the campaigns land on is
+        #: below its free-space reserve, or ``None``. While it has one nothing is created --
+        #: a Job admitted into a disk that cannot take its results computes them for
+        #: nothing, and on a node-directory deployment the next write past the kubelet's
+        #: eviction threshold evicts the service with every campaign it drives. Jobs
+        #: already running are unaffected: the reserve is the room their results land in.
+        self._space_gate = space_gate
+        self._space_short: Optional[str] = None
+        self._space_unmeasured_logged = False
         self._clock = clock or (lambda: __import__("time").monotonic())
         self._budget_ttl = budget_ttl
         # Reentrant, deliberately. ``drain`` calls the caller's ``sizing_for_node`` and
@@ -485,6 +500,11 @@ class AdmissionController:
             self._record_paused_refusals_locked()
             pending = self._pending_in_order()
             if not pending:
+                return 0
+            short = self._check_space_locked()
+            if short:
+                for owner in {item.owner for item in pending}:
+                    self._refusals[owner] = f"{DISK_WAIT}{short}"
                 return 0
             nodes, growable = self._effective_free_locked(force=True)
             by_id = {n.node_id: n for n in nodes}
@@ -878,6 +898,11 @@ class AdmissionController:
                 return capacity.holds(sizing)
         return True
 
+    def space_shortfall(self) -> Optional[str]:
+        """Why nothing is admitted for want of disk space, as of the last drain, or ``None``."""
+        with self._lock:
+            return self._space_short
+
     def refusal(self, owner: str) -> str:
         """Why nothing was created for *owner* last time, for its campaign's log.
 
@@ -888,6 +913,32 @@ class AdmissionController:
             return self._refusals.get(owner, "")
 
     # -- internals ---------------------------------------------------------------------
+
+    def _check_space_locked(self) -> Optional[str]:
+        """Ask the space gate, and remember its answer for :meth:`space_shortfall`.
+
+        A gate that raises is not a full disk: admission goes on, and the failure is logged
+        once rather than every drain. Holding every campaign because free space could not be
+        measured would make a launch depend on a reading it never needed.
+        """
+        if self._space_gate is None:
+            return None
+        try:
+            short = self._space_gate()
+        except Exception as e:  # noqa: BLE001 - unmeasured is not full; see above
+            if not self._space_unmeasured_logged:
+                logger.warning("free space could not be measured, so admission goes on "
+                               "without the reserve: %s", e)
+                self._space_unmeasured_logged = True
+            self._space_short = None
+            return None
+        self._space_unmeasured_logged = False
+        if short and short != self._space_short:
+            logger.warning("admitting no Jobs: %s", short)
+        elif not short and self._space_short:
+            logger.info("admitting Jobs again: the disk is above its reserve")
+        self._space_short = short or None
+        return self._space_short
 
     def _record_paused_refusals_locked(self) -> None:
         """Say *paused* for every owner holding back, rather than letting it read as a wait.

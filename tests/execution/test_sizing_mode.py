@@ -69,7 +69,7 @@ def test_the_role_decides_where_there_is_one():
 
 
 def test_the_limit_is_never_left_empty():
-    """`JOB_TEMPLATE` reads AVAILABLE_CPUS/AVAILABLE_MEM from `limits`, and the downward API
+    """`POD_TEMPLATE` reads AVAILABLE_CPUS/AVAILABLE_MEM from `limits`, and the downward API
     substitutes the NODE's allocatable for an empty limit -- so the container would be told
     it has the whole machine, and /dev/shm, sized from the same place, would turn an overrun
     into a SIGBUS with no reason attached."""
@@ -175,7 +175,7 @@ def test_an_oom_on_the_bootstrap_stops_the_campaign(monkeypatch):
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"oom_kills": 1}})
     with pytest.raises(CampaignConfigError, match="OOM-killed"):
-        r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+        r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 def test_heavy_throttling_on_the_bootstrap_stops_the_campaign(monkeypatch):
@@ -186,7 +186,7 @@ def test_heavy_throttling_on_the_bootstrap_stops_the_campaign(monkeypatch):
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"throttled_ratio": 0.4}})
     with pytest.raises(CampaignConfigError, match="throttled"):
-        r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+        r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 def test_a_calibrated_campaign_is_not_second_guessed(monkeypatch):
@@ -196,7 +196,7 @@ def test_a_calibrated_campaign_is_not_second_guessed(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"oom_kills": 5}})
-    r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")  # must not raise
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")  # must not raise
 
 
 def test_a_fixed_campaign_is_not_second_guessed(monkeypatch):
@@ -206,7 +206,7 @@ def test_a_fixed_campaign_is_not_second_guessed(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: {"sut": {"oom_kills": 5}})
-    r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 def test_an_unreadable_counter_is_not_a_verdict(monkeypatch):
@@ -215,7 +215,7 @@ def test_an_unreadable_counter_is_not_a_verdict(monkeypatch):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.node_calibration.read_probe_measurement",
         lambda *a, **k: (_ for _ in ()).throw(OSError("no storage")))
-    r._refuse_a_bootstrap_that_did_not_hold(object(), "b", "camp/", "j-0")
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
 # -- what the operator can read afterwards ---------------------------------------------
@@ -287,7 +287,7 @@ def test_the_main_container_takes_the_bootstrap_before_any_node_is_calibrated(mo
     waits for measured figures leaves the main container unsized for exactly the runs the
     bootstrap exists to carry.
 
-    An empty limit is not merely generous. JOB_TEMPLATE reads AVAILABLE_CPUS and
+    An empty limit is not merely generous. POD_TEMPLATE reads AVAILABLE_CPUS and
     AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the downward API substitutes the
     NODE's allocatable for an absent limit -- so the scenario sizes itself to the whole
     machine, and the probe measures a container that was never bounded. Measured on a
@@ -584,7 +584,7 @@ def _sweep_runner(monkeypatch, crashed, probes=None):
 
 
 def _sweep(runner):
-    return runner._fail_on_crashed_probes("a-label", "/campaign", object(), "b", "c/")
+    return runner._fail_on_crashed_probes("a-label", "/campaign")
 
 
 def test_a_probe_that_lost_a_container_fails_the_campaign(monkeypatch):
@@ -785,8 +785,7 @@ def test_a_probe_still_waiting_for_room_is_not_judged():
     r._probe_container_limits = lambda: {}
     r.get_remaining_jobs = lambda names: polled.append(list(names)) or []
 
-    r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
-                      bucket_name="b", campaign_prefix="c/")
+    r._collect_probes("/campaign")
     assert polled == [["probe-a"]], "the planned probe is never asked about"
 
 
@@ -805,8 +804,7 @@ def test_nothing_created_yet_polls_nothing():
                                         finished=lambda name: None)
     r.get_remaining_jobs = lambda names: (_ for _ in ()).throw(
         AssertionError("must not poll a probe that was never created"))
-    r._collect_probes(storage=types.SimpleNamespace(read_object=lambda *a: None),
-                      bucket_name="b", campaign_prefix="c/")
+    r._collect_probes("/campaign")
 
 
 # -- a campaign that measured its nodes is not on the bootstrap --------------------------
@@ -837,7 +835,7 @@ def test_the_bootstrap_guard_leaves_a_campaign_that_calibrated_alone():
     not using."""
     r = _bootstrap_guard_runner(["n1", "n2"])
     # Returns before reading any artifact: with nodes measured there is no bootstrap to judge.
-    r._refuse_a_bootstrap_that_did_not_hold(None, "bucket", "prefix/", "job-0")
+    r._refuse_a_bootstrap_that_did_not_hold("/campaign", "job-0")
 
 
 def test_it_still_guards_a_campaign_that_measured_nothing():
@@ -849,10 +847,9 @@ def test_it_still_guards_a_campaign_that_measured_nothing():
     r._probe_container_limits = lambda: {}
     r._container_percentiles = lambda: {}
     r._job_artifact_path = lambda i: f"j{i}"
-    # Reaches the read, which is where a real campaign would fetch counters; an unreadable
-    # one is not a verdict, so this returns rather than raising.
-    r._refuse_a_bootstrap_that_did_not_hold(
-        type("S", (), {"read_object": staticmethod(lambda *a: None)})(), "b", "p/", "job-0")
+    # Reaches the read, which is where a real campaign would read its counters; a file that
+    # is not there is not a verdict, so this returns rather than raising.
+    r._refuse_a_bootstrap_that_did_not_hold("/nonexistent-campaign", "job-0")
 
 
 def test_whether_calibration_applies_is_decided_once_for_the_campaign():

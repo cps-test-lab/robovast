@@ -39,9 +39,9 @@ MAIN_CONTAINER = "robovast"
 #: The main container's log file. Every reader of a job's log dir has to agree on which file is
 #: whose container, so the naming lives here with :data:`MAIN_CONTAINER` rather than in whichever
 #: lane needed it first -- the local tail reads these files directly, and the cluster lane reads
-#: the same names back out of the object store once a job has uploaded them. The names are written
-#: by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a property of the
-#: artifact rather than of a lane.
+#: the same names out of the campaign directory once a pod has delivered them. The names are
+#: written by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a
+#: property of the artifact rather than of a lane.
 MAIN_LOG = "system.log"
 
 _SIDECAR_PREFIX = "system_"

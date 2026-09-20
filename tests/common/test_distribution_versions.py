@@ -15,18 +15,21 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-#: Released together, so one version covers them.
+#: Released together, so one version covers them. ``robovast-sim-roqsim`` is here although
+#: it depends on nothing of ours: ``robovast`` names it as an extra at *exactly* the version
+#: being released (the publish workflow pins every path dependency that way), so a number of
+#: its own would be one the extra could never resolve.
 IN_STEP = (
     "pyproject.toml",
     "src/robovast_client/pyproject.toml",
     "src/robovast_nav/pyproject.toml",
     "src/robovast_cluster/pyproject.toml",
+    "src/robovast_sim_roqsim/pyproject.toml",
 )
 
-#: Versioned on its own, and able to be: it declares no dependency on ``robovast``, so
-#: nothing ties it to a RoboVAST release. Listed rather than skipped, so a new
-#: distribution has to be put in one column or the other on purpose.
-INDEPENDENT = ("src/robovast_sim_roqsim/pyproject.toml",)
+#: Versioned on its own. Empty, and listed rather than dropped, so a new distribution has
+#: to be put in one column or the other on purpose.
+INDEPENDENT = ()
 
 
 def _manifests():

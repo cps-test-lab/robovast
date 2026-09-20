@@ -85,7 +85,7 @@ def _staged(svc):
 
 def _prepare(svc, campaign_id):
     return retrigger.prepare(
-        svc._retrigger_source_dir(campaign_id), campaign_id,   # noqa: SLF001
+        str(svc.campaign_dir(campaign_id)), campaign_id,   # noqa: SLF001
         workspaces_root=svc.store.registry.root, description_limit=200,
         request_model=CreateCampaignRequest)
 
@@ -195,7 +195,7 @@ def test_a_build_free_campaign_is_not_blocked_by_the_preflight(svc, tmp_path):
                               "sut": "reg.example/sut:latest"}},
         launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
     report = retrigger.check(
-        svc._retrigger_source_dir("pilot-2026-08-08-120000"),   # noqa: SLF001
+        str(svc.campaign_dir("pilot-2026-08-08-120000")),   # noqa: SLF001
         "pilot-2026-08-08-120000")
     assert "images" not in report["blocking"]
     assert report["axes"]["images"]["reresolved"] == ["simulation", "sut"]

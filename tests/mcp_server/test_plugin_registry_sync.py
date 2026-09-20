@@ -70,8 +70,8 @@ _FORBIDDEN_NAMES = [
     "list_plugin_groups",      # -> list_plugins()
     "search_plugin",           # -> list_plugins(query=...)
     "list_running_campaigns",  # -> list_campaigns(running_only=True)
-    "campaign_data_status",    # -> describe_campaign_data(preflight_only=True)
-    "cleanup_campaign_data",   # -> delete_campaign(data_only=True)
+    "campaign_data_status",    # nothing transfers before a query, so nothing to probe
+    "cleanup_campaign_data",   # -> delete_campaign(): a campaign has one home
     # Nav: the stats variants became a flag on the tool that reads the same data, and the
     # data-model blurb moved into the docstrings of the tools it described.
     "nav_describe_data_model",
@@ -232,9 +232,8 @@ def _registered_tool_names():
 def _llm_facing_text() -> dict[str, str]:
     """Everything an LLM reads from this server, keyed by where it came from.
 
-    Deliberately not "every occurrence in the source": ``get_workspace``,
-    ``resource_usage`` and ``cleanup_campaign_data`` are live ``RobovastInterface``
-    methods that the tools call. Forbidding the *identifier* would forbid the code; what
+    Deliberately not "every occurrence in the source": ``get_workspace`` and
+    ``resource_usage`` are live ``RobovastInterface`` methods that the tools call. Forbidding the *identifier* would forbid the code; what
     must not survive is the retired name in text an LLM is given and will try to call.
     """
     server = create_server()
@@ -257,9 +256,9 @@ def _llm_facing_text() -> dict[str, str]:
     text["analyze prompt"] = prompts._SYSTEM_PROMPT
     text["run prompt"] = prompts._RUN_PROMPT
     # Only the tool-surface page. ``developer_guide.rst`` and ``architecture.rst``
-    # document ``RobovastInterface``, where ``get_workspace`` and
-    # ``cleanup_campaign_data`` are current method names — correct there, and a name
-    # that survives as a method is not a name an LLM is being offered as a tool.
+    # document ``RobovastInterface``, where ``get_workspace`` is a current method name
+    # — correct there, and a name that survives as a method is not a name an LLM is
+    # being offered as a tool.
     text["mcp.rst"] = (_DOCS_DIR / "mcp.rst").read_text(encoding="utf-8")
 
     # The skills this server ships. They are loaded verbatim into an agent's context and
@@ -689,8 +688,8 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #: budget as it stands.
 #:
 #: Where a response shape genuinely gates a decision, the pattern that already works is to put it
-#: on the *parameter that selects it* — ``summarize``, ``group_by_run`` and ``preflight_only`` each
-#: name their shape in ``Args:``, which is sent. That is the cheap half of the same fix, and it is
+#: on the *parameter that selects it* — ``summarize`` and ``group_by_run`` each name their
+#: shape in ``Args:``, which is sent. That is the cheap half of the same fix, and it is
 #: already done.
 _SURFACE_TOKEN_BUDGET = 15_500
 

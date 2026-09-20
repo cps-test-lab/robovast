@@ -37,6 +37,8 @@ OPTIONS:
     --compat-version VER    Highest container protocol this host speaks
     --min-compat-version V  Lowest container protocol this host still supports
     --provenance-file PATH  Mount dirname(PATH) at /provenance in the container (for provenance JSON output)
+    --input DIR             Mount DIR at /input. Without it, a last argument that is a
+                            directory is mounted there and replaced by /input.
     --cpus N                Cores the container may use, as a decimal count (e.g. 4, 2.5)
     --memory SIZE           Memory the container may use, in docker's spelling (e.g. 4g)
     -h, --help              Show this help message
@@ -48,6 +50,7 @@ EOF
 
 # Provenance mount (optional)
 PROVENANCE_MOUNT=()
+EXPLICIT_INPUT=""
 # What the container may use. Unset runs it uncontained, which is what a direct caller of this
 # script gets; the postprocessing plugin always passes both, so that the local lane holds a
 # conversion to the same figure the cluster lane reserves for it. The figure also reaches the
@@ -93,6 +96,14 @@ while [ $# -gt 0 ]; do
             LIMITS+=(--memory "$2")
             shift 2
             ;;
+        --input)
+            if [ ! -d "${2:-}" ]; then
+                echo "Error: --input requires an existing directory"
+                exit 1
+            fi
+            EXPLICIT_INPUT="$(cd "$2" && pwd)"
+            shift 2
+            ;;
         --provenance-file)
             if [ -z "${2:-}" ]; then
                 echo "Error: --provenance-file requires a path"
@@ -122,10 +133,14 @@ echo "Script directory: $SCRIPT_DIR"
 ARGS=("$@")
 LAST_ARG="${ARGS[${#ARGS[@]}-1]}"
 
-# Check if the last argument is a directory path
+# The input directory: named with --input, or else the last argument when it is a directory
 INPUT_MOUNT=()
 CONTAINER_INPUT_PATH=""
-if [ -d "$LAST_ARG" ]; then
+if [ -n "$EXPLICIT_INPUT" ]; then
+    CONTAINER_INPUT_PATH="/input"
+    INPUT_MOUNT=(-v "$EXPLICIT_INPUT:$CONTAINER_INPUT_PATH")
+    echo "Input directory: $EXPLICIT_INPUT"
+elif [ -d "$LAST_ARG" ]; then
     INPUT_DIR="$(cd "$LAST_ARG" && pwd)"
     CONTAINER_INPUT_PATH="/input"
     INPUT_MOUNT=(-v "$INPUT_DIR:$CONTAINER_INPUT_PATH")
@@ -152,8 +167,8 @@ if ! docker info >/dev/null 2>&1; then
     echo "  It runs a container directly, so it belongs on a machine with Docker -- not in"
     echo "  a cluster pod, where rosbag conversion runs as a Job instead."
     echo "  Reaching this from a campaign means the step was dispatched to the wrong lane:"
-    echo "  the in-pod pass must skip what the Job already does"
-    echo "  (results_processing.postprocessing.ROSBAG_JOB_NAMES)."
+    echo "  the in-pod pass must skip the steps that need the execution image, which the"
+    echo "  Job's image container already ran."
     exit 1
 fi
 

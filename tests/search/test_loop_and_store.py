@@ -51,8 +51,7 @@ class FakeBackend(ExecutionBackend):
     def __init__(self):
         self.batch_runs = []  # reps requested per run_batch call
 
-    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options,
-                  whole_campaign=False):
+    def run_batch(self, campaign_data, *, campaign_root, batch_tag, runs, options):
         self.batch_runs.append(runs)
         for i, cfg in enumerate(campaign_data["configs"]):
             failures = i % 2  # alternate failing / passing configs

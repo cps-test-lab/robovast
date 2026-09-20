@@ -1185,7 +1185,7 @@ function JobRow({
   // conversion itself -- and a pod log reader reports the containers that run for the pod's
   // whole life, so through the entire conversion the panel had nothing to show and said so.
   // The output is not missing: every container's, init ones included, is published to the
-  // campaign's POSTPROCESSING section as it runs, and that copy is in the object store, so it
+  // campaign's POSTPROCESSING section as it runs, and that copy is on the results volume, so it
   // is still there minutes later when `ttlSecondsAfterFinished` has taken the pod away --
   // which is exactly when someone reads a failed postprocess.
   if (postprocessing) return <CollapsibleBox {...header} collapsible={false} />

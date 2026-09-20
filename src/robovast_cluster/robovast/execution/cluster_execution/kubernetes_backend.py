@@ -21,8 +21,7 @@
 campaign as Kubernetes Jobs and leaves results at
 ``<campaign_root>/<config>/<run>/`` so the controller's scoring and store are
 backend-agnostic. It is meant to run **inside the controller pod**
-(a cluster campaign), where the storage backend is reachable directly and
-with full bandwidth.
+(a cluster campaign), on the service's own results volume.
 
 The job-manifest toolkit lives here in :class:`BatchJobRunner` (built only via
 :meth:`BatchJobRunner.for_batch`): it composes per-job Kubernetes manifests,
@@ -30,33 +29,28 @@ submits/polls/cleans up the Jobs, and writes the per-run job-link manifest.
 
 Per batch it:
 
-1. prepares the batch's config tree (reusing :func:`prepare_campaign_configs`
-   and the :class:`BatchJobRunner` manifest building),
-2. uploads it to the campaign's storage prefix (in-pod, via
-   :mod:`.in_pod_storage` — no ``kubectl``/archiver),
-3. creates one Kubernetes Job per packed job and waits for completion, then
-4. downloads that batch's per-config/run results, its job-artifact dir
-   (``_jobs/<batch_tag>/`` — ``sysinfo.yaml``, resource monitor, logs) **and** the
-   campaign-level snapshot (``_config``/``_transient``) back into ``campaign_root``,
-   materialises the per-run ``job`` symlinks, and records
-   ``_execution/execution.yaml``.
+1. prepares the batch's config tree straight into ``campaign_root`` (reusing
+   :func:`prepare_campaign_configs` and the :class:`BatchJobRunner` manifest building),
+2. creates one Kubernetes Job per packed job and waits for completion. Each Job's init
+   container fetches the campaign's inputs from the service's data plane as one tar
+   stream, and an uploader container delivers the pod's whole output tree back the same
+   way once every container of the pod is done -- so when a Job is complete its results
+   are already under ``campaign_root``; then
+3. materialises the per-run ``job`` symlinks and records ``_execution/execution.yaml``.
 
-Steps 1–4 leave ``campaign_root`` **complete** — the same shape a local
-(``DockerBackend``) run leaves — so the backend-agnostic analysis postprocessing
-and the canonical publish (:meth:`KubernetesBackend.finalize_campaign`) consume it
-identically. The object store is the source of truth; ``campaign_root`` is its
-projection (the same one the service's ``fetch_campaign`` reconstructs on re-run).
+That leaves ``campaign_root`` **complete** — the same shape a local (``DockerBackend``)
+run leaves — so the backend-agnostic analysis postprocessing consumes it identically.
+``campaign_root`` **is** the campaign: the results volume is its durable home.
 
-Each batch is isolated under a ``_batches/<batch_tag>/`` storage sub-prefix and
-uses batch-namespaced job names, so batches of one search campaign never
-collide. A ``_batch_tag`` of ``None`` selects the classic single-batch layout.
+Batches of one search campaign share the root and never collide, because the job
+names, ``<tag>.params.yaml`` and ``_jobs/<tag>`` are batch-namespaced by ``_job_tag``. A
+``_batch_tag`` of ``None`` selects the classic single-batch layout.
 """
 
 import copy
 import hashlib
 import logging
 import os
-import posixpath
 import re
 import shlex
 import tempfile
@@ -64,6 +58,7 @@ import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import yaml
 from kubernetes import client
@@ -84,19 +79,21 @@ from robovast.execution.backends import (CampaignConfigError, CampaignStopped, E
                                          RunOptions, ShareStopped)
 from robovast.execution.packer import build_jobs
 
-from . import in_pod_storage
+from . import pod_access, pod_upload
 from .cluster_context import resolve_resources
+from .admitted_jobs import AdmittedJobs, running_jobs
+from .campaign_job import apply_campaign_pod_policy, campaign_job_manifest, pin_campaign_job
 from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
-                                _label_safe_campaign, blocked_and_contended_reasons,
-                                previous_container_log, restarted_job_forensics)
+                                _label_safe_campaign,
+                                previous_container_log, resolve_pull_secret,
+                                restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
-from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL, JOB_TEMPLATE, MAIN_CONTAINER_NAME
-# Re-exported so the poll loop reads as prose: it consults these every two seconds, and an
-# import inside the loop would be noise. node_admission imports nothing from this package,
-# so there is no cycle to route around by importing late.
+from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAME,
+                        POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
+# node_admission imports nothing from this package, so there is no cycle to route around
+# by importing late.
 from .node_admission import CREATED as _ADMIT_CREATED
-from .node_admission import PLANNED as _ADMIT_PLANNED
-from .node_placement import job_node_pool, job_node_selector
+from .node_placement import job_node_pool
 
 logger = logging.getLogger(__name__)
 
@@ -107,32 +104,6 @@ logger = logging.getLogger(__name__)
 #: rather than an explicit list so one ``.vast`` key means the same thing here as on the
 #: Compose lane, which already writes exactly this.
 GPU_DRIVER_CAPABILITIES = "all"
-
-# How often (seconds) the result-download progress logger emits a running count.
-_DOWNLOAD_PROGRESS_INTERVAL = 5.0
-
-
-def _download_progress_logger(batch_tag, interval=_DOWNLOAD_PROGRESS_INTERVAL):
-    """Return a no-argument callback that logs the running download count.
-
-    Passed to ``StorageClient.download_prefix`` as ``on_file`` — it is called
-    once per fetched file and emits a throttled ``downloaded N so far`` line so a
-    large batch's projection shows progress instead of sitting silent. The count
-    is cumulative across the several ``download_prefix`` calls a search-mode batch
-    makes (the callback is shared), so the log reads as one continuous total.
-    """
-    state = {"count": 0, "last": time.monotonic()}
-
-    def on_file():
-        state["count"] += 1
-        now = time.monotonic()
-        if now - state["last"] >= interval:
-            state["last"] = now
-            logger.info("Batch %s: downloaded %d result file(s) so far...",
-                        batch_tag, state["count"])
-
-    return on_file
-
 
 def pull_policy_for(image_ref: str) -> str:
     """The ``imagePullPolicy`` a container running *image_ref* must carry.
@@ -180,23 +151,6 @@ def _instance_type_command(cluster_config) -> str | None:
         logger.debug("cluster config %s records no instance type",
                      type(cluster_config).__name__)
         return None
-
-
-def _s3_env(endpoint, bucket, access_key, secret_key, prefix) -> tuple:
-    """The credentials ``/tmp/s3_upload.sh`` reads at run time.
-
-    Given to the sidecars as well as the main container. A sidecar runs the same script
-    when its workload exits, because whatever it wrote after the main container's upload
-    -- the simulator's recording, and the tail of every sidecar log -- would otherwise die
-    with the pod's emptyDir.
-    """
-    return (
-        ('S3_ENDPOINT', endpoint),
-        ('S3_BUCKET', bucket),
-        ('S3_ACCESS_KEY', access_key),
-        ('S3_SECRET_KEY', secret_key),
-        ('S3_PREFIX', prefix),
-    )
 
 
 def _run_output_dir_env(job) -> tuple:
@@ -270,20 +224,25 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
       keeps the scenario's results out of the run tree;
     * ``OUTPUT_DIR``, which keeps the job artifacts -- the monitor CSVs this exists to read --
       out of it too;
+    * ``RUN_OUTPUT_DIR``, which keeps what a **sidecar** writes per run out of it: a
+      simulator's recording and pose record resolve against this variable and nothing else
+      (see :func:`_run_output_dir_env`), so a probe that inherited the job's value wrote the
+      simulator's records of the probe into ``/out/<config>/<run>`` -- a campaign result that no
+      trial produced, overwritten only if that run happened to be scheduled later;
     * :data:`TICK_LOG_FLAG` on :data:`SCENARIO_PARAMS_ENV` -- the one difference that adds
       something rather than isolating something, and the reason it is confined to the probe:
       it is per-tick instrumentation on the trial's hot path, and the run that has to be
       validated is the one deciding the allocation.
 
-    Both output overrides are needed: they govern different halves of what a job writes, and
-    changing only one leaves the probe writing into a real campaign run directory.
+    All three output overrides are needed: each governs a different part of what a job
+    writes, and changing fewer leaves the probe writing into a real campaign run directory.
 
     Rewritten across **every** container, not only the main one: the sidecars are handed the
     same extra env, and a sidecar still writing to the old ``OUTPUT_DIR`` would put the
     simulator's and the system under test's own CSVs -- the two that matter most here -- back
     into the run tree.
 
-    Beside those three, two pieces of **identity**, which no container reads and which
+    Beside those four, two pieces of **identity**, which no container reads and which
     therefore leave the measurement untouched:
 
     * the :data:`~.manifests.JOB_KIND_LABEL` label, on the Job and on the pod template, so
@@ -304,7 +263,8 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
     template_meta.setdefault("labels", {})[JOB_KIND_LABEL] = CALIBRATION_JOB_KIND
     template_meta.setdefault("annotations", {})["job-name-full"] = display_name
     spec = manifest["spec"]["template"]["spec"]
-    overrides = {"SCENARIO_PARAMETER_FILE": params_file, "OUTPUT_DIR": output_dir}
+    overrides = {"SCENARIO_PARAMETER_FILE": params_file, "OUTPUT_DIR": output_dir,
+                 "RUN_OUTPUT_DIR": output_dir}
     for container in list(spec.get("containers") or []) + list(spec.get("initContainers") or []):
         for entry in container.get("env") or []:
             if entry.get("name") in overrides and "value" in entry:
@@ -347,7 +307,7 @@ def _with_bootstrap(declared: dict, container_name: str = None, roles=()) -> dic
     node still being measured, and every job on a node whose probe was refused. Under
     ``sizing: fixed`` the declaration is always there and this returns it untouched.
 
-    **The limit is written explicitly, never left empty.** ``JOB_TEMPLATE`` reads
+    **The limit is written explicitly, never left empty.** ``POD_TEMPLATE`` reads
     ``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` from ``resourceFieldRef: limits.cpu`` /
     ``limits.memory``, and the downward API substitutes the NODE's allocatable for an empty
     limit -- so a container would be told it has the whole machine, and ``/dev/shm``, sized
@@ -506,7 +466,7 @@ def stamp_resources(spec: dict, resources: dict) -> None:
     a ceiling nothing reserves) or throttle a container that reserved room it is not allowed to
     use.
 
-    **Neither may be left empty.** ``JOB_TEMPLATE`` reads ``AVAILABLE_CPUS`` / ``AVAILABLE_MEM``
+    **Neither may be left empty.** ``POD_TEMPLATE`` reads ``AVAILABLE_CPUS`` / ``AVAILABLE_MEM``
     from ``resourceFieldRef: limits.cpu / limits.memory``, and the downward API substitutes the
     NODE's allocatable for an unset limit -- so a scenario would size itself to the whole
     machine and be wrong in a way that looks right.
@@ -620,8 +580,8 @@ class BatchJobRunner:
     """Build, submit and clean up the Kubernetes Jobs for **one** batch.
 
     Constructed only via :meth:`for_batch` from a pre-built ``campaign_data``
-    (the controller has already composed it). Runs in-pod: storage I/O is direct
-    (no archiver) and the Kubernetes client uses the in-cluster service account.
+    (the controller has already composed it). Runs in the service, whose results volume
+    holds the campaign; the Kubernetes client uses the in-cluster service account.
     Building manifests touches no API; only :meth:`run_batch_in_pod` does.
     """
 
@@ -726,7 +686,7 @@ class BatchJobRunner:
         self._sidecar_image = resolve_sidecar_image()
         self._registry_ca_file = None
         # ``None`` ⇒ classic single-batch layout; the controller sets
-        # a tag per search batch so jobs/param files/storage prefix don't collide.
+        # a tag per search batch so jobs, param files and `_jobs/<tag>` don't collide.
         self._batch_tag = batch_tag
 
         execution_params = campaign_data.get("execution", {}) or {}
@@ -826,21 +786,6 @@ class BatchJobRunner:
             elem = elem.replace(tmpl, str(idx))
         return elem
 
-    def _s3_settings(self):
-        """Return (endpoint, access_key, secret_key, bucket_name, campaign_prefix).
-
-        ``campaign_prefix`` is ``"<campaign>/"`` for shared-bucket backends
-        (e.g. GCS) and ``""`` for per-campaign buckets (embedded MinIO). It is the
-        flat campaign prefix — batches share it (no ``_batches/`` component); cross-
-        batch collisions are prevented by the batch-namespaced ``_job_tag`` (job
-        names, ``<tag>.params.yaml``, ``_jobs/<tag>``), so the layout matches local.
-        """
-        s3_endpoint = self.cluster_config.get_s3_endpoint()
-        s3_access_key, s3_secret_key = self.cluster_config.get_s3_credentials()
-        bucket_name, campaign_prefix = in_pod_storage.campaign_storage_location(
-            self.cluster_config, self.campaign)
-        return s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix
-
     def _job_tag(self, index: int) -> str:
         """Flat, slash-free job tag for job *index*, namespaced by the batch when set.
 
@@ -873,24 +818,25 @@ class BatchJobRunner:
 
     def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
                             sim_overlay=None, node_figures=None,
-                            total_jobs, s3_prefix, init_cmd, extra_main_env=()):
+                            total_jobs, init_cmd, extra_main_env=()):
         """Assemble a job manifest shared by single-config and packed jobs.
 
-        The two paths differ only in job naming, the S3 output prefix, the
-        initContainer mirror command, and a few extra env vars
-        (``extra_main_env``); everything else (volumes, the init container, the
-        main container env, secondary containers) is identical and lives here.
+        The two paths differ only in job naming, the initContainer fetch command, and
+        a few extra env vars (``extra_main_env``); everything else (volumes, the init
+        container, the main container env, the secondary containers, the uploader) is
+        identical and lives here.
         """
         job_manifest = copy.deepcopy(self.manifest)
 
-        label_safe_campaign = _label_safe_campaign(self.campaign)
-        self.replace_template(job_manifest, "$CAMPAIGN_ID", label_safe_campaign)
         self.replace_template(job_manifest, "$JOB_NAME", job_short_name)
         self.replace_template(job_manifest, "$JOB_FULL_NAME", job_full_name)
         self.replace_template(job_manifest, "$ITEM", item_tag)
         self.replace_template(job_manifest, "$TOTAL_JOB_NUM", str(total_jobs))
 
-        s3_endpoint, s3_access_key, s3_secret_key, bucket_name, campaign_prefix = self._s3_settings()
+        # How every container of this pod reaches the data plane: the address, the
+        # campaign id and the campaign's scoped token out of its Secret. Nothing else
+        # that reaches storage is ever in a pod.
+        access_env = pod_access.campaign_pod_env(self.namespace, self.campaign)
 
         spec = job_manifest['spec']['template']['spec']
         if node_figures or self._sizing_is_calibrated():
@@ -902,7 +848,7 @@ class BatchJobRunner:
             # `node_figures` alone is not the condition, and the difference is the whole
             # first job on every node: before anything is measured there are no figures, so
             # gating on them left the main container with NO resources at all rather than
-            # the bootstrap. An empty limit is not merely generous -- JOB_TEMPLATE reads
+            # the bootstrap. An empty limit is not merely generous -- POD_TEMPLATE reads
             # AVAILABLE_CPUS/AVAILABLE_MEM from `resourceFieldRef: limits.*`, and the
             # downward API substitutes the NODE's allocatable for an absent limit, so the
             # scenario sizes itself to the whole machine and the probe measures a container
@@ -943,37 +889,11 @@ class BatchJobRunner:
             if sized:
                 stamp_resources(spec['containers'][0], sized)
 
-        # Tolerate the taint a campaign node may carry, on the pod itself: nothing else
-        # injects it, and a deployment that taints its campaign nodes without it does not
-        # fail loudly -- its pods simply never place. Additive and idempotent, so it is
-        # safe to apply to a spec that already carries it.
-        from .node_placement import CAMPAIGN_NODE_TOLERATIONS  # noqa: PLC0415
-        existing = list(spec.get('tolerations') or [])
-        for toleration in CAMPAIGN_NODE_TOLERATIONS:
-            if dict(toleration) not in existing:
-                existing.append(dict(toleration))
-        spec['tolerations'] = existing
-
-        # Pull secret for an agent-built experiment image pushed to a private
-        # registry (see RegistryConfig). Only present when a registry with auth was
-        # configured at setup; a public/insecure registry needs none. Falls back to the
-        # well-known Secret setup creates when the env var naming it is absent — which is
-        # the normal case for an off-cluster service, since setup writes that name into the
-        # deployed pod's env (see ClusterService._resolve_registry_objects).
-        try:
-            pull_secret = self.cluster_config.get_registry_config().pull_secret_name
-            if not pull_secret:
-                from .service_deploy import REGISTRY_PUSH_SECRET_NAME
-                try:
-                    self.k8s_client.read_namespaced_secret(
-                        REGISTRY_PUSH_SECRET_NAME, self.namespace)
-                    pull_secret = REGISTRY_PUSH_SECRET_NAME
-                except client.exceptions.ApiException:
-                    pull_secret = ""
-        except Exception:  # noqa: BLE001 - registry config is optional
-            pull_secret = ""
-        if pull_secret:
-            spec['imagePullSecrets'] = [{'name': pull_secret}]
+        # The pull secret for an agent-built experiment image pushed to a private registry
+        # (see RegistryConfig), and the campaign nodes' toleration -- the same policy every
+        # admitted campaign Job carries.
+        apply_campaign_pod_policy(
+            spec, resolve_pull_secret(self.cluster_config, self.k8s_client, self.namespace))
 
         # Hosts the cluster's DNS cannot resolve (ROBOVAST_EXTRA_HOST_ALIASES). This
         # covers what the *pod* resolves; the image pull itself is the node's container
@@ -1010,20 +930,13 @@ class BatchJobRunner:
             {'name': 'tmp', 'emptyDir': {}},
         ]
 
-        init_env = [
-            {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
-            {'name': 'S3_BUCKET', 'value': bucket_name},
-            {'name': 'S3_ACCESS_KEY', 'value': s3_access_key},
-            {'name': 'S3_SECRET_KEY', 'value': s3_secret_key},
-            {'name': 'S3_CAMPAIGN_PREFIX', 'value': campaign_prefix},
-        ]
         spec['initContainers'] = [
             {
-                'name': 's3-init',
+                'name': 'fetch-inputs',
                 'image': self._sidecar_image,
                 'imagePullPolicy': pull_policy_for(self._sidecar_image),
                 'command': ['sh', '-c', init_cmd],
-                'env': init_env,
+                'env': list(access_env),
                 'volumeMounts': [
                     {'name': 'config', 'mountPath': '/config'}
                 ],
@@ -1053,11 +966,6 @@ class BatchJobRunner:
                     'name': str(name),
                     'value': "" if val is None else str(val)
                 })
-
-            # S3 env vars for entrypoint post-run upload
-            for k, v in _s3_env(s3_endpoint, bucket_name, s3_access_key,
-                                s3_secret_key, s3_prefix):
-                containers[0]['env'].append({'name': k, 'value': v})
 
             # Add PRE_COMMAND and POST_COMMAND if specified
             if self.pre_command:
@@ -1123,10 +1031,6 @@ class BatchJobRunner:
                 sc_backend_env.update(sim_overlay.get('env') or {})
             for key, value in sc_backend_env.items():
                 secondary_env.append({'name': key, 'value': value})
-            # So this sidecar can run /tmp/s3_upload.sh once its workload has exited.
-            for k, v in _s3_env(s3_endpoint, bucket_name, s3_access_key,
-                                s3_secret_key, s3_prefix):
-                secondary_env.append({'name': k, 'value': v})
             # The simulator's command is the one per-configuration thing in the plan: it
             # names the world. Everything else about this container -- image, resources,
             # packages -- stays campaign-level.
@@ -1169,10 +1073,35 @@ class BatchJobRunner:
                                          self._gpu_request(sc_resources, sc))
             if self.run_as_user is not None:
                 secondary_spec.setdefault('securityContext', {})['runAsUser'] = self.run_as_user
-            # Appended AFTER s3-init, which is an ordinary init container and therefore
-            # runs to completion first -- it is what populates /config, and a sidecar
-            # reads secondary_entrypoint.sh from there.
+            # Appended AFTER fetch-inputs, which is an ordinary init container and
+            # therefore runs to completion first -- it is what populates /config, and a
+            # sidecar reads secondary_entrypoint.sh from there.
             spec['initContainers'].append(secondary_spec)
+
+        # The uploader: one regular container that delivers the pod's whole /out to the
+        # campaign once every container of the pod has written its marker on /ipc. A
+        # regular container rather than a post-run step of each, so the tree is walked and
+        # sent once and a Job is complete only when its results are home -- the driver's
+        # wait loop reads a finished Job as delivered results. See `uploader_script`.
+        spec['containers'].append({
+            'name': pod_upload.UPLOADER_CONTAINER,
+            'image': self._sidecar_image,
+            'imagePullPolicy': pull_policy_for(self._sidecar_image),
+            'command': pod_upload.uploader_command(
+                self.campaign, [sc.name for sc in self.plan.sidecars]),
+            'env': list(access_env),
+            'resources': pod_upload.UPLOADER_RESOURCES,
+            'volumeMounts': [
+                {'name': 'out', 'mountPath': '/out'},
+                {'name': 'ipc', 'mountPath': '/ipc'},
+            ],
+        })
+        # A deadline or a stop TERMs every container at once; the uploader's handler
+        # delivers what /out holds within this window, so a hard-killed run still lands
+        # its evidence.
+        spec['terminationGracePeriodSeconds'] = max(
+            int(spec.get('terminationGracePeriodSeconds') or 0),
+            pod_upload.UPLOAD_TERMINATION_GRACE)
 
         return job_manifest
 
@@ -1181,7 +1110,7 @@ class BatchJobRunner:
 
         One K8s Job runs all the job's configs via a multi-document param file
         (the simulator is reset between them). ``/out`` is this pod's emptyDir shaped
-        as the campaign root, uploaded to the campaign prefix, so per-config
+        as the campaign root, delivered to the campaign once the pod is done, so per-config
         results land at ``<campaign>/<config>/<run>/`` via each document's
         ``_output_dir``. Job-level artifacts go to a per-job subdir, and each
         config's files are staged at ``/config/<deploy path>`` -- where the campaign's
@@ -1189,14 +1118,13 @@ class BatchJobRunner:
         that is running. The job's multi-document param file ships in ``_transient/``
         and so lands at ``/config/<job-tag>.params.yaml``.
         """
-        _, _, _, _, campaign_prefix = self._s3_settings()
         job_tag = self._job_tag(job.index)
         sim_overlay = self._sim_overlay(job)
         # The simulator's overrides document ships per job (``<job-tag>.sim.yaml``, unique
         # like the parameter file) but is READ at a fixed path, because a backend builds
         # its command before any job exists and argv cannot expand an environment
         # variable. Locally the two are reconciled by the bind mount's target; here the
-        # whole ``_transient/`` prefix is mirrored wholesale, so the reconciliation is this
+        # whole ``_transient/`` tree lands in ``/config``, so the reconciliation is this
         # one copy.
         sim_rename = (
             f"(cp /config/{job_tag}.sim.yaml {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
@@ -1209,33 +1137,21 @@ class BatchJobRunner:
         # knows exactly which paths are inputs, so they are named rather than filtered out
         # of a wholesale copy by a list that would have to grow with every new record.
         #
-        # After both campaign mirrors below, so a cell's copy lands on the campaign's; the
-        # packer keeps one file-owning configuration per job, so which copy wins is never
-        # in question (see `WorkItem.files_key`).
+        # Named on the inputs request as `config_file=<config>:<rel>`, and the data plane
+        # emits the cell's copy after the campaign's, so the later member wins on
+        # extraction; the packer keeps one file-owning configuration per job, so which copy
+        # wins is never in question (see `WorkItem.files_key`).
         staged = []
         for item in job.items:
             for deploy_rel, _src in (item.config.get("_config_files") or []):
                 entry = (item.config_name, deploy_rel)
                 if entry not in staged:
                     staged.append(entry)
-        per_config_stage = "".join(
-            f"(mkdir -p /config/{posixpath.dirname(rel)} && "
-            f"mc cp mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}{cn}/_config/{rel} "
-            f"/config/{rel} 2>/dev/null || true); "
-            for cn, rel in staged
-        )
+        query = "&".join(
+            "config_file=" + quote(f"{cn}:{rel}", safe="") for cn, rel in staged)
         init_cmd = (
-            f"mc alias set mystore \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && "
-            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_config/ /config/ && "
-            f"mc mirror mystore/$S3_BUCKET/${{S3_CAMPAIGN_PREFIX}}_transient/ /config/ && "
-            f"{per_config_stage}"
-            f"{sim_rename}"
-            f"for s3pfx in ${{S3_CAMPAIGN_PREFIX}}_config ${{S3_CAMPAIGN_PREFIX}}_transient; do "
-            f"mc find mystore/$S3_BUCKET/$s3pfx/ 2>/dev/null | while IFS= read -r obj; do "
-            f"mc stat --json \"$obj\" 2>/dev/null | grep -qi 'executable.*yes' && "
-            f"chmod +x \"/config/${{obj#mystore/$S3_BUCKET/$s3pfx/}}\" 2>/dev/null || true; "
-            f"done; done; true"
-        )
+            pod_access.fetch_command(f"/campaigns/{self.campaign}/inputs", "/config", query)
+            + " && " + (sim_rename.rstrip("; ") or "true"))
         extra_env = (
             ('SCENARIO_PARAMETER_FILE', f"/config/{job_tag}.params.yaml"),
             ('OUTPUT_RESULT_PER_SCENARIO', 'true'),
@@ -1250,7 +1166,6 @@ class BatchJobRunner:
             job_full_name=f"{self.campaign}-{job_tag}",
             item_tag=job_tag,
             total_jobs=total_jobs,
-            s3_prefix=campaign_prefix.rstrip("/"),
             init_cmd=init_cmd,
             extra_main_env=extra_env,
             sim_overlay=sim_overlay,
@@ -1288,8 +1203,8 @@ class BatchJobRunner:
         Empty for a campaign starting now -- the root is bare, so this is one ``isfile``
         miss per job and the batch behaves exactly as it always did. It is not empty for a
         campaign being **re-entered**: one whose driver a service restart took away, whose
-        root has been restored from the object store, and whose jobs are therefore about to
-        be planned a second time. Creating those again would re-run work that is finished
+        root the restarted service still holds, and whose jobs are therefore about to be
+        planned a second time. Creating those again would re-run work that is finished
         and overwrite its results.
 
         The verdict, not the presence of a job artifact directory: ``test.xml`` is the
@@ -1366,7 +1281,7 @@ class BatchJobRunner:
     def _probe_owner(self) -> str:
         return f"{self.campaign}{self._PROBE_OWNER_SUFFIX}"
 
-    def _start_probes(self, jobs, total_jobs, campaign_prefix):
+    def _start_probes(self, jobs, total_jobs):
         """Queue one calibration probe per uncalibrated node. Returns the calibration, or None.
 
         Each probe is **pinned** to the node it measures and runs at the DECLARED sizing --
@@ -1463,26 +1378,10 @@ class BatchJobRunner:
 
         The node is the one admission granted, or -- where nothing granted one: no queue, an
         unlabelled node -- the node the campaign is confined to, so a confined campaign's pod
-        is confined on every path that creates it. Both ANDed onto whatever the spec already
-        carried, through :func:`~.node_placement.job_node_selector`. The pool is the
-        operator's ``ROBOVAST_JOB_NODE_LABELS``, which is a pod ``nodeSelector``.
-
-        The pool must reach the pod, not just the accounting: the budget provider counts only
-        nodes inside it, so a pod free to land outside would be running on capacity nothing
-        reserved. The pin then narrows the pool rather than widening it -- a selector that
-        replaced the pool would defeat the very confinement it was placed inside.
+        is confined on every path that creates it. See
+        :func:`~.campaign_job.pin_campaign_job`.
         """
-        node_id = node_id or self._campaign_node_id()
-        pool = job_node_pool()
-        if not pool and not node_id:
-            # Nothing to confine. Returned untouched rather than reaching into the manifest:
-            # this is called unconditionally, and a caller with a minimal manifest (an offline
-            # emit, a test) would otherwise die on a key it never needed.
-            return manifest
-        spec = manifest.setdefault('spec', {}).setdefault(
-            'template', {}).setdefault('spec', {})
-        spec['nodeSelector'] = job_node_selector(spec.get('nodeSelector'), node_id, pool)
-        return manifest
+        return pin_campaign_job(manifest, node_id or self._campaign_node_id())
 
     def _create_probe(self, base, key, output_dir, node_id=None):
         """Create one probe Job. Signature matches the queue's create callback."""
@@ -1539,7 +1438,14 @@ class BatchJobRunner:
 
         return _sizing
 
-    def _refuse_a_bootstrap_that_did_not_hold(self, storage, bucket_name, prefix, job_name):
+    @staticmethod
+    def _campaign_reader(campaign_root):
+        """``rel -> bytes`` over the campaign root, the shape the probe readers take."""
+        def read(rel: str) -> bytes:
+            return Path(campaign_root, rel).read_bytes()
+        return read
+
+    def _refuse_a_bootstrap_that_did_not_hold(self, campaign_root, job_name):
         """Fail the campaign when a bootstrap-sized run hit a limit it never chose.
 
         **Only for a campaign running on the bootstrap**, which is `sizing: calibrated`
@@ -1574,10 +1480,10 @@ class BatchJobRunner:
         if index is None:
             return
         percentiles = self._container_percentiles()
-        job_prefix = f"{prefix}_jobs/{self._job_artifact_path(index)}/"
+        job_prefix = f"_jobs/{self._job_artifact_path(index)}/"
         try:
             measured = read_probe_measurement(
-                lambda k: storage.read_object(bucket_name, k), job_prefix,
+                self._campaign_reader(campaign_root), job_prefix,
                 self._probe_container_files(), limits=self._probe_container_limits(),
                 percentiles=percentiles)
         except Exception as exc:  # noqa: BLE001 - a counter we cannot read is not a verdict
@@ -1609,8 +1515,7 @@ class BatchJobRunner:
             f"Raise ROBOVAST_BOOTSTRAP_CPU / ROBOVAST_BOOTSTRAP_MEMORY for the role named "
             f"above, or set execution.sizing: fixed and declare what this campaign needs.")
 
-    def _fail_on_crashed_probes(self, job_label, campaign_root, storage, bucket_name,
-                                campaign_prefix) -> None:
+    def _fail_on_crashed_probes(self, job_label, campaign_root) -> None:
         """Fail the campaign when an outstanding probe lost a workload container.
 
         **The restart sweep the batch's own jobs get, asked about the probes too.** A probe
@@ -1662,8 +1567,7 @@ class BatchJobRunner:
             # the same reason as an invalidated job's.
             try:
                 self._capture_container_failures(entry, key, probe_output_dir(node_id), (),
-                                                 campaign_root, storage, bucket_name,
-                                                 campaign_prefix)
+                                                 campaign_root)
             except Exception as exc:  # noqa: BLE001 - a diagnostic must not raise
                 logger.warning("Batch %s: could not capture evidence for probe %s: %s",
                                self._batch_tag, key, exc)
@@ -1678,7 +1582,7 @@ class BatchJobRunner:
             node_id, detail = failed[0]
             raise self._probe_crash_error(node_id, detail, others=len(failed) - 1)
 
-    def _collect_probes(self, storage, bucket_name, campaign_prefix) -> None:
+    def _collect_probes(self, campaign_root) -> None:
         """Read whichever probes have finished, and let their nodes take work.
 
         Best-effort throughout: a probe that cannot be read leaves its node on the declared
@@ -1715,10 +1619,11 @@ class BatchJobRunner:
             admission.finished(key)
             if node_id is None:
                 continue
-            prefix = f"{campaign_prefix}{probe_output_dir(node_id)}/"
+            prefix = f"{probe_output_dir(node_id)}/"
+            read = self._campaign_reader(campaign_root)
             try:
                 measured = read_probe_measurement(
-                    lambda k: storage.read_object(bucket_name, k), prefix,
+                    read, prefix,
                     self._probe_container_files(), limits=self._probe_container_limits(),
                     percentiles=self._container_percentiles())
             except Exception as exc:  # noqa: BLE001 - see docstring
@@ -1728,9 +1633,8 @@ class BatchJobRunner:
             # The scenario's own verdict, not "did we read a file". The gate was handed
             # bool(measured) -- true of any probe that produced a CSV at all, which the
             # monitor writes whether or not the run got anywhere -- so it caught nothing.
-            completed = probe_completed(lambda k: storage.read_object(bucket_name, k), prefix)
-            tick = read_probe_tick_ratio(
-                lambda k: storage.read_object(bucket_name, k), prefix)
+            completed = probe_completed(read, prefix)
+            tick = read_probe_tick_ratio(read, prefix)
             if not calibration.record(node_id, key, measured, completed=completed,
                                       percentiles=self._container_percentiles(),
                                       tick_ratio=tick):
@@ -2091,6 +1995,23 @@ class BatchJobRunner:
             return []
         return [n for n in node_ids if calibration.calibrated(n) is None]
 
+    def _publish_space_wait(self, short) -> None:
+        """Put a wait for disk space on the campaign's ``stage``, and take it off again.
+
+        The queue's refusal reaches the campaign log already; the stage is what a person
+        watching the campaign reads, and a campaign that stopped starting Jobs has to say why
+        there. Cleared the moment the disk has room, so it never outlives the wait.
+        """
+        if self._state is None or short == getattr(self, "_space_wait_shown", None):
+            return
+        from .node_admission import DISK_WAIT  # noqa: PLC0415
+        self._space_wait_shown = short
+        try:
+            self._state.update(stage=f"{DISK_WAIT}{short}" if short else None)
+        except Exception:  # noqa: BLE001 - status reporting must not fail a batch
+            logger.debug("Could not publish the disk wait for batch %s", self._batch_tag,
+                         exc_info=True)
+
     def _publish_capacity_wait(self, waiting: bool) -> None:
         """Tell the status whether this batch is queued, if anyone is listening.
 
@@ -2210,39 +2131,12 @@ class BatchJobRunner:
         return JobSizing(cpu=cpu, memory=memory, gpu=gpu)
 
     def get_remaining_jobs(self, job_names):
-        """Which of *job_names* are still running. Same answer as before, one API call.
-
-        **Only ever pass names that were actually created.** A name absent from the listing
-        counts as finished -- which is right for a Job that was dropped or garbage-collected,
-        and catastrophically wrong for one that has not been created yet: under admission
-        every planned job would read as done and the batch would "finish" with zero results,
-        silently. The caller keeps planned and created apart for exactly this reason.
-
-        One ``list`` rather than a status read per name: at ``runs_per_job: 1`` a campaign has
-        ~1435 jobs and this loop runs every two seconds, so the per-name version was the
-        dominant API cost of a large batch.
+        """Which of *job_names* are still running, in one listing. See
+        :func:`~.admitted_jobs.running_jobs`; a Job its deadline killed is named on the way.
         """
-        wanted = set(job_names)
-        if not wanted:
-            return []
         label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
-        listing = self.k8s_batch_client.list_namespaced_job(namespace=self.namespace,
-                                                            label_selector=label)
-        by_name = {j.metadata.name: j for j in listing.items if j.metadata.name in wanted}
-        running_jobs = []
-        for job_name in job_names:
-            job = by_name.get(job_name)
-            if job is None:
-                # Gone: finished and garbage-collected, or cleaned up. Either way not running.
-                logger.debug("Job %s not in the listing; treating as finished.", job_name)
-                continue
-            status = job.status
-            self._log_if_deadline_killed(job_name, status)
-            if status.active is not None and status.active >= 1:
-                running_jobs.append(job_name)
-            elif status.completion_time is None and (status.failed is None or status.failed == 0):
-                running_jobs.append(job_name)
-        return running_jobs
+        return running_jobs(self.k8s_batch_client, self.namespace, label, job_names,
+                            on_status=self._log_if_deadline_killed)
 
     def _log_if_deadline_killed(self, job_name, status):
         """Emit a clear, greppable WARNING the first time *job_name* is seen to have
@@ -2336,9 +2230,15 @@ class BatchJobRunner:
 
         logger.debug(f"Using run_as_user={run_as_user} for job containers")
 
-        yaml_str = JOB_TEMPLATE.format(image=image, namespace=self.namespace,
-                                       pull_policy=pull_policy_for(image))
-        manifest = yaml.safe_load(yaml_str)
+        # The per-job values stay placeholders here, stamped on each Job built from this
+        # (`_build_job_manifest`); the campaign's own values are known now.
+        manifest = campaign_job_manifest(
+            name="$JOB_NAME", namespace=self.namespace, jobgroup="scenario-runs",
+            campaign_id=self.campaign, ttl_seconds=SCENARIO_JOB_TTL_SECONDS,
+            annotations={"total-job-num": "$TOTAL_JOB_NUM"},
+            pod_name="scenario-runs", pod_annotations={"job-name-full": "$JOB_FULL_NAME"},
+            pod_spec=yaml.safe_load(POD_TEMPLATE.format(
+                image=image, pull_policy=pull_policy_for(image))))
 
         # No queue-membership label, deliberately: this Job is admitted by RoboVAST's own
         # controller (node_admission.AdmissionController), which creates it only once the
@@ -2823,8 +2723,7 @@ class BatchJobRunner:
     # -- in-pod execution ---------------------------------------------------
 
     def _invalidate_restarted_jobs(self, job_label, job_names, jobs_by_name,
-                                   campaign_root, storage, bucket_name,
-                                   campaign_prefix) -> None:
+                                   campaign_root) -> None:
         """Drop every job of this batch whose container crashed and was restarted.
 
         The response to a restart, and the whole of it. Each job is recorded in the
@@ -2834,8 +2733,8 @@ class BatchJobRunner:
         finish, the cell scores over the samples it has left, and a cell that lost all of
         them degrades to ``no_sample``, which the search loop already handles.
 
-        Order matters and is the same as ``stop_job``'s: record, publish, *then* delete. The
-        pod dies asynchronously and takes its evidence with it.
+        Order matters and is the same as ``stop_job``'s: record, *then* delete. The pod
+        dies asynchronously and takes its evidence with it.
         """
         try:
             restarted = restarted_job_forensics(self.k8s_client, self.namespace,
@@ -2846,12 +2745,10 @@ class BatchJobRunner:
             return
         for job_name, entry in sorted(restarted.items()):
             self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
-                           campaign_root=campaign_root, storage=storage,
-                           bucket_name=bucket_name, campaign_prefix=campaign_prefix,
-                           forensics=entry)
+                           campaign_root=campaign_root, forensics=entry)
 
-    def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name, campaign_root,
-                           storage, bucket_name, campaign_prefix) -> None:
+    def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name,
+                           campaign_root) -> None:
         """Drop the jobs of this batch whose pod never started, once their grace is spent.
 
         The counterpart of :meth:`_invalidate_restarted_jobs` for the other way a job can
@@ -2864,12 +2761,10 @@ class BatchJobRunner:
         """
         for job_name in sorted(expired):
             self._drop_job(job_name, f"pod never started -- {reasons_by_job[job_name]}",
-                           jobs_by_name=jobs_by_name, campaign_root=campaign_root,
-                           storage=storage, bucket_name=bucket_name,
-                           campaign_prefix=campaign_prefix)
+                           jobs_by_name=jobs_by_name, campaign_root=campaign_root)
 
-    def _drop_job(self, job_name, detail, *, jobs_by_name, campaign_root, storage,
-                  bucket_name, campaign_prefix, forensics=None) -> None:
+    def _drop_job(self, job_name, detail, *, jobs_by_name, campaign_root,
+                  forensics=None) -> None:
         """Discard one job of this batch, record why, and let the batch drain around it.
 
         The single response to a job that cannot deliver a usable trial, whichever way it
@@ -2881,8 +2776,8 @@ class BatchJobRunner:
         samples it has left, and a cell that lost all of them degrades to ``no_sample``,
         which the search loop already handles.
 
-        Order matters and is the same as ``stop_job``'s: record, publish, *then* delete.
-        The pod dies asynchronously and takes its evidence with it.
+        Order matters and is the same as ``stop_job``'s: record, *then* delete. The pod
+        dies asynchronously and takes its evidence with it.
 
         *forensics* is the restart record whose container logs must be captured before the
         pod is collected; a job whose pod never started has none and passes ``None``.
@@ -2905,8 +2800,7 @@ class BatchJobRunner:
         if forensics is not None:
             try:
                 self._capture_container_failures(forensics, job_name, job_dir, runs,
-                                                 campaign_root, storage, bucket_name,
-                                                 campaign_prefix)
+                                                 campaign_root)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Batch %s: could not capture evidence for %s: %s",
                                self._batch_tag, job_name, exc)
@@ -2914,8 +2808,6 @@ class BatchJobRunner:
             record_intervention(
                 Path(campaign_root), kind=KIND_INVALID, job_dir=job_dir,
                 job_name=job_name, source="runner", detail=detail, runs=runs)
-            self._publish_execution_file(storage, campaign_root, bucket_name,
-                                         campaign_prefix, "interventions.json")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Batch %s: could not record the invalidation of %s: %s",
                            self._batch_tag, job_name, exc)
@@ -2935,8 +2827,8 @@ class BatchJobRunner:
             if exc.status != 404:
                 raise
 
-    def _capture_container_failures(self, entry, job_name, job_dir, runs, campaign_root,
-                                    storage, bucket_name, campaign_prefix) -> None:
+    def _capture_container_failures(self, entry, job_name, job_dir, runs,
+                                    campaign_root) -> None:
         """Write what the dead containers of *job_name* died of, before the pod is gone.
 
         The one artifact with a deadline. A restarted container's previous log lives only
@@ -2944,10 +2836,6 @@ class BatchJobRunner:
         Job is deleted -- so this is the last point at which the question "why did it die?"
         can still be answered at all. The campaign that motivated this had it answered by a
         single formatted sentence, hours later, with the pod long collected.
-
-        Published immediately rather than left for ``finalize_campaign``: search-mode
-        postprocessing runs per batch, and a campaign that ends by being stopped never
-        finalizes at all.
         """
         records = []
         for container in entry.get("containers") or ():
@@ -2969,47 +2857,29 @@ class BatchJobRunner:
             })
             records.append(record)
         record_container_failures(Path(campaign_root), records)
-        self._publish_execution_file(storage, campaign_root, bucket_name, campaign_prefix,
-                                     "container_failures.json")
 
-    def _publish_execution_file(self, storage, campaign_root, bucket_name,
-                                campaign_prefix, filename) -> None:
-        """Push one ``_execution/`` file to the object store now, best-effort.
+    def run_batch_in_pod(self, campaign_root: str, token: str):
+        """Run one batch; its results land under *campaign_root* as the Jobs finish.
 
-        The argument order this class already has, over the one definition of where such
-        a file lands (:func:`in_pod_storage.publish_execution_file`).
+        *token* is the campaign's scoped data-plane token, minted by the service; it goes
+        into the campaign's Secret here, before the first Job that needs it exists.
         """
-        in_pod_storage.publish_execution_file(storage, bucket_name, campaign_prefix,
-                                              campaign_root, filename)
-
-    def run_batch_in_pod(self, campaign_root: str, whole_campaign: bool = False):
-        """Upload, run and download one batch; this batch's results and the
-        campaign-level snapshot (``_config``/``_transient``) land under *campaign_root*.
-
-        ``whole_campaign`` is set in batch mode, where this batch *is* the entire
-        campaign: the prefix holds no other batch's artifacts, so the results can be
-        fetched with a single prefix download instead of the per-config enumeration
-        that search mode needs to scope ``_jobs/`` to the current batch."""
         self._ensure_k8s_initialized()
-        # Before anything is uploaded, probed or created: a job node alias that names no
+        # Before anything is staged, probed or created: a job node alias that names no
         # usable node refuses the campaign here, so no Job of it ever exists.
         self._campaign_node_id()
-        _, _, _, bucket_name, campaign_prefix = self._s3_settings()
-        storage = in_pod_storage.storage_client_for(self.cluster_config)
 
-        # 1. Prepare this batch's config tree + per-job parameter files.
-        with tempfile.TemporaryDirectory(prefix="robovast_batch_") as out_dir:
-            prepare_campaign_configs(
-                out_dir, self.campaign_data, cluster=True,
-                instance_type_command=_instance_type_command(self.cluster_config))
-            self._write_job_param_files(out_dir, campaign_root)
+        # 1. Prepare this batch's config tree + per-job parameter files, straight into the
+        #    campaign root: that is what the Jobs' init containers fetch, and the campaign
+        #    root is the campaign.
+        prepare_campaign_configs(
+            campaign_root, self.campaign_data, cluster=True,
+            instance_type_command=_instance_type_command(self.cluster_config))
+        self._write_job_param_files(campaign_root, campaign_root)
+        pod_access.ensure_campaign_secret(self.k8s_client, self.namespace, self.campaign,
+                                          token)
 
-            # 2. Upload to the batch's storage prefix (job init containers mirror from here).
-            n = storage.upload_dir(out_dir, bucket_name, campaign_prefix)
-            logger.info("Batch %s: uploaded %d config file(s) to %s/%s",
-                        self._batch_tag, n, bucket_name, campaign_prefix)
-
-        # 3. Build and submit one Job per packed job, then wait.
+        # 2. Build and submit one Job per packed job, then wait.
         # The up-front "can these jobs ever be admitted?" check is admission.preflight()
         # below: it asks whether the request fits any node's allocatable, which is the
         # question, asked of the cluster directly.
@@ -3061,29 +2931,30 @@ class BatchJobRunner:
                 else:
                     raise
 
+        from functools import partial  # noqa: PLC0415
+
         admission = self.admission
+        job_label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
+        tracker = AdmittedJobs(
+            admission=admission, owner=self.campaign, batch_api=self.k8s_batch_client,
+            core_api=self.k8s_client, namespace=self.namespace, label_selector=job_label,
+            blocked_grace=self._BLOCKED_GRACE_SECONDS,
+            contended_grace=self._CONTENDED_GRACE_SECONDS,
+            list_remaining=self.get_remaining_jobs)
         if not pending:
             # Every job this batch plans already has its results. Nothing to create and
             # nothing to queue -- and nothing to probe for either: calibration measures
             # nodes in order to place work on them, and there is none to place.
-            created_names = []
-            planned_count = 0
             logger.info("Batch %s: all %d job(s) already finished in an earlier life of "
                         "this campaign; waiting on nothing.", self._batch_tag, total_jobs)
         elif admission is None:
-            # No queue: create everything at once, exactly as before. This is the path every
-            # offline caller and every existing test takes.
-            for job, name in pending:
-                # Unpinned: without a queue nothing has reserved a node, so choosing one here
-                # would be a guess the scheduler is better placed to make.
-                _create_job(job, name)
-            created_names = [name for _, name in pending]
-            planned_count = 0
+            # No queue: create everything at once. This is the path every offline caller
+            # and every existing test takes.
+            tracker.submit((name, None, partial(_create_job, job, name))
+                           for job, name in pending)
             logger.info("Batch %s: created %d of %d job(s); waiting for completion...",
-                        self._batch_tag, len(created_names), len(job_names))
+                        self._batch_tag, len(pending), len(job_names))
         else:
-            from functools import partial  # noqa: PLC0415
-
             from .node_admission import AdmissionRefused, campaign_start_key  # noqa: PLC0415
 
             sizing = self._job_sizing(jobs[0], total_jobs)
@@ -3100,35 +2971,26 @@ class BatchJobRunner:
             # exists, rather than re-derived from position later -- creation order varies
             # under admission and an index recovered by counting would be wrong.
             self._job_index_by_name = {n: j.index for j, n in zip(jobs, job_names)}
-            calibration = self._start_probes(jobs, total_jobs, campaign_prefix)
+            calibration = self._start_probes(jobs, total_jobs)
             # A confined campaign is pinned to its node and does NOT reserve it: it always
             # has another job queued, so a claim would renew for its whole life and shut
             # every lower-ranked campaign out of that node. See WorkItem.reserves.
             confinement = ({"pin": campaign_node, "reserves": False}
                            if campaign_node is not None else {})
-            admission.submit(
-                self.campaign,
-                [(name, sizing, partial(_create_job, job, name))
-                 for job, name in pending],
+            tracker.submit(
+                ((name, sizing, partial(_create_job, job, name)) for job, name in pending),
                 started_at=campaign_start_key(self.campaign),
                 sizing_for_node=self._sizing_for_node(jobs[0], total_jobs, calibration),
                 accepts_node=(calibration.accepts_work if calibration else None),
                 **confinement)
-            created_names = []
-            planned_count = len(pending)
             logger.info("Batch %s: queued %d of %d job(s) for admission; creating as "
-                        "room appears...", self._batch_tag, planned_count, len(job_names))
+                        "room appears...", self._batch_tag, len(pending), len(job_names))
         # Job name -> its planned work, so a restart can be resolved to the runs it ruins
         # and to the artifact dir the ledger keys on. Built here and NOT read back from
         # ``_transient/job_links.yaml``: that manifest is downloaded after this loop
         # (`_write_job_links`), so on the first batch it does not exist yet.
         jobs_by_name = dict(zip(job_names, jobs))
 
-        job_label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(self.campaign)}"
-        # Per job, not per batch: two jobs can be blocked for different reasons, become
-        # blocked at different moments, and deserve different tolerances. One shared
-        # timer answered for all of them and so had to pick the shortest.
-        blocked_since: "dict[str, float]" = {}
         last_blocked_log = 0.0
         # Per owner, so the campaign's own refusal and its probes' cannot starve each other
         # out of the rate limit: they are refused for different reasons at different moments,
@@ -3139,75 +3001,44 @@ class BatchJobRunner:
                 raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
                                       f"{self._batch_tag}")
             if admission is not None:
-                # **Probes first, then the drain.** A node is held while its probe is out and
-                # freed the moment that probe reports -- per node, so one finishing does not
-                # wait for the others. Draining first spent that freedom on the NEXT poll
-                # instead of this one, leaving a measured node idle for a cycle for no reason.
-                # Collecting first means a node calibrated in this pass takes work in this
-                # pass.
+                # **Probes first, then the drain** (in `poll`). A node is held while its
+                # probe is out and freed the moment that probe reports -- per node, so one
+                # finishing does not wait for the others. Draining first spent that freedom
+                # on the NEXT poll instead of this one, leaving a measured node idle for a
+                # cycle for no reason.
                 # **Asked before the probes are read, not after.** Both questions are
                 # about the same pod, and the one that gets there first decides what the
                 # campaign reports: a crashed probe's fragment reads as a bad measurement,
                 # so collecting first ends the campaign naming a statistic and hiding the
                 # container that died.
-                self._fail_on_crashed_probes(job_label, campaign_root, storage,
-                                             bucket_name, campaign_prefix)
-                self._collect_probes(storage, bucket_name, campaign_prefix)
-                # Works the GLOBAL queue, so this may create another campaign's jobs too --
-                # that is what makes the ordering cluster-wide while keeping the queue
-                # thread-free.
-                admission.drain()
-                states = admission.states(self.campaign)
-                created_names = [n for n, st in states.items() if st == _ADMIT_CREATED]
-                planned_count = sum(1 for st in states.values() if st == _ADMIT_PLANNED)
-            remaining = self.get_remaining_jobs(created_names)
+                self._fail_on_crashed_probes(job_label, campaign_root)
+                self._collect_probes(campaign_root)
+            # Deleting a Job is asynchronous, so one already dropped keeps reporting itself
+            # blocked for a poll or two; its timer must not expire again.
+            rnd = tracker.poll(ignore_blocked=self._invalidated or ())
+            remaining, planned_count = rnd.remaining, rnd.planned
             if admission is not None:
-                # Release the reservation of anything that has finished, so the capacity it
-                # held is spendable again on the next drain.
-                for name in set(created_names) - set(remaining):
-                    admission.finished(name)
-                    self._refuse_a_bootstrap_that_did_not_hold(
-                        storage, bucket_name, campaign_prefix, name)
-            if not remaining and not planned_count:
+                # What the drain in `poll` found about space, published as it does.
+                self._publish_space_wait(admission.space_shortfall())
+            if admission is not None:
+                for name in rnd.done:
+                    self._refuse_a_bootstrap_that_did_not_hold(campaign_root, name)
+            if rnd.over:
                 # Cleared on the way out, not left to the next batch's first probe: between
                 # those two moments the campaign is still in `running`, and a flag that
                 # outlived its wait would suppress a verdict for a batch that is not queued
                 # at all. Same failure `stage` had before a phase change learned to clear it.
                 self._publish_capacity_wait(False)
                 break
-            # A Job whose pod can't start (bad/missing image, no pull creds, ...) stays
-            # "active" with a Pending pod forever, so this loop would otherwise spin
-            # indefinitely with no progress. Detect it and, once its grace window is
-            # spent, fail the batch with Kubernetes' own message so the campaign reports
-            # *why* instead of hanging. How long that window is depends on what the pod
-            # is waiting for -- see below.
-            try:
-                blocked, contended = blocked_and_contended_reasons(
-                    self.k8s_client, self.namespace, job_label)
-                # The label selector is campaign-wide and finished Jobs linger for
-                # ``ttlSecondsAfterFinished``, so scope the answer to THIS batch --
-                # the same reason ``restarted_job_forensics`` takes ``job_names``.
-                # Without it an earlier batch's job could be counted against this
-                # one's tally, which is what decides config fault vs cluster.
-                # CREATED names, not planned ones: a job that does not exist cannot be
-                # blocked, and counting it in the whole-batch tally below would fail a
-                # healthy campaign the moment its first job stalled while the rest were
-                # still queued.
-                blocked = {k: v for k, v in blocked.items() if k in set(created_names)}
-                contended = {k: v for k, v in contended.items() if k in blocked}
-            except Exception as exc:  # noqa: BLE001 - probe failed this iteration
-                # Could not check pods this cycle. Treat as "unknown", NOT as
-                # "nothing blocked": clearing blocked_since here would silently reset
-                # the grace timer and let a truly blocked batch hang until the
-                # deadline hard-kill. Keep any existing blocked state and retry.
+            if rnd.blocked is None:
+                # Could not check pods this cycle: "unknown", and the grace timers stand.
                 logger.warning("Batch %s: could not check for blocked jobs: %s",
-                               self._batch_tag, exc)
-                blocked, contended = None, {}
+                               self._batch_tag, rnd.blocked_error)
+            blocked, contended = rnd.blocked, rnd.contended
             # Publish whether this batch can run at all. A reader cannot judge a per-run
             # deadline while every job is queued for capacity, and only this loop knows.
             # Written every cycle, including the False case, so the flag never outlives the
-            # wait that set it -- the failure `stage` had, where a marker true once was
-            # still being reported long after.
+            # wait that set it.
             waiting = all_jobs_waiting_for_capacity(remaining, contended)
             if admission is not None and planned_count and not remaining:
                 # A fact the queue holds, not something inferred from pods that do not exist:
@@ -3215,32 +3046,15 @@ class BatchJobRunner:
                 waiting = True
             self._publish_capacity_wait(waiting)
             if blocked:
+                # A Job whose pod can't start (bad/missing image, no pull creds, ...) stays
+                # "active" with a Pending pod forever. Once its grace window is spent the
+                # batch fails with Kubernetes' own message, so the campaign reports *why*
+                # instead of hanging. The window depends on what the pod waits for: a pod
+                # waiting its turn for a node or an image pull starts by itself, anything
+                # else looks the same in ten minutes as in one (AdmittedJobs).
                 now = time.monotonic()
                 reasons = "; ".join(sorted(set(blocked.values())))
-                # Two tolerances, because "cannot start" covers two different futures.
-                # A pod waiting its turn starts by itself: for a node, once the neighbour
-                # holding the capacity finishes; for an image, once the pull the kubelet
-                # is rate-limiting comes up its queue. Both appear when several campaigns
-                # run at once and never when one does, and failing either on the
-                # registry-blip timer threw away campaigns for the very conditions that
-                # recover. Anything else here (an image that does not exist, a request no
-                # node can hold) looks the same in ten minutes as in one, and still gets
-                # the short timer.
-                fresh = [job for job in blocked if job not in blocked_since]
-                for job in fresh:
-                    blocked_since[job] = now
-                for job in [j for j in blocked_since if j not in blocked]:
-                    del blocked_since[job]      # it started after all
-                # Deleting a Job is asynchronous, so one already dropped keeps reporting
-                # itself blocked for a poll or two; skipping it here keeps the timers and
-                # the log honest without a second pass through `_drop_job`.
-                dropped = self._invalidated or ()
-                expired = [job for job, since in blocked_since.items()
-                           if job not in dropped
-                           and now - since >= (self._CONTENDED_GRACE_SECONDS
-                                               if job in contended
-                                               else self._BLOCKED_GRACE_SECONDS)]
-                if fresh:
+                if rnd.fresh:
                     last_blocked_log = now
                     logger.warning(
                         "Batch %s: %d of %d job(s) cannot start%s: %s",
@@ -3254,9 +3068,9 @@ class BatchJobRunner:
                     last_blocked_log = now
                     logger.warning("Batch %s: %d of %d job(s) still cannot start after "
                                    "%.0fs: %s", self._batch_tag, len(blocked),
-                                   len(job_names), now - min(blocked_since.values()),
-                                   reasons)
-                if expired:
+                                   len(job_names),
+                                   now - min(tracker.blocked_since.values()), reasons)
+                if rnd.expired:
                     # The whole batch, or part of it — and that is the whole distinction.
                     # Every job of a batch runs the same images with the same reservation,
                     # so a cause that lives in the CONFIGURATION blocks all of them: a
@@ -3280,11 +3094,8 @@ class BatchJobRunner:
                             f"and its pull credentials, an Unschedulable one at a "
                             f"reservation no node can satisfy (the message above names "
                             f"it).")
-                    self._drop_blocked_jobs(expired, blocked, jobs_by_name, campaign_root,
-                                            storage, bucket_name, campaign_prefix)
-            elif blocked is not None:
-                # A successful probe that found nothing blocked clears the timers.
-                blocked_since.clear()
+                    self._drop_blocked_jobs(rnd.expired, blocked, jobs_by_name,
+                                            campaign_root)
             # No grace period, deliberately: unlike a blocked pod, a restart has already
             # happened. The container lost its state, so every extra second spent waiting
             # buys a more convincing wrong answer rather than a chance of recovery.
@@ -3294,14 +3105,8 @@ class BatchJobRunner:
             # had already finished. The trial is what the restart invalidates; the batch
             # around it is fine and the batches after it were never in question. So: drop
             # that job, record why, and keep going.
-            self._invalidate_restarted_jobs(
-                job_label, job_names, jobs_by_name, campaign_root,
-                storage, bucket_name, campaign_prefix)
-            # blocked is None (probe failed) => leave blocked_since unchanged.
-            # Nothing suspends a Job, so the pod-based probe above is not blind to a
-            # waiting job: a job that has not been created yet is PLANNED in the
-            # controller, which _publish_capacity_wait reads directly rather than inferring
-            # from a pod that does not exist.
+            self._invalidate_restarted_jobs(job_label, job_names, jobs_by_name,
+                                            campaign_root)
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             if admission is not None and (planned_count or self._probes):
@@ -3341,9 +3146,7 @@ class BatchJobRunner:
         # The loop breaks on an empty `remaining` BEFORE probing, so a restart in the last
         # job's last seconds is otherwise never seen. The pods are still here -- cleanup
         # runs at the end of this method -- so ask once more.
-        self._invalidate_restarted_jobs(
-            job_label, job_names, jobs_by_name, campaign_root,
-            storage, bucket_name, campaign_prefix)
+        self._invalidate_restarted_jobs(job_label, job_names, jobs_by_name, campaign_root)
         if self._invalidated and len(job_names) > 1 and \
                 len(self._invalidated) >= len(job_names):
             # Every job of a multi-job batch dropped is not a flake, it is a fault they
@@ -3367,62 +3170,12 @@ class BatchJobRunner:
                 self._batch_tag, len(self._deadline_killed), self._deadline_seconds,
                 ", ".join(sorted(self._deadline_killed)))
 
-        # 4. Project this batch's results — and the campaign-level snapshot — from
-        #    the object store into the campaign root, so the host campaign is
-        #    complete (matching a local run and the service's fetch_campaign).
-        os.makedirs(campaign_root, exist_ok=True)
-        # A large batch's download is otherwise silent between "all jobs finished"
-        # and the final "downloaded N" line — potentially minutes on hundreds of
-        # files. Announce the start and log a running count every few seconds so
-        # the campaign log shows progress instead of appearing hung.
-        logger.info("Batch %s: downloading result files from object store...",
-                    self._batch_tag)
-        on_file = _download_progress_logger(self._batch_tag)
-        # The 3s run-progress poller lists the whole campaign prefix over this same
-        # (off-cluster) storage tunnel; pause it for the duration of the download so
-        # the transfer runs uncontended. Resumed in the finally so a download error
-        # (or an early return) can never leave the poller permanently off.
-        got = 0
-        if self._state is not None:
-            self._state.suspend_progress()
-        try:
-            if whole_campaign:
-                # Batch mode: this batch *is* the whole campaign, so the prefix holds
-                # nothing but its own artifacts. One prefix download does a single
-                # paginated list instead of one list per config — the per-config
-                # enumeration below costs 600+ sequential list calls on a large batch,
-                # during which the campaign sits in "running" with no progress.
-                got = storage.download_prefix(bucket_name, campaign_prefix, campaign_root,
-                                              on_file=on_file)
-            else:
-                # Search mode: the campaign prefix is flat/shared across batches, so we
-                #    fetch by name: this batch's <config>/ dirs (self.configs == this
-                #    batch's composed configs, the same names the controller scores at
-                #    campaign_root/<config>/) and its job-artifact dir _jobs/<batch_tag>/
-                #    (sysinfo.yaml, resource monitor, logs — read via each run's `job`
-                #    symlink), plus the campaign-level _config/ (holds the .vast the
-                #    auto-chain postprocessing reads) and _transient/. Batch-scoping
-                #    _jobs avoids re-fetching prior batches each iteration; the small
-                #    campaign-level dirs are re-fetched (idempotent — download_prefix
-                #    never deletes, so the locally-accumulated _transient/job_links.yaml
-                #    survives).
-                job_root = f"_jobs/{self._batch_tag}" if self._batch_tag else "_jobs"
-                targets = [c["name"] for c in self.configs if c.get("name")]
-                targets += ["_config", "_transient", job_root]
-                for rel in targets:
-                    got += storage.download_prefix(
-                        bucket_name, f"{campaign_prefix}{rel}",
-                        os.path.join(campaign_root, rel), on_file=on_file)
-        finally:
-            if self._state is not None:
-                self._state.resume_progress()
-        logger.info("Batch %s: downloaded %d result file(s) into %s",
-                    self._batch_tag, got, campaign_root)
-
-        # 4b. Record this batch's <config>/<run>/job -> _jobs/<batch>/job-<idx>
-        #     links, then materialise them as real symlinks now (not only at
-        #     upload-to-share), so downstream readers resolve <run>/job/sysinfo.yaml
-        #     during the driver's own metadata/postprocessing — as in a local run.
+        # 3. The results are home: every Job's uploader delivered the pod's /out into the
+        #    campaign before the Job counted as complete.
+        # 4. Record this batch's <config>/<run>/job -> _jobs/<batch>/job-<idx> links, then
+        #    materialise them as real symlinks now, so downstream readers resolve
+        #    <run>/job/sysinfo.yaml during the driver's own metadata/postprocessing — as in
+        #    a local run.
         self._write_job_links(campaign_root)
         create_job_links(campaign_root)
 
@@ -3434,15 +3187,11 @@ class BatchJobRunner:
     def _write_job_links(self, campaign_root: str):
         """Merge this batch's job-link entries into ``_transient/job_links.yaml``.
 
-        ``<config>/<run>/job`` -> ``../../_jobs/<batch>/job-<idx>``. Accumulated
-        across batches (the manifest is shared), uploaded by ``finalize_campaign``,
-        and turned into real symlinks by the controller's upload-to-share
-        compression.
-
-        Run after the batch's results are downloaded, because the download can bring a
-        manifest of its own. It accumulates through the same writer the upload side uses --
-        one definition of "merge", so the two cannot drift into disagreeing about what the
-        campaign's links are.
+        ``<config>/<run>/job`` -> ``../../_jobs/<batch>/job-<idx>``. Accumulated across
+        batches (the manifest is shared) and turned into real symlinks right after, and
+        again by the archive writer. It accumulates through the same writer the archive
+        side uses -- one definition of "merge", so the two cannot drift into disagreeing
+        about what the campaign's links are.
         """
         write_job_links_manifest(
             os.path.join(campaign_root, "_transient"), self._build_jobs(), self._batch_tag,
@@ -3530,19 +3279,23 @@ class KubernetesBackend(ExecutionBackend):
     """Run batches as Kubernetes Jobs from inside the controller pod.
 
     Args:
-        cluster_config: Reconstructed cluster config (storage + scheduling).
+        cluster_config: Reconstructed cluster config (scheduling, host aliases).
         namespace: Kubernetes namespace for the jobs.
+        data_token: The campaign's scoped data-plane token, which its pods carry.
         kube_context: Host context name, used only to resolve per-cluster resource
             lists; the API client itself uses in-cluster config.
         log_tree: Forward ``-t`` (live scenario tree) to the jobs.
     """
 
     def __init__(self, *, cluster_config, namespace="default", kube_context=None,
-                 log_tree=False, state=None, admission=None):
+                 log_tree=False, state=None, admission=None, data_token=""):
         # Owned by the service, not built here: one queue serves every campaign in the
         # process, and a backend built per campaign would give each its own -- which is
         # exactly the per-caller arbitration the queue exists to replace.
         self._admission = admission
+        #: The campaign's scoped data-plane token. Read by the controller too, for the
+        #: postprocessing Jobs it submits on this campaign's behalf.
+        self.data_token = data_token
         self.cluster_config = cluster_config
         self.namespace = namespace
         self.kube_context = kube_context
@@ -3550,9 +3303,6 @@ class KubernetesBackend(ExecutionBackend):
         # Cooperative-stop signal (Ctrl+C / Stop): lets the batch wait loop abort
         # cleanly instead of pressing on into a doomed result download.
         self._state = state
-        # Lazily-built read-only storage client for count_run_artifacts (the
-        # controller's progress poller); separate from the write path.
-        self._progress_storage = None
         # image ref -> the digest ref it resolved to, for this backend's lifetime. On the
         # backend rather than the runner because a search builds a fresh runner per batch,
         # and re-asking the registry fifty times answers a question that must not change
@@ -3674,7 +3424,7 @@ class KubernetesBackend(ExecutionBackend):
         return dict(self._build_lock_cache.get(image) or {})
 
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions, whole_campaign: bool = False) -> None:
+                  runs: int, options: RunOptions) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         execution_params = campaign_data.get("execution", {}) or {}
         from robovast.execution.backends import _scenario_image
@@ -3703,16 +3453,13 @@ class KubernetesBackend(ExecutionBackend):
         self._record_launch_images(campaign_root, runner)
         self._record_execution_yaml(runner, campaign_root, execution_params, runs,
                                     with_locks=False)
-        # And published here, for the same reason it is written here. The driver's disk is
-        # scratch on this lane, so a record that stays on it describes the campaign to nobody:
-        # the next publish is at the batch BOUNDARY, which for a batch-mode campaign -- one
-        # batch -- is after every run has finished. Until then a reader asking what this
-        # campaign is running, or which packages a run's world must be built from, finds no
-        # record of a campaign that has been running for an hour.
-        self.publish_records(campaign_root)
+        if not self.data_token:
+            raise CampaignConfigError(
+                "this backend was built without the campaign's data-plane token, so no "
+                "pod of it could fetch its inputs or deliver its outputs")
         batch_error = None
         try:
-            runner.run_batch_in_pod(campaign_root, whole_campaign=whole_campaign)
+            runner.run_batch_in_pod(campaign_root, self.data_token)
         except BaseException as exc:  # noqa: BLE001 - recorded, never swallowed
             # Remembered only so the cleanup below can tell a batch that ended from one that
             # is unwinding. Re-raised untouched at the end of the `finally`.
@@ -3878,135 +3625,11 @@ class KubernetesBackend(ExecutionBackend):
                               image_labels=image_labels or None,
                               nodes_skipped=runner.skipped_nodes() or None)
 
-    def publish_execution_records(self, campaign_root: str) -> None:
-        """Publish the directories only the driver writes, so a reader elsewhere has them.
-
-        ``finalize_campaign`` would do it, and does it later; postprocessing runs before
-        that and, on this lane, stages the campaign out of the store. So what the driver
-        alone holds has to be up there first or the pod converts a campaign that cannot
-        say what produced it.
-
-        Small and one-off: two directories of records and logs, published once at the
-        boundary where a different process starts reading. Best-effort for the same reason
-        the record publish is -- the campaign's results are already home, and its
-        bookkeeping must not be what ends it.
-        """
-        campaign_id = os.path.basename(os.path.normpath(campaign_root))
-        try:
-            bucket, prefix = in_pod_storage.campaign_storage_location(
-                self.cluster_config, campaign_id)
-            storage = in_pod_storage.storage_client_for(self.cluster_config)
-            for name in ("_execution", "_transient"):
-                local = os.path.join(campaign_root, name)
-                if os.path.isdir(local):
-                    storage.upload_dir(local, bucket, f"{prefix}{name}")
-        except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
-            logger.warning("Could not publish the execution records of %s: %s",
-                           campaign_id, e)
-
-    #: What a campaign's record is, as paths under its root. Named files rather than the
-    #: ``_execution`` directory: the logs beside them are written continuously and are
-    #: published once, at the boundary where another process starts reading
-    #: (``publish_execution_records``). These three are small, complete the moment they are
-    #: written, and are what a reader needs to say what this campaign IS.
-    _RECORD_FILES = ("campaign.db", "_execution/launch.yaml", "_execution/execution.yaml")
-
-    def publish_records(self, campaign_root: str) -> None:
-        """Publish the campaign's record, so an unfinished campaign still has one.
-
-        Named files, not the directory: this runs before any compute is spent, again as soon
-        as the images are pinned, and again at every batch boundary, and the campaign root
-        beside it holds the batch's results. ``finalize_campaign`` is what publishes those,
-        once.
-
-        The execution record belongs here and not only at the end. This lane's driver disk is
-        scratch, so a record that is written but never uploaded describes the campaign to
-        nobody -- which defeats the reason it is written before the jobs at all (see
-        :meth:`_record_execution_yaml`: a campaign that dies in its first batch should still
-        name the images it ran). It is also what any reader of a LIVE campaign has to go on:
-        the images it names are how the service resolves the packages a run's world must be
-        built from, and asking for that mid-campaign is ordinary.
-
-        Best-effort. The campaign is mid-flight and its own result uploads go through the
-        same client moments later, so a store that is genuinely unreachable is reported by
-        those with a real error rather than by ending the campaign over its bookkeeping.
-        """
-        present = [rel for rel in self._RECORD_FILES
-                   if os.path.isfile(os.path.join(campaign_root, rel))]
-        if not present:
-            # Nothing to publish yet is not a failure: the local batch runner reaches the
-            # per-batch call before the store has been created in some test lanes, and the
-            # first call of all runs before anything has been written.
-            return
-        campaign_id = os.path.basename(os.path.normpath(campaign_root))
-        try:
-            bucket, prefix = in_pod_storage.campaign_storage_location(
-                self.cluster_config, campaign_id)
-            storage = in_pod_storage.storage_client_for(self.cluster_config)
-            for rel in present:
-                storage.upload_file(os.path.join(campaign_root, rel), bucket, f"{prefix}{rel}")
-        except Exception as e:  # noqa: BLE001 - bookkeeping must not end a campaign
-            logger.warning("Could not publish the record of %s: %s", campaign_id, e)
-
-    def ensure_campaign_root_complete(self, campaign_root: str) -> None:
-        """Fetch whatever of *campaign_root* resume left in the object store.
-
-        A resumed campaign starts with its control plane only (``campaign_resume``), so the
-        artifacts of everything its previous life ran are still nowhere but the store. This is
-        where they come back, because this is where they are first read.
-
-        A no-op in bytes for a campaign that was never interrupted: the objects are immutable
-        and ``download_prefix`` skips a local file whose size already matches, so all this
-        costs then is the listing. Best-effort is not an option here -- a truncated tree would
-        yield a truncated ingest and a canonical publish missing runs that really ran --
-        so a failure propagates.
-        """
-        from robovast.common.progress import fmt_size  # pylint: disable=import-outside-toplevel
-
-        campaign_id = os.path.basename(os.path.normpath(campaign_root))
-        bucket, prefix = in_pod_storage.campaign_storage_location(
-            self.cluster_config, campaign_id)
-        storage = in_pod_storage.storage_client_for(self.cluster_config)
-        os.makedirs(campaign_root, exist_ok=True)
-
-        # Narrated on the campaign's own stage marker, not only in the pod log. This step has
-        # no run counter -- the same reason `_run_batch_mode` gives for narrating its steps --
-        # so without a line here a multi-GB transfer is indistinguishable from a wedged
-        # service to anyone watching the campaign, which is exactly how it read the first time
-        # it ran in anger.
-        def on_change(done, total, done_bytes, total_bytes):
-            if self._state is None:
-                return
-            self._state.update(stage=(
-                f"restoring campaign root — {done}/{total} file(s), "
-                f"{fmt_size(done_bytes)} of {fmt_size(total_bytes)}"))
-
-        # `on_progress` costs one extra metadata listing to learn the denominator
-        # (`count_pending`), which `download_prefix` otherwise skips. Worth it here and
-        # nowhere else in this class: this transfer runs once per resumed campaign, takes
-        # minutes, and a bare running count cannot say whether it is near done.
-        n = storage.download_prefix(
-            bucket, prefix, campaign_root,
-            on_file=in_pod_storage.download_progress_logger(
-                f"Campaign {campaign_id} (completing root)"),
-            on_progress=in_pod_storage.download_progress_reporter(on_change))
-        if n:
-            logger.info("Completed campaign root for %s with %d file(s) from %s/%s "
-                        "that a service restart had left in the object store",
-                        campaign_id, n, bucket, prefix)
-
     def finalize_campaign(self, campaign_root: str) -> None:
-        """Publish the canonical campaign to storage so the bucket matches local.
+        """Release what the cluster held for this campaign: its calibration and its rank.
 
-        Jobs upload raw per-run results (``<config>/<run>/test.xml`` etc.) and
-        ``_jobs/`` *before* the controller runs search postprocessing, and each
-        batch uploads ``_config``/``_transient`` and records
-        ``_execution/execution.yaml``. This step publishes the full in-pod
-        ``campaign_root`` — which additionally holds ``campaign.db`` and the
-        postprocessing-derived per-run artifacts (e.g. ``metrics.csv``, written next
-        to ``trajectory.csv`` by ``QuadMetrics``) — so ``upload-to-share`` +
-        ``download`` yield a layout identical to a local run. Re-uploading the small
-        raw files is idempotent.
+        The campaign's results need nothing here -- they are on the results volume, which
+        is their home.
         """
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         # The campaign is over, so its per-node figures are too. Deliberately not reused by
@@ -4020,32 +3643,6 @@ class KubernetesBackend(ExecutionBackend):
             # a timestamp, so nothing would ever ask about this one again -- the entry would
             # simply accumulate for the life of the process.
             self._admission.forget_scheduling(campaign_id)
-        bucket, prefix = in_pod_storage.campaign_storage_location(
-            self.cluster_config, campaign_id)
-        storage = in_pod_storage.storage_client_for(self.cluster_config)
-
-        n = storage.upload_dir(campaign_root, bucket, prefix)
-        logger.info("Published canonical campaign (%d file(s), incl. campaign.db / "
-                    "_execution / metrics) to %s/%s", n, bucket, prefix)
-
-    def campaign_results_bytes(self, campaign_root: str) -> "int | None":
-        """Sum the campaign's stored objects — the durable home on this lane is the store.
-
-        Measured against the object store rather than ``campaign_root`` because this
-        driver's disk is scratch: a campaign this process *resumed* holds only its control
-        plane locally (see ``campaign_resume``), so a walk of the local tree would report a
-        fraction of the campaign as its total and be believed. The store is authoritative
-        whatever the driver happens to hold.
-
-        A listing pass — sizes arrive with the keys, so this moves no data and costs one
-        request per 1000 objects, once, at the end of a campaign.
-        """
-        campaign_id = os.path.basename(os.path.normpath(campaign_root))
-        bucket, prefix = in_pod_storage.campaign_storage_location(
-            self.cluster_config, campaign_id)
-        storage = in_pod_storage.storage_client_for(self.cluster_config)
-        objects, _ = storage.list_entries(bucket, prefix)
-        return sum(int(size or 0) for _, size in objects)
 
     def preflight_upload_to_share(self) -> None:
         """Fail fast when ``--upload-to-share`` is set but no share is configured.
@@ -4150,21 +3747,3 @@ class KubernetesBackend(ExecutionBackend):
                 "(ROBOVAST_SHARE_TYPE unset).")
         provider.remove_archive(object_name)
         return f"the partial '{object_name}' was removed from the share."
-
-    def count_run_artifacts(self, campaign_id: str,
-                            campaign_root: str) -> int | None:
-        """Count the per-run JUnit reports uploaded under the campaign's prefix.
-
-        The object-store counterpart of :meth:`DockerBackend.count_run_artifacts`:
-        each finished run uploads its own ``test.xml``, so counting them under the
-        (flat, campaign-wide) prefix gives cumulative finished runs. The local
-        ``campaign_root`` is not the source of truth here — results reach it only when
-        a batch is downloaded — so it is unused.
-        """
-        del campaign_root
-        bucket, prefix = in_pod_storage.campaign_storage_location(
-            self.cluster_config, campaign_id)
-        if self._progress_storage is None:
-            self._progress_storage = in_pod_storage.storage_client_for(self.cluster_config)
-        keys = self._progress_storage.list_keys(bucket, prefix)
-        return sum(1 for k in keys if k.endswith(f"/{self.RUN_SENTINEL}"))

@@ -15,7 +15,7 @@ const notFound = new RobovastError(404, "no directory at '/results/c1/_config/'"
 
 describe('campaignConfigNote', () => {
   it('says nothing about staging when the lookup itself failed', () => {
-    expect(campaignConfigNote(new RobovastError(503, 'object store unreachable'), 'finished'))
+    expect(campaignConfigNote(new RobovastError(503, 'results volume unreachable'), 'finished'))
       .toBe('')
     expect(campaignConfigNote(new Error('Failed to fetch'), 'running')).toBe('')
   })

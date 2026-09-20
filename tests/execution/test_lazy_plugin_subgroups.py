@@ -65,12 +65,6 @@ def test_the_cluster_group_survives_the_cluster_package_being_absent(cluster_abs
     assert result.exit_code == 0, result.output
 
 
-def test_the_client_half_survives_the_cluster_package_being_absent(cluster_absent):
-    """``store-cleanup`` goes through the service, so it must not need the lane."""
-    result = CliRunner().invoke(cluster_cli.cluster, ["store-cleanup", "--help"])
-    assert result.exit_code == 0, result.output
-
-
 def test_the_service_group_keeps_its_client_half(cluster_absent):
     """``service`` spans two distributions; without the cluster one it is short verbs,
     not broken."""

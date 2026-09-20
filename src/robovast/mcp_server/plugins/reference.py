@@ -191,8 +191,8 @@ def get_service_info() -> dict:
 
         With a cluster lane: ``kube_context``, ``kube_context_source``, ``namespace``,
         ``in_pod``, ``api_server`` — which cluster a campaign would land in.
-        ``in_pod: false`` means campaigns are driven off-cluster through a port-forward:
-        fine for a pilot, fragile for a large campaign's result transfers.
+        ``in_pod: false`` means campaigns are driven by a service running outside the
+        cluster: fine for a pilot, fragile for a large campaign's result transfers.
 
         ``built_at`` is when the running image was built (RFC 3339, UTC); absent for a
         source checkout, which has no build to date.
