@@ -3894,6 +3894,7 @@ class LocalTransport(RobovastInterface):
         findings: list = []
         skipped: list = []
         try:
+            findings.extend(self._findings_from_record(campaign_id))
             for job_name, *paths in self._health_targets(campaign_id):
                 document, _reason = self._read_health(campaign_id, job_name, *paths)
                 findings.extend(self._findings_from_document(job_name, document))
@@ -3907,6 +3908,37 @@ class LocalTransport(RobovastInterface):
                 entry["findings"] = findings
                 entry["skipped"] = skipped
                 entry["refreshing"] = False
+
+    def _findings_from_record(self, campaign_id: str) -> list:
+        """Findings RoboVAST itself recorded about this campaign's runs.
+
+        The other source of findings, beside the document a running job writes about itself.
+        Some faults cannot be self-reported: a container that was OOM-killed is not there to
+        say so, and the Job carrying the evidence is deleted moments later -- so the runner
+        writes what it saw into the campaign's ledger and this reads it back.
+
+        **One finding per fault, not per run.** The ledger has an entry per lost run; a reader
+        acts on the fault, and forty findings saying the same thing would hide whatever else
+        the campaign is reporting. The count is what makes it a fault rather than a flake, so
+        it is in the sentence.
+        """
+        from robovast.client.status import HealthFinding
+        from robovast.common.campaign_data import KIND_SIZING, read_interventions
+
+        entries = read_interventions(self.campaign_dir(campaign_id), KIND_SIZING)
+        if not entries:
+            return []
+        newest = entries[-1]
+        return [HealthFinding(
+            job_name=str(newest.get("job_name") or ""),
+            level="error",
+            # The slug a reader keys on, and what `vast campaign wait` takes its edge from: one
+            # check firing for every lost run is one exit, not a stream.
+            check="calibrated-memory-oom",
+            detail=(f"{len(entries)} run(s) lost: {newest.get('detail') or 'OOM-killed'}. "
+                    "Every run is sized from one probe's peak, so this meets the runs still to "
+                    "come on that node. To bound it, state `calibration.min.memory` or raise "
+                    "`resources.memory`, and run again."))]
 
     @staticmethod
     def _findings_from_document(job_name: str, document) -> list:

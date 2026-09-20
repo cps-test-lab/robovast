@@ -679,6 +679,12 @@ KIND_KILLED = "killed"
 KIND_PROBED = "probed"
 KIND_INVALID = "invalid"
 
+#: A run lost to an allocation this campaign MEASURED rather than to anything the campaign was
+#: asked to do -- so far, a container OOM-killed at calibrated memory. Its own kind because it is
+#: the one entry a *reader* has to act on: the others say what was done to a run, this says the
+#: next run will meet the same thing.
+KIND_SIZING = "sizing"
+
 
 def record_intervention(campaign_root: Path, *, kind: str, job_dir: str, job_name: str,
                         source: str, detail: str | None = None,

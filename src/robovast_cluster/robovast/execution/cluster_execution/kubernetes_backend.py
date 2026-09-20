@@ -65,7 +65,7 @@ from kubernetes import client
 
 from robovast.common import (get_execution_env_variables, plan_containers,
                              prepare_campaign_configs, scenario_env)
-from robovast.common.campaign_data import (KIND_INVALID, PROBE_DIR,
+from robovast.common.campaign_data import (KIND_INVALID, KIND_SIZING, PROBE_DIR,
                                            record_container_failures, record_intervention)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
@@ -2842,8 +2842,51 @@ class BatchJobRunner:
                            self._batch_tag, exc)
             return
         for job_name, entry in sorted(restarted.items()):
+            self._record_a_kill_at_a_measured_figure(job_name, entry, campaign_root)
             self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
                            campaign_root=campaign_root, forensics=entry)
+
+    def _record_a_kill_at_a_measured_figure(self, job_name, entry, campaign_root) -> None:
+        """Record a run lost to memory this campaign MEASURED, so the campaign can report it.
+
+        **A measurement is a prediction about every run, and this run disproves it.** The probe
+        sees one run's peak; every other run is sized from it, so a demand the probe did not see
+        is not met once -- the same figure meets the next run, and the next. Nothing else in the
+        loop says so: the invalidation above says a trial was lost, which is true of a flake too.
+
+        Written to the campaign's own ledger rather than kept in memory, because the Job that
+        carried the evidence is deleted moments later and the fact has to outlive it -- and
+        because that ledger is what the service reads to report it (see
+        ``LocalTransport._findings_from_record``).
+
+        Only a figure this campaign measured is recorded: a container killed at what its author
+        DECLARED is a campaign asking for too little, which the author states and this must not
+        second-guess.
+        """
+        calibration = getattr(self, "_calibration", None)
+        node = (entry or {}).get("node")
+        figures = calibration.calibrated(node) if calibration and node else None
+        if not figures:
+            return
+        for record in (entry or {}).get("containers") or ():
+            if record.get("reason") != "OOMKilled":
+                continue
+            container = record.get("container")
+            measured = (figures.get(container) or {}).get("memory_peak")
+            if not measured:
+                continue
+            limit = to_bytes(record.get("memory_limit"))
+            gib = 1024 ** 3
+            at = f" at {limit / gib:.2f}GiB" if limit else ""
+            try:
+                record_intervention(
+                    Path(campaign_root), kind=KIND_SIZING, job_dir="", job_name=job_name,
+                    source="runner",
+                    detail=(f"container {container} was OOM-killed{at} -- memory this campaign "
+                            f"MEASURED on its node ({measured / gib:.2f}GiB peak)"))
+            except Exception as exc:  # noqa: BLE001 - a record must not fail the response
+                logger.warning("Batch %s: could not record the sizing fault for %s: %s",
+                               self._batch_tag, job_name, exc)
 
     def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name,
                            campaign_root) -> None:

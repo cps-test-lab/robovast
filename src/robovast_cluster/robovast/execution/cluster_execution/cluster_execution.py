@@ -940,8 +940,12 @@ def _pod_signals(k8s_core, namespace,
         formatted = _format_restarts(invalidating)
         if formatted:
             r, msg = formatted
+            # ``node`` is the machine's real name, for the runner alone: a figure is measured
+            # per node, so whether a kill happened at a MEASURED one can only be asked of the
+            # node it ran on. Deliberately not in the container records, which ship with the
+            # campaign and carry the hashed ``node_label`` instead.
             restarted[name] = {"detail": f"{r}: {msg}" if msg else r,
-                               "containers": invalidating}
+                               "containers": invalidating, "node": placed}
     return phases, blocked, terminated, restarted, contended, placed_on
 
 
@@ -980,8 +984,8 @@ def blocked_and_contended_reasons(k8s_core, namespace,
 
 def restarted_job_forensics(k8s_core, namespace, label_selector,
                             job_names=None) -> dict:
-    """Job name → ``{"detail", "containers"}`` for Jobs whose pod had a container CRASH and
-    be restarted (see :func:`pod_invalidating_restart`). Empty when nothing did.
+    """Job name → ``{"detail", "containers", "node"}`` for Jobs whose pod had a container
+    CRASH and be restarted (see :func:`pod_invalidating_restart`). Empty when nothing did.
 
     Separate from :func:`blocked_job_reasons` because it needs the opposite response.
     Blocked means "cannot start yet", so it is given a grace period. A restart has
