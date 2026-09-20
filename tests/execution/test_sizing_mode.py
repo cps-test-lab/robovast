@@ -1117,3 +1117,112 @@ def test_a_left_out_node_reaches_a_watcher_through_the_status():
     assert st.model_dump()["nodes_skipped"] == {
         "n2": "its probe did not run in 2 consecutive batches"}, \
         "carried on the payload every client reads"
+
+
+# -- the floors: what a measurement may never size a container below ----------------------
+
+def test_memory_has_the_floor_cpu_always_had():
+    """A container given too little CPU runs slowly; one given too little memory is killed --
+    so the resource that needed a floor most was the one without one."""
+    from robovast.execution.cluster_execution.node_calibration import (MIN_CPU, MIN_MEMORY,
+                                                                       min_memory_bytes)
+    assert MIN_CPU == 0.25
+    assert MIN_MEMORY == "512M"
+    assert min_memory_bytes() == 512 * 1000 ** 2
+
+
+def test_a_measurement_is_never_sized_below_the_floor():
+    """The probe reports a number, not whether its run got far enough for that number to mean
+    anything: one that stopped before the stack was up measures a fraction of what every later
+    run needs."""
+    from robovast.common.quantity import to_bytes
+    from robovast.execution.cluster_execution.node_calibration import min_memory_bytes
+
+    figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "2Gi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True, settings={"headroom": {"memory": 1.0}})
+    assert to_bytes(sized["memory"]) == min_memory_bytes()
+
+
+def test_every_role_keeps_the_same_floor():
+    """One figure, like MIN_CPU: it bounds a measurement rather than describing a workload, and
+    what a particular container needs is what `resources` and `calibration.min` are for."""
+    from robovast.common.quantity import to_bytes
+    from robovast.execution.cluster_execution.node_calibration import min_memory_bytes
+
+    figures = {"cores": 1.0, "memory_peak": 10 * 1024 ** 2, "samples": 90}
+    for role in ("sut", "scenario", "simulation"):
+        sized = kb.calibrated_resources({"memory": "2Gi"}, role, {role: figures},
+                                        roles=(role,), bootstrap=True,
+                                        settings={"headroom": {"memory": 1.0}})
+        assert to_bytes(sized["memory"]) == min_memory_bytes(), role
+
+
+def test_a_measurement_above_the_floor_is_left_alone():
+    """The floor is a bound, not a target: calibration sizes anywhere above it."""
+    from robovast.common.quantity import to_bytes
+
+    figures = {"sut": {"cores": 2.0, "memory_peak": 3 * 1024 ** 3, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "8Gi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True, settings={"headroom": {"memory": 1.0}})
+    assert to_bytes(sized["memory"]) >= 3 * 1024 ** 3
+
+
+def test_no_floor_ever_beats_the_declared_ceiling():
+    """``resources`` stays the most a container may have, whichever floor is under it."""
+    from robovast.common.quantity import to_bytes
+
+    figures = {"sut": {"cores": 2.0, "memory_peak": 10 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "256Mi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"headroom": {"memory": 1.0},
+                                              "min": {"memory": "4Gi"}})
+    assert to_bytes(sized["memory"]) == 256 * 1024 ** 2
+
+
+# -- the floor an author states ----------------------------------------------------------
+
+def test_a_stated_memory_floor_lifts_a_measurement_past_the_built_in_one():
+    """What headroom cannot be: a multiplier scales a measurement that is wrong, a floor
+    bounds it."""
+    from robovast.common.quantity import to_bytes
+
+    figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
+    sized = kb.calibrated_resources({"memory": "4Gi"}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"size_on": 100, "limit": "request",
+                                              "headroom": {"cpu": 1.0, "memory": 1.0},
+                                              "min": {"memory": "2Gi"}})
+    assert to_bytes(sized["memory"]) == 2 * 1024 ** 3
+    assert to_bytes(sized["memory_limit"]) == 2 * 1024 ** 3, "memory is never a soft ceiling"
+
+
+def test_a_stated_cpu_floor_lifts_a_small_measurement():
+    figures = {"sut": {"cores": 0.1, "samples": 90}}
+    sized = kb.calibrated_resources({"cpu": 8}, "sut", figures, roles=("sut",),
+                                    bootstrap=True,
+                                    settings={"headroom": {"cpu": 1.0}, "min": {"cpu": 2}})
+    assert float(sized["cpu"]) == 2
+
+
+def test_a_floor_above_the_ceiling_is_refused_rather_than_clipped():
+    """Two lines that cannot both hold: sizing to either one silently gives the author the
+    opposite of what the other says."""
+    from pydantic import ValidationError
+
+    from robovast.common.config import ContainerConfig
+    with pytest.raises(ValidationError, match="no allocation satisfies both"):
+        ContainerConfig(image="x", resources={"memory": "1Gi"},
+                        calibration={"min": {"memory": "2Gi"}})
+    with pytest.raises(ValidationError, match="no allocation satisfies both"):
+        ContainerConfig(image="x", resources={"cpu": 2}, calibration={"min": {"cpu": 4}})
+
+
+def test_a_stated_floor_is_read_off_the_containers_own_block():
+    """Stated in the `.vast`, it has to survive the three-layer merge that resolves a
+    container's calibration, or it is configured in the file and inert in the allocation."""
+    container = type("C", (), {"name": "sut", "roles": ("sut",),
+                               "calibration": {"min": {"memory": "1Gi", "cpu": 3}}})()
+    runner = kb.BatchJobRunner.__new__(kb.BatchJobRunner)
+    settings = runner._calibration_settings(container)
+    assert settings["min"] == {"memory": "1Gi", "cpu": 3}

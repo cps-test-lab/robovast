@@ -599,6 +599,46 @@ class CalibrationHeadroom(BaseModel):
     memory: Optional[float] = None
 
 
+class CalibrationFloor(BaseModel):
+    """The least a container may be sized to, whatever a probe measured, per resource.
+
+    A measurement is one run's demand, and a probe that did not see the workload measures
+    something smaller than it. Headroom cannot answer that -- it multiplies the measurement,
+    so it scales a figure that is wrong rather than bounding it -- and the two resources fail
+    differently: a container given too little CPU runs slowly, one given too little memory is
+    killed. So an author who knows what a container needs to exist states it here, and
+    calibration is free to size anywhere above it.
+
+    ``cpu`` is in cores, ``memory`` a Kubernetes quantity (``512Mi``, ``2Gi``). Never above
+    ``resources``, which remains the ceiling: a floor higher than the ceiling is refused
+    rather than silently winning.
+    """
+    model_config = ConfigDict(extra='forbid')
+
+    cpu: Optional[float] = None
+    memory: Optional[str] = None
+
+    @field_validator('cpu')
+    @classmethod
+    def validate_cpu(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError(
+                f"execution.containers.<name>.calibration.min.cpu is a number of cores and "
+                f"must be greater than 0; got {v}")
+        return v
+
+    @field_validator('memory')
+    @classmethod
+    def validate_memory(cls, v):
+        if v is None:
+            return v
+        if to_bytes(v) is None or to_bytes(v) <= 0:
+            raise ValueError(
+                f"execution.containers.<name>.calibration.min.memory is a Kubernetes "
+                f"quantity of memory to keep, for example '512Mi'; got {v!r}")
+        return v
+
+
 class CalibrationConfig(BaseModel):
     """How one container's measurement becomes its allocation, under ``sizing: calibrated``.
 
@@ -635,6 +675,10 @@ class CalibrationConfig(BaseModel):
 
     #: Margin above the measurement, per resource. Omitted, the built-in constants apply.
     headroom: Optional[CalibrationHeadroom] = None
+
+    #: The least this container may be sized to, per resource, whatever the probe measured.
+    #: Omitted, only the built-in CPU floor applies.
+    min: Optional[CalibrationFloor] = None
 
     @field_validator('size_on')
     @classmethod
@@ -721,6 +765,37 @@ class ContainerConfig(BaseModel):
     #: How a measurement becomes this container's allocation. Only read under
     #: ``sizing: calibrated``; see :class:`CalibrationConfig`.
     calibration: Optional[CalibrationConfig] = None
+
+    @model_validator(mode="after")
+    def _floor_fits_under_the_ceiling(self):
+        """A calibration floor above the declared ceiling is refused, not quietly clipped.
+
+        ``resources`` is the most a container may have and the floor is the least; a file
+        asking for both states two things that cannot hold at once, and sizing it to either
+        one silently gives the author the opposite of what the other line says. Compared only
+        where the ceiling is a single figure -- a per-node list has one per machine, and which
+        of them a floor should clear is not a question this file can answer.
+        """
+
+        floor = getattr(self.calibration, "min", None)
+        if floor is None or self.resources is None:
+            return self
+        cpu_ceiling = self.resources.cpu
+        if floor.cpu is not None and isinstance(cpu_ceiling, (int, float)) \
+                and floor.cpu > cpu_ceiling:
+            raise ValueError(
+                f"calibration.min.cpu ({floor.cpu}) is above this container's resources.cpu "
+                f"({cpu_ceiling}): the floor is the least it may be sized to and resources "
+                f"is the most, so no allocation satisfies both")
+        memory_ceiling = to_bytes(self.resources.memory) \
+            if isinstance(self.resources.memory, str) else None
+        floor_bytes = to_bytes(floor.memory) if floor.memory else None
+        if floor_bytes and memory_ceiling and floor_bytes > memory_ceiling:
+            raise ValueError(
+                f"calibration.min.memory ({floor.memory}) is above this container's "
+                f"resources.memory ({self.resources.memory}): the floor is the least it may "
+                f"be sized to and resources is the most, so no allocation satisfies both")
+        return self
     #: Simulator backend entry point (``simulation`` role only) -- a name in the
     #: ``robovast.simulators`` group, or a ``.vast``-relative ``<file>.py:<Class>`` ref.
     #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
