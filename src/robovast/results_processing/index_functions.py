@@ -33,7 +33,11 @@ have are created under exactly the same spellings and the same semantics:
   between the two neighbouring samples, which is what the SQLite implementation did and
   what ``percentile_cont`` does natively. Getting the scale wrong here would return the
   1st-percentile value for a query asking for the 95th, which is a plausible number and a
-  wrong answer.
+  wrong answer. ``PERCENTILE`` is defined here for the connection that queries the index
+  directly; a query that passes through
+  :mod:`~robovast.results_processing.index_dialect` reaches the server as
+  ``percentile_cont`` instead, because this definition costs quadratic time in the rows
+  of a group and that module says why.
 * ``REGEXP(pattern, value)`` is created as a function rather than left to Postgres' ``~``
   operator, because the argument order is part of the contract: SQLite's registered
   function takes ``(pattern, value)`` while ``~`` reads ``value ~ pattern``. A silent swap
@@ -46,6 +50,8 @@ a plugin panel that opens its own connection would not have them at all.
 """
 
 import logging
+
+from robovast.results_processing import index_schema
 
 logger = logging.getLogger(__name__)
 
@@ -148,18 +154,40 @@ _DEFINITIONS = (
 )
 
 
+def _installed_version(conn) -> int:
+    """The version this database carries, or -1 when it has none."""
+    if not conn.execute("SELECT to_regclass(%s)",
+                        (FUNCTIONS_VERSION_TABLE,)).fetchone()[0]:
+        return -1
+    row = conn.execute(f'SELECT version FROM "{FUNCTIONS_VERSION_TABLE}"').fetchone()
+    return row[0] if row else -1
+
+
 def install(conn) -> bool:
     """Define the functions if this database does not already have this version.
 
     Returns True when something was installed. Idempotent and cheap to call: the usual
-    path is one ``SELECT`` against a one-row table.
+    path is one catalog lookup and one ``SELECT`` against a one-row table, and it issues
+    no DDL at all -- which matters because every reader opens its connection through here.
+
+    The install itself takes the index's DDL lock and reads the version again inside it.
+    ``CREATE AGGREGATE`` has no ``IF NOT EXISTS`` and the one above it is dropped first, so
+    two writers that both saw an old version would both define it and the loser would be
+    refused -- failing whatever it was really doing.
     """
-    conn.execute(f'CREATE TABLE IF NOT EXISTS "{FUNCTIONS_VERSION_TABLE}" '
-                 "(version integer PRIMARY KEY)")
-    row = conn.execute(f'SELECT version FROM "{FUNCTIONS_VERSION_TABLE}"').fetchone()
-    if row and row[0] >= FUNCTIONS_VERSION:
+    if _installed_version(conn) >= FUNCTIONS_VERSION:
         return False
 
+    with index_schema.ddl_lock(conn):
+        if _installed_version(conn) >= FUNCTIONS_VERSION:
+            return False
+        conn.execute(f'CREATE TABLE IF NOT EXISTS "{FUNCTIONS_VERSION_TABLE}" '
+                     "(version integer PRIMARY KEY)")
+        return _define(conn)
+
+
+def _define(conn) -> bool:
+    """Apply every definition and record the version. Caller holds the DDL lock."""
     # Applied in dependency order, once, with nothing caught. An earlier draft retried the
     # list and swallowed failures, which would have recorded the version as installed while
     # PERCENTILE did not exist -- and the first symptom would have been a panel returning

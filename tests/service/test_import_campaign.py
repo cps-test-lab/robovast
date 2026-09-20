@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Taking a campaign *in* is a tracked operation, not a call that blocks until it is over.
 
-Three properties this defends, each of which was a wrong answer at some point:
+Four properties this defends, each of which was a wrong answer at some point:
 
 * the campaign is registered **before** any bytes move, so it appears in the campaign view
   at ``importing`` while it is still arriving rather than materialising at the end;
 * postprocessing is chained exactly when the archive arrived **raw**, because a campaign
   with no metric tables is not one anybody can query -- and a postprocessed one must not be
   recomputed;
+* the campaign is made **durable before** that postprocess rather than after it, because a
+  lane whose durable home is elsewhere is where the postprocess reads the campaign from;
 * a failed import is **kept**, as a failed campaign. Deleting the tree was tried and was
   strictly worse: registering the campaign is what makes it visible while it arrives, and
   that entry outlives the failure, so removing the directory left it listed as ``failed``
@@ -243,46 +245,6 @@ def test_a_failed_import_is_kept_so_its_reason_can_be_read(service, tmp_path, mo
     assert "failed" in outcome
 
 
-def test_a_failed_import_publishes_its_reason_on_a_lane_that_drops_the_scratch(
-        service, tmp_path, monkeypatch):
-    """Keeping the tree is only half the promise: it has to be kept where clients read.
-
-    Found live on the cluster lane. Publishing happens only on success, and that lane's
-    ``list_files``/``read_file`` answer from the object store -- so a failed import left
-    ``import.log`` and ``import.json`` on a pod's scratch, and ``/results/<id>`` answered
-    *no directory* for the one campaign whose files anybody wanted to open. The card showed
-    the refusal and nothing behind it could be read: the "worst of both" the keep-the-tree
-    fix was written against, still standing on the lane where campaigns actually run.
-
-    The local lane cannot catch it -- publishing is a no-op there and the scratch *is* the
-    durable home -- so the lane under test drops its tree the way a real one does.
-    """
-    import shutil
-
-    published = {}
-
-    def _publish_and_drop(self, campaign_id, target):
-        published[campaign_id] = (Path(target) / "_execution" / "import.log").read_text(
-            encoding="utf-8")
-        shutil.rmtree(target, ignore_errors=True)
-
-    def _boom(*_a, **_k):
-        raise OSError("disk went away mid-extraction")
-
-    monkeypatch.setattr("robovast.service.ingest.extract_archive", _boom)
-    monkeypatch.setattr(type(service), "_publish_failed_import", _publish_and_drop)
-
-    ref = service.import_campaign(ImportCampaignRequest(
-        archive_path=str(_archive(tmp_path))))
-    status = _wait_done(service, ref.campaign_id)
-
-    assert status.phase == Phase.FAILED
-    assert ref.campaign_id in published, "the failure must be published, not only recorded"
-    # Published *after* the log handler is closed and the outcome written, or what goes up
-    # is a truncated account of a failure -- the one file that exists to explain it.
-    assert "disk went away mid-extraction" in published[ref.campaign_id]
-
-
 def test_an_archive_that_is_not_the_campaign_it_was_fetched_as_is_refused(
         service, tmp_path, monkeypatch):
     """The id is claimed from the object's *name*; the tree lands under the tar's own.
@@ -355,7 +317,7 @@ def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
     status = _wait_done(service, ref.campaign_id)
 
     on_disk = reconstruct_status_from_disk(
-        service._campaign_dir(ref.campaign_id))  # pylint: disable=protected-access
+        service.campaign_dir(ref.campaign_id))  # pylint: disable=protected-access
     assert on_disk.runs.total > 0, "fixture must carry runs for this to test anything"
 
     assert status.postprocessed is True
@@ -364,39 +326,11 @@ def test_an_imported_campaign_reports_what_it_actually_holds(service, tmp_path):
     assert status.mode == on_disk.mode
 
 
-def test_the_report_survives_a_lane_that_drops_its_scratch_copy(service, tmp_path,
-                                                               monkeypatch):
-    """A lane whose durable home is elsewhere DELETES the tree once it is published.
-
-    The cluster service does exactly that -- a multi-gigabyte campaign left on a pod's
-    scratch is how the pod fills its disk -- so anything that reads the campaign after
-    publishing reads a directory that is gone and reconstructs zeros. That is the empty
-    report this whole adoption exists to prevent, and the local lane cannot catch it:
-    publishing is a no-op there, so the tree survives whatever the order.
-    """
-    import shutil
-
-    dropped = []
-
-    def _publish_and_drop(self, campaign_id, target):
-        dropped.append(campaign_id)
-        shutil.rmtree(target, ignore_errors=True)
-
-    monkeypatch.setattr(type(service), "_publish_imported_campaign", _publish_and_drop)
-    ref = service.import_campaign(ImportCampaignRequest(
-        archive_path=str(_archive(tmp_path, postprocessed=True, runs=26))))
-    status = _wait_done(service, ref.campaign_id)
-
-    assert dropped == [ref.campaign_id], "the lane under test must have dropped the tree"
-    assert status.runs.total == 26
-    assert status.postprocessed is True
-
-
 def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch):
-    """The raw path recorded the postprocessing verdict but never the run tally.
+    """A raw archive reports its run tally, not only its postprocessing verdict.
 
     Both arrival paths go through the same adoption, so neither can report an empty
-    campaign; this is the half that a fix aimed only at the postprocessed branch misses.
+    campaign; this is the raw half of that property.
     """
     monkeypatch.setattr(type(service), "_postprocess_campaign",
                         lambda self, cid, d, **k: (True, "ok"))
@@ -404,3 +338,74 @@ def test_a_raw_import_also_reports_its_run_tally(service, tmp_path, monkeypatch)
         archive_path=str(_archive(tmp_path, runs=26))))
     status = _wait_done(service, ref.campaign_id)
     assert status.runs.total == 26
+
+
+def _object_store_archive(tmp_path, staged: Path, name: str) -> Path:
+    """An archive as an exporter reading an object store writes one.
+
+    Built member by member: regular files only -- a bucket has no directories -- each mode
+    set explicitly, and the ``job`` symlinks synthesised at the end from
+    ``_transient/job_links.yaml``, because a bucket holds no links either. Shares hold
+    archives of this shape, and importing one is how a campaign kept in an object store
+    reaches this service.
+    """
+    import os
+    import yaml as _yaml
+    out = tmp_path / name
+    with tarfile.open(out, "w:gz") as tar:
+        for path in sorted(p for p in staged.rglob("*") if p.is_file()):
+            rel = path.relative_to(staged).as_posix()
+            info = tarfile.TarInfo(name=f"{staged.name}/{rel}")
+            info.size = path.stat().st_size
+            info.mode = 0o755 if os.access(path, os.X_OK) else 0o644
+            with open(path, "rb") as body:
+                tar.addfile(info, body)
+        manifest = staged / "_transient" / "job_links.yaml"
+        for link, target in (_yaml.safe_load(manifest.read_text()) or {}).items():
+            info = tarfile.TarInfo(name=f"{staged.name}/{link}")
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            info.mode = 0o777
+            tar.addfile(info)
+    return out
+
+
+def test_an_archive_exported_from_an_object_store_imports(service, tmp_path):
+    """A campaign kept in an object store arrives through a share, as such an archive.
+
+    So it must import: no directory members, links added after the files they point at,
+    executables marked by mode alone -- and the files such a campaign carries (a conversion
+    output list, archived log sections) are data like any other, not a reason to refuse.
+    """
+    import shutil
+    import yaml as _yaml
+    staged = tmp_path / "staged" / _SOURCE.name
+    shutil.copytree(_SOURCE, staged)
+    (staged / "_jobs" / "batch-0" / "job-0").mkdir(parents=True, exist_ok=True)
+    (staged / "_jobs" / "batch-0" / "job-0" / "controller.log").write_text("ran\n")
+    (staged / "_transient").mkdir(exist_ok=True)
+    (staged / "_transient" / "job_links.yaml").write_text(_yaml.safe_dump(
+        {"config-a/0/job": "../../_jobs/batch-0/job-0"}))
+    (staged / "config-a" / "0").mkdir(parents=True, exist_ok=True)
+    script = staged / "_config" / "files" / "prepare.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/bin/sh\necho prepared\n")
+    script.chmod(0o755)
+    exec_dir = staged / "_execution"
+    (exec_dir / "sections").mkdir(parents=True, exist_ok=True)
+    (exec_dir / "controller.log").write_text("ran the campaign\n")
+    (exec_dir / "sections" / "0001-postprocessing.log").write_text("first postprocess\n")
+    (exec_dir / "postprocessing.log").write_text("second postprocess\n")
+    (exec_dir / "conversion_outputs.txt").write_text("config-a/0/poses.csv\n")
+
+    archive = _object_store_archive(tmp_path, staged, "from-a-bucket.tar.gz")
+    ref = service.import_campaign(ImportCampaignRequest(archive_path=str(archive)))
+    status = _wait_done(service, ref.campaign_id)
+
+    assert status.phase == Phase.FINISHED, status.error
+    landed = service.campaign_dir(ref.campaign_id)
+    link = landed / "config-a" / "0" / "job"
+    assert link.is_symlink() and (link / "controller.log").read_text() == "ran\n"
+    assert (landed / "_config" / "files" / "prepare.sh").stat().st_mode & 0o111
+    log = service.get_campaign_logs(ref.campaign_id, 0).text
+    assert log.index("first postprocess") < log.index("second postprocess")

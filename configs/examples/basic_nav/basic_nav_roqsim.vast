@@ -4,22 +4,22 @@ metadata:
   title: Basic nav2 navigation on the roqsim (MuJoCo) TurtleBot 4 (Depot)
   description: |
     A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
-    roqsim (MuJoCo). The roqsim half of the basic_nav pair: same map and the same measurement half
-    as basic_nav_gazebo.vast. The bridge publishes the same ROS graph Gazebo does (incl. a
-    ground-truth turtlebot4_base_link_gt frame), so roqsim is a drop-in replacement.
+    roqsim (MuJoCo). The roqsim half of the basic_nav pair: same map, same nav2 params and the same
+    measurement half as basic_nav_gazebo.vast, so a difference in results is attributable to the
+    simulator. The bridge publishes the ROS graph Gazebo does, down to the ground-truth
+    turtlebot4_base_link_gt frame.
 
-    Three containers, which is what this file is really about. `simulation` is roqsim, started by
-    the backend from its own image -- nothing here installs a simulator. `sut` is a nav2 image kept
-    vanilla: RoboVAST layers scenario_execution_server onto it and the scenario drives its launch
-    over remote("ipc:///ipc/sut"). `scenario` is the stock RoboVAST image, so this campaign builds
-    no image of its own.
+    Three containers, and no image is built. `simulation` is roqsim, started by the backend from
+    its own image. `sut` is a vanilla nav2 image: RoboVAST layers scenario_execution_server onto it
+    and the scenario drives its launch over remote("ipc:///ipc/sut"). `scenario` is the stock
+    RoboVAST image.
 
-    One channel is varied: `scenario:` carries the goal, and every configuration runs the
-    campaign's own nav2 parameters.
+    One factor, on the `scenario:` channel: the goal.
   keywords: [robotics, navigation, ROS2, mujoco, roqsim, nav2, depot]
 configuration:
 - name: goal
   variations:
+  # Map-frame goals; the robot starts at the map origin. Identical to basic_nav_gazebo.vast.
   - ParameterVariationList:
       scenario: goal_pose
       values:
@@ -64,6 +64,8 @@ visualization:
           position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
           minimizable: true
           minimized: true
+      # Speed is not a recorded column, so it is derived here from consecutive poses. The Gazebo
+      # half plots the same table with a plain `timeseries`, the cheaper spelling without one.
       - vega:
           title: base_link
           position: {anchor: bottom-right, width: 320, height: 380}
@@ -129,20 +131,28 @@ execution:
       resources:
         cpu: 2
         memory: 640Mi
+  # The declared figures are each container's starting point and the ceiling a measured one may not
+  # exceed; within them, the node's probe sizes each container from what it used.
   sizing: calibrated
   mode: ros2
-  runs: 10
+  # 5 goals x 5 runs, the same as the Gazebo half: a comparison of two simulators wants the same
+  # number of samples on each side.
+  runs: 5
   timeout: 300
   scenario_file: scenario_roqsim.osc
+  # Named rather than globbed: files/ is shared with the Gazebo half and run_files are hashed into
+  # a configuration's identity, so a glob lets a Gazebo-only file change this roqsim configuration.
   run_files:
-  - "files/*.yaml"
-  - "files/*.pgm"
-  - "files/*.xml"
-  - "files/*.sdf"
-  - "files/*.py"
+  - files/depot.yaml
+  - files/depot.pgm
+  - files/nav2_params.yaml
+  - files/nav2_bt.xml
+  - files/nav2_sut.launch.py
 results_processing:
   health_checks:
   - nav2_control_loop_rate
+  # Identical to basic_nav_gazebo.vast, so both halves' tables hold the same frames. `require` is
+  # what the analysis reads: a run missing a frame fails rather than yielding an empty table.
   postprocessing:
   - rosbags_tf_to_csv:
       frames: all

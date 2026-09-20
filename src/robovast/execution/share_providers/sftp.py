@@ -233,7 +233,7 @@ class SftpShareProvider(BaseShareProvider):
         ssh, sftp = self._connect()
         try:
             # confirm=False: a post-upload stat would race a just-written streamed file
-            # on some servers; the campaign's canonical copy stays in the object store.
+            # on some servers; the campaign's canonical copy stays in the results tree.
             sftp.putfo(reader, remote_path, confirm=False)
         finally:
             sftp.close()

@@ -35,7 +35,8 @@ from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest, FileListing,
+                                        CreateWorkspaceRequest, EditFileRequest,
+                                        ERROR_CODE_HEADER, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
@@ -43,13 +44,17 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceError, UploadGrant,
+                                        ServiceCache, ServiceError, UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 
 logger = logging.getLogger(__name__)
+
+#: How long a cache report or clear may take. Both walk every file in the caches, and a
+#: campaign fetched whole can hold a hundred thousand of them.
+_CACHE_TIMEOUT_S = 600.0
 
 
 class HTTPTransport(RobovastInterface):
@@ -105,7 +110,12 @@ class HTTPTransport(RobovastInterface):
             detail = (resp.text or "").strip()[:500]
         raise ServiceError(resp.status_code,
                            detail or f"{resp.status_code} {resp.reason}",
-                           resp.url)
+                           resp.url,
+                           # The class of the refusal, where the service named one: the
+                           # exception type itself cannot cross this boundary, and a client
+                           # that has to act on which failure this was would otherwise have
+                           # to match on the sentence.
+                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip())
 
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file
@@ -134,9 +144,9 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return resp.json()
 
-    def _delete(self, route: str, **params):
+    def _delete(self, route: str, *, timeout: "float | None" = None, **params):
         resp = self.session.delete(f"{self.base_url}{route}", params=params or None,
-                               timeout=self.timeout)
+                               timeout=timeout or self.timeout)
         self.raise_for_status(resp)
         return resp.json()
 
@@ -145,6 +155,14 @@ class HTTPTransport(RobovastInterface):
 
     def resource_usage(self) -> ResourceUsage:
         return ResourceUsage.model_validate(self._get(Routes.USAGE))
+
+    def service_cache(self) -> ServiceCache:
+        return ServiceCache.model_validate(
+            self._get(Routes.ADMIN_CACHE, timeout=_CACHE_TIMEOUT_S))
+
+    def clear_service_cache(self) -> ServiceCache:
+        return ServiceCache.model_validate(
+            self._delete(Routes.ADMIN_CACHE, timeout=_CACHE_TIMEOUT_S))
 
     def upgrade_info(self) -> UpgradeInfo:
         return UpgradeInfo.model_validate(self._get(Routes.ADMIN_UPGRADE))
@@ -299,6 +317,16 @@ class HTTPTransport(RobovastInterface):
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
 
+    def set_campaign_scheduling(self, campaign_id: str, priority: Optional[int] = None,
+                                paused: Optional[bool] = None) -> ActionResult:
+        # ``_post`` drops the ``None``s, which is exactly the contract here: an omitted half
+        # must stay off the wire, or the service would read a default as an instruction and a
+        # pause would silently reset the rank the campaign resumes at. ``False`` is not None
+        # and is sent, which is what makes resuming work.
+        return ActionResult.model_validate(
+            self._post(Routes.campaign_scheduling(campaign_id),
+                       priority=priority, paused=paused))
+
     def stop_job(self, campaign_id: str, job_name: str,
                  reason: Optional[str] = None, source: str = "api") -> ActionResult:
         return ActionResult.model_validate(
@@ -315,11 +343,6 @@ class HTTPTransport(RobovastInterface):
         request = request or ListCampaignsRequest()
         return ListCampaignsResponse.model_validate(
             self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset))
-
-    def cleanup_campaign_data(self, request) -> ActionResult:
-        return ActionResult.model_validate(
-            self._post(Routes.CLEANUP_DATA,
-                       {"campaign_id": request.campaign_id, "force": request.force}))
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))
@@ -417,14 +440,17 @@ class HTTPTransport(RobovastInterface):
             self._get(Routes.campaign_retrigger_check(campaign_id)))
 
     def validate_project(self, workspace_id: str, path: str = "",
-                         check_world: bool = True) -> ValidationReport:
+                         check_world: bool = True,
+                         check_scenario: bool = True) -> ValidationReport:
         from robovast.service.interface import COMMAND_LIMIT_S
         return ValidationReport.model_validate(
             self._post(Routes.workspace_validate(workspace_id),
-                       json={"path": path, "check_world": check_world},
-                       # The world check runs a container: cold, that is seconds on the
-                       # local lane and can be well over ten on a busy cluster, which the
-                       # default read timeout would cut short mid-check.
+                       json={"path": path, "check_world": check_world,
+                             "check_scenario": check_scenario},
+                       # The world and scenario checks run a container: cold, that is
+                       # seconds on the local lane and can be well over ten on a busy
+                       # cluster, which the default read timeout would cut short
+                       # mid-check.
                        timeout=COMMAND_LIMIT_S))
 
     def preview_configurations(
@@ -485,7 +511,24 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return resp.iter_content(chunk_size=64 * 1024, decode_unicode=True)
 
-    def campaign_tar_stream(self, campaign_id: str):
+    # -- the data plane: tar streams, never held at either end --
+
+    def _stream(self, route: str, **params):
+        resp = self.session.get(f"{self.base_url}{route}", params=params or None,
+                                timeout=self.DATA_TIMEOUT, stream=True)
+        self.raise_for_status(resp)
+        return resp.iter_content(chunk_size=1024 * 1024)
+
+    def _upload(self, route: str, stream):
+        """PUT *stream* (an iterable of bytes, or a file-like) as a chunked body."""
+        from robovast.service.interface import OutputsIngested
+        body = stream if hasattr(stream, "read") else iter(stream)
+        resp = self.session.put(f"{self.base_url}{route}", data=body,
+                                timeout=self.DATA_TIMEOUT)
+        self.raise_for_status(resp)
+        return OutputsIngested.model_validate(resp.json())
+
+    def campaign_tar_stream(self, campaign_id: str, selection=None):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
@@ -493,21 +536,27 @@ class HTTPTransport(RobovastInterface):
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """
-        resp = self.session.get(f"{self.base_url}{Routes.campaign_archive(campaign_id)}",
-                                timeout=self.DATA_TIMEOUT, stream=True)
-        self.raise_for_status(resp)
-        return resp.iter_content(chunk_size=1024 * 1024)
+        params = {}
+        if selection is not None:
+            params = {k: v for k, v in selection.model_dump().items() if v}
+        return self._stream(Routes.campaign_archive(campaign_id), **params)
 
-    def campaign_data_status(self, campaign_id: str) -> "CampaignDataStatus":
-        # Deliberately the *default* timeout: this is the cheap probe, and if it hangs the
-        # answer is "the service is unwell", not "be patient".
-        from robovast.service.interface import CampaignDataStatus
-        return CampaignDataStatus.model_validate(
-            self._get(Routes.campaign_data_status(campaign_id)))
+    def campaign_inputs_tar_stream(self, campaign_id: str, config_files=None):
+        return self._stream(Routes.campaign_inputs(campaign_id),
+                            config_file=[f"{cn}:{rel}" for cn, rel in (config_files or ())])
+
+    def ingest_campaign_outputs(self, campaign_id: str, stream):
+        return self._upload(Routes.campaign_outputs(campaign_id), stream)
+
+    def staged_tar_stream(self, slot: str, path: str = ""):
+        return self._stream(Routes.staged(slot), **({"path": path} if path else {}))
+
+    def ingest_staged(self, slot: str, stream):
+        return self._upload(Routes.staged(slot), stream)
 
     def campaign_scene_status(self, campaign_id: str, config_name: str,
                               run_id: str) -> "SceneStatus":
-        # The default timeout, as for data-status: this is the cheap probe, and it never builds.
+        # The default timeout: this is the cheap probe, and it never builds.
         from robovast.service.interface import SceneStatus
         return SceneStatus.model_validate(self._get(
             Routes.campaign_scene(campaign_id),

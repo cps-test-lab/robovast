@@ -16,11 +16,12 @@
 
 """Where RoboVAST's own node-local state lives, decided once and made durable.
 
-Everything a deployment keeps is node-local by default: the object store and the campaign
-index beside it, the workspaces and the results, the registry, and the build cache -- a
-``hostPath`` each. A stock cluster ships no StorageClass, so ``hostPath`` is not a preference
-here, it is the fallback that works. The pin therefore holds the campaigns themselves, not
-only rebuildable blobs: a deployment that came up on another node would find an empty store.
+Everything a deployment keeps is node-local by default: the results volume that holds every
+campaign and the campaign index beside it, the workspaces, the registry, and the build cache
+-- a ``hostPath`` each. A stock cluster ships no StorageClass, so ``hostPath`` is not a
+preference here, it is the fallback that works. The pin therefore holds the campaigns
+themselves, not only rebuildable blobs: a deployment that came up on another node would find
+an empty results volume.
 
 Nothing pinned them, and the failure that follows is silent in both directions. A
 ``cleanup`` followed by a ``setup`` left no trace of the previous placement, so the
@@ -84,14 +85,13 @@ CAMPAIGN_NODE_TOLERATIONS = ({"key": "dedicated", "value": "batch", "effect": "N
 #: chosen".
 NODE_ID_LABEL = "robovast.io/node-id"
 
-#: The node pool campaign jobs may run on, as ``{label: value}`` -- what
-#: ``execution.kubernetes.jobs.node_labels`` means now.
+#: The node pool campaign jobs may run on, as ``{label: value}``.
 #:
 #: It reaches the running service through this env var rather than through a ``.vast``,
 #: because it is a property of the CLUSTER and not of a campaign: a per-campaign override
-#: would let one campaign widen the pool every other one is confined to. ``setup_server``
-#: reads the operator's file and stamps it here, which is the same path the headroom figures
-#: take.
+#: would let one campaign widen the pool every other one is confined to. The operator sets
+#: the same variable in the ``.env`` that ``vast cluster setup`` and ``vast service upgrade``
+#: read, and both stamp it into the service's environment.
 #:
 #: Two consumers, and both are needed for it to mean anything. The budget provider counts
 #: only matching nodes, so nothing outside the pool is ever offered as capacity; and every
@@ -109,10 +109,20 @@ def job_node_pool() -> dict:
     "every node" would scatter a campaign across machines the operator had excluded, and the
     symptom appears nowhere near the cause.
     """
-    import json  # noqa: PLC0415
     import os  # noqa: PLC0415
 
-    raw = (os.environ.get(JOB_NODE_POOL_ENV) or "").strip()
+    return parse_job_node_pool(os.environ.get(JOB_NODE_POOL_ENV))
+
+
+def parse_job_node_pool(raw) -> dict:
+    """The pool as written in :data:`JOB_NODE_POOL_ENV`, ``""``/``None`` being ``{}``.
+
+    Shared by the service reading its own environment and by a deploy reading the live
+    Deployment's, so both refuse the same malformed value rather than one of them guessing.
+    """
+    import json  # noqa: PLC0415
+
+    raw = (raw or "").strip()
     if not raw:
         return {}
     try:
@@ -124,6 +134,108 @@ def job_node_pool() -> dict:
         raise ValueError(f"{JOB_NODE_POOL_ENV}={raw!r} must be a JSON object of "
                          "label -> value strings")
     return value
+
+#: The operator's name for one machine a campaign may confine all its jobs to, as a node
+#: label ``robovast.io/job-node-alias=<alias>``. A campaign names the alias
+#: (``execution.kubernetes.jobs.node``), never the node, so no hostname reaches a ``.vast``,
+#: a pod spec or an error a campaign sees.
+#:
+#: A node label for the reason :data:`DATA_NODE_LABEL` is one: cluster-scoped, so it survives
+#: ``upgrade`` and ``cleanup`` without being recorded anywhere else. The operator states the
+#: registry in :data:`JOB_NODE_ALIASES_ENV`, and ``setup`` and ``upgrade`` both reconcile the
+#: labels to it (:func:`ensure_alias_labels`).
+#:
+#: **Narrowing only.** An alias resolves only to a node inside :data:`JOB_NODE_POOL_ENV`'s
+#: pool, checked when it is registered and again when a campaign starts
+#: (:func:`resolve_job_node_alias`), so a campaign can never use it to leave the pool.
+JOB_NODE_ALIAS_LABEL = "robovast.io/job-node-alias"
+
+#: The operator's alias registry: a JSON object of alias -> node name, the shape
+#: :data:`JOB_NODE_POOL_ENV` and the bootstrap sizing variables take. Set in the ``.env`` the
+#: ``vast`` command loads, and read there by ``setup`` and ``upgrade`` only.
+#:
+#: **Not** carried into the service's environment, unlike the pool: the service resolves an
+#: alias from the node labels, so the node names stay on the operator's machine and in the
+#: cluster's own node objects, and never in a manifest.
+JOB_NODE_ALIASES_ENV = "ROBOVAST_JOB_NODE_ALIASES"
+
+
+class _RepeatedAlias(ValueError):
+    """An alias given twice in :data:`JOB_NODE_ALIASES_ENV`."""
+
+
+def job_node_alias_problem(alias) -> Optional[str]:
+    """Why *alias* is not a legal job node alias, or ``None`` when it is.
+
+    The rule is the one :func:`robovast.common.config.validate_job_node_alias` holds a
+    campaign's ``execution.kubernetes.jobs.node`` to, read from the same pattern, so an alias
+    the operator can register is exactly one a campaign can name. The sentence is this
+    module's own: the schema's speaks about a ``.vast`` key.
+    """
+    from robovast.common.config import (  # pylint: disable=import-outside-toplevel
+        JOB_NODE_ALIAS_MAX_LEN, JOB_NODE_ALIAS_PATTERN)
+
+    if not isinstance(alias, str) or not alias:
+        return "a job node alias must be a non-empty string"
+    if len(alias) > JOB_NODE_ALIAS_MAX_LEN:
+        return (f"job node alias {alias!r} is {len(alias)} characters; a Kubernetes label "
+                f"value allows at most {JOB_NODE_ALIAS_MAX_LEN}")
+    if not JOB_NODE_ALIAS_PATTERN.fullmatch(alias):
+        return (f"job node alias {alias!r} must be lowercase letters, digits, '-' and '_', "
+                "starting and ending with a letter or digit")
+    return None
+
+
+def parse_job_node_aliases(raw) -> dict:
+    """:data:`JOB_NODE_ALIASES_ENV` as ``{alias: node}``, ``""``/``None`` being ``{}``.
+
+    Raises :class:`ValueError` naming the variable and every problem at once: not JSON, not
+    an object of non-empty strings, an alias that is not legal, or an alias given twice --
+    which ``json.loads`` would otherwise settle silently in favour of the last one. The
+    value itself is not echoed; it holds node names.
+    """
+    import json  # noqa: PLC0415
+
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+
+    def _no_repeats(pairs):
+        seen = {}
+        for key, value in pairs:
+            if key in seen:
+                raise _RepeatedAlias(f"{JOB_NODE_ALIASES_ENV}: alias {key!r} is given more "
+                                     "than once")
+            seen[key] = value
+        return seen
+
+    try:
+        value = json.loads(raw, object_pairs_hook=_no_repeats)
+    except _RepeatedAlias:
+        raise
+    except ValueError as exc:
+        raise ValueError(f"{JOB_NODE_ALIASES_ENV} is not JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f'{JOB_NODE_ALIASES_ENV} must be a JSON object of alias -> node name, '
+                         'e.g. {"bench": "node-a"}')
+    problems = []
+    for alias, node in value.items():
+        problem = job_node_alias_problem(alias)
+        if problem:
+            problems.append(problem)
+        if not isinstance(node, str) or not node.strip():
+            problems.append(f"job node alias {alias!r} names no node")
+    if problems:
+        raise ValueError(f"{JOB_NODE_ALIASES_ENV} refused:\n  " + "\n  ".join(problems))
+    return {alias: node.strip() for alias, node in value.items()}
+
+
+def job_node_aliases_from_env() -> dict:
+    """The registry the operator's environment states -- see :func:`parse_job_node_aliases`."""
+    import os  # noqa: PLC0415
+
+    return parse_job_node_aliases(os.environ.get(JOB_NODE_ALIASES_ENV))
+
 
 DATA_NODE_LABEL = "robovast.io/data-node"
 
@@ -388,6 +500,10 @@ def clear_labels(core, labels=(DATA_NODE_LABEL, BUILD_NODE_LABEL)) -> list:
     Only ``cleanup --forget-placement`` calls this. Forgetting is deliberately not the
     default: the labels are the stickiness, and clearing them on every teardown would
     restore exactly the behaviour this module removes.
+
+    :data:`JOB_NODE_ALIAS_LABEL` is not among the defaults and must not be: the alias
+    registry is the operator's naming of the cluster's machines, not a placement this
+    deployment chose, so forgetting where the data went does not forget it.
     """
     cleared = []
     for label in labels:
@@ -395,6 +511,259 @@ def clear_labels(core, labels=(DATA_NODE_LABEL, BUILD_NODE_LABEL)) -> list:
             core.patch_node(node, {"metadata": {"labels": {label: None}}})
             cleared.append(node)
     return sorted(set(cleared))
+
+
+class AliasUnresolved(Exception):
+    """A job node alias does not name exactly one node a campaign job may run on.
+
+    :attr:`cause` is one of the ``AliasUnresolved.*`` constants, so a caller can tell the
+    remedies apart without parsing the message. The message names the alias and never a
+    node: it reaches a campaign, and a campaign's errors travel with it. The node, where
+    there is one, goes to the log only.
+    """
+
+    #: No node carries the alias.
+    UNREGISTERED = "unregistered"
+    #: More than one node carries it, so a selector would float between them.
+    AMBIGUOUS = "ambiguous"
+    #: The node is cordoned, not Ready, or carries a taint a job pod does not tolerate.
+    UNSCHEDULABLE = "unschedulable"
+    #: The node is outside the cluster's job node pool.
+    OUTSIDE_POOL = "outside-pool"
+    #: The node carries no :data:`NODE_ID_LABEL`, so a job cannot be pinned to it.
+    UNIDENTIFIED = "unidentified"
+
+    def __init__(self, alias: str, cause: str, message: str):
+        super().__init__(message)
+        self.alias = alias
+        self.cause = cause
+
+
+def registered_aliases(core) -> dict:
+    """The alias registry as it is on the cluster: ``{alias: [node names, sorted]}``.
+
+    A list per alias rather than one name, because nothing in Kubernetes stops two nodes
+    carrying the same label value, and a reader that collapsed them would report a
+    registry that the scheduler does not have. Only the operator-facing paths (setup,
+    upgrade, doctor) may show the names.
+    """
+    registry = {}
+    for node in core.list_node(label_selector=JOB_NODE_ALIAS_LABEL).items:
+        alias = (node.metadata.labels or {}).get(JOB_NODE_ALIAS_LABEL)
+        if alias:
+            registry.setdefault(alias, []).append(node.metadata.name)
+    return {alias: sorted(nodes) for alias, nodes in sorted(registry.items())}
+
+
+def _in_pool(node, pool) -> bool:
+    labels = node.metadata.labels or {}
+    return all(labels.get(k) == v for k, v in (pool or {}).items())
+
+
+def job_node_alias_problems(core, aliases: dict, pool: dict) -> list:
+    """What stops *aliases* (``{alias: node}``) from being registered, one line each.
+
+    ``[]`` means every alias is legal, every named node exists and is eligible for a
+    campaign job -- schedulable with :data:`CAMPAIGN_NODE_TOLERATIONS` and inside *pool*
+    (the same :func:`eligible_nodes` question the pool itself is answered with) -- and no
+    node is named twice, which a single-valued label cannot hold. All problems at once, so
+    an operator fixes the command in one pass. The lines name nodes: the caller is the
+    operator who typed them.
+    """
+    problems = []
+    for alias in aliases:
+        problem = job_node_alias_problem(alias)
+        if problem:
+            problems.append(problem)
+    by_node = {}
+    for alias, node in aliases.items():
+        by_node.setdefault(node, []).append(alias)
+    for node, names in sorted(by_node.items()):
+        if len(names) > 1:
+            problems.append(f"node {node!r} is named by {len(names)} aliases "
+                            f"({', '.join(sorted(names))}); a node carries at most one")
+    if not aliases:
+        return problems
+    known = {n.metadata.name: n for n in core.list_node().items}
+    eligible = set(eligible_nodes(core, CAMPAIGN_NODE_TOLERATIONS, extra_labels=pool))
+    for alias, node in sorted(aliases.items()):
+        if node in eligible:
+            continue
+        if node not in known:
+            problems.append(f"alias {alias!r}: no node is called {node!r}")
+        elif not _in_pool(known[node], pool):
+            problems.append(
+                f"alias {alias!r}: node {node!r} is outside the campaign job node pool "
+                f"({', '.join(f'{k}={v}' for k, v in pool.items())}); an alias narrows "
+                "the pool and cannot leave it")
+        else:
+            problems.append(
+                f"alias {alias!r}: node {node!r} cannot run a campaign job: it is "
+                "cordoned, not Ready, or carries a taint a job pod does not tolerate")
+    return problems
+
+
+class AliasChanges(NamedTuple):
+    """What :func:`ensure_alias_labels` did.
+
+    ``registry`` is the registry afterwards, ``{alias: node}``. ``labelled`` is the aliases
+    put on a node they were not on, and ``unlabelled`` is ``{alias: [nodes]}`` for every
+    label taken off -- an alias that moved appears in both, one that was dropped only in
+    the second.
+    """
+
+    registry: dict
+    labelled: dict
+    unlabelled: dict
+
+
+def ensure_alias_labels(core, aliases: dict, dry_run: bool = False) -> AliasChanges:
+    """Make the cluster's alias registry exactly *aliases* (``{alias: node}``).
+
+    A reconcile, not an addition: every node carrying :data:`JOB_NODE_ALIAS_LABEL` with a
+    value other than the one *aliases* gives it loses the label. :data:`JOB_NODE_ALIASES_ENV`
+    states the whole registry, so an alias it no longer names is one the operator no longer
+    declares -- including when the variable is unset in the shell the command ran from.
+
+    Validates nothing about the nodes -- :func:`job_node_alias_problems` is the caller's
+    step before this, so an argument error leaves no half-written registry -- but refuses a
+    node named twice, which would otherwise silently keep whichever alias was patched last.
+    """
+    by_node = {}
+    for alias, node in aliases.items():
+        if node in by_node:
+            raise ValueError(f"node {node!r} is named by aliases {by_node[node]!r} and "
+                             f"{alias!r}; a node carries at most one")
+        by_node[node] = alias
+    current = {node: alias for alias, nodes in registered_aliases(core).items()
+               for node in nodes}
+    unlabelled = {}
+    for node, alias in sorted(current.items()):
+        if by_node.get(node) == alias:
+            continue
+        unlabelled.setdefault(alias, []).append(node)
+        if node not in by_node:     # a node given another alias is overwritten below
+            logger.info("removing %s=%s from node %s", JOB_NODE_ALIAS_LABEL, alias, node)
+            if not dry_run:
+                core.patch_node(node, {"metadata": {"labels": {JOB_NODE_ALIAS_LABEL: None}}})
+    labelled = {}
+    for node, alias in sorted(by_node.items()):
+        if current.get(node) == alias:
+            continue
+        logger.info("labelling node %s %s=%s", node, JOB_NODE_ALIAS_LABEL, alias)
+        if not dry_run:
+            core.patch_node(node, {"metadata": {"labels": {JOB_NODE_ALIAS_LABEL: alias}}})
+        labelled[alias] = node
+    return AliasChanges(dict(sorted(aliases.items())), labelled,
+                        {a: sorted(n) for a, n in sorted(unlabelled.items())})
+
+
+def refuse_job_node_aliases(core, aliases: dict, pool: dict) -> None:
+    """Raise :class:`ValueError` listing every :func:`job_node_alias_problems` line, if any."""
+    problems = job_node_alias_problems(core, aliases, pool)
+    if problems:
+        raise ValueError("job node aliases refused, nothing was registered:\n  "
+                         + "\n  ".join(problems))
+
+
+def check_job_node_aliases(aliases: dict, pool: dict, kube_context=None) -> None:
+    """Load the kube config and :func:`refuse_job_node_aliases`; reads nothing for ``{}``.
+
+    The step a command runs before it changes anything, so a refused alias leaves the
+    cluster as it was. One stubbable name, like :func:`apply_job_node_aliases`.
+    """
+    if not aliases:
+        return
+    from kubernetes import client  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(context=kube_context)
+    refuse_job_node_aliases(client.CoreV1Api(), aliases, pool)
+
+
+def apply_job_node_aliases(aliases: dict, pool: dict, kube_context=None) -> AliasChanges:
+    """Load the kube config, refuse *aliases* on any problem, then reconcile the registry.
+
+    One name for setup to call, so it is stubbable the way :func:`apply_node_id_labels` is.
+    The refusal is repeated here, immediately before the labels are written, so what is
+    written is what was just checked; see :func:`refuse_job_node_aliases`.
+    """
+    from kubernetes import client  # noqa: PLC0415
+
+    from .kube_client import load_kube_config  # noqa: PLC0415
+
+    load_kube_config(context=kube_context)
+    core = client.CoreV1Api()
+    refuse_job_node_aliases(core, aliases, pool)
+    return ensure_alias_labels(core, aliases)
+
+
+def resolve_job_node_alias(core, alias: str, *, pool: dict) -> str:
+    """The :data:`NODE_ID_LABEL` value of the one node *alias* names, for a campaign's pin.
+
+    Checked at campaign start, not only at registration, because a node's standing moves
+    underneath a registry: it is cordoned, the pool is changed by an ``upgrade``, a second
+    node is labelled by hand. Raises :class:`AliasUnresolved` with a distinct
+    :attr:`~AliasUnresolved.cause` for each; the message names the alias, never the node.
+
+    The node is tested with the predicates :func:`eligible_nodes` applies --
+    :func:`node_is_schedulable` with :data:`CAMPAIGN_NODE_TOLERATIONS`, and the pool's
+    labels -- asked separately so the message can say which failed.
+
+    An *alias* that is not legal is a :class:`ValueError`: the configuration schema refuses
+    it, so reaching here with one is a caller's bug, not a registry state.
+    """
+    problem = job_node_alias_problem(alias)
+    if problem:
+        raise ValueError(problem)
+    nodes = core.list_node(label_selector=f"{JOB_NODE_ALIAS_LABEL}={alias}").items
+    if not nodes:
+        known = sorted(registered_aliases(core))
+        raise AliasUnresolved(
+            alias, AliasUnresolved.UNREGISTERED,
+            f"job node alias {alias!r} is not registered on this cluster. Registered: "
+            f"{', '.join(known) or '(none)'}. An operator registers one in "
+            f"{JOB_NODE_ALIASES_ENV} and applies it with `vast cluster setup` or "
+            "`vast service upgrade`.")
+    if len(nodes) > 1:
+        raise AliasUnresolved(
+            alias, AliasUnresolved.AMBIGUOUS,
+            f"job node alias {alias!r} is registered on {len(nodes)} nodes, so it does not "
+            "name one machine. An operator must re-register it on one node.")
+    node = nodes[0]
+    logger.info("job node alias %s names node %s", alias, node.metadata.name)
+    if not node_is_schedulable(node, CAMPAIGN_NODE_TOLERATIONS):
+        raise AliasUnresolved(
+            alias, AliasUnresolved.UNSCHEDULABLE,
+            f"the node job node alias {alias!r} names cannot run a campaign job now: it is "
+            "cordoned, not Ready, or carries a taint a job pod does not tolerate.")
+    if not _in_pool(node, pool):
+        raise AliasUnresolved(
+            alias, AliasUnresolved.OUTSIDE_POOL,
+            f"the node job node alias {alias!r} names is outside this cluster's campaign "
+            "job node pool, and an alias can only narrow the pool.")
+    node_id = (node.metadata.labels or {}).get(NODE_ID_LABEL)
+    if not node_id:
+        raise AliasUnresolved(
+            alias, AliasUnresolved.UNIDENTIFIED,
+            f"the node job node alias {alias!r} names carries no {NODE_ID_LABEL} label, so "
+            "a job cannot be pinned to it. Re-running `vast cluster setup` labels it.")
+    return node_id
+
+
+def job_node_selector(existing, node_id, pool: dict) -> dict:
+    """A job pod's ``nodeSelector``: what it carried, ANDed with *pool*, then the pin.
+
+    In that order, so neither can widen the other: the pool overrides a spec's own value
+    for a pool key, and the pin (a :data:`NODE_ID_LABEL` value, or ``None`` for none)
+    narrows the pool to one node rather than replacing it. Pure; ``{}`` when there is
+    nothing to select on.
+    """
+    selector = {**(existing or {}), **(pool or {})}
+    if node_id:
+        selector[NODE_ID_LABEL] = node_id
+    return selector
 
 
 def resolve_placement(core, label: str, *, node_local: bool = True, requested: str = "",

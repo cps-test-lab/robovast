@@ -903,7 +903,8 @@ def ensure_plugins_importable(install_dir: str, vast_path: str | None = None) ->
     phase is deliberately materialize-only, so anything resolving a plugin **in** the
     long-lived process — a batch analysis run, a search's per-batch
     ``search.postprocessing`` step, a search **extractor**, or a re-run in a fresh
-    process / fetched campaign — would not otherwise see them. This installs the
+    process such as a postprocessing pod working on the copy it fetched — would not
+    otherwise see them. This installs the
     recorded specs into the workspace venv when absent and puts it on ``sys.path``;
     "install if absent" is what lets a re-run after a service restart resolve them.
 

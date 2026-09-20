@@ -30,6 +30,8 @@ const API_PREFIXES = [
   '/admin',
   // the two content namespaces (files by address)
   '/results', '/sources',
+  // the data plane: tar streams (the campaign download)
+  '/data',
   // FastAPI's own pages
   '/docs', '/openapi.json',
 ]

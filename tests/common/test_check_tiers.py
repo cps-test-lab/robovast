@@ -170,6 +170,23 @@ def test_no_runner_and_no_docker_refuses_naming_what_wanted_it(monkeypatch):
     assert "not a defect in the file" in excinfo.value.next_step
 
 
+def test_a_family_ref_is_named_after_its_member(monkeypatch):
+    """``family:<member>`` read as an ordinary reference has ``member`` as its TAG.
+
+    Stripping the tag then left every family ref called ``aux-family``: two specs naming
+    different members deduplicated onto one container -- the aux pod would hold one and the
+    second spec's commands would run in the wrong image -- and a refusal could not say which
+    image it wanted.
+    """
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    assert ContainerSpec(image="family:robovast-roqsim").container_name() == \
+        "aux-robovast-roqsim"
+    names = {ContainerSpec(image=f"family:{m}").container_name()
+             for m in ("robovast-roqsim", "robovast-sidecar")}
+    assert len(names) == 2, names
+
+
 def test_local_docker_still_serves_the_fallback(monkeypatch):
     """The working case: a host with docker previews a container-backed variation."""
     from robovast.common.config_generation import _make_container_runner
@@ -277,6 +294,37 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
     assert response.aux_containers == ["aux-builder"]
 
 
+def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
+    """Validation composes too, so it is a place a runner has to be arranged.
+
+    It counts a sweep's cells by composing the file, which reaches whatever that composition
+    asks for a container -- so on a lane with no ``docker`` to fall back on, a project whose
+    world only the simulator can enumerate was reported invalid for a property of where the
+    check ran. It shares preview's tag: the two are the same authoring loop over the same
+    file, and one warm container serves both.
+    """
+    from robovast.service.local_transport import LocalTransport, _preview_tag
+
+    entered = []
+
+    @contextlib.contextmanager
+    def _record(self, tag, project, *, hold=False):
+        entered.append((tag, hold))
+        yield
+
+    monkeypatch.setattr(LocalTransport, "_aux_runner_context", _record)
+    monkeypatch.setattr(LocalTransport, "_resolve_project",
+                        lambda self, ws, path: SimpleNamespace(config_path=str(tmp_path / "x.vast")))
+    monkeypatch.setattr("robovast.common.config_validation.validate_project_file",
+                        lambda _path: {"valid": True, "problems": [], "configs": 1,
+                                       "runs_per_config": 1, "total_trials": 1})
+
+    LocalTransport.validate_project(LocalTransport.__new__(LocalTransport), "ws-1", "x.vast",
+                                    check_world=False)
+
+    assert entered == [(_preview_tag("ws-1", "x.vast"), True)]
+
+
 def test_the_preview_tag_is_stable_per_project_and_name_safe():
     """Stable or the pod is never reused; name-safe or it cannot be a pod name at all."""
     from robovast.service.local_transport import _preview_tag
@@ -304,14 +352,16 @@ def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
     seen = []
     monkeypatch.setattr(
         LocalTransport, "_aux_runner_context",
-        lambda self, tag, project, *, hold=False: (
-            seen.append((tag, hold)) or contextlib.nullcontext()))
+        lambda self, tag, project, *, hold=False, should_stop=None: (
+            seen.append((tag, hold, should_stop)) or contextlib.nullcontext()))
+    stop = object()
     with LocalTransport._campaign_context(
-            LocalTransport.__new__(LocalTransport), "camp-7", None):
+            LocalTransport.__new__(LocalTransport), "camp-7", None, should_stop=stop):
         pass
     # The campaign's own id, and *not* held: its span owns the container, which is what
-    # lets per-campaign cleanup find it.
-    assert seen == [("camp-7", False)]
+    # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits a
+    # lane's span makes that are long enough for an operator to give up on.
+    assert seen == [("camp-7", False, stop)]
 
 
 def test_composition_reports_the_aux_container_it_used():

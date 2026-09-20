@@ -33,16 +33,20 @@ from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from pprint import pformat
 
+from robovast.client.status import failure_detail
+
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
+from .config_location import variation_line
 from .config_plugins import ensure_workspace_plugins
-from .errors import missing_input_error
+from .errors import (ActionableError, AuxContainerUnavailable, ExecPathUnavailable,
+                     missing_input_error)
 from .file_cache2 import CacheKey, FileCache2
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
 from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
-from .variation.base_variation import (VariationConfigError,
+from .variation.base_variation import (VariationConfigError, VariationFailed,
                                        VariationInfeasibleError)
 from .variation.loader import _validate_variation_class
 
@@ -155,8 +159,6 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
         # container: the alternative is `docker run` in a Popen that raises a bare
         # FileNotFoundError deep in the variation, which reads as a broken .vast. Conditional
         # on docker being genuinely absent, so a local host that has it is untouched.
-        from robovast.common.errors import \
-            AuxContainerUnavailable  # pylint: disable=import-outside-toplevel
         who = purpose or "a variation"
         raise AuxContainerUnavailable(
             f"{who} requires the auxiliary container '{spec.container_name()}' "
@@ -211,10 +213,15 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
         progress_update_callback(msg)
         raise VariationInfeasibleError(msg, config_name=e.config_name) from e
     except Exception as e:
+        # A bug in the plugin. The progress line names it; the exception carries the frames,
+        # rendered here, once: the surfaces it reaches print an exception's message and
+        # nothing else, so the file and line it broke at are only ever seen if the message
+        # holds them (see VariationFailed).
         msg = f"Variation failed. {variation_class.__name__}: {e}"
         logger.error(msg)
         progress_update_callback(msg)
-        raise RuntimeError(msg) from e
+        raise VariationFailed(
+            f"Variation failed. {variation_class.__name__}: {failure_detail(e)}") from e
 
     # Check if configs is None and return empty list
     if configs is None:
@@ -283,12 +290,19 @@ def _plugin_run_files(vast_dir, parameters):
     return found
 
 
-def _backend_run_files(vast_dir, parameters):
+def _backend_run_files(vast_dir, parameters, *, container_queries: bool = True):
     """Files the simulator backend declares its simulator needs, relative to the ``.vast``.
 
     Empty when no backend is declared, when the backend declares nothing, or when it
     cannot be resolved -- composition must not fail here on a backend problem that
     validation reports properly elsewhere.
+
+    *container_queries* is the opt-in :func:`~robovast.common.simulators.sim_input_files`
+    already states the rule for: a caller that owns a runner answers the query, and one
+    that does not asks nothing rather than reporting a partial list. False returns no run
+    files for a world only the simulator's image can enumerate, so it is for composing a
+    REPORT -- a count of configurations, which these files do not affect -- and never for
+    composing a run, whose world would then travel without the parent it extends.
     """
     from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
         ContainerQuery, backend_name, resolve_backend)
@@ -301,12 +315,19 @@ def _backend_run_files(vast_dir, parameters):
         backend = resolve_backend(name, vast_dir)
         cfg = _backend_cfg(backend, execution, name)
         declared = backend.input_files(cfg, execution, vast_dir)
-        if isinstance(declared, ContainerQuery):
-            return _run_input_files_query(declared, vast_dir)
-        return [str(p) for p in (declared or [])]
     except Exception as exc:  # noqa: BLE001 - reported by validation, not here
         logger.debug("simulator backend declared no input files: %s", exc)
         return []
+    # Past here the backend has ANSWERED, and the swallow above no longer applies. What it
+    # answered may be a question only the simulator's own image can settle, and every way
+    # asking can fail -- nothing arranged a runner, the aux pod never came up, this cluster
+    # cannot pull the image, the query printed no JSON -- propagates. Dropping an unanswered
+    # question instead stages a world without the parent it extends, so the run pulls its
+    # image, schedules its pod and dies on a file that never travelled: the failure the query
+    # exists to prevent, and indistinguishable from a world that genuinely is one file.
+    if isinstance(declared, ContainerQuery):
+        return _run_input_files_query(declared, vast_dir) if container_queries else []
+    return [str(p) for p in (declared or [])]
 
 
 def _stage_query_documents(runner, query, expose):
@@ -337,12 +358,16 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     Until this existed, a world extending another *campaign* file staged only the YAML: the
     run then failed in the container on a parent that never travelled, after the image pull.
 
-    Paths outside the campaign directory are dropped rather than staged. They are the ones
-    that arrived with the image (a packaged world's meshes), and copying them would put a
-    second, diverging copy of an installed asset into the campaign.
+    The answer comes back in the CONTAINER's paths, and is translated: the campaign tree is
+    exposed at :data:`CONFIG_MOUNT`, which is also where the command named the world, so
+    everything the campaign owns is rooted there and nothing under it exists on this host.
+    A path that is neither under the mount nor under the campaign directory arrived with the
+    image (a packaged world's meshes) and is dropped rather than staged, because copying it
+    would put a second, diverging copy of an installed asset into the campaign.
     """
     runner = _make_container_runner(query.spec, image_project=image_project,
-                                    image_project_tag=image_project_tag)
+                                    image_project_tag=image_project_tag,
+                                    purpose="the simulator's input-files query")
     if runner is None:
         return []
     lines = []
@@ -357,6 +382,17 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
                 CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
             expose(vast_dir, CONFIG_MOUNT)
         runner.run(query.command, lines.append)
+    except subprocess.CalledProcessError as exc:
+        # The container's own words, not the runner's exit status. ``CalledProcessError``
+        # renders as "returned non-zero exit status N" and nothing else, and the failure this
+        # query meets most -- an image with no simulator in it, so the exec never starts --
+        # states its reason ONLY on the exception, never through the line callback. Dropping
+        # it leaves a bare number standing for a cause that names itself.
+        spoke = (_command_failure(str(exc.output or "").splitlines())
+                 or _command_failure(lines))
+        raise RuntimeError(
+            "the simulator backend's input-files query failed in "
+            f"{getattr(query.spec, 'image', '') or 'its image'}: {spoke or exc}") from exc
     finally:
         runner.close()
 
@@ -368,12 +404,24 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     if payload.get("packaged"):
         return []
 
+    from robovast.common.simulators import \
+        CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
+
     root = os.path.abspath(vast_dir)
+    # Both roots are accepted because both are true of some runner: one that mirrors the tree
+    # into a fixed mount answers in the mount's paths, one that can place it at the identical
+    # absolute path answers in the campaign's. Neither is a guess about which ran -- a path
+    # can only be under one of them.
+    mount = CONFIG_MOUNT.rstrip("/")
     relative = []
     for path in payload.get("inputs") or []:
-        absolute = os.path.abspath(str(path))
-        if absolute.startswith(root + os.sep):
-            relative.append(os.path.relpath(absolute, root))
+        text = str(path)
+        for base in (mount, root):
+            if text.startswith(base + os.sep):
+                rel = os.path.relpath(text, base)
+                if rel not in relative:
+                    relative.append(rel)
+                break
     return relative
 
 
@@ -409,9 +457,9 @@ def _validated_variation_config(variation_class, parameters):
     return model(**parameters)
 
 
-def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
-                            parameters, vast_dir):
-    """Check what each variation says it will write, before any of them runs.
+def _check_declared_contracts(config, classes_and_parameters, scenario_parameters,
+                              parameters, vast_dir):
+    """Check what each variation says it will write and read, before any of them runs.
 
     A variation's outputs were never checked at all: the scenario-file check covers only the
     hand-written ``parameters:`` block, so a plugin writing a parameter the ``.osc`` does not
@@ -423,6 +471,12 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
     "undeclared", which is every third-party plugin and was the state of every plugin before
     this existed.
 
+    Inputs are checked in the SAME walk, because the answer depends on order: the variations run
+    in the order the ``.vast`` lists them, so a value one reads must already have been put there
+    -- by the campaign's own ``parameters:`` block, or by a variation ahead of it. Carrying that
+    set through the one loop is what makes "nothing writes this" answerable at all; separately it
+    would have to reconstruct the same ordering.
+
     The ``sim`` half checks the destination is addressable in the backend's schema. Whether
     the *path inside* an override actually exists in a particular world is a question only
     the simulator can answer, so a typo there is still refused in the container.
@@ -430,6 +484,12 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
     valid_names = [p.get('name') for p in (scenario_parameters or [])
                    if isinstance(p, dict) and 'name' in p]
     execution = parameters.get('execution', {}) or {}
+    # What a variation could read at this point in the walk: whatever the campaign stated
+    # outright, plus what each variation ahead of it writes, added as the walk passes.
+    available = set(channel(config, SCENARIO) or {})
+    #: ``{slot: parameter}`` for every slot written so far, so a variation reading a slot
+    #: resolves the name the campaign gave it without restating it.
+    slot_writers: dict = {}
 
     backend = backend_key_checker = None
     sut_destinations: list = []
@@ -441,12 +501,30 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
             # and this whole check silently did nothing, for every channel. A config that
             # will not validate is skipped rather than reported here; it is refused a
             # moment later with a message about the config itself.
-            declared = variation_class.declared_outputs(
-                _validated_variation_config(variation_class, variation_parameters)) or {}
+            validated = _validated_variation_config(variation_class, variation_parameters)
+            declared = variation_class.declared_outputs(validated) or {}
+            reads = variation_class.declared_inputs(validated) or {}
         except Exception as exc:  # noqa: BLE001 - a plugin that cannot answer is not checked
-            logger.debug("%s did not declare its outputs: %s",
+            logger.debug("%s did not declare its contract: %s",
                          variation_class.__name__, exc)
             continue
+
+        # Reads before writes: a variation cannot read what it writes itself, so checking in
+        # that order names the variation that is actually missing an input rather than the one
+        # that would have supplied it.
+        for slot, stated in reads.items():
+            name = stated or slot_writers.get(slot)
+            if name is None:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} reads '{slot}', "
+                    f"which no earlier variation writes. Either put a variation that writes "
+                    f"'{slot}' ahead of this one, or say which parameter holds it: "
+                    f"'reads: {{{slot}: <parameter>}}'.")
+            if name not in available:
+                raise ValueError(
+                    f"Scenario '{config['name']}': {variation_class.__name__} reads '{slot}' "
+                    f"from '{name}', which no earlier variation writes and the 'parameters:' "
+                    f"block does not set. Available here: {sorted(available)}")
 
         unknown = [n for n in declared.get('scenario', []) if n not in valid_names]
         if unknown and valid_names:
@@ -454,6 +532,13 @@ def _check_declared_outputs(config, classes_and_parameters, scenario_parameters,
                 f"Scenario '{config['name']}': {variation_class.__name__} writes "
                 f"{unknown}, which the scenario file does not declare. "
                 f"Valid parameters are: {valid_names}")
+        available.update(declared.get('scenario', []))
+        # The binding a later variation reading the same slot inherits, recorded here for the
+        # same reason `update_slots` records it at run time: the name is the campaign's, so a
+        # consumer can only know it from whoever wrote it.
+        bound = getattr(validated, 'scenario', None)
+        if isinstance(bound, dict):
+            slot_writers.update({k: v for k, v in bound.items() if isinstance(v, str)})
 
         sut_destinations.extend(declared.get('sut', []))
 
@@ -510,13 +595,35 @@ def _entity_names_in(value) -> set:
     return set()
 
 
+#: What settles a world query the simulator itself answered by failing: the image is the
+#: only thing that can change the answer.
+_IMAGE_STEP = ("the simulator in {image} answered the query itself, so that image is what "
+               "decides it: check the world path it names, and repin or rebuild the image "
+               "if it does not understand the query.")
+
+#: What settles a world query that nothing ran. Kept apart from _IMAGE_STEP because the two
+#: send a caller to opposite places, and the reply is the only thing that can tell them
+#: apart -- a lane that cannot start a container says nothing about the .vast.
+_LANE_STEP = ("nothing ran the query, so this says nothing about the .vast: check that the "
+              "execution lane can start a container (get_resource_usage, or `vast service "
+              "resources`) and validate again.")
+
+
 class WorldQueryUnavailable(RuntimeError):
     """The world could not be described, with the reason a caller can act on.
 
     Not "this campaign is wrong": it is unverifiable from here. Kept distinct from a plain
     ``ValueError`` so a caller pre-*checking* can carry on (and warn) while a caller *asking*
     can report why. Collapsing the two makes a failed lookup indistinguishable from a clean one.
+
+    ``next_step`` is what would settle the question, and it is the whole value of this
+    exception to a caller who cannot: a reason with no remedy leaves an agent guessing at
+    the ``.vast`` for a failure that was never about the file.
     """
+
+    def __init__(self, message: str, *, next_step: str = ""):
+        super().__init__(message)
+        self.next_step = next_step
 
 
 def describe_world_payload(execution, block, vast_dir, *, entities: bool = False,
@@ -554,7 +661,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         raise WorldQueryUnavailable(
             f"this campaign's world is described by its own built image ({image}), which does "
             "not exist yet -- build the experiment image first")
-    runner = _make_container_runner(query.spec)
+    runner = _make_container_runner(query.spec, purpose="the world description")
     if runner is None:
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []
@@ -569,6 +676,18 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
             expose(vast_dir, CONFIG_MOUNT)
             _stage_query_documents(runner, query, expose)
         runner.run(query.command, lines.append)
+    except ExecPathUnavailable:
+        # Passed through, not folded into the verdict below: "could not describe this world
+        # in <image>" is a claim about this world and this image, and both are fine -- the
+        # deployment simply cannot run a command in a container. Callers tell the two apart
+        # by the type, and the world and scenario checks report this one as unchecked.
+        raise
+    except ActionableError:
+        # Passed through for the same reason, and for one more: this refusal already names
+        # the single command that would move the caller forward -- an image that has to be
+        # built before anything can run in it. Folded into the verdict below it loses that,
+        # and the lane advice that replaces it sends a caller to check a lane that works.
+        raise
     except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
         # A non-zero exit that nonetheless PRINTED a payload is a partial answer, not a failure: a
         # simulator that could not build the world can still say which plugin keys it has, and that
@@ -581,16 +700,18 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         # The command's own last words, not the runner's: an old image whose simulator does not
         # know a flag says so itself ("unrecognized arguments: --overridable"), and that names
         # the remedy. Without this the CalledProcessError left the service returning a bare 500.
+        spoke = _command_failure(lines)
         raise WorldQueryUnavailable(
-            f"{name} could not describe this world in {image}: "
-            f"{_command_failure(lines) or str(exc)}") from None
+            f"{name} could not describe this world in {image}: {spoke or exc}",
+            next_step=(_IMAGE_STEP.format(image=image) if spoke else _LANE_STEP)) from None
     finally:
         runner.close()
     payload = _last_json_line(lines)
     if payload is None:
         raise WorldQueryUnavailable(
             f"{name} could not describe this world in {image}: "
-            f"{_command_failure(lines) or '(no output)'}")
+            f"{_command_failure(lines) or '(no output)'}",
+            next_step=_IMAGE_STEP.format(image=image))
     return payload, image
 
 
@@ -612,7 +733,7 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
     """Check every ``sim`` override addresses a plugin the world actually has.
 
     The ``sim`` channel is writable without this but not *discoverable*: a campaign writes
-    ``plugins.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod,
+    ``components.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod,
     and only then is refused by ``apply_overrides``. Nothing before the container could tell,
     because resolving a world's ``extends`` chain needs the simulator.
 
@@ -663,6 +784,14 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
         try:
             payload, _image = describe_world_payload(
                 execution, block, vast_dir, entities=bool(named))
+        except (ExecPathUnavailable, ActionableError) as exc:
+            # Advisory, like the arm below and for the reason in this function's docstring --
+            # but with no second attempt to make: neither a deployment that cannot run a
+            # command in a container nor an image that is not built yet is changed by
+            # dropping the overrides, so the retry below would be refused identically.
+            logger.warning("sim overrides were not pre-checked (%s). They are still refused "
+                           "in the container if they are wrong.", exc)
+            return
         except WorldQueryUnavailable as exc:
             # A simulator too old to take the overrides on its describe (no ``--override``: it
             # says "unrecognized arguments" and exits) can still answer the half that does not
@@ -851,9 +980,22 @@ def _check_config_file_paths(configs, scenario_file):
                     f"subdirectory, or rename it.")
 
 
+def _query_key(query) -> str:
+    """What a :class:`~robovast.common.simulators.ContainerQuery` asks, as one string.
+
+    Two queries with the same image, command and documents ask the same question of the same
+    simulator and get the same answer; the key is that and nothing more, so a backend whose
+    query does carry a block's overrides is still asked once per distinct set of them.
+    """
+    from dataclasses import asdict  # pylint: disable=import-outside-toplevel
+    return json.dumps({"spec": asdict(query.spec), "command": list(query.command),
+                       "documents": query.documents}, sort_keys=True, default=str)
+
+
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                scenario_parameters=None, *,
-                               image_project=None, image_project_tag=None):
+                               image_project=None, image_project_tag=None,
+                               container_queries: bool = True):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
     Runs **after** the variation loop, because that is the first point at which a
@@ -865,6 +1007,12 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     and the **union** of the worlds those blocks name joins ``run_files`` -- once per
     distinct block, since a campaign varying its world has several and each has to be
     mounted for the simulator to open it.
+
+    Where the backend answers with a question for the simulator's image, each distinct
+    question is asked once. A query may depend on less than the block it is asked for -- one
+    naming only the world, while the block also carries an override that swaps a mesh -- and
+    a sweep varying such an override is then one question however many blocks it has. Each
+    ask is a container round trip, which is what makes the distinction worth keeping.
 
     Errors are raised when the campaign actually uses the channel and swallowed when it does
     not: a ``sim:`` path that no backend accepts is a mistake worth failing composition for,
@@ -902,14 +1050,38 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         if resolved not in seen_blocks:
             seen_blocks.append(resolved)
 
-    for block in seen_blocks:
+    # True when the failure happened *inside* the query rather than while resolving the
+    # backend around it -- the same line `_backend_run_files` draws, drawn from in here
+    # because `sim_input_files` owns both halves. Nothing between the two catches, so the
+    # exception the caller re-raises is the original, with whatever next_step it carries.
+    query_failed = []
+    answers: dict = {}
+
+    def ask(query):
+        key = _query_key(query)
+        if key in answers:
+            return answers[key]
         try:
-            declared = sim_input_files(
-                execution, block, vast_dir,
-                run_query=lambda query: _run_input_files_query(
-                    query, vast_dir, image_project=image_project,
-                    image_project_tag=image_project_tag))
+            answers[key] = _run_input_files_query(
+                query, vast_dir, image_project=image_project,
+                image_project_tag=image_project_tag)
+        except BaseException:
+            query_failed.append(True)
+            raise
+        return answers[key]
+
+    for block in seen_blocks:
+        query_failed.clear()
+        try:
+            declared = sim_input_files(execution, block, vast_dir,
+                                       run_query=ask if container_queries else None)
         except Exception as exc:  # noqa: BLE001 - as above
+            if query_failed:
+                # Raised whether or not the campaign writes the channel: what a world is made
+                # of is not a matter of taste a campaign can decline, and an incomplete answer
+                # reads exactly like a complete one until the run opens a file that never
+                # travelled.
+                raise
             if uses_channel:
                 raise
             logger.debug("simulator backend declared no input files: %s", exc)
@@ -943,7 +1115,7 @@ def _backend_cfg(backend, execution, name):
     return _validated_cfg(backend, dict(block), name)
 
 
-def _generated_run_files(vast_dir, parameters, records):
+def _generated_run_files(vast_dir, parameters, records, container_queries=True):
     """Files produced by ``execution.generate``, as paths relative to the ``.vast``.
 
     Derived from each entry's declared ``out`` rather than from *records*, so the
@@ -961,6 +1133,11 @@ def _generated_run_files(vast_dir, parameters, records):
         out_dir = resolve_out_dir(params.get("out"), vast_dir,
                                   f"execution.generate[{index}].{name}")
         if not os.path.isdir(out_dir):
+            if not container_queries:
+                # Composing a report, where a generator needing a container was skipped: no
+                # directory is the expected outcome, not a `.vast` naming a file that is not
+                # there. Composing to RUN still passes True and still fails here.
+                continue
             raise missing_input_error(
                 [(f"execution.generate[{index}].{name}.out", params.get("out"), out_dir)])
         found.extend(collect_output_files(out_dir, vast_dir))
@@ -1106,6 +1283,9 @@ def _get_variation_classes(scenario_config, vast_dir=""):
     entry point or by a local ``<path>.py:<Class>`` file reference resolved
     relative to ``vast_dir`` (parity with search strategies/extractors and
     results postprocessing).
+
+    Returns ``(variation_class, parameters, ref)`` per entry, *ref* being the name as the
+    ``.vast`` wrote it -- what a message quotes to point a reader back into the file.
     """
 
     # Get the variation list from settings
@@ -1147,7 +1327,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
             # Each item in the list should be a dict with one key (the class name)
             for class_name in item.keys():
                 if class_name in available_classes:
-                    variation_classes.append((available_classes[class_name], item[class_name]))
+                    variation_classes.append((available_classes[class_name], item[class_name], class_name))
                 elif is_file_ref(class_name):
                     # Local '<path>.py:<Class>' reference relative to the .vast dir.
                     variation_class = load_ref(class_name, 'robovast.variation_types', vast_dir)
@@ -1155,7 +1335,7 @@ def _get_variation_classes(scenario_config, vast_dir=""):
                     if errors:
                         raise ValueError(
                             f"Invalid variation plugin '{class_name}': {'; '.join(errors)}")
-                    variation_classes.append((variation_class, item[class_name]))
+                    variation_classes.append((variation_class, item[class_name], class_name))
                 else:
                     error_msg = f"Unknown variation class '{class_name}' found in variation file.\n"
                     if not available_classes:
@@ -1482,7 +1662,7 @@ def _result_from_transport(data: dict, output_dir) -> dict:
 
 def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                       tolerate_infeasible=False, image_project=None,
-                      image_project_tag=None):
+                      image_project_tag=None, container_queries=True):
     """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
 
     The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
@@ -1526,6 +1706,10 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
                 "output_dir": output_dir,
                 "use_cache": bool(use_cache),
                 "tolerate_infeasible": bool(tolerate_infeasible),
+                # Crosses the boundary because the worker composes the run files too: a
+                # flag that stopped here would be silently ignored for exactly the
+                # campaigns that declare plugins.
+                "container_queries": bool(container_queries),
                 # In the job file, not the env: the worker composes for exactly this
                 # campaign, and the parent process may be composing others against other
                 # projects at the same time. An inherited env var would be whichever
@@ -1574,7 +1758,7 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     return _result_from_transport(transport, output_dir)
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None, container_queries=True):
     """Generate all scenario variation configs from a .vast file.
 
     ``image_project`` / ``image_project_tag`` select which project the RoboVAST image
@@ -1623,6 +1807,16 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     Pass ``isolate_plugins=False`` to compose in-process when a caller needs
     live variation GUI classes. A warm cache hit returns without forking. Built-in-only
     vasts (no ``plugins:``) always compose in-process.
+
+    ``container_queries`` answers what only the simulator's own image can answer -- which
+    files a world made of several actually needs. True (the default) is every caller that
+    composes a campaign to RUN it, and the query's failure propagates, because a world
+    staged without the parent it extends is a run that dies after the image pull. False is
+    for composing a REPORT of what the file expands to: the count of configurations, which
+    those files do not affect. It is how a caller keeps the half that needs no container
+    when the exec path is unavailable -- and what it costs is that the run files are not
+    enumerated, so the result must never be staged and the caller must say the query went
+    unanswered rather than let silence read as a pass.
     """
     if not progress_update_callback:
         progress_update_callback = logger.debug
@@ -1659,6 +1853,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             progress_update_callback,
             container_runner_factory=_container_runner_factory.get(),
             use_cache=use_cache,
+            container_queries=container_queries,
         )
 
     run_files = []
@@ -1702,7 +1897,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # -- treats them exactly like hand-written inputs, with no second code path. In the
     # isolated subprocess this re-derives them from `out` on disk without loading any
     # generator (generated_records is empty there).
-    for rel in _generated_run_files(vast_dir, parameters, generated_records):
+    for rel in _generated_run_files(vast_dir, parameters, generated_records,
+                                    container_queries=container_queries):
         if rel not in run_files:
             run_files.append(rel)
 
@@ -1723,7 +1919,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # `_resolve_config_sim_blocks`. The default is still staged here because it is what the
     # `.vast` declares and therefore what the composition cache key must cover; a campaign
     # whose every configuration replaces it simply carries one file it never opens.
-    for rel in _backend_run_files(vast_dir, parameters):
+    for rel in _backend_run_files(vast_dir, parameters, container_queries=container_queries):
         if rel not in run_files:
             run_files.append(rel)
 
@@ -1827,7 +2023,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     if should_isolate:
         return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                                  tolerate_infeasible, image_project=image_project,
-                                 image_project_tag=image_project_tag)
+                                 image_project_tag=image_project_tag,
+                                 container_queries=container_queries)
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
@@ -1886,15 +2083,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                         f"Valid parameters are: {valid_param_names}"
                     )
 
-        _check_declared_outputs(
-            config, variation_classes_and_parameters,
+        _check_declared_contracts(
+            config, [(cls, params) for cls, params, _ref in variation_classes_and_parameters],
             existing_scenario_parameters, parameters, vast_dir)
 
         current_configs = [{
             'name': config['name'],
             'config': config_dict}]
 
-        for variation_class, variation_parameters in variation_classes_and_parameters:
+        for variation_class, variation_parameters, variation_ref in variation_classes_and_parameters:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
             # Auxiliary container: if the plugin declares one, the active backend
@@ -1911,18 +2108,23 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
                                                                                                           variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
-            except (VariationInfeasibleError, VariationConfigError) as exc:
-                # Name the config block here -- neither execute_variation nor the plugin
-                # knows it, but it is exactly what a reader needs to act on the message
-                # (which config, not just which plugin/why), whether this propagates
-                # (batch mode) or is only logged before the config is dropped (search).
+            except (VariationInfeasibleError, VariationConfigError, VariationFailed) as exc:
+                # Name the config block and the .vast line here -- neither execute_variation
+                # nor the plugin knows either, and they are exactly what a reader needs to
+                # act on the message (which config, which line, not just which plugin/why),
+                # whether this propagates (batch mode) or is only logged before the config
+                # is dropped (search).
                 #
-                # Both classes, and the type is preserved: a draw a plugin refuses and a
-                # draw no arrangement realizes are equally unrunnable, so a search skips
+                # All three classes, and the type is preserved: a draw a plugin refuses and
+                # a draw no arrangement realizes are equally unrunnable, so a search skips
                 # both -- while a batch, which tolerates neither, still gets the message
-                # that fits its case.
-                named_exc = type(exc)(
-                    f"config '{config['name']}': {exc}", config_name=config['name'])
+                # that fits its case. A plugin that broke is never skipped.
+                line = variation_line(variation_file, config['name'], variation_ref)
+                where = f"{os.path.basename(variation_file)}:{line}: " if line else ""
+                named = f"{where}config '{config['name']}': {exc}"
+                if isinstance(exc, VariationFailed):
+                    raise VariationFailed(named) from exc
+                named_exc = type(exc)(named, config_name=config['name'])
                 if not tolerate_infeasible:
                     raise named_exc from exc
                 # This parameter draw cannot be realized (e.g. ObstacleVariation lost its
@@ -2019,7 +2221,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                existing_scenario_parameters,
                                image_project=image_project,
-                               image_project_tag=image_project_tag)
+                               image_project_tag=image_project_tag,
+                               container_queries=container_queries)
 
     # Extract execution parameters from execution section
     #

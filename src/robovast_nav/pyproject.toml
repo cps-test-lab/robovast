@@ -5,6 +5,9 @@ description = "Navigation-specific variation types for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast_nav"}]
 # The costmap run-view panel ships as a built Module-Federation remote (see web/), served by the
 # robovast service from this package data. Built by `npm --prefix web install && npm --prefix web run
@@ -15,7 +18,6 @@ exclude = ["web"]
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 robovast = "^2.0.0"
-robovast-mcp = {version = "^0.1.0", optional = true}
 scipy = "^1.11"
 # Imported by mcp_plugin (map rasters) and the notebook map visualizer. Declared here
 # because they are this package's imports, rather than left to robovast to carry.
@@ -54,6 +56,11 @@ nav2_control_loop_rate = "robovast_nav.health_checks:ControlLoopRate"
 
 [tool.poetry.plugins."robovast.mcp_plugins"]
 nav = "robovast_nav.mcp_plugin:NavMCPPlugin"
+
+# The run view's costmap panel as an inset on a rendered video: `roqsim render --overlay costmap`.
+# A name in roqsim's documented entry-point group, nothing imported from it.
+[tool.poetry.plugins."roqsim.render_overlays"]
+costmap = "robovast_nav.video_overlay:CostmapOverlay"
 
 [build-system]
 requires = ["poetry-core"]

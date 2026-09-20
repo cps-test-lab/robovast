@@ -2,343 +2,609 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The aux container's workspace mirroring: how it moves, and when it is skipped.
+"""The aux container's workspace transfer: how it moves, and when it is skipped.
 
 These tests are what keep one shape from coming back. Piping a base64 tarball into
 ``base64 -d | tar xzf -`` and relying on stdin EOF to end it cannot work here: the
 Kubernetes stream client can write stdin but cannot half-close it, so the receiver waits
-forever, the exec never returns, and ``run()`` hangs -- measured against a live pod on an
-*empty* workspace at 2m47s before it was killed. Framing the read with ``head -c <n>``
-is what avoids it.
+forever, the exec never returns, and ``run()`` hangs. Framing the read with ``head -c
+<n>`` is what avoids it.
 
-The transfer now goes through the object store instead, the way a campaign Job and the
-container-exec lane already stage: no stdin in either direction, so that failure mode is
-gone by construction rather than by a correct byte count. What is pinned here is that
-*absence*, the empty-workspace short-circuit that the hang was first seen on, and the
-cleanup — a per-variation runner that leaked its prefix would accumulate all campaign long.
+The transfer goes through the service's data plane instead, the way a campaign Job and the
+container-exec lane stage: a ``curl | tar`` fetch and a ``tar | curl`` delivery, both
+exec'd in the pod's transfer container, so no stdin in either direction and that failure
+mode is excluded by construction rather than by a correct byte count. What is pinned here
+is that *absence*, the empty-workspace short-circuit, and the cleanup — a per-variation
+runner that leaked its tree, or its copy inside the pod, would accumulate all campaign
+long.
 """
 
 import os
 
 import pytest
 
+from robovast.common.errors import ExecTargetGone
 from robovast.common.variation.container_runner import ContainerSpec
-from robovast.execution.cluster_execution.container_runner import (AuxPodSession,
+from robovast.execution.cluster_execution.container_runner import (TRANSFER_CONTAINER,
+                                                                   AuxPodSession,
                                                                    ClusterContainerRunner,
-                                                                   aux_owner_prefix,
-                                                                   build_aux_pod_manifest,
-                                                                   mc_host_env)
-
-_S3 = ("http://robovast:9000", "minioadmin", "minioadmin")
-
-
-class _FakeStore:
-    def __init__(self):
-        self.uploads, self.downloads, self.deleted = [], [], []
-
-    def upload_dir(self, local_dir, bucket, prefix=""):
-        self.uploads.append((local_dir, bucket, prefix))
-        return 1
-
-    def download_prefix(self, bucket, prefix, local_dir, force=False, on_file=None):
-        self.downloads.append((bucket, prefix, local_dir, force))
-        return 1
-
-    def delete_prefix(self, bucket, prefix):
-        self.deleted.append((bucket, prefix))
-        return 1
+                                                                   aux_pod_name,
+                                                                   aux_slot,
+                                                                   build_aux_pod_manifest)
+from robovast.execution.cluster_execution.pod_access import DATA_URL_ENV, TOKEN_ENV
 
 
-def _runner(store=None, owner="c-2026-08-06-000000"):
+@pytest.fixture(name="staged")
+def _staged(tmp_path):
+    """The service's ``staged_dir`` / ``discard_staged`` / ``scoped_token``, over a temp root."""
+    root = tmp_path / "_staged"
+
+    class _Staged:
+        def __init__(self):
+            self.discarded = []
+
+        def stage_dir(self, slot):
+            return root / slot
+
+        def discard(self, slot):
+            self.discarded.append(slot)
+            path = root / slot
+            if not path.exists():
+                return False
+            import shutil
+            shutil.rmtree(path)
+            return True
+
+        @staticmethod
+        def token_for(scope):
+            return f"tok({scope})"
+
+    return _Staged()
+
+
+def _runner(staged, pod="pod-x"):
     spec = ContainerSpec(image="example/img:1", keep_alive_command=["sleep", "infinity"])
-    return ClusterContainerRunner(spec, "pod-x", "ns", core_v1=object(),
-                                  storage=store if store is not None else _FakeStore(),
-                                  bucket="robovast-image-builds", owner_id=owner)
+    return ClusterContainerRunner(spec, pod, "ns", core_v1=object(),
+                                  stage_dir=staged.stage_dir)
+
+
+def _session(staged, campaign="c-2026-08-06-000000", **kwargs):
+    return AuxPodSession(campaign, "ns", stage_dir=staged.stage_dir,
+                         discard_staged=staged.discard, token_for=staged.token_for,
+                         **kwargs)
+
+
+def _manifest(staged, spec, **kwargs):
+    return build_aux_pod_manifest("c-1", [spec], "ns", stage_dir=staged.stage_dir,
+                                  token_for=staged.token_for, **kwargs)["spec"]
 
 
 class _Recorder:
-    """Captures what would have been exec'd, instead of talking to a cluster."""
+    """Captures what would have been exec'd, and where, instead of talking to a cluster."""
 
     def __init__(self):
         self.calls = []
 
-    def __call__(self, command, stdin_data=None, progress_update_callback=None):
-        self.calls.append((command, stdin_data))
+    def __call__(self, command, stdin_data=None, progress_update_callback=None,
+                 container=""):
+        self.calls.append((command, stdin_data, container))
         return ""
+
+    @property
+    def scripts(self):
+        return [cmd[2] for cmd, _payload, _container in self.calls if len(cmd) > 2]
 
 
 # -- the transfer -------------------------------------------------------------
 
 
-def test_neither_direction_uses_stdin_at_all(monkeypatch):
-    """The EOF hang cannot recur, because nothing is written to stdin any more.
+def test_neither_direction_uses_stdin_at_all(monkeypatch, staged):
+    """Nothing is written to stdin, so there is no EOF to wait for and nothing to frame.
 
-    This is the strengthened successor to the ``head -c <n>`` test: that one checked the
-    framing was *correct*, this one checks there is nothing left to frame.
+    Both directions are one ``curl``/``tar`` pipeline against the data plane, run in the
+    transfer container.
     """
-    store = _FakeStore()
-    runner = _runner(store)
+    runner = _runner(staged)
     with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
         fh.write("sim: {}\n")
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
     runner._copy_out()
 
-    assert [payload for _cmd, payload in rec.calls] == [None, None]
-    for cmd, _payload in rec.calls:
-        script = cmd[2]
-        for gone in ("head -c", "base64", "tar xzf", "tar czf"):
-            assert gone not in script, f"{gone!r} is the transport that was replaced"
+    assert [payload for _cmd, payload, _c in rec.calls] == [None, None]
+    for script in rec.scripts:
+        assert "curl" in script and f"${DATA_URL_ENV}" in script, script
 
 
-def test_copy_in_uploads_then_mirrors_down(monkeypatch):
-    store = _FakeStore()
-    runner = _runner(store)
+def test_the_workspace_is_the_staged_tree_itself(staged):
+    """No copy between the runner and what the pod fetches.
+
+    The workspace lives inside the pod's slot on the service's disk, so the fetch reads
+    it as it is and the delivery lands on it directly; and the pod mounts that slot at
+    the same absolute path, which is what keeps the plugin's paths valid on both sides.
+    """
+    runner = _runner(staged)
+    slot_dir = staged.stage_dir(aux_slot("pod-x"))
+    assert os.path.dirname(runner.workspace) == str(slot_dir)
+    assert os.path.isdir(runner.workspace)
+
+
+def test_copy_in_fetches_this_workspace_from_the_pods_slot(monkeypatch, staged):
+    runner = _runner(staged)
     with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
         fh.write("sim: {}\n")
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
-    (local, bucket, prefix), = store.uploads
-    assert local == runner.workspace and bucket == "robovast-image-builds"
-    (cmd, _), = rec.calls
+    (cmd, _payload, container), = rec.calls
+    assert container == TRANSFER_CONTAINER, "the aux image is asked for nothing"
     script = cmd[2]
-    # Remote is the source, local the destination.
-    assert f"'mystore/{bucket}/{prefix}/' '{runner.workspace}/'" in script
-    assert "/tools/mc" in script, "mc comes from the injected copy, not the aux image"
+    name = os.path.basename(runner.workspace)
+    assert f'"${DATA_URL_ENV}/staged/{aux_slot("pod-x")}?path={name}"' in script
+    assert f"tar -x -C {runner.workspace}" in script
+    assert f"chmod -R a+rwX {runner.workspace}" in script, \
+        "root fetched it; the aux user has to be able to write into it"
 
 
-def test_copy_in_creates_staged_empty_dirs_even_when_there_are_files(monkeypatch):
+def test_copy_in_carries_an_empty_output_directory_with_the_files(monkeypatch, staged):
     """The shape every two-step generator stages: inputs, plus an empty output directory.
 
-    An object store has no empty directories, so ``mc mirror`` recreates only the ones that
-    hold files -- it cannot know about one that is empty on purpose. The no-files path
-    already created the skeleton; this path assumed mc would cover it, and the empty output
-    directory silently did not arrive. ``floorplan generate`` validates its ``-o`` path and
-    exited 2 with "Path ... does not exist", after step 1 had passed because ``transform``
-    creates its own output directory.
+    A tar carries a directory entry whether or not anything is in it, so the workspace
+    travels whole and the directory the command was told to write into is there when it
+    runs -- with nothing to create separately.
     """
-    store = _FakeStore()
-    runner = _runner(store)
+    runner = _runner(staged)
     with open(os.path.join(runner.workspace, "hexagon.fpm"), "w", encoding="utf-8") as fh:
         fh.write("floorplan\n")
-    staged_out = os.path.join(runner.workspace, "artifacts", "hexagon")
-    os.makedirs(staged_out)
+    os.makedirs(os.path.join(runner.workspace, "artifacts", "hexagon"))
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
-    assert store.uploads, "there are files, so they do go through the store"
-    (cmd, _), = rec.calls
+    script, = rec.scripts
+    assert "curl" in script and "tar -x " in script
+    assert "artifacts" not in script, "nothing is created by hand; the tar carries it"
+
+
+def test_copy_out_delivers_the_workspace_under_its_own_name(monkeypatch, staged):
+    """Several runners share one pod, and one pod carries one token for one slot.
+
+    So the delivery has to keep the runner's directory name, or two workspaces delivered
+    to the slot would land on top of each other -- and this one would not land where it
+    was fetched from.
+    """
+    runner = _runner(staged)
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_exec", rec)
+
+    runner._copy_out()
+
+    (cmd, _payload, container), = rec.calls
+    assert container == TRANSFER_CONTAINER
     script = cmd[2]
-    assert f"'{staged_out}'" in script, "the empty output directory is created in the container"
-    assert "mirror" in script, "and it rides along with the mirror, costing no extra exec"
-    assert script.index("mkdir") < script.index("mirror"), "created before the files land"
-
-def test_copy_out_mirrors_up_then_downloads_forcing_a_refresh(monkeypatch):
-    """``force=True`` matters: the default skips a file whose size still matches, and a
-    regenerated artifact of the same size is an ordinary outcome, not a curiosity."""
-    store = _FakeStore()
-    runner = _runner(store)
-    rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
-
-    runner._copy_out()
-
-    (cmd, _), = rec.calls
-    assert f"'{runner.workspace}/' 'mystore/" in cmd[2], "local is the source going up"
-    (_bucket, _prefix, local, force), = store.downloads
-    assert local == runner.workspace and force is True
+    parent, name = os.path.split(runner.workspace)
+    assert f"tar -C {parent} -cf - {name} |" in script
+    assert f'-X PUT -T - -H "Content-Type: application/x-tar" "${DATA_URL_ENV}/staged/{aux_slot("pod-x")}"' in script
 
 
-def test_the_mirror_overwrites_rather_than_skipping_matching_files(monkeypatch):
-    """The transport this replaced extracted a tar over the destination, which always
-    overwrote. Without ``--overwrite`` mc would quietly keep the stale copy."""
-    runner = _runner()
-    rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
-    runner._copy_out()
-    assert "--overwrite" in rec.calls[0][0][2]
+def test_copy_in_of_an_empty_workspace_transfers_nothing(monkeypatch, staged):
+    """A generator whose inputs all live in its image stages nothing.
 
-
-def test_copy_in_of_an_empty_workspace_transfers_nothing(monkeypatch):
-    """A generator whose inputs all live in its image stages no files.
-
-    Round-tripping zero bytes is pure latency per ``run()`` -- and it is the case the
-    original hang was first seen on, so it is worth keeping honest.
+    Round-tripping zero bytes is pure latency per ``run()``. The directory still has to
+    exist in the pod, because the generator was handed that path.
     """
-    store = _FakeStore()
-    runner = _runner(store)
+    runner = _runner(staged)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
-    (command, payload), = rec.calls
+    (command, payload, container), = rec.calls
     assert payload is None, "nothing to send, so nothing is sent"
-    assert command[2] == f"mkdir -p '{runner.workspace}'", "but the workspace still exists"
-    assert store.uploads == [], "and nothing reaches the store either"
+    assert container == TRANSFER_CONTAINER
+    assert "curl" not in command[2], "nothing reaches the data plane"
+    assert f"mkdir -p {runner.workspace}" in command[2], "but the workspace still exists"
+    assert f"chmod 0777 {runner.workspace}" in command[2], "and the aux user can write into it"
 
 
-def test_copy_in_of_a_workspace_holding_only_empty_dirs_transfers_nothing(monkeypatch):
-    """The shape ``stage_for_container`` produces for a generator with no inputs.
-
-    It always creates an output directory for the generator to write into, so such a
-    workspace holds one empty dir and no files. Measuring emptiness in directory *entries*
-    called that non-empty: nothing was uploaded, and ``mc mirror`` then read a prefix that
-    did not exist and exited 1 -- which is how building a scene descriptor failed with an
-    object storage error. The directory still has to arrive, because the generator was
-    handed that path.
-    """
-    store = _FakeStore()
-    runner = _runner(store)
-    staged_out = os.path.join(runner.workspace, "out")
-    os.makedirs(staged_out)
+def test_a_workspace_holding_only_an_empty_dir_still_travels(monkeypatch, staged):
+    """The shape ``stage_for_container`` produces for a generator with no inputs: one
+    empty output directory. It is not empty, and a tar carries it, so it goes -- and the
+    directory arrives on the other side because the tar says so, not because the runner
+    listed it."""
+    runner = _runner(staged)
+    os.makedirs(os.path.join(runner.workspace, "out"))
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
 
     runner._copy_in()
 
-    (command, payload), = rec.calls
-    assert payload is None
-    assert store.uploads == [], "no files, so nothing may reach the store"
-    assert "mirror" not in command[2], "and nothing may be mirrored from an absent prefix"
-    assert f"'{staged_out}'" in command[2], "the staged output directory still arrives"
-    assert f"'{runner.workspace}'" in command[2]
+    script, = rec.scripts
+    assert "curl" in script
+    assert "mkdir -p " + os.path.join(runner.workspace, "out") not in script
 
 
-def test_a_runner_without_a_store_refuses_instead_of_running_unstaged(monkeypatch):
+def test_a_runner_without_a_stage_dir_refuses_at_construction():
+    """There is no unstaged mode: a runner that could not place its workspace would run the
+    command against nothing and look like a pass."""
     spec = ContainerSpec(image="example/img:1")
-    runner = ClusterContainerRunner(spec, "pod-x", "ns", core_v1=object())
-    with open(os.path.join(runner.workspace, "f.txt"), "w", encoding="utf-8") as fh:
-        fh.write("x")
-    monkeypatch.setattr(runner, "_retrying_exec", _Recorder())
-    with pytest.raises(RuntimeError, match="object store"):
-        runner._copy_in()
+    with pytest.raises(TypeError, match="stage_dir"):
+        ClusterContainerRunner(spec, "pod-x", "ns", core_v1=object())  # pylint: disable=missing-kwoa
 
 
 # -- isolation and cleanup ----------------------------------------------------
 
 
-def test_two_runners_never_share_a_prefix():
-    """A runner is built per *variation*, so two of them sharing one aux container would
-    share a prefix — and whichever closed first would delete the other's files."""
-    a, b = _runner(), _runner()
-    assert a._prefix != b._prefix
-    assert a._prefix.startswith(aux_owner_prefix("c-2026-08-06-000000"))
+def test_two_runners_on_one_pod_never_share_a_workspace(staged):
+    """A runner is built per *variation*, so two of them sharing one aux pod would
+    share a tree — and whichever closed first would delete the other's files."""
+    a, b = _runner(staged), _runner(staged)
+    assert a.workspace != b.workspace
+    assert os.path.dirname(a.workspace) == os.path.dirname(b.workspace), \
+        "but they sit in the same slot, which is the pod's"
 
 
-def test_close_drops_the_mirror_and_the_local_scratch():
-    store = _FakeStore()
-    runner = _runner(store)
+def test_close_drops_the_local_workspace(staged):
+    runner = _runner(staged)
     workspace = runner.workspace
     runner.close()
-    assert store.deleted == [("robovast-image-builds", runner._prefix)]
-    assert not os.path.exists(workspace), "the service's temp dir is not the pod's problem"
+    assert not os.path.exists(workspace)
 
 
-def test_a_failing_delete_does_not_fail_the_variation():
-    class _Broken(_FakeStore):
-        def delete_prefix(self, bucket, prefix):
-            raise RuntimeError("store is down")
+def test_close_also_drops_the_copy_inside_the_pod(monkeypatch, staged):
+    """The fetched workspace is removed from the pod, not only from here.
 
-    runner = _runner(_Broken())
+    Each runner's workspace has a path of its own, so a copy left behind is never
+    overwritten by the next runner's: it accumulates for the pod's whole life, on an
+    emptyDir, which is ephemeral storage the Pod reserves none of. A composition long
+    enough to fill the node has the kubelet evict the aux Pod it is composing against.
+    """
+    runner = _runner(staged)
+    with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("sim: {}\n")
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_exec", rec)
+    runner._copy_in()
+    workspace = runner.workspace
+    rec.calls.clear()
+
+    runner.close()
+
+    (cmd, _payload, container), = rec.calls
+    assert container == TRANSFER_CONTAINER
+    assert f"rm -rf {workspace}" in cmd[2]
+
+
+def test_close_execs_nothing_when_nothing_was_transferred(monkeypatch, staged):
+    """A runner may be built and closed without ever reaching the pod -- the query it
+    was made for failed before it ran, say -- and then there is no pod to remove anything
+    from, and possibly no pod at all."""
+    runner = _runner(staged)
+    rec = _Recorder()
+    monkeypatch.setattr(runner, "_exec", rec)
+
+    runner.close()
+
+    assert rec.calls == []
+
+
+def test_a_failing_remove_in_the_pod_does_not_fail_the_variation(monkeypatch, staged):
+    """The pod being gone is one of the ways a composition ends; a teardown that raised
+    over it would replace the real failure with its own."""
+    runner = _runner(staged)
+    with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("sim: {}\n")
+    monkeypatch.setattr(runner, "_exec", _Recorder())
+    runner._copy_in()
+
+    def _gone(*_args, **_kwargs):
+        raise RuntimeError("could not open an exec stream")
+
+    monkeypatch.setattr(runner, "_exec", _gone)
     runner.close()   # must not raise
 
 
-def test_the_session_sweeps_what_a_crashed_runner_left(monkeypatch):
-    """``close`` runs in a ``finally``, but not if the process died between them."""
-    store = _FakeStore()
-    session = AuxPodSession("c-2026-08-06-000000", [], "ns", core_v1=object(),
-                            storage=store, bucket="b", s3=_S3)
-    session._created = True
+def test_the_session_sweeps_what_a_crashed_runner_left(monkeypatch, staged):
+    """``close`` runs in a ``finally``, but not if the process died between them: the
+    pod's whole slot goes with the pod."""
+    session = _session(staged, core_v1=object())
+    pod = aux_pod_name("c-2026-08-06-000000", "aux-img")
+    session._created = {pod}
+    session._pods = {"aux-img": pod}
     monkeypatch.setattr(session, "_client",
                         lambda: type("C", (), {
                             "delete_namespaced_pod": lambda *a, **k: None})())
     session.__exit__(None, None, None)
-    assert store.deleted == [("b", aux_owner_prefix("c-2026-08-06-000000"))]
+    assert staged.discarded == [aux_slot(pod)]
 
 
-def test_partial_store_wiring_is_refused_at_construction():
-    """A pod with mc but no client (or the reverse) fails at the first run(), deep inside
-    a plugin, instead of here where the cause is legible."""
-    with pytest.raises(ValueError, match="together"):
-        AuxPodSession("c-1", [], "ns", storage=_FakeStore(), bucket="b")
+def test_a_failing_discard_does_not_fail_the_campaign(monkeypatch, staged):
+    def _broken(slot):
+        raise RuntimeError("disk is gone")
+
+    session = AuxPodSession("c-1", "ns", core_v1=object(), stage_dir=staged.stage_dir,
+                            discard_staged=_broken, token_for=staged.token_for)
+    session._created = {"pod-x"}
+    monkeypatch.setattr(session, "_client",
+                        lambda: type("C", (), {
+                            "delete_namespaced_pod": lambda *a, **k: None})())
+    session.__exit__(None, None, None)   # must not raise
+
+
+# -- a container that went away -----------------------------------------------
+
+
+class _Remade:
+    """A pod's owner that makes it again under its own name, counting the times."""
+
+    def __init__(self):
+        self.count = 0
+
+    def __call__(self, spec):
+        self.count += 1
+        return "pod-x"
+
+
+class _Vanishing:
+    """Execs that report the container gone until it has been made again *times* times.
+
+    A replacement answers to the same name -- the name is derived from the span and the
+    spec, never from the attempt -- so what tells the attempts apart is the owner's count.
+    """
+
+    def __init__(self, runner, remade, times=1):
+        self.runner, self.remade, self.times, self.calls = runner, remade, times, []
+
+    def __call__(self, command, stdin_data=None, progress_update_callback=None,
+                 container=""):
+        self.calls.append((self.remade.count, command))
+        if self.remade.count < self.times:
+            raise ExecTargetGone(
+                f"could not open an exec stream into {self.runner._pod}/aux: "
+                "the container was not there to exec into")
+        return ""
+
+    def scripts_after(self, remakes):
+        return [cmd[2] for seen, cmd in self.calls if seen == remakes and len(cmd) > 2]
+
+
+def _staged_runner(staged, reprovision=None):
+    runner = _runner(staged)
+    runner._reprovision = reprovision
+    with open(os.path.join(runner.workspace, "world.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("sim: {}\n")
+    return runner
+
+
+def test_a_vanished_container_is_made_again_and_the_command_repeated(monkeypatch, staged):
+    """An eviction mid-composition costs a container, not the composition.
+
+    A pod can end without the span that created it ending, and the exec that notices is
+    the one in the middle of work that may have been running for hours.
+    """
+    remade = _Remade()
+    runner = _staged_runner(staged, reprovision=remade)
+    execs = _Vanishing(runner, remade)
+    monkeypatch.setattr(runner, "_exec", execs)
+
+    runner.run(["roqsim", "scenes", "inputs", "/config/world.yaml"])
+
+    assert remade.count == 1
+    ran = [cmd for seen, cmd in execs.calls if seen == 1 and cmd[:1] == ["roqsim"]]
+    assert ran == [["roqsim", "scenes", "inputs", "/config/world.yaml"]]
+
+
+def test_the_whole_transfer_is_repeated_not_just_the_exec(monkeypatch, staged):
+    """A new container has an empty workspace and empty mounts, so re-running the command
+    alone would run it against nothing. This is the half that is easy to leave out."""
+    remade = _Remade()
+    runner = _staged_runner(staged, reprovision=remade)
+    runner.expose(runner.workspace, "/config")
+    execs = _Vanishing(runner, remade)
+    monkeypatch.setattr(runner, "_exec", execs)
+
+    runner.run(["true"])
+
+    on_new = execs.scripts_after(1)
+    assert any("curl" in script for script in on_new), "the workspace travels again"
+    assert any("/config" in script for script in on_new), "the mounts are filled again"
+
+
+def test_a_second_vanishing_is_reported_rather_than_sat_out(monkeypatch, staged):
+    """Once. A container that keeps going away is not something to keep waiting for, and a
+    loop here would hide a cluster that cannot hold one at all."""
+    remade = _Remade()
+    runner = _staged_runner(staged, reprovision=remade)
+    monkeypatch.setattr(runner, "_exec", _Vanishing(runner, remade, times=2))
+
+    with pytest.raises(ExecTargetGone):
+        runner.run(["true"])
+    assert remade.count == 1
+
+
+def test_without_a_way_to_replace_the_pod_the_failure_is_reported(monkeypatch, staged):
+    """A runner whose caller does not own the pod's lifetime cannot invent one, and must
+    say what happened rather than retry against the same dead name."""
+    runner = _staged_runner(staged)
+    monkeypatch.setattr(runner, "_exec", _Vanishing(runner, _Remade()))
+
+    with pytest.raises(ExecTargetGone):
+        runner.run(["true"])
+
+
+def test_a_replacement_under_another_name_is_reported_not_used(monkeypatch, staged):
+    """The workspace is staged in the pod's slot, so a pod made again under a different
+    name would leave the tree behind, and the first fetch would report a slot that holds
+    nothing. Both owners derive the name from the span and the spec; this pins that a
+    provider which does not is refused rather than trusted."""
+    remade = _Remade()
+    runner = _staged_runner(staged, reprovision=lambda spec: "pod-y")
+    monkeypatch.setattr(runner, "_exec", _Vanishing(runner, remade))
+
+    with pytest.raises(RuntimeError, match="own name"):
+        runner.run(["true"])
+
+
+def test_a_command_that_ran_and_failed_is_never_retried(monkeypatch, staged):
+    """The caller's question, answered. Repeating it would run a plugin's command twice
+    for a reason that has nothing to do with the container."""
+    import subprocess
+
+    remade = _Remade()
+    runner = _staged_runner(staged, reprovision=remade)
+    calls = []
+
+    def _exec(command, stdin_data=None, progress_update_callback=None, container=""):
+        calls.append(command)
+        if command[:1] == ["roqsim"]:
+            raise subprocess.CalledProcessError(2, command, output="bad world")
+        return ""
+
+    monkeypatch.setattr(runner, "_exec", _exec)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.run(["roqsim"])
+
+    assert len([c for c in calls if c[:1] == ["roqsim"]]) == 1
+    assert remade.count == 0, "no pod was replaced"
+
+
+def test_the_session_forgets_a_pod_it_replaces(staged):
+    """The memo is what keeps a second ask from paying a create and an image pull, and
+    exactly what makes it wrong once the pod it names has ended."""
+    session = _session(staged, core_v1=object())
+    spec = ContainerSpec(image="example/img:1")
+    created = []
+
+    def _create(_spec, pod_name):
+        created.append(pod_name)
+        return pod_name
+
+    session._create_pod = _create
+
+    first = session._pod_for(spec)
+    assert session._pod_for(spec) == first and len(created) == 1, "memoised"
+
+    again = session.replace(spec)
+
+    assert again == first, "the name is derived from the campaign, so it is the same one"
+    assert len(created) == 2, "and it was created again rather than handed out again"
+
+
+def test_a_session_without_the_data_plane_wiring_is_refused_at_construction(staged):
+    """A pod built without a way to stage, discard or reach its slot fails at the first
+    run(), deep inside a plugin, instead of here where the cause is legible."""
+    with pytest.raises(TypeError, match="token_for"):
+        AuxPodSession("c-1", "ns", stage_dir=staged.stage_dir,  # pylint: disable=missing-kwoa
+                      discard_staged=staged.discard)
 
 
 # -- the pod manifest ---------------------------------------------------------
 
 
-def test_mc_is_injected_from_the_sidecar_not_required_of_the_aux_image():
+def test_the_transfer_container_is_the_sidecar_not_the_aux_image(staged):
     """The aux image belongs to a plugin author (``scenery_builder``); we cannot add
-    tools to it, so the binary is copied in from the sidecar at pod creation."""
+    tools to it, so the transfer runs in a container of ours beside it, sharing its
+    mounts."""
     from robovast.common.execution import resolve_sidecar_image
     spec = ContainerSpec(image="example/img:1")
-    m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
-    init, = m["initContainers"]
-    assert init["image"] == resolve_sidecar_image()
-    assert "command -v mc" in init["command"][-1]
-    # The tools volume comes first; the mountable-path volumes follow it (see
-    # AUX_MOUNTABLE_PATHS), so this asserts what the tooling contributes, not the whole pod.
-    assert m["volumes"][0] == {"name": "aux-tools", "emptyDir": {}}
-    assert m["containers"][0]["volumeMounts"][0] == {"name": "aux-tools",
-                                                     "mountPath": "/tools"}
+    m = _manifest(staged, spec)
+    assert "initContainers" not in m
+    aux, transfer = m["containers"]
+    assert transfer["name"] == TRANSFER_CONTAINER
+    assert transfer["image"] == resolve_sidecar_image()
+    assert transfer["command"][-1].endswith("exec sleep " + str(m["activeDeadlineSeconds"]))
+    assert aux["image"] == "example/img:1"
+    assert {v["mountPath"] for v in aux["volumeMounts"]} == \
+        {v["mountPath"] for v in transfer["volumeMounts"]}, "one set of mounts, shared"
 
 
-def test_the_mc_config_dir_is_world_writable():
-    """An emptyDir belongs to root, and a spec's ``run_as_user`` means the container that
-    has to run mc may be nobody in particular."""
-    spec = ContainerSpec(image="example/img:1", run_as_user="1000:1000")
-    m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
-    assert "chmod 0777 /tools/mc-config" in m["initContainers"][0]["command"][-1]
-
-
-def test_credentials_ride_in_mc_host_so_no_alias_command_is_needed():
-    """``mc alias set`` writes to ``$HOME/.mc``; in an image that is not ours, HOME may
-    not exist or not be writable, and run_as_user changes who is asking."""
-    env = mc_host_env("http://robovast:9000", "key", "sec/ret+x")
-    assert env["MC_HOST_mystore"] == "http://key:sec%2Fret%2Bx@robovast:9000", \
-        "a secret with URL metacharacters must survive the round trip"
-
-
-def test_the_spec_env_still_reaches_the_container():
-    spec = ContainerSpec(image="example/img:1", env={"MY_VAR": "1"})
-    m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
-    env = {e["name"]: e["value"] for e in m["containers"][0]["env"]}
-    assert env["MY_VAR"] == "1" and "MC_HOST_mystore" in env
-
-
-def test_no_s3_means_no_tooling_is_attached():
+def test_the_pod_mounts_its_slot_where_the_service_has_it(staged):
+    """The workspace has one absolute path on both sides: the slot's directory."""
     spec = ContainerSpec(image="example/img:1")
-    m = build_aux_pod_manifest("c-1", [spec], "ns")["spec"]
-    assert "initContainers" not in m and "volumes" not in m
-    assert "volumeMounts" not in m["containers"][0]
+    m = _manifest(staged, spec, pod_name="pod-x")
+    root = str(staged.stage_dir(aux_slot("pod-x")))
+    for container in m["containers"]:
+        assert root in {v["mountPath"] for v in container["volumeMounts"]}
+    declared = {v["name"] for v in m["volumes"]}
+    assert {v["name"] for v in m["containers"][0]["volumeMounts"]} <= declared
+
+
+def test_every_volume_name_is_one_kubernetes_accepts_however_deep_the_scratch_is():
+    """A volume name is a DNS label, at most 63 characters, and the API server rejects the
+    whole pod otherwise -- so an aux pod that cannot be created fails every variation that
+    needs one. The workspace is mounted at the service's own scratch path, which in the
+    deployed layout is deep under the results root; its name must not follow that path."""
+    import re
+
+    from robovast.execution.cluster_execution.service_deploy import RESULTS_DATA_DIR
+
+    def stage_dir(slot):
+        return f"{RESULTS_DATA_DIR}/_staged/{slot}"
+
+    spec = ContainerSpec(image="example/img:1")
+    m = build_aux_pod_manifest("metamorphic-big-map-2026-09-19-141738", [spec], "ns",
+                               stage_dir=stage_dir, token_for=lambda scope: "tok",
+                               pod_name="robovast-exec-q73431e4cff")["spec"]
+    label = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+    names = [v["name"] for v in m["volumes"]]
+    names += [mount["name"] for c in m["containers"] for mount in c["volumeMounts"]]
+    for name in names:
+        assert len(name) <= 63 and label.match(name), name
+    declared = {v["name"] for v in m["volumes"]}
+    for container in m["containers"]:
+        assert {mount["name"] for mount in container["volumeMounts"]} <= declared
+
+
+def test_the_transfer_container_carries_the_slots_access_and_nothing_else_does(staged):
+    """What a pod is given to reach the data plane: its address and a token scoped to the
+    pod's own slot, on the transfer container and nowhere else."""
+    spec = ContainerSpec(image="example/img:1", env={"MY_VAR": "1"})
+    m = _manifest(staged, spec, pod_name="pod-x")
+    aux, transfer = m["containers"]
+    env = {e["name"]: e["value"] for e in transfer["env"]}
+    assert set(env) == {DATA_URL_ENV, TOKEN_ENV}
+    assert env[TOKEN_ENV] == staged.token_for("staged:" + aux_slot("pod-x"))
+    aux_env = {e["name"]: e["value"] for e in aux["env"]}
+    assert aux_env == {"MY_VAR": "1"}, "the spec's env reaches the aux container, and only it"
+
+
+def test_every_shared_mount_is_made_world_writable(staged):
+    """An emptyDir belongs to root, and a spec's ``run_as_user`` means the container that
+    has to write into it may be nobody in particular."""
+    from robovast.execution.cluster_execution.container_runner import AUX_MOUNTABLE_PATHS
+    spec = ContainerSpec(image="example/img:1", run_as_user="1000:1000")
+    m = _manifest(staged, spec, pod_name="pod-x")
+    script = m["containers"][-1]["command"][-1]
+    for path in (*AUX_MOUNTABLE_PATHS, str(staged.stage_dir(aux_slot("pod-x")))):
+        assert f"chmod 0777 {path}" in script
+    assert script.index("chmod") < script.index("sleep"), "before it idles"
 
 
 @pytest.mark.parametrize("secret", ["", "harbor-pull"])
-def test_aux_pod_pull_secret_is_set_only_when_named(secret):
+def test_aux_pod_pull_secret_is_set_only_when_named(secret, staged):
     """A public aux image needs no secret; a spec naming the campaign's own image does.
 
     ``imagePullPolicy: IfNotPresent`` hides a missing secret on any node that already cached the
     image, so this fails first on a *fresh* node -- the worst place to discover it.
     """
     spec = ContainerSpec(image="harbor.example/robovast/campaign@sha256:abc")
-    m = build_aux_pod_manifest("c-2026-08-06-000000", [spec], "ns", pull_secret=secret)
+    m = _manifest(staged, spec, pull_secret=secret)
     if secret:
-        assert m["spec"]["imagePullSecrets"] == [{"name": secret}]
+        assert m["imagePullSecrets"] == [{"name": secret}]
     else:
-        assert "imagePullSecrets" not in m["spec"]
+        assert "imagePullSecrets" not in m
 
 
 # -- the exec bound (shared with the container-exec lane) ---------------------
 
 
-def test_a_hung_helper_does_not_hang_the_campaign_forever(monkeypatch):
+def test_a_hung_helper_does_not_hang_the_campaign_forever(monkeypatch, staged):
     """``_exec`` had no overall bound: it polled ``update(timeout=1)`` until the command
     ended, so a helper that never ended took the campaign's worker thread with it.
 
@@ -347,7 +613,7 @@ def test_a_hung_helper_does_not_hang_the_campaign_forever(monkeypatch):
     """
     import subprocess
 
-    runner = _runner()
+    runner = _runner(staged)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kube_client.exec_stream",
         lambda *a, **k: (124, "", "", True))
@@ -356,7 +622,7 @@ def test_a_hung_helper_does_not_hang_the_campaign_forever(monkeypatch):
     assert "exceeded" in str(excinfo.value.output)
 
 
-def test_the_exec_bound_is_passed_through_not_ignored(monkeypatch):
+def test_the_exec_bound_is_passed_through_not_ignored(monkeypatch, staged):
     from robovast.execution.cluster_execution.container_runner import AUX_EXEC_LIMIT_S
     seen = {}
 
@@ -364,13 +630,13 @@ def test_the_exec_bound_is_passed_through_not_ignored(monkeypatch):
         seen.update(kwargs)
         return 0, "ok", "", False
 
-    runner = _runner()
+    runner = _runner(staged)
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.exec_stream", fake_stream)
     assert runner._exec(["true"]) == "ok"
     assert seen["limit_s"] == AUX_EXEC_LIMIT_S
 
 
-def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
+def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch, staged):
     """A 409 does not mean "already exists -> reuse it".
 
     The name is derived from the campaign id, so the pod it collides with is this
@@ -404,10 +670,9 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
         "service_pod_owner_reference", lambda *a, **k: None)
 
     spec = ContainerSpec(image="example/img:1")
-    session = AuxPodSession("c-1", [spec], "ns", core_v1=_Core())
-# entering without exiting is what this measures
-    # pylint: disable-next=unnecessary-dunder-call
-    session.__enter__()
+    session = _session(staged, "c-1", core_v1=_Core())
+    # provision, not enter: the pod is made when something asks for the container
+    session.provision(spec)
 
     assert events == ["create", "delete", "wait_gone", "create", "wait_ready"]
 
@@ -415,7 +680,7 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch):
 # -- which cluster this talks to ----------------------------------------------
 
 
-def test_the_session_honours_the_service_context(monkeypatch):
+def test_the_session_honours_the_service_context(monkeypatch, staged):
     """Without it, an aux pod lands in whichever cluster the *host* kubeconfig points at.
 
     That is not a small inconvenience: the campaign's helper containers would run
@@ -427,24 +692,28 @@ def test_the_session_honours_the_service_context(monkeypatch):
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         lambda context=None: seen.update(context=context))
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
-    AuxPodSession("c-1", [], "ns", kube_context="local")._client()
+    _session(staged, "c-1", kube_context="local")._client()
     assert seen["context"] == "local"
 
 
-def test_the_runner_honours_the_service_context(monkeypatch):
+def test_the_runner_honours_the_service_context(monkeypatch, staged):
     seen = {}
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
                         lambda context=None: seen.update(context=context))
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
     spec = ContainerSpec(image="example/img:1")
-    ClusterContainerRunner(spec, "pod-x", "ns", kube_context="local")._client()
+    ClusterContainerRunner(spec, "pod-x", "ns", kube_context="local",
+                           stage_dir=staged.stage_dir)._client()
     assert seen["context"] == "local"
 
 
-def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch):
+def test_the_session_hands_its_context_to_the_runners_it_makes(monkeypatch, staged):
     """The factory is where the two are joined; a runner that built its own client from
     the default context would reintroduce the bug one layer down."""
-    session = AuxPodSession("c-1", [], "ns", core_v1=object(), kube_context="local")
+    session = _session(staged, "c-1", core_v1=object(), kube_context="local")
+    # The factory creates the spec's pod on the way to the runner, so the pod is already
+    # accounted for here; what this measures is the runner it hands back.
+    monkeypatch.setattr(session, "_pod_for", lambda spec: "pod-x")
     runner = session.runner_factory()(ContainerSpec(image="example/img:1"))
     assert runner._kube_context == "local"
 
@@ -465,21 +734,20 @@ def test_the_cluster_service_passes_its_own_context(method):
     assert "kube_context=self.kube_context" in source
 
 
-def test_the_pod_declares_the_paths_a_runner_can_expose_a_tree_at():
+def test_the_pod_declares_the_paths_a_runner_can_expose_a_tree_at(staged):
     """A Pod's mounts are fixed when it is created, long before a runner stages anything.
 
-    So the mountable paths are declared up front and world-writable: an emptyDir belongs to
-    root, and the aux container may be running as nobody in particular.
+    So the mountable paths are declared up front, on the aux container and on the
+    transfer container that fills them.
     """
     from robovast.execution.cluster_execution.container_runner import AUX_MOUNTABLE_PATHS
     spec = ContainerSpec(image="example/img:1")
-    m = build_aux_pod_manifest("c-1", [spec], "ns", s3=_S3)["spec"]
-    mounted = {v["mountPath"] for v in m["containers"][0]["volumeMounts"]}
-    assert set(AUX_MOUNTABLE_PATHS) <= mounted
+    m = _manifest(staged, spec)
+    for container in m["containers"]:
+        mounted = {v["mountPath"] for v in container["volumeMounts"]}
+        assert set(AUX_MOUNTABLE_PATHS) <= mounted
     declared = {v["name"] for v in m["volumes"]}
     assert {v["name"] for v in m["containers"][0]["volumeMounts"]} <= declared
-    for path in AUX_MOUNTABLE_PATHS:
-        assert f"chmod 0777 {path}" in m["initContainers"][0]["command"][-1]
 
 
 def test_a_runner_refuses_a_path_the_pod_never_mounted():
@@ -490,27 +758,115 @@ def test_a_runner_refuses_a_path_the_pod_never_mounted():
         runner.expose("/tmp/staged", "/somewhere-else")
 
 
-def test_an_exposed_tree_is_copied_without_preserving_attributes(monkeypatch):
-    """``cp -a`` sets attributes on the destination too, and that inode is the mount point.
+def test_a_tree_outside_the_workspace_is_staged_into_it(tmp_path):
+    """Only the workspace travels, so exposing a path elsewhere on this host cannot work.
 
-    It belongs to root while the aux container may be anyone, so the copy died with
-    ``cp: preserving times for '/config/.': Operation not permitted`` -- taking the whole
-    scene build with it. Only the content is wanted; the tree is read, never re-published.
+    The copy that fills the mount runs INSIDE the container, against a source the fetch
+    put there. Handed a project directory of the service's own -- which is what the
+    simulator's query for a world's inputs asks for -- the container had no such path and
+    the copy failed with a host path in its message. Copied in here instead, so the single
+    transport holds without every caller knowing it has to.
     """
-    runner = _runner()
+    project = tmp_path / "project"
+    (project / "world").mkdir(parents=True)
+    (project / "world" / "child.yaml").write_text("extends: parent.yaml\n", encoding="utf-8")
+
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    os.makedirs(runner.workspace)
+
+    runner.expose(str(project), "/config")
+
+    staged = runner._exposed["/config"]
+    assert staged.startswith(runner.workspace + os.sep), staged
+    assert os.path.isfile(os.path.join(staged, "world", "child.yaml"))
+
+
+def test_the_copy_inside_the_container_names_a_path_the_fetch_carries(tmp_path):
+    """The defect this closes, at the level it showed up: the script, not the bookkeeping.
+
+    ``_place_exposed`` runs in the container, so its source has to be a path the fetch put
+    there. Handed a directory of the service's own it named that host path, and the copy
+    exited 1 -- taking a campaign's composition with it, with a host path as the whole
+    message.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "child.yaml").write_text("extends: parent.yaml\n", encoding="utf-8")
+
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    os.makedirs(runner.workspace)
+    scripts = []
+    runner._exec = lambda command, **kwargs: scripts.append(command[-1])
+
+    runner.expose(str(project), "/config")
+    runner._place_exposed()
+
+    assert len(scripts) == 1
+    source = scripts[0].split("cp -R '")[1].split("'")[0]
+    assert source.startswith(runner.workspace + os.sep), source
+    assert str(project) not in scripts[0]
+
+
+def test_a_tree_already_in_the_workspace_is_not_copied_again(tmp_path):
+    """What a variation plugin does: stage into the workspace, then expose the staged tree.
+
+    Copying it a second time would double the bytes the transfer carries for no reason.
+    """
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    inside = os.path.join(runner.workspace, "in", "0", "tree")
+    os.makedirs(inside)
+
+    runner.expose(inside, "/config")
+
+    assert runner._exposed["/config"] == inside
+
+
+def test_a_single_exposed_file_keeps_its_name(tmp_path):
+    """A file target names the exact path a command was written for, filename included.
+
+    Staged under a holder rather than as one, because the copy in the container is
+    ``cp -R <staged> /aux/name.yaml`` -- a directory there would nest.
+    """
+    document = tmp_path / "overrides.yaml"
+    document.write_text("a: 1\n", encoding="utf-8")
+
+    runner = ClusterContainerRunner.__new__(ClusterContainerRunner)
+    runner._exposed = {}
+    runner.workspace = str(tmp_path / "ws")
+    os.makedirs(runner.workspace)
+
+    runner.expose(str(document), "/aux/overrides.yaml")
+
+    staged = runner._exposed["/aux/overrides.yaml"]
+    assert os.path.basename(staged) == "overrides.yaml"
+    assert os.path.isfile(staged) and staged.startswith(runner.workspace + os.sep)
+
+
+def test_an_exposed_tree_is_copied_without_preserving_attributes(monkeypatch, staged):
+    """Only the content is wanted; the tree is read by the aux container, never
+    re-published, and a mode copied from a private source would be one the aux user
+    cannot read. The copy runs in the transfer container, which shares the mount."""
+    runner = _runner(staged)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
+    monkeypatch.setattr(runner, "_exec", rec)
     runner.expose(f"{runner.workspace}/in/0/_config", "/config")
 
     runner._place_exposed()
 
-    (cmd, _payload), = rec.calls
+    (cmd, _payload, container), = rec.calls
+    assert container == TRANSFER_CONTAINER
     script = cmd[2]
     assert "cp -a" not in script, "-a preserves attributes on the mount point and fails"
     assert f"cp -R '{runner.workspace}/in/0/_config/.' '/config/'" in script
 
 
-def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch):
+def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch, staged):
     """A staged FILE has to land at its exact path, filename included.
 
     `mount_at` names the path the command was written for -- the scene build's
@@ -521,17 +877,17 @@ def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch):
     bind-mounted the file and never noticed -- so the run view asked for geometry and got
     "a new path has to be added to AUX_MOUNTABLE_PATHS".
     """
-    runner = _runner()
+    runner = _runner(staged)
     rec = _Recorder()
-    monkeypatch.setattr(runner, "_retrying_exec", rec)
-    staged = f"{runner.workspace}/in/2/overrides.yaml"
-    runner.expose(staged, "/aux/roqsim_scene_overrides.yaml")
+    monkeypatch.setattr(runner, "_exec", rec)
+    document = f"{runner.workspace}/in/2/overrides.yaml"
+    runner.expose(document, "/aux/roqsim_scene_overrides.yaml")
 
     runner._place_exposed()
 
-    (cmd, _payload), = rec.calls
+    (cmd, _payload, _container), = rec.calls
     script = cmd[2]
-    assert f"cp -R '{staged}' '/aux/roqsim_scene_overrides.yaml'" in script
+    assert f"cp -R '{document}' '/aux/roqsim_scene_overrides.yaml'" in script
     assert "/.'" not in script, "a file is not a tree; filling a mount with it copies nothing"
     assert "mkdir -p '/aux'" in script
 

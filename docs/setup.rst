@@ -61,11 +61,21 @@ This will install the ``vast`` command and all its plugins.
    sibling shows up as an *entry point* that is absent rather than an import error, which reads as
    broken code rather than an incomplete environment.
 
-The web UI is not built by ``pip``. For a source checkout, build it once with
-``cd frontend/ui && npm ci && npm run build`` — ``vast serve`` then finds it there and
-picks up every rebuild. A wheel carries it instead: ``make build`` runs ``make ui-stage``
-first, which copies the built assets into the package so an installed service has a UI.
-Without either, ``vast serve`` warns and serves the API alone.
+The web UI and the navigation panels are not built by ``pip``. For a source checkout,
+build them once with ``make frontend`` — ``vast serve`` then finds them there and picks up
+every rebuild. A wheel carries them instead: ``make build`` runs ``make ui-stage`` first,
+which copies the built assets into the package so an installed service has a UI. Without
+either, ``vast serve`` warns and serves the API alone.
+
+The same set is on PyPI, for a machine that will not edit the code. The released wheels
+carry the frontend, and each name adds exactly what its editable counterpart above does:
+
+.. code-block:: bash
+
+   pip install robovast-client              # drive a service: the CLI alone
+   pip install "robovast[nav,roqsim]"       # run one: the service and the local Docker lane
+   pip install robovast-cluster             # add the Kubernetes lane
+
 The ``vast`` command provides a unified interface to all RoboVAST functionality.
 
 .. code-block:: bash

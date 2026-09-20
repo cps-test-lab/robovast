@@ -209,6 +209,12 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # run as fine. On its own it is noise on every healthy campaign.
     if findings and st.health_skipped:
         result["health_checks_not_run"] = list(st.health_skipped)
+    # Only when it happened, but then always, and NOT gated on a finding: a campaign running on
+    # fewer machines than the cluster has is slower than its plan and says so nowhere else while
+    # it runs. It is a fact about the campaign, not a diagnostic about a job, so it is reported
+    # on its own rather than beside the health block.
+    if st.nodes_skipped:
+        result["nodes_skipped"] = dict(st.nodes_skipped)
     # Only when it happened, but then always: a killed run is inside ``no_result``, so
     # without this the count reads as a run that vanished on its own rather than one
     # somebody deliberately ended — and the reader goes looking for a fault there is none.
@@ -272,7 +278,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    allow_opaque_image: bool = False,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
-                   show_gui: bool = False, description: str = "",
+                   show_gui: bool = False, description: str = "", priority: int = 0,
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
@@ -297,6 +303,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         force: Re-run despite a blocking pre-flight axis, for one you have decided you
             understand. With ``from_campaign`` only — a workspace launch has no pre-flight
             to override.
+        priority: Which campaign the cluster queue admits first: higher first, ``0`` normal,
+            negative last. Orders what is queued; never stops a running run. Cluster only.
         config_path: Which ``.vast``, when the workspace holds several.
         config_filter: Glob selecting which configurations to run.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
@@ -348,7 +356,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                 ("workspace_id", workspace_id), ("config_path", config_path),
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("show_gui", show_gui), ("description", description)) if value]
+                ("show_gui", show_gui), ("description", description),
+                ("priority", priority)) if value]
             if supplied:
                 return {"error":
                         f"from_campaign={from_campaign!r} replays what that campaign "
@@ -371,7 +380,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # campaign started without an explicit count to one run per configuration — a
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
-            allow_opaque_image=allow_opaque_image,
+            allow_opaque_image=allow_opaque_image, priority=priority,
             upload_to_share=upload_to_share, show_gui=show_gui))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}
@@ -480,6 +489,10 @@ def get_campaign_status(campaign_id: str) -> dict:
         dropped, or ``objective_history_unavailable: "multi_objective"`` when the search
         declares more than one objective and so has no single value to trend), plus
         ``progress_deadline_s`` +
+        ``nodes_skipped`` (``{node: why}``, present only when this campaign has left a machine
+        out -- its probe never ran, so nothing may be placed there; the campaign is smaller and
+        slower than its plan, and ``_execution/execution.yaml`` records the same fact for a
+        reader who arrives after it ends), plus
         ``stall_reason`` or ``stall_verdict``, ``health_findings``, ``next_step``, and the
         search fields (``best_objective``, ``budget``, ``batches_done``, ``stop``) when each
         applies; or ``{error}``.
@@ -563,12 +576,11 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
 
-    # Ask the service, which knows where this campaign's log actually lives: on the
-    # cluster the durable copy is in the object store and the live one is pod scratch
-    # (ClusterService.get_campaign_logs serves both), neither of which is on this
-    # filesystem. Reading the local results dir here reported an empty log for every
-    # cluster campaign. The local disk path stays as the serviceless fallback so an
-    # archived results tree is still readable with no service running.
+    # Ask the service, which knows where this campaign's log actually lives: its
+    # results tree, which is not on this filesystem when the service runs on another
+    # host. Reading the local results dir here reported an empty log for every such
+    # campaign. The local disk path stays as the serviceless fallback so an archived
+    # results tree is still readable with no service running.
     client = service_access.service_client()
     if client is not None:
         try:
@@ -859,14 +871,13 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
                 hide_shutdown: bool = True) -> dict:
-    """What is one **running** job doing? Its containers' live stdout/stderr.
+    """What is one job doing, or what did it do? Its containers' stdout/stderr.
 
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    Live source only — a finished job whose pod was garbage-collected has none; read the
-    campaign log instead. Every container the job runs is merged into one stream, each
-    line tagged ``[<container>]`` when there is more than one.
+    A **finished** job is served as readily as a running one -- its output is durable
+    either way. Every container is merged into one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -905,9 +916,12 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
 def stop_campaign(campaign_id: str) -> dict:
     """Stop a running campaign. The service owns the teardown (containers, cluster Jobs).
 
-    A campaign waiting for an image is detached instead, so a build a sibling may share is
-    not cancelled. One in ``postprocessing`` has that cancelled and ends ``finished``
-    without derived data.
+    A stop lands on whatever is *running*, and ``note`` says which. **Runs**: they end, but
+    the batches that finished are still postprocessed, so ``query_campaign_data_sql`` keeps
+    answering for them — stopping a search part-way is a normal way to end one.
+    **Postprocessing**: cancelled, leaving results but no derived data
+    (``run_postprocessing`` gets it back). **Sharing**: cancelled, partial object removed
+    or named. One waiting for an image detaches; one already over is refused.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -958,9 +972,9 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
 def get_resource_usage() -> dict:
     """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
 
-    Capacity **now** — what an executed run consumed is a table in its campaign's data
-    (``describe_campaign_data``), not here. It reads the cluster's nodes, so it also
-    confirms the lane is reachable, which ``get_service_info`` cannot.
+    Capacity **now**; what a finished run consumed is in its campaign's data
+    (``describe_campaign_data``). Reading the nodes also confirms the lane is reachable,
+    which ``get_service_info`` cannot.
 
     Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
     is false, else ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the ``.vast``
@@ -969,24 +983,22 @@ def get_resource_usage() -> dict:
     Returns:
         ``{backend, parallel_runs, cpu_capacity|used|reserved|measured,
         memory_{capacity,used,reserved,measured}_bytes, metrics_unavailable, jobs_running,
-        jobs_pending, disk, disk_node, store, store_node, disk_unavailable}`` — cores and
-        bytes — or ``{error}``.
+        jobs_pending, disk, disk_node, results, disk_unavailable,
+        storage_refusal}`` — cores and bytes — or ``{error}``.
 
         **Size a sweep against ``*_reserved``, judge a finished one against
-        ``*_measured``**: reserved is what the scheduler committed, so it decides whether
-        the next run fits; measured is what is being consumed. ``cpu_used`` aliases
-        whichever the lane leads with. A ``null`` in either pair is "no such reading",
-        never zero — nothing reserves locally, and ``metrics_unavailable`` says why a
-        cluster could not measure.
+        ``*_measured``**: reserved is what the scheduler committed; measured is what is
+        consumed. ``cpu_used`` aliases whichever the lane leads with. ``null`` in either
+        pair is "no such reading", never zero; ``metrics_unavailable`` says why.
 
-        ``disk`` (what runs write into) and ``store`` (the results store) are
-        ``{capacity_bytes, used_bytes}``, or **null meaning the lane does not report it —
-        never an empty disk**. On a cluster ``disk`` is ONE node's filesystem, not a sum:
-        ``disk_node``, which carries the service pod and the workspaces; ``store_node`` is
-        often another. ``jobs_running``/``jobs_pending`` is what the lane is *already* busy
-        with across every campaign, so free cores behind a long queue are not as free as
-        they look, and ``exec_container`` appears while an ``exec_in_container`` container
-        is held, which can hold a stack's worth of memory.
+        ``disk`` (what runs write into) and ``results`` (the volume the campaigns live
+        on) are ``{capacity_bytes, used_bytes}``, or **null: not reported, never an empty
+        disk**. On a cluster ``disk`` is ONE node's filesystem (``disk_node``), not a sum,
+        and ``results`` is reported only where that volume is separately measurable. Set,
+        ``storage_refusal`` says why new work is
+        refused for disk space. ``jobs_running``/``jobs_pending`` is
+        work already queued across every campaign; ``exec_container``, a held
+        ``exec_in_container`` container and its memory.
     """
     client = service_access.service_client()
     if client is None:
@@ -1218,48 +1230,47 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
                       keep_alive: bool = False, show_gui: bool = False,
-                      tail: int = 200, container: str = "") -> dict:
+                      tail: int = 200, container: str = "",
+                      fresh: bool = False) -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
 
-    **Produces no campaign data** — nothing durable, no provenance, no repetitions. To run the
-    experiment use ``start_campaign``; to see inside a running job, ``get_job_state``.
+    **Produces no campaign data** — nothing durable, no provenance, no repetitions. Run the
+    experiment with ``start_campaign``; see inside a running job with ``get_job_state``.
 
-    Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``, file
-    checks); does one config run (name a ``config_name``; an empty ``command`` starts its
-    scenario, detached); what does bring-up look like (add ``keep_alive``, ``show_gui``).
+    Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``,
+    file checks); does one config run (name a ``config_name``; empty ``command`` starts its
+    scenario, detached); what does bring-up look like (``keep_alive``, ``show_gui``).
 
-    **The source you name decides which image, and they answer different questions.** A
-    ``workspace_id`` runs what that project would build *now* — and never builds implicitly, so
-    ``build_experiment_image`` first and wait for it. A ``campaign_id`` runs the exact image that
-    campaign recorded, so it answers "what did that run actually see?" even after the workspace
-    has moved on. A refusal over an unbuilt image hands back the ``next_step`` for its state.
+    **The source you name decides which image.** ``workspace_id`` runs what that project
+    builds *now* from the serve host's sources — possibly stale — and never builds
+    implicitly, so ``build_experiment_image`` first. ``campaign_id`` runs the image that
+    campaign recorded: "what did that run actually see?". ``container.image`` names what ran.
 
     **At most one container exists at a time**, so ``reused: false`` means a fresh one and
-    anything the previous was running is gone; ``stop_container`` ends it. A started scenario logs
+    whatever the previous ran is gone; ``stop_container`` ends it. A started scenario logs
     to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
-    ``command="tail -200 <log_path>"``.
+    ``command="tail -200 <log_path>"``. Reuse keys on the image *ref*, which does not change
+    when a floating tag is re-pushed — so ``fresh`` is how you ask whether new bytes landed.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
         workspace_id, config_path: A workspace and which ``.vast`` in it.
-        campaign_id: Use an existing campaign's ``_config/`` as the project instead — exactly
-            one source, this or ``workspace_id``. A *running* campaign's container is never
-            touched; to inspect a live stack, start it here.
+        campaign_id: An existing campaign's ``_config/`` as the project — exactly one
+            source, this or ``workspace_id``. A running campaign's container is never touched.
         config_name: Stage this config. Omitted always means the bare image.
         container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
-            Asking for one this campaign lacks lists the ones it has.
+            Naming one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.
+        fresh: Replace the container rather than join a held one, so the image is
+            re-fetched. Discards whatever that container held.
         show_gui: Show the simulator's window on the serve host's display — **local ``vast
-            serve`` on local Docker only** (see ``start_campaign`` for whose screen). Changing
-            it between calls **replaces** the container, so ``reused`` is false and whatever
-            the old one was running is gone.
+            serve`` on local Docker only**. Changing it between calls replaces the container.
         tail: Lines kept per stream.
 
     Returns:
         ``{exit_code, stdout, stderr, timed_out, duration_s, limit_s, limit_source,
-        log_path, container}`` or ``{error[, next_step]}``. ``limit_source`` — ``command``
-        (fixed cap), ``execution.timeout``, or ``default`` (the project set none) — makes a
-        ``timed_out`` result name its own remedy.
+        log_path, container}`` or ``{error[, next_step]}``. ``limit_source`` (``command``,
+        ``execution.timeout``, ``default``) names a ``timed_out`` result's remedy.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     from robovast.service.interface import ExecRequest  # noqa: PLC0415
@@ -1271,7 +1282,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
             keep_alive=keep_alive, show_gui=show_gui,
-            container=container))
+            container=container, fresh=fresh))
     except Exception as e:  # noqa: BLE001
         return error_result(e)
     out = result.model_dump()

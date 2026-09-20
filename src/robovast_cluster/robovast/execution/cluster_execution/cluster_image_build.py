@@ -14,30 +14,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""In-cluster experiment-image builds (BuildKit Job + S3-staged context).
+"""In-cluster experiment-image builds (BuildKit Job + a context staged on the data plane).
 
-The service stages a project's build context (the workspace project dir + a
-generated Dockerfile) to the object store, then launches a rootless **BuildKit**
-Kubernetes Job that mirrors the context in via the ``robovast-sidecar`` init
-container (the same ``mc mirror`` contract campaign pods use) and builds+pushes to
-the deployment's registry using a pre-provisioned push Secret. The pushed image is
+The service stages a project's build context (the workspace project dir + a generated
+Dockerfile) as a scratch tree on its own disk, then launches a Kubernetes Job whose
+init container (``robovast-sidecar``) fetches that tree as one tar stream from the
+service's data plane (:mod:`robovast.execution.cluster_execution.pod_access`) and whose
+main container has the shared rootless **BuildKit** daemon build+push to the
+deployment's registry using a pre-provisioned push Secret. The pushed image is
 ``<registry_prefix>/<name>:<hash>``; only the symbolic ``build:<tag>`` is ever
 returned to a client.
 
+The init container stays even though BuildKit can read an HTTP context by itself: the
+data plane wants an ``Authorization`` header, and ``buildctl --opt context=<url>`` has no
+way to send one.
+
 The staged context is scratch, not results: it is discarded when the build reaches a
 terminal phase, and any context whose Job is gone is swept at the next build (see
-:func:`discard_context` / :func:`staged_context_build_ids`). The Job itself is reaped
-by its own ``ttlSecondsAfterFinished``.
+:func:`staged_context_build_ids`; the discard is the service's ``discard_staged``). The
+Job itself is reaped by its own ``ttlSecondsAfterFinished``.
 
 The pure helpers (hash, Dockerfile, error classification) are shared with the local
 path in ``robovast.service.image_build``.
 """
 
 import logging
-import tempfile
 from pathlib import Path
 
 from robovast.common.execution import GIT_TOKEN_SECRET_ID, resolve_sidecar_image
+
+from . import pod_access
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +65,7 @@ logger = logging.getLogger(__name__)
 #: nothing that day — which is the point at which to do it.
 BUILDKIT_IMAGE = "moby/buildkit:v0.32.2-rootless"
 
-#: Where the staged context (incl. the generated Dockerfile) is mirrored in the Job.
+#: Where the staged context (incl. the generated Dockerfile) is fetched to in the Job.
 _CONTEXT_MOUNT = "/context"
 #: Where the push credential (dockerconfigjson) is mounted for BuildKit.
 _DOCKER_CONFIG_MOUNT = "/docker"
@@ -118,42 +124,28 @@ def cache_image_ref(registry_prefix: str, tag: str, scope: str) -> str:
     return f"{registry_prefix.rstrip('/')}/{name}-{scope}:buildcache"
 
 
-#: Key prefix all staged build contexts live under, inside :func:`build_context_bucket`.
+#: The staged slot every build context lives under, on the service's disk.
 BUILD_CONTEXT_PREFIX = "image-builds"
 
 
-def context_prefix(build_id: str) -> str:
-    """Where *build_id*'s context is staged. One definition, because staging,
-    the Job's mirror command, and the cleanup must all address the same keys."""
+def context_slot(build_id: str) -> str:
+    """The staged slot holding *build_id*'s context. One definition, because staging,
+    the Job's fetch and the cleanup must all address the same slot."""
     return f"{BUILD_CONTEXT_PREFIX}/{build_id}"
 
 
-def staged_context_build_ids(storage_client, bucket: str) -> set:
-    """Build ids that currently have a context staged in *bucket*.
+def staged_context_build_ids(contexts_dir: Path) -> set:
+    """Build ids that currently have a context staged under *contexts_dir*.
 
-    The listing *is* the record of what needs cleaning: a build id is derivable from
-    its own keys, so no side table has to be kept in sync with the object store (and
-    a context staged by a service instance that has since restarted is still found).
+    *contexts_dir* is the service's ``staged_dir(BUILD_CONTEXT_PREFIX)``. The listing *is*
+    the record of what needs cleaning: a build id is its directory's name, so no side
+    table has to be kept in sync with the disk (and a context staged by a service
+    instance that has since restarted is still found).
     """
-    head = f"{BUILD_CONTEXT_PREFIX}/"
-    ids = set()
-    for key in storage_client.list_keys(bucket, BUILD_CONTEXT_PREFIX):
-        rest = key[len(head):] if key.startswith(head) else ""
-        build_id = rest.split("/", 1)[0]
-        if build_id:
-            ids.add(build_id)
-    return ids
-
-
-def discard_context(storage_client, bucket: str, build_id: str) -> int:
-    """Delete *build_id*'s staged context; return the number of objects removed.
-
-    The context is scratch — a copy of the project dir the init container mirrors in
-    once — so it is dead the moment the build reaches a terminal phase. Nothing reads
-    it afterwards: a rebuild re-stages, the layer cache lives in the registry, and a
-    failure is diagnosed from the build log.
-    """
-    return storage_client.delete_prefix(bucket, context_prefix(build_id))
+    contexts_dir = Path(contexts_dir)
+    if not contexts_dir.is_dir():
+        return set()
+    return {child.name for child in contexts_dir.iterdir() if child.is_dir()}
 
 
 #: Staged-context size above which the build reports what it is carrying. Not a limit --
@@ -164,35 +156,38 @@ def discard_context(storage_client, bucket: str, build_id: str) -> int:
 CONTEXT_WARN_BYTES = 50 * 1024 * 1024
 
 
-def stage_context_to_s3(storage_client, bucket: str, prefix: str,
-                        project_dir: Path, dockerfile: str) -> int:
-    """Upload the build context (project dir + generated Dockerfile) to S3.
+def stage_context(staged_dir: Path, project_dir: Path, dockerfile: str) -> int:
+    """Copy the build context (project dir + generated Dockerfile) into *staged_dir*.
 
-    The Dockerfile is written into a temp copy of the tree root so it lands at the
-    context root the BuildKit Job reads. Uses the storage client's ``upload_dir``.
+    *staged_dir* is the service's ``staged_dir(context_slot(build_id))``: the tree the
+    Job's init container fetches from the data plane. The Dockerfile is written at its
+    root, where the BuildKit client reads it. A tree already there is replaced, so a
+    re-submitted build stages exactly this project and not the union with a previous one.
 
     Returns the staged size in bytes, so the caller can put it where someone looking at a
-    slow build will see it. This is copied, uploaded and mirrored back down once per
-    container per build, and it was invisible: the one project that had accidentally
-    grown a 600 MB context paid it on every build for two days with nothing naming it.
+    slow build will see it. This is copied once and fetched into the Job once per
+    container per build, and a context that has grown by accident is invisible without
+    the figure: a slow build looks exactly like a large one.
     """
+    import shutil
+
     project_dir = Path(project_dir)
-    with tempfile.TemporaryDirectory() as tmp:
-        staging = Path(tmp) / "context"
-        staged_bytes, staged_files = _copy_tree(project_dir, staging)
-        (staging / "Dockerfile").write_text(dockerfile)
-        if staged_bytes >= CONTEXT_WARN_BYTES:
-            logger.warning(
-                "Build context for %s is %.0f MB in %d files, transferred on every build. "
-                "The largest directories are: %s. Campaign outputs and the names in "
-                "BUILD_CONTEXT_IGNORE are already skipped, so what is left is being sent "
-                "on purpose or by accident -- if by accident, move it out of the project.",
-                project_dir, staged_bytes / 1e6, staged_files,
-                _largest_dirs(staging))
-        else:
-            logger.info("Staged build context: %.1f MB in %d files",
-                        staged_bytes / 1e6, staged_files)
-        storage_client.upload_dir(str(staging), bucket, prefix)
+    staging = Path(staged_dir)
+    if staging.exists():
+        shutil.rmtree(staging)
+    staged_bytes, staged_files = _copy_tree(project_dir, staging)
+    (staging / "Dockerfile").write_text(dockerfile)
+    if staged_bytes >= CONTEXT_WARN_BYTES:
+        logger.warning(
+            "Build context for %s is %.0f MB in %d files, transferred on every build. "
+            "The largest directories are: %s. Campaign outputs and the names in "
+            "BUILD_CONTEXT_IGNORE are already skipped, so what is left is being sent "
+            "on purpose or by accident -- if by accident, move it out of the project.",
+            project_dir, staged_bytes / 1e6, staged_files,
+            _largest_dirs(staging))
+    else:
+        logger.info("Staged build context: %.1f MB in %d files",
+                    staged_bytes / 1e6, staged_files)
     return staged_bytes
 
 
@@ -244,70 +239,13 @@ def _copy_tree(src: Path, dst: Path) -> tuple:
     return staged_bytes, staged_files
 
 
-def context_fetch_command() -> str:
-    """The sidecar ``mc mirror`` command that pulls the staged context into /context.
+def context_fetch_command(build_id: str) -> str:
+    """The init container's shell: fetch the staged context into ``/context``.
 
-    Mirrors the campaign init contract (see ``kubernetes_backend``): the S3 env is
-    provided by :func:`s3_init_env`, and everything under the build prefix lands in
-    ``/context`` (including the generated ``Dockerfile``).
+    The same ``curl | tar`` every pod uses (:func:`pod_access.fetch_command`); the slot is
+    the build's, and the token in the container's env reaches that slot and nothing else.
     """
-    return (
-        'mc alias set mystore "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" && '
-        f'mc mirror "mystore/$S3_BUCKET/$S3_BUILD_PREFIX/" {_CONTEXT_MOUNT}/'
-    )
-
-
-#: Bucket the build context is staged to when the deployment has no shared bucket.
-#: Lowercase and hyphenated because MinIO rejects underscores with an HTTP 400.
-BUILD_CONTEXT_BUCKET = "robovast-image-builds"
-
-
-def build_context_bucket(cluster_config) -> str:
-    """The bucket an experiment-image build stages its context to.
-
-    The deployment's shared bucket when it has one (external-S3 / GCS keep everything
-    there under key prefixes). Otherwise a dedicated bucket of our own — an image build
-    belongs to no campaign, so a per-campaign-bucket deployment has none to hand it.
-    Refusing that case outright and demanding external-S3 mode is not a real requirement:
-    the embedded MinIO is an ordinary S3 endpoint, the Job takes
-    bucket/prefix/endpoint/credentials as plain values, and the S3 client creates a
-    missing bucket exactly as it does for a campaign's own bucket.
-
-    Naming our own bucket is only defensible on the ``s3`` backend, where the namespace
-    is the deployment's own endpoint and ``_ensure_bucket`` can create it. On GCS a
-    bucket name is global to all of Google Cloud — an invented one would collide with a
-    stranger's bucket or 403 — and that client does not create buckets at all, so a
-    missing shared bucket is a configuration error to report, not a name to guess.
-    """
-    shared = cluster_config.get_s3_bucket()
-    if shared:
-        return shared
-    backend = cluster_config.get_storage_backend()
-    if backend != "s3":
-        raise ValueError(
-            f"in-cluster image builds on the '{backend}' storage backend need a bucket "
-            "configured for this deployment (there is no private namespace to create one "
-            "in). Set it at 'vast cluster setup' (GCS: -o gcs_bucket=… or "
-            "ROBOVAST_GCS_BUCKET).")
-    return BUILD_CONTEXT_BUCKET
-
-
-def s3_init_env(s3_endpoint, s3_access_key, s3_secret_key, bucket, build_prefix,
-                prefix_var: str = 'S3_BUILD_PREFIX'):
-    """The env an ``mc``-based init container needs to mirror one prefix down.
-
-    *prefix_var* names the variable carrying the prefix. It is a parameter because the
-    container-exec lane stages the same way but reads ``S3_EXEC_PREFIX``: sharing the
-    connection half while each caller names its own prefix keeps one definition of "how
-    an init container reaches the store" without pretending an exec is a build.
-    """
-    return [
-        {'name': 'S3_ENDPOINT', 'value': s3_endpoint},
-        {'name': 'S3_BUCKET', 'value': bucket},
-        {'name': 'S3_ACCESS_KEY', 'value': s3_access_key},
-        {'name': 'S3_SECRET_KEY', 'value': s3_secret_key},
-        {'name': prefix_var, 'value': build_prefix},
-    ]
+    return pod_access.fetch_command(f"/staged/{context_slot(build_id)}", _CONTEXT_MOUNT)
 
 
 #: Where the registry CA (for a self-signed / private-CA registry) is mounted.
@@ -321,19 +259,21 @@ def _registry_host(image_ref: str) -> str:
 
 
 def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
-                       init_env: list, push_secret_name: str,
+                       token: str, push_secret_name: str,
                        namespace: str, insecure: bool = False,
                        ca_configmap_name: str = "",
                        cache_ref: str = "", host_aliases: list = None,
                        pull_secret_name: str = "", git_secret_name: str = "",
                        daemon_addr: str) -> dict:
-    """A Job that fetches the S3 context and has the shared daemon build+push *image_ref*.
+    """A Job that fetches the staged context and has the shared daemon build+push *image_ref*.
 
-    An init container (``robovast-sidecar``) mirrors the context to an emptyDir; the
-    BuildKit container builds ``Dockerfile`` from it and pushes with the mounted
-    push credential. ``push_secret_name`` is a ``kubernetes.io/dockerconfigjson``
-    Secret provisioned at ``vast cluster setup`` — the only place registry
-    credentials live.
+    An init container (``robovast-sidecar``) fetches the context from the data plane into
+    an emptyDir, reaching it with *token* -- scoped to this build's slot
+    (:func:`pod_access.staged_scope`) and carried as a plain env value, because the Job
+    lives as long as the slot and the slot holds a copy of a project nothing else can be
+    reached through. The BuildKit container builds ``Dockerfile`` from it and pushes with
+    the mounted push credential. ``push_secret_name`` is a ``kubernetes.io/dockerconfigjson``
+    Secret provisioned at ``vast cluster setup`` — the only place registry credentials live.
 
     ``pull_secret_name`` authenticates the *pod's own* image pulls, the opposite direction from
     the push above: the init container is ``robovast-sidecar``, which on a private-registry
@@ -497,8 +437,8 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                     'initContainers': [{
                         'name': 'context-fetch',
                         'image': resolve_sidecar_image(),
-                        'command': ['sh', '-c', context_fetch_command()],
-                        'env': init_env,
+                        'command': ['sh', '-c', context_fetch_command(build_id)],
+                        'env': pod_access.staged_pod_env(namespace, token),
                         'volumeMounts': [{'name': 'context',
                                           'mountPath': _CONTEXT_MOUNT}],
                     }],

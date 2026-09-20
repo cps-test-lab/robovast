@@ -21,7 +21,9 @@ user-error type the execution backends do, without importing the execution layer
 (which imports *them*).
 """
 
+import errno
 import os
+import sqlite3
 
 
 class CampaignConfigError(Exception):
@@ -56,32 +58,60 @@ class ClusterUnreachableError(Exception):
     include_traceback = False
 
 
-class ObjectStoreUnreachableError(RuntimeError):
-    """Raised when the campaign object store did not answer at all.
+class ExecPathUnavailable(RuntimeError):
+    """Raised when no command can be run in a container here at all.
 
-    A dropped or stalled ``kubectl port-forward``, a MinIO pod that went away, a
-    connection reset mid-response: botocore reports each of these as a different
-    transport exception, and every one of them means the same thing — no answer, so
-    there is nothing to interpret. Left raw they reach the caller as a ~90-line
-    traceback through urllib3, botocore's retry handler and the ASGI stack that names
-    no cause the one sentence here does not.
+    A property of the *deployment*, never of the image, the command or the project: an
+    upgrade request answered with an ordinary HTTP success means nothing serving it upgraded
+    the connection, so every exec is refused equally, before the command exists. The pod and
+    container one attempt named are therefore incidental, and naming them invites a caller
+    to try another.
 
-    Distinct from a ``ClientError``: the store answered, and *what* it answered
-    (``NoSuchBucket``, ``NoSuchKey``) is the caller's question to interpret.
+    A status that is *not* a success is not this: the API server answering ``404`` or
+    ``500`` is answering about the one target that was asked for, which a caller may retry
+    against another.
 
-    A ``RuntimeError`` so that the readers which already degrade on one
-    (``_campaign_records`` falling back to "unknown", the service's ``_guard``) keep
-    working unchanged; the service maps this subclass to 503 rather than 409.
+    Distinct from a command that ran and failed, which is the caller's own question
+    answered, and from :class:`ClusterUnreachableError`, where the API server never answered
+    at all. Here it answers: everything that needs no container keeps working, which is what
+    makes the consequence worth stating rather than leaving to be inferred.
+
+    Its own type because the callers that must degrade rather than mis-attribute recognise
+    it structurally -- the world and scenario checks report *unchecked*, the image catalogs
+    report the deployment instead of the image. Across HTTP the type is carried as the
+    :data:`~robovast.service.interface.EXEC_PATH_UNAVAILABLE` code on the refusal, so a
+    client recognises the same fact without matching on the message.
+
+    A ``RuntimeError`` so the callers that already catch one keep working; the service
+    maps this subclass to 503 rather than 409.
     """
 
     include_traceback = False
 
 
+class ExecTargetGone(RuntimeError):
+    """Raised when the pod or container an exec named is no longer there.
+
+    The other half of the read :class:`ExecPathUnavailable` describes: the API server
+    answered about *the one target that was asked for* rather than refusing every exec, so
+    the deployment needs no attention and the target can simply be made again. A pod ends
+    without its span ending -- an eviction, a drained node, a deadline -- and the next exec
+    into it is the first thing that notices.
+
+    Its own type because the caller that can act on it cannot act on a message: a runner
+    holding a name that no longer resolves recreates the container and repeats what it was
+    doing, which is only correct for *this* cause. A command that ran and failed, or a
+    deployment that can exec nothing, must not be retried that way.
+
+    A ``RuntimeError`` for the reason its siblings are: callers that already catch one keep
+    working unchanged, and only the one that knows how to recover matches the subclass.
+    """
+
+
 class IndexUnreachableError(RuntimeError):
     """Raised when the central index did not answer at all.
 
-    The sibling of :class:`ObjectStoreUnreachableError`, and for the same reason: a
-    Postgres that is starting, a sidecar that went away, a volume that failed to
+    A Postgres that is starting, a sidecar that went away, a volume that failed to
     mount, and a wrong port all reach the caller as different psycopg exceptions
     that mean one thing -- no answer -- wrapped in a traceback through the driver and
     the ASGI stack that names no cause the one sentence here does not.
@@ -95,7 +125,9 @@ class IndexUnreachableError(RuntimeError):
     whole design exists to avoid. Say the index is unreachable and let the caller
     decide.
 
-    A ``RuntimeError`` so the service's ``_guard`` maps it to 503 like its sibling.
+    A ``RuntimeError`` like its sibling, but unlike it ``_guard`` carries no arm of its
+    own for this type: it falls through to the ``RuntimeError`` arm and reaches a client as
+    409 rather than 503. The routes that must tell it apart catch it themselves.
     """
 
     include_traceback = False
@@ -199,6 +231,26 @@ class TableColumnLimitExceeded(ActionableError):
     include_traceback = False
 
 
+class CampaignNotIngestable(ActionableError):
+    """A directory carries no campaign, so ingesting it would assert something false.
+
+    The registry exists to separate "ingested and measured nothing" from "never ingested",
+    and each tolerance on the ingest path is right on its own: a missing ``campaign.db`` is
+    survivable, because a campaign that ended badly still has its runs on disk and is
+    exactly the one worth reading; an empty run walk is survivable, because a campaign
+    whose every draw failed to compose really did produce no runs. Together they would let
+    a directory holding neither -- a cluster cache dir the service never filled, an extract
+    that stopped partway -- be recorded as ingested, after which a query answers ``0`` rows
+    with no note and a reader takes a pipeline failure for a fact about the experiment.
+
+    So the pair is refused where either alone is not: no record *and* no run directory
+    means the ingest was aimed at something that is not this campaign's data. Refused
+    before the campaign's existing rows are cleared, so a mis-aimed ingest cannot empty a
+    campaign that has them.
+    """
+    include_traceback = False
+
+
 class ImageStoreUnavailable(RuntimeError):
     """Raised when an image store could not be asked whether an image is there.
 
@@ -208,11 +260,72 @@ class ImageStoreUnavailable(RuntimeError):
     report every built image as unbuilt — a missing *dependency* reported as a missing
     *artifact*.
 
-    A ``RuntimeError`` for the same reason :class:`ObjectStoreUnreachableError` is one: the
-    readers that already degrade on one keep working unchanged.
+    A ``RuntimeError`` so the readers that already degrade on one keep working unchanged.
     """
 
     include_traceback = False
+
+
+class InsufficientStorageError(ActionableError):
+    """Raised when a write is refused because free space is below the reserve.
+
+    Distinct from a write that already failed for lack of space (:func:`is_storage_full`):
+    this is RoboVAST declining new work while it still has room to keep running what it has
+    (see :mod:`robovast.common.disk_reserve`). Both reach an HTTP caller as a 507; this one
+    says which disk is short and by how much, and carries clearing the service cache as its
+    ``next_step`` when that would free something worth it.
+
+    Not a ``RuntimeError``: nothing is in conflict, and a caller that maps a conflict to
+    "wait for the other operation" would wait for something that will not finish.
+    """
+
+
+#: What a caller is told when a write failed because the service's storage is full. One
+#: sentence for every surface, and no path: where on the service host the write landed is
+#: nothing a caller can act on.
+STORAGE_FULL_DETAIL = (
+    "The service ran out of disk space and did not complete this request. The request "
+    "itself is fine: free space on the service's storage -- deleting campaigns that are "
+    "no longer needed is the usual way -- then retry.")
+
+#: Postgres's SQLSTATE for ``disk_full``: what the index answers when its volume is full.
+_PG_DISK_FULL = "53100"
+
+#: SQLite's primary result code for a full disk: what a campaign's ``campaign.db`` answers
+#: when the results volume is full.
+_SQLITE_FULL = sqlite3.SQLITE_FULL
+
+
+def is_storage_full(exc: BaseException) -> bool:
+    """Whether *exc*, or anything that caused it, says the storage behind a write is full.
+
+    Three shapes carry that fact: the kernel's ``ENOSPC``/``EDQUOT`` on a file write,
+    Postgres's ``disk_full`` on an index write -- matched on the SQLSTATE attribute rather
+    than the psycopg class, so this module does not import the driver -- and SQLite's
+    ``SQLITE_FULL`` on a write to a campaign's store, which SQLite raises as its own error
+    rather than the ``OSError`` behind it.
+
+    The cause chain is followed because a layer that translates an ``OSError`` into its own
+    refusal (an archive that could not be extracted is a ``ValueError``) would otherwise
+    turn "the disk is full" into "your input is wrong", which sends the caller to fix a
+    request that was never the problem.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
+            return True
+        if getattr(exc, "sqlstate", None) == _PG_DISK_FULL:
+            return True
+        if getattr(exc, "sqlite_errorcode", None) == _SQLITE_FULL:
+            return True
+        # The chain a traceback prints: an explicit cause, else the exception being handled
+        # when this one was raised -- unless ``from None`` said that one is irrelevant.
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+        else:
+            exc = None if exc.__suppress_context__ else exc.__context__
+    return False
 
 
 def missing_input_error(entries, *, hint=True):

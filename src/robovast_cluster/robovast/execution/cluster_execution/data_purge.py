@@ -16,9 +16,11 @@
 
 """Reclaiming the node directories a cleanup deliberately leaves behind.
 
-``vast cluster cleanup`` removes the deployment and keeps its data: the store holds finished
-campaigns, and a teardown that silently deleted them would be a very expensive way to free a
-node. So the directories stay, and this is how an operator asks for them back --
+``vast cluster cleanup`` removes the deployment and keeps its data: the results volume holds
+finished campaigns, and a teardown that silently deleted them would be a very expensive way
+to free a node. Which directories those are is read from the live objects -- every
+``hostPath`` the ``robovast`` pod and the service Deployment mount, which are the tenants of
+:mod:`.data_paths` -- rather than from a list kept here. So the directories stay, and this is how an operator asks for them back --
 ``--delete-data``, never by default.
 
 **A node directory can only be removed from the node.** No API call reaches it, so this runs

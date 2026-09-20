@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
 from robovast.service.client import LocalTransport
+from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 _CAMPAIGN = "camp-2026-01-01-000000"
@@ -72,7 +73,7 @@ def test_a_local_service_streams_its_own_campaign(env):
     check, and leaves an operator on a local service with no way to hand a campaign to
     anybody without shell access to the host.
     """
-    resp = env.get(f"/campaigns/{_CAMPAIGN}/archive")
+    resp = env.get(Routes.campaign_archive(_CAMPAIGN))
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-disposition"] == f'attachment; filename="{_CAMPAIGN}.tar.gz"'
 
@@ -85,14 +86,14 @@ def test_a_local_service_streams_its_own_campaign(env):
 
 def test_postprocessing_scratch_is_left_out(env):
     """``.cache`` and ``_postproc`` are staging, not campaign content."""
-    names = _members(env.get(f"/campaigns/{_CAMPAIGN}/archive").content)
+    names = _members(env.get(Routes.campaign_archive(_CAMPAIGN)).content)
     assert not [n for n in names if "/.cache" in n or "/_postproc" in n], \
         f"staging directories were shipped in the archive: {sorted(names)}"
 
 
 def test_an_unknown_campaign_is_a_404(env):
     """A missing campaign is absent, not a conflict — the same answer either lane gives."""
-    resp = env.get("/campaigns/nope-2026-01-01-000000/archive")
+    resp = env.get(Routes.campaign_archive("nope-2026-01-01-000000"))
     assert resp.status_code == 404
 
 
@@ -113,7 +114,7 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     (root / "campaign.vast").write_text("configuration:\n  name: x\n", encoding="utf-8")
 
     with TestClient(build_app(lt)) as client:
-        resp = client.get(f"/campaigns/{_CAMPAIGN}/archive")
+        resp = client.get(Routes.campaign_archive(_CAMPAIGN))
     assert resp.status_code == 200, resp.text
     assert _CAMPAIGN in resp.headers["content-disposition"]
 
@@ -136,7 +137,7 @@ def test_a_running_campaign_downloads_as_an_incomplete_snapshot(tmp_path, monkey
     monkeypatch.setattr(type(transport), "campaign_is_live", lambda self, cid: True)
 
     with TestClient(build_app(transport)) as client:
-        resp = client.get(f"/campaigns/{_CAMPAIGN}/archive")
+        resp = client.get(Routes.campaign_archive(_CAMPAIGN))
 
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-disposition"] == \
@@ -152,6 +153,6 @@ def test_a_finished_campaign_is_not_marked_incomplete(env):
     """
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
 
-    resp = env.get(f"/campaigns/{_CAMPAIGN}/archive")
+    resp = env.get(Routes.campaign_archive(_CAMPAIGN))
     assert resp.headers["content-disposition"] == f'attachment; filename="{_CAMPAIGN}.tar.gz"'
     assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" not in _members(resp.content)

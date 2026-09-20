@@ -46,6 +46,36 @@ from robovast.client.status import (  # noqa: F401  # pylint: disable=unused-imp
 logger = logging.getLogger(__name__)
 
 
+#: The campaign's runs -- what a stop meant when a campaign had one stoppable thing.
+STOP_RUNS = "runs"
+#: Analysis postprocessing: the rosbag conversions, the metrics, the index ingest.
+STOP_POSTPROCESSING = "postprocessing"
+#: The upload-to-share, which streams a whole campaign to somebody else's storage.
+STOP_SHARE = "share"
+
+#: The units of work a stop can land on.
+#:
+#: Three, because a campaign runs three things long enough to be worth interrupting and
+#: they end in different places. One flag for all of them cannot say which was meant, and
+#: the cost of that was silent: a stop aimed at the runs also cancelled the analysis of the
+#: batches that had already finished, so their results stayed on disk and reached no query.
+STOP_SCOPES = (STOP_RUNS, STOP_POSTPROCESSING, STOP_SHARE)
+
+#: Phases in which the runs are already over, so stopping can only mean the analysis.
+#:
+#: ``finishing`` and ``importing`` belong here, and that is the whole point of using a
+#: phase *set* rather than testing for ``postprocessing``: they sit between the run loop
+#: ending and postprocessing starting, so an equality test left a window in which a stop
+#: was accepted, reported as "stop requested", and cancelled nothing at all.
+_POST_RUN_PHASES = frozenset({Phase.FINISHING, Phase.IMPORTING, Phase.POSTPROCESSING})
+
+#: Phases in which stopping means the campaign's **runs** -- every live phase that is not
+#: one of the two later stages. Derived rather than listed, so a live phase added later
+#: falls to the run scope (a stop ends the campaign, the safe reading) instead of falling
+#: through unclassified.
+_RUN_PHASES = frozenset(RUNNING_PHASES - _POST_RUN_PHASES - {Phase.SHARING})
+
+
 # -- shared state -----------------------------------------------------------
 
 class ControllerState:
@@ -61,7 +91,7 @@ class ControllerState:
     def __init__(self, **initial):
         self._lock = threading.Lock()
         self._status = Status(**initial)
-        self._stop_event = threading.Event()
+        self._stop_events = {scope: threading.Event() for scope in STOP_SCOPES}
         self._progress_suspend = threading.Event()
         self._progress_mark = self._progress_signal()
 
@@ -177,12 +207,40 @@ class ControllerState:
                 self._status.stage = stage
             self._status.updated_at = time.time()
 
-    def request_stop(self) -> None:
-        self._stop_event.set()
+    def request_stop(self, scope: str = STOP_RUNS) -> None:
+        """Ask *scope*'s work to end cooperatively.
+
+        Defaulting to :data:`STOP_RUNS` rather than stopping everything: a caller that
+        does not say what it is stopping means the campaign's runs, which is what a stop
+        meant when there was only one of them.
+        """
+        if scope not in self._stop_events:
+            raise ValueError(f"unknown stop scope {scope!r}; expected one of {STOP_SCOPES}")
+        self._stop_events[scope].set()
+
+    def stop_requested_for(self, scope: str) -> bool:
+        """Whether *scope*'s work was asked to end."""
+        return self._stop_events[scope].is_set()
 
     @property
     def stop_requested(self) -> bool:
-        return self._stop_event.is_set()
+        """Whether the campaign's **runs** were asked to end.
+
+        Deliberately still the runs and nothing else. A stop of the analysis or of the
+        upload must not read as "the campaign was stopped": that is what made a stopped
+        run also discard its analysis, because one bit answered both questions.
+        """
+        return self.stop_requested_for(STOP_RUNS)
+
+    @property
+    def postprocessing_stop_requested(self) -> bool:
+        """Whether **postprocessing** was asked to end (see :func:`stop_checker`)."""
+        return self.stop_requested_for(STOP_POSTPROCESSING)
+
+    @property
+    def share_stop_requested(self) -> bool:
+        """Whether the **share upload** was asked to end (see :class:`UploadProgress`)."""
+        return self.stop_requested_for(STOP_SHARE)
 
     def suspend_progress(self) -> None:
         """Pause the run-progress poller (see CampaignController._poll).
@@ -238,12 +296,63 @@ def stage_output_callback(state, log):
 #:
 #: Said rather than left to be discovered, because the outcome differs from stopping a run
 #: and the difference is the part an operator has to act on: the runs are over and every
-#: result they produced is kept, so the campaign still ends as ``finished`` -- what the stop
-#: gives up is the derived data, and a re-run gets it back.
+#: result they produced is kept -- what the stop gives up is the derived data, and a re-run
+#: gets it back.
+#:
+#: It does not name the phase the campaign ends in, because that is not this stop's to
+#: decide: a campaign whose runs finished ends ``finished``, and one whose runs were
+#: stopped first ends ``stopped``. Asserting one of them here was true only while a stop
+#: discarded the analysis unconditionally.
 STOP_DURING_POSTPROCESSING = (
-    "stop requested; cancelling postprocessing. The runs are finished and their results "
-    "are kept, so the campaign ends as 'finished' with its derived data not computed -- "
-    "re-run postprocessing to get it.")
+    "stop requested; cancelling postprocessing. The runs are over and their results are "
+    "kept, so the campaign ends with its derived data not computed -- re-run "
+    "postprocessing to get it.")
+
+#: What ``stop`` answers when it lands on a campaign that is uploading to the share.
+#:
+#: The partial object is this message's subject because it is the part that is not
+#: recoverable by re-asking: the upload can be re-triggered, but a truncated archive left
+#: on somebody else's storage lists and downloads exactly like a complete one.
+STOP_DURING_SHARING = (
+    "stop requested; cancelling the upload to share. The campaign and its results are "
+    "untouched and the partial upload is removed -- re-trigger the share to upload it "
+    "again.")
+
+#: What ``stop`` answers when the campaign it names is already over.
+#:
+#: A refusal rather than a cheerful "stop requested": nothing was running, so nothing was
+#: stopped, and reporting otherwise sends a reader looking for an effect that never came.
+STOP_ALREADY_OVER = (
+    "campaign is already over ({phase}); nothing was stopped. Its results are on disk -- "
+    "re-run postprocessing if its derived data is missing.")
+
+
+def stop_scope_for_phase(phase: str) -> "str | None":
+    """Which unit of work a stop lands on for a campaign in *phase*, or ``None``.
+
+    The single place that decision is made, so the two lanes' ``stop`` implementations
+    cannot answer it differently -- they both used to inline ``phase ==
+    Phase.POSTPROCESSING`` and each restated the consequence in its own docstring.
+
+    ``None`` means nothing of this campaign is running: every terminal phase, and any
+    phase this vocabulary does not know. Callers report that rather than setting a flag
+    nothing will read.
+    """
+    if phase in _RUN_PHASES:
+        return STOP_RUNS
+    if phase in _POST_RUN_PHASES:
+        return STOP_POSTPROCESSING
+    if phase == Phase.SHARING:
+        return STOP_SHARE
+    return None
+
+
+#: What ``stop`` reports for each scope. Beside the scope decision because the two are one
+#: answer: which work is ending, and what that leaves behind.
+STOP_SCOPE_MESSAGES = {
+    STOP_POSTPROCESSING: STOP_DURING_POSTPROCESSING,
+    STOP_SHARE: STOP_DURING_SHARING,
+}
 
 
 def stop_checker(state):
@@ -258,7 +367,11 @@ def stop_checker(state):
     (the postprocessing pipeline, its plugins, the cluster's conversion Job) then needs to
     know only "is this still wanted", not what a campaign or a phase is. That is also what
     makes those layers testable without one.
+
+    Reads the **postprocessing** scope, not the runs. A stop aimed at the runs leaves the
+    analysis of the batches that did finish to complete, which is what puts their results
+    in the index; only a stop aimed at the analysis ends it here.
     """
     if state is None:
         return None
-    return lambda: state.stop_requested
+    return lambda: state.postprocessing_stop_requested

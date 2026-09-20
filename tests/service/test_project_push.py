@@ -159,7 +159,7 @@ def test_sync_echo_reports_each_change(client, project):
 # -- sync: campaign results are not project input ---------------------------
 
 
-def _campaign_dir(root, name):
+def campaign_dir(root, name):
     """A directory that looks like campaign output because it CONTAINS the markers.
 
     Named after a campaign id rather than "results", which is the case the name-based
@@ -176,7 +176,7 @@ def _campaign_dir(root, name):
 
 
 def test_sync_skips_a_results_tree_named_after_its_campaign(client, project):
-    _campaign_dir(project, "demo-2026-08-21-09291829")
+    campaign_dir(project, "demo-2026-08-21-09291829")
     wid = _wid(client)
     stats = sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
 
@@ -186,7 +186,7 @@ def test_sync_skips_a_results_tree_named_after_its_campaign(client, project):
 
 
 def test_sync_reports_what_it_skipped_and_how_to_include_it(client, project):
-    _campaign_dir(project, "demo-2026-08-21-09291829")
+    campaign_dir(project, "demo-2026-08-21-09291829")
     wid = _wid(client)
     lines = []
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
@@ -198,7 +198,7 @@ def test_sync_reports_what_it_skipped_and_how_to_include_it(client, project):
 
 
 def test_include_results_uploads_them_anyway(client, project):
-    _campaign_dir(project, "demo-2026-08-21-09291829")
+    campaign_dir(project, "demo-2026-08-21-09291829")
     wid = _wid(client)
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"},
                                 include_results=True)
@@ -469,3 +469,30 @@ def test_a_served_name_that_is_a_path_is_ignored(tmp_path):
 
     assert _served_filename('attachment; filename="../../etc/passwd"') == ""
     assert _served_filename('attachment; filename="a/b.tar.gz"') == ""
+
+
+def test_a_refused_upload_reaches_the_caller_as_the_services_sentence(tmp_path):
+    """Over HTTP the side-channel PUT is refused with a sentence saying what to do, and
+    ``requests``' own ``raise_for_status`` would replace it with a status line and a URL."""
+    import requests
+
+    from robovast.service.http_client import HTTPTransport
+    from robovast.service.interface import ServiceError
+    from robovast.service.project_push import push_file
+
+    refused = requests.Response()
+    refused.status_code = 507
+    refused.reason = "Insufficient Storage"
+    refused.url = "http://service.example/uploads/tok"
+    refused._content = b'{"detail": "The service ran out of disk space."}'  # pylint: disable=protected-access
+    http_client = SimpleNamespace(
+        create_upload=lambda request: SimpleNamespace(url=refused.url, token="tok"),
+        session=SimpleNamespace(put=lambda url, data, timeout: refused),
+        raise_for_status=HTTPTransport.raise_for_status)
+    binary = tmp_path / "data.bin"
+    binary.write_bytes(b"\x00")
+
+    with pytest.raises(ServiceError) as excinfo:
+        push_file(http_client, _address("ws-1", "data.bin"), binary)
+    assert excinfo.value.status == 507
+    assert excinfo.value.detail == "The service ran out of disk space."

@@ -38,6 +38,7 @@ export type McpCall = Schemas['McpCall']
 export type UpgradeInfo = Schemas['UpgradeInfo']
 export type ServiceConfig = Schemas['ServiceConfig']
 export type ServiceSetting = Schemas['ServiceSetting']
+export type ServiceCache = Schemas['ServiceCache']
 
 export type CampaignSummary = Schemas['CampaignSummary']
 
@@ -90,14 +91,35 @@ const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
 export const isTerminalPhase = (phase: string | undefined): boolean =>
   !!phase && !RUNNING_PHASES.has(phase)
 
+// Phases before the run loop starts. They have no progress bar of their own, so the only
+// signal that one is wedged rather than slow is how long it has been held — and nothing a
+// campaign stages for a reader exists yet (see `mayHaveStagedConfig`).
+export const PRE_RUN_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'initializing', 'building', 'starting', 'plugin install', 'variation',
+])
+
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
-export const isFinished = (c: CampaignSummary) => c.phase === 'finished'
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
-// Results are ready to explore only once the run finished AND its configured postprocessing
-// pipelines ran: "finished" alone is reached *before* postprocessing chains, and a campaign that
-// defines no postprocessing never gets the derived data the Results views query. The single gate
-// for what the Results topic (Explorer / Run / Data) shows.
-export const hasResults = (c: CampaignSummary) => isFinished(c) && c.postprocessed
+// The phases in which a campaign has ENDED with results worth reading. `stopped` and `crashed`
+// belong here as much as `finished` does: the runs they completed are on disk and their analysis
+// runs like any other campaign's, so gating on `finished` alone hid exactly the campaigns whose
+// partial results someone had a reason to go looking at. A stopped campaign in particular could
+// never qualify however often its data was rebuilt -- `status_recovery.record_step_outcome`
+// deliberately preserves `stopped` across a re-postprocess, so the phase never becomes `finished`.
+//
+// `failed` stays out, and for a reason about the data rather than about tidiness: a failed campaign
+// never finished projecting its results, so its root is missing pieces postprocessing needs, which
+// is why the controller skips postprocessing for it.
+const ENDED_WITH_RESULTS_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
+  'finished', 'stopped', 'crashed',
+])
+
+// Results are ready to explore only once the campaign ENDED AND its configured postprocessing
+// pipelines ran: the end is reached *before* postprocessing chains, and a campaign that defines no
+// postprocessing never gets the derived data the Results views query. The single gate for what the
+// Results topic (Explorer / Run / Data) shows.
+export const hasResults = (c: CampaignSummary) =>
+  ENDED_WITH_RESULTS_PHASES.has(c.phase) && c.postprocessed
 // Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so
 // zero means there is no store to read — the campaign never started, or ended before writing one.
 // Nothing can be replayed or queried for such a campaign, so the Run view does not offer it.
@@ -161,8 +183,8 @@ export type RetriggerAxis = Schemas['RetriggerAxis']
 
 export type ActionResult = Schemas['ActionResult']
 
-// Whether a run's 3D geometry is ready, and what the wait is on if not. Mirrors CampaignDataStatus'
-// job: say why you are about to wait, before you wait.
+// Whether a run's 3D geometry is ready, and what the wait is on if not: say why you are about to
+// wait, before you wait.
 export type SceneStatus = Schemas['SceneStatus']
 
 // control_server.Status (reused verbatim by the interface) — the live monitor model.
@@ -302,11 +324,6 @@ export type DataDescribe = Schemas['DataDescribe']
 
 export type DataQueryResult = Schemas['DataQueryResult']
 
-// Whether querying a campaign has to transfer its databases from the object store first.
-// `fetch_required: false` (a local service) means the question does not apply — the backend
-// difference is resolved server-side, so a view reads the same fields either way.
-export type CampaignDataStatus = Schemas['CampaignDataStatus']
-
 export interface PlotSpec {
   title: string
   query: string
@@ -364,23 +381,25 @@ export const resultsUrl = (campaignId: string, path: string) =>
 export const sourcesUrl = (workspaceId: string, path: string) =>
   `/sources/${encodeURIComponent(workspaceId)}/${encodePath(path)}`
 
+/** The error a failed response carries: FastAPI's `{detail}`, else the status text. */
+async function errorFrom(res: Response): Promise<RobovastError> {
+  let detail = res.statusText
+  try {
+    const j = (await res.json()) as { detail?: string }
+    if (j?.detail) detail = j.detail
+  } catch {
+    /* non-JSON body */
+  }
+  return new RobovastError(res.status, detail)
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!res.ok) {
-    // FastAPI errors carry {detail}; fall back to the status text.
-    let detail = res.statusText
-    try {
-      const j = (await res.json()) as { detail?: string }
-      if (j?.detail) detail = j.detail
-    } catch {
-      /* non-JSON body */
-    }
-    throw new RobovastError(res.status, detail)
-  }
+  if (!res.ok) throw await errorFrom(res)
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }
@@ -468,17 +487,20 @@ export const robovast = {
   // Only changes when the pod restarts, so callers poll it not at all.
   serviceConfig: () => request<ServiceConfig>('GET', '/admin/config'),
 
+  // The rebuildable caches: what they hold, and clearing what nothing may still be using.
+  serviceCache: () => request<ServiceCache>('GET', '/admin/cache'),
+  clearServiceCache: () => request<ServiceCache>('DELETE', '/admin/cache'),
+
   // Returns as soon as the roll is asked for, NOT when the new pod is serving: with one
   // replica Kubernetes starts the new pod before stopping the old, so the pod answering
   // this is still up. Watch upgradeInfo().running_digest for the handover.
   upgradeService: (force: boolean) =>
     request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
 
-  // Direct URL of a campaign's tar.gz (a GET the browser downloads). Both lanes answer
-  // it: a cluster service streams it from the object store, a local one tars its own
-  // results directory.
+  // Direct URL of a campaign's tar.gz (a GET the browser downloads), on the data plane:
+  // the service tars its results directory into the response, on either lane.
   archiveUrl: (campaignId: string) =>
-    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/archive`,
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
 
   // What the configured share holds, read by the service with its own credentials --
   // a browser has none. `configured: false` means this service has no share at all,
@@ -558,6 +580,20 @@ export const robovast = {
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
 
+  // How the cluster queue treats a campaign: its rank, its hold, or both. Ordering only —
+  // nothing already running stops, so a campaign demoted or paused keeps the runs it has and
+  // gives up only the slots they release. Omitted halves are left alone, so pausing does not
+  // reset the priority the campaign resumes at.
+  setScheduling: (campaignId: string, opts: { priority?: number; paused?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts.priority !== undefined) params.set('priority', String(opts.priority))
+    if (opts.paused !== undefined) params.set('paused', String(opts.paused))
+    return request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/scheduling?${params.toString()}`,
+    )
+  },
+
   // Kill ONE running job; the campaign keeps going and that run is recorded as `killed`.
   // Refused (409) unless the job is running. `job_name` is a query param because locally it
   // is a "<config>/<run>" id and contains a slash.
@@ -586,8 +622,8 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/retrigger/check`,
     ),
 
-  // Permanently delete one campaign wholesale (local dir / cluster object-store data +
-  // leftover Jobs + cache). Refused by the service while the campaign is still running.
+  // Permanently delete one campaign wholesale (its results directory + leftover Jobs +
+  // cache). Refused by the service while the campaign is still running.
   deleteCampaign: (campaignId: string) =>
     request<ActionResult>('DELETE', `/campaigns/${encodeURIComponent(campaignId)}`),
 
@@ -641,7 +677,7 @@ export const robovast = {
       method: 'PUT',
       body: data,
     })
-    if (!res.ok) throw new RobovastError(res.status, `upload failed: ${res.statusText}`)
+    if (!res.ok) throw await errorFrom(res)
     return (await res.json()) as FileMeta
   },
 
@@ -656,16 +692,7 @@ export const robovast = {
       method: 'PUT',
       body: file,
     })
-    if (!res.ok) {
-      let detail = res.statusText
-      try {
-        const j = (await res.json()) as { detail?: string }
-        if (j?.detail) detail = j.detail
-      } catch {
-        /* non-JSON body */
-      }
-      throw new RobovastError(res.status, detail)
-    }
+    if (!res.ok) throw await errorFrom(res)
     return (await res.json()) as StagedArchive
   },
 
@@ -767,14 +794,6 @@ export const robovast = {
       max_bytes: UI_RESULT_BYTES,
     }),
 
-  // Cheap pre-flight for the two above: on a cluster campaign the first of them fetches the
-  // databases from the object store inside the request, which without a word looks like a hang.
-  campaignDataStatus: (campaignId: string) =>
-    request<CampaignDataStatus>(
-      'GET',
-      `/campaigns/${encodeURIComponent(campaignId)}/data-status`,
-    ),
-
   listCampaignPlots: (campaignId: string) =>
     request<CampaignPlotsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/plots`),
 
@@ -826,16 +845,7 @@ export const robovast = {
     const res = await fetch(
       `${BASE}/campaigns/${encodeURIComponent(campaignId)}/notebook?${params.toString()}`,
     )
-    if (!res.ok) {
-      let detail = res.statusText
-      try {
-        const j = (await res.json()) as { detail?: string }
-        if (j?.detail) detail = j.detail
-      } catch {
-        /* non-JSON body */
-      }
-      throw new RobovastError(res.status, detail)
-    }
+    if (!res.ok) throw await errorFrom(res)
     return res.text()
   },
 

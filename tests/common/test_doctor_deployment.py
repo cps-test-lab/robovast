@@ -58,6 +58,9 @@ def deployment(monkeypatch):
     from robovast.execution.cluster_execution import buildkitd_deploy, kube_client
     monkeypatch.setattr(kube_client, "load_kube_config", lambda ctx=None: None)
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_ready", lambda ns: state.daemon_ready)
+    # The job placement rows read the live Deployment and the node list; they have tests of
+    # their own below and are not what this fixture's tests are about.
+    monkeypatch.setattr(doc, "_check_job_placement", lambda ns, ctx: [])
     return state
 
 
@@ -433,3 +436,77 @@ class _Refused(Exception):
         super().__init__(detail or f"HTTP {status}")
         self.status = status
         self.detail = detail
+
+
+# -- job placement ----------------------------------------------------------------------
+
+def _placement(monkeypatch, nodes, pool):
+    from robovast.execution.cluster_execution import kube_client, service_deploy
+    from tests.execution.test_job_node_alias import _Core
+
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda ctx=None: None)
+    if isinstance(pool, Exception):
+        def _raise(ns, ctx):
+            raise pool
+        monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster", _raise)
+    else:
+        monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster",
+                            lambda ns, ctx: pool)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: _Core(*nodes))
+    return doc._check_job_placement("default", None)
+
+
+def test_a_pool_matching_no_node_fails(monkeypatch):
+    from tests.execution.test_job_node_alias import _Node
+    checks = _placement(monkeypatch, [_Node("node-a")], {"node-pool": "typo"})
+    row = _by_name(checks, "job node pool")
+    assert not row.ok and not row.optional
+    assert "matches no node" in row.detail
+
+
+def test_a_pool_of_unschedulable_nodes_fails(monkeypatch):
+    from tests.execution.test_job_node_alias import POOL, _pooled
+    row = _by_name(_placement(monkeypatch, [_pooled("node-a", cordoned=True)], POOL),
+                   "job node pool")
+    assert not row.ok and "none schedulable" in row.detail
+
+
+def test_a_usable_pool_is_green(monkeypatch):
+    from tests.execution.test_job_node_alias import POOL, _pooled
+    row = _by_name(_placement(monkeypatch, [_pooled("node-a")], POOL), "job node pool")
+    assert row.ok
+
+
+def test_an_unparseable_pool_fails(monkeypatch):
+    checks = _placement(monkeypatch, [], ValueError("ROBOVAST_JOB_NODE_LABELS='x' is not JSON"))
+    assert not _by_name(checks, "job node pool").ok
+
+
+@pytest.mark.parametrize("nodes,cause", [
+    pytest.param(lambda m: [m._Node("node-a", {m.ALIAS: "bench", m.np.NODE_ID_LABEL: "i"}),
+                            m._pooled("node-b")], "outside-pool", id="outside-pool"),
+    pytest.param(lambda m: [m._pooled("node-a", labels={m.ALIAS: "bench"}),
+                            m._pooled("node-b", labels={m.ALIAS: "bench"})],
+                 "ambiguous", id="on-two-nodes"),
+    pytest.param(lambda m: [m._pooled("node-a", labels={m.ALIAS: "bench"}, cordoned=True),
+                            m._pooled("node-b")], "unschedulable", id="cordoned"),
+])
+def test_a_dangling_alias_fails_naming_the_alias(monkeypatch, nodes, cause):
+    from tests.execution import test_job_node_alias as m
+    row = _by_name(_placement(monkeypatch, nodes(m), m.POOL), "job node alias bench")
+    assert not row.ok and not row.optional
+    assert cause in row.detail
+
+
+def test_a_resolvable_alias_is_green(monkeypatch):
+    from tests.execution import test_job_node_alias as m
+    checks = _placement(monkeypatch, [m._pooled("node-a", labels={m.ALIAS: "bench"})], m.POOL)
+    assert _by_name(checks, "job node alias bench").ok
+
+
+def test_placement_is_checked_on_an_unpublished_deployment(deployment, monkeypatch):
+    """Unrelated to the registry: a pool that matches nothing stops every campaign."""
+    monkeypatch.setattr(doc, "_check_job_placement",
+                        lambda ns, ctx: [doc.Check("job node pool", False, "x")])
+    names = [c.name for c in doc.check_deployment()]
+    assert "build registry" in names and "job node pool" in names

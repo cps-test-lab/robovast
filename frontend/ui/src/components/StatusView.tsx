@@ -500,6 +500,7 @@ export function StatusView({
   newest = true,
   quotaCpu,
   postprocessed = false,
+  resultsBytes,
   onStopJob,
   stoppingJob,
 }: {
@@ -525,6 +526,10 @@ export function StatusView({
   // Whether the metric tables exist yet -- the Details panel re-queries when this flips, since a
   // campaign is postprocessed a few minutes after it finishes.
   postprocessed?: boolean
+  // Total bytes the campaign's results occupy, measured once when it ended. `null`/omitted
+  // means not recorded -- a campaign that ended before this was measured, or one still
+  // running -- and Details then shows no size rather than "0 B".
+  resultsBytes?: number | null
   // Offer each running job a Stop button. Omitted → no buttons, which is what the Launcher
   // wants: this view stays presentational and the caller owns the confirm + the mutation,
   // because it also owns the jobs query that has to be invalidated afterwards.
@@ -755,6 +760,7 @@ export function StatusView({
                 campaignId={cid}
                 quotaCpu={quotaCpu}
                 postprocessed={postprocessed}
+                resultsBytes={resultsBytes}
                 selected
               />
             ) : (
@@ -1179,7 +1185,7 @@ function JobRow({
   // conversion itself -- and a pod log reader reports the containers that run for the pod's
   // whole life, so through the entire conversion the panel had nothing to show and said so.
   // The output is not missing: every container's, init ones included, is published to the
-  // campaign's POSTPROCESSING section as it runs, and that copy is in the object store, so it
+  // campaign's POSTPROCESSING section as it runs, and that copy is on the results volume, so it
   // is still there minutes later when `ttlSecondsAfterFinished` has taken the pod away --
   // which is exactly when someone reads a failed postprocess.
   if (postprocessing) return <CollapsibleBox {...header} collapsible={false} />

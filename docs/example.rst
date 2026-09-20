@@ -26,9 +26,6 @@ To run the example, execute the following commands in the base folder of the Rob
 
    # Multiple campaigns can run in parallel by default.
 
-   # optionally: remove result buckets from S3
-   vast cluster store-cleanup
-
    # cleanup pods in cluster
    vast cluster cleanup
 

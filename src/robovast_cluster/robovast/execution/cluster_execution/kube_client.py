@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import re
+from typing import NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ def load_kube_config(context: str | None = None) -> str:
     service deploy/cleanup path or the RBAC setup loading config directly runs its API
     calls with ``timeout=None``, which shows up as an off-cluster ``vast serve --backend
     cluster`` hanging for minutes on an unreachable cluster and then dying in a urllib3
-    traceback. A test enforces it (``tests/common/test_kube_loader_is_the_only_entry.py``).
+    traceback. A test enforces it (``tests/execution/test_kube_loader_is_the_only_entry.py``).
 
     Args:
         context: Host kubeconfig context to select when not running in-cluster.
@@ -144,6 +145,31 @@ def load_kube_config(context: str | None = None) -> str:
         return loaded
 
 
+def core_v1_client(context: str | None = None):
+    """A ``CoreV1Api`` for this process, configured through :func:`load_kube_config`.
+
+    One constructor rather than a copy per holder, because the two steps belong together:
+    the loader installs the connect-timeout policy, and a client built without having gone
+    through it runs every call with ``timeout=None``.
+
+    What it returns is meant to be **kept** by the caller that asked for it. It is not for
+    streaming -- :func:`exec_stream` builds its own and is handed none, since
+    ``kubernetes.stream`` rebinds the request method of whatever client it is given.
+    """
+    from kubernetes import client  # noqa: PLC0415 - keeps the import cost local
+
+    load_kube_config(context=context)
+    return client.CoreV1Api()
+
+
+def _waiting_reason(status) -> str:
+    """What one container status says it is waiting for, or ``""`` if it is not waiting."""
+    waiting = getattr(status.state, "waiting", None)
+    if not (waiting and waiting.reason):
+        return ""
+    return f"{waiting.reason}: {waiting.message or ''}".strip()
+
+
 def pod_pending_reason(pod) -> str:
     """The most useful line from a pod that is not Running yet, or ``""``.
 
@@ -154,12 +180,26 @@ def pod_pending_reason(pod) -> str:
 
     Init containers are checked first: they run before the main one, so when both are
     waiting the init container's reason is the one that explains the other.
+
+    ``PodInitializing`` is the exception the rest of this has to work around. It is what
+    kubelet puts on the *main* container for the whole time an init container is working,
+    it carries no message, and on a pod whose init container is running rather than
+    waiting it is the only reason there is — so read raw it says a pod is initializing and
+    nothing about what would end it. The init container still running is that, and is
+    named here.
     """
-    for statuses in (pod.status.init_container_statuses, pod.status.container_statuses):
-        for status in statuses or []:
-            waiting = getattr(status.state, "waiting", None)
-            if waiting and waiting.reason:
-                return f"{waiting.reason}: {waiting.message or ''}".strip()
+    for status in pod.status.init_container_statuses or []:
+        reason = _waiting_reason(status)
+        if reason:
+            return reason
+    initializing = next((status.name for status in pod.status.init_container_statuses or []
+                         if getattr(status.state, "running", None)), "")
+    for status in pod.status.container_statuses or []:
+        reason = _waiting_reason(status)
+        if reason:
+            if initializing and reason.startswith("PodInitializing"):
+                return f"PodInitializing: init container {initializing} is still running"
+            return reason
     return ""
 
 
@@ -170,14 +210,14 @@ def pod_workload_containers(pod) -> list:
     **native sidecar**, which kubelet starts before the regular containers and stops only
     after the last one exits. It is a workload container that happens to be declared in
     ``initContainers`` — the opposite of what the field name suggests. Ordinary init
-    containers (``s3-init``, which populates ``/config`` and exits) are one-shot staging
-    and excluded.
+    containers (``fetch-inputs``, which populates ``/config`` and exits) are one-shot
+    staging and excluded.
 
     Anything asking "which containers does this pod actually run?" must ask it here.
-    Three places answered it from ``spec.containers`` alone and each was wrong in the same
-    way once the simulator and the system under test became sidecars: resource accounting
-    dropped the two biggest reservations, image pinning pinned every role to the scenario's
-    digest, and the job log showed one container out of three.
+    Answered from ``spec.containers`` alone it misses the simulator and the system under
+    test, which are sidecars: resource accounting would drop the two biggest reservations,
+    image pinning would pin every role to the scenario's digest, and the job log would
+    show one container out of three.
 
     Returns the container *specs*, not names — callers need ``.resources`` as often as
     ``.name``.
@@ -192,7 +232,7 @@ def pod_workload_containers(pod) -> list:
 
 
 def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
-                   on_pending=None) -> None:
+                   on_pending=None, should_stop=None) -> None:
     """Block until *name* can be exec'd into, or fail saying why it cannot.
 
     Args:
@@ -201,18 +241,32 @@ def wait_pod_ready(core, namespace: str, name: str, timeout_s: float = 120.0,
             *why* a wait is still going while it is going: a pull that will never succeed backs
             off for the whole timeout, and its reason is on the pod within seconds of the pod
             existing. Without it the reason arrives only with the failure, minutes later.
+        should_stop: predicate polled on every poll; true ends the wait at once. What it is
+            for is a wait nobody wants any more -- the work behind the pod was cancelled --
+            which without it is answered only when the pod comes up or the timeout expires.
 
     Raises:
-        RuntimeError: the pod reached a terminal phase before it could be used, or it was
-            still not Running at *timeout_s* — in which case the message carries
-            :func:`pod_pending_reason` rather than only the elapsed time.
+        RuntimeError: the pod reached a terminal phase before it could be used, *should_stop*
+            asked for the wait to end, it was still not Running at *timeout_s* — in which
+            case the message carries :func:`pod_pending_reason` rather than only the elapsed
+            time — or the pod could not be read.
+        ExecPathUnavailable: no command can run in a container here at all, which the read
+            is as entitled to discover as the exec it is waiting to make possible.
     """
     import time
+
+    from kubernetes.client.rest import ApiException
 
     deadline = time.monotonic() + timeout_s
     last = ""
     while time.monotonic() < deadline:
-        pod = core.read_namespaced_pod(name, namespace)
+        if should_stop is not None and should_stop():
+            raise RuntimeError(
+                f"stopped while waiting for pod {name} to be ready: {last or 'pending'}")
+        try:
+            pod = core.read_namespaced_pod(name, namespace)
+        except ApiException as exc:
+            raise_api_error(exc, f"could not read pod {name} while waiting for it to be ready")
         phase = pod.status.phase
         if phase == "Running":
             return
@@ -241,7 +295,9 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
             ``core.read_namespaced_pod``; pass more when a delete spans several kinds.
 
     Raises:
-        RuntimeError: something was still terminating at *timeout_s*.
+        RuntimeError: something was still terminating at *timeout_s*, or an object could not
+            be read.
+        ExecPathUnavailable: no command can run in a container here at all.
     """
     import time
 
@@ -255,14 +311,14 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
             except ApiException as e:
                 if e.status == 404:
                     break
-                raise
+                raise_api_error(e, f"could not read {name} while waiting for it to go")
             time.sleep(1)
         else:
             raise RuntimeError(
                 f"{name} did not finish terminating within {int(timeout_s)}s")
 
 
-def exec_stream(core, pod: str, namespace: str, container: str, command,
+def exec_stream(pod: str, namespace: str, container: str, command,
                 *, limit_s: float, stdin_data: str | None = None,
                 on_stdout_line=None, on_stderr_line=None):
     """Exec *command* in a running pod. Returns ``(code, stdout, stderr, timed_out)``.
@@ -278,15 +334,31 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
     Note on *stdin_data*: the stream can be written to but **cannot be half-closed**, so a
     receiver waiting for EOF never sees one. A sender must frame its payload by length (see
     ``ClusterContainerRunner._copy_in``); this function cannot do it for the caller.
+
+    It streams on a client **of its own**, and is deliberately handed none.
+    ``kubernetes.stream`` works by rebinding ``ApiClient.request`` for the duration of the
+    call, so any ordinary REST call issued through the same client meanwhile goes out as a
+    websocket handshake and is refused -- carrying whatever status that call would have
+    returned. Sharing one client between an exec and the rest of a threaded service
+    therefore breaks unrelated reads and deletes, and breaks them wearing this function's
+    error, which reads as the deployment being unable to exec at all.
     """
     import time
 
+    from kubernetes import client as kube
+    from kubernetes.client.rest import ApiException
     from kubernetes.stream import stream
 
-    resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
-                  container=container, command=list(command),
-                  stderr=True, stdin=stdin_data is not None, stdout=True,
-                  tty=False, _preload_content=False)
+    api = kube.ApiClient()
+    core = kube.CoreV1Api(api)
+    try:
+        resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
+                      container=container, command=list(command),
+                      stderr=True, stdin=stdin_data is not None, stdout=True,
+                      tty=False, _preload_content=False)
+    except ApiException as exc:
+        api.close()
+        raise_api_error(exc, f"could not open an exec stream into {pod}/{container}")
     out, err = [], []
     deadline = time.monotonic() + max(1.0, float(limit_s))
     timed_out = False
@@ -329,6 +401,7 @@ def exec_stream(core, pod: str, namespace: str, container: str, command,
                 code = 126  # the shell's "command found but not executable" convention
     finally:
         resp.close()
+        api.close()
     if code is None:
         # Either the deadline fired, or the channel closed without a status — neither is a
         # success, and reporting 0 for the second would invent one.
@@ -438,6 +511,133 @@ def api_transport_errors(what: str):
                 "Check that the cluster is running and reachable (VPN, kubeconfig "
                 "context, 'kubectl cluster-info')."
             ) from exc
+
+#: A websocket handshake the peer answered with an ordinary HTTP response. ``websocket``
+#: puts the code in its message and appends the response headers; only the code is a fact
+#: about the failure.
+_HANDSHAKE_STATUS = re.compile(r"Handshake status (\d{3})")
+
+
+def _status_message(body) -> str:
+    """The ``message`` of a Kubernetes ``Status`` object, or ``""`` if the body is not one."""
+    if not body:
+        return ""
+    try:
+        parsed = json.loads(body if isinstance(body, (str, bytes, bytearray)) else str(body))
+    except (TypeError, ValueError):
+        return ""
+    message = parsed.get("message") if isinstance(parsed, dict) else None
+    return str(message).strip()[:400] if message else ""
+
+
+def _handshake_failure(reason: str) -> str:
+    """A websocket upgrade answered with an ordinary HTTP *success*, stated as that.
+
+    Only a 2xx earns this verdict. The API server answers an exec upgrade with ``101``, and
+    a 4xx or 5xx is its answer about the one call that asked -- ``404`` for a pod that is
+    gone, ``500`` for a container that is. Reported as "nothing can exec here" those send a
+    caller to their cluster administrator over a target they could simply ask about again,
+    which is why the status is read rather than the mere presence of a handshake failure.
+    """
+    found = _HANDSHAKE_STATUS.search(reason or "")
+    if not found or not found.group(1).startswith("2"):
+        return ""
+    return ("the connection was never upgraded to a websocket -- the request for the "
+            f"stream was answered with an ordinary HTTP {found.group(1)} response, so "
+            "nothing serving this call upgraded it")
+
+
+def _handshake_target_gone(reason: str) -> str:
+    """A websocket upgrade answered about ONE TARGET, stated as that.
+
+    The other half of the read :func:`_handshake_failure` makes. A 2xx says nothing
+    upgraded the request and so every exec here is refused; a 4xx or 5xx is the API server
+    answering about the pod and container that were asked for -- ``404`` for a pod that is
+    gone, ``500`` for a container that is. That target can be made again, which is why it
+    is worth telling a caller which of the two it met rather than handing over a bare
+    status line to interpret.
+    """
+    found = _HANDSHAKE_STATUS.search(reason or "")
+    if not found or found.group(1).startswith("2"):
+        return ""
+    return ("the container was not there to exec into -- the request for the stream was "
+            f"answered with HTTP {found.group(1)}, which is the API server answering "
+            "about this pod and container rather than refusing every exec")
+
+
+def _first_segment(reason: str) -> str:
+    """The head of a reason string: its first line, up to the client's own separator.
+
+    Built by keeping the part that describes the failure rather than by naming the parts
+    to remove, so a reason shape this has never seen still comes through short.
+    """
+    head = (reason or "").split(" -+-+- ")[0].strip()
+    return head.splitlines()[0].strip()[:400] if head else ""
+
+
+def api_error_reason(exc) -> str:
+    """What an ``ApiException`` says, in one line a caller can act on.
+
+    ``ApiException.reason`` is not an HTTP reason phrase, and must not be reported as
+    though it were. The generated client's stream helper turns *any* exception into
+    ``ApiException(status=0, reason=str(e))``, so a failed websocket handshake arrives as
+    that exception's whole repr -- response headers, an audit id and a ``None`` body,
+    joined by the websocket library's separators. Forwarded verbatim it hands a caller
+    several hundred characters that name nothing to fix, and buries the one fact that
+    matters.
+
+    So the fields are read in the order they carry meaning: the API server's own message
+    when the body holds a ``Status``, a handshake failure said plainly, else the head of
+    the reason.
+    """
+    status = getattr(exc, "status", 0) or 0
+    reason = str(getattr(exc, "reason", "") or "")
+    detail = (_status_message(getattr(exc, "body", None))
+              or _handshake_failure(reason)
+              or _handshake_target_gone(reason)
+              or _first_segment(reason)
+              or exc.__class__.__name__)
+    return f"HTTP {status}: {detail}" if status else detail
+
+
+def raise_api_error(exc, context: str) -> NoReturn:
+    """Raise what a failed Kubernetes call means, and never return.
+
+    **Every ``ApiException`` a caller is meant to see goes through here.** One place
+    decides whether a failure belongs to the deployment or to the call, so a call site
+    cannot render a reason without also classifying it -- which is the failure mode this
+    replaces: two exec entry points rendered the same handshake and only one raised the
+    type every ``except`` downstream matches on, so which entry point met it first decided
+    whether the service degraded or reported a defect in itself.
+
+    A websocket upgrade the peer answered with an ordinary response refuses every exec on
+    this deployment, not the one that happened to ask: it is raised as that deployment-wide
+    verdict with the consequence stated, because the cause alone leaves each caller to
+    conclude on its own what it can still do -- and they concluded differently.
+
+    An upgrade answered with a 4xx or 5xx is the opposite verdict and gets its own type
+    too: the API server is answering about the pod and container that were asked for, so
+    the caller holding that name is the one that can do something -- make the target again
+    and repeat what it was doing. Left as a bare ``RuntimeError`` that recovery is not
+    available without matching on a message.
+
+    Anything else belongs to the call *context* names. Naming it here is what keeps a
+    failure from being reported by whichever wrapper happened to enclose the call, which
+    pointed callers at an operation that had in fact succeeded.
+    """
+    from robovast.common.errors import (  # noqa: PLC0415 - keeps the import cost local
+        ExecPathUnavailable, ExecTargetGone)
+    reason = str(getattr(exc, "reason", "") or "")
+    handshake = _handshake_failure(reason)
+    if handshake:
+        raise ExecPathUnavailable(
+            f"no command can run in a container on this deployment: {handshake}. "
+            "Nothing that has to ask a container a question can be answered here; "
+            "everything that needs none is unaffected") from exc
+    if _handshake_target_gone(reason):
+        raise ExecTargetGone(f"{context}: {api_error_reason(exc)}") from exc
+    raise RuntimeError(f"{context}: {api_error_reason(exc)}") from exc
+
 
 def parse_resource(val):
     """A Kubernetes resource quantity as a number; ``0`` for missing or unparseable.

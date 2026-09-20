@@ -29,21 +29,9 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from robovast.common.log_tail import MAIN_CONTAINER, MergedLogBuffer, tag_width  # noqa: F401
-
-#: The main container's log. The name its lines are tagged with is
-#: :data:`~robovast.common.log_tail.MAIN_CONTAINER`, shared with the merged ``run_log`` so the
-#: same campaign does not read as two different sets of containers.
-MAIN_LOG = "system.log"
-
-#: Sidecar logs, written by ``secondary_entrypoint.sh`` as ``system_${CONTAINER_NAME}.log``.
-_SIDECAR_PREFIX = "system_"
-_SIDECAR_SUFFIX = ".log"
-
-
-def _sidecar_name(filename: str) -> str:
-    """``system_simulation.log`` -> ``simulation`` (i.e. the container's ``CONTAINER_NAME``)."""
-    return filename[len(_SIDECAR_PREFIX):-len(_SIDECAR_SUFFIX)]
+from robovast.common.log_tail import (MAIN_CONTAINER, MAIN_LOG,  # noqa: F401
+                                      SIDECAR_LOG_GLOB, MergedLogBuffer,
+                                      container_of_log_file, tag_width)
 
 
 class LocalJobLogTail:
@@ -89,11 +77,11 @@ class LocalJobLogTail:
         main = log_dir / MAIN_LOG
         found = [(MAIN_CONTAINER, main)] if main.is_file() else []
         try:
-            sidecars = sorted(log_dir.glob(f"{_SIDECAR_PREFIX}*{_SIDECAR_SUFFIX}"))
+            sidecars = sorted(log_dir.glob(SIDECAR_LOG_GLOB))
         except OSError:
             # The dir does not exist yet -- the documented startup race, not an error.
             sidecars = []
-        found += [(_sidecar_name(p.name), p) for p in sidecars]
+        found += [(container_of_log_file(p.name), p) for p in sidecars]
         return found
 
     def _delta_lines(self, path: Path, flush_partial: bool) -> "list[str]":

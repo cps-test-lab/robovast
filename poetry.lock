@@ -4043,7 +4043,7 @@ url = "src/robovast_nav"
 
 [[package]]
 name = "robovast-sim-roqsim"
-version = "0.1.0"
+version = "2.1.0"
 description = "The roqsim simulator backend for RoboVAST"
 optional = true
 python-versions = ">=3.10,<3.14"

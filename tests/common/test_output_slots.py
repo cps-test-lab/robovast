@@ -25,7 +25,7 @@ class OneOutput(DestinationConfig):
 class TwoOutputs(DestinationConfig):
     """A generator producing a map and a mesh -- the FloorplanGeneration shape."""
 
-    SLOTS = ("map", "mesh")
+    OUTPUT_SLOTS = ("map", "mesh")
 
 
 # -- single output ------------------------------------------------------------------------
@@ -48,11 +48,11 @@ def test_a_single_output_refuses_a_slot_mapping():
 def test_slots_may_straddle_both_channels():
     """The point of slots: one plugin, two artifacts, opposite sides of the compile boundary."""
     cfg = TwoOutputs(scenario={"map": "map_file"},
-                     sim={"mesh": "plugins.floorplan.mesh"})
+                     sim={"mesh": "components.floorplan.mesh"})
     assert cfg.binding("map") == (SCENARIO_CHANNEL, "map_file")
-    assert cfg.binding("mesh") == (SIM_CHANNEL, "plugins.floorplan.mesh")
+    assert cfg.binding("mesh") == (SIM_CHANNEL, "components.floorplan.mesh")
     assert cfg.outputs() == {SCENARIO_CHANNEL: ["map_file"],
-                             SIM_CHANNEL: ["plugins.floorplan.mesh"]}
+                             SIM_CHANNEL: ["components.floorplan.mesh"]}
 
 
 def test_both_slots_may_share_one_channel():
@@ -71,9 +71,16 @@ def test_an_unknown_slot_is_refused_naming_the_real_ones():
         TwoOutputs(scenario={"map": "map_file", "meshh": "x"})
 
 
-def test_a_slot_cannot_go_to_both_channels():
-    with pytest.raises(ValidationError, match="goes to one channel"):
-        TwoOutputs(scenario={"map": "map_file", "mesh": "a"}, sim={"mesh": "b"})
+def test_a_slot_may_go_to_both_channels():
+    """One value is one output however many places need it.
+
+    This used to be refused. What the rule cost was a plugin having to invent a second slot
+    for the same value -- one name per channel, describing one fact, free to drift apart --
+    and the campaign then binding both. Several destinations is what a binding says; several
+    VALUES is still several slots.
+    """
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "a"}, sim={"mesh": "b"})
+    assert cfg.bindings("mesh") == ((SCENARIO_CHANNEL, "a"), (SIM_CHANNEL, "b"))
 
 
 def test_slots_refuse_a_bare_name():
@@ -101,10 +108,10 @@ class _Undeclared(Variation):
 
 
 def test_declared_outputs_comes_from_the_binding():
-    cfg = TwoOutputs(scenario={"map": "map_file"}, sim={"mesh": "plugins.floorplan.mesh"})
+    cfg = TwoOutputs(scenario={"map": "map_file"}, sim={"mesh": "components.floorplan.mesh"})
     assert _Slotted.declared_outputs(cfg) == {
         SCENARIO_CHANNEL: ["map_file"],
-        SIM_CHANNEL: ["plugins.floorplan.mesh"],
+        SIM_CHANNEL: ["components.floorplan.mesh"],
     }
 
 
@@ -122,20 +129,60 @@ def test_update_slots_routes_each_output_to_its_channel():
     # pylint: disable-next=no-value-for-parameter
     variation = _Slotted.__new__(_Slotted)
     variation.parameters = TwoOutputs(scenario={"map": "map_file"},
-                                      sim={"mesh": "plugins.floorplan.mesh"})
+                                      sim={"mesh": "components.floorplan.mesh"})
     variation._config_child_indices = {}
 
     out = variation.update_slots({"name": "cfg"},
                                  {"map": "maps/a.yaml", "mesh": "3d/a.stl"})
 
     assert out["config"] == {"map_file": "maps/a.yaml"}
-    assert out["sim"] == {"plugins.floorplan.mesh": "3d/a.stl"}
+    assert out["sim"] == {"components.floorplan.mesh": "3d/a.stl"}
+
+
+def test_one_output_may_name_a_destination_on_each_channel():
+    """One value both sides of the compile boundary need is one output, not two.
+
+    A start pose the simulator places the robot at and the stack under test is told about is
+    the same pose. Carrying it as a second slot would name the same fact twice, and the two
+    names could then drift apart; binding it twice says what is true.
+    """
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                     sim={"mesh": "components.floorplan.mesh"})
+    assert cfg.bindings("mesh") == ((SCENARIO_CHANNEL, "mesh_file"),
+                                    (SIM_CHANNEL, "components.floorplan.mesh"))
+    # Both destinations are declared, so validation and preview see the pair.
+    assert cfg.outputs() == {SCENARIO_CHANNEL: ["map_file", "mesh_file"],
+                             SIM_CHANNEL: ["components.floorplan.mesh"]}
+
+
+def test_the_single_binding_accessor_refuses_a_slot_bound_twice():
+    """Answering with the first would make the result depend on channel order."""
+    cfg = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                     sim={"mesh": "components.floorplan.mesh"})
+    assert cfg.binding("map") == (SCENARIO_CHANNEL, "map_file")
+    with pytest.raises(KeyError, match="bindings"):
+        cfg.binding("mesh")
+
+
+def test_a_slot_bound_twice_is_written_to_both_destinations():
+    """The value reaches every destination from the one call, so the two cannot disagree."""
+    # pylint: disable-next=no-value-for-parameter
+    variation = _Slotted.__new__(_Slotted)
+    variation.parameters = TwoOutputs(scenario={"map": "map_file", "mesh": "mesh_file"},
+                                      sim={"mesh": "components.floorplan.mesh"})
+    variation._config_child_indices = {}
+
+    out = variation.update_slots({"name": "cfg"},
+                                 {"map": "maps/a.yaml", "mesh": "3d/a.stl"})
+
+    assert out["config"] == {"map_file": "maps/a.yaml", "mesh_file": "3d/a.stl"}
+    assert out["sim"] == {"components.floorplan.mesh": "3d/a.stl"}
 
 
 # -- the shape of a one-or-many output ------------------------------------------------------
 
 class _GoalShape(DestinationConfig):
-    SLOTS = ("start", "goal")
+    OUTPUT_SLOTS = ("start", "goal")
 
 
 def _path_variation(scenario_file, binding):
@@ -195,7 +242,7 @@ def test_goal_cannot_be_bound_to_the_sim_channel(tmp_path):
     osc = _write_scenario(tmp_path, "goal_pose: pose_3d")
     v = _path_variation(osc, {"start": "start_pose", "goal": "goal_pose"})
     v.parameters = _GoalShape(scenario={"start": "start_pose"},
-                              sim={"goal": "plugins.x.y"})
+                              sim={"goal": "components.x.y"})
     with pytest.raises(ValueError, match="cannot be bound to the 'sim' channel"):
         v._goal_destination()
 
@@ -239,7 +286,8 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
     def _cfg(**oc):
         return ObstacleVariationConfig(
             scenario={"objects": "static_objects"},
-            sim={"instances": "plugins.obstacles.instances"},
+            reads={"start": "start_pose", "goal": "goal_poses"},
+            sim={"instances": "components.obstacles.instances"},
             obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m", **oc}],
             seed=1, robot_diameter=0.35)
 
@@ -248,6 +296,7 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
 
     # Bound only to a run-time spawner, no size is needed -- that campaign compiles nothing.
     ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                            reads={"start": "start_pose", "goal": "goal_poses"},
                             obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m",
                                                "xacro_arguments": "radius:=0.3"}],
                             seed=1, robot_diameter=0.35)
@@ -255,6 +304,7 @@ def test_obstacle_size_must_be_declared_rather_than_guessed():
     # A template that cannot resolve is refused rather than reaching a spawner as a literal.
     with pytest.raises(ValueError, match=r"references \{size\[\.\.\.\]\} but no 'size'"):
         ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                                reads={"start": "start_pose", "goal": "goal_poses"},
                                 obstacle_configs=[{"amount": 1, "max_distance": 0.1, "model": "m",
                                                    "xacro_arguments": "width:={size[0]}"}],
                                 seed=1, robot_diameter=0.35)
@@ -265,6 +315,7 @@ def test_an_optional_slot_may_be_left_unbound():
     from robovast_nav.variation.obstacle_variation import ObstacleVariationConfig
 
     cfg = ObstacleVariationConfig(scenario={"objects": "static_objects"},
+                                  reads={"start": "start_pose", "goal": "goal_poses"},
                                   obstacle_configs=[], seed=1, robot_diameter=0.35)
     assert cfg.is_bound("objects") and not cfg.is_bound("instances")
     assert cfg.outputs() == {SCENARIO_CHANNEL: ["static_objects"]}
@@ -274,40 +325,63 @@ def test_binding_the_optional_slot_puts_it_on_the_sim_channel():
     from robovast_nav.variation.obstacle_variation import ObstacleVariationConfig
 
     cfg = ObstacleVariationConfig(scenario={"objects": "static_objects"},
-                                  sim={"instances": "plugins.obstacles.instances"},
+                                  reads={"start": "start_pose", "goal": "goal_poses"},
+                                  sim={"instances": "components.obstacles.instances"},
                                   obstacle_configs=[], seed=1, robot_diameter=0.35)
     assert cfg.is_bound("instances")
-    assert cfg.outputs()[SIM_CHANNEL] == ["plugins.obstacles.instances"]
+    assert cfg.outputs()[SIM_CHANNEL] == ["components.obstacles.instances"]
 
 
 # -- answers that need the simulator ---------------------------------------------------------
 
 @pytest.mark.requires_simulator
-def test_a_world_with_no_campaign_parent_needs_no_container(tmp_path):
-    """The common case must not make composition depend on pulling a simulator image."""
+@pytest.mark.parametrize("world_yaml", [
+    # Extends nothing the campaign owns, and once answered here without a container.
+    "components: []\n",
+    # Extends a PACKAGED world -- likewise, and likewise wrong: what the parent is made of
+    # is the image's to say, and a mesh under its assets is what makes a compiled scene stale.
+    "extends: roqsim_scenes:depot\ncomponents: []\n",
+    # A plugin pointing at a campaign file. No walk of this YAML can find the wall colliders
+    # beside that mesh: where they live is the plugin's rule, held in roqsim.
+    "plugins:\n  - floorplan:\n      mesh: env/lab.obj\n",
+    # The MJCF the world compiles, which names its own meshes and textures.
+    "sim:\n  world: models/lab.xml\ncomponents: []\n",
+    # An extends chain the campaign owns.
+    "extends: ./base.yaml\ncomponents: []\n",
+])
+def test_every_campaign_world_asks_the_image_what_it_is_made_of(tmp_path, world_yaml):
+    """Which files a world needs is roqsim's rule, and no part of it is restated here.
+
+    A test in the backend deciding a world is "just one file" is a second copy of that rule,
+    and it is wrong in the direction nothing notices: the campaign stages too little, every
+    check reading the workspace passes, and the run opens the missing file after the image
+    pull and the pod schedule.
+    """
     from robovast.common.simulators import ContainerQuery
     from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
     world = tmp_path / "w.yaml"
-    world.write_text("extends: roqsim_scenes:depot\nplugins: []\n")
-    declared = RoqsimBackend().input_files(
-        RoqsimConfig(config=str(world)), {}, str(tmp_path))
-    assert not isinstance(declared, ContainerQuery)
-    assert declared == [str(world)]
-
-
-@pytest.mark.requires_simulator
-def test_a_world_extending_a_campaign_file_asks_the_image(tmp_path):
-    """That chain is what the backend cannot resolve without importing the simulator."""
-    from robovast.common.simulators import ContainerQuery
-    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
-
-    world = tmp_path / "w.yaml"
-    world.write_text("extends: ./base.yaml\nplugins: []\n")
+    world.write_text(world_yaml)
     declared = RoqsimBackend().input_files(
         RoqsimConfig(config=str(world)), {}, str(tmp_path))
     assert isinstance(declared, ContainerQuery)
     assert declared.command[:3] == ["roqsim", "scenes", "inputs"]
+
+
+@pytest.mark.requires_simulator
+def test_an_unreadable_world_is_still_asked_about(tmp_path):
+    """Whether a world is any good is not this question, and not answerable here either.
+
+    A file this process cannot parse is one the simulator reports on with its own error; a
+    campaign staging nothing for it would fail later and say less.
+    """
+    from robovast.common.simulators import ContainerQuery
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
+
+    world = tmp_path / "w.yaml"
+    world.write_text("this: [is not: valid yaml\n")
+    assert isinstance(RoqsimBackend().input_files(
+        RoqsimConfig(config=str(world)), {}, str(tmp_path)), ContainerQuery)
 
 
 @pytest.mark.requires_simulator
@@ -339,30 +413,29 @@ def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
 
 
 @pytest.mark.requires_simulator
-def test_the_extends_question_is_answered_from_the_vast_dir_not_the_cwd(tmp_path, monkeypatch):
-    """The authored path is relative to the ``.vast``; the caller's cwd is not a party to it.
+def test_the_query_names_the_world_where_the_container_will_find_it(tmp_path, monkeypatch):
+    """The authored path is relative to the ``.vast``, which is not a directory the container has.
 
-    Opening it as given made the same campaign answer differently depending on where the
-    caller stood -- asked from its own directory, skipped from anywhere else -- and only the
-    asking branch staged the parent.
+    RoboVAST mounts the campaign's files at ``/config``, so that is the spelling the command
+    carries. Passed through unchanged it made the simulator look beside its own working
+    directory and fail with "world config does not exist" -- after the image pull.
+
+    The caller's cwd is not a party to any of it, so the answer is the same from both.
     """
     from robovast.common.simulators import ContainerQuery
     from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
     (tmp_path / "world").mkdir()
-    (tmp_path / "world" / "w.yaml").write_text("extends: base.yaml\nplugins: []\n")
+    (tmp_path / "world" / "w.yaml").write_text("extends: base.yaml\ncomponents: []\n")
     cfg = RoqsimConfig(config="world/w.yaml")
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-    declared = RoqsimBackend().input_files(cfg, {}, str(tmp_path))
-    assert isinstance(declared, ContainerQuery)
-    # And the container is told where the file will be, not where it is on this host.
-    assert declared.command == ["roqsim", "scenes", "inputs", "/config/world/w.yaml"]
-
-    monkeypatch.chdir(tmp_path)
-    assert isinstance(RoqsimBackend().input_files(cfg, {}, str(tmp_path)), ContainerQuery)
+    for cwd in (elsewhere, tmp_path):
+        monkeypatch.chdir(cwd)
+        declared = RoqsimBackend().input_files(cfg, {}, str(tmp_path))
+        assert isinstance(declared, ContainerQuery)
+        assert declared.command == ["roqsim", "scenes", "inputs", "/config/world/w.yaml"]
 
 
 def test_the_query_mounts_the_campaign_where_its_command_looks(tmp_path):
@@ -508,7 +581,7 @@ def test_a_simulator_too_old_for_the_overrides_still_gets_the_plugin_half_checke
 
     execution = {"mode": "ros2",
                  "containers": {"simulation": {"backend": "roqsim", "config": "w.yaml"}}}
-    block = {"config": "w.yaml", "overrides": {"plugins": {"boxesTYPO": {"instances": []}}}}
+    block = {"config": "w.yaml", "overrides": {"components": {"boxesTYPO": {"instances": []}}}}
     configs = [{"name": "c", "sim": block, "config": {}}]
     original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
@@ -533,7 +606,7 @@ def test_the_world_is_described_with_the_campaign_overrides_a_run_would_get():
     from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
 
     cfg = RoqsimConfig(config="w.yaml",
-                       overrides={"plugins": {"boxes": {"instances": [{"pos": [1, 1]}]}}})
+                       overrides={"components": {"boxes": {"instances": [{"pos": [1, 1]}]}}})
     query = RoqsimBackend().describe_query(cfg, {"mode": "ros2"}, entities=True)
     assert query.command[-2:] == ["--override", SIM_QUERY_OVERRIDES_MOUNT]
     # And the document travels ON the query, so the path its command names is the path the
@@ -554,17 +627,17 @@ def test_a_query_document_is_written_where_its_command_looks(tmp_path):
         workspace = str(tmp_path)
 
     mounted = {}
-    query = ContainerQuery(None, [], {"/aux/sim.overrides.yaml": {"plugins": {"boxes": {}}}})
+    query = ContainerQuery(None, [], {"/aux/sim.overrides.yaml": {"components": {"boxes": {}}}})
     _stage_query_documents(_Runner(), query, lambda host, at: mounted.update({at: host}))
 
     assert list(mounted) == ["/aux/sim.overrides.yaml"]
     with open(mounted["/aux/sim.overrides.yaml"], encoding="utf-8") as handle:
-        assert _yaml.safe_load(handle) == {"plugins": {"boxes": {}}}
+        assert _yaml.safe_load(handle) == {"components": {"boxes": {}}}
 
 
 @pytest.mark.requires_simulator
 def test_an_override_targeting_no_plugin_is_refused_before_the_image_pull(tmp_path):
-    block = {"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}}
+    block = {"config": "w.yaml", "overrides": {"components": {"floorplna": {"size": 4.0}}}}
     with pytest.raises(ValueError, match="targets no component"):
         _check(block, {"plugins": [{"address": "floorplan", "paths": []}],
                 "addresses": ["floorplan"]}, tmp_path)
@@ -572,7 +645,7 @@ def test_an_override_targeting_no_plugin_is_refused_before_the_image_pull(tmp_pa
 
 @pytest.mark.requires_simulator
 def test_the_error_names_what_the_world_does_have(tmp_path):
-    block = {"config": "w.yaml", "overrides": {"plugins": {"nope": {}}}}
+    block = {"config": "w.yaml", "overrides": {"components": {"nope": {}}}}
     with pytest.raises(ValueError, match="floorplan, lidar"):
         _check(block, {"plugins": [{"address": "lidar"}, {"address": "floorplan"}],
                 "addresses": ["floorplan", "lidar"]}, tmp_path)
@@ -580,7 +653,7 @@ def test_the_error_names_what_the_world_does_have(tmp_path):
 
 @pytest.mark.requires_simulator
 def test_a_real_plugin_passes(tmp_path):
-    block = {"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}}
+    block = {"config": "w.yaml", "overrides": {"components": {"floorplan": {"size": 4.0}}}}
     _check(block, {"plugins": [{"address": "floorplan", "paths": []}],
                 "addresses": ["floorplan"]}, tmp_path)
 
@@ -589,7 +662,7 @@ def test_a_real_plugin_passes(tmp_path):
 def test_a_path_the_world_leaves_at_its_default_is_not_refused(tmp_path):
     """`paths` lists what exists; a plugin may accept a key its world never sets."""
     block = {"config": "w.yaml",
-             "overrides": {"plugins": {"floorplan": {"never_set_in_this_world": 1}}}}
+             "overrides": {"components": {"floorplan": {"never_set_in_this_world": 1}}}}
     _check(block, {"plugins": [{"address": "floorplan", "paths": ["components.floorplan.mesh"]}],
                   "addresses": ["floorplan"]},
            tmp_path)
@@ -643,7 +716,7 @@ def test_entities_the_world_compiled_pass(tmp_path):
 def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
     """A build that failed costs the entity check, not the plugin-key check -- and says which."""
     with caplog.at_level(logging.WARNING):
-        _check({"config": "w.yaml", "overrides": {"plugins": {"floorplan": {"size": 4.0}}}},
+        _check({"config": "w.yaml", "overrides": {"components": {"floorplan": {"size": 4.0}}}},
                {"plugins": [{"address": "floorplan", "paths": []}], "addresses": ["floorplan"],
                 "entities": None,
                 "errors": {"build": "unresolved plugins: ros2_bridge"}},
@@ -659,7 +732,7 @@ def test_a_partial_answer_still_checks_the_half_it_has(tmp_path, caplog):
 def test_a_partial_answer_does_not_soften_the_check_it_can_still_make(tmp_path):
     """The plugin keys came back, so a misspelt one is refused exactly as it always was."""
     with pytest.raises(ValueError, match="targets no component"):
-        _check({"config": "w.yaml", "overrides": {"plugins": {"floorplna": {"size": 4.0}}}},
+        _check({"config": "w.yaml", "overrides": {"components": {"floorplna": {"size": 4.0}}}},
                {"plugins": [{"address": "floorplan", "paths": []}], "addresses": ["floorplan"],
                 "entities": None,
                 "errors": {"build": "unresolved plugins: ros2_bridge"}},
@@ -719,15 +792,61 @@ def test_both_channels_call_an_obstacle_the_same_thing():
     assert scenery[0]["motion"] == "static"
 
 
-def test_the_triggered_obstacle_keeps_the_movable_default():
-    """The point of a distance trigger is an obstacle revealed mid-run, which means teleported.
-    SetEntityState refuses an entity with no free joint, so this is the one placement that must
-    NOT be welded -- while a plain placed obstacle is scenery and must be."""
+def test_the_trigger_point_states_the_height_the_obstacle_stands_at():
+    """A scenario revealing the obstacle must state a whole pose, so the slot must carry one.
+
+    The distance test that fires the trigger is planar, so z rode along as 0.0 -- a height a
+    floor-standing obstacle is never at. The teleport that follows the trigger is not planar:
+    given 0.0 it seats a 1 m box half a metre inside the floor, and the solver answers the
+    penetration by launching it. The number is fixed here because two channels depend on it
+    agreeing -- the instance the simulator compiles, and the pose the scenario asks for.
+    """
+    from dataclasses import dataclass, field
+
+    from robovast_nav.data_model import Orientation, Pose, Position
+    from robovast_nav.variation.obstacle_variation import resting_z
+    from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
+        ObstacleVariationWithDistanceTrigger)
+
+    @dataclass
+    class _Obj:
+        entity_name: str = "dynamic_0"
+        model: str = "box.sdf.xacro"
+        xacro_arguments: str = "width:=0.5, length:=0.5, height:=1.0"
+        spawn_pose: Pose = field(default_factory=lambda: Pose(
+            position=Position(x=1.0, y=2.0), orientation=Orientation(yaw=0.0)))
+
+    class _Stub:
+        _current_trigger_distance = 1.5
+
+    values = ObstacleVariationWithDistanceTrigger._post_process(
+        _Stub(), [_Obj()], [], [], [("box", [0.5, 0.5, 1.0])])
+    assert values["trigger_point"] == {"x": 1.0, "y": 2.0, "z": 0.5}
+
+    # The origin is the prop's CENTRE, so standing on the floor is half the declared height --
+    # the same number a placement plugin applies to an instance that omits z, which is how
+    # `_instances_for_sim` writes them.
+    assert resting_z([0.5, 0.5, 1.0]) == 0.5
+    assert resting_z([0.4, 0.4, 0.8]) == 0.4
+    # No declared geometry, no height to report: the channels that lack a size are the ones
+    # that never compile the obstacle, and 0.0 is what they have always said.
+    assert resting_z(None) == 0.0
+
+
+def test_the_triggered_obstacle_is_placeable_but_not_owned_by_the_solver():
+    """The point of a distance trigger is an obstacle revealed mid-run, which means teleported --
+    so it cannot be welded, which has no pose to write.
+
+    `driven` and not `physics`: both take a pose, and only one KEEPS it. A free body is the
+    solver's from the next step, so the robot that reaches the obstacle pushes it off the
+    placement the search selected, and a placement overlapping other geometry is answered by
+    ejecting it. The obstacle's pose is the campaign's variable; neither of those is a result.
+    """
     from robovast_nav.variation.obstacle_variation import ObstacleVariation
     from robovast_nav.variation.obstacle_variation_with_distance_trigger import (
         ObstacleVariationWithDistanceTrigger)
 
-    assert ObstacleVariationWithDistanceTrigger.SIM_INSTANCES_MOTION is None
+    assert ObstacleVariationWithDistanceTrigger.SIM_INSTANCES_MOTION == "driven"
     assert ObstacleVariation.SIM_INSTANCES_MOTION == "static"
 
 
@@ -742,6 +861,7 @@ def test_a_density_is_refused_where_a_single_obstacle_is_required():
         return ObstacleVariationWithDistanceTriggerConfig(
             scenario={"objects": "dynamic_objects", "trigger_point": "p",
                       "trigger_threshold": "t"},
+            reads={"start": "start_pose", "goal": "goal_poses"},
             obstacle_configs=[{"max_distance": 0.1, "model": "m", **oc}],
             trigger_distance=2.0, seed=1, robot_diameter=0.35)
 

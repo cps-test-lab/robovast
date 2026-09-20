@@ -429,7 +429,7 @@ def test_dockerignore_excludes_at_root_and_nested(name):
 # set. Recognised by structure instead: a directory holding `_execution/`.
 # ---------------------------------------------------------------------------
 
-def _campaign_dir(root, name):
+def campaign_dir(root, name):
     """A downloaded campaign: the `_execution/` marker plus a heavy `_jobs/` tree."""
     (root / name / "_execution").mkdir(parents=True)
     (root / name / "_execution" / "build.log").write_text("...")
@@ -439,15 +439,15 @@ def _campaign_dir(root, name):
 
 
 def test_a_campaign_directory_is_recognised_by_structure_not_by_name(tmp_path):
-    campaign = _campaign_dir(tmp_path, "tb4-markerless-2026-08-18-19401887")
+    campaign = campaign_dir(tmp_path, "tb4-markerless-2026-08-18-19401887")
     (tmp_path / "src").mkdir()
     assert is_campaign_output(campaign)
     assert not is_campaign_output(tmp_path / "src")
 
 
 def test_campaign_outputs_are_found_and_not_descended_into(tmp_path):
-    _campaign_dir(tmp_path, "campaign-a")
-    _campaign_dir(tmp_path / "nested", "campaign-b")
+    campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path / "nested", "campaign-b")
     (tmp_path / "src" / "pkg").mkdir(parents=True)
     found = {str(p) for p in campaign_outputs_in(tmp_path)}
     assert found == {"campaign-a", "nested/campaign-b"}
@@ -455,12 +455,12 @@ def test_campaign_outputs_are_found_and_not_descended_into(tmp_path):
 
 def test_campaign_outputs_does_not_walk_into_ignored_names(tmp_path):
     """`results/` is already excluded wholesale; walking it would cost the scan it saves."""
-    _campaign_dir(tmp_path / "results", "campaign-c")
+    campaign_dir(tmp_path / "results", "campaign-c")
     assert campaign_outputs_in(tmp_path) == []
 
 
 def test_dockerignore_lists_the_campaign_directories_found(tmp_path):
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     patterns = render_dockerignore(tmp_path).splitlines()
     assert "campaign-a" in patterns
     # Still a superset of the static set — the computed part only adds.
@@ -471,7 +471,7 @@ def test_both_lanes_skip_the_same_campaign_directory(tmp_path):
     """The staging and the .dockerignore must agree, or the two builders see different trees."""
     from robovast.execution.cluster_execution.cluster_image_build import _copy_tree
 
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     (tmp_path / "plugins").mkdir()
     (tmp_path / "plugins" / "pkg-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
 
@@ -489,7 +489,7 @@ def test_a_campaign_directory_does_not_change_the_build_hash(tmp_path):
     (tmp_path / "plugins" / "pkg-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
     spec = _spec(python_packages=["./plugins/pkg-0.1.0-py3-none-any.whl"])
     before = build_hash(spec, tmp_path, "base@sha256:aaa")
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     assert build_hash(spec, tmp_path, "base@sha256:aaa") == before
 
 
@@ -646,7 +646,7 @@ def test_base_identity_falls_back_to_the_ref(monkeypatch):
 
 def test_the_walk_survives_a_symlink_loop(tmp_path):
     """A link back to an ancestor must not make the scan run forever."""
-    _campaign_dir(tmp_path, "campaign-a")
+    campaign_dir(tmp_path, "campaign-a")
     (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
     assert [str(p) for p in campaign_outputs_in(tmp_path)] == ["campaign-a"]
 
@@ -748,3 +748,96 @@ def test_restricting_the_packages_affects_the_hash(tmp_path):
 def test_no_ros_packages_renders_no_workspace_lines(tmp_path):
     df = generate_dockerfile(BuildSpec(tag="t", system_packages=["git"]), tmp_path, BASE)
     assert "colcon" not in df and "/ws/src" not in df
+
+
+# -- a colcon failure is not a push failure ------------------------------------------------------
+_COLCON_LOG = """
+#6 ERROR: failed to configure registry cache importer: unexpected status from HEAD request to
+https://registry.invalid/v2/sut-abc/manifests/buildcache: 401 Unauthorized
+#10 55.61   Add the installation prefix of "test_msgs" to CMAKE_PREFIX_PATH or set
+#10 55.61   "test_msgs_DIR" to a directory containing one of the above files.
+#10 55.61 Failed   <<< nav2_util [1.09s, exited with code 1]
+#10 55.62 Summary: 3 packages finished [54.8s]
+error: failed to solve: process "/bin/bash -xo pipefail -c colcon build --packages-up-to \
+nav2_smac_planner" did not complete successfully: exit code: 1
+"""
+
+
+def test_a_failed_colcon_build_names_the_package_and_stays_agent_fixable():
+    """The registry words appear in almost every build log, and mean nothing on their own.
+
+    BuildKit's cache importer logs a plain `401 Unauthorized` whenever the registry serves no
+    cache manifest for this tag yet -- i.e. on every first build of a project. Matching the bare
+    word against the whole log reported a `ros_packages` compile error as a push failure, with
+    `fixable_by: infra` and "the build itself succeeded": two false statements that between them
+    send the agent to the cluster operator instead of to the one missing entry in this container's
+    own `system_packages`.
+    """
+    err = classify_build_error(_COLCON_LOG)
+    assert err.phase == "source-build"
+    assert err.fixable_by == "agent"
+    assert err.entry == "nav2_util", "name the package, not the RUN line every build shares"
+    assert "system_packages" in err.message
+    assert "push" not in err.message
+
+
+def test_a_compiler_the_kernel_killed_is_infra_not_a_missing_dependency():
+    """The same misdiagnosis as above, one branch further on.
+
+    Adding the colcon check ahead of the registry heuristics stopped an OOM being reported as a
+    rejected push credential -- and started it being reported as a missing build dependency, which
+    sends the author to `system_packages` where no entry can make a compile fit into memory the
+    builder does not have. The package colcon stopped on is still named; the owner is not.
+    """
+    log = (_COLCON_LOG
+           + "#12 251.8 c++: fatal error: Killed signal terminated program cc1plus\n"
+             "#12 251.8 Failed   <<< nav2_amcl [3min 17s, exited with code 2]\n")
+    err = classify_build_error(log)
+    assert err.phase == "resource"
+    assert err.fixable_by == "infra"
+    assert "nav2_amcl" in err.entry, "still say where it stopped"
+    assert "memory" in err.message
+    assert "system_packages" not in err.message, "no package list fixes an OOM"
+
+
+def test_a_registry_failure_is_only_claimed_when_the_build_got_that_far():
+    """A push failure is a statement that the image WAS built, so it needs that to be true."""
+    err = classify_build_error(
+        'error pushing to registry: denied: requested access to the resource is denied\n')
+    assert err.phase == "push"
+    assert err.fixable_by == "infra"
+    # ... and the same words, in a log that stopped at a failing step, are not one.
+    stopped = classify_build_error(
+        'denied: requested access to the resource is denied\n'
+        'error: failed to solve: process "/bin/sh -c false" did not complete successfully\n')
+    assert stopped.phase != "push"
+    assert stopped.fixable_by == "agent"
+
+
+def test_a_daemon_that_dies_mid_build_is_infra_and_says_so():
+    """The other failure the cache-chatter gate has to keep apart from a push.
+
+    A build daemon that accepts the build and goes away part-way through a compile leaves the
+    client reporting a broken stream, not a refused dial, so none of the dial-time wordings
+    match -- and the failure would fall through to the same bare `unauthorized` in the
+    cache-importer line and come back as a rejected push credential.
+    """
+    err = classify_build_error(
+        "#11 88.78 Starting >>> nav2_behavior_tree\n"
+        " > importing cache manifest from registry.invalid/sut-abc:buildcache:\n"
+        "  401 Unauthorized\n"
+        "error: failed to receive status: rpc error: code = Unavailable desc = error reading "
+        "from server: EOF\n")
+    assert err.phase == "builder"
+    assert err.fixable_by == "infra"
+    assert "push" not in err.message
+
+
+def test_cache_chatter_alone_never_becomes_a_push_failure():
+    """A first build always logs it, so reading it as a push failure would fire on every one."""
+    err = classify_build_error(
+        " > importing cache manifest from registry.invalid/sut-abc:buildcache:\n"
+        "#6 ERROR: failed to configure registry cache importer: unexpected status from HEAD "
+        "request: 401 Unauthorized\n"
+        "something else went wrong\n")
+    assert err.phase != "push"

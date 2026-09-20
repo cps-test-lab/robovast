@@ -118,8 +118,21 @@ class ContainerSpec:
 
         Both the host-side manifest injection and the in-pod runner compute this
         from the same spec, so they always agree on the exec target.
+
+        A symbolic ``family:<member>`` ref is named after its **member**. Read as an
+        ordinary reference the member is its *tag*, so dropping the tag would name every
+        family ref ``aux-family``: two specs naming different members would deduplicate onto
+        one container, and a refusal could not say which image it wanted.
         """
-        base = self.image.rsplit("/", 1)[-1].split(":", 1)[0].split("@", 1)[0]
+        # Imported here, not at module scope: this module is the plugin-facing half of the
+        # contract and is imported by plugins, while `common.execution` pulls in the whole
+        # campaign model.
+        from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+            FAMILY_IMAGE_PREFIX, is_family_image_ref)
+
+        image = (self.image or "").strip()
+        base = (image[len(FAMILY_IMAGE_PREFIX):] if is_family_image_ref(image)
+                else image.rsplit("/", 1)[-1].split(":", 1)[0].split("@", 1)[0])
         safe = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-") or "aux"
         return f"aux-{safe}"
 

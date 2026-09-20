@@ -186,12 +186,33 @@ Note what the table does *not* say. ``validate_project`` composes too (it has to
 backend's*: on the cluster lane that is the campaign's aux pod, on the local lane ``docker``
 on the service host — which is why ``start_campaign`` is the boundary rather than "the cluster".
 
-The world column is the one place ``validate_project`` runs a container, and it is a
+The world column is where ``validate_project`` runs a container, and it is a
 **different** container from the backend context in the last column: a held, read-only query
 container from the exec lane's pool (``ExecRequest.query``, ``service/world_query.py``), not a
 variation's auxiliary one. That is why it can be the cheap tier and still settle the world —
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
+
+It checks every world a run would load, once each: the campaign's ``simulation`` block
+when some configuration runs it as authored, and each distinct block a configuration's own
+``sim:`` resolves to. A campaign whose every configuration overrides the block -- a world
+naming its mesh per configuration and none by default -- is checked on those configurations'
+worlds only, because no run opens the default as authored.
+
+``check_scenario`` is the second such check, on the same pool but in the **scenario** container
+(``service/scenario_query.py``): does the scenario parse there, imports resolved? Only that
+image can answer — ``import osc.<library>`` resolves against the
+``scenario_execution.osc_libraries`` installed where the scenario runs — so it is the one check
+that sees a library the image lacks, which otherwise kills every trial at its first line.
+
+**A check that did not run is not a pass.** ``valid`` covers every check the reply reports on,
+so a world nobody could look at makes it ``false``; ``world_checked`` says which of the three
+happened (it ran, it could not, it was not asked for); and the problem carries
+``severity: "unchecked"``. A caller branching on the boolean — which is what a boolean is for
+— is therefore never told a campaign is good to run because the most expensive thing about it
+was skipped, and it can still tell "could not check" from "is wrong" without matching on
+English. ``severity: "advice"`` is the other side of that line: a checked fact worth saying,
+and ``valid`` stays true.
 
 The consequence is that each tier has something it structurally cannot settle, and the honest
 place to say so is **the problem it reports**, not a tool description the reader has to
@@ -206,16 +227,18 @@ remember and map onto their situation:
   **names** out of that directory: metadata, not an import, because
   ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and
   this process is long-lived.
-* A variation declaring an auxiliary container is exercised by ``preview_configurations`` and
-  not by ``validate_project`` — because the difference between them is that preview
-  **composes**. Composing is what asks a variation to produce what it varies, and a variation
-  may need a helper image to do it; ``validate_project`` never gets that far, so it reports the
-  variation tier as unchecked rather than pretending. Preview's reply names what it ran in
-  ``aux_containers``, and the composition is cached, so a following ``start_campaign`` reuses
-  the work.
+* A variation declaring an auxiliary container is exercised by **both**, because both
+  compose: composing is what asks a variation to produce what it varies, and a variation may
+  need a helper image to do it. Each arranges a runner for one first — see
+  ``LocalTransport.validate_project`` and ``preview_configurations``, which enter the same
+  held aux-runner span. What separates them is what they *report*: preview names the cells
+  the sweep resolves to and the images it ran in ``aux_containers``, where validation reports
+  only the counts. The composition is cached either way, so a following ``start_campaign``
+  reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
   span by ``LocalTransport._aux_runner_context``: a campaign gets one for its run, a preview
-  gets one held by the container-exec manager and reaped on idleness, and a local service
+  gets one held by the container-exec manager, idle only once every holder has released it
+  and reaped after that, and a local service
   needs none because ``docker`` on the host is the fallback. When none of those applies —
   composing in a process with no backend and no ``docker`` — the refusal is
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
@@ -260,10 +283,6 @@ must call the lister to learn the name the getter needs. So an **empty argument 
      - the group catalog / a group's plugins / a name search
    * - ``list_campaigns()`` / ``(running_only=True)``
      - every campaign / the live ones
-   * - ``describe_campaign_data(id)`` / ``(preflight_only=True)``
-     - the schema / just the fetch verdict, without reading it
-   * - ``delete_campaign(id)`` / ``(id, data_only=True)``
-     - remove the campaign / free only its object-store data
    * - ``nav_get_trajectory(…)`` / ``(…, stats_only=True)``
      - the points / distance, duration, speeds, bounding box
    * - ``nav_get_map_info(…)`` / ``(…, occupancy=True)``
@@ -395,17 +414,14 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
-A query never fetches a campaign
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A query costs the rows it touches
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Results live in a central index, so a query is answered there for every campaign, on both
-lanes. Nothing is materialized in the service to answer one: no first-query transfer, and no
-per-campaign database that has to exist before a question can be asked.
-
-``describe_campaign_data(preflight_only=True)`` therefore reports ``fetch_required: false``
-and ``transfer: none``, which is what "the question does not apply" looks like. It remains a
-cheap pre-flight worth calling before a batch of queries, and the ``fetch`` field on a query
-result reports the same — a client that used to explain a wait now has nothing to explain.
+lanes. Nothing is materialized in the service to answer one, and no per-campaign database
+has to exist before a question can be asked — so ``describe_campaign_data`` takes a
+campaign id and returns the schema, and a query result says what it matched and nothing
+about where it came from.
 
 Cost tracks the rows a query touches, not the rosbags beside them — the same rule
 ``read_file`` follows for ``/results``.
@@ -455,8 +471,8 @@ non-recursive by default (a campaign has one directory per configuration and one
 run) and report ``total`` when truncated, so you know to page. ``read_file`` returns
 text and refuses binary — fetch those over HTTP or with ``vast files get``.
 
-Writes are restricted to ``/sources``: campaign results are immutable, and on the
-cluster they are object-store objects that a local write could not change. Inline
+Writes are restricted to ``/sources``: campaign results are immutable — they are the
+record a figure is drawn over, and a rewritten one is a figure nobody can check. Inline
 writes accept only ``.vast``/``.osc``; everything else goes through ``create_upload``,
 so its bytes never enter the token stream.
 
@@ -513,6 +529,15 @@ run for days, and a blocking tool call would occupy its caller for the whole of
 it, where a command can be backgrounded and waited on. ``get_campaign_status``
 is the single-read version for a campaign you are not waiting on.
 
+``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
+when several are waiting, so an assistant told to start something out of the way of a
+running campaign can do it at launch. **Changing it afterwards, and pausing, are
+``vast campaign`` verbs rather than tools** — ``priority``, ``pause`` and ``resume``.
+Which experiment deserves the cluster right now is a decision about the operator's
+plans rather than about the campaign in front of the assistant, and every tool's schema
+is injected into the model's context on every request, so the surface is spent on what
+an assistant is actually the right one to decide.
+
 **Image builds wait the same way**, through ``vast image wait <build-id>…``.
 That was once the exception — a blocking ``wait_for_image_build`` tool, on the
 argument that a build is minutes rather than days — and the exception did not
@@ -533,8 +558,7 @@ next. It is deliberately not on every reply, since a field that always appears i
 one that stops being read.
 
 Results live
-wherever the service keeps them — local disk for a local ``vast serve``, the
-object store for a cluster service (retrieve via the web UI or
+wherever the service keeps them — its results root on either lane (retrieve via the web UI or
 ``get_campaign_download``, which hands back the route, the ``vast campaign download``
 command with the id filled in, and a URL when this deployment declares an origin to build
 one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
@@ -586,8 +610,13 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (terminating a local Docker container, or the cluster's in-flight
-   scenario Jobs). ``list_campaigns(running_only=True)`` reports the campaigns the
-   service considers live (all lanes).
+   scenario Jobs). It lands on whatever is *running*, and the reply says which: the
+   **runs** (the batches that finished are still postprocessed and indexed, so the
+   campaign stays queryable), **postprocessing** (results kept, derived data not
+   computed — re-run it), or the **share upload** (cancelled, partial archive removed).
+   A campaign that is already over is refused rather than silently accepted.
+   ``list_campaigns(running_only=True)`` reports the campaigns the service considers
+   live (all lanes).
 
    ``stop_job`` is the narrow one beside it: it kills a **single running** job and lets
    the rest of the campaign finish. Reach for it only when ``list_campaign_jobs`` shows a
@@ -601,12 +630,12 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
 .. note::
 
-   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same **live
-   per-job** view the web UI Monitor shows: the current batch's jobs with their
+   ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same
+   **per-job** view the web UI Monitor shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
-   live log of a single **running** job (its scenario container's output — the
-   running pod's log on the cluster, the live ``system.log`` file locally). A
-   finished job whose pod has been garbage-collected has no live log.
+   log of a single job. A **finished** job is served as readily as a running one:
+   locally the containers write their files in place, and on the cluster a pod that
+   has gone is read from the campaign's objects instead.
 
    Each job also carries ``node`` — where its pod was placed, ``None`` on the local lane and
    on a job the scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
@@ -625,7 +654,7 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 .. note::
 
    ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current
-   usage — plus, where the lane can report them, its ``disk`` and results ``store``
+   usage — plus, where the lane can report them, its ``disk`` and ``results``
    filesystems — and a ``parallel_runs`` flag. The fields mean the same thing on either
    lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
    against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
@@ -644,6 +673,14 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    has no such reading — nothing reserves on the local Docker lane, and a cluster without
    metrics-server cannot measure, saying which in ``metrics_unavailable`` — and ``null``
    never means zero.
+
+   ``storage_refusal`` is non-null while ``disk`` or ``results`` has less free space than the
+   reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`). While
+   it is set, ``start_campaign``, re-runs, image builds, imports and postprocessing are
+   refused with the same sentence; campaigns already running continue, but on a cluster start
+   no new Jobs below the reserve and say so in ``get_campaign_status``'s ``stage``. Check
+   it before a sweep rather than learning it from the refusal. When clearing the service's
+   caches would help, the refusal's ``next_step`` is ``vast service cache --clear``.
 
 
 .. _mcp-liveness:
@@ -733,7 +770,9 @@ reads the JSON, and keeps it for the length of one poll interval. So nothing run
 container between reads, nothing is emitted into any log, nothing is written into the results,
 and a campaign nobody is watching is never asked at all. N watchers cost one check per
 interval, and the read happens off the request thread — a wedged container cannot slow a
-status read even by its own timeout.
+status read even by its own timeout. Every running job that carries a run is asked, a
+node-calibration probe included: the read runs inside the simulator's container and counts
+against its memory, and a probe that was not asked would size the simulator without it.
 
 **The contract, and all of it.** A simulator's reply carries ``findings``, each
 
@@ -1040,7 +1079,7 @@ Asking what a world offers an override
 --------------------------------------
 
 The ``sim`` channel is writable long before it is *discoverable*. A campaign writes
-``plugins.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod — and
+``components.floorplna.size``, composes cleanly, ships, pulls the image, schedules the pod — and
 only there is it refused, because resolving a world's ``extends`` chain needs the simulator.
 ``describe_world`` (and ``vast workspace world``) asks the simulator instead, up front:
 
@@ -1132,9 +1171,9 @@ the service's default lane, the same rule ``start_campaign`` follows. Ask the la
 will *run* on: an image checked on one says nothing about the other. Both stage the
 project's ``/config`` and, when ``workspace_id`` is given, mount that workspace read-only
 at ``/sources/<workspace_id>`` — the same address, so a path returned by ``write_file`` is
-usable verbatim in the command either way. In-cluster the staging goes through the object
-store, exactly as a campaign job's does, so anything a campaign can stage this can stage
-too — there is no separate size ceiling to run into.
+usable verbatim in the command either way. In-cluster the staging is a tar stream from the
+service's data plane into the pod, exactly as a campaign job's inputs are, so anything a
+campaign can stage this can stage too — there is no separate size ceiling to run into.
 
 **A running campaign is never a target of this tool.** There is no way from here to a
 job's container or pod, and the argument for that has not changed: a campaign in flight is
@@ -1230,7 +1269,7 @@ What it keeps, and does not:
   the retained window, and the panel says so rather than claiming a month it does not have.
 * Rows go to the central index (:mod:`robovast.common.index_db`), buffered rather than written
   per call: a Postgres round-trip in front of every tool call would cost more than some of the
-  tools. They therefore survive a service restart but not the results store, which the index
+  tools. They therefore survive a service restart but not the results volume, which the index
   shares a lifetime with.
 
 **Recording never fails a tool call.** Every path in

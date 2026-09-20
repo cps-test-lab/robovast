@@ -33,7 +33,8 @@ import yaml
 
 from .campaign_data import (aggregate_run_status, list_config_dirs, list_run_dirs,
                             read_config_channels, read_execution_metadata,
-                            read_run_outcomes, read_scenario_config)
+                            read_resolved_configurations, read_run_outcomes,
+                            read_scenario_config)
 from .common import load_config
 from .store import STORE_FILENAME, CampaignStore, read_campaign_description
 from robovast.common.results_utils import campaign_vast_or_none
@@ -81,6 +82,34 @@ def _recorded_start_time(campaign_dir: Path) -> Optional[float]:
         logger.warning("Unparsable execution_time %r in %s; start time unknown",
                        recorded, campaign_dir.name)
         return None
+
+
+def _declared_config_names(campaign_dir: Path) -> list:
+    """Every configuration the campaign was composed with, in composition order.
+
+    From ``_transient/configurations.yaml``, which is written when the tree is staged and
+    is the only record of what the sweep was *supposed* to be: the ``.vast`` states
+    variations, not the set they expand to, and the results tree states only what came
+    back. Without it a campaign that lost cells is indistinguishable from a smaller
+    campaign that ran perfectly.
+
+    Empty when there is no such record -- an imported archive that dropped ``_transient``,
+    or a campaign predating it. Empty means "cannot say", and the caller must not read it
+    as "nothing was declared": inventing a shortfall from a missing record would be the
+    same wrong answer in the other direction.
+    """
+    try:
+        declared = read_resolved_configurations(campaign_dir)
+    except (FileNotFoundError, OSError, yaml.YAMLError) as e:
+        logger.warning("No configuration record for %s (%s); a lost cell cannot be "
+                       "distinguished from one that was never declared", campaign_dir.name, e)
+        return []
+    names = []
+    for entry in (declared or {}).get("configs") or []:
+        name = (entry or {}).get("name") if isinstance(entry, dict) else None
+        if name:
+            names.append(str(name))
+    return names
 
 
 def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
@@ -132,6 +161,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
             store.record_execution(campaign_id, read_execution_metadata(campaign_dir))
         except FileNotFoundError:
             pass
+        indexed = set()
         for cfg_dir in list_config_dirs(campaign_dir):
             run_dirs = list_run_dirs(cfg_dir)
             try:
@@ -150,7 +180,23 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 n_samples=len(run_dirs),
                 channels=read_config_channels(cfg_dir),
             )
+            indexed.add(cfg_dir.name)
             store.record_runs(unit_id, read_run_outcomes(cfg_dir, campaign_dir))
+        # A configuration the campaign was composed with but whose directory never reached
+        # the tree. Recorded as a unit of its own, with no runs, because the alternative is
+        # what this indexer used to do: build the record from the directories that exist,
+        # so a sweep that lost cells reported the smaller number as its whole design and
+        # nothing anywhere said otherwise. A shortfall has to be a row before it can be a
+        # finding.
+        for name in _declared_config_names(campaign_dir):
+            if name in indexed:
+                continue
+            store.record_unit(
+                batch_id=batch_id, paramset_id=name, config_name=name,
+                params={}, objectives={}, measures={},
+                status="missing", result_dir="", n_samples=0,
+            )
+            indexed.add(name)
     logger.info("Built campaign store: %s", store_path)
     return store_path
 

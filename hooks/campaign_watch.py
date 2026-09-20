@@ -232,8 +232,79 @@ def rearm(payload, path):
     _write(path, data)
 
 
+#: What counts as busy-waiting: this many status reads of ONE campaign inside this
+#: window. Sized from what the record showed -- an agent polling every couple of seconds
+#: for twenty minutes -- and deliberately well above honest use. Checking a campaign a
+#: few times across a turn is not polling; the shape being caught is a loop.
+POLL_LIMIT = 5
+POLL_WINDOW_S = 300
+
+
+def poll(payload, path):
+    """Say, once per campaign, that repeated status reads are not waiting.
+
+    ``get_campaign_status`` is a single look. Waiting is a backgrounded
+    ``vast campaign wait``, which exits when the campaign is genuinely over and leaves the
+    agent free meanwhile -- and both the tool's own description and the campaign-waiting
+    skill say so. Saying it is not enough, because the loop is self-reinforcing: a campaign
+    holds ``running`` for its whole life, so an agent waiting for the status to change is
+    waiting for something that only happens when the campaign ends.
+
+    ``check`` cannot see this. It runs at ``Stop``, and an agent spinning inside its turn
+    never reaches it -- and when the turn does end, that agent has been watching all along,
+    so nothing looks wrong. The Stop guard catches the silent exit; this catches the loud
+    one, which costs the context the silent one saved.
+
+    Once per campaign, like every other warning here: a guard that fires repeatedly is one
+    agents learn to scroll past, which is what the ``rearm`` docstring already argues.
+    """
+    campaign_id = str(_tool_response(payload).get("campaign_id") or
+                      (payload.get("tool_input") or {}).get("campaign_id") or "")
+    if not campaign_id:
+        return
+    # Shares a matcher with `rearm`, which also wants get_job_state. A job-state read is a
+    # diagnosis, not a poll, so it is not counted here.
+    tool = str(payload.get("tool_name") or "")
+    if tool and not tool.endswith("get_campaign_status"):
+        return
+
+    data = _live(_read(path))
+    entry = data.setdefault(campaign_id, {"started_at": time.time(), "warned": True})
+    now = time.time()
+    # Only the window's own reads are kept, so a slow trickle across a long session never
+    # accumulates into a false positive.
+    reads = [t for t in entry.get("polls", []) if now - float(t) < POLL_WINDOW_S]
+    reads.append(now)
+    entry["polls"] = reads
+    if len(reads) < POLL_LIMIT or entry.get("polls_warned"):
+        _write(path, data)
+        return
+    entry["polls_warned"] = True
+    _write(path, data)
+
+    if entry.get("warned"):
+        # A waiter already owns it (`delegated`), so the fix is not to start another one.
+        advice = (f"A waiter already owns {campaign_id} and will notify you when it ends. "
+                  "Reading its status in a loop tells you nothing sooner.")
+    else:
+        advice = (f"Wait for it instead, in the BACKGROUND (Bash run_in_background=true) "
+                  f"— it exits when the campaign is genuinely over and you are notified "
+                  f"then, so you stay free meanwhile:\n    "
+                  f"vast campaign wait {campaign_id}")
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": (
+                f"You have read {campaign_id}'s status {len(reads)} times in the last "
+                f"{POLL_WINDOW_S // 60} minutes. get_campaign_status is a single look at a "
+                f"campaign you are not waiting on; it is not a way to wait. {advice}\n"
+                "This is the only time you will be told for this campaign."),
+        },
+    }))
+
+
 ACTIONS = {"record": record, "clear": clear, "delegated": delegated,
-           "rearm": rearm, "check": check}
+           "rearm": rearm, "check": check, "poll": poll}
 
 
 def main():

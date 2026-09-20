@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { formatBytesPair } from './format'
 
-// The sidebar's disk and store meters print through this. It exists because the memory
+// The sidebar's disk and results meters print through this. It exists because the memory
 // bar's fixed-GiB style ("412/1863") stops being readable at the TiB scale a node
 // filesystem reaches, and because both numbers must land in ONE unit to fit the track.
 describe('formatBytesPair', () => {

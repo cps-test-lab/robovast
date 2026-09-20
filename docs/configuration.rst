@@ -401,7 +401,7 @@ happens to have:
          initial_population: 123
          goal_pose: {position: {x: 10.0, y: 5.0}}
        sim:                          # what it runs in: nested, against the backend's schema
-         overrides: {plugins: {ceiling: {enabled: false}}}
+         overrides: {components: {ceiling: {enabled: false}}}
        sut:                          # how the stack is configured: FLAT <source>.<path> keys
          nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius: 0.55
 
@@ -501,16 +501,75 @@ slots**, and the same two keys take a *slot to destination* mapping:
    - FloorplanGeneration:
        floorplans: [environments/secorolab/secorolab.fpm]
        scenario: {map: map_file}
-       sim:      {mesh: plugins.floorplan.mesh}
+       sim:      {mesh: components.floorplan.mesh}
 
 The floorplan case is why a plugin may use **both** keys at once: nav2 reads the occupancy
 map at run time, while the simulator has to compile the mesh into its model — the two
 artifacts sit on opposite sides of :ref:`the compile boundary <sim-channel>`, and no single
 key could say so.
 
-Every declared slot must be bound, each to exactly one channel; an unknown slot is refused
-naming the ones that exist. A plugin may also declare *optional* outputs — obstacle geometry
-for a simulator to compile is one — which are simply not produced when left unbound.
+Every declared slot must be bound; an unknown slot is refused naming the ones that exist. A
+plugin may also declare *optional* outputs — obstacle geometry for a simulator to compile is
+one — which are simply not produced when left unbound.
+
+A slot may name a destination on **more than one** channel, for the case where one value is
+wanted on both sides of the compile boundary. A drawn start pose is the example: the simulator
+compiles the robot where the path begins, and the stack under test is told where that is —
+one pose, so the trial no longer has to move the robot itself once the run is going.
+
+.. code-block:: yaml
+
+   - PathVariationRandom:
+       scenario: {start: start_pose, goal: goal_pose}
+       sim:      {start: components.robot.pose}
+
+Both destinations are written from the one call, so they cannot disagree. Binding the second
+is optional and changes nothing for a campaign that leaves it out. Note what this is *not*:
+two outputs whose contents differ — an obstacle's spawner arguments and its compiled geometry
+— remain two slots, because they are two values rather than one value in two places.
+
+
+.. _config-variation-reads:
+
+Variations that read what an earlier one produced
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some plugins consume a value rather than only producing one. ``ObstacleVariation`` places
+obstacles along the route the robot drives, so it needs the start and the goals — which
+``PathVariationRandom`` produced a moment earlier, under whatever parameter names this campaign
+chose. It declares those as **input slots**, and normally binds nothing:
+
+.. code-block:: yaml
+
+   - PathVariationRandom:
+       scenario: {start: start_pose, goal: goal_poses}
+   - ObstacleVariation:
+       scenario: {objects: static_objects}
+
+The name travels with the configuration: the variation that wrote ``start`` recorded the
+parameter it bound, and the one reading ``start`` takes it from there. Rename the parameter and
+you rename it once, on the line that writes it.
+
+A configuration that sets the value **itself** has no earlier variation to inherit from — the
+poses are in its own ``parameters:`` block — so it says where to read them with ``reads:``:
+
+.. code-block:: yaml
+
+   - name: one-fixed-route
+     parameters:
+       scenario:
+         start_pose: {position: {x: -2.0, y: -0.5}}
+         goal_poses: [{position: {x: 2.0, y: 0.5}}]
+     variations:
+     - ObstacleVariation:
+         scenario: {objects: static_objects}
+         reads: {start: start_pose, goal: goal_poses}
+
+There is no conventional name to fall back on: an input that nothing wrote and no ``reads:``
+names is refused before the campaign runs, saying which slot and both ways to satisfy it.
+``reads:`` also wins where it is given, so a configuration can read a parameter other than the
+one a preceding variation wrote. Each plugin's inputs are listed with it under
+:doc:`variation`.
 
 
 .. _sut-channel:
@@ -1473,6 +1532,11 @@ per *field*, so a ``.vast`` stating only ``cpu`` keeps the deployment's ``memory
 **What it measures.** CPU and memory, both from the same probe. CPU is read at a percentile
 that depends on the container's role; memory is read at the **maximum** for every role,
 because exceeding a CPU reservation slows a container while exceeding a memory one kills it.
+The probe is a run in the job shape, and is treated as one all the way: while somebody is
+watching the campaign, the service asks the probe's simulator for its health exactly as it asks
+a run's (:doc:`mcp`, "How it is asked"). That read is a process started inside the simulator's
+container and charged to its memory, so it is part of what the simulator's limit must clear,
+and a probe spared it would be sized without it.
 
 **How the measurement becomes an allocation** is a per-container ``calibration`` block, every
 field optional and defaulted from the role and the deployment:
@@ -1568,8 +1632,9 @@ splitting *any* container, and neither is visible in one run:
   running the **static** CPU manager that is what makes the SUT ineligible for exclusive
   cores, and it weakens the Memory Manager's guarantees too. It costs nothing where
   ``cpuManagerPolicy`` is ``none`` — no container is eligible for exclusive cores there
-  whatever its class — which is why the effect is latent rather than absent. ``vast doctor``
-  reports the policy per node.
+  whatever its class — which is why the effect is latent rather than absent. The policy of
+  each node is read when a campaign starts and recorded in its ``execution.yaml`` under
+  ``cluster_info.cpu_manager_policies`` (``execution_json`` in the campaign data).
 - **Bursts correlate.** Forty simulators reserving 0.5 and permitted 6 are placed against 20
   cores while able to demand 240, and they burst *together* — world compile happens at
   startup, and a batch starts at once. Whether a given run gets its burst then depends on its
@@ -1700,55 +1765,63 @@ kubernetes
 
 **Applies to:** Cluster execution only (ignored for local runs)
 
-Configuration options that apply only when running tests on a Kubernetes cluster (e.g. ``vast workspace run``).
+Settings only the cluster lane reads. The local Docker lane ignores the block, as it ignores
+``sizing``, so the same ``.vast`` runs locally unchanged.
 
-kubernetes.jobs
-"""""""""""""""
+kubernetes.jobs.node
+""""""""""""""""""""
 
-**Type:** Dictionary
+**Type:** String (a node alias)
 
 **Required:** No
 
-Settings applied to the Kubernetes ``Job`` objects that execute individual runs.
+Confines every job of this campaign to the one node the operator registered under this alias:
 
-kubernetes.jobs.node_labels
-''''''''''''''''''''''''''''
+.. code-block:: yaml
 
-**Removed from the** ``.vast``. The node pool campaign jobs may run on is now a setup
-option::
+   execution:
+     kubernetes:
+       jobs:
+         node: bench-a
 
-   vast cluster setup <config> --jobs-node-label KEY=VALUE
+The operator registers the alias on the cluster — in ``ROBOVAST_JOB_NODE_ALIASES`` in the
+``.env`` that ``vast cluster setup`` and ``vast service upgrade`` read — and the campaign names
+only the alias, so a ``.vast`` never carries a machine's name and runs on any cluster that
+registers the same alias. See :ref:`cluster-node-alias`.
 
-Repeatable, and written on every setup — omitting it *clears* a previously configured pool
-rather than preserving it.
+**It narrows, never widens.** The alias is ANDed onto the cluster's job pool
+(``ROBOVAST_JOB_NODE_LABELS``, :ref:`cluster-node-labels`): registering an alias
+for a node outside the pool is refused, and the pool is checked again when a campaign starts.
+Admission counts capacity on that node only.
 
-It moved because it is a property of the **cluster**, not of a campaign. Carrying it here
-put a deploy's lasting, cluster-wide decisions in a file that travels with an experiment,
-and it let one campaign's file describe which machines every other campaign could use.
+**An unresolvable alias refuses the campaign** when it starts, before any job exists — an alias
+nobody registered, or one whose node has left the pool. A campaign never falls back to the
+whole pool, because its results would then describe machines it did not ask for.
 
-What it does is unchanged, and both halves are enforced: the admission controller counts
-free capacity only on nodes inside the pool, so it never promises room on a machine the
-jobs may not use; and each pod carries the labels as a ``nodeSelector``, so kube-scheduler
-is bound by the same rule the accounting assumed. The per-run node pin is ANDed onto the
-pool, narrowing it rather than replacing it. See :ref:`cluster-node-labels`.
+**It is per campaign**, like the rest of ``execution``. A sweep across CPU levels on one node is
+one campaign per level, each extending a shared base (``extends:``) and naming the same alias.
 
-kubernetes.control.node_labels
-'''''''''''''''''''''''''''''''
+**It does not isolate a job from its neighbours.** A pinned job shares the node with whatever
+else runs there, and a CPU request is a share of the node rather than a reservation of cores.
+``run_validity_view.contended`` says per run whether contention affected it.
 
-**Removed from the** ``.vast``, for the same reason and at the same time::
+The alias must be lowercase letters, digits, ``-`` and ``_``, start and end with a letter or
+digit, and be at most 63 characters (it is matched as a Kubernetes label value). A label
+selector (``KEY=VALUE``), a label key (``prefix/name``) or a node name (anything with a dot
+or an uppercase letter) is refused with a message naming the fix.
 
-   vast cluster setup <config> --control-node-label KEY=VALUE
+Node pools are not campaign settings
+""""""""""""""""""""""""""""""""""""
 
-Places RoboVAST's own infrastructure pods, as opposed to the campaign's job pods. Narrows
-rather than decides: these are ANDed with the node-local data placement setup chooses (see
-:ref:`cluster-node-local-storage`). On their own they would still let the pod float within
-the pool, which is the same problem at a smaller scale.
+``execution.kubernetes.jobs.node_labels`` and ``execution.kubernetes.control`` are refused.
+Which nodes jobs and RoboVAST's own pods may use is decided for the whole cluster:
 
-**Combined example** (pin jobs to ``primary`` nodes, control pod to ``extra``)::
+- ``jobs.node_labels`` → ``ROBOVAST_JOB_NODE_LABELS`` in the operator's ``.env`` for the
+  pool, and ``execution.kubernetes.jobs.node`` to confine one campaign to a node inside it.
+- ``control.node_labels`` → ``vast cluster setup <config> --control-node-label KEY=VALUE``.
 
-   vast cluster setup rke2 \
-       --jobs-node-label node-pool=primary \
-       --control-node-label node-pool=extra
+An archived campaign carrying either key still reads, retriggers and seeds a workspace: the
+keys never affected its run, so they are dropped from the copy with a log line.
 
 
 Results Processing Section
@@ -1880,9 +1953,11 @@ To list all available plugins and their descriptions:
    ``rosbags_process`` — the one that shows up in ``vast configuration plugins``
    and the ``list_plugins`` MCP tool. When several ``rosbags_*`` commands appear
    in a config, they are transparently batched into one ``rosbags_process`` call
-   so each rosbag is read only once. You can keep using the individual
-   ``rosbags_*`` names (they remain valid), or write ``rosbags_process`` directly
-   with a list of handler ``type`` entries when you need finer control:
+   so each rosbag is read only once, and every kind of bag — a run's own ``rosbag2``
+   and the infrastructure ``logs/rosout_bag`` — is converted in the same scan and
+   worker pool. You can keep using the individual ``rosbags_*`` names (they remain
+   valid), or write ``rosbags_process`` directly with a list of handler ``type``
+   entries when you need finer control:
 
    .. code-block:: yaml
 
@@ -1893,6 +1968,13 @@ To list all available plugins and their descriptions:
                 frames: [base_link]
               - type: to_csv
                 topics: [/cmd_vel, /odom]
+
+   ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). Every
+   ``rosbags_process`` entry and every ``rosbags_*`` name in the list is combined into
+   the one conversion, bag directory by bag directory, and the ``logs/rosout_bag``
+   handlers (``rosout_to_csv``, ``clock_to_csv``) are added to it unless an entry
+   declares them itself or they are skipped — so write an entry per bag directory
+   whose handlers you set, and nothing for the rest.
 
 See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
 

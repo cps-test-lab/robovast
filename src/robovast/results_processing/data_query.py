@@ -23,7 +23,7 @@ parameterized by the campaign **directory** so it serves both callers:
   ``results_resolver`` (or delegates to a configured service); and
 * the ``robovast-service`` (``describe_campaign_data`` / ``query_campaign_data_sql``
   on :class:`~robovast.service.interface.RobovastInterface`), which resolves the
-  dir per transport — local disk, or an object-store fetch on the cluster.
+  dir under its results root, where campaigns of either lane live.
 
 The rows themselves live in the central index now (:mod:`.index_query`), which is why the
 directory is only a *name* here: it identifies the campaign, and that name is what the
@@ -259,16 +259,22 @@ _POSE_CLOCKS_TRANSPORT = (
     "WINDOW w AS (ORDER BY stamp)) WHERE ps IS NOT NULL AND stamp > ps. "
 )
 
-#: For a pose table the SIMULATOR wrote itself. One clock, and it is the true one -- so the warning
-#: above does not apply here and would be actively wrong: there is no `stamp` column to point at,
-#: and this `timestamp` is exactly the quantity the other table's `stamp` is.
+#: For a pose table the SIMULATOR wrote itself. One MEASUREMENT clock, and it is the true one -- so
+#: the warning above does not apply here and would be actively wrong: there is no `stamp` column to
+#: point at, and this `timestamp` is exactly the quantity the other table's `stamp` is. `wall_time`
+#: rides along and is named here rather than left out: a reader who sees two time columns and is
+#: told the table has one clock concludes the description is stale, not that the second is a bridge.
 _POSE_CLOCKS_NATIVE = (
-    "ONE CLOCK, and it is the honest one: `timestamp` is exact simulated seconds, taken inside the "
-    "simulator when the pose was true, so unlike the `poses` table there is no arrival/measurement "
-    "split and no `stamp` column -- difference this one freely. Better still, do not difference at "
-    "all: twist.linear.* / twist.angular.* are the TRUE world-frame velocities read straight from "
-    "the physics solver, so a speed is SQRT(POWER(\"twist.linear.x\",2)+POWER(\"twist.linear.y\",2)) "
-    "with no window function and no interval to get wrong. "
+    "ONE MEASUREMENT CLOCK, and it is the honest one: `timestamp` is exact simulated seconds, taken "
+    "inside the simulator when the pose was true, so unlike the `poses` table there is no "
+    "arrival/measurement split and no `stamp` column -- difference and ORDER BY this one freely. "
+    "Better still, do not difference at all: twist.linear.* / twist.angular.* are the TRUE "
+    "world-frame velocities read straight from the physics solver, so a speed is "
+    "SQRT(POWER(\"twist.linear.x\",2)+POWER(\"twist.linear.y\",2)) with no window function and no "
+    "interval to get wrong. The second time column, `wall_time`, is NOT a second measurement of the "
+    "pose: it is Unix epoch seconds for the same sample, there to join this table to whatever is "
+    "stamped in wall time (run_log, resource_usage) on a run that has no rosbag to relate them "
+    "otherwise. Never difference it -- it advances with the host, not with the simulation. "
 )
 
 #: Also shared: what the orientation columns are, and which one is a projection.
@@ -459,7 +465,8 @@ _TABLE_DESCRIPTIONS = {
         "One row per entity per sample, written by the SIMULATOR itself during the run rather "
         "than derived from a bag -- so it exists even for a non-ROS run, which has no rosbag and "
         "therefore no 'poses' table at all. Same POSE CONTRACT columns as 'poses', and it holds "
-        "every free-standing body in the world, not only what TF happened to publish. " +
+        "every named body in the world -- links, wheels and attached tools included -- not only "
+        "what TF happened to publish. " +
         _POSE_CLOCKS_NATIVE + _POSE_ORIENTATION),
     ("main", "run_log"): (
         "One row per log EVENT, every container joined with /rosout, on the run's playback "
@@ -730,25 +737,23 @@ def campaign_id_of(campaign_dir) -> str:
     one configuration, or one run -- the notebook surface routinely does, and has nothing
     else to go on.
 
-    **A caller that already knows the id should pass it instead**, and the service does.
-    Deriving it from a path asks the filesystem a question that ingestion has already
-    answered: the rows are in the index, so the campaign needs no directory here at all,
-    and on the cluster lane the "directory" is a cache the service deliberately never
-    fills. Measured: an imported campaign left an EMPTY cache dir, which exists -- so the
-    guard below does not fire -- and carries no ``campaign.db`` to walk up to, so every
-    query against it was refused while its 38838 rows sat in the index.
+    **A caller that already knows the id passes it instead**, and every caller in the
+    service does. Deriving it from a path asks the filesystem a question that ingestion has
+    already answered: the rows are in the index, so the campaign needs no directory here at
+    all, and on the cluster lane it has none. The answer then turns on what happens to be on
+    disk -- a scratch directory carries the campaign's name while holding only the objects
+    some reader fetched into it, so the walk below refuses a campaign whose rows are sitting
+    in the index. Passing the id keeps the question from being asked.
     """
     from robovast.common.analysis.db import (  # pylint: disable=import-outside-toplevel
         campaign_root)
 
     path = Path(campaign_dir)
     if not path.exists():
-        # The cluster lane resolves a query to the campaign's cache dir *without fetching
-        # it* -- there is nothing left to fetch, the rows are in the index -- so the path
-        # names a campaign that has no directory on this machine at all. Walking up for
-        # campaign.db would refuse every such query. A path that does not exist carries no
-        # structure to walk, so its name is the id; an existing path that is not a campaign
-        # still raises below.
+        # A path that does not exist carries no structure to walk, so its name is the id.
+        # That keeps "this campaign was never ingested" answerable -- the index reports it
+        # as such -- rather than refusing it as "not a campaign directory". An existing path
+        # that is not a campaign still raises below.
         return path.name
 
     return campaign_root(path).name

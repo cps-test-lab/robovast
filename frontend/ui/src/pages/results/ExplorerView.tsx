@@ -5,7 +5,6 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import IconButton from '@mui/material/IconButton'
 import InputAdornment from '@mui/material/InputAdornment'
-import LinearProgress from '@mui/material/LinearProgress'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Tab from '@mui/material/Tab'
@@ -16,8 +15,9 @@ import Typography from '@mui/material/Typography'
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
-import { robovast, hasRecordedRuns, hasResults, type CampaignSummary } from '@/lib/robovastClient'
-import { formatDataFetchLabel, progressPercent } from '@/lib/format'
+import {
+  robovast, hasRecordedRuns, hasResults, isPreviewable, type CampaignSummary,
+} from '@/lib/robovastClient'
 import {
   resolveSelection,
   selectionNodeId,
@@ -25,8 +25,10 @@ import {
   type ResultsTreeItem,
 } from '@/lib/resultsTree'
 import { LOG_TAB_SLUG, type ResultsSel } from '@/lib/hashNav'
-import { openResultsView } from '@/lib/nav'
-import { RunViewIcon } from '@/components/viewIcons'
+import { openCampaignConfig, openResultsView } from '@/lib/nav'
+import { mayHaveStagedConfig } from '@/lib/campaignConfig'
+import { ConfigIcon, RunViewIcon } from '@/components/viewIcons'
+import { PreviewChip } from '@/lib/preview/PreviewChip'
 import { RunLogTab, type LogTabScope } from '@/components/runLog/RunLogTab'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
@@ -65,12 +67,15 @@ export function ExplorerView({
   // Whether this campaign actually has the config/run the URL names, and which round proposed it.
   // The rows are the tree's own query (same key, so this is served from its cache), and a finished
   // campaign's are fixed — so this is a derivation, not something to keep watching.
-  // Only finished+postprocessed campaigns have the notebooks and the queryable rows this view is
-  // built on. The Results container lists those the Run view can PREVIEW while they run as well —
-  // the three views share one selection, so they must share one list — and filtering here is how
-  // this one declines them. Kept defensive like the Data browser's own filter, since `campaigns`
-  // is a prop.
-  const explorable = useMemo(() => campaigns.filter(hasResults), [campaigns])
+  // The container's own predicate, so this view admits exactly what the three share a selection
+  // over. A finished+postprocessed campaign is the full view: its notebooks and its queryable rows.
+  // A campaign that is still running has neither, and shows only its Log tab — a run's containers
+  // write their output as they go, so that one tab has a source before postprocessing has run.
+  // Kept defensive like the Data browser's own filter, since `campaigns` is a prop.
+  const explorable = useMemo(
+    () => campaigns.filter((c) => hasResults(c) || isPreviewable(c)),
+    [campaigns],
+  )
 
   // Looked up in `explorable`, not in every campaign handed over: a campaign this view declines is
   // one it must not query either. Selecting a running campaign in the Run view leaves it in the
@@ -194,6 +199,8 @@ export function ExplorerView({
             tab={tab}
             onTab={(next) => commit(resolved.sel, next)}
             canReplay={!!campaign && hasRecordedRuns(campaign)}
+            canConfig={!!campaign && mayHaveStagedConfig(campaign.phase)}
+            preview={!!campaign && isPreviewable(campaign)}
           />
         </Box>
       )}
@@ -203,7 +210,15 @@ export function ExplorerView({
 
 // Right pane: the selected node's evaluation.visualization notebooks, executed for this node and
 // shown as HTML — the web equivalent of the desktop `vast eval gui`.
-function SelectionDetail(props: NodeProps & { tab: string; onTab: (tab: string) => void; canReplay: boolean }) {
+function SelectionDetail(
+  props: NodeProps & {
+    tab: string
+    onTab: (tab: string) => void
+    canReplay: boolean
+    canConfig: boolean
+    preview: boolean
+  },
+) {
   if (!props.campaignId) {
     return (
       <Alert severity="info" variant="outlined">
@@ -260,14 +275,26 @@ function NotebookPanel({
   tab,
   onTab,
   canReplay,
-}: NodeProps & { tab: string; onTab: (tab: string) => void; canReplay: boolean }) {
+  canConfig,
+  preview,
+}: NodeProps & {
+  tab: string
+  onTab: (tab: string) => void
+  canReplay: boolean
+  canConfig: boolean
+  preview: boolean
+}) {
   // The selection's levels are the backend's level names, so this needs no translation — a
   // 'batch' node asks for the campaign's `batch:` notebook.
   const { level, configName, runId } = nodeParams(sel)
 
+  // Not asked for a campaign that is still running: a notebook is executed against the index, so
+  // there is no answer to fetch yet, and a failed request would be reported as a problem where the
+  // truth is simply "not until this finishes".
   const vis = useQuery({
     queryKey: ['visualizations', campaignId],
     queryFn: () => robovast.listCampaignVisualizations(campaignId),
+    enabled: !preview,
     retry: false,
     staleTime: 60_000,
   })
@@ -288,7 +315,7 @@ function NotebookPanel({
       onTab(workloads[0]?.name ?? (showLog ? LOG_TAB_SLUG : ''))
   }, [names, tab, showLog]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const logScope: LogTabScope = { campaignId, level, configName, runId }
+  const logScope: LogTabScope = { campaignId, level, configName, runId, preview }
 
   // A failed workload list is reported *beside* the tabs rather than instead of them: the log
   // does not depend on it, and hiding a working view because an unrelated request failed is
@@ -300,9 +327,9 @@ function NotebookPanel({
           {(vis.error as Error).message}
         </Alert>
       ) : null}
-      {/* The tabs scroll; the jump to the Run view is pinned to the right of them, so it stays
-          reachable however many workloads a campaign declares. Same icon and gate as the campaign
-          card's shortcut, because it is the same destination. */}
+      {/* The tabs scroll; the jumps out of this view are pinned to the right of them, so they stay
+          reachable however many workloads a campaign declares. Same icons and gates as the campaign
+          card's shortcuts, because they are the same destinations. */}
       <Stack direction="row" alignItems="center" sx={{ flexShrink: 0 }}>
         <Tabs
           value={tab}
@@ -316,6 +343,23 @@ function NotebookPanel({
           ))}
           {showLog ? <Tab value={LOG_TAB_SLUG} label="Log" sx={{ minHeight: 36, py: 0 }} /> : null}
         </Tabs>
+        {/* Beside the tabs, where the reader is looking when they wonder why there is only one:
+            the chip carries the reason. */}
+        {preview ? <PreviewChip /> : null}
+        {/* The campaign this selection belongs to, whatever node is picked: the frozen `_config/`
+            is the campaign's, so unlike the jump beside it this one is not a run-level shortcut. */}
+        {canConfig ? (
+          <Tooltip title="Open this campaign's configuration">
+            <IconButton
+              size="small"
+              aria-label="open configuration"
+              sx={{ flexShrink: 0 }}
+              onClick={() => openCampaignConfig(campaignId)}
+            >
+              <ConfigIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         {sel.level === 'run' && canReplay ? (
           <Tooltip title="Replay this run in the Run view">
             <IconButton
@@ -329,8 +373,14 @@ function NotebookPanel({
           </Tooltip>
         ) : null}
       </Stack>
-      {vis.isPending && tab !== LOG_TAB_SLUG ? <CircularProgress size={18} /> : null}
-      {!workloads.length && !showLog && !vis.isPending ? (
+      {vis.isPending && !preview && tab !== LOG_TAB_SLUG ? <CircularProgress size={18} /> : null}
+      {preview && !showLog ? (
+        <Typography variant="caption" color="text.secondary">
+          This campaign is still running. Select one of its finished runs to read its log — its
+          charts and notebooks are built by postprocessing when the campaign ends.
+        </Typography>
+      ) : null}
+      {!preview && !workloads.length && !showLog && !vis.isPending ? (
         <Typography variant="caption" color="text.secondary">
           No notebook visualizations declared for this {level}. Select a run to read its log.
         </Typography>
@@ -344,40 +394,12 @@ function NotebookPanel({
   )
 }
 
-// What a click on a cluster campaign is actually waiting for. The request that renders a notebook
-// first pulls the whole campaign out of the object store — GBs over a port-forward — and only then
-// executes the cells, so a bare spinner covered a wait that runs into minutes and reported nothing.
-// The service publishes live counts on its data-status, which is cheap to poll *because* it answers
-// from memory while busy; this asks once a second for exactly as long as the render is outstanding.
-function NotebookWait({ campaignId }: { campaignId: string }) {
-  const status = useQuery({
-    queryKey: ['data-status', campaignId],
-    queryFn: () => robovast.campaignDataStatus(campaignId),
-    refetchInterval: 1000,
-    // A campaign whose progress cannot be read (an older service has no such route) is not a
-    // reason to fail the view being waited on — the label just falls back to the generic one.
-    retry: false,
-  })
-  const progress = status.data?.progress ?? null
-  const label = formatDataFetchLabel(status.data) ?? 'Running notebook…'
-  const percent = progressPercent(progress)
-
+// The request that renders a notebook executes its cells before answering, so a click waits
+// seconds to minutes; the message says what the wait is so a bare spinner does not read as a hang.
+function NotebookWait() {
   return (
-    // The bar is pinned to the box's own edges rather than laid out inside the message, so its
-    // full length reads as the full transfer — an inset bar makes "done" land short of the box
-    // and understates itself at every value.
-    <Alert
-      severity="info"
-      icon={<CircularProgress size={16} />}
-      sx={{ maxWidth: 340, position: 'relative', pb: 1.5, overflow: 'hidden' }}
-    >
-      <Typography variant="body2">{label}</Typography>
-      <LinearProgress
-        {...(percent === null
-          ? { variant: 'indeterminate' as const }
-          : { variant: 'determinate' as const, value: percent })}
-        sx={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
-      />
+    <Alert severity="info" icon={<CircularProgress size={16} />} sx={{ maxWidth: 340 }}>
+      <Typography variant="body2">Running notebook…</Typography>
     </Alert>
   )
 }
@@ -414,7 +436,7 @@ function NotebookFrame({ campaignId, sel, workload }: NodeProps & { workload: st
     return () => URL.revokeObjectURL(url)
   }, [html.data])
 
-  if (html.isPending) return <NotebookWait campaignId={campaignId} />
+  if (html.isPending) return <NotebookWait />
   if (html.isError)
     return (
       <Alert severity="error" variant="outlined">

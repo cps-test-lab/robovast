@@ -13,14 +13,35 @@
 // fixed by the merge that writes it:
 //   max_rows: cap on the initial load (default 20000; hitting it is reported in the footer)
 //   severities: push a severity floor into the query, e.g. [warn, error]
+//
+// While the campaign is still running there is no `run_log` table to read, and the panel switches
+// to `PreviewRunLog` -- the run's raw container output, unfiltered and not cursor-synced. See that
+// module for what the early view gives up and why.
 
 import { useMemo } from 'react'
 import { registerPanel } from '@/lib/panels/registry'
 import { RunLogView } from '@/components/runLog/RunLogView'
 import { useRunLog } from '@/components/runLog/useRunLog'
+import { PreviewRunLog } from '@/lib/preview/PreviewRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 function RunLogPanel({ spec, clock, data }: PanelProps) {
+  // Set by the run view when the campaign is still running: there is no `run_log` table yet, so the
+  // panel reads the run's own container output instead. Not a binding a campaign declares -- the
+  // host knows which mode it is drawing, and a campaign cannot.
+  if (spec.config.preview)
+    return (
+      <PreviewRunLog
+        campaignId={data.campaignId}
+        configName={data.configName}
+        runId={data.runId}
+      />
+    )
+  return <IndexedRunLog spec={spec} clock={clock} data={data} />
+}
+
+/** The post-hoc log: the merged `run_log` table, filtered and following the playback cursor. */
+function IndexedRunLog({ spec, clock, data }: PanelProps) {
   // `hideShutdown` too, not just the cursor: the run view has one shutdown state, reached from
   // its header, and the log is one of the two things it governs. Reading it here rather than
   // owning a copy is what keeps the log and the timeline agreeing about where the run ended --

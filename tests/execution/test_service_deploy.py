@@ -11,6 +11,7 @@ the cluster e2e path, not here.
 
 import pytest
 
+from robovast.execution.cluster_execution import front_deploy
 from robovast.execution.cluster_execution import service_deploy as sd
 
 
@@ -34,11 +35,24 @@ def test_manifests_have_expected_kinds_and_names():
         # Cluster-scoped read for the /usage endpoint (nodes are not namespaced).
         ("ClusterRole", f"{sd.SERVICE_ACCOUNT}-usage-default"),
         ("ClusterRoleBinding", f"{sd.SERVICE_ACCOUNT}-usage-default"),
+        ("ConfigMap", front_deploy.FRONT_CONFIGMAP_NAME),
         ("Deployment", sd.SERVICE_NAME),
         ("Service", sd.SERVICE_NAME),
     ]
     # No git token → no Secret injected.
     assert not any(m["kind"] == "Secret" for m in ms)
+
+
+def test_the_old_pod_goes_before_the_new_one_starts():
+    """The campaigns are on a ReadWriteOnce claim, which one node may mount at a time.
+
+    Under the default rolling update the replacement is scheduled while the old pod still
+    holds the volume, and on another node it never starts: a Multi-Attach the Deployment
+    reports as "progressing" until the upgrade times out, with no pod serving either way.
+    """
+    ms = sd.service_manifests(namespace="default", image="example/robovast:test")
+    dep = next(m for m in ms if m["kind"] == "Deployment")
+    assert dep["spec"]["strategy"] == {"type": "Recreate"}
 
 
 def test_usage_cluster_role_grants_the_kubelet_proxy_read():
@@ -232,21 +246,71 @@ def test_workspace_store_honours_an_explicitly_configured_root():
     assert roots == [{"name": sd.WORKSPACES_ROOT_ENV, "value": "/somewhere/else"}]
 
 
-def test_deployment_runs_vast_serve_on_service_port():
+def test_deployment_runs_vast_serve_behind_the_front_on_one_port():
+    """Three containers, one port: the front owns it and the two planes sit on sockets.
+
+    The control plane never binds the port -- a `--host`/`--port` here would race the
+    front for it -- and the data plane runs the same image with the results volume and
+    the auth Secret alone, so a pod's upload verifies against the same secret without
+    the data container learning anything else the control plane is given.
+    """
     ms = sd.service_manifests(namespace="ns1", image="example/robovast:test")
     dep = next(m for m in ms if m["kind"] == "Deployment")
-    container = dep["spec"]["template"]["spec"]["containers"][0]
-    assert container["image"] == "example/robovast:test"
-    assert container["command"] == ["vast", "serve", "--host", "0.0.0.0",
-                                    "--port", str(sd.SERVICE_PORT),
-                                    "--results-dir", sd.RESULTS_DATA_DIR]
-    assert container["ports"][0]["containerPort"] == sd.SERVICE_PORT
-    assert container["readinessProbe"]["httpGet"]["path"] == "/healthz"
+    pod = dep["spec"]["template"]["spec"]
+    by_name = {c["name"]: c for c in pod["containers"]}
+    assert list(by_name) == [sd.SERVICE_NAME, front_deploy.DATA_CONTAINER_NAME,
+                             front_deploy.FRONT_CONTAINER_NAME]
+
+    control = by_name[sd.SERVICE_NAME]
+    assert control["image"] == "example/robovast:test"
+    assert control["command"] == ["vast", "serve", "--uds", front_deploy.SERVICE_SOCKET,
+                                  "--results-dir", sd.RESULTS_DATA_DIR]
+    assert "ports" not in control
+    assert control["readinessProbe"]["exec"]["command"][-1] == "http://robovast/healthz"
+
+    data = by_name[front_deploy.DATA_CONTAINER_NAME]
+    assert data["image"] == "example/robovast:test"
+    assert data["command"] == ["vast", "serve-data", "--uds", front_deploy.DATA_SOCKET,
+                               "--results-dir", sd.RESULTS_DATA_DIR]
+    assert {m["name"] for m in data["volumeMounts"]} == {sd.RESULTS_VOLUME_NAME,
+                                                         front_deploy.SOCKET_VOLUME_NAME}
+    assert data["envFrom"] == [{"secretRef": {"name": sd.AUTH_SECRET_NAME}}]
+    assert "env" not in data
+
+    front = by_name[front_deploy.FRONT_CONTAINER_NAME]
+    assert front["ports"] == [{"containerPort": sd.SERVICE_PORT, "name": "http"}]
+    assert front["readinessProbe"]["httpGet"] == {"path": "/healthz", "port": sd.SERVICE_PORT}
+    # The one port is the Service's target, by the name the front gives it.
+    service = next(m for m in ms if m["kind"] == "Service")
+    assert service["spec"]["ports"] == [{"port": sd.SERVICE_PORT, "targetPort": "http",
+                                         "name": "http"}]
+    # The sockets live in memory and the front's config is the rendered ConfigMap.
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes[front_deploy.SOCKET_VOLUME_NAME]["emptyDir"] == {"medium": "Memory"}
+    assert volumes[front_deploy.FRONT_CONFIGMAP_NAME]["configMap"]["name"] == \
+        front_deploy.FRONT_CONFIGMAP_NAME
     # binds to the service account that can launch controllers
-    assert dep["spec"]["template"]["spec"]["serviceAccountName"] == sd.SERVICE_ACCOUNT
+    assert pod["serviceAccountName"] == sd.SERVICE_ACCOUNT
     # namespace threaded through every object
     assert all(m["metadata"].get("namespace", "ns1") == "ns1"
                for m in ms if m["kind"] != "ClusterRole")
+
+
+def test_the_front_routes_the_data_prefix_to_the_data_socket():
+    """The rendered nginx config names both sockets and sends `/data/` to the data plane
+    unbuffered: an upload that was spooled through the front's disk first would double
+    the write and hold the response back by the whole transfer."""
+    from robovast.service.interface import Routes
+    ms = sd.service_manifests(namespace="default", image="x")
+    cm = next(m for m in ms if m["kind"] == "ConfigMap")
+    config = cm["data"][front_deploy.FRONT_CONFIG_KEY]
+    assert f"unix:{front_deploy.SERVICE_SOCKET}" in config
+    assert f"unix:{front_deploy.DATA_SOCKET}" in config
+    assert f"listen {sd.SERVICE_PORT};" in config
+    data_block = config[config.index(f"location {Routes.DATA}/"):config.index("location / ")]
+    assert "proxy_request_buffering off;" in data_block
+    assert "proxy_buffering off;" in data_block
+    assert "client_max_body_size 0;" in config
 
 
 def test_deploy_context_stamped_into_service_env():
@@ -352,7 +416,28 @@ def test_service_rbac_can_write_the_postprocessing_configmap():
 
     secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
                     for v in rule["verbs"]}
-    assert secret_verbs == {"get"}, "widening configmaps must not widen secrets"
+    assert secret_verbs == {"get", "create", "delete"}, (
+        "widening configmaps must not widen secrets")
+
+
+def test_service_rbac_can_make_and_remove_a_campaigns_token_secret():
+    """Every campaign's pods read their data-plane token from a Secret the service creates
+    before the first Job and deletes with the campaign. Without the verbs, every cluster
+    campaign fails before its first Job with a 403 -- and nothing about the RBAC list says
+    so, which is why the calls and the grant are held together here."""
+    import inspect
+
+    from robovast.execution.cluster_execution import pod_access
+
+    ms = sd.service_manifests(namespace="default", image="x")
+    role = next(m for m in ms if m["kind"] == "Role")
+    secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
+                    for v in rule["verbs"]}
+    source = inspect.getsource(pod_access)
+    for call, verb in (("create_namespaced_secret", "create"),
+                       ("delete_namespaced_secret", "delete")):
+        assert call in source, f"pod_access no longer calls {call}; revisit this grant"
+        assert verb in secret_verbs, f"the service calls {call} but the Role lacks {verb!r}"
 
 
 # The family variables are applied with a strategic-merge patch, whose merge key for
@@ -380,6 +465,31 @@ def test_family_env_carries_what_the_environment_says(monkeypatch):
            _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
     assert env["ROBOVAST_PROJECT"] == "ghcr.io/example-org"
     assert env["ROBOVAST_PROJECT_TAG"] == "2026-08-20"
+
+
+def test_the_disk_reserve_is_carried_even_when_unset(monkeypatch):
+    """Empty, not absent, for the family's reason: deleting the .env line must reset the pod."""
+    from robovast.common.disk_reserve import RESERVE_ENV
+    monkeypatch.delenv(RESERVE_ENV, raising=False)
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env[RESERVE_ENV] == ""
+
+
+def test_the_disk_reserve_carries_what_the_environment_says(monkeypatch):
+    from robovast.common.disk_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "150")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env[RESERVE_ENV] == "150"
+
+
+def test_a_malformed_disk_reserve_fails_the_deploy_not_the_pod(monkeypatch):
+    """Caught on the operator's machine, where the .env is, rather than by every campaign."""
+    from robovast.common.disk_reserve import RESERVE_ENV
+    monkeypatch.setenv(RESERVE_ENV, "a lot")
+    with pytest.raises(ValueError, match=RESERVE_ENV):
+        sd.service_manifests(namespace="default", image="x")
 
 
 def test_the_pod_carries_the_setup_hosts_timezone(monkeypatch):
@@ -529,8 +639,7 @@ def test_startup_probe_gives_a_resume_room_before_liveness_kills_it():
     container = next(m for m in ms if m["kind"] == "Deployment")[
         "spec"]["template"]["spec"]["containers"][0]
     startup = container["startupProbe"]
-    assert startup["httpGet"]["path"] == "/healthz"
-    assert startup["httpGet"]["port"] == sd.SERVICE_PORT
+    assert startup["exec"] == front_deploy.socket_probe(front_deploy.SERVICE_SOCKET)["exec"]
 
     liveness = container["livenessProbe"]
     liveness_budget = (liveness["initialDelaySeconds"]

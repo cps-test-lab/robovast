@@ -53,6 +53,7 @@ import logging
 
 from psycopg import errors
 
+from robovast.common import store
 from robovast.results_processing import index_schema, index_scope
 
 logger = logging.getLogger(__name__)
@@ -187,9 +188,12 @@ def campaign_view_sql(conn) -> dict:
                     if "channels_json" in _columns_in(conn, index_schema.CAMPAIGN_SCHEMA,
                                                       "unit")
                     else "NULL AS channels_json")
-        # A composition-failed unit has no run rows, so the join alone drops it -- and with
-        # it the only record that the draw was attempted. Added back as one run-less row,
-        # or a search campaign silently reports only the draws that happened to work.
+        # A unit with no run rows is dropped by the join alone -- and with it the only
+        # record that the cell was part of the design. Added back as one run-less row each,
+        # or a campaign silently reports the cells that happened to work as its whole shape:
+        # the draws a search could not compose, and the configurations a sweep declared and
+        # never got back.
+        runless = ", ".join(f"'{status}'" for status in store.RUNLESS_UNIT_STATUSES)
         views["run_view"] = f"""
             SELECT r.campaign_id, u.config_name, r.run_id, r.status, r.passed, r.duration_s,
                    r.errors, r.failures, r.tests, r.start_time, r.failure_message,
@@ -208,7 +212,7 @@ def campaign_view_sql(conn) -> dict:
                    NULL AS job_dir, NULL AS sysinfo_json
             FROM {_c('unit')} u
             {bjoin}
-            WHERE u.status = 'composition_failed'
+            WHERE u.status IN ({runless})
         """
 
     if "container_failure" in have:
@@ -326,12 +330,25 @@ def metric_view_sql(conn) -> dict:
 def create_views(conn) -> list:
     """Create the views this index can support; return their names.
 
-    Ordinary views rather than temporary ones. ``data.db`` had to use TEMP views because it
-    was attached read-only and a store predating a table would carry a view referencing it;
-    here there is one index whose shape the ingest controls, so defining them once means a
-    reader does not pay to rebuild them per connection -- including the plugin panels, which
-    open their own.
+    Objects in the index rather than views on each connection: there is one index whose
+    shape the ingest controls, so defining them once means a reader does not pay to rebuild
+    them per connection -- including the plugin panels, which open their own.
+
+    One index is shared by every campaign, so this runs at the end of *every* ingest and
+    two of them can be in it at once. Both things that makes hard are handled here: the
+    :func:`~robovast.results_processing.index_schema.ddl_lock` serialises the writers, and
+    the whole rebuild is one transaction so a reader never observes the state between the
+    ``DROP`` and the ``CREATE`` -- it waits for the swap and then sees the new view, rather
+    than being told the relation does not exist, which reads as a campaign with no runs.
     """
+    with index_schema.ddl_lock(conn), conn.transaction():
+        created = _rebuild(conn)
+    logger.debug("index: created views %s", ", ".join(created) or "(none)")
+    return created
+
+
+def _rebuild(conn) -> list:
+    """Drop and recreate every supported view. Caller holds the lock and the transaction."""
     created = []
     definitions = {**campaign_view_sql(conn), **metric_view_sql(conn)}
     for name, body in definitions.items():
@@ -345,7 +362,9 @@ def create_views(conn) -> list:
         #
         # Deliberately narrow: only "that relation/column is not there" is tolerated. A
         # syntax error or a type mismatch is this module's own defect and must still raise,
-        # or a view could quietly stop existing everywhere and read as "no data".
+        # or a view could quietly stop existing everywhere and read as "no data". A
+        # SAVEPOINT rather than a transaction, since the caller opened one: an unsupported
+        # view rolls back to here and the views around it still commit together.
         try:
             with conn.transaction():
                 # security_invoker is not decoration. A view runs with its OWNER's rights
@@ -363,5 +382,4 @@ def create_views(conn) -> list:
                         str(exc).splitlines()[0])
             continue
         created.append(name)
-    logger.debug("index: created views %s", ", ".join(created) or "(none)")
     return created

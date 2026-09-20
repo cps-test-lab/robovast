@@ -109,5 +109,9 @@ export function useConfigEditor(source: ConfigSource) {
     /** Why the file list is empty, when it is empty for a reason. A campaign whose snapshot never
      *  got written is the first project that can legitimately fail to load at all. */
     filesError: files.error as Error | null,
+    /** Read the listing again. `retry: false` above makes one failure the answer for as long as
+     *  the page stays mounted, and a campaign staging its `_config/` mid-run is precisely a
+     *  failure that stops being true — so the reader needs a way to ask again. */
+    refetchFiles: files.refetch,
   }
 }

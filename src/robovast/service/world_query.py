@@ -225,11 +225,35 @@ class ExecSlotContainerRunner:
         return arg
 
 
-def _problem(message: str, config=None, field: str = "") -> dict:
-    """One structured problem, in the shape ``validate_project_file`` returns."""
+def _problem(message: str, config=None, field: str = "",
+             severity: str = "error") -> dict:
+    """One structured problem, in the shape ``validate_project_file`` returns.
+
+    ``severity`` carries the distinction this module exists to keep: ``error`` for a world
+    that does not load, ``unchecked`` for a question nothing here could ask. Both are
+    reported, neither is a pass, and a caller can tell them apart without reading English.
+    """
     return {"stage": "world", "config": config,
             "field": field or "execution.containers.simulation.config",
-            "message": message}
+            "message": message, "severity": severity}
+
+
+def _collapse_lane_wide(problems: list, blocks: int) -> list:
+    """One problem for a failure that was not about any one configuration.
+
+    A lane that cannot start a container fails every block for the same reason, and the
+    loop cannot know that while it runs. Left per block, one unreachable lane becomes as
+    many copies of one message as the campaign has distinct worlds: a reply that grows
+    with the sweep and says a single thing.
+
+    Collapsed only when the text is identical across every block, so a difference between
+    two configurations is never folded away.
+    """
+    if blocks < 2 or len(problems) != blocks:
+        return problems
+    if len({problem["message"] for problem in problems}) != 1:
+        return problems
+    return [{**problems[0], "config": None}]
 
 
 def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
@@ -238,6 +262,12 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
     The campaign default first, then any configuration whose authored ``sim:`` resolves to
     a different block — a campaign may vary its world per configuration, and the one that
     does is precisely where a typo hides in a single cell.
+
+    The default is a world only when some configuration runs it: one that authors no
+    ``sim:`` of its own, or a campaign with no configurations at all. A campaign whose
+    every configuration overrides the block never loads the default as authored -- a
+    world that names its mesh per configuration and deliberately none by default is the
+    common shape -- and a verdict on it would be a verdict on a world no run opens.
 
     Deduplicated by the resolved block, because what a world offers depends on the world
     and not on the configuration: describing it once per cell would multiply the cost by
@@ -266,9 +296,11 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
         seen.add(key)
         found.append((name, block))
 
-    _add(None, campaign_sim_block(execution))
-    for config in (parameters.get("configuration") or []):
-        if not isinstance(config, dict) or not channel(config, SIM):
+    configs = [c for c in (parameters.get("configuration") or []) if isinstance(c, dict)]
+    if not configs or not all(channel(c, SIM) for c in configs):
+        _add(None, campaign_sim_block(execution))
+    for config in configs:
+        if not channel(config, SIM):
             continue
         try:
             resolved = merge_sim_block(
@@ -281,6 +313,19 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
     return found
 
 
+def _unchecked(reason, step: str = "") -> str:
+    """One advisory sentence: why the world was not checked, then what would settle it.
+
+    The reasons come from several exceptions and some already end in a full stop, so the
+    punctuation is decided here rather than by each arm appending one.
+    """
+    text = str(reason).rstrip()
+    if not text.endswith((".", "!", "?")):
+        text += "."
+    return (f"this campaign's world was NOT checked: {text}"
+            + (f" Next: {step}" if step else ""))
+
+
 def world_problems(exec_call, *, workspace_id: str, config_path: str,
                    vast_dir: str, parameters: dict) -> list:
     """Does this campaign's world load, and does its model compile?
@@ -288,8 +333,8 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
     One problem per distinct world that does not, in the flat shape the rest of
     ``validate_project`` returns. An empty list means every world was asked and answered
     cleanly — **not** that nothing was checked: a campaign with no simulator backend
-    returns early, and anything that could not be asked comes back as an advisory naming
-    what would settle it. Silence never stands for a pass.
+    returns early, and anything that could not be asked comes back as an ``unchecked``
+    problem naming what would settle it. Silence never stands for a pass.
 
     Always ``--entities``, i.e. always compiling the model. Measured, the compile adds
     0.1-1.0 s to a container that costs 1-15 s, so the cheaper half-answer buys nothing
@@ -298,17 +343,28 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
     from robovast.common.config_generation import (WorldQueryUnavailable,
                                                    describe_world_payload,
                                                    set_container_runner_factory)
-    from robovast.common.errors import ActionableError
+    from robovast.common.errors import ActionableError, ExecPathUnavailable
 
     execution = parameters.get("execution", {}) or {}
+    blocks = _distinct_blocks(parameters, vast_dir)
     problems = []
-    for config_name, block in _distinct_blocks(parameters, vast_dir):
+    for config_name, block in blocks:
         runner = ExecSlotContainerRunner(
             exec_call, workspace_id=workspace_id, config_path=config_path)
         token = set_container_runner_factory(lambda _spec, _r=runner: _r)
         try:
             payload, image = describe_world_payload(
                 execution, block, vast_dir, entities=True)
+        except ExecPathUnavailable as exc:
+            # Before the arms below, and its own answer: they name the image or the lane as
+            # what would settle it, and neither is what is wrong. Unchecked rather than an
+            # error, by the same rule -- a check that could not run is never a verdict about
+            # the world.
+            problems.append(_problem(
+                _unchecked(exc, "nothing about the .vast changes this -- the world can "
+                                "only be described where a command can run in a container"),
+                config=config_name, severity="unchecked"))
+            continue
         except WorldQueryUnavailable as exc:
             # One exception, two very different meanings, and only the runner can tell them
             # apart: `describe_world_payload` raises this both when nothing could ask the
@@ -328,17 +384,17 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
             # already-built one. It errs towards "not checked" rather than a wrong pass,
             # so it is left as it is -- lifting it means teaching that function which
             # images this lane can reach.
-            step = getattr(exc, "next_step", "")
             problems.append(_problem(
-                f"this campaign's world was NOT checked: {exc}."
-                + (f" Next: {step}" if step else ""),
-                config=config_name))
+                _unchecked(exc, getattr(exc, "next_step", "")),
+                config=config_name, severity="unchecked"))
             continue
         except ActionableError as exc:
+            # Its own arm, and not folded into the one above: this is a refusal that knows
+            # the command that settles it -- an image that is not built names the build --
+            # so the advisory carries that rather than the lane advice a wrapped one gets.
             problems.append(_problem(
-                f"this campaign's world was NOT checked: {exc}."
-                + (f" Next: {exc.next_step}" if exc.next_step else ""),
-                config=config_name))
+                _unchecked(exc, exc.next_step),
+                config=config_name, severity="unchecked"))
             continue
         finally:
             _reset_factory(token)
@@ -351,7 +407,7 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
             problems.append(_problem(
                 f"{world} loads but its model does not compile in {image}: "
                 f"{build_error}", config=config_name))
-    return problems
+    return _collapse_lane_wide(problems, len(blocks))
 
 
 def _reset_factory(token) -> None:

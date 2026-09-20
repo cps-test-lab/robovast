@@ -70,7 +70,8 @@ import tempfile
 import time
 from importlib.metadata import entry_points
 
-from robovast.common.errors import CampaignConfigError
+from robovast.common.errors import (ActionableError, CampaignConfigError,
+                                    ExecPathUnavailable)
 from robovast.common.plugin_ref import is_file_ref, load_ref
 
 logger = logging.getLogger(__name__)
@@ -344,7 +345,8 @@ def _hash_inputs(inputs):
 
 
 def run_input_generators(vast_dir, entries, progress_update_callback=None,
-                         container_runner_factory=None, use_cache=True):
+                         container_runner_factory=None, use_cache=True,
+                         container_queries=True):
     """Run every ``execution.generate`` entry and return their provenance records.
 
     Args:
@@ -355,6 +357,11 @@ def run_input_generators(vast_dir, entries, progress_update_callback=None,
         container_runner_factory: ``spec -> runner`` for generators declaring an
             auxiliary container (the active execution backend's factory).
         use_cache: Skip a generator whose recorded inputs and outputs are unchanged.
+        container_queries: False skips every generator that declares an auxiliary
+            container, recording it as skipped instead of running it. It is for composing
+            a REPORT of what a ``.vast`` expands to, which those files do not affect, and
+            never for composing a run -- a generated input that was never generated is a
+            run that dies on a missing file after the image pull.
 
     Returns:
         A list of ``{name, params, out, outputs, inputs, cached, duration}`` dicts —
@@ -383,6 +390,15 @@ def run_input_generators(vast_dir, entries, progress_update_callback=None,
         claimed[out] = index
 
         generator_cls = resolve_input_generator(name, vast_dir, plugins)
+        if not container_queries and generator_cls.get_required_container(params) is not None:
+            # Recorded rather than dropped: what it would have written is missing from this
+            # composition, and a caller that cannot see which entry went unrun would report
+            # a count as though everything had been produced.
+            progress(f"Input generator '{name}' was NOT run: nothing here can give it the "
+                     f"container it declares ({out}).")
+            records.append({"name": name, "params": params, "out": out, "outputs": [],
+                            "inputs": [], "cached": False, "skipped": True, "duration": 0.0})
+            continue
         record = _run_one(name, generator_cls, params, out, out_dir, vast_dir, field,
                           progress, container_runner_factory, use_cache)
         records.append(record)
@@ -449,6 +465,14 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+    except (ExecPathUnavailable, ActionableError):
+        # Passed through rather than folded into the verdict below, for the reason
+        # `describe_world_payload` passes the same two: both say something about where this
+        # ran -- a deployment where no command can run in a container, a helper image
+        # nothing arranged a runner for -- while `CampaignConfigError` says the user's file
+        # is wrong. Callers tell them apart by the type, and the pre-flight report degrades
+        # on these and reports a defect on that one.
+        raise
     except CampaignConfigError:
         raise
     except Exception as exc:  # noqa: BLE001 - re-raised as a user-facing config error

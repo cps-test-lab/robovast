@@ -85,7 +85,7 @@ def _staged(svc):
 
 def _prepare(svc, campaign_id):
     return retrigger.prepare(
-        svc._retrigger_source_dir(campaign_id), campaign_id,   # noqa: SLF001
+        str(svc.campaign_dir(campaign_id)), campaign_id,   # noqa: SLF001
         workspaces_root=svc.store.registry.root, description_limit=200,
         request_model=CreateCampaignRequest)
 
@@ -195,7 +195,7 @@ def test_a_build_free_campaign_is_not_blocked_by_the_preflight(svc, tmp_path):
                               "sut": "reg.example/sut:latest"}},
         launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
     report = retrigger.check(
-        svc._retrigger_source_dir("pilot-2026-08-08-120000"),   # noqa: SLF001
+        str(svc.campaign_dir("pilot-2026-08-08-120000")),   # noqa: SLF001
         "pilot-2026-08-08-120000")
     assert "images" not in report["blocking"]
     assert report["axes"]["images"]["reresolved"] == ["simulation", "sut"]
@@ -468,3 +468,64 @@ def test_a_workspace_launch_is_unaffected(svc):
     target = WorkspaceTarget(config_path="/x/p.vast")
     assert target.materialize is None and target.discard is None
     assert target.pinned_images is None
+
+
+# -- keys a campaign ran without ---------------------------------------------------
+
+_POOL_KEYS_VAST = """\
+version: 4
+metadata: {name: pilot}
+configuration:
+- name: config1
+execution:
+  scenario_file: scenario.osc
+  runs: 3
+  containers:
+    scenario: {image: 'base:1'}  # the image the pilot ran
+  kubernetes:
+    jobs:
+      node_labels: {pool: bench}
+"""
+
+
+def _archived_with_pool_keys(tmp_path, text=_POOL_KEYS_VAST):
+    campaign = _source_campaign(tmp_path / "results",
+                                execution={"runs": 3, "execution_type": "cluster"})
+    (campaign / "_config" / "pilot.vast").write_text(text)
+    return campaign
+
+
+def test_a_campaign_carrying_the_pool_keys_is_retriggered_without_them(svc, tmp_path):
+    """The staged copy is launched strictly, which refuses the keys by name; they never reached
+    the source run, so they go, and the author's comments stay."""
+    from robovast.common.common import load_config
+
+    _archived_with_pool_keys(tmp_path)
+    plan = _prepare(svc, "pilot-2026-08-08-120000")
+    staged = (plan.staging_dir / "pilot.vast").read_text()
+    assert "node_labels" not in staged and "kubernetes" not in staged
+    assert "# the image the pilot ran" in staged
+    load_config(plan.config_path)                      # strict: the launch path
+    archived = tmp_path / "results" / "pilot-2026-08-08-120000" / "_config" / "pilot.vast"
+    assert "node_labels" in archived.read_text()
+
+
+def test_a_pinned_campaign_is_retriggered_pinned(svc, tmp_path):
+    from robovast.common.common import load_config
+    from robovast.common.execution import job_node_alias
+
+    _archived_with_pool_keys(tmp_path, _POOL_KEYS_VAST.replace(
+        "      node_labels: {pool: bench}\n", "      node: bench-a\n"))
+    plan = _prepare(svc, "pilot-2026-08-08-120000")
+    assert job_node_alias(load_config(plan.config_path)) == "bench-a"
+
+
+def test_a_workspace_seeded_from_such_a_campaign_is_launchable(svc, tmp_path):
+    from robovast.common.common import load_config
+
+    _archived_with_pool_keys(tmp_path)
+    workspace_id = svc.store.registry.create("seeded")["workspace_id"]
+    svc._seed_from_campaign(workspace_id, "pilot-2026-08-08-120000")   # noqa: SLF001
+    seeded = svc.store.registry.project_dir(workspace_id) / "pilot.vast"
+    assert "node_labels" not in seeded.read_text()
+    load_config(str(seeded))

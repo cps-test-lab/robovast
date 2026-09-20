@@ -53,6 +53,9 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
      - Stop a campaign, kill one wedged job, read its infrastructure log.
+   * - ``vast campaign priority|pause|resume``
+     - Which campaign the cluster queue admits first, and whether one admits at all. Orders
+       what is queued; runs already started finish either way (:ref:`cluster-admission`).
    * - ``vast campaign rerun <id>``
      - Launch a new campaign from what a past one recorded. The service refuses one its
        pre-flight blocks; ``--check`` reports every axis without launching, ``--force``
@@ -61,13 +64,13 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``
      - Which service is answering and which code it runs; whether the lane has room.
+   * - ``vast service cache [--clear]``
+     - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
      - What the *service itself* has been doing. ``-f`` follows.
    * - ``vast service restart``
      - Roll the deployed service onto the newest image at its tag, through its own API —
        no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
-   * - ``vast cluster store-cleanup``
-     - Remove result buckets from the service's object store.
    * - ``vast container exec|stop``
      - Run a command in the experiment image, to test a container before a campaign does.
    * - ``vast files ls|cat|get|put|rm``
@@ -98,17 +101,18 @@ What is absent, and what is only partly here
 hidden or disabled — the distribution does not register them, so ``vast --help`` on a
 client install lists exactly what it can run. That is the point of installing it alone.
 
-**Partly here:** ``vast cluster`` and ``vast service``. The rule is the same one, applied a
-level down — a subcommand exists exactly when something that can perform it is installed:
+**Partly here:** ``vast service``, and ``vast cluster`` as an empty group. The rule is the
+same one, applied a level down — a subcommand exists exactly when something that can
+perform it is installed:
 
-* ``vast cluster store-cleanup`` and ``vast service log|info|resources|restart`` ship with
-  the client. Every one of them only *drives* a service, so a client install runs them
-  completely.
+* ``vast service log|info|resources|restart|cache|mcp-stats`` ship with the client. Every
+  one of them only *drives* a service, so a client install runs them completely.
 * ``vast cluster setup|cleanup|jobs-cleanup|monitor`` and ``vast service upgrade|token``
   arrive with ``robovast-cluster``. They need a kubeconfig, an API server or a cluster
   Secret.
 
-So ``vast cluster --help`` on a client install lists ``store-cleanup`` and not ``setup``.
+So ``vast service --help`` on a client install lists ``restart`` and not ``upgrade``, and
+``vast cluster --help`` lists nothing at all until the cluster distribution is installed.
 Nothing is stubbed and nothing fails on use.
 
 Both groups spanning two distributions is the design, not an accident: a group is named
@@ -164,6 +168,13 @@ Then check it, and run it:
    vast workspace validate my-experiment my.vast   # every problem at once
    vast workspace preview  my-experiment my.vast   # how many configurations is that?
    vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
+
+``validate`` prints each problem with its severity and exits non-zero unless every check it
+covers ran and passed — including the two that need a container: the world check, and parsing
+the scenario in the image that would run it (the only check that sees an ``import
+osc.<library>`` that image lacks). So a lane that cannot start one is reported as ``unchecked``
+rather than counted as a pass; ``--no-world-check`` / ``--no-scenario-check`` ask for the
+narrower verdict on the file alone.
 
 Omit the path when the workspace holds exactly one ``.vast`` and the service will resolve
 it, naming the candidates if there are several. ``--push DIR`` does the push and the launch

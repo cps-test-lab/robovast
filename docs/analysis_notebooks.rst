@@ -186,11 +186,13 @@ the metrics. ``objectives_json`` and ``measures_json`` exist **only** on ``unit`
 ``runs.objective`` lifts just the single scalar — so a multi-objective or quality-diversity
 campaign can only be read this way.
 
-Two unit statuses are not results and must not be averaged over: ``composition_failed`` is a
-draw that could not be built into a configuration at all and never ran, and ``no_sample`` is
-one that ran and lost every run to infrastructure. Both are search coverage that was not
-obtained; count them rather than dropping them, or the campaign reads as having explored more
-than it did.
+Three unit statuses are not results and must not be averaged over: ``composition_failed`` is
+a draw that could not be built into a configuration at all and never ran, ``missing`` is a
+configuration the campaign was composed with whose results never reached the tree, and
+``no_sample`` is one that ran and lost every run to infrastructure. All three are coverage
+that was not obtained; count them rather than dropping them, or the campaign reads as having
+explored more than it did -- and the first two carry no runs at all, so a query that joins
+through ``run`` drops them without saying so.
 
 Reading requires postprocessing to have run — the campaign is not in the index before it, and a
 campaign whose postprocessing failed still reports ``finished``. That case raises with the

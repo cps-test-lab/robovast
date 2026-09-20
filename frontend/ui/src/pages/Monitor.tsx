@@ -13,11 +13,15 @@ import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
+import Chip from '@mui/material/Chip'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
+import LowPriorityRoundedIcon from '@mui/icons-material/LowPriorityRounded'
+import PauseRoundedIcon from '@mui/icons-material/PauseRounded'
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // Postprocessing recomputes metrics from the preserved rosbags, so it gets the
 // derive-statistics-from-data icon; the replay arrow goes to the entry that actually runs
@@ -41,12 +45,14 @@ import {
   hasResults,
   isPreviewable,
   isTerminalPhase,
+  PRE_RUN_PHASES,
   type CampaignSummary,
   type JobSummary,
   type RetriggerAxis,
   type ShareArchive,
   type Status,
 } from '@/lib/robovastClient'
+import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
 import { useCampaignStream } from '@/components/CampaignStreamProvider'
 import { useToasts } from '@/components/ToastProvider'
@@ -79,12 +85,6 @@ import { LaunchBar } from './LaunchBar'
 // sessions never click. Mounted only once opened, so the chunk is fetched on first use.
 const PostprocessingDialog = lazyView('Postprocessing settings',
   () => import('./PostprocessingDialog').then((m) => ({ default: m.PostprocessingDialog })))
-
-// Phases before the run loop starts. They have no progress bar of their own, so the only
-// signal that one is wedged rather than slow is how long it has been held.
-const PRE_RUN_PHASES: ReadonlySet<string> = new Set([
-  'initializing', 'building', 'starting', 'plugin install', 'variation',
-])
 
 // The campaign id's column, fixed so a page of collapsed cards reads down its columns instead of
 // zig-zagging. Sized against the ids campaigns actually get, measured rather than guessed: the
@@ -339,6 +339,28 @@ function CampaignCard({ summary, newest, openedByLink }: {
     },
   })
 
+  // The campaign's standing with the cluster queue. Ordering only: nothing already running
+  // stops, which is why these are offered on a LIVE campaign where every other act-on entry
+  // is not — they change what happens next without touching what the campaign has produced.
+  const setScheduling = useMutation({
+    mutationFn: (opts: { priority?: number; paused?: boolean }) =>
+      robovast.setScheduling(id, opts),
+    // A warning rather than an error, as for stopJob: the expected refusal here is a service
+    // whose lane has no queue, and its message says so in full.
+    onError: (e: unknown) => notify({
+      severity: 'warning', key: `sched:${id}`, message: 'Could not change the queue order.',
+      note: (e as Error).message,
+    }),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      qc.invalidateQueries({ queryKey: ['status', id] })
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `sched:${id}`,
+                 message: 'The queue order was not changed.', note: res.message || undefined })
+      }
+    },
+  })
+
 
   // Stopping a campaign is asked about, because it is not undoable and not recoverable: there is
   // no resume anywhere in the service, so the only way back is Retrigger, which is a NEW campaign
@@ -385,6 +407,31 @@ function CampaignCard({ summary, newest, openedByLink }: {
     })
     if (reason === null) return
     stopJob.mutate({ jobName: job.job_name, reason: reason.trim() || undefined })
+  }
+
+  // A number, asked for as text because that is the prompt this app has. A value that is not
+  // a whole number is rejected rather than coerced: Number('') is 0, which would silently
+  // reset the campaign to normal when somebody meant to cancel.
+  const onSetPriority = async () => {
+    closeMenu()
+    const typed = await prompt({
+      title: 'Queue priority',
+      message:
+        'Which campaign the cluster admits first when several are waiting. Higher goes ' +
+        'first, 0 is normal, negative waits behind everything else. This orders what is ' +
+        'queued — runs already started finish either way.',
+      label: 'Priority',
+      placeholder: 'e.g. -1 to let other campaigns past',
+      confirmLabel: 'Set priority',
+    })
+    if (typed === null) return
+    const value = Number(typed.trim())
+    if (!typed.trim() || !Number.isInteger(value)) {
+      notify({ severity: 'warning', key: `sched:${id}`,
+               message: 'Priority must be a whole number.' })
+      return
+    }
+    setScheduling.mutate({ priority: value })
   }
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
@@ -517,11 +564,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
 
   const phase = status.data?.phase ?? summary.phase
   const running = !isTerminalPhase(phase)
-  // A campaign freezes its project into `_config/` only once variation has expanded, so during a
-  // pre-run phase there is provably nothing to open and the shortcut is hidden rather than offered
-  // and answered with a 404. From then on it stays, running or finished: the configuration a
-  // campaign is running is worth reading while it runs.
-  const hasConfig = !PRE_RUN_PHASES.has(phase)
+  // Hidden until the campaign can have a frozen `_config/` at all, rather than offered and
+  // answered with a 404 — see mayHaveStagedConfig for which phases those are and why the gate
+  // only goes one way. From then on it stays, running or finished: the configuration a campaign
+  // is running is worth reading while it runs.
+  const hasConfig = mayHaveStagedConfig(phase)
   // How long the current phase has been held, shown only while a *pre-run* phase is in
   // effect. Those are the phases with no progress bar to watch, so a stalled project
   // push or image build otherwise looks exactly like a slow one — indefinitely.
@@ -547,6 +594,10 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // the age is measured against the service's clock rather than this browser's, and refreshes
   // with the 1.5 s poll.
   const stalled = status.data?.stalled === true
+  // Sorted so the chip's hover lists the same machines in the same order on every poll.
+  const nodesSkipped = Object.entries(status.data?.nodes_skipped ?? {})
+    .map(([node, why]) => [node, String(why)] as const)
+    .sort(([a], [b]) => a.localeCompare(b))
   const progressAgeS = status.data?.progress_age_s ?? null
   const progressDeadline = status.data?.progress_deadline_s
   // The live step marker, for the phases that have no progress bar of their own. Postprocessing
@@ -569,9 +620,9 @@ function CampaignCard({ summary, newest, openedByLink }: {
     : [postprocError ? 'postprocessing' : '', shareError ? 'upload to share' : ''].filter(Boolean)
   const stepIssue = failedSteps.length ? `${failedSteps.join(' + ')} failed` : null
 
-  // Every lane serves the archive now: the cluster streams it from the object store, and a
-  // local service tars its own results directory (`campaign_tar_stream` is on the interface,
-  // implemented by both), and neither waits on postprocessing. So nothing gates the download:
+  // Every lane serves the archive: the service tars the campaign's results directory
+  // (`campaign_tar_stream` is on the interface) and does not wait on postprocessing. So
+  // nothing gates the download:
   // a running campaign is offered as a SNAPSHOT -- what has been written so far, named
   // `<id>.incomplete.tar.gz` by the service and carrying a marker the import reads. Hiding it
   // while a campaign runs withheld the download from precisely the campaign a reader is
@@ -765,6 +816,34 @@ function CampaignCard({ summary, newest, openedByLink }: {
         ) : null,
   ].filter(Boolean)
 
+  // Only while it runs, and the mirror image of `actItems`: these change what the campaign
+  // does NEXT without touching what it has produced, which is what makes them safe on a live
+  // campaign. A finished campaign has no standing with the queue to set.
+  const queueItems = running
+    ? [
+        <MenuItem key="priority" onClick={onSetPriority} disabled={setScheduling.isPending}>
+          <ListItemIcon><LowPriorityRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Set queue priority…</ListItemText>
+        </MenuItem>,
+        <MenuItem
+          key="pause"
+          disabled={setScheduling.isPending}
+          onClick={() => { closeMenu(); setScheduling.mutate({ paused: !summary.paused }) }}
+        >
+          <ListItemIcon>
+            {summary.paused
+              ? <PlayArrowRoundedIcon fontSize="small" />
+              : <PauseRoundedIcon fontSize="small" />}
+          </ListItemIcon>
+          {/* The label says what it leaves alone, because "pause" on a thing that is running
+              trials reads as though it stops them. It does not: it stops admitting new ones. */}
+          <ListItemText>
+            {summary.paused ? 'Resume admitting runs' : 'Pause admitting new runs'}
+          </ListItemText>
+        </MenuItem>,
+      ]
+    : []
+
   // Nothing here while the campaign runs: each one either re-runs a step of it or destroys it.
   const actItems = running
     ? []
@@ -794,7 +873,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
         </MenuItem>,
       ]
 
-  const menuItems = [openItems, takeItems, actItems]
+  const menuItems = [openItems, takeItems, queueItems, actItems]
     .filter((group) => group.length)
     .flatMap((group, i) => (i ? [<Divider key={`sep-${i}`} />, ...group] : group))
 
@@ -861,6 +940,24 @@ function CampaignCard({ summary, newest, openedByLink }: {
               stalled {formatDuration(progressAgeS!)}
             </Typography>
           ) : null}
+          {/* A campaign running on fewer machines than the cluster has is slower than its plan
+              and looks entirely healthy: the runs it does place all pass, the progress bar just
+              moves less. Warning rather than error — nothing is wrong with the results, every
+              run is still sized from its own node — and the hover carries which machines and
+              why, since that is what decides whether to restart it staggered or let it run. */}
+          {nodesSkipped.length ? (
+            <Typography
+              variant="caption"
+              color="warning.main"
+              noWrap
+              title={
+                `Left out of this campaign, so it runs on fewer machines than the cluster ` +
+                `has:\n${nodesSkipped.map(([n, why]) => `${n} — ${why}`).join('\n')}`
+              }
+            >
+              {nodesSkipped.length} node(s) left out
+            </Typography>
+          ) : null}
           {/* A fixed column while FOLDED, a shrink-to-fit label while open: campaign ids carry a
               user-supplied name, so their widths vary by a factor of three, and a page of folded
               cards without a column would sit its timestamp and its meter at a different x on
@@ -889,6 +986,31 @@ function CampaignCard({ summary, newest, openedByLink }: {
             </Typography>
           </CampaignOrigin>
           <LaunchedBy name={summary.created_by} />
+          {/* Beside the name, not on a line of its own: this is a label on the campaign, and a
+              full-width row for one short value pushed everything below it down. Only on an open
+              card and only when it is not the default — a chip reading "prio 0" on every campaign
+              costs every row a glance and says nothing. Paused shows whatever the rank, because a
+              campaign admitting nothing looks idle and this is the only thing that says why. */}
+          {!collapsed && running && summary.priority !== 0 ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`prio ${summary.priority > 0 ? `+${summary.priority}` : summary.priority}`}
+              title="Which campaign the cluster queue admits first. Higher goes first."
+              sx={{ flexShrink: 0 }}
+            />
+          ) : null}
+          {!collapsed && running && summary.paused ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              color="warning"
+              icon={<PauseRoundedIcon />}
+              label="paused"
+              title="Admitting no new runs. The runs already started finish normally."
+              sx={{ flexShrink: 0 }}
+            />
+          ) : null}
           {/* Folded, the description moves up into the row. On its own line it doubled the height
               of every collapsed card, which is most of what the fold was for; here it also lines
               up into a column that can be read down. The full text is on hover, and it returns to
@@ -1146,6 +1268,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
             newest={newest}
             quotaCpu={usage.data?.cpu_capacity ?? null}
             postprocessed={!!summary.postprocessed}
+            resultsBytes={summary.results_bytes}
             onStopJob={onStopJob}
             stoppingJob={stopJob.isPending ? (stopJob.variables?.jobName ?? null) : null}
           />

@@ -232,6 +232,18 @@ def test_the_pointer_beats_alphabetical_order(tmp_path):
     assert campaign_vast(config_dir.parent).name == "campaign.vast"
 
 
+def test_postprocessing_reads_the_pointer_too(tmp_path):
+    """``find_campaign_vast_file`` is how postprocessing finds the config; a campaign archived
+    beside its base resolves to the campaign, not to the base that sorts before it."""
+    from robovast.common.results_utils import find_campaign_vast_file
+    proj = tmp_path / "proj"
+    _write(proj, "campaign.vast", CAMPAIGN)
+    config_dir = _archive(tmp_path, _write(proj, "probe.vast",
+                                           "version: 4\nextends: campaign.vast\n"))
+    assert find_campaign_vast_file(str(config_dir.parent)) == \
+        (str(config_dir / "probe.vast"), str(config_dir))
+
+
 def test_a_campaign_archived_before_pointers_still_resolves(tmp_path):
     """One file, no pointer: the old rule and the new one agree, so nothing needs migrating."""
     from robovast.common.results_utils import campaign_vast

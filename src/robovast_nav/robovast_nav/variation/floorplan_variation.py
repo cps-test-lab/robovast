@@ -103,12 +103,12 @@ class FloorplanVariationConfig(DestinationConfig):
     #: .. code-block:: yaml
     #:
     #:     scenario: {map: map_file}
-    #:     sim:      {mesh: plugins.floorplan.mesh}
+    #:     sim:      {mesh: components.floorplan.mesh}
     #:
     #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
     #: parameter. Each destination is named, rather than positional as in
     #: ``name: [map_param, mesh_param]``, whose meaning depends on remembering the order.
-    SLOTS = ("map", "mesh")
+    OUTPUT_SLOTS = ("map", "mesh")
 
     variation_files: list[str]
     num_variations: int
@@ -161,12 +161,12 @@ class FloorplanGenerationConfig(DestinationConfig):
     #: .. code-block:: yaml
     #:
     #:     scenario: {map: map_file}
-    #:     sim:      {mesh: plugins.floorplan.mesh}
+    #:     sim:      {mesh: components.floorplan.mesh}
     #:
     #: Both may equally go to ``scenario:`` for a simulator that loads its world from a
     #: parameter. Each destination is named, rather than positional as in
     #: ``name: [map_param, mesh_param]``, whose meaning depends on remembering the order.
-    SLOTS = ("map", "mesh")
+    OUTPUT_SLOTS = ("map", "mesh")
 
     floorplans: list[str]
     mesh_format: str = 'stl'
@@ -200,7 +200,7 @@ class FloorplanGeneration(NavVariation):
     Expected parameters:
 
     - ``scenario`` / ``sim``: slot -> destination for the ``map`` and ``mesh`` slots, e.g.
-      ``scenario: {map: map_file}`` and ``sim: {mesh: plugins.floorplan.mesh}``. The retired
+      ``scenario: {map: map_file}`` and ``sim: {mesh: components.floorplan.mesh}``. The retired
       positional ``name: [map_param, mesh_param]`` is refused.
     - ``floorplans``: List of paths to ``.fpm`` floorplan files to generate artifacts
       for (must contain at least one file).
@@ -539,7 +539,7 @@ class FloorplanVariation(NavVariation):
     Expected parameters:
 
     - ``scenario`` / ``sim``: slot -> destination for the ``map`` and ``mesh`` slots, e.g.
-      ``scenario: {map: map_file}`` and ``sim: {mesh: plugins.floorplan.mesh}``. The retired
+      ``scenario: {map: map_file}`` and ``sim: {mesh: components.floorplan.mesh}``. The retired
       positional ``name: [map_param, mesh_param]`` is refused.
     - ``variation_files``: List of variation files to use for floorplan generation
       (must contain at least one file).

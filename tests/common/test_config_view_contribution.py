@@ -34,7 +34,7 @@ def _nav_config(**overrides):
                 spawn_pose=_pose(3.0, 4.0, 0.2))],
             "map_file": "environments/office/map.yaml",
         },
-        "sim": {"plugins.boxes.instances": [
+        "sim": {"components.boxes.instances": [
             {"name": "obstacle_0", "pos": [3.0, 4.0], "size": [0.5, 0.5, 1.0], "yaw": 0.2}]},
         "_path": [Position(x=1.0, y=2.0), Position(x=5.0, y=6.0)],
         "_goal_parameter_name": "goal_poses",
@@ -145,7 +145,7 @@ def test_the_instances_list_is_found_whichever_way_it_states_a_placement():
     obstacles out of every earlier campaign's map rather than report anything.
     """
     for placement in ({"pose": {"position": {"x": 3.0, "y": 4.0}}}, {"pos": [3.0, 4.0]}):
-        config = _nav_config(sim={"plugins.boxes.instances": [
+        config = _nav_config(sim={"components.boxes.instances": [
             {"name": "obstacle_0", "size": [0.5, 0.5, 1.0], **placement}]})
         boxes = [m for m in config_view.obstacle_contribution(config).markers if m.kind == "box"]
         assert len(boxes) == 1, placement

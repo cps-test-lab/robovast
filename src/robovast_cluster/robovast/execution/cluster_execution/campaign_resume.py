@@ -17,17 +17,17 @@
 """Picking a campaign back up after the service process that drove it went away.
 
 A cluster campaign's compute is Kubernetes Jobs. They are not children of the service
-process, they carry no owner reference, and they upload their own results to the object
-store — so a pod replacement (``vast service upgrade``, an eviction, a drain, an OOM)
-takes away the *driver* and nothing else. What was lost is an in-memory campaign entry, a
-thread, and the batch loop's position.
+process, they carry no owner reference, and they deliver their own results to the
+campaign on the results volume — so a pod replacement (``vast service upgrade``, an
+eviction, a drain, an OOM) takes away the *driver* and nothing else. What was lost is an
+in-memory campaign entry, a thread, and the batch loop's position.
 
 This module restores those, and does it by **re-launching the campaign under its own id**
 rather than by a resume path of its own. Everything that makes that safe is a property
 elsewhere, each true of a campaign starting now as much as one being re-entered:
 
-* the campaign's records are published when they are written, not at the end, so there is
-  something to re-launch from (``_publish_campaign_records`` / ``publish_records``);
+* the campaign's records are written into its directory as it runs, so there is
+  something to re-launch from;
 * the batch runner plans against the campaign root it is given, so finished jobs are
   adopted instead of re-run (``BatchJobRunner._jobs_already_done``);
 * ``create_campaign`` is idempotent by name, so the restored store re-opens its row;
@@ -43,10 +43,10 @@ its replacement could not re-enter. Both go through :func:`plan_for` over a rest
 root -- :func:`would_be_lost` is the second caller -- because a warning that reaches a
 different verdict from the behaviour it warns about is worse than no warning at all.
 
-**Discovery has one source**: the object store's campaign index, minus everything with a
-terminal ``_execution/outcome.json``. Listing live Jobs would be a second source for the
-same set — a campaign with live Jobs is indexed and has no outcome — and two sources of
-one truth is one more way for them to disagree.
+**Discovery has one source**: the results root, minus every campaign with a terminal
+``_execution/outcome.json``. Listing live Jobs would be a second source for the same set
+— a campaign with live Jobs has a directory and no outcome — and two sources of one truth
+is one more way for them to disagree.
 
 **A search is picked up too**, when it can be: it re-drives its strategy through the
 ask/tell sequence its own store recorded, which reproduces the original search exactly for
@@ -54,13 +54,6 @@ a strategy that is a function of its seed and its evaluations. The two condition
 makes true -- a seed is set, and the strategy does not declare itself unresumable -- are
 checked before the campaign is re-launched rather than discovered halfway through its
 second half.
-
-**Only the control plane is fetched**, because all of this happens inside
-``ClusterService.__init__`` -- before ``vast serve`` binds its port, so the service is
-unreachable for the whole of it. Re-entering a campaign needs its launch record, its frozen
-config, its store and its per-run verdicts; the artifacts are gigabytes and are not read until
-postprocessing, which fetches them itself through
-``ExecutionBackend.ensure_campaign_root_complete``. See :func:`_is_control_plane`.
 
 **Refusals are left alone rather than failed.** A campaign this module will not pick up
 keeps whatever ``reconstruct_status_from_disk`` says about it, which is ``crashed``: the
@@ -74,43 +67,46 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 #: Why a campaign was not picked up, keyed by campaign id. Reported, not raised: a service
-#: must start whatever it finds in the store.
+#: must start whatever it finds in its results root.
 Refusal = str
 
 
-def _terminal_outcome(service, campaign_id: str) -> bool:
-    """Whether the store holds a terminal ``outcome.json`` for *campaign_id*.
+def _terminal_outcome(campaign_root: Path) -> bool:
+    """Whether *campaign_root* holds a terminal ``outcome.json``.
 
     A campaign that recorded an ending is over, however it ended, and picking it up again
-    would restart work its own record says is finished. Read as a single ``stat_object``
-    rather than by fetching the object: the question is whether the ending exists, and the
-    campaign's phase is reconstructed from the file itself later by the ordinary readers.
+    would restart work its own record says is finished.
     """
-    from . import in_pod_storage
-    cfg = service._cluster_config()  # noqa: SLF001 - same package, one collaborator
-    bucket, prefix = in_pod_storage.campaign_storage_location(cfg, campaign_id)
-    storage = in_pod_storage.storage_client_for(cfg, interactive=True)
-    return storage.stat_object(bucket, f"{prefix}_execution/outcome.json") is not None
+    from robovast.client.status import is_terminal
+    from robovast.common.campaign_data import read_execution_outcome
+    status = read_execution_outcome(campaign_root)
+    return status is not None and is_terminal(status.phase)
 
 
 def owed_work(service) -> list:
-    """Campaign ids the store lists and that recorded no ending, newest first.
+    """Campaign ids under the results root that recorded no ending, newest first.
 
     Newest first because that is the order they should be re-launched in: a service coming
     back has to get the campaign someone is watching moving again before it works through
-    older ones.
+    older ones. Ids carry their creation time, so the name orders them.
     """
-    # A pair of maps, not one: ``(created_at, finished_at)``. Only the first orders the
-    # re-launch; an ending is read from the campaign's own outcome.json below rather than
-    # from the index, because that is the record a resume must not step on.
-    created, _finished = service._campaign_index()  # noqa: SLF001 - same package, one collaborator
+    from robovast.common.execution import is_campaign_dir
+    root = Path(service._campaigns_root())  # noqa: SLF001 - same package, one collaborator
+    if not root.is_dir():
+        return []
     owed = []
-    for campaign_id in sorted(created, key=lambda cid: created[cid] or "", reverse=True):
+    for entry in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
+        if not entry.is_dir() or not is_campaign_dir(entry.name):
+            continue
+        # A directory with no launch record is not a campaign anything drove: an import
+        # in progress, or a tree put there by hand.
+        if not (entry / "_execution" / "launch.yaml").is_file():
+            continue
         try:
-            if not _terminal_outcome(service, campaign_id):
-                owed.append(campaign_id)
+            if not _terminal_outcome(entry):
+                owed.append(entry.name)
         except Exception as e:  # noqa: BLE001 - one unreadable campaign is not a failed start
-            logger.debug("could not tell whether %s is over: %s", campaign_id, e)
+            logger.debug("could not tell whether %s is over: %s", entry.name, e)
     return owed
 
 
@@ -173,6 +169,11 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
         postprocess=launch.get("postprocess", True),
         upload_to_share=launch.get("upload_to_share", False),
         show_gui=False,
+        # Restored, unlike a retrigger's: this is the same campaign coming back, and one that
+        # was demoted or held before the restart would otherwise return at the default and
+        # take capacity an operator had already taken away from it.
+        priority=launch.get("priority", 0),
+        paused=launch.get("paused", False),
         description=_description(campaign_root))
     target = WorkspaceTarget(config_path=str(vast_path), campaign_id=campaign_id,
                              pinned_images=pinned or None)
@@ -232,19 +233,15 @@ def resume_all(service) -> dict:
     """Re-launch every campaign this store says is still owed work.
 
     Returns ``{campaign_id: None | refusal}`` — ``None`` where the campaign was picked up.
-    Never raises: a service has to start even when the store is unreachable, and a campaign
-    it could not pick up is reported rather than lost (its Jobs keep running and its results
-    keep landing in the store either way).
+    Never raises: a campaign it could not pick up is reported rather than lost (its Jobs
+    keep running and its results keep landing in its directory either way).
     """
     outcomes: dict = {}
     try:
         candidates = owed_work(service)
     except Exception as e:  # noqa: BLE001 - nothing here is worth refusing to start over
-        # Loud, with the traceback, and without naming a cause. A store outage does not
-        # reach here -- ``_campaign_index`` degrades to its cache and ``_terminal_outcome``
-        # is caught per campaign -- so what lands here is a fault in this module, and the
-        # one thing it must not do is read like the routine outage it is not. Blaming the
-        # store once cost a service restart every campaign it was driving.
+        # Loud, with the traceback: ``_terminal_outcome`` is caught per campaign, so what
+        # lands here is a fault in this module.
         logger.error("Could not check for campaigns to resume, so none was picked up "
                      "and every interrupted campaign is left for 'vast campaign import': %s",
                      e, exc_info=True)
@@ -259,83 +256,27 @@ def resume_all(service) -> dict:
     return outcomes
 
 
-#: Keys a campaign must have locally before it can be re-entered, relative to its prefix.
-#:
-#: The launch record and the frozen ``_config/`` are what :func:`plan_for` reads; ``campaign.db``
-#: is the store a resumed search replays its ask/tell sequence out of
-#: (``search.history.recorded_batches``); ``_execution/`` carries the campaign's own account of
-#: itself; and a run's ``test.xml`` is the verdict ``BatchJobRunner._jobs_already_done`` adopts
-#: finished jobs on. Nothing else is read before postprocessing.
-_CONTROL_PLANE_PREFIXES = ("_config/", "_execution/")
-_CONTROL_PLANE_FILES = ("launch.yaml", "campaign.db")
-
-
-def _is_control_plane(rel: str) -> bool:
-    """Whether the object at *rel* is needed to re-enter a campaign (not to analyse it)."""
-    return (rel.startswith(_CONTROL_PLANE_PREFIXES)
-            or rel in _CONTROL_PLANE_FILES
-            or rel.endswith("/test.xml"))
-
-
-def _is_plan_input(rel: str) -> bool:
-    """Whether the object at *rel* is read while *deciding* whether to re-enter a campaign.
-
-    Narrower than :func:`_is_control_plane`, and narrower on purpose. ``campaign.db`` and the
-    per-run ``test.xml`` are what a re-launch runs *from* -- the recorded ask/tell sequence, the
-    verdicts finished jobs are adopted on -- not what :func:`plan_for` reads to reach a verdict.
-    That distinction is load-bearing for :func:`would_be_lost`, which asks the question while the
-    campaign is still being driven: fetching ``campaign.db`` there would write the store's copy
-    over the SQLite file that campaign's own controller holds open.
-    """
-    return rel.startswith(_CONTROL_PLANE_PREFIXES)
-
-
 def would_be_lost(service, campaign_id: str) -> "str | None":
     """Why rolling now would lose *campaign_id*, or ``None`` when its successor picks it up.
 
     The question ``ClusterService.upgrade_service`` puts before it rolls the pod. It has to
     reach the verdict :func:`_resume_one` will reach afterwards, so it plans with the same
-    :func:`plan_for` -- and, because that function reads a campaign root and nothing else, it
-    has to restore that root the same way first.
-
-    Restoring it is the whole of this function, and skipping it is not a shortcut but a
-    different question. While a campaign runs, the records planning needs are split across two
-    places: ``_execution/launch.yaml`` is written into the campaign root at launch, while the
-    frozen ``_config/`` is staged into a temporary directory, uploaded to the object store and
-    dropped (``KubernetesBackend.run_batch_in_pod``) -- it does not reach the root until the
-    first batch's results are downloaded. Planning against either half alone refuses a campaign
-    that nothing is wrong with: against the root, for a config that is not missing but
-    elsewhere; against the store, for a launch record that has not been published yet.
-
-    So the fetch lands in the campaign root rather than the scratch cache -- the union of the
-    two halves is what planning needs, and the root is where the successor will put its copy
-    anyway. It writes only objects this campaign itself uploaded, which is the same download the
-    driver performs at its own batch boundary, and ``download_prefix`` skips a local file whose
-    size already matches -- so a campaign past its first batch pays a listing and no bytes.
+    :func:`plan_for` over the same campaign root.
     """
-    campaign_root = Path(service._campaign_dir(campaign_id))  # noqa: SLF001
-    service.fetch_campaign(campaign_id, dest=campaign_root, include=_is_plan_input)
+    campaign_root = Path(service.campaign_dir(campaign_id))  # noqa: SLF001
     _, _, refusal = plan_for(service, campaign_id, campaign_root)
     return refusal
 
 
 def _resume_one(service, campaign_id: str) -> "str | None":
-    """Restore one campaign's root and re-launch it; return a refusal, or ``None``."""
-    campaign_root = service._campaign_dir(campaign_id)  # noqa: SLF001
-    # The control plane only, into the driver's own root rather than the scratch cache: from
-    # here the controller and the batch runner read it as the campaign's working directory,
-    # which is what lets them adopt the finished jobs instead of re-running them.
-    #
-    # NOT the whole prefix. Resume runs inside
-    # `ClusterService.__init__`, before `vast serve` binds its port, so every byte fetched here
-    # is a byte the service spends being unreachable -- and a campaign's artifacts run to
-    # gigabytes against a few hundred kilobytes of control plane. A service with live campaigns
-    # could not finish before the liveness probe killed it, and each attempt started over.
-    #
-    # The rest is fetched by `ExecutionBackend.ensure_campaign_root_complete` at the point it is
-    # first needed, which is postprocessing. Between here and there the root is incomplete on
-    # purpose; see that hook for why nothing in between reads it.
-    service.fetch_campaign(campaign_id, dest=campaign_root, include=_is_control_plane)
+    """Re-launch one campaign from its root; return a refusal, or ``None``.
+
+    A stream that a pod was delivering when the driver went away may have left a file
+    under its incoming suffix; swept first, so the batch runner adopts only whole verdicts.
+    """
+    from robovast.service.tar_io import sweep_incoming
+    campaign_root = service.campaign_dir(campaign_id)  # noqa: SLF001
+    sweep_incoming(campaign_root)
     target, request, refusal = plan_for(service, campaign_id, Path(campaign_root))
     if refusal is not None:
         logger.info("Not resuming campaign %s: %s", campaign_id, refusal)

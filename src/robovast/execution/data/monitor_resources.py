@@ -606,6 +606,43 @@ def _run_once(argv) -> int:
     return 0
 
 
+def _existing_header(path: str):
+    """The first line of *path* as CSV fields, ``None`` for a file that is absent or empty."""
+    try:
+        with open(path, newline="", encoding="utf-8") as handle:
+            return next(csv.reader(handle), None)
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def open_record(path: str, header: list):
+    """Open a sample file for writing, continuing it when an earlier instance left one.
+
+    A container the kubelet restarts runs this sampler again, in the same pod, against the same
+    output directory -- and the samples the first instance wrote are the record of why it died:
+    a memory high-water mark climbing towards the limit is visible in nothing else once the
+    container is gone. Truncating on start would throw that record away at the one moment it is
+    worth having, and leave the trace of the instance that survived standing in for the one that
+    was killed.
+
+    So an existing file with this *header* is appended to, and the header is written only into a
+    file that is new or empty. The seam between two instances is a cumulative counter that goes
+    backwards, which the calibration reader drops as a cgroup replaced; the run itself is invalid
+    once a workload container has crashed, so nothing compares its aggregates. A file whose
+    header differs is from a runtime that reports other counters than this one -- not a
+    continuation -- and is replaced, with the replacement stated on stderr.
+    """
+    existing = _existing_header(path)
+    if existing == header:
+        return open(path, "a", newline="", buffering=1)
+    if existing is not None:
+        print(f"{path}: earlier samples report other columns and are replaced",
+              file=sys.stderr, flush=True)
+    handle = open(path, "w", newline="", buffering=1)
+    csv.writer(handle).writerow(header)
+    return handle
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--once":
         return _run_once(sys.argv[2:])
@@ -626,16 +663,15 @@ def main():
     probes = start_probes()
     system_columns = [column for _, columns in probes for column in columns]
 
-    with open(output_path, "w", newline="", buffering=1) as f, \
-            open(system_usage_path(output_path), "w", newline="", buffering=1) as sf:
+    process_header = ["timestamp", "pid", "name", "cpu_percent", "memory_rss_bytes",
+                      "shm_used_bytes", "shm_total_bytes"]
+    # The system file is written even when no probe answered, so the file's presence means "the
+    # sampler ran" and its emptiness means "this runtime reports nothing" -- which a missing
+    # file cannot distinguish from a sampler that died.
+    with open_record(output_path, process_header) as f, \
+            open_record(system_usage_path(output_path), ["timestamp"] + system_columns) as sf:
         writer = csv.writer(f)
-        writer.writerow(["timestamp", "pid", "name", "cpu_percent", "memory_rss_bytes",
-                         "shm_used_bytes", "shm_total_bytes"])
-        # Written even when no probe answered, so the file's presence means "the sampler ran"
-        # and its emptiness means "this runtime reports nothing" -- which a missing file cannot
-        # distinguish from a sampler that died.
         system_writer = csv.writer(sf)
-        system_writer.writerow(["timestamp"] + system_columns)
 
         while not _shutdown:
             ts = time.time()

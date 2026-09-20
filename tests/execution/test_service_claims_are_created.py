@@ -47,6 +47,7 @@ def apis(monkeypatch):
     monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
     monkeypatch.setattr(service_deploy, "service_storage_from_cluster", lambda *a, **k: {})
+    monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "existing_auth_token", lambda *a, **k: "token")
     monkeypatch.setattr(service_deploy, "existing_index_password", lambda *a, **k: "pw")

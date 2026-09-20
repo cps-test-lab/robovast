@@ -33,6 +33,17 @@ dependency, so a new route is covered automatically: a dependency would miss the
 rather than re-parsing headers, so exchanging the shared secret for an identity provider
 replaces one resolver instead of every route.
 
+A **scoped token** is the second kind of credential the gate accepts, and the only one a
+pod is ever given. It is ``<scope>.<hmac>`` -- an HMAC of the scope under the shared secret
+(:func:`robovast.service.auth.scoped_token`) -- and it reaches exactly the data-plane routes
+of the one campaign or staged slot the scope names
+(:func:`~robovast.service.auth.scope_allows`); anything else is a ``403``, distinct from the
+``401`` an unauthenticated caller gets so the pod is not sent to log in with a token that
+already proved itself. It needs no registry: every process holding the secret verifies it,
+a restart forgets nothing, and a scope stops mattering the moment nothing answers for it.
+Handing a pod the shared secret instead would let any container in the cluster start
+campaigns.
+
 Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
 ``sources_root`` for any caller that is not on the same machine, because those are
 filesystem paths only useful — and only safe — to one that is; a forwarded request
@@ -55,6 +66,23 @@ reading the route table:
 
 Large uploads take the side channel instead: ``POST /uploads`` grants a token, and
 ``PUT /uploads/{token}`` streams the bytes.
+
+The **data plane** is the third namespace, ``/data``: every route that moves a campaign's
+or a staged slot's bytes as one tar stream. ``GET /data/campaigns/{id}/archive`` is the
+campaign as a tar.gz (narrowed by ``stage``, ``skip_bags`` and ``batch_jobs`` to what a
+postprocessing pod reads, and a plain tar with ``uncompressed``); ``GET .../inputs`` is what a job pod extracts into its
+``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened and a cell's
+own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
+pod's output tree into the campaign, last writer wins, with what the driver owns -- the
+campaign's own store, its logs -- refused per member and named in the reply; and
+``GET``/``PUT /data/staged/{slot}`` move the scratch trees the service stages for a build
+or exec pod. Every stream a pod reads is a plain tar, and an upload may be plain or
+gzipped: the reader detects it. These are **control routes, not writes under** ``/results``, so that space
+keeps having no write verb at all. Streamed both ways, never buffered: a download is
+tarred as it is read and an upload is extracted as it arrives, through a bounded queue,
+so a slow disk holds the socket back rather than the body piling up in memory. In the
+cluster Deployment they are answered by their own process behind the front
+(:doc:`deployment`); a ``vast serve`` mounts them into its one app, at the same paths.
 
 A **campaign archive** has its own channel rather than an address in that space, because
 ``/sources`` needs workspaces configured (a ``501`` otherwise) and an archive is not project
@@ -99,6 +127,22 @@ the meaning of a status is uniform across every route:
      - A notebook or visualization failed to render.
    * - ``501``
      - Workspaces are not configured on this service.
+   * - ``503``
+     - A dependency did not answer, so the request could not be attempted: the object
+       store, the index, or the exec path into a container. Worth retrying, unlike the
+       codes above.
+   * - ``507``
+     - The service is out of disk space, or low enough that it declines new work (see
+       :ref:`deployment-disk-reserve`). Never reported as bad input or a conflict: the
+       request itself was fine, and is worth retrying once space is freed.
+
+A refusal whose *class* a caller must act on rather than print also carries an
+``x-robovast-error`` header naming that class — today only ``exec_path_unavailable``, for a
+deployment where no command can be run in a container at all. The exception type is what an
+HTTP boundary drops, and a client that has to *behave* differently (report the deployment
+rather than the image, degrade a check to "unchecked") would otherwise have to match on the
+sentence, which then nobody may reword. ``ServiceError.code`` carries it; the body stays
+FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 
 Streaming
 =========
@@ -106,11 +150,10 @@ Streaming
 Four routes stream instead of returning a body. The two ``.../stream`` log routes and
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
-than replaying the whole log. ``GET /campaigns/{id}/archive`` streams a tar.gz of the
-campaign — tarred from the object store's objects as they are fetched on a cluster
-service, from the campaign directory on a local one. Both lanes answer it: refusing on a
-local service with a ``409`` ("the results are already on this host's filesystem") asserts
-something true of a caller on that host and false of everyone else.
+than replaying the whole log. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
+campaign, tarred from the campaign directory as it is read. Both lanes answer it: refusing
+on a local service with a ``409`` ("the results are already on this host's filesystem")
+asserts something true of a caller on that host and false of everyone else.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is

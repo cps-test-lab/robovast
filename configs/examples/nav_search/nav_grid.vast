@@ -32,16 +32,28 @@ configuration:
   - ParameterVariationList:
       sim: components.barrier.instances
       values:
-      - [{pos: [0.0, -2.60], size: [0.2, 4.8, 1.0]}, {pos: [0.0, 2.60], size: [0.2, 4.8, 1.0]}]
-      - [{pos: [0.0, -2.70], size: [0.2, 4.6, 1.0]}, {pos: [0.0, 2.70], size: [0.2, 4.6, 1.0]}]
-      - [{pos: [0.0, -2.80], size: [0.2, 4.4, 1.0]}, {pos: [0.0, 2.80], size: [0.2, 4.4, 1.0]}]
-      - [{pos: [0.0, -2.90], size: [0.2, 4.2, 1.0]}, {pos: [0.0, 2.90], size: [0.2, 4.2, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.60}}, size: [0.2, 4.8, 1.0]}, {pose: {position: {x: 0.0, y: 2.60}}, size: [0.2, 4.8, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.70}}, size: [0.2, 4.6, 1.0]}, {pose: {position: {x: 0.0, y: 2.70}}, size: [0.2, 4.6, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.80}}, size: [0.2, 4.4, 1.0]}, {pose: {position: {x: 0.0, y: 2.80}}, size: [0.2, 4.4, 1.0]}]
+      - [{pose: {position: {x: 0.0, y: -2.90}}, size: [0.2, 4.2, 1.0]}, {pose: {position: {x: 0.0, y: 2.90}}, size: [0.2, 4.2, 1.0]}]
   # When the pedestrian is at the crossing, relative to the robot's arrival. Dwell shifts
   # the patrol's phase, so this is the encounter timing -- the factor that makes the
   # failure region a band rather than a threshold.
   - ParameterVariationList:
       sim: components.pedestrian.dwell
       values: [0.0, 2.0, 4.0, 6.0]
+
+visualization:
+  results:
+    explorer:
+      notebooks:
+      # The reference campaign needs a view of its own: the eight search campaigns each
+      # answer "what did my strategy find", and this one answers the question they are all
+      # read against -- what exhaustive coverage cost, and which factor actually decides
+      # the outcome. Batch mode, so it works from the runs table rather than from the
+      # `unit` table a search records its scored cells in.
+      - Analysis:
+          campaign: analysis/nav_grid.ipynb
 
 execution:
   containers:

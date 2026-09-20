@@ -64,64 +64,6 @@ export function formatBytesPair(used: number, capacity: number): string {
   return `${one(used)}/${one(capacity)} ${units[i]}`
 }
 
-export interface WorkProgress {
-  phase: 'listing' | 'downloading' | 'executing'
-  unit: 'files' | 'cells'
-  done: number
-  total: number | null
-  bytes_done: number
-  bytes_total: number | null
-  detail: string
-}
-
-interface DataFetchStatus {
-  fetch_required: boolean
-  cached: boolean
-  transfer: 'none' | 'cluster-network' | 'port-forward'
-  db_bytes: number
-  fetch_in_progress: boolean
-  progress?: WorkProgress | null
-}
-
-/**
- * What to say while a campaign's first query runs, or `null` when there is nothing to say.
- *
- * A cluster campaign's first query fetches its databases from the object store *inside* the
- * request, which without a word is indistinguishable from a hang. `null` for a local service
- * (nothing to transfer) and for an already-cached campaign, so the common case stays silent
- * rather than explaining something that is not happening.
- *
- * When the service reports live counts they replace the generic sentence: "downloaded 152 of
- * 410 files" is the answer to the question the generic one only acknowledges. Without them
- * (an older service, or the moment before the first count lands) the original wording stands.
- *
- * Lives here, not in a view, because three of them show it and the wording must not drift.
- */
-export function formatDataFetchLabel(status: DataFetchStatus | undefined): string | null {
-  if (!status || !status.fetch_required || status.cached) return null
-  const via = status.transfer === 'port-forward' ? ' over a port-forward' : ''
-  const p = status.progress
-  if (p) {
-    if (p.phase === 'listing') return `Listing campaign files${via}…`
-    if (p.phase === 'executing')
-      return `Running notebook — cell ${p.done}${p.total ? ` of ${p.total}` : ''}…`
-    // Bytes rather than the file count in the parenthetical: "410 files" says nothing about
-    // how long this takes, and the transferred size is what the wait is actually made of.
-    const size = p.bytes_total ? ` (${formatBytes(p.bytes_total)})` : ''
-    const of = p.total ? ` of ${p.total}` : ''
-    return `Downloading campaign data${size}${via} — ${p.done}${of} files…`
-  }
-  const size = status.db_bytes ? ` (${formatBytes(status.db_bytes)})` : ''
-  if (status.fetch_in_progress) return `Fetching campaign data${size}${via}…`
-  return `First query — fetching campaign data${size} from the object store${via}…`
-}
-
-/** 0-100 for a determinate bar, or `null` when the total is unknown (draw indeterminate). */
-export function progressPercent(p: WorkProgress | null | undefined): number | null {
-  if (!p || !p.total) return null
-  return Math.min(100, Math.round((p.done / p.total) * 100))
-}
-
 /** Seconds → a coarse human duration: "45s", "12m", "2h 5m", "1d 3h". */
 export function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.round(seconds))

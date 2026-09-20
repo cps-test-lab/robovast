@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import csv
 import os
-import re
 from dataclasses import dataclass, field, fields
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -94,11 +93,6 @@ TIME_NONE = "none"          #: no stamp anywhere in the log to bracket it with
 #: ``source`` values.
 SRC_ROSOUT = "rosout"
 SRC_STDOUT = "stdout"
-
-#: The main container's log; a sidecar's is ``system_<container>.log``.
-_MAIN_LOG = "system.log"
-_SIDECAR_RE = re.compile(r"^system_(?P<container>.+)\.log$")
-
 
 @dataclass
 class LogRecord:

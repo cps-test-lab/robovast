@@ -118,8 +118,9 @@ def push_file(client, address: str, path: Path) -> str:
     if grant.url:  # HTTP service issued an absolute PUT URL
         # The client's own session, not a bare requests.put: the upload route is
         # behind the same authentication as everything else, and a fresh request
-        # would carry no credentials.
-        client.session.put(grant.url, data=data, timeout=120).raise_for_status()
+        # would carry no credentials. The client's own raise_for_status too, so a
+        # refusal reaches the caller as the sentence the service wrote.
+        client.raise_for_status(client.session.put(grant.url, data=data, timeout=120))
     elif hasattr(client, "store"):  # in-process LocalTransport
         client.store.write_upload(grant.token, data)
     else:
@@ -442,7 +443,7 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
     say = logger.info
-    url = f"{client.base_url}{Routes.CAMPAIGNS}/{campaign_id}/archive"
+    url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
     say("Downloading %s from robovast-service ...", campaign_id)
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
     tmp_path = f"{dest_path}.part"

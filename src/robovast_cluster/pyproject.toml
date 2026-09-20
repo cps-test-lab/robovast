@@ -5,6 +5,9 @@ description = "The Kubernetes execution lane for RoboVAST: cluster campaigns, de
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
 # Ships into the `robovast` namespace rather than a name of its own, so the import paths
 # do not change: `robovast/` and `robovast/execution/` carry no `__init__.py` in either
 # distribution, which makes them PEP 420 namespace packages and lets the two trees merge.
@@ -22,8 +25,6 @@ kubernetes = "^34.1"
 # The built-in registry's password file. ``registry:2`` verifies with Go's bcrypt and
 # rejects anything weaker, so this is the hash or no auth at all -- see registry_deploy.
 bcrypt = "^4.0"
-boto3 = "^1.35"
-google-cloud-storage = "^2.0"
 
 # `vast serve --backend cluster`. Resolved by name, so the core never imports this package
 # to start a service -- see robovast/service/serve_backends.py.

@@ -6,58 +6,169 @@ Each case pins a spot that could silently degrade (swallow an error and proceed
 with a quietly-wrong configuration) and asserts it fails loudly instead.
 """
 
+import json
+import os
 from unittest import mock
 
 import pytest
 
-# -- A1: aux-container discovery ---------------------------------------------
+from .image_steps_helper import CMDS, stub_image_steps
 
-def test_aux_discovery_subprocess_failure_raises():
-    """A plugin-discovery subprocess that exits non-zero must abort, not yield []."""
-    from robovast.execution.cluster_execution import container_runner
-    from robovast.execution.cluster_execution.container_runner import AuxDiscoveryError
+# -- A1: the auxiliary container a composition needs -------------------------
 
-    completed = mock.Mock(returncode=1, stdout="boom", stderr="traceback here")
-    with mock.patch.object(container_runner.subprocess, "run", return_value=completed):
-        with pytest.raises(AuxDiscoveryError, match="exit 1"):
-            container_runner._discover_specs_subprocess("/nonexistent/campaign.vast")
+# Whether a composition needs an auxiliary container is answered by asking for one, so there is no
+# spec list here that could be wrong -- see tests/execution/test_aux_containers_are_created_on_demand.py.
+# What this file pins is the other direction: a container that cannot be provided must not be
+# answered around.
 
 
-def test_aux_discovery_subprocess_no_result_raises():
-    """A worker that exits 0 but writes no result file must abort, not yield []."""
-    from robovast.execution.cluster_execution import container_runner
-    from robovast.execution.cluster_execution.container_runner import AuxDiscoveryError
+def test_an_unanswerable_input_files_query_is_not_swallowed_into_an_empty_list():
+    """The simulator alone can enumerate what a world is made of; a guess is not a substitute.
 
-    completed = mock.Mock(returncode=0, stdout="", stderr="")
-    with mock.patch.object(container_runner.subprocess, "run", return_value=completed):
-        with pytest.raises(AuxDiscoveryError, match="no readable result"):
-            container_runner._discover_specs_subprocess("/nonexistent/campaign.vast")
+    ``_backend_run_files`` swallows a backend it cannot resolve, on purpose -- validation reports
+    that properly elsewhere. It must NOT swallow "the backend answered, and nothing here could
+    ask": the campaign would then stage the one file the `.vast` names, pull its image, schedule
+    its pod and die on a parent world that never travelled.
+    """
+    from robovast.common.config_generation import _backend_run_files
+    from robovast.common.errors import AuxContainerUnavailable
+    from robovast.common.simulators import ContainerQuery
+    from robovast.common.variation.container_runner import ContainerSpec
 
+    query = ContainerQuery(ContainerSpec(image="family:robovast-roqsim"), ["enumerate"])
+    parameters = {"execution": {"containers": {"simulation": {"backend": "stub"}}}}
 
-def test_aux_discovery_variation_error_propagates():
-    """A variation whose container requirement can't be computed aborts discovery."""
-    from robovast.execution.cluster_execution import container_runner
-
-    class _Boom:
-        __name__ = "BoomVariation"
+    class _Backend:
+        CONFIG_CLASS = None
 
         @staticmethod
-        def get_required_container(_params):
-            raise RuntimeError("cannot compute container spec")
+        def input_files(_cfg, _execution, _vast_dir):
+            return query
 
-    # load_config / ensure_workspace_plugins / _get_variation_classes are imported
-    # inside _discover_specs, so patch them at their defining modules.
-    with mock.patch(
-        "robovast.common.common.load_config",
-        return_value={"configuration": [{"variations": {}}]},
-    ), mock.patch(
-        "robovast.common.config_plugins.ensure_workspace_plugins"
-    ), mock.patch(
-        "robovast.common.config_generation._get_variation_classes",
-        return_value=[(_Boom, {})],
-    ):
-        with pytest.raises(RuntimeError, match="cannot compute container spec"):
-            container_runner._discover_specs("/tmp/campaign.vast")
+    with mock.patch("robovast.common.simulators.resolve_backend", return_value=_Backend()), \
+            mock.patch("robovast.common.config_generation._backend_cfg", return_value=object()), \
+            mock.patch("robovast.common.config_generation._run_input_files_query",
+                       side_effect=AuxContainerUnavailable("no runner here")):
+        with pytest.raises(AuxContainerUnavailable):
+            _backend_run_files("/tmp", parameters)
+
+
+def test_a_query_that_could_not_be_asked_at_all_is_not_swallowed_either():
+    """Not having a runner is one way of failing to ask; it stopped being the likely one.
+
+    On the cluster lane a runner factory is now installed unconditionally, so
+    ``AuxContainerUnavailable`` cannot be raised there at all -- what happens instead is that
+    the factory builds the aux pod and the pod does not come up, or the query runs and prints
+    nothing a caller can read. Those must propagate for exactly the reason the missing runner
+    does: the difference between "this world is one file" and "nobody could ask" is invisible
+    until the run opens a parent that never travelled.
+    """
+    from robovast.common.config_generation import _backend_run_files
+    from robovast.common.simulators import ContainerQuery
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    query = ContainerQuery(ContainerSpec(image="family:robovast-roqsim"), ["enumerate"])
+    parameters = {"execution": {"containers": {"simulation": {"backend": "stub"}}}}
+
+    class _Backend:
+        CONFIG_CLASS = None
+
+        @staticmethod
+        def input_files(_cfg, _execution, _vast_dir):
+            return query
+
+    with mock.patch("robovast.common.simulators.resolve_backend", return_value=_Backend()), \
+            mock.patch("robovast.common.config_generation._backend_cfg", return_value=object()), \
+            mock.patch("robovast.common.config_generation._run_input_files_query",
+                       side_effect=RuntimeError("aux pod never became ready")):
+        with pytest.raises(RuntimeError, match="never became ready"):
+            _backend_run_files("/tmp", parameters)
+
+
+def test_an_unresolvable_backend_is_still_swallowed():
+    """The other half of the same line, so the fix above cannot quietly widen.
+
+    A campaign that never mentions a simulator must not fail composition because a backend
+    it does not use cannot be imported; validation reports that where it can be acted on.
+    """
+    from robovast.common.config_generation import _backend_run_files
+
+    parameters = {"execution": {"containers": {"simulation": {"backend": "stub"}}}}
+    with mock.patch("robovast.common.simulators.resolve_backend",
+                    side_effect=RuntimeError("no such backend")):
+        assert _backend_run_files("/tmp", parameters) == []
+
+
+def test_the_worlds_the_simulator_named_become_campaign_inputs(tmp_path):
+    """A world's parent has to end up in `run_files`, or the query bought nothing.
+
+    The simulator answers in the paths it was asked in -- the campaign tree is exposed at
+    `/config` and the command names the world there -- so an answer read as this host's paths
+    matches nothing and the campaign stages neither the world nor its parent. What it opens
+    then depends on a `run_files` glob happening to cover them.
+    """
+    from robovast.common.config_generation import _run_input_files_query
+    from robovast.common.simulators import ContainerQuery
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    (tmp_path / "world").mkdir()
+
+    class _Runner:
+        workspace = str(tmp_path / "ws")
+
+        def run(self, _command, progress_update_callback=None):
+            # What `roqsim scenes inputs` prints: absolute, in the container, one JSON line.
+            # The mesh is the packaged case -- it arrives with the image and must not be copied.
+            progress_update_callback(json.dumps({
+                "world": "/config/world/child.yaml",
+                "packaged": False,
+                "inputs": ["/config/world/child.yaml", "/config/world/parent.yaml",
+                           "/opt/roqsim/scenes/empty_room/floor.stl"]}))
+
+        def expose(self, _host_path, _container_path):
+            pass
+
+        def close(self):
+            pass
+
+    query = ContainerQuery(ContainerSpec(image="family:robovast-roqsim"),
+                           ["roqsim", "scenes", "inputs", "/config/world/child.yaml"])
+    with mock.patch("robovast.common.config_generation._make_container_runner",
+                    return_value=_Runner()):
+        declared = _run_input_files_query(query, str(tmp_path))
+
+    assert declared == [os.path.join("world", "child.yaml"),
+                        os.path.join("world", "parent.yaml")], declared
+
+
+def test_a_configuration_s_world_is_enumerated_or_the_composition_fails(tmp_path):
+    """The same contract per configuration, and there without the `sim:` channel either.
+
+    A configuration's world is resolved after the variation loop, and a failure there is
+    swallowed unless the campaign writes the ``sim`` channel -- a backend that cannot be
+    imported must not break a campaign that never mentions one. "The world extends a file only
+    the simulator can resolve, and nothing here could ask it" is not that: dropping it stages
+    a world without its parent, whichever way the campaign is written.
+
+    Run against the real roqsim backend on a real world chain, with the local ``docker``
+    fallback taken away -- the state a service pod is in.
+    """
+    import shutil
+
+    from robovast.common.config_generation import _resolve_config_sim_blocks
+    from robovast.common.errors import AuxContainerUnavailable
+
+    (tmp_path / "parent.yaml").write_text("components: []\n", encoding="utf-8")
+    (tmp_path / "child.yaml").write_text("extends: parent.yaml\ncomponents: []\n",
+                                         encoding="utf-8")
+    parameters = {"execution": {"containers": {"simulation": {"backend": "roqsim",
+                                                              "config": "child.yaml"}}},
+                  "configuration": [{"name": "only"}]}
+    configs = [{"_config_name": "only", "config": {}}]
+
+    with mock.patch.object(shutil, "which", return_value=None):
+        with pytest.raises(AuxContainerUnavailable, match="input-files query"):
+            _resolve_config_sim_blocks(configs, parameters, str(tmp_path), [])
 
 
 def test_cpu_manager_policy_unknown_on_query_failure():
@@ -106,7 +217,7 @@ def test_load_kube_config_prefers_in_cluster():
 # exception out of the conversion step. The load-bearing detail is that the very first
 # call touching the API server is the one that has to translate the transport error.
 
-def test_unreachable_cluster_only_ends_postprocessing():
+def test_unreachable_cluster_only_ends_postprocessing(monkeypatch):
     """The runs are already published when postprocessing chains, so an unreachable
     cluster is a reported, re-runnable postprocessing failure -- never an exception out
     of the conversion step."""
@@ -116,7 +227,6 @@ def test_unreachable_cluster_only_ends_postprocessing():
     from robovast.execution.cluster_execution import postprocess_job
 
     cluster_config = mock.Mock()
-    cluster_config.get_s3_credentials.return_value = ("key", "secret")
     boom = urllib3.exceptions.MaxRetryError(
         pool=mock.Mock(), url="/api/v1/namespaces/ns/configmaps",
         reason=urllib3.exceptions.ConnectTimeoutError("connect timed out"))
@@ -132,17 +242,17 @@ def test_unreachable_cluster_only_ends_postprocessing():
     # The Job's host container is the index ingest, so the manifest is not built at all
     # without a DSN in the submitting process -- and this test is about the transport to
     # the API server, not about that refusal.
+    stub_image_steps(monkeypatch)
     with mock.patch.dict("os.environ",
                          {DSN_ENV: "host=index.example.com dbname=robovast"}), \
-         mock.patch("robovast.execution.cluster_execution.in_pod_storage."
-                    "campaign_storage_location", return_value=("bucket", "prefix/")), \
          mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
          mock.patch("kubernetes.client.CoreV1Api", return_value=core), \
          mock.patch("kubernetes.client.BatchV1Api", return_value=batch), \
          mock.patch("robovast.execution.cluster_execution.cluster_execution."
                     "resolve_pull_secret", return_value=""):
         ok, message = postprocess_job.run_conversion_job(
-            cluster_config, "camp", "ns", "img", [{"plugins": []}])
+            cluster_config, "camp", "/results/camp", "ns", "img", CMDS,
+            token="campaign:camp.0123abcd")
 
     assert ok is False
     assert "unreachable" in message

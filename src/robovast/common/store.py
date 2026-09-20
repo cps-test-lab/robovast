@@ -80,6 +80,14 @@ _STAMP_NOW = object()
 # (a batch ``campaign-<id>/`` or a ``search-<ts>/`` root).
 STORE_FILENAME = "campaign.db"
 
+#: ``unit.status`` values that mean the cell produced no run at all, each naming a
+#: different coverage loss: ``composition_failed`` is a draw whose configuration could not
+#: be built, ``missing`` a declared configuration that reached the results tree with no
+#: directory of its own. Both are units a run join would drop, so every reader that counts
+#: cells adds them back from here rather than naming one of them -- a shortfall that only
+#: one reader knows about is a shortfall nobody is told about.
+RUNLESS_UNIT_STATUSES = ("composition_failed", "missing")
+
 #: The full current layout, applied to a fresh database. Mirrors the cumulative effect of
 #: every entry in :data:`_MIGRATIONS`; see the module docstring for why both exist.
 _SCHEMA = """
@@ -692,9 +700,9 @@ class CampaignStore:
         **Idempotent by ``name``.** A campaign whose row already exists re-opens it and is
         left exactly as it was, rather than gaining a second row. This is what lets a
         controller be re-entered for a campaign already under way -- the store it is handed
-        may be one restored from the object store, carrying the rows of an earlier life --
-        and the first write is the one kept on purpose: the row records how the campaign was
-        *started*, which a later re-entry did not do and must not restate.
+        may carry the rows of an earlier life -- and the first write is the one kept on
+        purpose: the row records how the campaign was *started*, which a later re-entry did
+        not do and must not restate.
         """
         existing = self._conn.execute(
             "SELECT id FROM campaign WHERE name = ?", (name,)).fetchone()

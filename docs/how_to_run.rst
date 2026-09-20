@@ -18,35 +18,21 @@ How to run
    :prog: vast container
    :nested: full
 
-.. `vast cluster` and `vast service` each hold BOTH eagerly-defined verbs and lazily
-   attached ones — `store-cleanup` and `restart` are in the group's own module, `setup` and
-   `upgrade` arrive from robovast-cluster through an entry point. sphinx-click reads the
-   eager ``commands`` dict rather than ``list_commands()``, so a group holding even one
-   eager verb renders ONLY that half and drops every lazy one **silently**: the section
-   appears, the page builds clean, and six operator verbs are simply absent. Verified, not
-   assumed — the first draft of this file lost them exactly that way.
+.. `vast cluster` and `vast service` both attach operator verbs lazily, from
+   robovast-cluster through an entry point: `setup`, `cleanup`, `jobs-cleanup` and
+   `monitor` on the first, `upgrade` and `token` on the second. sphinx-click reads a
+   group's eager ``commands`` dict rather than ``list_commands()``, so a group holding
+   even one eager verb renders ONLY that half and drops every lazy one **silently**: the
+   section appears, the page builds clean, and the operator verbs are simply absent.
 
-   So each operator verb is documented from the module that defines it, as its own
-   directive. Tedious, and the alternative is worse: an undocumented verb nobody notices.
+   `vast cluster` holds none of its own, so its directive below renders the whole group.
+   `vast service` holds `log`, `restart`, `info`, `resources`, `cache` and `mcp-stats`,
+   so its two lazy verbs get a directive each, from the module that defines them. Adding
+   an eager verb to `vast cluster` would silently drop its four — give each one a
+   directive here if that ever happens.
 
 .. click:: robovast.client.cluster_cli:cluster
    :prog: vast cluster
-   :nested: full
-
-.. click:: robovast.execution.cluster_execution.cli:setup
-   :prog: vast cluster setup
-   :nested: full
-
-.. click:: robovast.execution.cluster_execution.cli:cleanup
-   :prog: vast cluster cleanup
-   :nested: full
-
-.. click:: robovast.execution.cluster_execution.cli:run_cleanup
-   :prog: vast cluster jobs-cleanup
-   :nested: full
-
-.. click:: robovast.execution.cluster_execution.cli:monitor
-   :prog: vast cluster monitor
    :nested: full
 
 .. click:: robovast.client.service_cli:service

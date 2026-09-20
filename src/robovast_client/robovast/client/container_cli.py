@@ -55,6 +55,9 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
     SHELL_COMMAND then starts its scenario, and its output goes to a log file inside the
     container rather than to stdout (the path is printed).
 
+    The image is the one this host's copy of the project builds, so a stale checkout
+    checks a stale image; the ``build:<tag>@<hash>`` that ran is printed with the exit line.
+
     There is at most one such container at a time; ``vast container stop``
     ends it. No ``--timeout``: the limit is derived from what is being run (the
     project's ``execution.timeout`` for a scenario, a fixed cap for a command) and
@@ -78,12 +81,14 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
         click.echo(result.stderr, nl=False, err=True)
     click.echo(f"\n[exit {result.exit_code}"
                f"{' TIMED OUT' if result.timed_out else ''}"
-               f", limit {result.limit_s}s from {result.limit_source}]", err=True)
+               f", limit {result.limit_s}s from {result.limit_source}"
+               f"{', image ' + result.container.image if result.container.image else ''}]",
+               err=True)
     if result.log_path:
         click.echo(f"[scenario log inside the container: {result.log_path} — read it with "
                    f"a follow-up: --keep-alive \"tail -200 {result.log_path}\"]", err=True)
     if result.container.kept:
-        click.echo(f"[container kept: image {result.container.image}"
+        click.echo("[container kept"
                    f"{', config ' + result.container.config if result.container.config else ''}"
                    f", hard stop in {result.container.deadline_in_s}s]", err=True)
     if result.timed_out or result.exit_code != 0:

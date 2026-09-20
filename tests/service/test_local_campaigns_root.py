@@ -74,7 +74,7 @@ def test_list_and_status_read_the_shared_root(transport):
     assert cid in listed
     # get_status for an untracked campaign reconstructs from that same root
     assert transport.get_status(cid).phase != "unknown"
-    assert transport._campaign_dir(cid) == root / cid
+    assert transport.campaign_dir(cid) == root / cid
 
 
 def test_started_at_comes_from_the_store(transport):
@@ -193,7 +193,7 @@ def _mark_live(transport, cid: str, phase: str = "running") -> None:
     # re-tracks a finished campaign. A tracked entry's `created_at` is what `_started_at_for`
     # answers with, so leaving the constructor's default here would restamp the campaign to
     # now and it would sort first for that reason instead of the one under test.
-    entry.created_at = (read_campaign_created_at(transport._campaign_dir(cid))
+    entry.created_at = (read_campaign_created_at(transport.campaign_dir(cid))
                         or entry.created_at)
     with transport._lock:
         transport._campaigns[cid] = entry
@@ -398,7 +398,7 @@ def _campaign_finished_at(transport, cid: str, finished_at: float) -> None:
     from robovast.common.campaign_data import write_execution_outcome
     from robovast.execution.control_server import Phase
 
-    write_execution_outcome(transport._campaign_dir(cid),
+    write_execution_outcome(transport.campaign_dir(cid),
                             Status(phase=Phase.FINISHED, phase_since=finished_at))
 
 

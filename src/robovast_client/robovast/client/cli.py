@@ -512,18 +512,22 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 @click.argument('workspace', metavar='WORKSPACE')
 @click.argument('vast_path', metavar='[VAST]', required=False, default='')
 @click.option('--no-world-check', is_flag=True,
-              help='Skip the world check, which builds the model in a container. Faster, '
-                   'and the only part of validation that costs more than a moment.')
+              help='Skip the world check, which builds the model in a container.')
+@click.option('--no-scenario-check', is_flag=True,
+              help='Skip parsing the scenario in the image that would run it. That is '
+                   'the only check that sees an import the image does not carry.')
 @target_options
-def workspace_validate(workspace, vast_path, no_world_check, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_validate(workspace, vast_path, no_world_check, no_scenario_check,  # pylint: disable=redefined-outer-name
+                       namespace, context):
     """Check a project before spending any compute on it.
 
     Reports **every** problem at once rather than the first, because they fail
     independently and fixing them one launch at a time is the expensive way to find out.
 
-    Computed service-side: the checks need the config schema, the scenario parser and
-    (unless ``--no-world-check``) the simulator, none of which a client install has. So
-    this works the same whether the service is local or remote.
+    Computed service-side: the checks need the config schema, the scenario image's own
+    parser and (unless ``--no-world-check``) the simulator, none of which a client install
+    has. So this works the same whether the service is local or remote. The two container
+    checks are what cost more than a moment; each has a flag to skip it.
     """
     try:
         from robovast.service.project_push import \
@@ -533,16 +537,29 @@ def workspace_validate(workspace, vast_path, no_world_check, namespace, context)
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
             report = client.validate_project(
-                workspace_id, path=vast_path, check_world=not no_world_check)
+                workspace_id, path=vast_path, check_world=not no_world_check,
+                check_scenario=not no_scenario_check)
 
             for problem in report.problems:
                 where = " ".join(p for p in (problem.config, problem.field) if p)
                 location = f" [{where}]" if where else ""
-                click.echo(f"  {problem.stage}{location}: {problem.message}")
+                # The severity is printed, not inferred from the wording: "could not
+                # check" and "is wrong" ask different things of the reader.
+                click.echo(f"  {problem.severity} {problem.stage}{location}: "
+                           f"{problem.message}")
 
             if not report.valid:
+                unchecked = [p for p in report.problems if p.severity == "unchecked"]
+                errors = [p for p in report.problems if p.severity == "error"]
+                if errors:
+                    raise click.ClickException(
+                        f"{len(errors)} problem(s) — fix them and validate again."
+                        + (f" A further {len(unchecked)} check(s) did not run."
+                           if unchecked else ""))
                 raise click.ClickException(
-                    f"{len(report.problems)} problem(s) — fix them and validate again.")
+                    f"{len(unchecked)} check(s) could not run here, so this is not a "
+                    "pass: fix what they name, or ask for the narrower verdict with "
+                    "--no-world-check / --no-scenario-check.")
             click.echo(
                 f"✓ valid: {report.configs} configuration(s) × "
                 f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)")
@@ -605,6 +622,11 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
 @click.option('--description', default=None, metavar='TEXT',
               help='One line saying what this run is for. It is what tells two '
                    'same-day <name>-<timestamp> campaigns apart in the web UI.')
+@click.option('--priority', type=int, default=None, metavar='N',
+              help='Which campaign the cluster queue admits first: higher goes first, '
+                   '0 is normal, negative waits behind everything else. Ordering only — '
+                   'it never stops a run that has started. Refused by a service on the '
+                   'local Docker lane, which runs one campaign at a time.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')
@@ -631,7 +653,7 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
               help='Seconds between status polls when --wait-and-download is set.')
 @target_options
 def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
-                  campaign_name, description, upload_to_share, show_gui,
+                  campaign_name, description, priority, upload_to_share, show_gui,
                   allow_opaque_image, image_project, image_project_tag,
                   wait_and_download, poll_interval, namespace, context):
     """Run a ``.vast`` — the one way to start a campaign from a project.
@@ -706,6 +728,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
                 campaign_name=campaign_name or "", description=description or "",
                 upload_to_share=upload_to_share, show_gui=show_gui,
                 allow_opaque_image=allow_opaque_image,
+                priority=priority or 0,
                 image_project=project, image_project_tag=project_tag))
             cid = ref.campaign_id
 

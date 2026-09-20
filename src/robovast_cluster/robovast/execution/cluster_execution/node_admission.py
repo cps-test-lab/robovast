@@ -15,8 +15,8 @@ be decided by which thread won the lock. A search campaign submits its batches o
 another, so ordering by submission makes an older campaign's later batches look younger than
 a newer campaign, and the two end up taking turns instead of the older one finishing first.
 Here the order is a
-property of the queue -- ``(priority, campaign start)`` -- and no thread can change it by
-being quick.
+property of the queue -- ``(priority, campaign rank, campaign start)`` -- and no thread can
+change it by being quick.
 
 **No thread of its own, deliberately.** :meth:`AdmissionController.drain` is called by the
 campaign threads that already exist, and it works the *global* queue rather than the caller's
@@ -49,6 +49,11 @@ CREATED = "created"
 #: means either idle capacity or over-admission, where there it only means a slightly old
 #: number on a screen.
 BUDGET_TTL_S = 3.0
+
+#: How a refusal for want of disk space begins, so a reader -- the batch loop putting it on
+#: the campaign's status, a postprocess explaining its timeout -- can tell it from a wait for
+#: a node. The rest is the reserve's own sentence (:mod:`robovast.common.disk_reserve`).
+DISK_WAIT = "waiting for disk space: "
 
 #: How many jobs may be outstanding **unpinned** at once on a cluster that can grow.
 #:
@@ -88,10 +93,9 @@ def campaign_start_key(campaign_id: str) -> float:
     be looked up: a batch runner deep in the cluster lane can order itself against campaigns
     it has never heard of.
 
-    Parsed **naively**, never through an epoch conversion, for the reason
-    ``campaign_priority_value`` records: this only has to be monotone in the wall-clock label,
-    and going via epoch seconds folds the repeated hour of a DST fall-back onto itself and
-    inverts two campaigns' order.
+    Parsed **naively**, never through an epoch conversion: this only has to be monotone in
+    the wall-clock label, and going via epoch seconds folds the repeated hour of a DST
+    fall-back onto itself and inverts two campaigns' order.
 
     An unparseable id sorts last rather than raising. Ordering is a preference, and refusing to
     run a campaign because its name is unusual would be a much worse failure than running it
@@ -242,6 +246,12 @@ class WorkItem:
     sizing: JobSizing
     create: "Callable[[Optional[str]], None]"
     owner: str = ""
+    #: The campaign this item belongs to, which is what its rank is read against. Distinct
+    #: from *owner*, the cancellation scope: a campaign's probes queue under ``<campaign>#probes``
+    #: so they stay out of its progress counts, and they must still rank with the campaign
+    #: rather than as a stranger. Empty means the owner IS the campaign, which is true of a
+    #: campaign's own trials.
+    campaign: str = ""
     priority: int = 0
     started_at: float = 0.0
     seq: int = 0
@@ -260,16 +270,45 @@ class WorkItem:
     last_error: str = ""
 
     #: When set, the ONLY node this item may go to. A calibration probe measures one machine,
-    #: so placing it anywhere else answers a question about the wrong node. Everything else
-    #: leaves it unset and is placed wherever it fits.
+    #: so placing it anywhere else answers a question about the wrong node; a campaign
+    #: confined with ``execution.kubernetes.jobs.node`` may use its one node and no other.
+    #: Everything else leaves it unset and is placed wherever it fits.
     pin: "str | None" = None
 
+    #: Whether a pinned item that does not fit **claims its node** for the rest of the pass
+    #: (see :meth:`AdmissionController.drain`). Meaningless without *pin*.
+    #:
+    #: ``True`` is right for a calibration probe: it is transient, one per node, and its node
+    #: must drain for it or it is never placed. ``False`` is what a confined campaign submits,
+    #: and it is not an optimisation. A campaign always has another job queued, so its claim
+    #: would renew on every pass for the campaign's whole life: its node would take nothing
+    #: from any lower-ranked campaign for as long as it ran, which is a denial of service
+    #: against every other campaign, not a reservation.
+    reserves: bool = True
+
+    @property
+    def ranks_under(self) -> str:
+        """The campaign key this item's priority and pause are read from."""
+        return self.campaign or self.owner
+
     def may_use(self, node_id) -> bool:
-        if self.pin is not None:
-            return node_id == self.pin
-        # An unlabelled node is allowed: it cannot be measured, so there is nothing for the
-        # gate to wait for, and refusing it would make an unlabelled cluster unusable.
-        return self.accepts_node is None or node_id is None or self.accepts_node(node_id)
+        """Whether this item may be placed on *node_id*: the pin AND the owner's gate.
+
+        Both, never either. A calibrated campaign confined to one node is pinned to it and
+        gated on that node's measurement, and it must wait for its node's probe exactly as an
+        unconfined campaign does. A probe is submitted with no gate, so it is never waiting
+        for its own measurement.
+
+        A pinned item never takes an unlabelled node: its pin names a node id, and a node
+        with none is not that node. An unpinned item does take one -- it cannot be measured,
+        so there is nothing for the gate to wait for, and refusing it would make a cluster
+        predating the identity label unusable.
+        """
+        if self.pin is not None and node_id != self.pin:
+            return False
+        if node_id is None:
+            return True
+        return self.accepts_node is None or self.accepts_node(node_id)
 
     def sizing_on(self, node_id) -> "JobSizing":
         """What this job needs *on that node*, falling back to what it declared."""
@@ -314,8 +353,18 @@ class AdmissionController:
     every campaign's job creation.
     """
 
-    def __init__(self, provider: BudgetProvider, *, clock=None, budget_ttl: float = BUDGET_TTL_S):
+    def __init__(self, provider: BudgetProvider, *, clock=None, budget_ttl: float = BUDGET_TTL_S,
+                 space_gate: "Optional[Callable[[], Optional[str]]]" = None):
         self._provider = provider
+        #: Asked before every drain: the sentence saying the disk the campaigns land on is
+        #: below its free-space reserve, or ``None``. While it has one nothing is created --
+        #: a Job admitted into a disk that cannot take its results computes them for
+        #: nothing, and on a node-directory deployment the next write past the kubelet's
+        #: eviction threshold evicts the service with every campaign it drives. Jobs
+        #: already running are unaffected: the reserve is the room their results land in.
+        self._space_gate = space_gate
+        self._space_short: Optional[str] = None
+        self._space_unmeasured_logged = False
         self._clock = clock or (lambda: __import__("time").monotonic())
         self._budget_ttl = budget_ttl
         # Reentrant, deliberately. ``drain`` calls the caller's ``sizing_for_node`` and
@@ -330,6 +379,14 @@ class AdmissionController:
         self._items: "Dict[str, WorkItem]" = {}
         self._held: "Dict[str, _Held]" = {}
         self._calibrations: dict = {}
+        #: ``campaign -> priority``, absent meaning the default 0. Held here rather than
+        #: copied onto every item so that changing it is one write that reaches the items
+        #: already queued AND the batches a campaign has not submitted yet.
+        self._priorities: "Dict[str, int]" = {}
+        #: Campaigns admitting nothing. A paused campaign's created jobs run to completion --
+        #: pausing orders the queue, exactly as priority does, and never stops work already
+        #: placed.
+        self._paused: "set" = set()
         self._seq = itertools.count()
         self._budget: Optional[Budget] = None
         self._budget_at = 0.0
@@ -350,18 +407,36 @@ class AdmissionController:
 
     def submit(self, owner: str,
                items: "Iterable[Tuple[str, JobSizing, Callable[[Optional[str]], None]]]",
-               *, started_at: float, priority: int = 0, sizing_for_node=None,
-               accepts_node=None, pin=None) -> int:
+               *, started_at: float, priority: int = 0, campaign: str = "",
+               sizing_for_node=None, accepts_node=None, pin=None,
+               reserves: bool = True) -> int:
         """Enqueue a campaign's whole plan. Returns how many were accepted.
 
         *started_at* is the CAMPAIGN's start, not this batch's: a search submits batch after
         batch, and ordering by submission would let a newer campaign overtake an older one
         between its rounds.
 
+        *campaign* is which campaign's rank these items take, and defaults to *owner*, which
+        is what a campaign's own trials submit under. An owner that is a sub-scope of a
+        campaign -- ``<campaign>#probes`` -- must name the campaign, or its work would rank as
+        a stranger to the campaign it belongs to and a demoted campaign's probes would outrank
+        its own runs.
+
+        *priority* stays what it has always been: the ordering WITHIN a campaign, which puts
+        a probe ahead of the work it gates and postprocessing ahead of both. The campaign's
+        own rank (:meth:`set_scheduling`) is the more significant key, so setting one never
+        disturbs the other.
+
         *pin* restricts these items to one node. A calibration probe measures a particular
         machine, so placing it elsewhere answers a question about the wrong one -- and it
         waits for that node rather than settling for another, which is the opposite of how
-        ordinary work is placed.
+        ordinary work is placed. It composes with *accepts_node* rather than replacing it:
+        a pinned item goes to its node only once that node accepts its work.
+
+        *reserves* is whether a pinned item that does not fit holds its node open against
+        lower-ranked work -- see :attr:`WorkItem.reserves`. ``False`` for a campaign confined
+        to one node, which always has more work queued and would otherwise hold that node
+        for its whole life.
 
         *accepts_node* is ``(node_id) -> bool``: whether this owner's work may go there yet.
         A node being measured for this campaign answers ``False`` until its figures are in, so
@@ -381,10 +456,11 @@ class AdmissionController:
                 if key in self._items:
                     continue  # re-submitting a plan must not double it
                 self._items[key] = WorkItem(key=key, sizing=sizing, create=create, owner=owner,
-                                            priority=priority, started_at=started_at,
-                                            seq=next(self._seq),
+                                            campaign=campaign, priority=priority,
+                                            started_at=started_at, seq=next(self._seq),
                                             sizing_for_node=sizing_for_node,
-                                            accepts_node=accepts_node, pin=pin)
+                                            accepts_node=accepts_node, pin=pin,
+                                            reserves=reserves)
                 added += 1
             return added
 
@@ -410,7 +486,10 @@ class AdmissionController:
         So a pinned item that does not fit **claims its node** for the rest of the pass:
         nothing further is placed there, the node drains as its work finishes, and the item
         goes on the pass where it fits. Only where the wait can end -- see
-        :meth:`_could_ever_hold_locked`.
+        :meth:`_could_ever_hold_locked` -- and only for an item that :attr:`~WorkItem.reserves`.
+        A campaign confined to one node is pinned but does not reserve: it waits for room on
+        its node like any other work, because a claim that renews for as long as it has jobs
+        queued would shut every lower-ranked campaign out of that node for the campaign's life.
 
         On a growable cluster a job that fits no node may still be created unpinned, but only
         up to :data:`GROWTH_UNPINNED_LIMIT` of them at a time -- see there for why the cap is
@@ -418,8 +497,14 @@ class AdmissionController:
         """
         created = 0
         with self._lock:
+            self._record_paused_refusals_locked()
             pending = self._pending_in_order()
             if not pending:
+                return 0
+            short = self._check_space_locked()
+            if short:
+                for owner in {item.owner for item in pending}:
+                    self._refusals[owner] = f"{DISK_WAIT}{short}"
                 return 0
             nodes, growable = self._effective_free_locked(force=True)
             by_id = {n.node_id: n for n in nodes}
@@ -454,7 +539,11 @@ class AdmissionController:
                 chosen = max(fits, key=lambda n: n.free_cpu) if fits else None
                 if chosen is not None:
                     need = item.sizing_on(chosen.node_id)
-                if chosen is None and not (growable and unpinned < GROWTH_UNPINNED_LIMIT):
+                # Never for a pinned item: created unpinned, a calibration probe lands on any
+                # node and its output is still recorded as the pinned node's measurement.
+                may_grow = (item.pin is None and growable
+                            and unpinned < GROWTH_UNPINNED_LIMIT)
+                if chosen is None and not may_grow:
                     # **This owner's items, not the queue's.** The count spanned every owner,
                     # so a campaign with a handful of jobs queued was told the whole cluster's
                     # queue depth, reported into its own log as though it were its own.
@@ -480,11 +569,22 @@ class AdmissionController:
                     if usable:
                         emptiest = max(usable, key=lambda n: n.free_cpu)
                         need = item.sizing_on(emptiest.node_id)
-                    if chosen is None and growable:
+                    if item.pin is None and growable:
                         self._refusals[item.owner] = (
                             f"{waiting}: {unpinned} already created for a node the "
                             f"autoscaler has not produced yet (limit "
                             f"{GROWTH_UNPINNED_LIMIT})")
+                    elif not usable and item.pin is not None and item.pin in by_id:
+                        # Pinned, and its one node is present but not accepting this work.
+                        # Named as "its node" and never by id: the refusal reaches the
+                        # campaign's log, which travels with its results.
+                        self._refusals[item.owner] = (
+                            f"{waiting}: the one node it may use is being measured before "
+                            f"work is placed on it")
+                    elif not usable and item.pin is not None:
+                        self._refusals[item.owner] = (
+                            f"{waiting}: the one node it may use is not among the "
+                            f"{len(by_id)} node(s) this queue currently measures for work")
                     elif not usable:
                         self._refusals[item.owner] = (
                             f"{waiting}: no node is accepting work yet "
@@ -496,12 +596,17 @@ class AdmissionController:
                             f"{waiting}: next needs {need.cpu:g} cpu / "
                             f"{need.memory // (1024 ** 2)}Mi and no node has that free "
                             f"(most free of {len(usable)} usable: {biggest:g} cpu)")
-                    # **Claim the node, so the wait can end.** Only for a pinned item, only
-                    # where the node could hold it empty, and only if nothing has claimed it
-                    # already -- the first claimant is the highest-priority one, since the
-                    # queue is walked in priority order, and a second claim on the same node
-                    # would change nothing but the bookkeeping.
-                    if item.pin is not None and item.pin not in held_for_pin \
+                    # **Claim the node, so the wait can end.** Only for a pinned item that
+                    # reserves, only where the node could hold it empty, and only if nothing
+                    # has claimed it already -- the first claimant is the highest-priority
+                    # one, since the queue is walked in priority order, and a second claim on
+                    # the same node would change nothing but the bookkeeping.
+                    #
+                    # `reserves` gates it because a confined campaign always has another job
+                    # behind this one: its claim would renew every pass for its whole life and
+                    # hold its node against every lower-ranked campaign. See WorkItem.reserves.
+                    if item.pin is not None and item.reserves \
+                            and item.pin not in held_for_pin \
                             and self._could_ever_hold_locked(item.pin, item.sizing_on(item.pin)):
                         held_for_pin.add(item.pin)
                         self._refusals[item.owner] = (
@@ -604,6 +709,48 @@ class AdmissionController:
         with self._lock:
             return self._calibrations.pop(owner, None) is not None
 
+    def set_scheduling(self, campaign: str, *, priority=None, paused=None) -> None:
+        """Set how the queue treats *campaign*: its rank, whether it admits at all, or both.
+
+        Takes effect on the next :meth:`drain`, and applies to the items already queued as
+        well as to the batches the campaign has not submitted yet -- which is why the pair is
+        held per campaign here rather than copied onto each item as it is enqueued.
+
+        Neither setting stops work already created. A campaign demoted or paused keeps the
+        jobs it has until they finish, and gives up only the slots they release: the queue
+        orders admission and has never been able to take a running job back, which is what
+        makes both safe to use on a campaign whose results matter.
+
+        ``None`` leaves that half alone, so a pause does not disturb the rank it will come
+        back at.
+        """
+        with self._lock:
+            if priority is not None:
+                self._priorities[campaign] = int(priority)
+            if paused is not None:
+                if paused:
+                    self._paused.add(campaign)
+                else:
+                    self._paused.discard(campaign)
+
+    def scheduling(self, campaign: str) -> "Tuple[int, bool]":
+        """``(priority, paused)`` for *campaign* -- the default ``(0, False)`` when unset."""
+        with self._lock:
+            return self._priorities.get(campaign, 0), campaign in self._paused
+
+    def forget_scheduling(self, campaign: str) -> None:
+        """Drop a campaign's rank and pause, once it is over.
+
+        A campaign's lifetime, like :meth:`forget_calibration` and unlike :meth:`cancel` --
+        the rank has to survive the end of each batch, since a search submits batch after
+        batch under the same campaign and would otherwise come back at the default halfway
+        through. Kept separate from the calibration for the reason recorded there: one call
+        that means two lifetimes is how the probe leak got in.
+        """
+        with self._lock:
+            self._priorities.pop(campaign, None)
+            self._paused.discard(campaign)
+
     def node_ids(self) -> list:
         """The identity of every node that can currently be pinned to.
 
@@ -652,8 +799,17 @@ class AdmissionController:
 
     # -- invariants --------------------------------------------------------------------
 
-    def preflight(self, sizing: JobSizing) -> None:
+    def preflight(self, sizing: JobSizing, node_id: "str | None" = None) -> None:
         """Raise if no node could ever run this, however empty the cluster gets.
+
+        With *node_id*, the question is about that one node: a campaign confined to it can
+        use no other, so "some node is large enough" says nothing about whether it will ever
+        run. It matters more there than for a probe, because a confined campaign does not
+        claim its node (:attr:`WorkItem.reserves`) and so has no drain-side guard either --
+        a job its node could never hold would simply never be placed. Permissive when the
+        provider carries no node ids, as :meth:`_could_ever_hold_locked` is: that is an
+        unknowable answer, not a verdict. A provider that does carry them and does not list
+        the node is refused, since nothing could then be placed on it.
 
         Checked once before a batch is enqueued. Without it a campaign sits in the admit loop
         forever having created **zero** jobs, and every diagnosis path downstream is pod-based
@@ -684,6 +840,23 @@ class AdmissionController:
                 "would admit the entire plan at once. Declare "
                 "execution.containers.<name>.resources.cpu.")
         capacities = self._provider.capacities()
+        if node_id is not None and any(getattr(c, "node_id", None) for c in capacities):
+            # Named as "the node it is confined to", never by id: this becomes a campaign
+            # error, which the campaign's record carries.
+            own = [c for c in capacities if getattr(c, "node_id", None) == node_id]
+            if not own:
+                raise AdmissionRefused(
+                    "the node this campaign is confined to (execution.kubernetes.jobs.node) "
+                    "is not among the nodes this cluster offers for campaign jobs, so none "
+                    "of its jobs could ever be placed. Check that the node is ready and "
+                    "inside the job node pool.")
+            if own[0].holds(sizing):
+                return
+            raise AdmissionRefused(
+                f"a job needs {sizing.cpu:g} cpu / {sizing.memory // (1024 ** 2)}Mi and the "
+                f"node this campaign is confined to (execution.kubernetes.jobs.node) holds "
+                f"{own[0].cpu:g} cpu / {own[0].memory // (1024 ** 2)}Mi. Reduce "
+                "execution.containers.*.resources, or confine it to a larger node.")
         if any(c.holds(sizing) for c in capacities):
             return
         if not capacities:
@@ -725,6 +898,11 @@ class AdmissionController:
                 return capacity.holds(sizing)
         return True
 
+    def space_shortfall(self) -> Optional[str]:
+        """Why nothing is admitted for want of disk space, as of the last drain, or ``None``."""
+        with self._lock:
+            return self._space_short
+
     def refusal(self, owner: str) -> str:
         """Why nothing was created for *owner* last time, for its campaign's log.
 
@@ -735,6 +913,48 @@ class AdmissionController:
             return self._refusals.get(owner, "")
 
     # -- internals ---------------------------------------------------------------------
+
+    def _check_space_locked(self) -> Optional[str]:
+        """Ask the space gate, and remember its answer for :meth:`space_shortfall`.
+
+        A gate that raises is not a full disk: admission goes on, and the failure is logged
+        once rather than every drain. Holding every campaign because free space could not be
+        measured would make a launch depend on a reading it never needed.
+        """
+        if self._space_gate is None:
+            return None
+        try:
+            short = self._space_gate()
+        except Exception as e:  # noqa: BLE001 - unmeasured is not full; see above
+            if not self._space_unmeasured_logged:
+                logger.warning("free space could not be measured, so admission goes on "
+                               "without the reserve: %s", e)
+                self._space_unmeasured_logged = True
+            self._space_short = None
+            return None
+        self._space_unmeasured_logged = False
+        if short and short != self._space_short:
+            logger.warning("admitting no Jobs: %s", short)
+        elif not short and self._space_short:
+            logger.info("admitting Jobs again: the disk is above its reserve")
+        self._space_short = short or None
+        return self._space_short
+
+    def _record_paused_refusals_locked(self) -> None:
+        """Say *paused* for every owner holding back, rather than letting it read as a wait.
+
+        A paused campaign is filtered out before the placement walk, so it would otherwise
+        keep whatever its last drain said -- "no node has that free" -- and a campaign nobody
+        is admitting would be indistinguishable from a campaign the cluster is too full for.
+        Those need opposite responses: one is waiting for a machine, the other for a person.
+        """
+        for owner in {i.owner for i in self._items.values()
+                      if i.state == PLANNED and i.ranks_under in self._paused}:
+            own = sum(1 for i in self._items.values()
+                      if i.owner == owner and i.state == PLANNED)
+            self._refusals[owner] = (
+                f"paused: {own} job(s) held, and nothing is admitted until it is resumed. "
+                f"Jobs already running are unaffected.")
 
     def _unpinned_outstanding_locked(self) -> int:
         """How many created-but-unplaced unpinned jobs the queue is carrying.
@@ -749,14 +969,34 @@ class AdmissionController:
                    if held.node_id is None and key not in counted)
 
     def _pending_in_order(self) -> "List[WorkItem]":
-        """Highest priority first, then oldest campaign, then submission order.
+        """Priority first, then campaign rank, then oldest campaign, then submission order.
+
+        ``priority`` leads, and it has to. It is not a preference but a campaign's own
+        sequence: a calibration probe measures the node its work will be sized from, and
+        postprocessing turns a finished campaign's runs into its results. Both are bounded --
+        a few per campaign, short -- and both are *preconditions*, so ranking ordinary work
+        ahead of them does not make the queue fairer, it makes the campaign behind them fail.
+        A demoted campaign whose probe keeps losing its node is refused outright after
+        ``UNMEASURED_BATCH_LIMIT`` batches, so a rank that reached its probes would turn
+        "let other campaigns past" into "end this campaign", which is not what anyone setting
+        it asked for.
+
+        The campaign's rank comes next, and is what a person actually sets: it orders the
+        *runs*, which is where a campaign spends all but a moment of its time and the whole of
+        what another campaign is waiting for.
 
         ``started_at`` before ``seq`` is the whole point: sequence is when this *batch* was
         enqueued, and an older campaign's second batch must still beat a younger campaign's
         first.
+
+        A paused campaign is absent entirely: it is not a low rank but no rank, so nothing of
+        it is created however idle the cluster is.
         """
-        return sorted((i for i in self._items.values() if i.state == PLANNED),
-                      key=lambda i: (-i.priority, i.started_at, i.seq))
+        return sorted((i for i in self._items.values()
+                       if i.state == PLANNED and i.ranks_under not in self._paused),
+                      key=lambda i: (-i.priority,
+                                     -self._priorities.get(i.ranks_under, 0),
+                                     i.started_at, i.seq))
 
     def _effective_free_locked(self, *, force: bool = False):
         """``([NodeBudget], growable)`` with in-flight reservations already subtracted.

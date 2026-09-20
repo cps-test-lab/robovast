@@ -114,6 +114,8 @@ def _run_upgrade(before, after, rollout_error=None):
                   "reconcile_existing", MagicMock(return_value="")), \
             patch("robovast.execution.cluster_execution.buildkitd_deploy."
                   "apply_buildkitd", MagicMock()), \
+            patch("robovast.execution.cluster_execution.node_placement."
+                  "apply_job_node_aliases", MagicMock(return_value=None)), \
             patch("robovast.execution.cluster_execution.buildkitd_deploy."
                   "buildkitd_storage_from_cluster", MagicMock(return_value={})), \
             patch("robovast.execution.cluster_execution.image_warm."

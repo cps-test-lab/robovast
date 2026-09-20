@@ -32,6 +32,9 @@ growth_sim/growth_sim.vast
 growth_sim/postprocess.sh
 growth_sim/scenario.osc
 nav_search/README.md
+nav_search/analysis/compare.py
+nav_search/analysis/nav_grid.ipynb
+nav_search/analysis/nav_search_6d.ipynb
 nav_search/analysis/nav_search_adaptive_reps.ipynb
 nav_search/analysis/nav_search_boundary.ipynb
 nav_search/analysis/nav_search_cmaes.ipynb
@@ -53,7 +56,9 @@ nav_search/nav_search_halton.vast
 nav_search/nav_search_minimax.vast
 nav_search/nav_search_qd.vast
 nav_search/nav_search_random.vast
+nav_search/nav_search_random_6d.vast
 nav_search/nav_search_tpe.vast
+nav_search/nav_search_tpe_6d.vast
 nav_search/scenario_roqsim.osc
 nav_search/search/minimax.py
 nav_search/search/nav_extract.py

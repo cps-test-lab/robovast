@@ -199,8 +199,8 @@ It provides four views:
   ordered by what a reader came for — open something, take something away, re-run something,
   destroy something — and every entry is conditional, so a campaign with nothing to act on
   yet is offered no menu at all. Its middle group is **Download**, which streams the
-  campaign's ``tar.gz`` straight from the service — from the object store on a cluster, from
-  disk on a local one; the lane is not something a viewer should have to know — and, when
+  campaign's ``tar.gz`` straight from the service's ``/data/campaigns/{id}/archive`` route,
+  tarred off its results tree as it is read and never buffered, on either lane — and, when
   that campaign also has a copy on the share, **Copy share link** (omitted for a share
   provider that has no link a browser could open — SFTP has none). Below those,
   **Retrigger campaign** starts a **new** campaign from
@@ -263,7 +263,7 @@ The Admin page
 --------------
 
 Every other page is about a campaign. This one is about the service running them, and it
-answers four questions no other page does.
+answers the questions no other page does.
 
 **How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
@@ -327,9 +327,11 @@ re-attaches to them. What the service refuses is the narrower case its own resum
 cannot answer for -- the campaigns that could *not* be picked up again -- and the refusal
 names each one with the reason it gives, which is what an operator would have to act on.
 Only then does the page offer to force, quoting that refusal; the first confirmation is not
-an override, because at that point there is nothing yet to override. Kubernetes starts the
-new pod before stopping the old, so the API stays up, and the page waits for the running
-digest to change rather than trusting the request it just made.
+an override, because at that point there is nothing yet to override. The old pod stops
+before the new one starts -- the campaigns are on a volume one node may mount at a time --
+so the API is away for a few seconds, and longer where the replacement has campaigns to
+pick up; the page waits for the running digest to change rather than trusting the request
+it just made.
 
 Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
 cluster from outside it — there is no button, just the reason. The chart and the log work
@@ -363,6 +365,14 @@ added to RoboVAST appears here without anyone maintaining a list. The cost is th
 nothing recognises can turn up; it is shown as ``set`` with **no value**, since the next
 setting somebody adds may well be a credential. If you see one, that is the prompt to
 describe it in ``robovast.service.settings_report``.
+
+**What it can give back.** The **Service cache** panel — collapsed until you open it, and
+measured when you do — lists what the service keeps that it can rebuild from durable data:
+the compiled 3D worlds, on every lane. The results tree is never offered, on either lane: it
+is the campaigns' durable home, not a copy of one. **Clear cache** removes everything not in
+use and says what it freed; what it keeps is listed with the reason. It is the thing to reach
+for when new work is refused for disk space. ``vast service cache [--clear]`` does the same
+from a terminal.
 
 **What the service has been doing.** A service writes to stderr, and stderr is not readable
 back, which is why several failures in RoboVAST are diagnosable only from a log nobody
@@ -1205,25 +1215,28 @@ hover tooltip spelling the numbers out:
   Unlike CPU and memory on a cluster, this is **measured** usage rather than a sum of
   pod requests — nothing reserves disk, so a request sum would read near-empty on
   a full disk.
-* **Store** — the campaign results store, where the backend can measure one. This is
-  where finished campaigns live until they are archived, so a full one is not merely a
-  slow lane. Its denominator is the store's own volume, not the **Disk** figure; the two
-  can sit on different nodes.
+* **Results** — the results volume, where the backend can measure one separately. This is
+  where every campaign lives, so a full one is not merely a slow lane. It appears only where
+  the volume is a thing of its own — a provisioned claim on the service pod; where the volume
+  is a directory on the service's node there is no separate figure to report and **Disk** is
+  already that filesystem.
+
+Beneath them, **refusing new work: disk below reserve** appears while either meter has less
+free space than the reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see
+:ref:`deployment`); its tooltip is the sentence a refused launch carries.
 
 The last two appear only where the backend can actually report them, and are
 absent rather than zero when it cannot: a service older than the fields, a
 cluster whose kubelet could not be read (the service needs ``nodes/proxy``; see
-:ref:`deployment`), or a provider backed by a cloud bucket, which has no capacity
-to fill and so nothing to draw. ``get_resource_usage`` reports the reason when the
+:ref:`deployment`), or a results volume the kubelet reports no separate figure for. ``get_resource_usage`` reports the reason when the
 backend tried and failed. The reading is sampled at most once every few seconds
 and shared across browser tabs, so it never loads the backend.
 
 .. note::
 
-   The service is **unauthenticated in v1** and must stay behind the
-   localhost / SSH-tunnel / ``kubectl port-forward`` boundary — do not expose it
-   directly. Public access (Ingress + token/TLS) is a deferred, whole-surface
-   decision (see :ref:`deployment`).
+   Every request needs the service's shared token — a browser presents it as the cookie
+   ``/login`` sets — and a service published over an Ingress insists on TLS. See
+   :ref:`deployment`.
 
 Results viewer
 --------------
@@ -1253,8 +1266,10 @@ learn rather than two.
 **Both views use it, and share it.** Pick a run in the Explorer and switch to the Run view and
 that run is what plays; each has an icon button that hands its node to the other — at the right
 of the Explorer's tab row, and left of the Run view's gear, both carrying the icon of where they
-lead. The Data browser is campaign-scoped, so it carries no node: stepping through it and back
-returns to the campaign.
+lead. Beside it in each sits a second one, **Open configuration**, on the campaign the selection
+belongs to (see :ref:`web-ui-campaign-config`) — the campaign's, so it needs no run selected. The
+Data browser is campaign-scoped, so it carries no node: stepping through it and back returns to
+the campaign.
 
 Two things stay out of the path deliberately. The **notebook tab** is a lens on a node rather
 than part of its address, so it is a query parameter (``?tab=``; the built-in Log tab is
@@ -1285,15 +1300,25 @@ real step, so Back returns to the view you left.
 Reading the configuration a campaign ran
 ----------------------------------------
 
-**Open configuration** in a campaign card's actions menu opens **Config** on that campaign's
-frozen ``_config/`` — the configuration it was actually staged with — at
-``#/config/campaign/<campaign_id>``. It appears once the campaign has staged that snapshot
-(after variation expansion) and stays for the rest of its life, so the configuration of a
-campaign that is still running can be read while it runs.
+**Open configuration** opens **Config** on a campaign's frozen ``_config/`` — the configuration
+it was actually staged with — at ``#/config/campaign/<campaign_id>``. It is offered from a
+campaign card's actions menu, and as an icon button in the Explorer and the Run view on the
+campaign whose result is on screen. It appears once the campaign can have that snapshot at
+all and stays for the rest of its life, so the configuration of a campaign that is still
+running can be read while it runs.
+
+Two phases are before that point and every route to it is hidden through both. A run stages
+``_config/`` when its **first batch is prepared**; a campaign taken in from an archive has it
+once the bytes land, and is listed at ``importing`` from before the first of them arrives —
+its campaign directory does not exist yet. The run's gate is one-way: the controller advances
+to ``running`` before that first batch is staged, so the entry can still be offered a little
+early. The Config view reports that as what it is — the configuration is not staged yet, with
+a **Retry** — rather than as a campaign that never froze one. The two absences look identical
+from a listing, and only the campaign's phase separates them.
 
 **This is not a workspace, and it is deliberately not in the workspace picker.** It is
 served from the read-only results tree (``/results/<campaign_id>/_config/``, which has no
-write route at all), and the card's link is the only way to it: clicking **Config** in the
+write route at all), and those links are the only way to it: clicking **Config** in the
 sidebar always returns to your workspaces. Where a workspace has its picker, the header
 names what is on screen — ``<campaign_id>/<file>.vast (read-only)`` — and the editor takes
 no cursor at all: a caret blinking in a YAML buffer is an invitation to type an edit that
@@ -1355,15 +1380,10 @@ in the editor and **Run** it; the result shows as a table and, via the chart bui
 as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric
 table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric>*".
 
-**The first query on a cluster campaign may pause.** Its databases live in the object
-store, and the service copies them into a local cache inside that first request; every
-query afterwards reads the cache. Rather than an unexplained spinner, the Explorer's
-loading row and the Data browser's toolbar say what is happening and how much is moving
-("First query — fetching campaign data (39.9 MiB) from the object store over a
-port-forward…"). Nothing is shown for a local service, which transfers nothing, or for a
-campaign already cached — so the message appears exactly when there is something to
-explain. It comes from ``GET /campaigns/{id}/data-status``, which is cheap enough to ask
-alongside the query itself.
+A query costs the same on either lane. The campaign's databases are files in its own
+directory on the service's results tree, cluster or local, so a first query transfers
+nothing and waits for nothing — there is no cache to warm and no state a view has to
+explain before it runs.
 
 .. note::
 
@@ -1432,7 +1452,7 @@ live connection to the system-under-test).
 
 The run picker lists only campaigns that actually **recorded runs** (``num_runs > 0``,
 tallied from ``campaign.db``). A campaign that never started, or that ended before its
-store was written, has nothing to replay, so it is not offered here at all — rather
+``campaign.db`` was written, has nothing to replay, so it is not offered here at all — rather
 than being selectable and then answering with an empty view.
 
 .. _run-view-preview:
@@ -1702,7 +1722,8 @@ speed the robot marker can sit slightly ahead of its window — that offset is t
 own resolution, not drift. *This panel ships with the*
 ``robovast_nav`` *package* (not the core UI) as a package-provided panel — see below — so
 it is available whenever ``robovast_nav`` is installed; the ``.vast`` still references it
-as plain ``- costmap:``.
+as plain ``- costmap:``. The same package draws the same picture onto a rendered video of
+the run (:ref:`the costmap video overlay <costmap-video-overlay>`).
 
 .. _camera-panel:
 
@@ -1733,7 +1754,7 @@ Two properties worth knowing. The encode is **constant-rate** — ``fps`` is der
 first and last frames land exactly on their recorded moments, so only mid-run jitter drifts,
 which is sub-second at a monitor camera's 1 Hz. And **seeking is efficient on the local lane**:
 the file is served with ``FileResponse``, so the browser ranges into it. A cluster campaign
-fetches the one object behind the address first, then serves it the same way.
+is served the same way, from the same route: its run directory is on the service's disk too.
 
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colors each node by its status (running / success / failure) at the current time.
@@ -2087,8 +2108,8 @@ A campaign does not deliver it. The service resolves it per view:
    GET  /campaigns/{id}/scene_assets/{key}/{file}    the bytes, from the shared cache
 
 The split matters: a ``GET`` that started a build would fire on a browser prefetch or a React
-strict-mode double render, and each of those would launch an image pull. Status is modeled on
-``data-status`` (*say why you are about to wait, before you wait*), starting work is a ``POST`` returning
+strict-mode double render, and each of those would launch an image pull. Status is its own
+cheap ``GET`` (*say why you are about to wait, before you wait*), starting work is a ``POST`` returning
 ``ActionResult`` as ``postprocessing/run`` is, and the bytes are served like a panel bundle because they
 live in the service's cache rather than in the campaign's results. The cache key is in the asset path so
 one URL prefix addresses the whole entry, which is what makes the loader's sibling fetches resolve.
@@ -2127,6 +2148,37 @@ The run-view costmap panel fetches the frame nearest the current time from the c
 geometry is visible to an LLM via MCP ``describe_campaign_data`` (the ``costmaps`` table
 description carries the map's size in meters, resolution, layers, and delivery), so it can
 reason about the run without decoding grids.
+
+.. _costmap-video-overlay:
+
+**The same panel on a rendered video.** ``robovast_nav`` registers the panel a second
+time, as a ``costmap`` overlay for ``roqsim render`` (roqsim's ``roqsim.render_overlays``
+entry-point group), so a video of the recorded simulation carries the costmap view as an
+inset in a corner, in step with the picture because both sides carry simulated seconds:
+
+.. code-block:: bash
+
+   roqsim render --state run.npz --from onset --overlay costmap --out clip.mp4
+   roqsim render --state run.npz --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
+       "layers": {"map": {"topic": "/map"}, "local": {"topic": "/local_costmap/costmap"},
+                  "poses": {"table": "poses"}}}}' --out clip.mp4
+
+It draws what the panel draws -- the layers, the driven trail, the robot -- plus the
+configuration's planned path, goal and obstacles (``planned_path``, ``goal``,
+``obstacles``, each ``true`` unless turned off), with the panel's palette and draw order.
+``layers`` is the panel's binding, so a set that works in the web UI works here; a layer may
+name a map ``file`` (campaign-relative) instead of a ``topic``. With no ``layers`` stated, the
+panel's default layers are taken as far as the run recorded them -- a campaign that stored only
+its global costmap gets that one, and the choice is logged -- while a stated binding is held to
+the letter. It reads **files, not the
+service**: ``costmaps.csv`` and ``poses.csv`` beside the recording, and the campaign's
+``_transient/configurations.yaml``, laid out as the campaign directory is
+(``<campaign>/<config>/<run>/``) -- so a run fetched to disk, or a campaign archive, is enough.
+A file it needs and cannot find is refused by name, together with the postprocessing step that
+writes it; a costmap in a frame the poses do not carry (the local costmap is in ``odom``) is
+refused naming the frames present; and a layer whose nearest frame is further from the
+cursor than two of its publish periods is withheld and said in the picture, as the panel does
+(``stale_after`` sets the window in seconds).
 
 Development
 -----------

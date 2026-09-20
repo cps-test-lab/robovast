@@ -95,6 +95,30 @@ def test_unknown_jsonl_format_yields_no_rows(tmp_path):
     assert _read_table_rows(path) == []
 
 
+def test_a_comment_preamble_before_the_header_is_not_the_header(tmp_path):
+    """A producer states what its columns mean on a `#` line; numpy and pandas read past it,
+    and so must this -- taken as the header, every real row is ragged and the ingest died."""
+    path = tmp_path / "insertion_series.csv"
+    path.write_text("# frame=world; force in N, torque in Nm, t in s\n"
+                    "t,x,fz\n0.0,1.0,-2.5\n0.01,1.1,-2.6\n", encoding="utf-8")
+
+    rows = _read_table_rows(path)
+
+    assert [r["t"] for r in rows] == ["0.0", "0.01"]
+    assert set(rows[0]) == {"t", "x", "fz"}
+
+
+def test_a_ragged_row_refuses_the_file_and_names_it(tmp_path, caplog):
+    """More fields than the header is one file's fault; it must not take the campaign's
+    index down through a sort over a None column."""
+    path = tmp_path / "ragged.csv"
+    path.write_text("a,b\n1,2\n3,4,5\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        assert _read_table_rows(path) == []
+    assert "ragged.csv" in caplog.text and "more fields than its header" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # The scenario verdict
 #

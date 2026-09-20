@@ -84,3 +84,21 @@ def test_importing_the_backend_pulls_in_no_simulator():
          "assert 'mujoco' not in sys.modules, sorted(sys.modules)"],
         capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_a_sim_destination_that_addresses_no_part_of_a_world_is_refused():
+    """A factor whose destination names nothing fails while the campaign is composed.
+
+    Such a destination merges into the block as an ``overrides`` root roqsim ignores, so every
+    cell of the sweep would run the identical world -- a factor with no effect, which reads as
+    a result rather than as a mistake and which no amount of repetition reveals.
+    """
+    from robovast.common.simulators import merge_sim_block
+
+    execution = {"containers": {"simulation": {"backend": "roqsim",
+                                               "config": "world/world.yaml"}}}
+    with pytest.raises(ValueError, match="box_offset_y"):
+        merge_sim_block(execution, {"box_offset_y": 0.03})
+
+    merged = merge_sim_block(execution, {"components.workpiece.pose.position.y": 0.03})
+    assert merged["overrides"]["components"]["workpiece"]["pose"]["position"]["y"] == 0.03

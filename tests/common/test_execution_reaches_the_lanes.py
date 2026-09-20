@@ -49,6 +49,9 @@ _DECLARED = {
     # probes a node), but it must still ARRIVE, or a calibrated campaign would silently
     # run fixed.
     "sizing": "calibrated",
+    # Read by the cluster lane to confine jobs to one registered node; the local lane
+    # ignores it, but it must arrive, or a pinned campaign would silently use the whole pool.
+    "kubernetes": {"jobs": {"node": "bench-a"}},
 }
 
 #: Carried, but not an ``ExecutionConfig`` field -- ``containers`` is rewritten by

@@ -222,11 +222,11 @@ class SimulatorBackend:
         """Files the simulator needs that the campaign owns, relative to the ``.vast``.
 
         *vast_dir* is the directory the ``.vast`` lives in, and it is required because the
-        paths in *cfg* are relative to it and to nothing else. A backend that reads one --
-        to decide whether a world inherits from another campaign file, say -- must resolve
-        it against this, never against the process's working directory: composition runs
-        from the CLI's cwd, from a service worker, and from an isolated subprocess, and a
-        backend that guessed made the same campaign answer differently in each.
+        paths in *cfg* are relative to it and to nothing else. A backend that resolves one --
+        to name a file for staging, or to spell it for the container -- must resolve it
+        against this, never against the process's working directory: composition runs from
+        the CLI's cwd, from a service worker, and from an isolated subprocess, and a backend
+        that guessed made the same campaign answer differently in each.
 
         Typically a world declared as a path rather than a package ref. A packaged world
         travels inside the image and needs nothing here, which is the default.
@@ -692,16 +692,24 @@ def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
     Getting it wrong is the silent kind of wrong: a world ref that resolves only in the campaign's
     built image does not resolve in a default one, so the simulator answers nothing and whatever
     the answer was for quietly does not happen.
+
+    The shape decides which container is the simulator's, and only that container is read. An
+    image on any OTHER container is a different program's -- in the ROS shape a campaign names
+    one for ``scenario`` because that is where scenario-execution runs, and answering with it
+    sends the simulator's own question into an image that has no simulator in it.
     """
-    order = ([SIMULATION_CONTAINER, SCENARIO_CONTAINER]
-             if shape_for((execution or {}).get("mode", "auto")) == SHAPE_ROS
-             else [SCENARIO_CONTAINER, SIMULATION_CONTAINER])
-    for source in ((execution or {}).get("containers") or {}, declared or {}):
-        for name in order:
-            image = ((source.get(name) or {}).get("image") or "").strip()
-            if image:
-                return image
-    return ""
+    containers = (execution or {}).get("containers") or {}
+    stepped = shape_for((execution or {}).get("mode", "auto")) == SHAPE_STEPPED
+    target = SCENARIO_CONTAINER if stepped else SIMULATION_CONTAINER
+    # In the stepped shape ``apply_backend`` moves the author's container-level keys off the
+    # ``simulation`` block onto ``scenario`` before any default lands, so an image written on
+    # either block is the one the simulator runs in -- and the move decides which wins.
+    authored = [target, SIMULATION_CONTAINER] if stepped else [target]
+    for name in authored:
+        image = ((containers.get(name) or {}).get("image") or "").strip()
+        if image:
+            return image
+    return ((declared or {}).get(target) or {}).get("image", "").strip()
 
 
 def campaign_sim_block(execution: dict) -> dict:

@@ -37,7 +37,7 @@ def test_a_declared_limit_raises_only_the_ceiling():
 
 
 def test_neither_side_is_ever_left_empty():
-    """``JOB_TEMPLATE`` reads AVAILABLE_CPUS/AVAILABLE_MEM from ``resourceFieldRef:
+    """``POD_TEMPLATE`` reads AVAILABLE_CPUS/AVAILABLE_MEM from ``resourceFieldRef:
     limits.*``, and the downward API substitutes the NODE's allocatable for an unset limit --
     so a scenario would size itself to the whole machine, which is a wrong answer that looks
     like a right one."""
