@@ -38,8 +38,9 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from robovast.common.campaign_data import (read_execution_metadata, read_interventions,
-                                           read_launch_record, read_sysinfo, read_test_result)
+from robovast.common.campaign_data import (read_execution_metadata, read_execution_outcome,
+                                           read_interventions, read_launch_record,
+                                           read_sysinfo, read_test_result)
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir, read_job_links
 from robovast.common.results_utils import find_campaign_vast_file
@@ -95,6 +96,26 @@ class MetadataProcessor(ABC):
 # ---------------------------------------------------------------------------
 # MetadataGenerator — generic structural metadata
 # ---------------------------------------------------------------------------
+
+def _ended_early(campaign_dir: Path) -> Optional[str]:
+    """The phase a campaign ended in, when that phase means it did not run every run it
+    planned -- a stop, a failure, a crash -- else ``None``.
+
+    Read from its durable outcome record. A campaign whose record is absent, unreadable or
+    not terminal has not said it ended early, so it is held to its plan: the record of a
+    campaign that ran to the end is written after its postprocessing, which is exactly when
+    this runs for it.
+    """
+    from robovast.client.status import Phase  # pylint: disable=import-outside-toplevel
+
+    try:
+        outcome = read_execution_outcome(campaign_dir)
+    except Exception:  # noqa: BLE001 - an unreadable record says nothing, so the plan holds
+        return None
+    if outcome is None or outcome.phase not in (Phase.STOPPED, Phase.FAILED, Phase.CRASHED):
+        return None
+    return str(outcome.phase)
+
 
 class MetadataGenerator:
     """Collects generic structural metadata from a campaign directory."""
@@ -216,6 +237,12 @@ class MetadataGenerator:
 
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
+        # A campaign that ended early holds fewer runs than it planned, and the record says
+        # so rather than refusing to exist: which way it ended, and per configuration how
+        # many of its runs are here. Every other campaign is held to its plan.
+        ended_early = _ended_early(self.campaign_dir)
+        if ended_early:
+            metadata["execution"]["ended_early"] = ended_early
         # Read once for the campaign: it names every run's job.
         job_links = read_job_links(self.campaign_dir)
         for config_entry in metadata["configurations"]:
@@ -230,11 +257,16 @@ class MetadataGenerator:
                         test_dirs.append(int(item.name))
             test_dirs.sort()
 
-            if expected_runs is not None and len(test_dirs) != expected_runs:
+            if expected_runs is not None and len(test_dirs) != expected_runs and not (
+                    ended_early and len(test_dirs) < expected_runs):
                 raise ValueError(
                     f"Config '{config_name}' has {len(test_dirs)} run directories "
                     f"but expected {expected_runs} runs"
+                    + ("" if ended_early else
+                       ", and the campaign has no record of ending before it ran them all")
                 )
+            if ended_early:
+                config_entry["runs_present"] = len(test_dirs)
 
             # Transient files
             transient_dir = config_dir_path / "_transient"
