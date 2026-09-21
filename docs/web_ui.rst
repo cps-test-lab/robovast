@@ -108,6 +108,11 @@ It provides four views:
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
   Hovering a campaign's **name** says **where it came from** — the workspace and the ``.vast``
   it was launched from; see `Where a campaign came from`_.
+  A small cloud after the name says the campaign is **already on the share**: a cloud with a
+  check for its postprocessed archive, a hollow cloud when the share holds only the raw
+  campaign-end upload. Hovering it names every variant the share holds. It is read from the
+  share's own listing, so a share that is unconfigured or unreachable shows no cloud rather
+  than a wrong one.
   The phase reflects the whole lifecycle, including its two pre-run steps:
   ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign
