@@ -766,3 +766,73 @@ def test_aliases_are_reconciled_without_a_restart(monkeypatch):
     assert result.exit_code == 0, result.output
     assert node_placement.registered_aliases(core) == {"gpu": ["node-b"]}
     assert not deploy.called
+
+
+def _deploy_over_a_live_service(monkeypatch, *, origin="", **kwargs):
+    """Run `deploy_service` against a cluster where every object already exists.
+
+    Returns the AppsV1Api mock, which holds what was done to the live Deployment.
+    """
+    from unittest.mock import MagicMock
+
+    from kubernetes import client as kclient
+    from kubernetes.client.rest import ApiException
+
+    from robovast.execution.cluster_execution import kube_client
+
+    def _conflict(*_a, **_k):
+        raise ApiException(status=409)
+
+    apis = {}
+    for api in ("CoreV1Api", "RbacAuthorizationV1Api", "AppsV1Api", "NetworkingV1Api"):
+        apis[api] = MagicMock()
+    apis["AppsV1Api"].create_namespaced_deployment.side_effect = _conflict
+    for api, mocked in apis.items():
+        monkeypatch.setattr(kclient, api, lambda *a, _m=mocked, **k: _m)
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
+    monkeypatch.setattr(service_deploy, "service_storage_from_cluster", lambda *a, **k: {})
+    monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
+    monkeypatch.setattr(service_deploy, "existing_auth_token", lambda *a, **k: "token")
+    monkeypatch.setattr(service_deploy, "existing_index_password", lambda *a, **k: "pw")
+    monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: origin)
+    for var in service_deploy._GIT_TOKEN_HOST_ENVS:
+        monkeypatch.delenv(var, raising=False)
+    service_deploy.deploy_service(namespace="default", config_name="rke2",
+                                  job_node_labels={}, **kwargs)
+    return apis["AppsV1Api"]
+
+
+def _replaced_deployment(apps):
+    assert apps.replace_namespaced_deployment.called, "the live Deployment must be replaced"
+    return apps.replace_namespaced_deployment.call_args.args[2]
+
+
+def test_a_live_deployment_is_replaced_not_merged(monkeypatch):
+    """A strategic merge keys `volumes` by name and never drops one.
+
+    So the mount of a credential Secret that this deploy deleted outlived it, and the new pod
+    waited forever on a volume that could not be set up.
+    """
+    apps = _deploy_over_a_live_service(monkeypatch)
+
+    assert not apps.patch_namespaced_deployment.called
+    volumes = [v["name"] for v in
+               _replaced_deployment(apps)["spec"]["template"]["spec"]["volumes"]]
+    assert "git-credentials" not in volumes
+
+
+def test_an_unstated_origin_is_recovered_from_the_live_ingress(monkeypatch):
+    """Replacing drops an env var nobody renders, so the origin is read back, not kept."""
+    apps = _deploy_over_a_live_service(monkeypatch, origin="https://robovast.example")
+
+    env = {e["name"]: e["value"] for e in
+           _replaced_deployment(apps)["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env[service_deploy.PUBLIC_URL_ENV] == "https://robovast.example"
+
+
+def test_an_unpublished_service_declares_no_origin(monkeypatch):
+    apps = _deploy_over_a_live_service(monkeypatch, origin="")
+
+    env = {e["name"] for e in
+           _replaced_deployment(apps)["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert service_deploy.PUBLIC_URL_ENV not in env

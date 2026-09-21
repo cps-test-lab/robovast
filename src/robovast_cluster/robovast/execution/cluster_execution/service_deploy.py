@@ -751,20 +751,28 @@ def _rollout_pod_state(core, namespace):
     window, ``restart_count >= 1`` *is* a crash-loop -- which it would not be for the
     long-lived pod of a steady-state Deployment.
 
+    A volume the kubelet cannot set up -- a Secret the pod mounts that does not exist -- is
+    recorded only in Events, so a pod placed on a node that has started nothing costs one
+    Event read. Its grace is the caller's window, not a second one here.
+
     ``unhealthy`` is ``(reason, message)`` or ``None``. Raises whatever the API raises;
     the caller decides what an unreadable cluster means.
     """
     # Deferred: this module is imported by the client-side CLI, and cluster_execution
     # pulls in the batch lane.
-    from .cluster_execution import pod_block_reason  # pylint: disable=import-outside-toplevel
-    from .cluster_execution import pod_restarted_containers
+    from .cluster_execution import (  # pylint: disable=import-outside-toplevel
+        mount_failure_events, pod_awaiting_setup, pod_block_reason, pod_restarted_containers,
+        pod_volume_reason)
 
     pods = core.list_namespaced_pod(namespace,
                                     label_selector=f"app={SERVICE_NAME}").items
     if not pods:
         return None, None
     newest = max(pods, key=lambda p: p.metadata.creation_timestamp)
-    return newest, (pod_block_reason(newest) or pod_restarted_containers(newest))
+    unhealthy = pod_block_reason(newest) or pod_restarted_containers(newest)
+    if unhealthy is None and pod_awaiting_setup(newest, grace=0.0):
+        unhealthy = pod_volume_reason(newest, mount_failure_events(core, namespace))
+    return newest, unhealthy
 
 
 def wait_for_rollout(namespace="default", kube_context=None, timeout_s=180.0,
@@ -924,6 +932,13 @@ def _next_step(signal, namespace, kube_context) -> str:
         # capacity, not configuration -- there is nothing to check on this host.
         return ("Next: the scheduler's message above names what no node could satisfy. Free "
                 "that resource, or deploy where it exists.")
+    if "FailedMount" in signal or "FailedAttachVolume" in signal:
+        # Nothing has started, so there is no log to read: the kubelet's message above names
+        # the volume and what it is missing.
+        return (f"Next: the message above names the volume the pod cannot mount. A missing "
+                f"Secret is a credential the environment of the deploy did not configure -- "
+                f"'./.env' is read from the CURRENT directory only. With cluster access, "
+                f"'{kubectl} describe pod {pods}' shows the kubelet's own account.")
     if "Restarted" in signal:
         return (f"Next: with cluster access, '{kubectl} logs {pods} --previous --tail=50' -- "
                 f"the container that died is the *previous* one, so the current pod's log "
@@ -947,21 +962,21 @@ def _pull_credential_hint(signal) -> str:
 
 
 #: Closing paragraph for both failures. It answers the two questions the reason itself does
-#: not: is the service down (no -- with one replica Kubernetes keeps the old pod until the
-#: new one is Available), and does a retry start over (no -- the Deployment is already
-#: patched, so the next upgrade re-rolls the same spec). Without them a failed upgrade
-#: reads as an outage.
-_STILL_SERVING = (
-    "\n\nThe previous pod is still serving -- with a single replica Kubernetes keeps it "
-    "until the new one is Available -- so the API is up on the old version. The Deployment "
-    "has already been patched, so another 'upgrade' re-rolls the same spec rather than "
-    "starting over.")
+#: not: is the service down, and does a retry start over. The Deployment rolls with
+#: ``Recreate`` (see :func:`_deployment_manifest`), so the old pod was stopped before this one
+#: was created and the API is down until a pod starts -- saying otherwise sends the reader to
+#: a service that is not there.
+_NOT_SERVING = (
+    "\n\nThe service is down until a pod starts: the Deployment recreates its pod, so the "
+    "previous one was stopped before this one was created. The Deployment has already been "
+    "replaced, so another 'upgrade' re-renders it from the environment it runs in rather "
+    "than resuming this one.")
 
 
 def _blocked_message(namespace, signal, grace_s, kube_context=None) -> str:
     return (f"the new {SERVICE_NAME} pod did not start within {int(grace_s)}s and will not "
             f"recover on its own. Kubernetes reports: {signal}."
-            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n\n"
+            f"{_pull_credential_hint(signal)}{_NOT_SERVING}\n\n"
             f"{_next_step(signal, namespace, kube_context)}")
 
 
@@ -972,7 +987,7 @@ def _timeout_message(namespace, signal, timeout_s, kube_context=None) -> str:
               " The pod reported no error, so it was still starting: a large image pull, or "
               "a container that is up but never becomes Ready.")
     return (f"the {SERVICE_NAME} rollout did not converge within {int(timeout_s)}s.{detail}"
-            f"{_pull_credential_hint(signal)}{_STILL_SERVING}\n\n"
+            f"{_pull_credential_hint(signal)}{_NOT_SERVING}\n\n"
             f"{_next_step(signal, namespace, kube_context)} If this cluster simply needs "
             f"longer than {int(timeout_s)}s, raise it with '--timeout'.")
 
@@ -2136,19 +2151,14 @@ def service_manifests(namespace="default", image=None, env=None,
     # images and moved only the controller. It is also the *site default*: a campaign may
     # override it on its own request
     # (CreateCampaignRequest.image_project), which is what makes a dev run need no deploy.
-    # Carried UNCONDITIONALLY, empty value and all, and that is the point rather than an
-    # oversight. The Deployment is applied with a strategic-merge patch, whose merge key for
-    # `containers[].env` is the variable NAME -- so a variable the patch omits is not removed,
-    # it is preserved. Emitting these only when set makes them write-only: an operator who
-    # sets ROBOVAST_PROJECT_TAG once could never unset it again, because deleting it from
-    # ./.env (or from their shell) simply leaves it out of the next patch and the old value
-    # stays in the pod -- a deployment resolving the family at a tag nobody can find in any
-    # file, and every campaign's build failing to pull an image at it.
+    # Carried UNCONDITIONALLY, empty value and all, so the pod's environment states what the
+    # family resolves from even when the operator set nothing -- deleting the line from
+    # ./.env shows up in the Deployment as a reset rather than as an absent variable.
     #
     # An empty value is safe because it is exactly what "unset" already means to every reader:
     # they all do `os.environ.get(var, "").strip() or <default>` (see execution.default_image_
     # project / default_image_tag), so "" resolves to the default rather than to an empty
-    # image ref. Emitting it turns removal into a reset instead of a no-op.
+    # image ref.
     #
     # A caller-supplied `env` still wins: setup passes what it composed, and this must not
     # overwrite a value that was decided deliberately upstream.
@@ -2169,14 +2179,13 @@ def service_manifests(namespace="default", image=None, env=None,
         env = [*env, {"name": RESERVE_ENV, "value": os.environ.get(RESERVE_ENV, "").strip()}]
 
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
-    # as the family env above: "" is UTC to libc -- what an unset TZ already means -- so an
-    # empty value resets the pod to UTC instead of being a value the merge patch preserves.
+    # as the family env above: "" is UTC to libc -- what an unset TZ already means.
     if not any(e["name"] == "TZ" for e in env):
         env = [*env, {"name": "TZ", "value": _host_timezone()}]
 
-    # The published origin. Written when somebody knows it, and left alone when nobody
-    # does -- a merge patch preserves what it does not mention, which is the only safe
-    # answer for a caller that would otherwise overwrite a correct value with a guess.
+    # The published origin. Written when somebody knows it, and omitted when nobody does --
+    # never a guess. `deploy_service` recovers it from the live Ingress before rendering, so
+    # "nobody knows" means the service is not published.
     #
     # Knowing it means knowing the *scheme* as well as the host. A `setup` that publishes
     # the service has that in its own arguments. An `upgrade` has neither: it reads the
@@ -2489,9 +2498,14 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
             deployed_selector=deployed.get("node_selector"))
     if job_node_labels is None and env is None:
         # Same convention as `node_selector`: `None` is "recover", `{}` is "no pool". The env
-        # is rendered on every deploy, empty included, so an unstated pool is not an omission
-        # a patch would preserve -- it is an overwrite that clears it.
+        # is rendered on every deploy, empty included, and the Deployment is replaced whole,
+        # so an unstated pool would be an overwrite that clears it.
         job_node_labels = job_node_pool_from_cluster(namespace, kube_context)
+    if public_origin is None and not ingress_host:
+        # The Deployment is replaced whole, so an origin nobody states is dropped rather than
+        # kept -- and a `setup` re-run without --ingress-host leaves the Ingress published.
+        # The live Ingress is what the origin describes, so it is read from there.
+        public_origin = published_url(namespace, kube_context) or None
 
     # The service's own image may need registry auth. The Secret is usually NOT created
     # by this run: setup only writes it when ROBOVAST_REGISTRY_* are in the environment,
@@ -2588,11 +2602,14 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     if results_storage_size:
         logger.info("%s", grow_results_claim(core, namespace, results_storage_size,
                                              dry_run=dry_run))
-    # Deployment (patch spec on conflict, so a `setup --force` over a live
-    # service updates it in place instead of failing)
+    # Deployment, replaced whole on conflict so `setup --force` and `upgrade` update a live
+    # service in place. Not a patch: a strategic merge keys `volumes` by name and never drops
+    # one, so the mount of a credential Secret deleted above outlives it, and the new pod
+    # waits forever on a volume that cannot be set up.
     _create_or_replace(
         lambda: apps.create_namespaced_deployment(namespace, deployment, dry_run=dr),
-        lambda: apps.patch_namespaced_deployment(SERVICE_NAME, namespace, deployment, dry_run=dr))
+        lambda: apps.replace_namespaced_deployment(SERVICE_NAME, namespace, deployment,
+                                                   dry_run=dr))
     # Service. Patched on conflict, not tolerated: its spec stopped being stable when the
     # registry added a second port, and an untouched Service meant the Ingress' /v2 rule
     # pointed at a port the Service did not publish -- nginx answered 503 while the
