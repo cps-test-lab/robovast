@@ -1184,3 +1184,44 @@ def test_the_refusal_names_the_size_the_fit_test_actually_used():
     message = c.refusal("camp")
     assert "needs 3 cpu" in message, message
     assert "5.85" not in message, "the declared figure was never the one being tested"
+
+
+# -- dropping what an owner no longer needs ----------------------------------------------
+
+
+def test_dropping_an_owners_planned_items_leaves_what_it_created():
+    """A planned item keeps its place in the queue and is created the moment room appears,
+    so an owner with nothing left for it to do must be able to take it back. What it already
+    created is a pod that exists, and forgetting that reservation would hand the same cores
+    out twice."""
+    c = _controller(FakeProvider(cpu=5.0))      # room for two 2-core jobs at a time
+    made = _items(c, "camp", 4)
+    c.drain()
+    assert sorted(made) == ["camp-0", "camp-1"]
+    assert sorted(c.drop_planned("camp")) == ["camp-2", "camp-3"]
+    assert sorted(c.states("camp")) == ["camp-0", "camp-1"]
+    c.drain()
+    assert sorted(made) == ["camp-0", "camp-1"], "a dropped item is not created later"
+
+
+def test_a_dropped_item_does_not_release_the_cores_a_created_one_holds():
+    """The hazard of using ``cancel`` for this: it releases the owner's reservations too,
+    and the pods behind them are running."""
+    c = _controller(FakeProvider(cpu=5.0))
+    _items(c, "camp", 4)
+    c.drain()
+    c.drop_planned("camp")
+    other = _items(c, "other", 1)
+    c.drain()
+    assert other == [], "4 of the 5 cores are still held by the jobs that exist"
+
+
+def test_dropping_every_planned_item_clears_the_reason_the_owner_was_waiting():
+    """A reason that outlives the wait it described reads to an operator as an owner still
+    stuck -- the same defect a create already clears."""
+    c = _controller(FakeProvider(cpu=1.0))
+    _items(c, "camp", 1, cpu=2.0)
+    c.drain()
+    assert c.refusal("camp")
+    c.drop_planned("camp")
+    assert c.refusal("camp") == ""
