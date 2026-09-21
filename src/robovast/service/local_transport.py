@@ -5013,6 +5013,7 @@ class LocalTransport(RobovastInterface):
             parameters = load_config(project.config_path) or {}
             problems = world_problems(
                 self.exec_in_container,
+                resolve_call=self.resolve_image,
                 workspace_id=self.store.registry.require(workspace_id)["workspace_id"],
                 # The workspace-relative path as the caller gave it; empty is fine and
                 # means the sole .vast, which is what exec_in_container resolves too.

@@ -155,11 +155,18 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
     )
   }
   if (report.valid) {
+    // A valid report can still carry advice -- a checked fact worth saying, such as a world key
+    // the pinned image does not publish. It does not take the pass away, so it is listed under
+    // the pass rather than painted as a problem, but it is listed: the CLI and the MCP tool show
+    // it on a valid report too.
     return (
-      <Alert severity="success" variant="outlined" sx={{ py: 0 }}>
-        Valid · {report.configs} configs · {report.runs_per_config} runs/config ·{' '}
-        {report.total_trials} trials
-      </Alert>
+      <Stack spacing={0.5}>
+        <Alert severity="success" variant="outlined" sx={{ py: 0 }}>
+          Valid · {report.configs} configs · {report.runs_per_config} runs/config ·{' '}
+          {report.total_trials} trials
+        </Alert>
+        {report.problems.length > 0 && <ProblemList problems={report.problems} />}
+      </Stack>
     )
   }
   // A check that could not run is why `valid` is false without anything being wrong with
@@ -177,8 +184,24 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
           `${unchecked.length} check${unchecked.length === 1 ? '' : 's'} did not run`}
       </Typography>
       <Divider sx={{ my: 0.5 }} />
-      {/* pre-wrap: a plugin that broke reports the frames it broke in, one per line. */}
-      {report.problems.map((p, i) => (
+      <ProblemRows problems={report.problems} />
+    </Paper>
+  )
+}
+
+function ProblemList({ problems }: { problems: ValidationReport['problems'] }) {
+  return (
+    <Paper sx={{ p: 1, maxHeight: 120, overflow: 'auto', borderColor: 'info.main' }} variant="outlined">
+      <ProblemRows problems={problems} />
+    </Paper>
+  )
+}
+
+function ProblemRows({ problems }: { problems: ValidationReport['problems'] }) {
+  // pre-wrap: a plugin that broke reports the frames it broke in, one per line.
+  return (
+    <>
+      {problems.map((p, i) => (
         <Typography
           key={i}
           variant="caption"
@@ -191,6 +214,6 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
           {p.field ? ` ${p.field}` : ''}: {p.message}
         </Typography>
       ))}
-    </Paper>
+    </>
   )
 }

@@ -207,6 +207,30 @@ when some configuration runs it as authored, and each distinct block a configura
 naming its mesh per configuration and none by default -- is checked on those configurations'
 worlds only, because no run opens the default as authored.
 
+Each world that loads is also checked for **keys its image does not know**. A campaign runs a
+pinned image, and a world can be newer than it: a key a later plugin reads is, to the image's
+older plugin, a key nobody reads, and most plugins do not refuse one — the run starts and the key
+does nothing. So every component the world *document* declares has its top-level config keys
+compared with what that image's own plugin publishes (``get_roqsim_plugin_details``: its
+``parameters``, and ``schema`` where it declares one), and a key missing from it comes back as
+``severity: "advice"``:
+
+.. code-block:: text
+
+   advice world: <image>'s energy_monitor (components.robot.energy) does not publish
+   'resistive_w_per_nm2' as a config key; unless it reads it without documenting it, that
+   image will ignore it.
+
+Advice, because a plugin's published list is its documented ``Config::`` block unless it declares
+a schema, and a documented block can leave out a key the plugin does read; a plugin whose schema
+says ``strict_keys`` has a complete list by its own declaration, and the advice then says the
+image will refuse the key. Not compared: the keys roqsim lets any component carry (a manifest's
+``prefix``, a transport scope, a fault block — read from the image, which is what applies them),
+components a model's manifest adds (they ship with the plugin that reads them), a plugin that
+publishes no keys at all, and a plugin the world loads by path. The catalog is asked once per
+image and cached with the ``list_roqsim_plugins`` tools' own; a catalog that could not be read is
+itself an advice problem saying the keys were not checked.
+
 ``check_scenario`` is the second such check, on the same pool but in the **scenario** container
 (``service/scenario_query.py``): does the scenario parse there, imports resolved? Only that
 image can answer — ``import osc.<library>`` resolves against the
@@ -220,7 +244,9 @@ happened (it ran, it could not, it was not asked for); and the problem carries
 — is therefore never told a campaign is good to run because the most expensive thing about it
 was skipped, and it can still tell "could not check" from "is wrong" without matching on
 English. ``severity: "advice"`` is the other side of that line: a checked fact worth saying,
-and ``valid`` stays true.
+and ``valid`` stays true. An *advisory* check — one the caller did not ask for, such as the
+world-key check — reports as advice whether it ran or not: it was never part of the verdict, so
+the only wrong answer it could give is silence.
 
 The consequence is that each tier has something it structurally cannot settle, and the honest
 place to say so is **the problem it reports**, not a tool description the reader has to
