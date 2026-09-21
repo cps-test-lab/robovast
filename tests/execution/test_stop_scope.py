@@ -11,6 +11,8 @@ finished, so their results sat complete on disk and reached no query surface.
 
 import pytest
 
+from robovast.common.errors import CampaignStopped
+
 from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, STOP_SCOPES,
                                                STOP_SHARE, ControllerState, Phase,
                                                stop_checker, stop_scope_for_phase)
@@ -121,3 +123,71 @@ def test_every_phase_is_classified():
 def test_stop_checker_is_none_without_a_state():
     """The re-run entry points postprocess a campaign nothing is driving."""
     assert stop_checker(None) is None
+
+
+def test_stop_checker_can_read_the_runs_scope():
+    """The pre-run steps and a search's per-batch conversion ask the same question of the
+    runs, and must get it from the one function rather than a predicate of their own."""
+    state = ControllerState()
+    state.request_stop(STOP_RUNS)
+
+    assert stop_checker(state, scope=STOP_RUNS)() is True
+    assert stop_checker(state)() is False
+
+
+# -- the two primitives every wait and every step boundary goes through ------
+#
+# What makes a stop prompt rather than eventual: a loop that sleeps notices a stop at the
+# end of whichever interval it happened to be in, so the interval that makes a poll cheap
+# is also the delay the stop pays.
+
+def test_a_wait_ends_the_instant_the_stop_is_requested():
+    import threading
+    import time
+
+    state = ControllerState()
+    threading.Timer(0.1, state.request_stop).start()
+
+    started = time.monotonic()
+    assert state.wait_for_stop(30) is True
+    assert time.monotonic() - started < 5
+
+
+def test_a_wait_nobody_stops_takes_its_timeout():
+    import time
+
+    state = ControllerState()
+    started = time.monotonic()
+
+    assert state.wait_for_stop(0.2) is False
+    assert time.monotonic() - started >= 0.2
+
+
+def test_a_wait_reads_one_scope_only():
+    """A postprocessing stop must not shorten a wait the runs are in, or vice versa."""
+    state = ControllerState()
+    state.request_stop(STOP_POSTPROCESSING)
+
+    assert state.wait_for_stop(0, STOP_POSTPROCESSING) is True
+    assert state.wait_for_stop(0) is False
+
+
+def test_an_unknown_scope_is_refused_rather_than_waited_on():
+    """As ``request_stop`` refuses it: a wait on a scope nobody sets never ends."""
+    with pytest.raises(ValueError):
+        ControllerState().wait_for_stop(0, "everything")
+
+
+def test_raise_if_stopped_ends_the_step_boundary_it_names():
+    state = ControllerState()
+    state.request_stop(STOP_RUNS)
+
+    with pytest.raises(CampaignStopped, match="stopped while composing"):
+        state.raise_if_stopped("stopped while composing the campaign's configurations")
+
+
+def test_raise_if_stopped_is_silent_for_a_scope_that_was_not_stopped():
+    state = ControllerState()
+    state.request_stop(STOP_RUNS)
+
+    state.raise_if_stopped("cancelled", scope=STOP_POSTPROCESSING)

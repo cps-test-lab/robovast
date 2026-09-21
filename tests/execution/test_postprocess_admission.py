@@ -216,3 +216,45 @@ def test_postprocessing_is_not_confined_to_the_campaigns_node():
     assert all(kw.get("reserves", True) is True for kw in submitted)
     assert "job_node_alias" not in inspect.getsource(pj), \
         "postprocessing reads no campaign node; confining it is a decision to make on purpose"
+
+
+# -- a stop reaches the queue, not only the pod ---------------------------------------
+#
+# The wait is hours long by design (a busy cluster is exactly when postprocessing queues),
+# so a campaign stopped while its analysis waits for capacity must not hold that place.
+
+def test_a_stopped_campaign_stops_waiting_for_capacity():
+    """It says what is missing and that a re-run supplies it -- nothing failed here."""
+    import time
+
+    admission = AdmissionController(_Provider(free_cpu=0.5), budget_ttl=0.0)
+
+    started = time.monotonic()
+    ok, _node, message = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                                            timeout=3 * 60 * 60, poll=30,
+                                            should_stop=lambda: True)
+
+    assert not ok
+    assert message == pj.POSTPROCESSING_QUEUE_CANCELLED
+    assert time.monotonic() - started < 30, "the wait was slept through, not ended"
+
+
+def test_a_cancelled_wait_gives_its_place_back():
+    """Left in the queue it would be granted room later and create a pod for a campaign
+    nobody is waiting on -- capacity spent on work that was cancelled."""
+    admission = AdmissionController(_Provider(free_cpu=0.5), budget_ttl=0.0)
+
+    pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                       timeout=60, poll=0.01, should_stop=lambda: True)
+
+    assert admission.states("camp-1" + pj._POSTPROCESS_OWNER_SUFFIX) == {}
+
+
+def test_a_wait_nobody_stops_is_unaffected():
+    admission = AdmissionController(_Provider(free_cpu=8.0), budget_ttl=0.0)
+
+    ok, node_id, _message = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                                               timeout=2.0, poll=0.01,
+                                               should_stop=lambda: False)
+
+    assert ok and node_id == "node-a"

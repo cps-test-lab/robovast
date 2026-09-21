@@ -189,8 +189,8 @@ It provides four views:
   pauses the follow while you hold it — auto-scrolling out from under a drag is what
   made a live log impossible to copy from — and dropping it resumes the tail by itself.
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
-  running work halts promptly (not only after the current batch). That is the whole
-  campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
+  running work halts within seconds whatever phase the campaign is in
+  (:ref:`what a stop ends, per phase <stopping-a-campaign>`). That is the whole campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
   It asks first, and says how many runs are in flight at that moment — the one thing a
   reader needs before pressing it that nothing else on the card shows. Worth confirming
   because there is no resume: a stopped campaign is over, and **Retrigger campaign** starts

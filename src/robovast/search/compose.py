@@ -160,8 +160,12 @@ class Compose:
     """Turns parameter sets into ``campaign_data`` using a base ``.vast``."""
 
     def __init__(self, vast_file: str, image_project: str | None = None,
-                 image_project_tag: str | None = None):
+                 image_project_tag: str | None = None, should_stop=None):
         self.vast_file = os.path.abspath(vast_file)
+        # Held for the same reason the image project is: a search composes once per
+        # generation over the campaign's whole life, and every one of those must be
+        # endable by the stop the campaign was given.
+        self.should_stop = should_stop
         self.vast_dir = os.path.dirname(self.vast_file)
         # Which project the RoboVAST family images resolve from, for every batch this
         # composes. Held here rather than read at compose time because a search composes
@@ -239,6 +243,7 @@ class Compose:
                 image_project=self.image_project,
                 image_project_tag=self.image_project_tag,
                 container_queries=container_queries,
+                should_stop=self.should_stop,
             )
             # Repoint "vast" at the persistent original (same dir, so relative
             # scenario_file/run_files still resolve) so downstream consumers that

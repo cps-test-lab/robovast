@@ -75,8 +75,8 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
-from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
-                                         RunOptions, ShareStopped)
+from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
+                                         ShareStopped)
 from robovast.execution.packer import build_jobs
 
 from . import pod_access, pod_upload
@@ -1280,6 +1280,30 @@ class BatchJobRunner:
 
     def _probe_owner(self) -> str:
         return f"{self.campaign}{self._PROBE_OWNER_SUFFIX}"
+
+    def _raise_if_stopped(self, what: str) -> None:
+        """End this batch when the campaign's runs were asked to stop.
+
+        *what* says where the stop landed ("before staging", "during"), because the
+        message becomes the campaign's recorded reason. Silent when no state drives this
+        runner: an offline caller has no campaign to stop.
+        """
+        if self._state is not None:
+            self._state.raise_if_stopped(
+                f"campaign {self.campaign} stopped {what} batch {self._batch_tag}")
+
+    def _poll_wait(self, seconds: float) -> None:
+        """Wait *seconds* between polls of the batch, ending the batch if a stop lands.
+
+        The batch wait is this lane's longest -- hours, on the campaigns worth stopping --
+        and it is where the stop must be read rather than slept through: the service's own
+        teardown deletes the Jobs, but it is this loop noticing that winds the campaign
+        down.
+        """
+        if self._state is None:
+            time.sleep(seconds)
+        elif self._state.wait_for_stop(seconds):
+            self._raise_if_stopped("during")
 
     def _start_probes(self, jobs, total_jobs):
         """Queue one calibration probe per uncalibrated node. Returns the calibration, or None.
@@ -2868,6 +2892,10 @@ class BatchJobRunner:
         # Before anything is staged, probed or created: a job node alias that names no
         # usable node refuses the campaign here, so no Job of it ever exists.
         self._campaign_node_id()
+        # And before the staging itself, which writes this batch's whole config tree and
+        # mints the campaign's Secret: minutes on a large sweep, and every second of it
+        # after a stop is work for a campaign that will not read it.
+        self._raise_if_stopped("before staging")
 
         # 1. Prepare this batch's config tree + per-job parameter files, straight into the
         #    campaign root: that is what the Jobs' init containers fetch, and the campaign
@@ -2941,6 +2969,11 @@ class BatchJobRunner:
             blocked_grace=self._BLOCKED_GRACE_SECONDS,
             contended_grace=self._CONTENDED_GRACE_SECONDS,
             list_remaining=self.get_remaining_jobs)
+        # The last moment before this batch exists on the cluster. A stop that arrived
+        # while the configs were being staged has already had the service tear down
+        # whatever Jobs were there; creating this batch's now would leave Jobs behind that
+        # nothing asked for and nothing is waiting on.
+        self._raise_if_stopped("before creating the jobs of")
         if not pending:
             # Every job this batch plans already has its results. Nothing to create and
             # nothing to queue -- and nothing to probe for either: calibration measures
@@ -2997,9 +3030,7 @@ class BatchJobRunner:
         # and one shared timer prints whichever came first and hides the other.
         last_refusal_log: "dict[str, float]" = {}
         while True:
-            if self._state is not None and self._state.stop_requested:
-                raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
-                                      f"{self._batch_tag}")
+            self._raise_if_stopped("during")
             if admission is not None:
                 # **Probes first, then the drain** (in `poll`). A node is held while its
                 # probe is out and freed the moment that probe reports -- per node, so one
@@ -3137,12 +3168,10 @@ class BatchJobRunner:
                         continue
                     last_refusal_log[owner] = time.monotonic()
                     logger.info("Batch %s: %s: %s", self._batch_tag, what, reason)
-            time.sleep(2)
+            self._poll_wait(2)
         # A stop that landed while the last jobs were being torn down leaves the loop
         # via the empty-remaining path; catch it here too before the result download.
-        if self._state is not None and self._state.stop_requested:
-            raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
-                                  f"{self._batch_tag}")
+        self._raise_if_stopped("during")
         # The loop breaks on an empty `remaining` BEFORE probing, so a restart in the last
         # job's last seconds is otherwise never seen. The pods are still here -- cleanup
         # runs at the end of this method -- so ask once more.
@@ -3561,6 +3590,16 @@ class KubernetesBackend(ExecutionBackend):
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)
+            if self._state is not None and self._state.stop_requested:
+                # The second and final sweep. The service's own teardown ran when the stop
+                # landed, but a batch can create Jobs after it -- a drain between that
+                # teardown and this loop's next read of the flag -- and those are Jobs
+                # nothing is waiting on and nothing else will delete. Label-scoped to this
+                # campaign's scenario runs like every other teardown, so a shared image
+                # build and another campaign's work are untouched. After the queue is
+                # cancelled above, so nothing can be created behind it.
+                runner.cleanup_jobs(campaign=campaign_id)
+                runner.cleanup_pods(campaign=campaign_id)
 
         self._record_execution_yaml(runner, campaign_root, execution_params, runs,
                                     with_locks=True)

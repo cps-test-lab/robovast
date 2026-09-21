@@ -65,6 +65,7 @@ from urllib.parse import quote
 from robovast.common.execution import resolve_controller_image, resolve_sidecar_image
 from robovast.execution.campaign_archive import in_part
 from robovast.common.quantity import to_bytes, to_cores
+from robovast.common.stop import sleep_unless_stopped
 
 from . import pod_access, postprocess_usage
 from .kube_client import api_transport_errors
@@ -141,6 +142,13 @@ def postprocess_owner(campaign_id: str) -> str:
 
 POLL_SECONDS = 5
 DEFAULT_TIMEOUT = 3 * 60 * 60
+
+#: What a caller is told when the campaign was stopped while its postprocessing waited for
+#: capacity. Its own message because nothing failed and nothing is wrong with the cluster:
+#: the derived data is simply missing, and a re-run is all it takes.
+POSTPROCESSING_QUEUE_CANCELLED = (
+    "postprocessing was cancelled while queued for capacity; the runs' results are "
+    "complete and re-running postprocessing derives the rest.")
 
 #: Disk the pod reserves and may use, for every step. Not settable by a campaign.
 #:
@@ -326,7 +334,8 @@ def pod_sizing(manifest: dict):
 
 
 def await_admission(admission, campaign_id: str, name: str, manifest: dict,
-                    timeout: float = DEFAULT_TIMEOUT, poll: float = POLL_SECONDS) -> tuple:
+                    timeout: float = DEFAULT_TIMEOUT, poll: float = POLL_SECONDS,
+                    should_stop=None) -> tuple:
     """Wait for the queue to find room for this pod. Returns ``(ok, node_id, message)``.
 
     **Why this pod queues at all.** Its cpu request equals its limit, so on a cluster kept
@@ -374,6 +383,12 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
     deadline = time.monotonic() + timeout
     logged = 0.0
     while time.monotonic() < deadline:
+        if should_stop is not None and should_stop():
+            # The submission goes with the wait. Left in the queue it would be granted room
+            # later and create a pod for a campaign nobody is waiting on -- capacity spent
+            # on work that was cancelled, which is what the queue exists to prevent.
+            admission.finished(name)
+            return False, None, POSTPROCESSING_QUEUE_CANCELLED
         # Works the GLOBAL queue, like every other caller: whichever thread is awake advances
         # everybody, which is what keeps the queue free of a thread of its own.
         admission.drain()
@@ -384,7 +399,7 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
             logged = time.monotonic()
             logger.info("Postprocessing of %s is queued for capacity: %s", campaign_id,
                         reason)
-        time.sleep(poll)
+        sleep_unless_stopped(poll, should_stop)
 
     reason = admission.refusal(owner)
     admission.finished(name)
@@ -1867,7 +1882,7 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
                 f"not about postprocessing, which has not run. Nothing about the "
                 f"campaign's results is wrong; re-run postprocessing once the pod can "
                 f"start.")
-        time.sleep(POLL_SECONDS)
+        sleep_unless_stopped(POLL_SECONDS, should_stop)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives
     # up. Reported as unknown so the campaign keeps whatever it already says about
@@ -2196,7 +2211,7 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
     admitted = False
     if admission is not None and not adopted:
         granted, node_id, message = await_admission(admission, campaign_id, name, manifest,
-                                                    timeout=timeout)
+                                                    timeout=timeout, should_stop=should_stop)
         if not granted:
             return False, message
         admitted = True

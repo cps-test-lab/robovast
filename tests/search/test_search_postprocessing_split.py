@@ -202,6 +202,7 @@ def test_the_conversion_runs_the_job_against_the_campaign(monkeypatch, campaign_
                         lambda: (_fake_job, lambda root: 'img', lambda m, _p: m, _JobRole))
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -227,6 +228,7 @@ def test_a_job_that_failed_does_not_stop_the_batch(monkeypatch, campaign_root):
         kube_context = None
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -263,6 +265,7 @@ def test_each_conversion_is_dispatched_under_its_own_name(monkeypatch, campaign_
         kube_context = None
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -282,6 +285,7 @@ def test_the_batch_tag_reaches_the_conversion(monkeypatch, campaign_root):
 
     passed = []
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}}]
     obj.vast_dir = '/tmp'
     obj.campaign_root = campaign_root
@@ -319,6 +323,7 @@ def test_a_conversion_that_cannot_even_start_fails_the_campaign(monkeypatch, cam
         kube_context = None
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -346,6 +351,7 @@ def test_a_conversion_that_ran_and_failed_is_still_left_to_the_extractor(monkeyp
         kube_context = None
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -383,6 +389,7 @@ def test_a_batch_conversion_runs_at_the_campaigns_declared_size(monkeypatch, tmp
         kube_context = None
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = str(campaign)
@@ -403,6 +410,7 @@ def _controller_with_backend(monkeypatch, campaign_root, backend, job_ok=True):
     monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
                         lambda *a, **kw: None)
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = backend
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -507,6 +515,7 @@ def test_the_batch_carries_its_own_command_list_to_the_pod(monkeypatch, campaign
                         lambda *a, **kw: None)
 
     obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.state = None          # nothing drives these; no campaign to stop
     obj.backend = _Backend()
     obj.campaign_id = 'c'
     obj.campaign_root = campaign_root
@@ -517,3 +526,68 @@ def test_the_batch_carries_its_own_command_list_to_the_pod(monkeypatch, campaign
 
     assert seen['role'].host_commands == [{'nav2_bt_tree': {'bt_xml': 'files/bt.xml'}}], (
         "the pod must run the batch's own half, not whatever it would look up")
+
+
+# -- a stop reaches a generation's own conversion -----------------------------
+#
+# The conversion is where a search spends its time between generations -- on a cluster a
+# Job of its own, queued behind whatever else the cluster is running -- so a stop that
+# could not reach it waited out the very step it was aimed at.
+
+def test_the_conversion_of_a_batch_is_stoppable(monkeypatch, campaign_root):
+    """The RUNS scope: this conversion is part of the batch, not the analysis a stopped
+    campaign's finished batches are still owed."""
+    from robovast.execution import controller as ctrl
+    from robovast.execution.control_server import ControllerState
+
+    passed = {}
+
+    class _Backend:
+        cluster_config = object()
+        kube_context = None
+        admission = None
+        data_token = ''
+
+    def _run_job(*a, **kw):
+        passed.update(kw)
+        return True, 'batch postprocessing complete'
+
+    monkeypatch.setattr(ctrl, '_conversion_job_runner',
+                        lambda: (_run_job, lambda root: 'img', lambda m, _p: m, _JobRole))
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.backend = _Backend()
+    obj.campaign_id = 'c'
+    obj.campaign_root = campaign_root
+    obj.vast_dir = '/tmp'
+    obj.state = ControllerState()
+
+    obj._postprocess_batch_in_cluster([{'rosbags_process': {'plugins': []}}], [], 'b')
+
+    assert passed['should_stop']() is False
+    obj.state.request_stop()
+    assert passed['should_stop']() is True
+
+
+def test_a_batch_whose_conversion_was_cut_ends_the_campaign(monkeypatch, campaign_root):
+    """A batch whose scoring was cut is a batch cut mid-way.
+
+    Returning normally would score a generation whose metrics were never derived, which
+    the search records as a generation that measured nothing -- a stop, read as evidence.
+    """
+    from robovast.execution import controller as ctrl
+    from robovast.execution.backends import CampaignStopped
+    from robovast.execution.control_server import ControllerState
+
+    state = ControllerState()
+    obj = ctrl.CampaignController.__new__(ctrl.CampaignController)
+    obj.postprocessing = [{'rosbags_to_csv': {'topics': ['/clearance']}}]
+    obj.vast_dir = '/tmp'
+    obj.campaign_root = campaign_root
+    obj.state = state
+    monkeypatch.setattr(ctrl.CampaignController, '_postprocess_batch_in_cluster',
+                        lambda self, cmds, local, tag: state.request_stop() or False)
+    monkeypatch.setattr('robovast.common.config_plugins.ensure_plugins_importable',
+                        lambda *a, **kw: None)
+
+    with pytest.raises(CampaignStopped, match='batch-2'):
+        obj._run_postprocessing('batch-2')

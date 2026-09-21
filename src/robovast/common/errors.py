@@ -41,6 +41,18 @@ class CampaignConfigError(Exception):
     include_traceback = False
 
 
+class CampaignStopped(Exception):
+    """Raised when a batch is abandoned because a cooperative stop was requested.
+
+    A *clean* terminal signal (Ctrl+C on ``vast serve``, the Stop button, an MCP
+    stop) — distinct from a genuine failure. Callers set the campaign phase to
+    ``"stopped"`` and skip the finish work that would otherwise fail noisily against a
+    torn-down cluster tunnel and produce misleading tracebacks. The analysis of the
+    batches that did finish is *not* part of what is skipped — it is owed, and the
+    service runs it (``LocalTransport.start_campaign``'s stopped path).
+    """
+
+
 class ClusterUnreachableError(Exception):
     """Raised when the Kubernetes API server cannot be reached at all.
 

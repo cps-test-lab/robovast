@@ -97,19 +97,73 @@ campaign still runs as their own Kubernetes workloads, because each needs to be
 one: the scenario/postprocessing **Jobs**, and — only for variations that declare
 one — a per-campaign **auxiliary-container pod** the driver execs into.
 
-Because the driver's batch wait loop blocks on the running Jobs and the
-cooperative-stop flag is only checked *between* batches (or search generations),
+.. _stopping-a-campaign:
+
+**A stop is read wherever a campaign waits.** The flag
+(``ControllerState.request_stop``) is set by the service, and the campaign's own thread
+reads it through two primitives and nothing else: ``wait_for_stop`` replaces the sleep in
+every poll loop, so a wait ends the instant the flag is set rather than at the end of
+whichever interval it was in, and ``raise_if_stopped`` ends the campaign at the boundary
+between two steps. Below the execution layer — pip, the composition worker, the
+conversion — the same thing is a ``should_stop`` predicate
+(:func:`~robovast.execution.control_server.stop_checker`) and the helpers in
+:mod:`robovast.common.stop`, which kill a running subprocess's whole process group.
+
+What a flag cannot end is work on another machine, which is why
 ``ClusterService.stop`` also tears down that campaign's in-flight Jobs — reusing the
 campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
-``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
-loop (``running_jobs`` treats a gone Job as finished) so the campaign winds
-down promptly. The deletions are label-scoped to the one campaign, so other
-queued/running campaigns are untouched, and to its Jobs: a campaign's aux pod belongs to
-the composition span that created it and is deleted when that span ends, so a stop leaves
-it alone and only a reaper (``jobs-cleanup``, a campaign being deleted) collects one.
-Composition itself is stop-checked in two places, because it is long enough to give up
-in: the pod's ready wait ends as soon as the flag is set, and a campaign stopped while
-composing raises rather than submitting the sweep it has just composed.
+``vast cluster jobs-cleanup`` performs). The running pods terminate now, and the batch
+loop finds them gone (``running_jobs`` treats a gone Job as finished) rather than
+waiting out runs the campaign has given up on. The deletions are label-scoped to the one
+campaign, so other queued/running campaigns are untouched, and to its Jobs: a campaign's
+aux pod belongs to the composition span that created it and is deleted when that span
+ends, so a stop leaves it alone and only a reaper (``jobs-cleanup``, a campaign being
+deleted) collects one. A batch that ends while stopped sweeps its own Jobs once more on
+the way out, because the queue can create one between that teardown and the loop's next
+read of the flag, and nothing else would collect it.
+
+Which work a stop lands on, and what it leaves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 16 30 32
+
+   * - Phase
+     - Scope
+     - What ends it
+     - What the campaign is left as
+   * - ``initializing``, ``starting``, ``variation``
+     - runs
+     - the boundary between two steps; the composition worker's process group is terminated
+     - ``stopped``, with no results: the campaign was ended before its first run
+   * - ``plugin install``
+     - runs
+     - pip's process group is terminated
+     - ``stopped``
+   * - ``building``
+     - runs
+     - the wait is abandoned
+     - ``stopped``. The build itself is **never** cancelled: it is content-addressed and
+       therefore shared, so a sibling campaign may be waiting on it
+   * - ``running``
+     - runs
+     - the lane's teardown (the scenario container, or this campaign's Jobs), which the
+       batch loop then sees
+     - ``stopped``, plus the analysis the batches that finished are owed — except on a
+       local batch-mode campaign, where the loop's own account is that the batch ended,
+       and the campaign reads ``finished``
+   * - ``finishing``, ``importing``, ``postprocessing``
+     - postprocessing
+     - the pipeline between steps; the conversion's process group, or its Jobs
+     - ``finished`` with the reason on ``postprocessing_error`` and no derived data
+   * - ``sharing``
+     - share
+     - the upload's own progress callbacks
+     - ``finished`` with the reason on ``share_error``; the partial upload is discarded
+   * - terminal
+     - —
+     - nothing is running
+     - the stop is refused rather than answered with a flag nothing will read
 
 **Service shutdown** is deliberately *not* the same thing. Whether exiting tears a
 campaign down is a property of the lane, asked
@@ -121,8 +175,9 @@ is not, and it never was a good way to say it — the cooperative stop persists 
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
-A stopped campaign is reported as a **clean terminal**, not a failure. The batch wait
-loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag, the
+A stopped campaign is reported as a **clean terminal**, not a failure. On both lanes the
+batch wait loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag,
+the
 controller sets phase ``"stopped"``, and the builders' finish tail
 (``_finish_campaign``) is skipped — the per-run results the pods already delivered are
 left as the campaign's output. The ``"stopped"`` outcome is persisted like a failure
