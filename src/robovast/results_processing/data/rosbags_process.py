@@ -1233,22 +1233,34 @@ def process_rosbag_worker(args: tuple) -> BagResult:
                 if t in topic_type_map:
                     topic_to_handlers.setdefault(t, []).append(h)
 
-        # Pre-load message types once for all subscribed+available topics
+        # Pre-load message types once for all subscribed+available topics. A type that does
+        # not resolve fails the bag: the topic was recorded and a handler asked for it, so
+        # skipping it would leave the step green and the campaign short a table -- a run that
+        # recorded a vendor's message without that vendor's package in the execution image
+        # would look converted. The fix is named because it is always the same one.
         msg_type_cache: Dict[str, type] = {}
+        unloadable: List[str] = []
         for topic in topic_to_handlers:
             try:
                 msg_type_cache[topic] = get_message(topic_type_map[topic])
             except Exception as e:
-                print(f"  ✗ Could not load message type for {topic}: {e}")
+                unloadable.append(f"{topic} ({topic_type_map[topic]}): {e}")
+        if unloadable:
+            for line in unloadable:
+                print(f"  ✗ Message type not loadable for {line}")
+            print(
+                "  ✗ The message package(s) are not installed where the bags are converted "
+                "(the campaign's execution image); add them with the container's "
+                "system_packages or ros_packages, or drop the topic from the handler."
+            )
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Main read loop — deserialize each message at most once
         while reader.has_next():
             topic, data, timestamp = reader.read_next()
             if topic not in topic_to_handlers:
                 continue
-            msg_cls = msg_type_cache.get(topic)
-            if msg_cls is None:
-                continue
+            msg_cls = msg_type_cache[topic]
             try:
                 msg = deserialize_message(data, msg_cls)
             except Exception as e:

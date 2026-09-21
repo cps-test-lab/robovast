@@ -327,7 +327,8 @@ git_secret() {
 # rsync rather than passing the path straight through, because the excludes matter: a .git of
 # several hundred MB, a host venv whose binaries are wrong for the image, colcon build/ and
 # install/ trees that would be found ahead of what colcon builds inside the image, and (for
-# roqsim) `external/`, ~250 MB of vendored upstream source that nothing installed below reads.
+# roqsim) `external/`, where a checkout keeps the upstream trees it fetched -- hundreds of MB
+# that nothing installed below reads. Its manifest of external assets is the exception.
 src_context() {
   local stage="$1" src="$2" label="$3"
   SRC_CONTEXT=()
@@ -338,10 +339,36 @@ src_context() {
   echo "$label source: $src (local checkout)"
   local staged="$SRC_STAGING/$stage"
   mkdir -p "$staged" || return 1
+  # The manifest of external assets goes in -- the Dockerfile reads it to refuse any that
+  # arrived -- and the assets it names come out: they live in the package trees, fetched or
+  # converted by a developer's checkout where a clone has none, and several are under licences
+  # that forbid redistribution. They must not ride into a published image through this hatch.
   rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
         --exclude='*.egg-info' --exclude='build/' --exclude='install/' --exclude='log/' \
-        --exclude='external/' --exclude='docs/build/' \
+        --include='/external/' --include='/external/external_assets.yaml' \
+        --exclude='/external/*' --exclude='docs/build/' \
         "${src%/}/" "$staged/" || return 1
+  if [[ -f "$staged/external/external_assets.yaml" ]]; then
+    python3 - "$staged" <<'PY' || return 1
+import pathlib
+import shutil
+import sys
+
+import yaml
+
+root = pathlib.Path(sys.argv[1])
+resources = yaml.safe_load((root / "external/external_assets.yaml").read_text())["resources"]
+for target in (t for r in resources for t in r.get("targets", [])):
+    path = root / target
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+    else:
+        continue
+    print(f"  left out {target}: an external asset the source repository does not publish")
+PY
+  fi
   SRC_CONTEXT=(--build-context "$stage=$staged")
 }
 
