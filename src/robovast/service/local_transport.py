@@ -3887,9 +3887,11 @@ class LocalTransport(RobovastInterface):
         """Ask every running job once, and replace what this campaign reports.
 
         Replaces rather than accumulates: a finding is a statement about the run *now*, and one
-        that has stopped being true must stop being reported. Failures are left to
-        :meth:`get_job_state` to explain -- nothing is invented here, because a finding RoboVAST
-        made up is a finding no simulator can be held to.
+        that has stopped being true must stop being reported. Two sources: what each running
+        job's simulator says about itself, and what RoboVAST recorded in the campaign's ledger
+        about faults a job cannot report -- a container killed at a figure the campaign
+        measured (:meth:`_findings_from_record`). Nothing else is inferred here; other failures
+        are left to :meth:`get_job_state` to explain.
         """
         findings: list = []
         skipped: list = []

@@ -29,15 +29,15 @@ def _entry(container="sut", node="n1", limit="128Mi", reason="OOMKilled"):
                             "memory_limit": limit, "invalidating": True}]}
 
 
-def _runner(tmp_path, *, calibrated=True):
+def _runner(tmp_path, *, calibrated=True, measured="sut"):
     from robovast.execution.cluster_execution.node_calibration import NodeCalibration
 
     calibration = NodeCalibration()
     if calibrated:
         calibration.claim_probe("n1", "probe-1")
         calibration.record("n1", "probe-1",
-                           {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2,
-                                    "samples": 90}})
+                           {measured: {"cores": 2.0, "memory_peak": 100 * 1024 ** 2,
+                                       "samples": 90}})
     runner = kb.BatchJobRunner.__new__(kb.BatchJobRunner)
     runner._calibration = calibration
     runner._batch_tag = "batch-0"
@@ -69,6 +69,61 @@ def test_a_crash_that_is_not_an_oom_says_nothing_about_memory(tmp_path):
     runner = _runner(tmp_path)
     runner._record_a_kill_at_a_measured_figure("job-1", _entry(reason="Error"), str(tmp_path))
     assert read_interventions(tmp_path, KIND_SIZING) == []
+
+
+def _ended_pod(job="job-1", container="scenario", reason="OOMKilled", limit="128Mi"):
+    """A pod whose container is NOT restarted and died: ``state``, not ``last_state``."""
+    from types import SimpleNamespace as NS
+    terminated = NS(reason=reason, exit_code=137)
+    return NS(
+        metadata=NS(name=f"{job}-pod", labels={"job-name": job}),
+        spec=NS(node_name="n1", init_containers=[],
+                containers=[NS(name=container, resources=NS(limits={"memory": limit}))]),
+        status=NS(phase="Failed", init_container_statuses=[], container_statuses=[
+            NS(name=container, state=NS(terminated=terminated, running=None, waiting=None),
+               last_state=NS(terminated=None), restart_count=0)]))
+
+
+class _Pods:
+    def __init__(self, *pods):
+        self.pods, self.lists = list(pods), 0
+
+    def list_namespaced_pod(self, namespace, label_selector=None):
+        from types import SimpleNamespace as NS
+        self.lists += 1
+        return NS(items=self.pods)
+
+
+def test_a_container_the_pod_does_not_restart_is_read_where_it_died():
+    """Under ``restartPolicy: Never`` the scenario container dies into ``state`` and takes the
+    pod with it, so the restart path -- which reads ``last_state`` -- never sees it."""
+    from robovast.execution.cluster_execution.cluster_execution import oom_killed_job_forensics
+    killed = oom_killed_job_forensics(_Pods(_ended_pod(), _ended_pod("job-2", reason="Error")),
+                                      "ns", "sel")
+    assert list(killed) == ["job-1"]
+    assert killed["job-1"]["node"] == "n1"
+    assert killed["job-1"]["containers"] == [
+        {"container": "scenario", "reason": "OOMKilled", "memory_limit": "128Mi"}]
+
+
+def test_a_pod_that_ended_on_a_kill_at_a_measured_figure_is_recorded_once(tmp_path):
+    """Its pod is listed on every poll until the batch cleans up, so the same kill is seen
+    again and again -- and a count of lost runs that grows with the poll rate is no count."""
+    runner = _runner(tmp_path, measured="scenario")
+    runner.k8s_client, runner.namespace = _Pods(_ended_pod()), "ns"
+    for _ in range(3):
+        runner._record_oom_kills_at_measured_figures("sel", ["job-1"], str(tmp_path))
+    entries = read_interventions(tmp_path, KIND_SIZING)
+    assert len(entries) == 1 and "scenario" in entries[0]["detail"]
+
+
+def test_nothing_measured_means_no_pod_is_listed_for_it(tmp_path):
+    """A campaign with no figures cannot lose a run to one, and a pod list per poll is not free."""
+    runner = _runner(tmp_path, calibrated=False)
+    pods = _Pods(_ended_pod())
+    runner.k8s_client, runner.namespace = pods, "ns"
+    runner._record_oom_kills_at_measured_figures("sel", ["job-1"], str(tmp_path))
+    assert pods.lists == 0 and read_interventions(tmp_path, KIND_SIZING) == []
 
 
 def _transport(tmp_path):
