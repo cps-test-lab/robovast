@@ -1340,18 +1340,19 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def read_run_job(run_dir: Path, campaign_root: Path) -> tuple[str, dict[str, Any] | None]:
+def read_run_job(run_dir: Path, campaign_root: Path,
+                 links: "dict | None" = None) -> tuple[str, dict[str, Any] | None]:
     """The execution job a run belonged to: ``(job_dir, sysinfo)``.
 
     ``job_dir`` is the job's directory relative to *campaign_root* (e.g.
-    ``_jobs/batch-0/job-3``), resolved through the run dir's ``job`` symlink. It is the
+    ``_jobs/batch-0/job-3``), resolved by :func:`run_job_dir`. It is the
     identity of the *host record*, not of the run: a packed multi-config job executes
     several (config, run) pairs, and every one of them resolves to the same job dir. That
     sharing is the point — it is what makes "did these runs land on one machine?"
     answerable — so the job is recorded once and runs point at it.
 
-    Without a ``job`` symlink — an older layout that wrote ``sysinfo.yaml`` into the run
-    dir or its ``logs/``, or a run whose job dir was pruned — the run *is* its own unit of
+    Without a job -- an older layout that wrote ``sysinfo.yaml`` into the run dir or its
+    ``logs/``, or a run whose job dir was pruned -- the run *is* its own unit of
     host information, so ``job_dir`` is the run's own directory. That keeps the host record
     reachable (dropping it would lose data :func:`read_sysinfo` can still find) while
     saying something true: one host record, no shared job known.
@@ -1372,15 +1373,15 @@ def read_run_job(run_dir: Path, campaign_root: Path) -> tuple[str, dict[str, Any
 
     job_dir = ""
     try:
-        job_path = (run_dir / "job").resolve()
-        if job_path.is_dir():
-            job_dir = _relative(job_path)
+        job_path = run_job_dir(run_dir, campaign_root, links)
+        if job_path is not None and job_path.is_dir():
+            job_dir = _relative(job_path.resolve())
     except (OSError, ValueError):
         job_dir = ""
     if not job_dir:
         job_dir = _relative(run_dir.resolve())
     try:
-        sysinfo = read_sysinfo(run_dir)
+        sysinfo = read_sysinfo(run_dir, campaign_root, links)
     except (FileNotFoundError, OSError, ValueError, TypeError):
         sysinfo = None
     return job_dir, sysinfo
@@ -1389,7 +1390,8 @@ def read_run_job(run_dir: Path, campaign_root: Path) -> tuple[str, dict[str, Any
 def read_run_outcome(run_dir: Path,
                      campaign_root: Path | None = None,
                      killed: "dict[str, dict[str, Any]] | None" = None,
-                     invalid: "dict[str, dict[str, Any]] | None" = None) -> dict[str, Any]:
+                     invalid: "dict[str, dict[str, Any]] | None" = None,
+                     links: "dict | None" = None) -> dict[str, Any]:
     """Per-run outcome for the ``run`` table, derived from ``test.xml``.
 
     The single place the JUnit result is mapped to a normalized ``status`` —
@@ -1428,6 +1430,7 @@ def read_run_outcome(run_dir: Path,
             the ledger; ``None`` means "look it up", and an empty mapping means "nothing
             was killed" — the default.
         invalid: An :func:`invalid_runs` mapping, on the same terms.
+        links: The job-link manifest (:func:`run_job_dir`), on the same terms.
 
     Returns a dict keyed exactly like the ``run`` columns: ``run_id``, ``status``,
     ``passed`` (0/1), ``errors``, ``failures``, ``tests``, ``duration_s``,
@@ -1437,7 +1440,7 @@ def read_run_outcome(run_dir: Path,
     run_key = f"{run_dir.parent.name}/{run_dir.name}"
     job: dict[str, Any] = {}
     if campaign_root is not None:
-        job_dir, sysinfo = read_run_job(run_dir, campaign_root)
+        job_dir, sysinfo = read_run_job(run_dir, campaign_root, links)
         job = {"job_dir": job_dir, "sysinfo": sysinfo}
     # Checked BEFORE the verdict is read, not in the handler for a missing one: this is the
     # status that overrides what the trial wrote, so reading it first is the point.
@@ -1497,37 +1500,74 @@ def read_run_outcomes(config_dir: Path,
                       campaign_root: Path | None = None) -> list[dict[str, Any]]:
     """:func:`read_run_outcome` for every numeric run dir under *config_dir*.
 
-    The intervention ledger is resolved **once** here and shared across the config's runs,
-    rather than per run: with no ledger that is a single ``is_file`` miss for the whole
-    config, and the outcomes are then identical to what this returned before the ledger
-    existed.
+    The intervention ledger and the job-link manifest are resolved **once** here and shared
+    across the config's runs, rather than per run: the manifest holds one entry per run, so
+    a read per run would make the walk quadratic in the run count, and with no ledger that
+    is a single ``is_file`` miss for the whole config.
 
     Read unfiltered and split by kind locally rather than calling :func:`killed_runs` and
     :func:`invalid_runs` in turn — two calls would be two file reads and two manifest reads,
     which is exactly the per-config cost this promises not to pay.
     """
+    from robovast.common.execution import read_job_links
+
     killed: dict[str, dict[str, Any]] = {}
     invalid: dict[str, dict[str, Any]] = {}
+    links = None
     if campaign_root is not None:
+        links = read_job_links(campaign_root)
         for run_key, entry in intervened_runs(campaign_root).items():
             if entry.get("kind") == KIND_KILLED:
                 killed[run_key] = entry
             elif entry.get("kind") == KIND_INVALID:
                 invalid[run_key] = entry
-    return [read_run_outcome(rd, campaign_root, killed, invalid)
+    return [read_run_outcome(rd, campaign_root, killed, invalid, links)
             for rd in list_run_dirs(config_dir)]
 
 
-def read_sysinfo(run_dir: Path) -> dict[str, Any]:
+def run_job_dir(run_dir: Path, campaign_root: Path,
+                links: "dict | None" = None) -> Path | None:
+    """The job artifact directory *run_dir* ran in, or ``None`` when nothing names one.
+
+    Resolved through the campaign's job-link manifest
+    (:func:`~robovast.common.execution.job_artifact_dir`), which both lanes write before the
+    first job starts. Not through the run's ``job`` symlink: a batch creates those only once
+    it ends, so the finished runs of a batch that was stopped have none, while the manifest
+    already names their jobs. The symlink is read only for a campaign recorded before the
+    manifest, which has no entry to resolve.
+
+    Args:
+        run_dir: The run's directory (``<campaign>/<config>/<run>``).
+        campaign_root: The campaign root the manifest belongs to.
+        links: The manifest as :func:`~robovast.common.execution.read_job_links` returns
+            it, when a caller walks every run and read it once; ``None`` reads it here.
+    """
+    from robovast.common.execution import job_artifact_dir, read_job_links
+
+    if links is None:
+        links = read_job_links(campaign_root)
+    try:
+        return Path(job_artifact_dir(str(campaign_root), f"{run_dir.parent.name}/{run_dir.name}",
+                                     links))
+    except FileNotFoundError:
+        pass
+    link = run_dir / "job"
+    return link.resolve() if link.is_dir() else None
+
+
+def read_sysinfo(run_dir: Path, campaign_root: Path,
+                 links: "dict | None" = None) -> dict[str, Any]:
     """Read system information from ``sysinfo.yaml``.
 
-    ``collect_sysinfo.py`` writes it into the **job** directory, which each run
-    dir exposes as its ``job`` symlink (``_jobs/batch-<n>/job-<m>/sysinfo.yaml``) —
-    on both backends. Older/other layouts kept it in the run dir or its ``logs/``,
-    so all three locations are accepted.
+    ``collect_sysinfo.py`` writes it into the **job** directory
+    (``_jobs/batch-<n>/job-<m>/sysinfo.yaml``), found through :func:`run_job_dir` -- on
+    both backends. Older layouts kept it in the run dir or its ``logs/``, which are read
+    when the run names no job.
 
     Args:
         run_dir: Path to the run directory.
+        campaign_root: The campaign root, whose job-link manifest names the run's job.
+        links: See :func:`run_job_dir`.
 
     Returns:
         Dictionary with platform, CPU, memory, etc.
@@ -1535,9 +1575,9 @@ def read_sysinfo(run_dir: Path) -> dict[str, Any]:
     Raises:
         FileNotFoundError: If sysinfo.yaml does not exist.
     """
-    candidates = [run_dir / "job" / "sysinfo.yaml",
-                  run_dir / "sysinfo.yaml",
-                  run_dir / "logs" / "sysinfo.yaml"]
+    job = run_job_dir(run_dir, campaign_root, links)
+    candidates = ([job / "sysinfo.yaml"] if job is not None else []) + [
+        run_dir / "sysinfo.yaml", run_dir / "logs" / "sysinfo.yaml"]
     path = next((p for p in candidates if p.exists()), None)
     if path is None:
         raise FileNotFoundError(f"sysinfo.yaml not found in {run_dir}")

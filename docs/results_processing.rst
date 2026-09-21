@@ -224,7 +224,10 @@ Anything the *scenario* itself produces (``test.xml``, scenario-recorded
 monitoring artifacts (``sysinfo.yaml``, ``resource_usage_*.csv``, the system
 log, and the entrypoint's ``/rosout`` + ``/clock`` recording) belong to the **job**
 and live under ``_jobs/job-N/`` — reachable via the ``job`` link, e.g.
-``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`).
+``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`). The links are made when a batch
+ends, so the runs of a batch that was stopped have none. Which job each run belongs to is
+recorded in ``_transient/job_links.yaml`` from before the first job starts, and that is
+what RoboVAST resolves a run's job through.
 
 Postprocessing adds two derived files to the run directory: ``run_log.csv``, the job's
 container logs joined with ``/rosout`` and sliced to this run (see
