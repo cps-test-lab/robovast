@@ -116,7 +116,7 @@ def test_postprocess_campaign_forwards_the_context(monkeypatch):
     # `_read_submit_inputs`. Patched at that seam, so this test needs no campaign tree.
     monkeypatch.setattr(postprocess_job, "_read_submit_inputs",
                         lambda root, skip=None, skip_rosout=False:
-                        (["echo"], "img", (), None))
+                        (["echo"], "img", (), None, None))
 
     with pytest.raises(_Stop):
         postprocess_job.postprocess_campaign(

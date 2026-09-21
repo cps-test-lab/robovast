@@ -702,7 +702,10 @@ up a map), and a source caught by one is not an author error to correct — but 
 original beside the rewritten copy would leave *which file the stack opens* deciding whether
 the campaign varied anything, and a run against unvaried configuration succeeds and reports
 normally. With one copy, a scenario still naming the old path fails on a missing file
-instead. The content still reaches the configuration's identity, hashed separately.
+instead. The content still reaches the configuration's identity, hashed separately, and the
+original is archived in ``<campaign>/_config/`` without being mounted — composition reads it
+to write each copy, so a restart, a retrigger or a workspace rebuilt from the campaign needs
+it there.
 
 What is checked before anything runs
 """"""""""""""""""""""""""""""""""""

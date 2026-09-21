@@ -241,16 +241,16 @@ def test_the_parts_logs_are_read_in_order_with_a_header_each(tmp_path):
 def test_a_campaign_runs_in_one_job_when_the_cap_says_one(monkeypatch, tmp_path):
     monkeypatch.setenv(ps.MAX_PARALLEL_ENV, "1")
     (tmp_path / "_config").mkdir()
-    (tmp_path / "_config" / "c.vast").write_text("version: 1\n")
-    assert pj._plan_split(str(tmp_path)) is None  # pylint: disable=protected-access
+    vast = tmp_path / "_config" / "c.vast"
+    vast.write_text("version: 1\n")
+    assert pj._plan_split(str(tmp_path), str(vast)) is None  # pylint: disable=protected-access
 
 
 def test_a_split_runs_the_map_then_the_reduce_and_keeps_the_parts_log(monkeypatch, tmp_path):
     parts = [ps.Part(name="part-1", runs=["a/0"]), ps.Part(name="part-2", runs=["a/1"])]
     monkeypatch.setattr(pj, "_read_submit_inputs",
-                        lambda root, skip=None, skip_rosout=False: ([], "img", (), None))
-    monkeypatch.setattr(pj, "_plan_split", lambda root, skip=None, skip_rosout=False: (
-        ["run_log"], ["compress"], parts))
+                        lambda root, skip=None, skip_rosout=False:
+                        ([], "img", (), None, (["run_log"], ["compress"], parts)))
     monkeypatch.setattr(pj, "campaign_vast", lambda root: str(tmp_path / "_config" / "c.vast"))
     calls = []
 
@@ -279,9 +279,8 @@ def test_a_split_runs_the_map_then_the_reduce_and_keeps_the_parts_log(monkeypatc
 def test_a_failed_map_never_starts_the_reduce(monkeypatch, tmp_path):
     parts = [ps.Part(name="part-1", runs=["a/0"]), ps.Part(name="part-2", runs=["a/1"])]
     monkeypatch.setattr(pj, "_read_submit_inputs",
-                        lambda root, skip=None, skip_rosout=False: ([], "img", (), None))
-    monkeypatch.setattr(pj, "_plan_split", lambda root, skip=None, skip_rosout=False: (
-        ["run_log"], [], parts))
+                        lambda root, skip=None, skip_rosout=False:
+                        ([], "img", (), None, (["run_log"], [], parts)))
     monkeypatch.setattr(ps, "run_map_phase", lambda *a, **k: (False, "1 of 2 part(s) failed"))
     monkeypatch.setattr(pj, "run_conversion_job",
                         lambda *a, **k: pytest.fail("the reduce ran after a failed map"))
