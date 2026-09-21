@@ -65,7 +65,7 @@ from kubernetes import client
 
 from robovast.common import (get_execution_env_variables, plan_containers,
                              prepare_campaign_configs, scenario_env)
-from robovast.common.campaign_data import (KIND_INVALID, PROBE_DIR,
+from robovast.common.campaign_data import (KIND_INVALID, KIND_SIZING, PROBE_DIR,
                                            record_container_failures, record_intervention)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
@@ -87,7 +87,7 @@ from .campaign_job import apply_campaign_pod_policy, campaign_job_manifest, pin_
 from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign,
                                 previous_container_log, resolve_pull_secret,
-                                restarted_job_forensics)
+                                oom_killed_job_forensics, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
 from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAME,
                         POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
@@ -616,6 +616,9 @@ class BatchJobRunner:
     #: :meth:`for_batch`.
     _deadline_seconds = None
     _deadline_killed = frozenset()
+    #: ``(job, container)`` pairs already recorded as killed at a measured figure. A kill can
+    #: be seen on more than one poll, and through the restart path as well as the pod's end.
+    _sizing_recorded = frozenset()
     #: Nodes whose probe this batch cancelled because it had no job left to place (see
     #: :meth:`drop_probes_with_no_work_left_to_size`). Still held, and still unmeasured,
     #: but not for a reason that says anything about whether the node CAN be measured.
@@ -2842,8 +2845,75 @@ class BatchJobRunner:
                            self._batch_tag, exc)
             return
         for job_name, entry in sorted(restarted.items()):
+            self._record_a_kill_at_a_measured_figure(job_name, entry, campaign_root)
             self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
                            campaign_root=campaign_root, forensics=entry)
+
+    def _record_a_kill_at_a_measured_figure(self, job_name, entry, campaign_root) -> None:
+        """Record a run lost to memory this campaign MEASURED, so the campaign can report it.
+
+        **A measurement is a prediction about every run, and this run disproves it.** The probe
+        sees one run's peak; every other run is sized from it, so a demand the probe did not see
+        is not met once -- the same figure meets the next run, and the next. Nothing else in the
+        loop says so: the invalidation above says a trial was lost, which is true of a flake too.
+
+        Written to the campaign's own ledger rather than kept in memory, because the Job that
+        carried the evidence is deleted moments later and the fact has to outlive it -- and
+        because that ledger is what the service reads to report it (see
+        ``LocalTransport._findings_from_record``).
+
+        Only a figure this campaign measured is recorded: a container killed at what its author
+        DECLARED is a campaign asking for too little, which the author states and this must not
+        second-guess.
+        """
+        calibration = getattr(self, "_calibration", None)
+        node = (entry or {}).get("node")
+        figures = calibration.calibrated(node) if calibration and node else None
+        if not figures:
+            return
+        for record in (entry or {}).get("containers") or ():
+            if record.get("reason") != "OOMKilled":
+                continue
+            container = record.get("container")
+            measured = (figures.get(container) or {}).get("memory_peak")
+            if not measured:
+                continue
+            if (job_name, container) in self._sizing_recorded:
+                continue
+            self._sizing_recorded = self._sizing_recorded | {(job_name, container)}
+            limit = to_bytes(record.get("memory_limit"))
+            gib = 1024 ** 3
+            at = f" at {limit / gib:.2f}GiB" if limit else ""
+            try:
+                record_intervention(
+                    Path(campaign_root), kind=KIND_SIZING, job_dir="", job_name=job_name,
+                    source="runner",
+                    detail=(f"container {container} was OOM-killed{at} -- memory this campaign "
+                            f"MEASURED on its node ({measured / gib:.2f}GiB peak)"))
+            except Exception as exc:  # noqa: BLE001 - a record must not fail the response
+                logger.warning("Batch %s: could not record the sizing fault for %s: %s",
+                               self._batch_tag, job_name, exc)
+
+    def _record_oom_kills_at_measured_figures(self, job_label, job_names,
+                                              campaign_root) -> None:
+        """Record the jobs whose pod ended on a container OOM-killed at a measured figure.
+
+        The restart path sees only a container the pod restarts. The scenario container is
+        not restarted, so its kill ends the pod instead, and is read here. Asked only once
+        some node has figures: before that there is no measured figure to be killed at.
+        """
+        calibration = getattr(self, "_calibration", None)
+        if calibration is None or not calibration.outcome().get("calibrated"):
+            return
+        try:
+            killed = oom_killed_job_forensics(self.k8s_client, self.namespace, job_label,
+                                              job_names=job_names)
+        except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+            logger.warning("Batch %s: could not check for OOM-killed containers: %s",
+                           self._batch_tag, exc)
+            return
+        for job_name, entry in sorted(killed.items()):
+            self._record_a_kill_at_a_measured_figure(job_name, entry, campaign_root)
 
     def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name,
                            campaign_root) -> None:
@@ -3216,6 +3286,7 @@ class BatchJobRunner:
             # that job, record why, and keep going.
             self._invalidate_restarted_jobs(job_label, job_names, jobs_by_name,
                                             campaign_root)
+            self._record_oom_kills_at_measured_figures(job_label, job_names, campaign_root)
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             if admission is not None and (planned_count or self._probes):
@@ -3254,6 +3325,7 @@ class BatchJobRunner:
         # job's last seconds is otherwise never seen. The pods are still here -- cleanup
         # runs at the end of this method -- so ask once more.
         self._invalidate_restarted_jobs(job_label, job_names, jobs_by_name, campaign_root)
+        self._record_oom_kills_at_measured_figures(job_label, job_names, campaign_root)
         if self._invalidated and len(job_names) > 1 and \
                 len(self._invalidated) >= len(job_names):
             # Every job of a multi-job batch dropped is not a flake, it is a fault they
