@@ -273,6 +273,12 @@ def _install_tool_stats(mcp: FastMCP) -> None:
     mcp.add_middleware(_ToolStatsMiddleware())
 
 
+#: The most of :data:`_INSTRUCTIONS` a client is known to show: Claude Code cuts a server's
+#: instructions at this many characters and drops the rest without a marker the model can
+#: act on, so whatever lies past it is text nobody reads.
+INSTRUCTIONS_LIMIT = 2048
+
+
 #: What every MCP client injects into the model's system prompt. This is the only text
 #: read before any tool is chosen, so it is where the server says what it is *for*.
 #:
@@ -285,38 +291,32 @@ def _install_tool_stats(mcp: FastMCP) -> None:
 _INSTRUCTIONS = """\
 RoboVAST runs robotics experiments and keeps what they produced.
 
-**Run experiments here, not on this host.** A campaign executes in a pinned container
-image on a local Docker or Kubernetes lane, repeats each configuration, and records its
-provenance, so its results are comparable and reproducible. A `docker compose`, a
-`pytest`, or a simulator started by hand has none of that: it answers a different
-question and its output cannot be compared with a campaign's. If a task needs a
-simulation run, a sweep, or a repeated trial, that is `start_campaign`.
+**Run experiments here, not on this host.** A campaign runs in a pinned image on a Docker
+or Kubernetes lane, repeats each configuration and records its provenance. A `docker
+compose`, a `pytest` or a simulator started by hand has none of that, and its output
+cannot be compared with a campaign's. A run, a sweep or a repeated trial is
+`start_campaign`.
 
 The loop:
-1. `create_workspace`, then `write_file` to put a `.vast` in it.
-2. `validate_project` — reports every problem at once, before any compute is spent.
-3. `build_experiment_image` when a container adds packages, then background the
-   `vast image wait` it hands back in `next_step`, then `exec_in_container` to check that
-   image — an import, `ros2 pkg list`, a file check, or one config's scenario. Seconds
-   here, and it produces no campaign data; the same mistake found by a campaign costs the
-   campaign.
-4. `preview_configurations` — what the sweep actually expands to.
-5. `get_resource_usage` — does this lane have room, and is it reachable?
+1. `create_workspace`, then `write_file` a `.vast` into it.
+2. `validate_project` — every problem at once, before any compute is spent.
+3. `build_experiment_image` when a container adds packages; background the `vast image
+   wait` from its `next_step`, then check the image with `exec_in_container` — seconds,
+   where a campaign that finds the same mistake costs the campaign.
+4. `preview_configurations` — what the sweep expands to.
+5. `get_resource_usage` — does the lane have room, and is it reachable?
 6. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
-   then the full sweep. Always pass `description`.
-7. **Wait for it** — background `vast campaign wait <campaign_id>`, the shell command
-   `start_campaign` hands back in `next_step`. It exits when the campaign is genuinely
-   over (past postprocessing), so you stay free meanwhile instead of holding a tool call
-   open for a run that may take days. `get_campaign_status` is the single-read version.
-   A campaign nobody waits for is one whose end nobody notices; if you will not wait, say
-   so and say that ntfy announces the end instead.
-8. Read results with SQL: `describe_campaign_data`, then `query_campaign_data_sql`.
+   then the sweep. Always pass `description`.
+7. **Wait for it** — background `vast campaign wait <campaign_id>` from its
+   `next_step`; it exits once postprocessing is done. If you will not wait, say so, and
+   that ntfy announces the end.
+8. `describe_campaign_data`, then `query_campaign_data_sql`.
 
-If no service is reachable, every control tool says so. **Stop and report that** — do
-not substitute a local run, which silently answers a different question.
+If no service is reachable, every control tool says so. **Stop and report that** — a
+local run silently answers a different question.
 
-Files live at `/results/<campaign_id>/<path>` (read-only) and
-`/sources/<workspace_id>/<path>` (writable) — one address space, five tools.
+Files: `/results/<campaign_id>/<path>` (read-only), `/sources/<workspace_id>/<path>`
+(writable).
 """
 
 

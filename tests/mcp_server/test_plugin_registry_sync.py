@@ -396,6 +396,20 @@ def test_the_server_says_it_runs_experiments_before_any_tool_is_read():
     assert "stop and report" in instructions
 
 
+def test_the_instructions_fit_what_a_client_shows():
+    """A client cuts the instructions at a fixed length, and the model never sees the rest.
+
+    Nothing marks the cut, so text past it fails silently: the tail of a rule reads as if
+    the rule were never stated. Measured on the server as built, with every installed
+    plugin, since that is the text a client receives.
+    """
+    from robovast.mcp_server.server import INSTRUCTIONS_LIMIT
+    instructions = create_server().instructions or ""
+    assert len(instructions) <= INSTRUCTIONS_LIMIT, (
+        f"the instructions are {len(instructions)} characters; a client shows "
+        f"{INSTRUCTIONS_LIMIT} and drops the rest")
+
+
 @pytest.mark.parametrize("source", ["_RUN_PROMPT", "instructions"])
 def test_checking_the_image_is_part_of_the_loop_an_agent_is_given(source):
     """A capability missing from the loop is a capability nobody uses.

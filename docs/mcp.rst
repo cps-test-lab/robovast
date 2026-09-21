@@ -18,13 +18,18 @@ server spans two concerns:
 * **Analyze** — inspect campaigns, configurations, runs, logs, and tabular run
   data (read-only).
 
-That order is deliberate, and the server's MCP ``instructions`` say the same thing.
-Introducing itself as an archive — the earlier text was "provides access to the results
-created by RoboVAST" — is why assistants ran experiments by hand on the host and came
-here only to read files afterwards. A hand-started simulator has no pinned image, no
-recorded provenance and no repetitions, so its output cannot be compared with a
+That order is deliberate, and the server's MCP ``instructions`` say the same thing. A
+server that introduces itself as an archive is used as one: assistants run experiments by
+hand on the host and come here only to read files. A hand-started simulator has no pinned
+image, no recorded provenance and no repetitions, so its output cannot be compared with a
 campaign's; the instructions say so, and so does ``start_campaign``. Two MCP prompts
 cover the halves: ``run_experiments`` and ``analyze_campaigns``.
+
+The instructions are the only text a client puts in front of the model before any tool
+is chosen, and a client shows only so much of them: Claude Code cuts them at 2048
+characters, without a mark the model can act on. They are kept under that
+(``INSTRUCTIONS_LIMIT``, checked by the test suite), so they carry the loop and the rules
+it cannot do without, and each tool's own description carries the rest.
 
 A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
 binding the service accepts, and ``config_path`` selects among several
