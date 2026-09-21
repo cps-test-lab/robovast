@@ -46,7 +46,7 @@ BUILT = {"runs": 3, "execution_type": "cluster", "images": {"scenario": "build:p
 
 
 def _source_campaign(root, campaign_id="pilot-2026-08-08-120000", *, vast=None,
-                     execution=None, launch=None, run_files=(), extra_config=()):
+                     execution=None, launch=None, run_files=(), extra_config=(), recorded=None):
     """A campaign directory shaped like one a real run leaves behind."""
     campaign = root / campaign_id
     (campaign / "_config").mkdir(parents=True)
@@ -62,7 +62,7 @@ def _source_campaign(root, campaign_id="pilot-2026-08-08-120000", *, vast=None,
         else {"runs": 3, "execution_type": "cluster", "image_revision": DIGEST}))
     (campaign / "_transient").mkdir(exist_ok=True)
     (campaign / "_transient" / "configurations.yaml").write_text(yaml.safe_dump(
-        {"configs": [{"name": "config1"}], "_run_files": list(run_files)}))
+        {"configs": [{"name": "config1"}], "_run_files": list(run_files), **(recorded or {})}))
     if launch is not None:
         write_launch_record(campaign, launch)
     return campaign
@@ -288,6 +288,26 @@ def test_a_config_missing_a_recorded_run_file_is_refused(svc, tmp_path):
     with pytest.raises(retrigger.RetriggerRefused) as e:
         plan.materialize()
     assert "files/nav2_params.yaml" in str(e.value)
+
+
+_SUT_EXECUTION = {"containers": {"sut": {"image": "sut:1",
+                                         "config_files": {"nav2": "files/nav2_params.yaml"}}}}
+
+
+def test_a_config_missing_a_declared_sut_source_is_refused(svc, tmp_path):
+    """A `sut:` source is not in `_run_files` -- a run mounts only its cell's rewritten copy --
+    but composition reads the original, so a snapshot without it cannot be composed again."""
+    _source_campaign(tmp_path / "results", recorded={"execution": _SUT_EXECUTION})
+    plan = _prepare(svc, "pilot-2026-08-08-120000")
+    with pytest.raises(retrigger.RetriggerRefused) as e:
+        plan.materialize()
+    assert "files/nav2_params.yaml" in str(e.value)
+
+
+def test_an_archived_sut_source_satisfies_the_check(svc, tmp_path):
+    source = _source_campaign(tmp_path / "results", recorded={"execution": _SUT_EXECUTION},
+                              extra_config=("files/nav2_params.yaml",))
+    assert retrigger.missing_run_files(source, source / "_config") == []
 
 
 # -- the pre-flight refuses the launch, whichever client asked ---------------------
