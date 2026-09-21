@@ -213,11 +213,12 @@ whether it ever ran:
   node's runs would use the starting allocation while every measured node's used a figure, so
   the campaign would mix two allocations and nothing in the results would say which run got
   which. The message names the reason and the remedy for it.
-* **It never ran at all** — pinned to a node that had no room to spare for it, or dropped
-  because the batch had nothing left to place on that node. That is *counted*, not fatal: the
-  node takes no work for that batch, is re-probed on the next one, and the campaign is
-  refused only if the same node goes unmeasured
-  ``UNMEASURED_BATCH_LIMIT`` batches running. A probe too large for any node's *capacity* is a
+* **It never ran at all** — pinned to a node that had no room to spare for it. That is
+  *counted*, not fatal: the node takes no work for that batch, is re-probed on the next one,
+  and is left out of the campaign only if it goes unmeasured in ``UNMEASURED_BATCH_LIMIT``
+  batches. A probe the batch **cancelled** because it had nothing left to place is reported
+  but not counted: it lost no race for capacity, so it says nothing about whether the node
+  can be measured. A probe too large for any node's *capacity* is a
   separate case and never reaches here — ``preflight`` in ``_start_probes`` refuses it before a
   single job exists.
 

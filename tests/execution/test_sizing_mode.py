@@ -1288,13 +1288,21 @@ def test_a_probe_the_queue_has_not_created_is_cancelled_once_every_job_exists():
     assert q.asked == ["camp-1#probes"], "the probes queue under their own owner"
 
 
-def test_a_cancelled_probe_still_counts_as_a_node_that_went_unmeasured():
-    """The node was held for measuring and never measured. Dropping it from the tally would
-    hide a machine the campaign takes no work on -- which is what the tally is for."""
+def test_a_cancelled_probe_holds_its_node_but_is_not_charged_toward_leaving_it_out():
+    """The node stays held, so a retried run cannot land on it at the declared sizing. But a
+    probe cancelled for want of work lost no race for capacity, so it says nothing about
+    whether the node can be measured -- charging it would leave a busy node out of a search
+    after two batches that simply finished early."""
     q = _Queue(planned=["probe-b"])
-    r = _probing_runner({"probe-b": "n2"}, admission=q)
+    r = _probing_runner({"probe-a": "n1", "probe-b": "n2"}, admission=q)
+    charged = []
+    r._calibration.unmeasured_batch = lambda node_id: charged.append(node_id) or 1
     r.drop_probes_with_no_work_left_to_size()
-    assert r.unmeasured_nodes() == ["n2"]
+
+    assert r.unmeasured_nodes() == ["n1", "n2"], "both are still held for measuring"
+    assert r.weigh_unmeasured_nodes() == {"n1": 1}, "only the probe that lost a race counts"
+    assert charged == ["n1"]
+    assert r.cancelled_probe_nodes() == ["n2"], "reported, not hidden"
 
 
 def test_a_probe_that_is_running_is_left_to_finish():

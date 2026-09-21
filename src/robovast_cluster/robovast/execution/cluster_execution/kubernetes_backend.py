@@ -616,6 +616,10 @@ class BatchJobRunner:
     #: :meth:`for_batch`.
     _deadline_seconds = None
     _deadline_killed = frozenset()
+    #: Nodes whose probe this batch cancelled because it had no job left to place (see
+    #: :meth:`drop_probes_with_no_work_left_to_size`). Still held, and still unmeasured,
+    #: but not for a reason that says anything about whether the node CAN be measured.
+    _probes_cancelled = frozenset()
 
     #: How long a batch tolerates jobs stuck unable to start (image pull / config
     #: error) before failing with the Kubernetes reason. The shared value, because the
@@ -1814,15 +1818,19 @@ class BatchJobRunner:
         what it measures still sizes the next batch of a search, which re-probes only the
         nodes it has no figures for.
 
-        The node stays outstanding in the calibration rather than being released here. It was
-        held for measuring and never measured, which is what ``weigh_unmeasured_nodes`` counts
-        at the end of the batch -- a node that never takes the campaign's work must be
-        reported, not quietly dropped from the tally.
+        The node stays held until the batch ends, so nothing requeued later in the batch --
+        a retried run -- lands on it at the declared sizing beside runs sized from figures.
+        It is not charged toward :data:`~.node_calibration.UNMEASURED_BATCH_LIMIT`, though:
+        that limit tells a node that cannot be measured from one that was busy, and a probe
+        cancelled for want of work is evidence of neither. The batch reports it separately
+        (:meth:`cancelled_probe_nodes`), and the next batch probes the node again.
         """
         admission = self.admission
         if admission is None or not self._probes:
             return 0
         dropped = admission.drop_planned(self._probe_owner())
+        self._probes_cancelled = self._probes_cancelled | {
+            self._probes[k] for k in dropped if k in self._probes}
         if dropped:
             logger.info(
                 "Batch %s: every job of this batch exists, so %d calibration probe(s) that "
@@ -1867,11 +1875,20 @@ class BatchJobRunner:
         :data:`~.node_calibration.UNMEASURED_BATCH_LIMIT`, which is where the number a caller
         weighs this against is argued.
         """
-        nodes = self.unmeasured_nodes()
+        nodes = [n for n in self.unmeasured_nodes() if n not in self._probes_cancelled]
         calibration = self._calibration
         if not nodes or calibration is None:
             return {}
         return {node_id: calibration.unmeasured_batch(node_id) for node_id in nodes}
+
+    def cancelled_probe_nodes(self) -> list:
+        """Nodes that sat out this batch because their probe was cancelled for want of work.
+
+        Unmeasured like the nodes :meth:`weigh_unmeasured_nodes` counts, and reported beside
+        them, but never charged: the probe did not lose a race for capacity, the batch simply
+        finished placing its jobs before the queue reached it.
+        """
+        return sorted(n for n in self._probes_cancelled if n in self.unmeasured_nodes())
 
     def skip_unmeasured_nodes(self, node_ids, reason: str) -> None:
         """Leave *node_ids* out of this campaign for good.
@@ -3589,6 +3606,7 @@ class KubernetesBackend(ExecutionBackend):
                 from .node_calibration import UNMEASURED_BATCH_LIMIT  # noqa: PLC0415
 
                 unmeasured = {} if batch_error else runner.weigh_unmeasured_nodes()
+                cancelled = [] if batch_error else runner.cancelled_probe_nodes()
                 runner.abandon_outstanding_probes()
                 # **Only once it has happened twice running.** A probe that could never be
                 # placed on any node is already refused before a single job exists, by the
@@ -3643,11 +3661,17 @@ class KubernetesBackend(ExecutionBackend):
                     # complaint that started all this was that nothing in the results said so.
                     logger.warning(
                         "Batch %s: %s took no work -- held for measuring and never measured. "
-                        "Re-probed on the next batch; the campaign is refused if the same "
-                        "node goes unmeasured %d batches running.", batch_tag,
+                        "Re-probed on the next batch; a node unmeasured in %d batches is left "
+                        "out of the campaign.", batch_tag,
                         ", ".join(f"{node_id} ({batches} batch(es) now)"
                                   for node_id, batches in sorted(unmeasured.items())),
                         UNMEASURED_BATCH_LIMIT)
+                if cancelled:
+                    logger.warning(
+                        "Batch %s: %s took no work -- every job of the batch was placed "
+                        "before its probe could start, so the probe was cancelled. Not "
+                        "counted toward leaving the node out; re-probed on the next batch.",
+                        batch_tag, ", ".join(cancelled))
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)
