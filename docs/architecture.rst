@@ -891,13 +891,24 @@ untyped ingest makes every comparison lexicographic — ``ORDER BY timestamp`` p
 ``"10.022"`` before ``"9.5"``, shuffling a trajectory and producing a path length that is
 wrong by a factor rather than an error. So ingest infers a type per column
 (:mod:`robovast.results_processing.csv_types`): a column whose every non-empty value is a
-plain decimal number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything
-else stays ``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the
-column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its text, and
-NaN has no SQLite representation, so accepting it would delete data instead of typing it).
+number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything else stays
+``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the column, and
+``"007"`` is text, because a zero-padded identifier must keep its text.
 ``param_*`` columns are typed the same way from their resolved values.
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
 caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
+
+**A non-finite value is a measurement, so it is stored as one.** A range with no return, a
+path length for a trial where no path came back, a ratio with no denominator: these reach
+the ingest as CSV text (``inf``, ``nan``) and as Python floats, from a ``.jsonl`` file or
+from the campaign record's own parameters. ``REAL`` is ``double precision``, which holds
+``Infinity``, ``-Infinity`` and ``NaN`` natively, so the column stays numeric and ``NULL``
+is left to mean that nothing was measured. A container is JSON-encoded with
+``allow_nan=False`` and each non-finite float written as the string ``"inf"``, ``"-inf"`` or
+``"nan"``: Python's ``json`` otherwise writes ``Infinity``, ``-Infinity`` and ``NaN``,
+which JSON has no tokens for and which Postgres refuses when the column is cast — failing
+the **whole query** rather than the row that holds one. The ``*_json`` columns mirrored from
+``campaign.db`` are re-encoded the same way on their way into the index.
 
 **The declaration never outlives the evidence.** A column is declared by the first run that
 writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,

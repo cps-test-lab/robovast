@@ -2,11 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for CSV column-type inference (``robovast.results_processing.csv_types``)."""
 
+import json
+import math
+
 import pytest
 
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, cast_expr, coerce,
-                                                   column_def, infer_column_types, sql_value,
+from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, as_stored,
+                                                   cast_expr, coerce, column_def,
+                                                   infer_column_types, json_text, sql_value,
                                                    value_type, widest)
+
+
+def _refuse_constant(token):
+    raise AssertionError(f"{token} is not JSON and no strict parser accepts it")
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -29,13 +37,13 @@ from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
     ("1 m", TEXT),
     ("007", TEXT),          # zero-padded identifier must keep its text
     ("01.5", TEXT),
-    ("nan", TEXT),          # no SQLite representation — sqlite3 would store NULL
-    ("inf", TEXT),
-    ("-inf", TEXT),
-    ("1e999", TEXT),        # overflows to infinity: the same loss as literal "inf"
+    ("nan", REAL),          # double precision holds NaN and the infinities natively
+    ("inf", REAL),
+    ("-inf", REAL),
+    ("1e999", TEXT),        # a finite literal that overflows: not an infinity anyone measured
     ("-1e999", TEXT),
     ("1e308", REAL),        # large but finite: still a number
-    ("9" * 25, TEXT),       # wider than SQLite's 8-byte integer
+    ("9" * 25, TEXT),       # wider than bigint's 8 bytes
 ])
 def test_value_type(value, expected):
     assert value_type(value) == expected
@@ -145,3 +153,86 @@ def test_the_declaration_and_the_value_agree_for_a_boolean_column():
 
     assert declared == INTEGER
     assert all(isinstance(sql_value(r["is_active"], declared), int) for r in rows)
+
+
+# -- non-finite floats, which JSON has no token for --------------------------
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), "inf", "-inf", "+inf",
+                                   "Infinity", "INF"])
+def test_an_infinity_is_a_number(value):
+    """A censored measurement is a result: ``double precision`` holds it, so the column
+    stays numeric and ``NULL`` is left to mean that nothing was measured."""
+    assert value_type(value) == REAL
+    stored = sql_value(value, REAL)
+    assert isinstance(stored, float) and math.isinf(stored)
+
+
+@pytest.mark.parametrize("value", [float("nan"), "nan", "NaN", "-nan"])
+def test_a_nan_is_a_number(value):
+    assert value_type(value) == REAL
+    stored = sql_value(value, REAL)
+    assert isinstance(stored, float) and math.isnan(stored)
+
+
+def test_one_censored_trial_does_not_turn_a_column_of_numbers_into_text():
+    """The failure this module exists to prevent: a text column compares lexicographically,
+    so one ``inf`` would make every ``ORDER BY`` over the finite trials wrong."""
+    rows = [{"clearance": "1.5"}, {"clearance": "inf"}, {"clearance": "10.25"}]
+
+    assert infer_column_types(rows, ["clearance"])["clearance"] == REAL
+
+
+def test_an_integer_column_with_an_infinity_widens_to_real():
+    rows = [{"steps": "3"}, {"steps": "inf"}]
+
+    assert infer_column_types(rows, ["steps"])["steps"] == REAL
+
+
+def test_a_finite_literal_that_overflows_stays_text():
+    """``1e999`` is not an infinity anybody measured; storing it as one would invent one."""
+    assert value_type("1e999") == TEXT
+
+
+def test_a_non_finite_float_in_a_container_never_becomes_a_json_token():
+    """One of them anywhere in the value makes every query casting the column fail --
+    the whole query, not the row -- so the substitution has to reach into the value."""
+    encoded = sql_value({"path_length": float("inf"),
+                         "gaps": [1.0, float("nan"), float("-inf")]}, TEXT)
+
+    assert json.loads(encoded, parse_constant=_refuse_constant) == {
+        "path_length": "inf", "gaps": [1.0, "nan", "-inf"]}
+
+
+def test_json_text_writes_what_a_strict_parser_accepts():
+    assert json.loads(json_text({"a": [float("nan")]}),
+                      parse_constant=_refuse_constant) == {"a": ["nan"]}
+    assert json_text([1.0, 2.0]) == "[1.0, 2.0]"
+
+
+def test_as_stored_leaves_everything_finite_alone():
+    value = {"speed": 0.5, "name": "goal-1", "steps": [1, 2], "ok": True, "gap": None}
+
+    assert as_stored(value) == value
+
+
+def test_a_finite_value_is_unaffected():
+    """The ordinary path, which the substitution must not touch."""
+    assert sql_value("1.5", REAL) == pytest.approx(1.5)
+    assert sql_value(1.5, REAL) == pytest.approx(1.5)
+    assert sql_value("1e308", REAL) == pytest.approx(1e308)
+    assert sql_value("2", INTEGER) == 2
+    assert sql_value("passed", TEXT) == "passed"
+    assert sql_value("", REAL) is None
+    assert sql_value([1.0, {"x": 2.0}], TEXT) == '[1.0, {"x": 2.0}]'
+
+
+def test_the_campaign_record_json_is_made_castable_on_its_way_into_the_index():
+    """``campaign.db`` is written with Python's ``json``, whose ``Infinity`` token Postgres
+    refuses on a ``jsonb`` cast; the mirror rewrites it and leaves everything else as is."""
+    from robovast.results_processing.dimension_ingest import _indexable
+
+    assert json.loads(_indexable("objectives_json", '{"length": Infinity, "gap": NaN}'),
+                      parse_constant=_refuse_constant) == {"length": "inf", "gap": "nan"}
+    assert _indexable("objectives_json", '{"length": 1.5}') == '{"length": 1.5}'
+    assert _indexable("status", "Infinity") == "Infinity", "only the *_json columns"

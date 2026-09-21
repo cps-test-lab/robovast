@@ -9,6 +9,7 @@ arrives as a number or as its own text.
 Set ``ROBOVAST_TEST_PG_DSN`` to run them; without it they skip.
 """
 
+import math
 import os
 
 import pytest
@@ -139,6 +140,36 @@ def test_a_container_value_is_json_encoded(conn):
                types={"goal": TEXT})
 
     assert conn.execute("SELECT goal FROM params").fetchone()[0] == "[1.0, 2.0]"
+
+
+def test_a_censored_measurement_reaches_the_index_as_a_number(conn):
+    """A sensor with no return, ingested: the value is a number and is not a NULL, and
+    the column stays numeric -- so the row that was censored is still in the answer, in
+    order, instead of being indistinguishable from one nobody measured."""
+    sink = PostgresRowSink(conn, campaign_id="camp-1")
+    rows = [{"distance": "1.5"}, {"distance": ""}, {"distance": "inf"},
+            {"distance": float("nan")}, {"distance": "10.25"}]
+
+    sink.write("out", rows, context={"config_name": "goal-1", "run_id": 0})
+
+    got = [r[0] for r in conn.execute(
+        "SELECT distance FROM out WHERE distance IS NOT NULL ORDER BY distance").fetchall()]
+    assert got[:3] == [1.5, 10.25, float("inf")], "ordered as numbers, not as text"
+    assert math.isnan(got[3]), "NaN sorts above every number in Postgres"
+    assert conn.execute(
+        "SELECT count(*) FROM out WHERE distance IS NULL").fetchone()[0] == 1
+
+
+def test_a_non_finite_value_in_a_container_leaves_the_column_castable(conn):
+    """The failure this closes is not one row: ``::jsonb`` fails the whole query, so a
+    single censored field would cost every field of every run the query asked for."""
+    sink = PostgresRowSink(conn, campaign_id="camp-1")
+    sink.write("params", [{"goal": {"path_length": float("inf"), "gaps": [1.0]}}],
+               context={"config_name": "goal-1", "run_id": 0},
+               types={"goal": TEXT})
+
+    got = conn.execute("SELECT goal::jsonb ->> 'path_length' FROM params").fetchone()[0]
+    assert got == "inf"
 
 
 def test_two_campaigns_share_one_table(conn):

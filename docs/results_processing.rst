@@ -972,6 +972,31 @@ or would not fit an identifier even at full length. Those get no column and are 
 warning level during ingest, naming the destination: a column silently missing is the same
 wrong answer as a column silently shared.
 
+.. _non-finite-values:
+
+A measurement with no finite value
+----------------------------------
+
+A metric can come out infinite or undefined and still be right: a range sensor reports no
+return, a trial produced no trajectory so its path length is infinite, a ratio had no
+denominator. Such a value is stored as a number — ``double precision``'s ``Infinity``,
+``-Infinity`` or ``NaN`` — in a column that stays numeric, whether the CSV wrote it ``inf``,
+``-inf`` or ``nan``. A value nobody measured is ``NULL``, so the two never have to be told
+apart by guesswork::
+
+    SELECT AVG(path_length) FROM nav_metrics;                 -- Infinity if any trial was censored
+    SELECT * FROM nav_metrics WHERE path_length = 'Infinity'; -- the censored trials
+    SELECT * FROM nav_metrics WHERE path_length = 'NaN';      -- the undefined ones
+    SELECT * FROM nav_metrics WHERE path_length IS NULL;      -- and the unmeasured ones
+
+In Postgres, ``NaN`` equals itself and sorts above every number, infinity included, so an
+``ORDER BY`` or a ``MAX`` over such a column puts it last.
+
+Inside a JSON-encoded value — a container-valued ``param_*`` column, ``channels_json`` —
+the same three appear as the JSON strings ``"inf"``, ``"-inf"`` and ``"nan"``, so
+``param_gaps::jsonb ->> 1`` is ``nan`` rather than a token that would make the cast fail,
+and ``(param_gaps::jsonb ->> 1)::double precision`` is the number.
+
 .. _reading-result-files:
 
 Reading these files
