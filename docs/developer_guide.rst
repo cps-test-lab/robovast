@@ -1491,6 +1491,14 @@ Then register the class as an entry point in ``pyproject.toml``:
 
 The plugin is picked up automatically the next time the server starts.
 
+Where the plugin's tools answer a question an agent would otherwise put to a core tool —
+the nav tools against ``query_campaign_data_sql``, say — give the class an
+``instructions`` attribute: one short paragraph appended to the server's MCP
+instructions, the only text a client shows before any tool is chosen. Core text names no
+plugin tool, so the routing exists exactly where the plugin is installed. The server
+refuses to start when the instructions with every plugin's paragraph exceed what a client
+shows (:ref:`the instructions limit <mcp-instructions-limit>`); keep the paragraph to a sentence or two.
+
 
 .. _extending-search-strategy:
 

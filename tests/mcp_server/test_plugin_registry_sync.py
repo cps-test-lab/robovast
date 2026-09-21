@@ -744,3 +744,43 @@ def test_the_tool_surface_stays_within_its_token_budget():
         f"tool surface is ~{total} tokens, over the {_SURFACE_TOKEN_BUDGET} budget. "
         f"Largest: {worst}. Compress a description or merge two tools — do not just "
         "raise the budget.")
+
+
+def test_a_plugin_adds_its_own_line_to_the_instructions():
+    """Routing to a plugin's tools is said where the plugin is installed, and only there.
+
+    The core text names no plugin tool: without the plugin that name is a tool the
+    caller cannot call.
+    """
+    from robovast.mcp_server.server import _INSTRUCTIONS, compose_instructions
+
+    class _Plugin:
+        name = "extra"
+        instructions = "Ask `extra_tool` first."
+
+    class _Silent:
+        name = "silent"
+
+    text = compose_instructions([_Plugin(), _Silent()])
+    assert text.startswith(_INSTRUCTIONS)
+    assert text.endswith("\nAsk `extra_tool` first.\n")
+    assert compose_instructions([_Silent()]) == _INSTRUCTIONS
+    assert "nav_get_" not in _INSTRUCTIONS
+
+
+def test_instructions_a_client_would_cut_stop_the_server():
+    """Past the limit the cut lands on some line silently, so the server refuses to start."""
+    from robovast.mcp_server.server import INSTRUCTIONS_LIMIT, compose_instructions
+
+    class _Verbose:
+        name = "verbose"
+        instructions = "x" * INSTRUCTIONS_LIMIT
+
+    with pytest.raises(RuntimeError, match="verbose"):
+        compose_instructions([_Verbose()])
+
+
+def test_the_nav_plugin_routes_where_the_robot_went_to_its_tools():
+    pytest.importorskip("robovast_nav")
+    instructions = create_server().instructions or ""
+    assert "`nav_get_trajectory`" in instructions

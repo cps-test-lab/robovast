@@ -938,6 +938,14 @@ class NavMCPPlugin:
 
     name = "nav"
 
+    #: Routing, in the server instructions: the SQL tool is what an agent reaches for
+    #: first, and these answer where the robot went from the same tables, reduced.
+    instructions = (
+        "Where the robot went: `nav_get_trajectory`, `nav_get_path_deviation`, "
+        "`nav_get_obstacles`, `nav_get_map_info` and `nav_get_action_feedback` answer "
+        "it over every recorded pose. Ask them before writing SQL, which over a thinned "
+        "or unjoined result gives a different number.")
+
     def register(self, mcp: FastMCP) -> None:
         for fn in _TOOLS:
             mcp.tool()(fn)
