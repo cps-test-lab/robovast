@@ -1932,6 +1932,13 @@ That is also what makes the records cheap to read. ``_summary_for``, ``_started_
 local files — no fetch, no per-row round trip on a listing, and nothing that can be
 reachable for one reader and not another.
 
+The order is computed over every id **before** the page is cut, so each sort key has to be
+answerable without building a summary per campaign: the recency keys come from the memoised
+``_started_at_for`` / ``_finished_at_for``, and ``sort="size"`` from ``_results_bytes_for``,
+which reads the same ``outcome.json`` figure the row shows and memoises it — ``None``
+included — once a terminal record says it. Only the page's own campaigns get a
+``_summary_for``.
+
 .. _campaign-building-phase:
 
 A campaign waits for its image; the request does not

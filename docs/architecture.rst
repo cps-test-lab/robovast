@@ -1092,7 +1092,11 @@ lives in the ``run_data`` MCP plugin):
   connect and on every change, which is how the webui shows a launched campaign — and
   its ``building`` / ``variation`` / ``running`` / … phase — the instant it is
   registered, without polling. ``list_campaigns`` stays the authoritative pull for
-  MCP and the CLI. Both draw from one rule: a campaign tracked in the in-process
+  MCP and the CLI. The stream takes the pull's ``sort``/``order``, because the order is
+  applied before the page is cut and so cannot be re-applied by a client; the web UI
+  keeps its app-wide stream in the default order, which the start/end notices read,
+  and opens a second one only while its list is shown in another. Both draw from one
+  rule: a campaign tracked in the in-process
   registry reports its live ``ControllerState``; an untracked one is reconstructed
   from its recorded facts (``reconstruct_status_from_disk`` over ``campaign_dir``) — the
   same precedence ``get_status`` uses. Which campaigns *exist* is the union of

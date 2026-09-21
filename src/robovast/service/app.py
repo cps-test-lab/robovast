@@ -56,6 +56,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
+                                        CampaignSortKey, SortOrder,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
@@ -837,7 +838,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #: Poll cadence of the campaign-list stream's server-side loop.
     _sse_list_poll_s = 1.0
 
-    async def _sse_campaign_list(request: Request):
+    async def _sse_campaign_list(request: Request, sort: str, order: str):
         """SSE generator pushing the campaign list whenever it changes.
 
         A server-side loop over the same ``list_campaigns`` pull the CLI/MCP use, so
@@ -848,9 +849,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         native ``EventSource`` reconnect, which re-runs this handler and re-sends the
         list; a connection that died without the browser noticing is caught by the
         client's own heartbeat watchdog, so no polling fallback is needed either way.
+
+        ``sort``/``order`` are those of ``GET /campaigns``, validated by the route before
+        the stream opens: a value refused mid-stream would arrive as a ``streamerror``,
+        which a client reads as a fault in the listing rather than in its own request.
         """
         from robovast.service.interface import \
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
+        listing = ListCampaignsRequest(limit=100, offset=0, sort=sort, order=order)
         yield ": open\n\n"
         last = None
         while not app.state.should_exit():
@@ -860,8 +866,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             # serialization failure takes the same streamerror path as a failed pull.
             encoded = await _pull_or_exit(
                 lambda: _json.dumps(
-                    impl.list_campaigns(
-                        ListCampaignsRequest(limit=100, offset=0)).model_dump(),
+                    impl.list_campaigns(listing).model_dump(),
                     default=str))
             if encoded is None:  # shutting down — close the stream, don't wait
                 return
@@ -1546,17 +1551,30 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return _guard(lambda: impl.create_campaign(request))
 
     @app.get(Routes.CAMPAIGNS, response_model=ListCampaignsResponse, tags=["campaigns"])
-    def list_campaigns(limit: int = 20, offset: int = 0) -> ListCampaignsResponse:
+    def list_campaigns(limit: int = 20, offset: int = 0,
+                       sort: CampaignSortKey = "recent",
+                       order: SortOrder = "desc") -> ListCampaignsResponse:
+        """The campaign listing: live campaigns first, then ordered by ``sort``/``order``.
+
+        ``sort`` is ``recent`` (when a campaign ended, or started while it is live) or
+        ``size`` (its recorded results size); ``order`` is ``desc`` or ``asc``. Any other
+        value is refused with 422.
+        """
         from robovast.service.interface import \
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
         return _guard(
-            lambda: impl.list_campaigns(ListCampaignsRequest(limit=limit, offset=offset)))
+            lambda: impl.list_campaigns(ListCampaignsRequest(
+                limit=limit, offset=offset, sort=sort, order=order)))
 
     @app.get(Routes.CAMPAIGNS_STREAM, tags=["campaigns"])
-    async def stream_campaigns(request: Request):
-        """Server-sent events: the campaign list, pushed on every change."""
+    async def stream_campaigns(request: Request, sort: CampaignSortKey = "recent",
+                               order: SortOrder = "desc"):
+        """Server-sent events: the campaign list, pushed on every change.
+
+        Ordered as ``GET /campaigns`` is, by the same ``sort``/``order``.
+        """
         return StreamingResponse(
-            _sse_campaign_list(request),
+            _sse_campaign_list(request, sort, order),
             media_type="text/event-stream", headers=_sse_headers)
 
     @app.get(Routes.campaign_status("{campaign_id}"), response_model=StatusResponse,

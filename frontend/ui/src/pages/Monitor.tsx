@@ -58,7 +58,13 @@ import {
 } from '@/lib/robovastClient'
 import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon, RunViewIcon } from '@/components/viewIcons'
-import { useCampaignStream } from '@/components/CampaignStreamProvider'
+import { useCampaignList, useCampaignStream } from '@/components/CampaignStreamProvider'
+import {
+  CAMPAIGN_SORT_CHOICES,
+  campaignSortKey,
+  isDefaultCampaignSort,
+  type CampaignListSort,
+} from '@/lib/campaignSort'
 import { useToasts } from '@/components/ToastProvider'
 import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
@@ -71,7 +77,7 @@ import {
   type CampaignFilter,
 } from '@/lib/campaignFilter'
 import { formatAge, formatLocalClock, formatLocalTime } from '@/lib/time'
-import { formatDuration } from '@/lib/format'
+import { formatBytes, formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
@@ -117,6 +123,10 @@ const CONTROLS_COLUMN = 108
 // The age column. Fixed and right-aligned so the ages read down the page as one column; wide
 // enough for the longest string formatAge produces.
 const AGE_COLUMN = 78
+
+// The size column of a folded card, fixed and right-aligned for the age column's reason; wide
+// enough for the longest string formatBytes produces ("1023 KiB").
+const SIZE_COLUMN = 64
 
 /** How long a finished campaign took, or null while it is still running / was never recorded.
  *  Derivable from the listing alone, and shown nowhere else — the card had a start time and no
@@ -1103,6 +1113,21 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               rather than dashed when none can be had — nothing has finished yet, or it is a
               search whose rounds nothing bounds (see campaignEtaSeconds) — because an empty cell
               reads as "not known" while a dash reads as a value. */}
+          {/* Folded only: open, the card's details carry the same figure with its label. Empty
+              rather than dashed when none is recorded (a campaign still running, or one never
+              measured), for the reason the age column gives, and kept at its width even then so
+              the sizes read down the page as one column. */}
+          {collapsed ? (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              noWrap
+              title={summary.results_bytes != null ? 'results size' : undefined}
+              sx={{ flexShrink: 0, width: SIZE_COLUMN, textAlign: 'right' }}
+            >
+              {summary.results_bytes != null ? formatBytes(summary.results_bytes) : ''}
+            </Typography>
+          ) : null}
           {summary.started_at ? (
             <HoverFacts
               facts={
@@ -1360,7 +1385,12 @@ export function Monitor({
   openCampaign,
   shareImport,
   onShareImportConsumed,
+  listSort,
+  onListSortChange,
 }: {
+  /** The order the list is shown in — held in the URL by App (`Nav.listSort`). */
+  listSort: CampaignListSort
+  onListSortChange: (sort: CampaignListSort) => void
   /** A search string from a `#/execution?import=` link: open the share dialog on it. */
   shareImport?: string
   /** A campaign to open and scroll to on arrival — `#/execution?campaign=<id>`. An instruction,
@@ -1369,7 +1399,10 @@ export function Monitor({
   /** Called once that request has been taken, so the URL stops carrying a spent one. */
   onShareImportConsumed?: () => void
 }) {
-  const { data, error, live, reconnect } = useCampaignStream()
+  // The list in the order asked for, and beside it the app-wide one, which is always newest
+  // first: that is what says which campaign IS the newest, whatever order this page shows.
+  const { data, error, live, reconnect } = useCampaignList(listSort)
+  const newestId = useCampaignStream().data?.campaigns[0]?.campaign_id
   const active = useActiveView()
   const [importAnchor, setImportAnchor] = useState<HTMLElement | null>(null)
   const [shareOpen, setShareOpen] = useState<string | null>(null)
@@ -1473,6 +1506,31 @@ export function Monitor({
             <ChecklistRoundedIcon fontSize="small" />
           </IconButton>
         </Tooltip>
+        {/* Beside the search, and always on screen rather than inside the search panel: the
+            order changes which campaigns the page holds at all (the service orders before it
+            cuts the list), so a choice that outlived a closed panel would reshape the list with
+            nothing on screen saying so. */}
+        <TextField
+          select
+          size="small"
+          variant="standard"
+          aria-label="order campaigns"
+          value={campaignSortKey(listSort)}
+          onChange={(e) => {
+            const choice = CAMPAIGN_SORT_CHOICES.find(
+              (c) => campaignSortKey(c.sort) === e.target.value,
+            )
+            if (choice) onListSortChange(choice.sort)
+          }}
+          slotProps={{ input: { disableUnderline: isDefaultCampaignSort(listSort) } }}
+          sx={{ minWidth: 120, '& .MuiInputBase-input': { typography: 'caption' } }}
+        >
+          {CAMPAIGN_SORT_CHOICES.map((c) => (
+            <MenuItem key={campaignSortKey(c.sort)} value={campaignSortKey(c.sort)} dense>
+              {c.label}
+            </MenuItem>
+          ))}
+        </TextField>
         <Tooltip title={filter ? 'Hide the search' : 'Search campaigns'}>
           <IconButton
             size="small"
@@ -1618,12 +1676,12 @@ export function Monitor({
       ) : (
         // `newest` follows the campaign, not the row position: a filter that hides the
         // campaign the user is here to watch must not promote another one into its place and
-        // auto-expand its failures.
+        // auto-expand its failures, and neither must an order that puts another one first.
         shown.map((c) => (
           <CampaignCard
             key={c.campaign_id}
             summary={c}
-            newest={c.campaign_id === data.campaigns[0].campaign_id}
+            newest={c.campaign_id === newestId}
             openedByLink={c.campaign_id === openCampaign}
             select={selected ? {
               checked: selected.has(c.campaign_id),

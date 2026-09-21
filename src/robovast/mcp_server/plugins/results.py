@@ -34,7 +34,7 @@ where the SQL ones return ``{"error": ...}`` — an image response has no dict t
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context, FastMCP
@@ -82,6 +82,10 @@ def _summary_to_dict(summary) -> dict:
         "num_composition_failed": summary.num_composition_failed,
         "num_no_sample": summary.num_no_sample,
     }
+    # Omitted when not recorded, like ``finished_at``: a running or unmeasured campaign has
+    # no size, which is a different fact from a size of 0.
+    if summary.results_bytes is not None:
+        entry["results_bytes"] = summary.results_bytes
     if summary.description:
         entry["description"] = summary.description
     if summary.finished_at:
@@ -93,9 +97,9 @@ def _summary_to_dict(summary) -> dict:
     return entry
 
 
-def _walk_all(client) -> list:
+def _walk_all(client, sort: str, order: str) -> list:
     """Every campaign summary the service knows, in the service's order (live first,
-    then newest first).
+    then by *sort*/*order*).
 
     Only for ``running_only``. The service now leads with the live campaigns, so the
     first page usually holds them all — but "usually" is not an answer to "which are
@@ -106,7 +110,7 @@ def _walk_all(client) -> list:
     offset = 0
     while True:
         page = client.list_campaigns(
-            ListCampaignsRequest(limit=_WALK_PAGE, offset=offset))
+            ListCampaignsRequest(limit=_WALK_PAGE, offset=offset, sort=sort, order=order))
         out.extend(page.campaigns)
         offset += _WALK_PAGE
         if offset >= page.total or not page.campaigns:
@@ -114,22 +118,23 @@ def _walk_all(client) -> list:
 
 
 def list_campaigns(limit: int = 20, offset: int = 0,
-                   running_only: bool = False) -> dict:
-    """What has been run? Campaigns newest first — the first page answers "what did I
-    just run?".
+                   running_only: bool = False,
+                   sort: Literal["recent", "size"] = "recent",
+                   order: Literal["desc", "asc"] = "desc") -> dict:
+    """What has been run? Live campaigns first, then newest first.
 
     Args:
         limit: Maximum campaigns to return.
         offset: Campaigns to skip (campaign index).
-        running_only: Only the campaigns the service considers live, across all lanes.
-            The whole list is walked before filtering, so a long-running campaign started
-            days ago still appears; ``total`` then counts the live ones.
+        running_only: Only live campaigns, on all lanes and however old; ``total`` counts
+            them.
+        sort: ``size`` orders by ``results_bytes``, unknown last; live ones lead.
 
     Returns:
         ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
         mode, started_at, postprocessed, num_runs, num_passed, num_failed,
-        num_composition_failed, num_no_sample}`` plus ``description`` and ``finished_at``
-        where recorded, and ``paused``/``priority`` where either is not the default (a
+        num_composition_failed, num_no_sample}`` plus ``description``, ``finished_at`` and
+        ``results_bytes`` where recorded, and ``paused``/``priority`` where either is not the default (a
         held campaign makes no progress on purpose) — or ``{error}``. ``mode`` is ``search`` or ``batch``; a search is
         read by its cells (``run_view``'s ``batch``/``paramset_id``/``objective``).
 
@@ -140,7 +145,14 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         or this host's results root when none is reachable, since "no campaigns" means
         different things from the two.
     """
+    from pydantic import ValidationError
+
     from robovast.service.interface import ListCampaignsRequest
+    try:
+        # Built first so a value outside the vocabulary is refused before anything is asked.
+        request = ListCampaignsRequest(limit=limit, offset=offset, sort=sort, order=order)
+    except ValidationError as e:
+        return {"error": str(e)}
     client = service_access.service_client()
     source = "service"
     if client is None:
@@ -150,12 +162,12 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     try:
         if running_only:
             from robovast.execution.control_server import is_running
-            matched = [c for c in _walk_all(client) if is_running(c.phase)]
+            matched = [c for c in _walk_all(client, request.sort, request.order)
+                       if is_running(c.phase)]
             total = len(matched)
             window = matched[offset:offset + limit]
         else:
-            page = client.list_campaigns(
-                ListCampaignsRequest(limit=limit, offset=offset))
+            page = client.list_campaigns(request)
             total = page.total
             window = page.campaigns
     except Exception as e:  # noqa: BLE001

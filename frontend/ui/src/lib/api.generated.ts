@@ -241,7 +241,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Campaigns */
+        /**
+         * List Campaigns
+         * @description The campaign listing: live campaigns first, then ordered by ``sort``/``order``.
+         *
+         *     ``sort`` is ``recent`` (when a campaign ended, or started while it is live) or
+         *     ``size`` (its recorded results size); ``order`` is ``desc`` or ``asc``. Any other
+         *     value is refused with 422.
+         */
         get: operations["list_campaigns_campaigns_get"];
         put?: never;
         /** Create Campaign */
@@ -333,6 +340,8 @@ export interface paths {
         /**
          * Stream Campaigns
          * @description Server-sent events: the campaign list, pushed on every change.
+         *
+         *     Ordered as ``GET /campaigns`` is, by the same ``sort``/``order``.
          */
         get: operations["stream_campaigns_campaigns_events_get"];
         put?: never;
@@ -4939,6 +4948,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 offset?: number;
+                sort?: "recent" | "size";
+                order?: "desc" | "asc";
             };
             header?: never;
             path?: never;
@@ -5085,7 +5096,10 @@ export interface operations {
     };
     stream_campaigns_campaigns_events_get: {
         parameters: {
-            query?: never;
+            query?: {
+                sort?: "recent" | "size";
+                order?: "desc" | "asc";
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5099,6 +5113,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
