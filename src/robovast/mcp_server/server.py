@@ -299,18 +299,17 @@ cannot be compared with a campaign's. A run, a sweep or a repeated trial is
 
 The loop:
 1. `create_workspace`, then `write_file` a `.vast` into it.
-2. `validate_project` — every problem at once, before any compute is spent.
-3. `build_experiment_image` when a container adds packages; background the `vast image
-   wait` from its `next_step`, then check the image with `exec_in_container` — seconds,
-   where a campaign that finds the same mistake costs the campaign.
-4. `preview_configurations` — what the sweep expands to.
-5. `get_resource_usage` — does the lane have room, and is it reachable?
-6. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
+2. `validate_project`, before any compute is spent.
+3. `preview_configurations` — what the sweep expands to.
+4. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
    then the sweep. Always pass `description`.
-7. **Wait for it** — background `vast campaign wait <campaign_id>` from its
-   `next_step`; it exits once postprocessing is done. If you will not wait, say so, and
-   that ntfy announces the end.
-8. `describe_campaign_data`, then `query_campaign_data_sql`.
+5. **Wait for it** — background `vast campaign wait <campaign_id>` from its
+   `next_step`; it exits once postprocessing is done.
+6. `describe_campaign_data`, then `query_campaign_data_sql`.
+
+Images: `build_experiment_image` extends a container image with packages;
+`exec_in_container` runs a command or one config's scenario in an image, to test it
+before a campaign does.
 
 If no service is reachable, every control tool says so. **Stop and report that** — a
 local run silently answers a different question.
