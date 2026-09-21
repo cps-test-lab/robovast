@@ -396,16 +396,28 @@ def test_the_server_says_it_runs_experiments_before_any_tool_is_read():
     assert "stop and report" in instructions
 
 
-@pytest.mark.parametrize("source", ["_RUN_PROMPT", "instructions"])
-def test_checking_the_image_is_part_of_the_loop_an_agent_is_given(source):
-    """A capability missing from the loop is a capability nobody uses.
+def test_the_instructions_fit_what_a_client_shows():
+    """A client cuts the instructions at a fixed length, and the model never sees the rest.
 
-    ``exec_in_container`` and ``build_experiment_image`` existed, were documented, and had
-    good descriptions — and the loop went ``validate → preview → usage → start_campaign``,
-    so an agent following it reached ``start_campaign`` with an unverified image and paid
-    a full campaign to learn a package was missing. That is the same mistake this file
-    already records about itself: the instructions once introduced the server as an
-    archive, and the whole execution half went unused.
+    Nothing marks the cut, so text past it fails silently: the tail of a rule reads as if
+    the rule were never stated. Measured on the server as built, with every installed
+    plugin, since that is the text a client receives.
+    """
+    from robovast.mcp_server.server import INSTRUCTIONS_LIMIT
+    instructions = create_server().instructions or ""
+    assert len(instructions) <= INSTRUCTIONS_LIMIT, (
+        f"the instructions are {len(instructions)} characters; a client shows "
+        f"{INSTRUCTIONS_LIMIT} and drops the rest")
+
+
+@pytest.mark.parametrize("source", ["_RUN_PROMPT", "instructions"])
+def test_checking_the_image_is_offered_before_a_campaign(source):
+    """A capability an agent is never shown is a capability nobody uses.
+
+    Both texts name ``build_experiment_image`` and ``exec_in_container``. The run prompt
+    walks the loop step by step, so there the check comes before the step that launches:
+    after it, the campaign that finds a missing package is already paid for. The
+    instructions keep them out of the default loop, in a section of their own.
     """
     from robovast.mcp_server.plugins import prompts
     text = (create_server().instructions if source == "instructions"
@@ -413,11 +425,9 @@ def test_checking_the_image_is_part_of_the_loop_an_agent_is_given(source):
     assert "exec_in_container" in text, (
         f"{source} never mentions it, so the cheap check is invisible where it matters")
     assert "build_experiment_image" in text
-    # Ordered before the step that launches: after it, the cycle this saves is already
-    # paid. Anchored to the *last* mention, since both texts name `start_campaign` up
-    # front in the "run it here, not on this host" framing, well before the loop.
-    assert text.index("exec_in_container") < text.rindex("start_campaign"), (
-        f"{source} mentions the check only after the campaign is launched")
+    if source == "_RUN_PROMPT":
+        assert text.index("exec_in_container") < text.rindex("start_campaign"), (
+            f"{source} mentions the check only after the campaign is launched")
 
 
 #: One name per concept, one concept per name. Each entry was a divergence: the nav tools
