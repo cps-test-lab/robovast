@@ -1521,6 +1521,27 @@ def _index_env(namespace: str) -> list:
     ]
 
 
+def _git_credentials() -> tuple:
+    """The host container's mount of the GitHub token Secret, and the volume behind it.
+
+    The same Secret and path the service pod gets, so ``config_plugins`` finds the token
+    where it looks on either side (:data:`~robovast.common.config_plugins.GIT_TOKEN_FILE`).
+
+    **Optional**, because the Secret exists only where the operator gave ``vast cluster
+    setup`` a token. A required Secret volume that names nothing holds the pod in
+    ``ContainerCreating``; an optional one starts it without the file, and a private
+    ``git+https`` plugin then fails its install with the message that names the missing
+    token -- the answer the operator needs, where a pod that never starts gives none.
+    """
+    from .service_deploy import GIT_SECRET_NAME, GIT_TOKEN_MOUNT_DIR  # noqa: PLC0415
+
+    mount = {"name": "git-credentials", "mountPath": GIT_TOKEN_MOUNT_DIR, "readOnly": True}
+    volume = {"name": "git-credentials",
+              "secret": {"secretName": GIT_SECRET_NAME, "defaultMode": 0o400,
+                         "optional": True}}
+    return mount, volume
+
+
 @dataclasses.dataclass(frozen=True)
 class JobRole:
     """Which postprocessing Job this is, and therefore what its pod is asked to do.
@@ -1644,6 +1665,7 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
     # none of this. See the conversion container below.
     data_plane_env = pod_access.campaign_pod_env(namespace, campaign_id)
     campaign_mount = {"name": "campaign", "mountPath": CAMPAIGN_MOUNT}
+    git_mount, git_volume = _git_credentials()
 
     stage = {
         "name": STAGE_CONTAINER,
@@ -1711,7 +1733,11 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
             *([{"name": ENV_PART, "value": part}] if part else []),
             *([{"name": ENV_SKIP_MAP, "value": "1"}] if skip_map else []),
         ],
-        "volumeMounts": [campaign_mount],
+        # The GitHub token, for the one thing here that needs it: the host re-installs the
+        # campaign's `plugins:` before its steps run, and a `git+https` spec for a private
+        # repository cannot be cloned without it. Mounted as a file, in this container
+        # only -- the conversion runs the campaign's own image and gets nothing.
+        "volumeMounts": [campaign_mount, git_mount],
         "resources": host_block,
     }
 
@@ -1731,6 +1757,7 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
     volumes = [
         # One copy of the campaign, shared by every container.
         {"name": "campaign", "emptyDir": {}},
+        git_volume,
     ]
     if steps:
         # Scratch for the conversion, which is the only container that mounts it. Declared
