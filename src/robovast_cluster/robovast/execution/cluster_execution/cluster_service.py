@@ -61,7 +61,7 @@ from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
 from robovast.common.campaign_data import update_launch_scheduling
 from robovast.service.client import LocalTransport
 from robovast.service.local_transport import require_scheduling_change
-from robovast.service.interface import (ActionResult, JobCounts, JobKind,
+from robovast.service.interface import (ActionResult, CampaignDeletion, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
                                         ResourceUsage, DiskSpace, UpgradeInfo, VersionInfo)
 
@@ -2714,9 +2714,10 @@ class ClusterService(LocalTransport):
                         len(resumed), ", ".join(resumed))
         return outcomes
 
-    def delete_campaign(self, campaign_id: str) -> ActionResult:
+    def _delete_deletable(self, campaign_id: str) -> CampaignDeletion:
         """Delete one cluster campaign wholesale: its directory and sibling files, its
         leftover Jobs and its token Secret (see :meth:`RobovastInterface.delete_campaign`).
+        Reached by the single and the multi-campaign delete alike, after their guard.
 
         The files are the inherited delete, whose result this returns; the Job reap catches
         anything a crashed or orphaned campaign left behind. The external share copy is
@@ -2725,7 +2726,7 @@ class ClusterService(LocalTransport):
         from . import pod_access
         from .cluster_execution import cleanup_cluster_campaign
 
-        result = super().delete_campaign(campaign_id)
+        result = super()._delete_deletable(campaign_id)
         try:
             cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                      context=self.kube_context)

@@ -136,6 +136,14 @@ the meaning of a status is uniform across every route:
        :ref:`deployment-disk-reserve`). Never reported as bad input or a conflict: the
        request itself was fine, and is worth retrying once space is freed.
 
+A call that acts on several things answers per thing, not with one status. ``POST
+/campaigns/delete`` takes ``{"campaign_ids": [...]}`` and returns ``200`` with one result per
+id — its ``outcome`` (``deleted``, ``not_found``, ``partial``, ``running``, ``invalid``) and its
+own message — because a running campaign among the ids is a fact about that id, and a ``409`` for
+the whole call would hide that the others were deleted. Only a request naming no campaign is
+refused as a whole (``422``). The single-campaign ``DELETE /campaigns/{id}`` keeps the codes
+above: ``400`` for an id that is not a campaign id, ``409`` for a running campaign.
+
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class — today only ``exec_path_unavailable``, for a
 deployment where no command can be run in a container at all. The exception type is what an

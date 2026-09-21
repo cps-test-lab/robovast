@@ -50,6 +50,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CampaignVisualizationsResponse,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
+                                        DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
                                         EXEC_PATH_UNAVAILABLE,
                                         ExecRequest, ExecResult, ExecStopResult,
@@ -1669,6 +1670,15 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         # Wholesale delete of one campaign's durable home. Refuses a running
         # campaign (409 via _guard's RuntimeError mapping); idempotent otherwise.
         return _guard(lambda: impl.delete_campaign(campaign_id))
+
+    @app.post(Routes.CAMPAIGNS_DELETE, response_model=DeleteCampaignsResponse,
+              tags=["campaigns"],
+              description="Delete several campaigns, each as the single delete would. Not "
+                          "all-or-nothing: a running campaign or an id that is not a "
+                          "campaign id is that id's outcome, not a refusal of the call, so "
+                          "the answer is 200 with one result per id -- read each one.")
+    def delete_campaigns(request: DeleteCampaignsRequest) -> DeleteCampaignsResponse:
+        return _guard(lambda: impl.delete_campaigns(request))
 
     # -- image builds -------------------------------------------------------
 

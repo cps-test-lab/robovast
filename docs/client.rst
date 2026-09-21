@@ -60,6 +60,9 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Launch a new campaign from what a past one recorded. The service refuses one its
        pre-flight blocks; ``--check`` reports every axis without launching, ``--force``
        launches regardless (:ref:`results-retrigger-preflight`).
+   * - ``vast campaign delete <id>...``
+     - Permanently delete campaigns, each deleted or refused on its own and reported on its own
+       line. Exits non-zero if any was not fully deleted; a running one is refused.
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``

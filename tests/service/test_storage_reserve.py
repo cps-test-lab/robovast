@@ -200,6 +200,13 @@ def test_deleting_a_campaign_is_never_refused(transport, monkeypatch):
         pytest.fail("a delete was refused for lack of the space it would free")
     except Exception:  # noqa: BLE001 - whatever a missing campaign says, it is not this
         pass
+    from robovast.service.interface import DeleteCampaignsRequest
+    try:
+        transport.delete_campaigns(DeleteCampaignsRequest(campaign_ids=["camp-that-is-not-here"]))
+    except InsufficientStorageError:
+        pytest.fail("a multi-campaign delete was refused for lack of the space it would free")
+    except Exception:  # noqa: BLE001 - whatever a missing campaign says, it is not this
+        pass
 
 
 def test_the_cluster_lane_refuses_its_own_builds_and_postprocessing(monkeypatch):
