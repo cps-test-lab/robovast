@@ -686,7 +686,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
         run_path = Path(run_dir)
         run_id = int(run_path.name)
         outcome = (outcomes.get(config_name, {}).get(run_id)
-                   or campaign_data.read_run_outcome(run_path, root))
+                   or campaign_data.read_run_outcome(run_path, root, links=links))
         instance_type, node_label, cpu_name, cpus, mem = _sysinfo_fields(outcome)
         clock = _clock_map_info(root, config_name, run_id, links)
         shm_peak, shm_limit = _shm_info(root, config_name, run_id)

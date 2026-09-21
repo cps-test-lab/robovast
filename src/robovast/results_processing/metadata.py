@@ -41,7 +41,7 @@ import yaml
 from robovast.common.campaign_data import (read_execution_metadata, read_interventions,
                                            read_launch_record, read_sysinfo, read_test_result)
 from robovast.common.common import load_config
-from robovast.common.execution import is_campaign_dir
+from robovast.common.execution import is_campaign_dir, read_job_links
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
 
@@ -216,6 +216,8 @@ class MetadataGenerator:
 
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
+        # Read once for the campaign: it names every run's job.
+        job_links = read_job_links(self.campaign_dir)
         for config_entry in metadata["configurations"]:
             config_name = config_entry.get("name", "")
             config_dir_path = self.campaign_dir / config_name
@@ -293,7 +295,7 @@ class MetadataGenerator:
                 # sysinfo is a real gap in what the campaign recorded, and saying so is
                 # the only way anyone finds out.
                 try:
-                    entry["sysinfo"] = read_sysinfo(run_dir)
+                    entry["sysinfo"] = read_sysinfo(run_dir, self.campaign_dir, job_links)
                 except FileNotFoundError as exc:
                     if entry.get("success") != "unknown":
                         raise FileNotFoundError(
