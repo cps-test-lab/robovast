@@ -2456,6 +2456,17 @@ without touching any panel:
   view's ``vega_lite``/``layers``/``series`` bindings stay free-form. A type that declares one
   gets its keys checked, and a misspelled binding becomes an error naming the valid fields
   instead of a panel that silently draws nothing.
+
+  A config panel that renders a contributed file may also draw it **without a browser**, for
+  the ``draw_config`` MCP tool: it declares ``FILE_ROLE`` (the ``contribution.files`` role it
+  reads) and ``plot(ax, path, projection, read)``, which draws the file onto a matplotlib
+  ``Axes``. ``read(path)`` returns a campaign file's bytes by its campaign-relative path, so a
+  format that names sibling files (a map YAML and its image) fetches them the same way.
+  ``plot`` returns ``False`` for a projection it does not draw and raises when the file cannot
+  be drawn; it imports matplotlib inside the function, so the panel module still imports
+  without it. The package that renders a format in the browser is then the one that renders
+  it here, and core never learns the format. Reference: ``Map2DPanelType`` in
+  ``robovast_nav/panels.py``.
 * **Data** comes only through ``DataProvider`` (``dataProvider.ts``): rows by table+time,
   nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a

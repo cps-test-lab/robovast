@@ -81,6 +81,7 @@ _FORBIDDEN_NAMES = [
     # Answered by core for any robot, from what a configuration's variations contributed.
     "nav_get_obstacles",               # -> get_config_contribution
     "nav_get_path_deviation",          # -> get_track_deviation
+    "draw_map",                        # -> draw_config
     "display_simulation_screenshot",   # -> get_simulation_screenshot
     "resource_usage",                  # -> get_resource_usage
     # Built, then deliberately dropped: waiting for a campaign is `vast exec wait`, a
