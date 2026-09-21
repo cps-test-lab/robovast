@@ -121,8 +121,11 @@ SOCKET="${IPC_DIR}/${CONTAINER_NAME}"
 # provider a campaign used is installed in this container and in no other. `|| true` because a
 # record about a run must never be the reason the run fails, and an older image may not mount
 # the script at all.
+# The simulator's own build identity goes with them, for the same reason: in the ROS shape this
+# is the container the simulator runs in.
 python3 /config/collect_sysinfo.py --no-sysinfo \
-  --distributions "${OUTPUT_DIR}/distributions_${CONTAINER_NAME}.json" || true
+  --distributions "${OUTPUT_DIR}/distributions_${CONTAINER_NAME}.json" \
+  --simulator-version "${OUTPUT_DIR}/simulator_version_${CONTAINER_NAME}.json" || true
 
 # Start resource monitor
 python3 /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_${CONTAINER_NAME}.csv" &

@@ -51,7 +51,8 @@ ARG ROQSIM_REF
 # for a reason: ``--depth 1 --branch <ref>`` cannot check out a bare commit sha, and a sha is
 # what build.sh and CI pass (see below). One idiom that takes a branch, a tag or a sha beats two
 # that each take some of them. .git is dropped afterwards -- no layer below reads it, and it is
-# also where a credentialled clone would leave the token behind.
+# also where a credentialled clone would leave the token behind. The commit it was is kept, in
+# ``.roqsim-commit``, for roqsim's own build to bake in (see the pip install below).
 #
 # NOTE ON CACHING: this layer's cache key is the command text plus the ARGs, not the state of
 # the remote. With a *branch* in ROQSIM_REF the cache therefore serves the tree from the first
@@ -86,6 +87,7 @@ RUN --mount=type=secret,id=git_token \
       echo "  - or point elsewhere:     --build-arg ROQSIM_REPO=<url>" >&2; \
       exit 1; \
     fi \
+ && git -C /src rev-parse --verify HEAD > /src/.roqsim-commit \
  && rm -rf /src/.git
 
 # The source tree, as a filesystem with nothing else in it. Its whole purpose is to be
@@ -241,7 +243,16 @@ sys.exit(1 if found else 0)'
 # scenario-execution dependency is deliberately not declared (see its pyproject) -- this image already
 # carries that as a colcon package under /ws, and a pip'd copy from PyPI would be a different, older
 # project sitting on the same sys.path.
+#
+# ROQSIM_GIT_SHA is the commit roqsim's own build bakes into the install, which `roqsim --version`
+# then reports and every run records (roqsim.build_identity). /opt/roqsim has no .git, so the build
+# cannot read it: the clone stage leaves it in .roqsim-commit. A tree handed in through
+# --build-context carries none, so such a build is given the commit through this argument,
+# which wins when set. With neither, roqsim's build refuses rather than recording an unknown
+# commit.
+ARG ROQSIM_GIT_SHA=
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    ROQSIM_GIT_SHA="${ROQSIM_GIT_SHA:-$(cat /opt/roqsim/.roqsim-commit 2>/dev/null || true)}" \
     pip install --break-system-packages \
         "mujoco>=3.0" \
         /opt/roqsim/roqsim \

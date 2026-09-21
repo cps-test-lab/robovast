@@ -297,6 +297,64 @@ def write_distributions(path: str) -> None:
         print(f"could not record installed distributions: {exc}")
 
 
+#: Carries the simulator backend's version command into this container (see
+#: ``robovast.common.simulators.SIMULATOR_VERSION_ENV``, which a test keeps equal to this). Spelled
+#: here because this script runs in images that do not carry robovast.
+SIMULATOR_VERSION_ENV = "ROBOVAST_SIMULATOR_VERSION_COMMAND"
+
+#: How long the version command may take. It prints one line; a simulator that has not answered
+#: in this long is recorded as not having answered, rather than holding the run.
+_VERSION_TIMEOUT_S = 120
+
+
+def get_simulator_version(command_line: str) -> Optional[Dict[str, Any]]:
+    """What the simulator in THIS container says about its own build, or ``None``.
+
+    Run here because the image is the only place the answer exists, and per run because a
+    campaign's runs can land on images that differ -- a tag that moved between batches, a
+    rebuilt experiment image. Recorded verbatim (``stdout``, ``stderr``, ``exit_code``); what the
+    line means is the simulator backend's to read, afterwards, where it is installed.
+
+    ``None`` when this container does not have the command at all: in a shape where the simulator
+    runs in a container of its own, the others have nothing to report, and a record from each
+    of them saying so would read like a finding.
+    """
+    import shlex
+    import shutil
+    import subprocess
+
+    argv = shlex.split(command_line)
+    if not argv or shutil.which(argv[0]) is None:
+        return None
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                timeout=_VERSION_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired:
+        return {"command": command_line, "exit_code": None, "stdout": "",
+                "stderr": f"no answer within {_VERSION_TIMEOUT_S} s"}
+    except OSError as exc:
+        return {"command": command_line, "exit_code": None, "stdout": "", "stderr": str(exc)}
+    return {"command": command_line, "exit_code": result.returncode,
+            "stdout": result.stdout[-4000:], "stderr": result.stderr[-4000:]}
+
+
+def write_simulator_version(path: str) -> None:
+    """Write :func:`get_simulator_version` as JSON when the backend named a command and this
+    container has it. Never raises: this records a fact about a run and must not become the
+    reason one fails."""
+    command_line = os.environ.get(SIMULATOR_VERSION_ENV, "").strip()
+    if not command_line:
+        return
+    try:
+        record = get_simulator_version(command_line)
+        if record is None:
+            return
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, indent=2, sort_keys=True)
+    except Exception as exc:                              # noqa: BLE001 - best effort
+        print(f"could not record the simulator version: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -343,6 +401,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--simulator-version",
+        metavar="PATH",
+        help=(
+            f"Also run the simulator backend's version command (from ${SIMULATOR_VERSION_ENV}) "
+            "and write what it printed here as JSON. Nothing is written when the variable is "
+            "unset or this container does not have the command."
+        ),
+    )
+    parser.add_argument(
         "--no-sysinfo",
         action="store_true",
         help="Skip the sysinfo output. For a container that only reports its distributions.",
@@ -364,6 +431,8 @@ def main() -> None:
         write_yaml(sysinfo, args.output)
     if args.distributions:
         write_distributions(args.distributions)
+    if args.simulator_version:
+        write_simulator_version(args.simulator_version)
 
 
 if __name__ == "__main__":

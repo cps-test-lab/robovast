@@ -1095,6 +1095,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
                               + all_provenance_entries)
 
     _record_campaign_providers(campaign_dir, output)
+    _record_simulator_builds(campaign_dir, output)
 
 
     # Load the campaign into the central index: one index answers across campaigns, where
@@ -1217,6 +1218,134 @@ def _campaign_provider_records(campaign_dir) -> list:
         if isinstance(data, dict):
             records.append(data)
     return records
+
+
+def _campaign_job_dirs(campaign_dir) -> set:
+    """Campaign-relative job directories this campaign's runs wrote to.
+
+    Read from the job-link manifest, which holds one entry per run and is written before the
+    first job starts, so a job that produced nothing is still named. Several runs can share
+    one job, which is why the set is of directories rather than of runs.
+    """
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        list_config_dirs, list_run_dirs)
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        job_artifact_dir, read_job_links)
+
+    root = Path(campaign_dir)
+    links = read_job_links(str(root))
+    dirs = set()
+    for config_dir in list_config_dirs(str(root)):
+        for run_dir in list_run_dirs(config_dir):
+            name = f"{Path(config_dir).name}/{Path(run_dir).name}"
+            try:
+                dirs.add(Path(job_artifact_dir(str(root), name, links)).relative_to(
+                    root).as_posix())
+            except (FileNotFoundError, ValueError):
+                # A run the manifest does not name has no job directory to look in; the
+                # record says nothing about it rather than inventing one.
+                continue
+    return dirs
+
+
+def _simulator_version_records(campaign_dir) -> dict:
+    """``{job dir (campaign-relative): [(container, record), ...]}`` from the job dirs.
+
+    Written per container by ``collect_sysinfo.py --simulator-version`` as
+    ``simulator_version_<container>.json``, in the same ``_jobs/[<batch>/]job-N/`` layout
+    :func:`_campaign_provider_records` walks. A container that does not have the version
+    command writes none, so a job normally holds exactly one: the simulator's container.
+    """
+    import glob  # pylint: disable=import-outside-toplevel
+
+    root = Path(campaign_dir)
+    pattern = os.path.join(str(root), "_jobs", "**", "simulator_version_*.json")
+    by_job: dict = {}
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        container = Path(path).stem[len("simulator_version_"):]
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                record = json.load(handle)
+        except (OSError, ValueError) as exc:
+            record = {"unreadable": str(exc)}
+        job = Path(path).parent.relative_to(root).as_posix()
+        by_job.setdefault(job, []).append((container, record if isinstance(record, dict)
+                                           else {"unreadable": "not a JSON object"}))
+    return by_job
+
+
+def _simulator_build_of(backend, container: str, record: dict) -> dict:
+    """One container's record, read by its backend: ``{container, version, build[, ...]}``."""
+    if "unreadable" in record:
+        return {"container": container, "version": None, "build": None,
+                "absent": f"the run's record could not be read ({record['unreadable']})"}
+    command = record.get("command") or "the version command"
+    if record.get("exit_code") != 0:
+        said = " ".join(str(record.get("stderr") or record.get("stdout") or "").split())[-300:]
+        return {"container": container, "version": None, "build": None,
+                "absent": f"`{command}` failed in this image"
+                          + (f" ({said})" if said else "")}
+    return {"container": container, **backend.parse_version(str(record.get("stdout") or ""))}
+
+
+def _record_simulator_builds(campaign_dir, output) -> None:
+    """Write ``_execution/simulator_build.yaml``: which build of the simulator each run ran.
+
+    From what every run's own container printed for the backend's ``VERSION_COMMAND``, read back
+    here by that backend. Per run, because runs can land on images that differ -- a floating tag
+    that moved between batches -- and an image digest names bytes, not the simulator commit they
+    were built from.
+
+    Three states, as for the providers record. A run whose image named a build records it; a run
+    whose image named none records ``build: None`` with the reason (an image whose simulator
+    predates the identity says so, and is not given one). No record at all -- the backend names
+    no version command, or the runs predate the record -- leaves the file absent, i.e. unknown.
+    """
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        campaign_backend, write_simulator_build_record)
+
+    try:
+        backend = campaign_backend(campaign_dir)
+        if backend is None:
+            output("Not recording the simulator's build: this campaign's backend could not be "
+                   "resolved here, so there is nothing to read the runs' version records with.")
+            return
+        if not getattr(backend, "VERSION_COMMAND", ()):
+            return
+        by_job = _simulator_version_records(campaign_dir)
+        if not by_job:
+            output("Not recording the simulator's build: no run recorded what its simulator "
+                   "said (runs that predate that record, or that never started) -- leaving the "
+                   "record absent (unknown).")
+            return
+        runs = {}
+        # Every job the campaign's runs wrote to, not only those that left a record: a job
+        # whose container wrote none is a run whose build is unknown, and counting the files
+        # that exist would report the campaign as fully recorded while it is short of it.
+        for job in sorted(set(by_job) | _campaign_job_dirs(campaign_dir)):
+            records = by_job.get(job) or []
+            if not records:
+                runs[job] = {"build": None,
+                             "absent": "no container of this job recorded a version"}
+                continue
+            builds = [_simulator_build_of(backend, container, record)
+                      for container, record in records]
+            # A job with several is one where more than one container could run the command;
+            # each is kept, since which of them was the simulator is not this code's to guess.
+            runs[job] = builds[0] if len(builds) == 1 else {"containers": builds}
+        write_simulator_build_record(campaign_dir, {
+            "command": " ".join(getattr(backend, "VERSION_COMMAND")),
+            "runs": runs,
+        })
+        named = {b.get("build") for r in runs.values()
+                 for b in (r.get("containers") or [r]) if b.get("build")}
+        absent = sum(1 for r in runs.values()
+                     for b in (r.get("containers") or [r]) if not b.get("build"))
+        output(f"✓ recorded the simulator build of {len(runs)} run(s): "
+               f"{len(named)} distinct build(s)"
+               + (f", {absent} with none recorded" if absent else ""))
+    except Exception as e:  # pylint: disable=broad-except
+        output(f"Warning: could not record the simulator's build: {e}")
 
 
 def _record_campaign_providers(campaign_dir, output) -> None:

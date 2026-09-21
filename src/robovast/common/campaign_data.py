@@ -70,16 +70,11 @@ def _is_digest(image: str) -> bool:
     return image.startswith("sha256:") and len(image) >= 20
 
 
-def campaign_asset_groups(campaign_dir) -> tuple:
-    """The entry-point groups this campaign's simulator resolves asset providers through.
+def campaign_backend(campaign_dir):
+    """The simulator backend of this campaign's frozen ``.vast``, or ``None``.
 
-    Read from the frozen ``.vast`` and its backend, the same way
-    :func:`campaign_container_plan` reads the container plan -- so a campaign carries the
-    question its providers must be filtered by, and core still names no simulator.
-
-    ``()`` when the backend cannot be resolved here, which a caller must treat as "cannot
-    filter" rather than "no groups": recording an unfiltered record, or an empty one, would
-    both claim something nobody checked.
+    ``None`` when the campaign names no backend or the backend cannot be resolved here -- which a
+    caller must treat as "cannot ask the backend", never as an answer from it.
     """
     from robovast.common.results_utils import \
         campaign_vast  # pylint: disable=import-outside-toplevel
@@ -91,18 +86,34 @@ def campaign_asset_groups(campaign_dir) -> tuple:
         with open(vast_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
     except (OSError, ValueError, yaml.YAMLError):
-        return ()
+        return None
     execution = (raw or {}).get("execution") or {}
     if not isinstance(execution, dict):
-        return ()
+        return None
     try:
         name = backend_name(execution)
         if not name:
-            return ()
-        backend = resolve_backend(name, str(Path(vast_path).parent))
-        return tuple(getattr(backend, "ASSET_ENTRY_POINT_GROUPS", ()) or ())
-    except Exception:  # noqa: BLE001 - an unresolvable backend is "cannot filter"
+            return None
+        return resolve_backend(name, str(Path(vast_path).parent))
+    except Exception:  # noqa: BLE001 - an unresolvable backend is "cannot ask"
+        return None
+
+
+def campaign_asset_groups(campaign_dir) -> tuple:
+    """The entry-point groups this campaign's simulator resolves asset providers through.
+
+    Read from the frozen ``.vast`` and its backend, the same way
+    :func:`campaign_container_plan` reads the container plan -- so a campaign carries the
+    question its providers must be filtered by, and core still names no simulator.
+
+    ``()`` when the backend cannot be resolved here, which a caller must treat as "cannot
+    filter" rather than "no groups": recording an unfiltered record, or an empty one, would
+    both claim something nobody checked.
+    """
+    backend = campaign_backend(campaign_dir)
+    if backend is None:
         return ()
+    return tuple(getattr(backend, "ASSET_ENTRY_POINT_GROUPS", ()) or ())
 
 
 def campaign_container_plan(campaign_dir: Path):
@@ -1040,6 +1051,42 @@ def read_providers_record(campaign_dir) -> "dict | None":
     returns ``{}``: asked, none. See :func:`read_plugins_record` for why the two must not collapse.
     """
     path = Path(campaign_dir) / "_execution" / _PROVIDERS_FILENAME
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        loaded = yaml.safe_load(f)
+    return {} if loaded is None else loaded
+
+
+_SIMULATOR_BUILD_FILENAME = "simulator_build.yaml"
+
+
+def write_simulator_build_record(campaign_root, record: dict) -> None:
+    """Persist which build of the simulator each run ran, to ``_execution/simulator_build.yaml``.
+
+    Beside the image digests (``execution.yaml``) and the build locks (``build_manifest/``), and
+    for the question neither answers: an image digest names bytes, not the simulator commit they
+    were built from, and a lock lists distributions by version -- which for a simulator released
+    as ``0.1.0`` between two releases is every build alike. *record* is
+    ``{"command": ..., "runs": {<job dir>: {"container", "version", "build", ...}}}``, with
+    ``build: None`` and an ``absent`` reason for a run whose image named none.
+
+    Raises rather than swallowing; the caller decides this is best-effort.
+    """
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    with open(exec_dir / _SIMULATOR_BUILD_FILENAME, "w", encoding="utf-8") as f:
+        yaml.dump(record, f, default_flow_style=False, sort_keys=True)
+
+
+def read_simulator_build_record(campaign_dir) -> "dict | None":
+    """Read ``_execution/simulator_build.yaml``; ``None`` when the campaign has none.
+
+    ``None`` means **unknown** -- a campaign whose runs predate the record, or whose backend names
+    no version command -- and not "no build". A run that was asked and whose image named no build
+    is in the record, with ``build: None`` and the reason.
+    """
+    path = Path(campaign_dir) / "_execution" / _SIMULATOR_BUILD_FILENAME
     if not path.exists():
         return None
     with open(path, "r", encoding="utf-8") as f:

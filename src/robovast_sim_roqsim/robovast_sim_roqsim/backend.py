@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from typing import Optional
 
@@ -29,6 +30,47 @@ _WORLD_ROOTS = ("sim", "components")
 #: and read twice — :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the
 #: service where to find it — so the request and the lookup cannot drift apart.
 _RECORD_FILE = "run.npz"
+
+
+#: ``roqsim --version``'s line: ``roqsim, version <v>`` then, from the release that records one,
+#: ``, build <40 hex>[-dirty]`` or ``, build not recorded (<reason>)``.
+_VERSION_LINE_RE = re.compile(r"^roqsim, version (?P<version>\S+?)(?:, build (?P<build>.*))?$")
+_BUILD_RE = re.compile(r"(?P<commit>[0-9a-f]{40})(?P<dirty>-dirty)?")
+_NOT_RECORDED_RE = re.compile(r"not recorded \((?P<reason>.*)\)")
+
+
+def parse_roqsim_version(output: str) -> dict:
+    """``{"version", "build"[, "dirty"]}`` or ``{"version", "build": None, "absent"}``.
+
+    The last ``roqsim, version ...`` line counts: anything the image prints before it (a GL
+    backend note, a warning) is not the answer. ``build`` is the full commit the image's roqsim
+    was built from; an image whose roqsim prints no build clause predates the build identity,
+    and that -- not a guess -- is what is recorded.
+    """
+    lines = [ln.strip() for ln in (output or "").splitlines()
+             if ln.strip().startswith("roqsim, version ")]
+    if not lines:
+        shown = " ".join((output or "").split())[-200:]
+        return {"version": None, "build": None,
+                "absent": "`roqsim --version` printed no version line"
+                          + (f" ({shown})" if shown else "")}
+    match = _VERSION_LINE_RE.match(lines[-1])
+    if match is None:
+        return {"version": None, "build": None,
+                "absent": f"`roqsim --version` printed {lines[-1]!r}, which is not its format"}
+    version, build = match.group("version"), match.group("build")
+    if build is None:
+        return {"version": version, "build": None,
+                "absent": "this image's roqsim predates the build identity: its --version "
+                          "names no build"}
+    commit = _BUILD_RE.fullmatch(build.strip())
+    if commit is not None:
+        return {"version": version, "build": commit.group("commit"),
+                "dirty": bool(commit.group("dirty"))}
+    not_recorded = _NOT_RECORDED_RE.fullmatch(build.strip())
+    reason = not_recorded.group("reason") if not_recorded else build.strip()
+    return {"version": version, "build": None,
+            "absent": f"this image's roqsim records no build: {reason}"}
 
 
 def _is_package_ref(config: str) -> bool:
@@ -134,6 +176,13 @@ class RoqsimBackend(SimulatorBackend):
     #: reproducible only by someone who can obtain that code, and a published dataset has to
     #: name it and its commit rather than depending on something nobody can identify.
     ASSET_ENTRY_POINT_GROUPS = ("roqsim.models", "roqsim.worlds", "roqsim.plugins")
+
+    #: roqsim's documented CLI, run in each run's own container: which commit its roqsim was
+    #: built from (roqsim ``build_identity``), beside the image digest that names only bytes.
+    VERSION_COMMAND = ("roqsim", "--version")
+
+    def parse_version(self, output: str) -> dict:
+        return parse_roqsim_version(output)
 
     def containers(self, cfg, execution: dict) -> dict:
         # Both shapes name the SAME family member, symbolically: only that image carries

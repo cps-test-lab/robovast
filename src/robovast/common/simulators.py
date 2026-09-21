@@ -42,6 +42,7 @@ it declares strings and container specs, and anything needing the simulator itse
 
 from __future__ import annotations
 
+import shlex
 from typing import Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
@@ -65,6 +66,11 @@ CONFIG_MOUNT = "/config"
 #: job. A constant rather than a per-backend choice for the same reason ``/ipc`` is one: a
 #: backend building a command has to name it, and a lane writing the file has to agree.
 SIM_OVERRIDES_MOUNT = f"{CONFIG_MOUNT}/sim.overrides.yaml"
+
+#: The variable carrying a backend's :attr:`SimulatorBackend.VERSION_COMMAND` into the run's
+#: containers, as one shell-quoted line. ``collect_sysinfo.py`` is mounted into images that do
+#: not carry robovast, so it spells the name itself; a test keeps the two equal.
+SIMULATOR_VERSION_ENV = "ROBOVAST_SIMULATOR_VERSION_COMMAND"
 
 #: Where a *query's* overrides document is mounted -- a describe question, not a run. Outside
 #: ``CONFIG_MOUNT`` because the campaign tree mounts there and an input nested inside another
@@ -135,6 +141,23 @@ class SimulatorBackend:
     #: already declares images and environment strings. Empty means "nothing beyond this
     #: distribution itself", which is the honest answer for a simulator with no asset plugins.
     ASSET_ENTRY_POINT_GROUPS: tuple = ()
+
+    #: The command that makes the simulator in a container name its own build, as argv --
+    #: ``("roqsim", "--version")``, say. Every run's containers execute it and record what it
+    #: printed (``collect_sysinfo.py --simulator-version``), and :meth:`parse_version` reads that
+    #: back, so a campaign records which build of the simulator each run ran and core still names
+    #: no simulator. Empty means the backend cannot say, and nothing is recorded.
+    VERSION_COMMAND: tuple = ()
+
+    def parse_version(self, output: str) -> dict:
+        """``{"version", "build"}`` from what :data:`VERSION_COMMAND` printed.
+
+        ``build`` is the simulator's own build identity, or ``None`` with an ``absent`` reason
+        when the output names none -- an image whose simulator predates it, say. Absent is stated,
+        never filled in. Only called for a backend that declares a :data:`VERSION_COMMAND`.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} declares VERSION_COMMAND but does not parse its output")
 
     def sim_document(self, cfg, execution: dict) -> Optional[dict]:
         """The part of *cfg* that travels as a file rather than on the command line.
@@ -581,7 +604,12 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
         ref = backend.simulation_ref(cfg, execution)
         if ref:
             result["simulation"] = ref
-    contributed = backend.env(cfg, execution)
+    contributed = dict(backend.env(cfg, execution) or {})
+    if backend.VERSION_COMMAND:
+        # Through the backend's environment because that is what already reaches the
+        # simulator's container on both lanes and in both shapes (the scenario container when
+        # it IS the simulator, the simulation sidecar when not).
+        contributed[SIMULATOR_VERSION_ENV] = shlex.join(backend.VERSION_COMMAND)
     if contributed:
         result["_backend_env"] = contributed
     return result

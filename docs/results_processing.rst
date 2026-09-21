@@ -82,6 +82,7 @@ The structure inside is domain-specific, but typically includes:
    ├── controller.log                        # ``run`` phase — campaign controller log
    ├── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + index ingest)
    ├── share.log                             # ``share`` phase (export to share, when re-run)
+   ├── simulator_build.yaml                  # which simulator build each run ran (see below)
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
    └── import.json                           # per-stage ingest report (only on an imported campaign)
 
@@ -118,6 +119,29 @@ inspectable part of it.
   reuses this exact image, so a later re-run deserializes the recorded bags against the
   same image the runs used even if the tag has since moved.
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
+
+.. _simulator-build-record:
+
+``simulator_build.yaml`` records **which build of the simulator each run ran**, for what the image
+digest and the build lock do not say: a digest names bytes, and a lock lists distributions by
+version, which for a simulator between two releases is every build alike. Each run's containers run
+the simulator backend's version command (roqsim's: ``roqsim --version``) and write what it printed
+to ``simulator_version_<container>.json`` in the run's job directory; postprocessing has the backend
+read each one back:
+
+.. code-block:: yaml
+
+   command: roqsim --version
+   runs:
+     _jobs/batch-0/job-0: {container: simulation, version: <release>,
+                           build: 0123456789abcdef0123456789abcdef01234567, dirty: false}
+     _jobs/batch-0/job-1: {container: simulation, version: <release>, build: null,
+                           absent: "this image's roqsim predates the build identity: ..."}
+
+A run whose image names no build records ``build: null`` with the reason, never a guess. A container
+without the command writes no record, so a job normally carries exactly the simulator container's.
+The file is **absent** when no run recorded anything -- a backend with no version command, or runs
+from before the record -- which means *unknown*, not "no build".
 
 .. _campaign-launch-record:
 

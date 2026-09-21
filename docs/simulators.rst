@@ -164,6 +164,13 @@ Hooks, all optional except as noted:
    lookup cannot drift apart.
 ``simulation_screenshot(cfg, execution, *, state, at, view, focus, camera, size)``
    Command that re-renders **one moment of one run** from a chosen viewpoint, or ``None``.
+``VERSION_COMMAND`` / ``parse_version(output)``
+   The argv that makes the simulator in a container name its own build (roqsim's is
+   ``roqsim --version``), and how to read what it printed: ``{"version", "build"}``, with
+   ``build: None`` and an ``absent`` reason when the output names none. Every run's containers
+   run it and postprocessing records the result per run in
+   ``_execution/simulator_build.yaml`` (:ref:`results_processing <simulator-build-record>`).
+   Empty, the default, records nothing.
 
 Showing a run: two questions, two hooks
 ```````````````````````````````````````
@@ -456,6 +463,11 @@ The image records the commit it was built from and ``roqsim --version`` reports 
 what lets a campaign say which simulator it ran — a commit nobody can fetch names nothing. A
 clone of a private fork needs a token: set ``GITHUB_TOKEN`` and ``build.sh`` passes it as a
 BuildKit secret.
+
+The image is told which commit its roqsim is, since the tree reaches it without its ``.git``:
+the clone stage records the commit it checked out, and an explicit ``ROQSIM_GIT_SHA`` build
+argument wins over it. ``roqsim --version`` in the image then names that commit, and it is what
+every run records (:ref:`simulator_build.yaml <simulator-build-record>`).
 
 ``make release-images PROJECT=... ROQSIM_REF=<branch> PUSH=1`` does the same for the whole
 family at once, which is what a cluster needs — ``ROBOVAST_PROJECT`` moves all four members,

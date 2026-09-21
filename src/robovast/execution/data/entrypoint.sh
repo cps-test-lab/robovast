@@ -105,7 +105,9 @@ if [ "${COLLECT_SYSINFO}" != "false" ]; then
   # one, which has no node to name -- the same shape as INSTANCE_TYPE above. It is passed
   # as --node-name rather than --external because collect_sysinfo HASHES it: this file
   # ships inside the campaign archive, so the name itself must not reach it.
-  python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --distributions "${OUTPUT_DIR}/distributions_main.json" --external "instance_type=${INSTANCE_TYPE}" --node-name "${NODE_NAME}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
+  # --simulator-version: the build the simulator in this container says it is, when the
+  # simulator backend names a version command and this container has it.
+  python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --distributions "${OUTPUT_DIR}/distributions_main.json" --simulator-version "${OUTPUT_DIR}/simulator_version_main.json" --external "instance_type=${INSTANCE_TYPE}" --node-name "${NODE_NAME}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
 else
   log "System information collection disabled (COLLECT_SYSINFO=false)"
 fi
