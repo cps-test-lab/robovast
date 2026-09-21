@@ -306,6 +306,7 @@ and ``top`` (top N patterns) stay distinct from ``limit`` because they are diffe
 operations.
 
 :mod:`tests.mcp_server.test_plugin_registry_sync` enforces all of this — the vocabulary,
+as an allowlist, so a new argument name fails the build until someone adds it on purpose,
 the single ``{"error": …}`` convention, that no retired name survives in text an LLM
 reads, and a ceiling on the surface's total token cost.
 

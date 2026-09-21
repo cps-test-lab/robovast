@@ -24,7 +24,7 @@ is a join between a log and a run's verdict and a stream has nothing to join to.
 The merged ``run_log`` table can (see
 :mod:`robovast.results_processing.run_log`), so this tool is a thin shape over SQL that keeps
 the *reading* vocabulary identical to the other log tools — ``grep`` / ``min_severity`` /
-``summarize`` / ``tail`` mean exactly what they mean there, because they are the same
+``summarize`` mean exactly what they mean there, because they are the same
 :func:`~robovast.mcp_server.log_view.view_log`.
 
 Cost: the rows live in the central index, so nothing is fetched per campaign any more — a
@@ -308,8 +308,13 @@ def search_run_logs(
     The log is every container's output joined with ``/rosout``, on the run's playback clock, so
     ``t0``/``t1`` are sim-time seconds of the *trial*. For one live or just-finished run use
     ``get_job_log`` (this needs postprocessing); for build/controller phases,
-    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` / ``tail`` /
+    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` /
     ``hide_shutdown`` mean the same in all of them, defaults included.
+
+    It takes no ``tail``, ``top`` or ``offset``, which the log tools above do: this searches
+    across runs rather than paging one, and each argument costs schema on every request
+    whether or not it is used. Use ``query_campaign_data_sql`` for the rare question that
+    needs to page these columns directly.
 
     Args:
         campaign_id: Campaign id or path; a regex over ids when *campaign_regex*.

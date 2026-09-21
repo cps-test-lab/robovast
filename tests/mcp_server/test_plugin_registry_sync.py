@@ -461,15 +461,64 @@ def _tool_parameters() -> dict[str, dict]:
             for t in asyncio.run(_tools())}
 
 
+#: Every argument name this surface may use. An allowlist: a denylist can only forbid the
+#: synonyms someone has thought of, so the next one passes. Here a new name fails the build
+#: until it is added on purpose.
+#:
+#: Adding a name is that decision. Before adding one, check it is not another word for a
+#: concept that already has a name -- "match some text", "how many", "skip ahead".
+_PARAMETER_VOCABULARY = {
+    # what to act on
+    "address", "campaign_id", "workspace_id", "config_path", "config_name", "run_id",
+    "job_name", "build_id", "container", "node", "name", "group", "catalog", "topic",
+    "frame", "camera", "backend", "scenario_path", "world_path", "from_campaign",
+    "campaign_name", "targets", "entities", "phase", "entries", "content",
+    "old_string", "new_string", "sql", "command", "description", "reason",
+    "archive_path", "occupancy",
+    # how much, and from where
+    "limit", "offset", "top", "tail", "page", "size", "runs", "max_campaigns",
+    # how to match
+    "query", "grep", "search", "pattern", "config_filter", "min_severity",
+    "campaign_regex", "t0", "t1", "at", "time",
+    # how to behave
+    "force", "recursive", "summarize", "group_by_run", "hide_shutdown", "keep_alive",
+    "show_gui", "check_world", "check_scenario", "fresh", "priority", "executable",
+    "running_only", "preflight_only",
+    "stats_only", "failed_only", "allow_opaque_image", "upload_to_share", "view",
+    "focus", "layers", "figsize", "title", "show_legend", "wait", "follow",
+    "skip", "data_only", "share_archive", "rebuild_store",
+}
+
+
 def test_tools_share_one_parameter_vocabulary():
-    """A concept must have the same argument name everywhere it appears."""
-    offenders = {}
+    """Every argument name comes from one declared vocabulary, so a concept has the same
+    name everywhere it appears."""
+    unknown = {}
     for tool, props in _tool_parameters().items():
         for param in props:
             if param in _BANNED_PARAMETERS:
-                offenders.setdefault(tool, []).append(
-                    f"{param} -> {_BANNED_PARAMETERS[param]}")
-    assert not offenders, f"tools using a retired parameter name: {offenders}"
+                unknown.setdefault(tool, []).append(
+                    f"{param} (retired -> {_BANNED_PARAMETERS[param]})")
+            elif param not in _PARAMETER_VOCABULARY:
+                unknown.setdefault(tool, []).append(f"{param} (not in the vocabulary)")
+    assert not unknown, (
+        f"arguments outside the declared vocabulary: {unknown}. If the concept already has "
+        "a name on this surface, use it; if it genuinely needs a new one, add it to "
+        "_PARAMETER_VOCABULARY so the choice is reviewed rather than inherited.")
+
+
+def test_the_vocabulary_refuses_a_synonym_nobody_listed():
+    """A synonym is refused without anyone having named it as one."""
+    for synonym in ("max_matches", "num_rows", "howmany"):
+        assert synonym not in _PARAMETER_VOCABULARY
+        assert synonym not in _BANNED_PARAMETERS, \
+            "if the denylist had it, this test proves nothing"
+
+
+def test_every_retired_name_stays_out_of_the_vocabulary():
+    """The two lists must not disagree: a name cannot be both retired and allowed."""
+    both = sorted(set(_BANNED_PARAMETERS) & _PARAMETER_VOCABULARY)
+    assert not both, f"retired names also listed as allowed: {both}"
 
 
 def test_every_tool_returns_a_dict_or_an_image():
