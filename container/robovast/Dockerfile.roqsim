@@ -172,6 +172,23 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 ##############################################################
+####             Create 3 / TurtleBot 4 stack             ####
+##############################################################
+# The robot's own nodes, unchanged from their release: the Create 3 API nodes, the simulator
+# adapters that consume plain ROS types, and turtlebot4_node. roqsim_create3_toolbox (built into
+# /ws below) launches them over the TurtleBot 4 model and declares them as its exec_depends, so
+# an image carrying the toolbox without them fails at `ros2 launch` with "package not found".
+# The gz toolbox pulls only ros_gz_interfaces, not a Gazebo runtime.
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ros-"${ROS_DISTRO}"-irobot-create-msgs \
+        ros-"${ROS_DISTRO}"-irobot-create-nodes \
+        ros-"${ROS_DISTRO}"-irobot-create-gz-toolbox \
+        ros-"${ROS_DISTRO}"-turtlebot4-node && \
+    rm -rf /var/lib/apt/lists/*
+
+##############################################################
 ####                      roqsim                        ####
 ##############################################################
 # From the ``roqsim-src`` stage above: a clone of the pinned ref by default, or whatever a
@@ -277,6 +294,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # NavigateToPose / NavigateThroughPoses, and StartRoute from `roqsim_nav_interfaces` for a
 # mover with a configured route). A world that declares an endpoint nothing here serves stops
 # the bridge at start-up, so without these a scenario cannot send traffic anywhere.
+# `roqsim_create3_toolbox` is the Create 3 adapter and the launch that runs the stack installed
+# above over the TurtleBot 4 model.
 #
 # Built into **/ws**, the overlay the RoboVAST entrypoint already sources -- not into a
 # second workspace of their own. A separate overlay has to be sourced by something, and
@@ -293,10 +312,12 @@ RUN ln -s /opt/roqsim/ros2_ws/src/roqsim_ros_bridge /ws/src/roqsim_ros_bridge &&
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav_interfaces /ws/src/roqsim_nav_interfaces && \
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav_ros /ws/src/roqsim_nav_ros && \
     ln -s /opt/roqsim/ros2_ws/src/roqsim_nav2_example /ws/src/roqsim_nav2_example && \
+    ln -s /opt/roqsim/ros2_ws/src/roqsim_create3_toolbox /ws/src/roqsim_create3_toolbox && \
     . "/opt/ros/${ROS_DISTRO}/setup.bash" && \
     cd /ws && \
     colcon build --packages-select \
-      roqsim_ros_bridge roqsim_nav_interfaces roqsim_nav_ros roqsim_nav2_example
+      roqsim_ros_bridge roqsim_nav_interfaces roqsim_nav_ros roqsim_nav2_example \
+      roqsim_create3_toolbox
 
 # Back to the archive the base image shipped, whatever this build fetched through. An image that
 # kept a site's mirror would carry a host nobody outside that network can resolve, so every
