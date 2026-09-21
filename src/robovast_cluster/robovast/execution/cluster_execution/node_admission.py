@@ -707,7 +707,13 @@ class AdmissionController:
             self._items.pop(key, None)
 
     def cancel(self, owner: str) -> int:
-        """Drop an owner's planned items and release its held reservations.
+        """Drop an owner's items and release its held reservations; return how many were
+        still planned.
+
+        Only the planned ones are counted, because that is the number a caller can report as
+        released: work that will now never exist. A created item is a Job that exists or
+        existed, and counting it would have a batch stopped mid-run report its running jobs as
+        released "never created".
 
         Called from a ``finally``, because a campaign that raises on its way out would
         otherwise leak its reservations for the life of the process -- shrinking every other
@@ -715,22 +721,22 @@ class AdmissionController:
 
         **The calibration survives, and that is the point.** This runs at the end of every
         BATCH -- a search builds a fresh runner per batch -- so dropping the calibration here
-        made every batch re-probe every node. Measured on a live search: four probe runs per
-        batch instead of per campaign, and the figures moved between batches (one node's
-        system-under-test went 1.820 to 1.106 cores), so runs in different batches of the same
-        campaign were sized differently. That defeats the property calibration exists to
-        provide, which is that every run of a campaign meets the same allocation.
+        would make every batch re-probe every node, and since a figure moves between probes,
+        runs in different batches of the same campaign would be sized differently. That
+        defeats the property calibration exists to provide, which is that every run of a
+        campaign meets the same allocation.
         :meth:`forget_calibration` is what ends it, at the end of the campaign.
         """
         with self._lock:
             keys = [k for k, i in self._items.items() if i.owner == owner]
+            planned = sum(1 for k in keys if self._items[k].state == PLANNED)
             for key in keys:
                 self._items.pop(key, None)
                 self._held.pop(key, None)
             for key in [k for k, h in self._held.items() if h.owner == owner]:
                 self._held.pop(key, None)
             self._refusals.pop(owner, None)
-            return len(keys)
+            return planned
 
     def drop_planned(self, owner: str) -> "List[str]":
         """Drop *owner*'s items that are not created yet, keeping what it already holds.
