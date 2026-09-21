@@ -1781,6 +1781,21 @@ def list_run_dirs(config_dir: Path) -> list[Path]:
         return []
 
 
+def campaign_has_runs(campaign_dir: Path) -> bool:
+    """Whether any configuration of the campaign has a run directory on disk.
+
+    What a campaign's analysis reads is its run directories -- the ingest globs them and
+    nothing else -- so a campaign with none has nothing for postprocessing to derive,
+    however far it got before it ended. ``False`` for a campaign directory that does not
+    exist yet, which is where a campaign stopped while it was starting is.
+    """
+    try:
+        config_dirs = list_config_dirs(campaign_dir)
+    except OSError:
+        return False
+    return any(list_run_dirs(d) for d in config_dirs)
+
+
 def aggregate_run_status(run_dirs: list[Path], *,
                          invalid: "set[str] | None" = None) -> str:
     """Aggregate per-run pass/fail (from each run's ``test.xml``) into one status.
