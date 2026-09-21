@@ -330,7 +330,8 @@ def pod_sizing(manifest: dict):
         return max([*inits, mains]) if (inits or mains) else 0
 
     return JobSizing(cpu=_charge("cpu", to_cores),
-                     memory=int(_charge("memory", to_bytes)))
+                     memory=int(_charge("memory", to_bytes)),
+                     ephemeral=int(_charge("ephemeral-storage", to_bytes)))
 
 
 def await_admission(admission, campaign_id: str, name: str, manifest: dict,
@@ -356,9 +357,10 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
     of one API call, and the next budget reading reconciles it against the real pod anyway.
     """
     from .node_admission import CREATED, AdmissionRefused  # noqa: PLC0415
-    from .node_admission import campaign_start_key  # noqa: PLC0415
+    from .node_admission import campaign_start_key, describe_resources  # noqa: PLC0415
 
     sizing = pod_sizing(manifest)
+    asked = describe_resources(sizing.cpu, sizing.memory, sizing.ephemeral)
     granted = {}
 
     try:
@@ -368,9 +370,9 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
         admission.preflight(sizing)
     except AdmissionRefused as exc:
         return False, None, (
-            f"postprocessing needs {sizing.cpu:g} cpu / {sizing.memory // 1024 ** 2}Mi and "
-            f"no node in this cluster is that large. Lower results_processing.resources for "
-            f"this campaign. ({exc})")
+            f"postprocessing needs {asked} and no node in this cluster is that large. Lower "
+            f"results_processing.resources for this campaign; a disk figure is what the "
+            f"campaign stages and is not set there. ({exc})")
 
     def _record_grant(node_id):
         granted["node_id"] = node_id
@@ -412,9 +414,8 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
             f"{reason[len(DISK_WAIT):]} The campaign's runs are complete; delete campaigns "
             f"no longer needed, then re-run postprocessing.")
     return False, None, (
-        f"postprocessing waited {timeout:g}s for {sizing.cpu:g} cpu / "
-        f"{sizing.memory // 1024 ** 2}Mi and the cluster stayed full. The campaign's runs "
-        f"are complete; re-run postprocessing when there is room, or lower "
+        f"postprocessing waited {timeout:g}s for {asked} and the cluster stayed full. The "
+        f"campaign's runs are complete; re-run postprocessing when there is room, or lower "
         f"results_processing.resources.")
 
 

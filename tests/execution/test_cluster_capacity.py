@@ -49,8 +49,10 @@ def _taint(key, value, effect="NoSchedule"):
     return types.SimpleNamespace(key=key, value=value, effect=effect)
 
 
-def _c(cpu=None, memory=None, gpu=None):
+def _c(cpu=None, memory=None, gpu=None, disk=None):
     req = {}
+    if disk:
+        req["ephemeral-storage"] = disk
     if cpu:
         req["cpu"] = cpu
     if memory:
@@ -61,9 +63,10 @@ def _c(cpu=None, memory=None, gpu=None):
                                  restart_policy=None)
 
 
-def _pod(node, *containers, job=None, sidecars=(), phase="Running"):
-    init = [types.SimpleNamespace(resources=c.resources, restart_policy="Always")
-            for c in sidecars]
+def _pod(node, *containers, job=None, sidecars=(), inits=(), phase="Running"):
+    # One-shot init containers first, as a pod declares them before its sidecars.
+    init = list(inits) + [types.SimpleNamespace(resources=c.resources, restart_policy="Always")
+                          for c in sidecars]
     labels = {"batch.kubernetes.io/job-name": job} if job else {}
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(name="p", namespace="default", labels=labels,
@@ -99,6 +102,31 @@ def test_native_sidecars_count(monkeypatch):
     p, _ = _provider([_node("n1", cpu="8")],
                      [_pod("n1", _c(cpu="1"), sidecars=[_c(cpu="3")])], monkeypatch)
     assert p.budget().free_cpu == pytest.approx(8 - 4 - 1)
+
+
+def _with_disk(node, disk):
+    node.status.allocatable["ephemeral-storage"] = disk
+    return node
+
+
+def test_disk_is_allocatable_minus_what_bound_pods_request(monkeypatch):
+    """The scheduler places on ``ephemeral-storage`` as it does on cpu, so the queue must see
+    the same figure: what the node allocates, less what the pods bound to it asked for."""
+    p, _ = _provider([_with_disk(_node("n1"), "100Gi")],
+                     [_pod("n1", _c(cpu="1", disk="30Gi"))], monkeypatch)
+    assert p.budget().free_ephemeral == 70 * 1024 * MIB
+    assert p.capacities()[0].ephemeral == 100 * 1024 * MIB
+
+
+def test_a_one_shot_init_containers_disk_is_charged_as_the_scheduler_charges_it(monkeypatch):
+    """A postprocessing pod stages its campaign in an init container, whose request is the
+    size of that campaign, and asks for a floor in its main container. The scheduler holds
+    the larger of the two for the pod's life; summing main containers alone would report the
+    node's disk as free while it is held."""
+    stage = _c(cpu="2", disk="60Gi")
+    p, _ = _provider([_with_disk(_node("n1"), "100Gi")],
+                     [_pod("n1", _c(cpu="2", disk="20Gi"), inits=[stage])], monkeypatch)
+    assert p.budget().free_ephemeral == 40 * 1024 * MIB
 
 
 def test_a_pod_bound_to_no_node_is_not_counted(monkeypatch):
