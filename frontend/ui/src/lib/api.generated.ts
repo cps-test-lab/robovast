@@ -866,6 +866,14 @@ export interface paths {
          *
          *     Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
          *     results at all, it is in the service's shared cache.
+         *
+         *     Cached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what
+         *     the entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the
+         *     world, its overrides and the bytes of every campaign file it reads, and an entry is written
+         *     once under its key and never rewritten (``scene_cache.generate`` returns a complete entry
+         *     untouched). Different geometry is a different key, so a different URL; a run switch between
+         *     runs of one world then costs no request for its assets at all. ``/results`` files get no
+         *     such header: their paths name a location, not the bytes in it.
          */
         get: operations["campaign_scene_asset_campaigns__campaign_id__scene_assets__path__get"];
         put?: never;

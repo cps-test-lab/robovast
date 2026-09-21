@@ -6728,7 +6728,7 @@
     },
     "/campaigns/{campaign_id}/scene_assets/{path}": {
       "get": {
-        "description": "Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, \u2026).\n\nServed like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's\nresults at all, it is in the service's shared cache.",
+        "description": "Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, \u2026).\n\nServed like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's\nresults at all, it is in the service's shared cache.\n\nCached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what\nthe entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the\nworld, its overrides and the bytes of every campaign file it reads, and an entry is written\nonce under its key and never rewritten (``scene_cache.generate`` returns a complete entry\nuntouched). Different geometry is a different key, so a different URL; a run switch between\nruns of one world then costs no request for its assets at all. ``/results`` files get no\nsuch header: their paths name a location, not the bytes in it.",
         "operationId": "campaign_scene_asset_campaigns__campaign_id__scene_assets__path__get",
         "parameters": [
           {

@@ -189,3 +189,64 @@ def test_a_retry_clears_the_previous_reason(client, monkeypatch, tmp_path):
     ready = _wait_ready(client)
     assert ready["cached"] is True
     assert ready["error"] == "", "the previous failure outlived the attempt that replaced it"
+
+
+def test_scene_assets_are_cached_for_good_and_results_files_are_not(client):
+    """The asset URL carries the cache key, which names the bytes; a ``/results`` path does not.
+
+    An immutable header on a results path would pin a file that a re-run or a repair rewrites in
+    place, so the header belongs to the one route whose URL changes whenever its bytes do.
+    """
+    client.post(f"/campaigns/{CAMPAIGN}/scene/run", params=QUERY)
+    ready = _wait_ready(client)
+    for url in (ready["url"], ready["url"].rsplit("/", 1)[0] + "/scene.bin"):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+
+    capture = client.get(f"/results/{CAMPAIGN}/goal-1/0/capture/capture.json")
+    assert capture.status_code == 200
+    assert "immutable" not in capture.headers.get("cache-control", "")
+
+
+def _count_identity_reads(monkeypatch):
+    calls = []
+    real = scene_cache.world_identity
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(scene_cache, "world_identity", counted)
+    return calls
+
+
+def test_a_campaign_at_rest_resolves_a_runs_scene_identity_once(client, monkeypatch, tmp_path):
+    """A run switch asks the status again; for a campaign at rest the identity is memoised.
+
+    ``world_identity`` is the expensive part -- the campaign-file tree hashes and, for a tag-only
+    campaign, a Docker lookup -- so it must not run on every switch. The capture is the one input
+    the campaign's record files do not cover, so rewriting it must be seen.
+    """
+    campaign = tmp_path / "results" / CAMPAIGN
+    (campaign / "campaign.db").write_bytes(b"")  # a record: the campaign is at rest
+    calls = _count_identity_reads(monkeypatch)
+
+    first = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
+    second = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
+    assert first["world"] == second["world"] == "pkg:depot"
+    assert len(calls) == 1
+
+    manifest = campaign / "goal-1" / "0" / "capture" / "capture.json"
+    manifest.write_text(json.dumps({"producer": "roqsim", "world": "pkg:warehouse", "overrides": {}}),
+                        encoding="utf-8")
+    third = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
+    assert third["world"] == "pkg:warehouse"
+    assert len(calls) == 2
+
+
+def test_a_campaign_without_a_record_is_not_memoised(client, monkeypatch):
+    """No ``campaign.db`` means nothing to key on -- the rest key's own rule -- so every ask reads."""
+    calls = _count_identity_reads(monkeypatch)
+    client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY)
+    client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY)
+    assert len(calls) == 2

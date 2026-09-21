@@ -43,7 +43,8 @@ import { robovast } from '@/lib/robovastClient'
 import type { MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
 import { CANVAS } from '@/colors'
 import { openRunCapture } from '@/lib/scene3d/runCapture'
-import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
+import type { SceneModel } from '@/lib/scene3d/sceneLoader'
+import { sceneModels, type SceneLease } from '@/lib/scene3d/sceneModelCache'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 import { registerSceneReset } from './sceneReset'
@@ -70,6 +71,7 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<SceneViewport | null>(null)
   const modelRef = useRef<SceneModel | null>(null)
+  const leaseRef = useRef<SceneLease | null>(null)
   const sourceRef = useRef<MotionSource | null>(null)
   const sinkRef = useRef<MotionSink | null>(null)
 
@@ -119,7 +121,9 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   }, [applyAt])
 
   // One viewport per mount. PanelHost remounts the panel per run, so switching run or campaign builds
-  // a fresh one and disposes this.
+  // a fresh one and disposes this. The *model* outlives it: it is leased from `sceneModels` and handed
+  // back on unmount, so the next run of the same world is seated in the parsed geometry this one
+  // showed rather than fetching and building it again.
   //
   // The viewport's lifetime is also what the header's "Reset 3D view" entry follows: registering here
   // rather than once per panel *type* means the entry is offered while a camera exists to re-frame,
@@ -155,20 +159,23 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   )
 
 
-  // Load the geometry once the service says it is ready. Disposing the previous model matters even
-  // though the panel usually remounts: a URL that changes *within* a mounted viewport (a campaign
-  // switch that keeps the panel alive) would otherwise leave the old world's buffers on the GPU for
-  // the life of the tab.
+  // Lease the geometry once the service says it is ready. Handing the previous lease back matters
+  // even though the panel usually remounts: a URL that changes *within* a mounted viewport (a campaign
+  // switch that keeps the panel alive) would otherwise keep the old world out of the cache and its
+  // buffers on the GPU for the life of the tab.
   useEffect(() => {
     if (!sceneUrl) return
     let cancelled = false
-    loadScene(sceneUrl)
-      .then((model) => {
+    sceneModels
+      .acquire(sceneUrl)
+      .then((lease) => {
         if (cancelled) {
-          model.dispose()
+          lease.release()
           return
         }
-        modelRef.current?.dispose()
+        leaseRef.current?.release()
+        leaseRef.current = lease
+        const { model } = lease
         modelRef.current = model
         // The sink is the scene model: a joint track drives jointMap, a pose track basePose.
         sinkRef.current = {
@@ -227,7 +234,8 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
     () => () => {
       sourceRef.current?.dispose()
       sourceRef.current = null
-      modelRef.current?.dispose()
+      leaseRef.current?.release()
+      leaseRef.current = null
       modelRef.current = null
       sinkRef.current = null
     },

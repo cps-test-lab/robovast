@@ -2119,6 +2119,14 @@ cheap ``GET`` (*say why you are about to wait, before you wait*), starting work 
 live in the service's cache rather than in the campaign's results. The cache key is in the asset path so
 one URL prefix addresses the whole entry, which is what makes the loader's sibling fetches resolve.
 
+Because the key names what an entry was compiled from, and an entry is never rewritten under its key,
+an asset URL names its bytes. So the assets are served ``Cache-Control: private, max-age=31536000,
+immutable``, and the run view keeps the last parsed scene when the panel is torn down on a run switch:
+the next run of the same world is seated in that model — back at rest — with no fetch and no rebuild. Its
+status ``GET`` is still asked on every switch, since another run may name another world; for a campaign
+at rest the service answers it from a memo kept against the campaign's record files and the run's
+capture. Files under ``/results`` carry no such header: their paths name a location, not the bytes in it.
+
 The cache is **shared across campaigns** and durable (``~/.robovast/cache/scenes``, overridable with
 ``ROBOVAST_SCENE_CACHE``; size-capped by ``ROBOVAST_SCENE_CACHE_BYTES``, evicted whole-entry
 least-recently-used). Two consequences worth knowing:
