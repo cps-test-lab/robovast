@@ -227,8 +227,7 @@ class ExecutionBackend(ABC):
         from robovast.execution.share_providers.naming import archive_name, campaign_variant
         self._refuse_unimportable(campaign_root)
         results_dir = os.path.dirname(os.path.normpath(campaign_root))
-        archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(
-            results_dir, "_archives")
+        archive_dir = campaign_archive.local_archive_dir(results_dir)
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         on_member = getattr(progress_callback, "on_member", None)
         if on_member is not None:

@@ -669,7 +669,8 @@ class LocalTransport(RobovastInterface):
         self._health: dict[str, dict] = {}
         self._health_guard = threading.Lock()
         # campaign_id -> recorded start time (see _started_at_for). Only known values
-        # are held, and a recorded one never changes, so no invalidation is needed.
+        # are held, and a recorded one never changes while the campaign exists, so the only
+        # invalidation is delete_campaign's, which drops every per-campaign cache here.
         self._started_at_cache: dict[str, str] = {}
         #: campaign_id -> recorded finish time (see _finished_at_for). Unlike the caches
         #: beside it this one CAN go stale: a re-triggered postprocessing or a re-run
@@ -1244,11 +1245,12 @@ class LocalTransport(RobovastInterface):
     def _sweep_staged_archives(self) -> None:
         """Delete staged archives old enough that nothing can still be waiting on them.
 
-        Every other path already cleans up after itself: an import deletes the copy it
-        consumed, and a failed extraction deletes it too. What is left is the upload that was
-        never imported -- a refused pre-flight, or a browser that went away between the PUT and
-        the POST -- and those bytes are a campaign archive, so leaving them is leaving
-        gigabytes per attempt on the results volume.
+        An import deletes the copy it consumed. A failed import keeps it, so a retry with
+        force costs no second transfer, and deleting that campaign removes a copy fetched from
+        the share (staged under the campaign id). What is left is an upload, staged under its
+        token: one never imported -- a refused pre-flight, or a browser that went away between
+        the PUT and the POST -- or one whose import failed. Those bytes are a campaign archive,
+        so leaving them is leaving gigabytes per attempt on the results volume.
 
         Not deleted on refusal, deliberately: the answer to the commonest refusal (a campaign of
         that id is already here) is to import the *same* staged archive again with ``force``,
@@ -4481,19 +4483,82 @@ class LocalTransport(RobovastInterface):
                 logger.info("index: removed %d row(s) for deleted campaign %s",
                             sum(deleted.values()), campaign_id)
 
+    def _campaign_siblings(self, campaign_id: str) -> list[Path]:
+        """Files that belong to *campaign_id* but live outside its directory.
+
+        The local archives an upload-to-share or ``run_share`` wrote (a full copy each, on
+        the results volume), and the copy an import fetched from the share and kept because
+        the import failed. An *uploaded* archive is staged under its grant token, not the
+        campaign id, so it is not found here; ``_sweep_staged_archives`` removes it.
+        """
+        from robovast.execution.campaign_archive import \
+            local_archive_files  # pylint: disable=import-outside-toplevel
+        found = [Path(p) for p in local_archive_files(str(self._campaigns_root()),
+                                                      campaign_id)]
+        staged = self._staging_dir() / f"{campaign_id}.tar.gz"
+        if staged.is_file():
+            found.append(staged)
+        return found
+
     def delete_campaign(self, campaign_id: str) -> ActionResult:
-        """Delete the campaign's directory under the results root (see interface)."""
+        """Delete the campaign's directory and its sibling files (see interface).
+
+        Everything that can go is removed before anything is reported, so a second delete
+        retries only what is left. A path that could not be removed makes the result
+        ``ok=False`` naming it: the commonest cause is run output written by a container
+        user other than the service's (``execution.run_as_user``), which the service cannot
+        unlink, and a delete that answered "deleted" over it would leave the space taken
+        with nothing saying so.
+        """
         self._ensure_deletable(campaign_id)
         campaign_dir = self.campaign_dir(campaign_id)
         existed = campaign_dir.is_dir()
-        shutil.rmtree(campaign_dir, ignore_errors=True)
+        failed: list[tuple[str, OSError]] = []
+
+        def _record(_func, path, exc):
+            if not isinstance(exc, FileNotFoundError):
+                failed.append((path, exc))
+
+        if existed:
+            shutil.rmtree(campaign_dir, onexc=_record)
+
+        removed_archives, archive_bytes = 0, 0
+        for path in self._campaign_siblings(campaign_id):
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                failed.append((str(path), e))
+            else:
+                removed_archives += 1
+                archive_bytes += size
+
         self._forget_in_index(campaign_id)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
-        return ActionResult(
-            ok=True,
-            message=(f"Deleted campaign {campaign_id!r}." if existed
-                     else f"Campaign {campaign_id!r} had no local data; nothing to delete."))
+            for cache in (self._started_at_cache, self._finished_at_cache,
+                          self._description_cache, self._created_by_cache,
+                          self._origin_cache, self._summary_cache, self._disk_status_cache):
+                cache.pop(campaign_id, None)
+
+        if failed:
+            path, exc = failed[0]
+            return ActionResult(
+                ok=False,
+                message=(f"Campaign {campaign_id!r} was not fully deleted: {len(failed)} "
+                         f"path(s) could not be removed, the first being {path} "
+                         f"({exc.strerror or exc}). Files written by a container user other "
+                         f"than the service's (execution.run_as_user) cannot be removed by "
+                         f"the service; remove them as that user, then delete again."))
+        if not existed and not removed_archives:
+            return ActionResult(
+                ok=True,
+                message=f"Campaign {campaign_id!r} had no local data; nothing to delete.")
+        archives = (f", and {removed_archives} archive(s) of "
+                    f"{archive_bytes / 1024 ** 3:.2f} GiB beside it" if removed_archives else "")
+        return ActionResult(ok=True, message=f"Deleted campaign {campaign_id!r}{archives}.")
 
     # -- postprocessing -----------------------------------------------------
 

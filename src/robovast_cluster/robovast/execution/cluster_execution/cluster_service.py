@@ -2715,11 +2715,12 @@ class ClusterService(LocalTransport):
         return outcomes
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
-        """Delete one cluster campaign wholesale: its directory, its leftover Jobs and its
-        token Secret (see :meth:`RobovastInterface.delete_campaign`).
+        """Delete one cluster campaign wholesale: its directory and sibling files, its
+        leftover Jobs and its token Secret (see :meth:`RobovastInterface.delete_campaign`).
 
-        The directory is the inherited delete; the Job reap catches anything a crashed or
-        orphaned campaign left behind. The external share copy is untouched.
+        The files are the inherited delete, whose result this returns; the Job reap catches
+        anything a crashed or orphaned campaign left behind. The external share copy is
+        untouched.
         """
         from . import pod_access
         from .cluster_execution import cleanup_cluster_campaign
