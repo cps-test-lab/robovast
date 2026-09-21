@@ -1029,7 +1029,7 @@ single file.
 The file is produced by a four-phase pipeline:
 
 1. **Generic metadata** — collected by ``MetadataGenerator``
-   (``robovast.common.metadata``).  This includes configurations, test
+   (``robovast.results_processing.metadata``).  This includes configurations, test
    results (pass/fail, timing, output files, sysinfo), execution metadata,
    run files, and the scenario file reference.
 
@@ -1052,6 +1052,14 @@ The file is produced by a four-phase pipeline:
    ``prov:wasDerivedFrom`` edge from the cell to that configuration in
    ``metadata.prov.json``.  A configuration that records no parent carries no
    such field.
+
+A campaign whose recorded outcome says it ended early — ``stopped``, ``failed`` or
+``crashed`` — is described with the runs it has: ``execution.ended_early`` names the phase,
+a configuration may have fewer run directories than ``execution.runs`` planned, and the
+campaign may have no run with a verdict, since the ending cuts runs short before they reach
+one. Any other campaign with fewer runs than it planned, or none with a verdict, is refused
+as a broken input — a shortfall on its own is also what an accidental gap looks like. More
+runs than planned is refused however the campaign ended.
 
 Example structure of ``metadata.yaml``:
 
