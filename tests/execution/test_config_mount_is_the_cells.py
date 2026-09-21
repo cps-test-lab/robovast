@@ -185,7 +185,7 @@ def test_it_fetches_the_whole_view_in_one_stream(monkeypatch):
     order the cell's file lands on the campaign's is the stream's rather than a step the
     pod could get wrong."""
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS)
-    assert command.count("curl") == 1, command
+    assert command.count("curl -sSf") == 1, command
     assert "/campaigns/camp-2026-07-17-120000/inputs" in command, command
     assert "tar -x -C /config" in command, command
 
