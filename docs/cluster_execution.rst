@@ -1469,9 +1469,10 @@ part that does not survive it; the campaigns do.
 * Jobs already created keep running. They carry no owner reference, so Kubernetes does
   not collect them, and startup reaping covers aux pods only -- they run to completion
   and their uploaders deliver their results into the campaign, which is where a
-  campaign's results live anyway. The uploader retries for longer than the service's own
-  startup budget, so a Job that finishes while the service is being rolled waits for it
-  rather than failing for it.
+  campaign's results live anyway. Every transfer a pod makes -- its fetch as much as its
+  delivery -- retries for longer than the service's own startup budget, re-running the
+  whole stream each time, so a Job that starts or finishes while the service is being
+  rolled waits for it rather than failing for it.
 * Jobs still queued were never created, so there is nothing to orphan. They are re-queued
   when the campaign is adopted.
 * The successor process does **not** over-admit against the surviving Jobs. Capacity is

@@ -31,9 +31,10 @@ A marker that never comes -- a sidecar killed hard, an image whose entrypoint ne
 must not hold the result hostage: once ``done.main`` has existed for the grace period the
 upload proceeds with what is there, saying which markers were missing.
 
-The upload retries, because the service it delivers to is rolled by ``vast service
-upgrade`` while campaigns run, and a streamed body cannot be replayed: every attempt
-re-runs the whole ``tar | curl`` pipeline. A 507 is retried too: the results volume is
+The upload retries on the schedule every transfer follows
+(:data:`~.pod_access.TRANSFER_ATTEMPTS`), because the service it delivers to is rolled by
+``vast service upgrade`` while campaigns run, and a streamed body cannot be replayed: every
+attempt re-runs the whole ``tar | curl`` pipeline. A 507 is retried too: the results volume is
 full, the run's output is sound, and space freed within the retry window is space this
 upload lands in -- giving up would throw away a run that already cost its compute. Only a
 4xx is terminal: the request itself is wrong, and retrying it would only repeat the
@@ -46,7 +47,7 @@ Runs from the sidecar image, so this is POSIX ``sh`` for busybox, with ``curl`` 
 
 from robovast.common.execution import IPC_DIR, MAIN_CONTAINER, done_marker
 
-from .pod_access import deliver_command
+from .pod_access import TRANSFER_ATTEMPTS, TRANSFER_BACKOFF_S, deliver_command
 
 #: The uploader's name in the pod: a regular container, so the Job is complete only once
 #: the results are home, and failed when they could not be delivered.
@@ -63,21 +64,6 @@ UPLOADER_RESOURCES = {
 IPC_DIR_ENV = "ROBOVAST_IPC_DIR"
 OUT_DIR_ENV = "ROBOVAST_OUT_DIR"
 OUT_DIR = "/out"
-
-#: The retry schedule: attempt *n* is followed by a sleep of ``n * UPLOAD_BACKOFF_S``
-#: seconds, so the window the uploader keeps trying for is
-#: ``UPLOAD_BACKOFF_S * UPLOAD_ATTEMPTS * (UPLOAD_ATTEMPTS - 1) / 2`` seconds
-#: (:func:`upload_retry_window_s`).
-#:
-#: That window has to exceed the service's own startup budget,
-#: ``service_deploy.STARTUP_PROBE_PERIOD_SECONDS * STARTUP_PROBE_FAILURE_THRESHOLD``: a
-#: service being upgraded resumes every interrupted campaign before it answers, and may
-#: take the whole of that budget to do so. An uploader that gave up sooner would fail
-#: exactly the Jobs that finished during an upgrade -- and fail them for the upgrade, not
-#: for anything they did. ``tests/execution/test_pod_upload_protocol.py`` holds the two
-#: figures to that relation.
-UPLOAD_ATTEMPTS = 13
-UPLOAD_BACKOFF_S = 30
 
 #: How long a sidecar may take to stop its workload and write its marker after
 #: ``done.main`` exists before the upload proceeds without it. Long enough for a simulator
@@ -97,12 +83,6 @@ UPLOAD_TERMINATION_GRACE = 120
 #: forensics whose signal is the archive's absence. Once every marker exists nothing is
 #: still being written, so the ordinary upload excludes nothing.
 IN_PROGRESS_SUFFIX = ".part"
-
-
-def upload_retry_window_s(attempts: int = UPLOAD_ATTEMPTS,
-                          backoff_s: int = UPLOAD_BACKOFF_S) -> int:
-    """The seconds between the first attempt and the last, under linear backoff."""
-    return backoff_s * attempts * (attempts - 1) // 2
 
 
 _SCRIPT = r'''#!/bin/sh
@@ -256,14 +236,16 @@ exit 1
 
 
 def uploader_script(campaign_id: str, wait_for: "list[str]", grace_s: int = UPLOAD_GRACE_SECONDS,
-                    *, attempts: int = UPLOAD_ATTEMPTS, backoff_s: int = UPLOAD_BACKOFF_S) -> str:
+                    *, attempts: int = TRANSFER_ATTEMPTS,
+                    backoff_s: int = TRANSFER_BACKOFF_S) -> str:
     """The uploader container's command, as one ``sh`` script.
 
     *wait_for* names the sidecars whose ``done.<name>`` markers gate the upload; the
     scenario container's ``done.main`` is always waited for, and is the marker that starts
     the *grace_s* clock after which the upload proceeds without the rest. *attempts* and
     *backoff_s* are the retry schedule and exist so a test can run it in seconds; a pod
-    takes the defaults, which :func:`upload_retry_window_s` sizes.
+    takes the defaults, which
+    :func:`~.pod_access.transfer_retry_window_s` sizes.
     """
     if not campaign_id:
         raise ValueError("an uploader needs the campaign it delivers to")
@@ -294,6 +276,5 @@ def uploader_command(campaign_id: str, wait_for: "list[str]",
 
 
 __all__ = ["IN_PROGRESS_SUFFIX", "IPC_DIR_ENV", "OUT_DIR", "OUT_DIR_ENV", "UPLOADER_CONTAINER",
-           "UPLOADER_RESOURCES", "UPLOAD_ATTEMPTS", "UPLOAD_BACKOFF_S", "UPLOAD_GRACE_SECONDS",
-           "UPLOAD_TERMINATION_GRACE", "done_marker", "upload_retry_window_s",
+           "UPLOADER_RESOURCES", "UPLOAD_GRACE_SECONDS", "UPLOAD_TERMINATION_GRACE", "done_marker",
            "uploader_command", "uploader_script"]

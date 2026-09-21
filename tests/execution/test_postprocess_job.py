@@ -447,22 +447,24 @@ def test_an_unreadable_pod_list_never_becomes_the_failure():
 
 def test_a_stage_exit_code_is_read_in_the_pipelines_own_vocabulary():
     """The stage is `curl | tar`, so its code is curl's or tar's and a bare `exited 1
-    (Error)` names neither. curl's two codes that mean something on their own are given
-    words; anything else is tar's, which is the stream cut short or the disk full -- and
-    in every case curl's own report is in the log the pod's stdout is published to.
+    (Error)` names neither. The fetch exits with curl's code when the transfer failed and
+    tar's only when a whole stream would not extract, so a cut stream is curl's to name and
+    tar's codes mean the node could not take the archive. Any other curl code is named by
+    number -- and in every case the report is in the log the pod's stdout is published to.
     """
-    assert set(pj.STAGE_EXIT_REASONS) == {7, 22}
-    for code in (7, 22):
-        reason = pj.pod_failure_reason(
-            _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=code)])]), 'ns', 'job-x')
-        assert pj.STAGE_EXIT_REASONS[code] in reason
-        assert 'data plane' in reason
-        assert f'exit {code}' in reason
+    def reason(code):
+        return pj.pod_failure_reason(
+            _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=code, reason='Error')])]),
+            'ns', 'job-x')
 
-    tar = pj.pod_failure_reason(
-        _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=2, reason='Error')])]),
-        'ns', 'job-x')
-    assert pj.STAGE_TAR_FAILED in tar and 'disk' in tar and 'exit 2' in tar
+    assert set(pj.STAGE_EXIT_REASONS) == {7, 18, 22, 56}
+    for code in pj.STAGE_EXIT_REASONS:
+        assert pj.STAGE_EXIT_REASONS[code] in reason(code)
+        assert f'exit {code}' in reason(code)
+    for code in pj.STAGE_TAR_CODES:
+        assert pj.STAGE_TAR_FAILED in reason(code) and 'disk' in reason(code)
+    timeout = reason(28)
+    assert pj.STAGE_FETCH_FAILED in timeout and 'exit 28' in timeout and 'disk' not in timeout
 
 
 def test_another_containers_exit_code_is_reported_as_the_number():
