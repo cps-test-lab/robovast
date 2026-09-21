@@ -187,6 +187,49 @@ def test_only_the_host_container_is_given_the_index_and_only_ours_the_token():
     assert pod_access.TOKEN_ENV in stage_env and DSN_ENV not in stage_env
 
 
+
+@pytest.mark.parametrize("role", [pj.JobRole.campaign(), pj.JobRole.for_part("part-1", []),
+                                  pj.JobRole.reduce(stage_bags=False)],
+                         ids=["campaign", "part", "reduce"])
+@pytest.mark.parametrize("rosbag_cmds", [[], _CMDS], ids=["host-only", "with-conversion"])
+def test_the_host_finds_the_git_token_where_the_plugin_install_looks(role, rosbag_cmds):
+    """The host re-installs the campaign's ``plugins:``, so it needs what the service has.
+
+    A ``git+https`` spec for a private repository is cloned by that install, and without the
+    token the clone asks for a username it has no terminal to read. The service pod had the
+    Secret and every postprocessing Job did not, so a campaign that composed and ran got
+    its plugin install refused the moment its postprocessing moved into Jobs of its own.
+    Every role, because every role's host runs that install.
+    """
+    from robovast.common.config_plugins import GIT_TOKEN_FILE
+    from robovast.execution.cluster_execution.service_deploy import (GIT_SECRET_KEY,
+                                                                     GIT_SECRET_NAME)
+
+    spec = _pod_spec(rosbag_cmds=rosbag_cmds, role=role)
+    volume = next(v for v in spec["volumes"] if v["name"] == "git-credentials")
+    assert volume["secret"]["secretName"] == GIT_SECRET_NAME
+    # Optional: the Secret exists only where setup was given a token, and a required one
+    # naming nothing holds the pod in ContainerCreating instead of letting the install say
+    # which token is missing.
+    assert volume["secret"]["optional"] is True
+
+    mount = next(m for m in _by_name(spec)[HOST_CONTAINER]["volumeMounts"]
+                 if m["name"] == "git-credentials")
+    assert mount["readOnly"] is True
+    assert f"{mount['mountPath']}/{GIT_SECRET_KEY}" == GIT_TOKEN_FILE
+
+
+def test_only_the_host_container_mounts_the_git_token():
+    """The conversion runs the campaign's own image, and the stage only fetches bytes.
+
+    Neither installs a plugin, so neither has a use for the token -- and the conversion is
+    a stranger's image, the one container in this pod that must hold no credential.
+    """
+    for name, container in _by_name(_pod_spec()).items():
+        mounts = {m["name"] for m in container.get("volumeMounts", [])}
+        assert ("git-credentials" in mounts) == (name == HOST_CONTAINER), name
+
+
 # -- what the pod reserves ---------------------------------------------------
 
 
