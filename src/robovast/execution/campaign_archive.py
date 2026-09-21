@@ -341,6 +341,29 @@ def make_campaign_tarball(campaign_root: str, archive_dir: str,
     return out_path
 
 
+def local_archive_dir(results_dir: str) -> str:
+    """Where the local lane writes a campaign's archives: ``$ROBOVAST_ARCHIVE_DIR``, or a
+    ``_archives/`` sibling of the campaign dirs under *results_dir*.
+
+    Outside every campaign dir so an archive cannot perturb postprocessing's hash-cache,
+    which also means deleting a campaign's dir does not delete its archives:
+    :func:`local_archive_files` is what finds them.
+    """
+    return os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(results_dir, "_archives")
+
+
+def local_archive_files(results_dir: str, campaign_id: str) -> list:
+    """The files :func:`make_campaign_tarball` has left for *campaign_id* in the local
+    archive dir: every variant's archive, and the ``.part`` of a writer that was killed."""
+    from robovast.execution.share_providers.naming import VARIANTS, archive_name
+    archive_dir = local_archive_dir(results_dir)
+    found = []
+    for variant in VARIANTS:
+        path = os.path.join(archive_dir, archive_name(campaign_id, variant))
+        found.extend(p for p in (path, f"{path}.part") if os.path.isfile(p))
+    return found
+
+
 class _TarPipe:
     """A running tar stream: a writer thread tars into a pipe, and ``stdout`` reads it.
 
