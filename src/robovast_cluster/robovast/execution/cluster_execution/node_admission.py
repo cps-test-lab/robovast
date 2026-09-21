@@ -732,6 +732,28 @@ class AdmissionController:
             self._refusals.pop(owner, None)
             return len(keys)
 
+    def drop_planned(self, owner: str) -> "List[str]":
+        """Drop *owner*'s items that are not created yet, keeping what it already holds.
+
+        For an owner that has nothing left for a planned item to do. A planned item keeps its
+        place in the global queue and is created the moment room appears, so leaving it there
+        spends a node's capacity on work whose submitter has no use for the result.
+
+        Not :meth:`cancel`, which also releases what the owner's CREATED items hold -- those
+        are pods that exist, and forgetting their reservation would let the queue spend the
+        same capacity twice.
+        """
+        with self._lock:
+            keys = [k for k, i in self._items.items()
+                    if i.owner == owner and i.state == PLANNED]
+            for key in keys:
+                self._items.pop(key, None)
+            if not any(i.owner == owner for i in self._items.values()):
+                # A reason that outlived the wait it described reads to an operator as an
+                # owner still stuck -- the same defect a create already clears.
+                self._refusals.pop(owner, None)
+            return keys
+
     def forget_calibration(self, owner: str) -> bool:
         """Drop an owner's calibration, once its campaign is over. Returns whether there was one.
 
