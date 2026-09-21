@@ -36,6 +36,8 @@ import time
 from functools import partial
 from typing import Dict, List
 
+from robovast.common.stop import sleep_unless_stopped
+
 from . import pod_access
 from .admitted_jobs import AdmittedJobs, running_jobs
 from .campaign_job import pin_campaign_job
@@ -372,7 +374,7 @@ class _MapPhase:
                 if time.monotonic() > deadline:
                     return None, (f"the postprocessing parts were still running after "
                                   f"{timeout:g}s; they continue in the cluster")
-                time.sleep(pj.POLL_SECONDS)
+                sleep_unless_stopped(pj.POLL_SECONDS, should_stop)
         finally:
             if not settled and self.admission is not None:
                 # Whatever ended the wait early, a part still queued must not be created

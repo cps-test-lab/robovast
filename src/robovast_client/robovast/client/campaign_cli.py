@@ -65,11 +65,12 @@ def _sole_running_campaign(client):
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @target_options
 def stop(campaign, namespace, context):
-    """Ask a running campaign to stop gracefully (after the current batch).
+    """Ask a running campaign to stop.
 
-    Goes through the robovast-service, which drives the campaign in-process: the
-    loop ends once the in-flight batch finishes and the campaign is published as
-    usual. A no-op if nothing is running.
+    Goes through the robovast-service, which drives the campaign in-process, so the
+    stop reaches whatever it is doing and the campaign is published as usual. What it
+    leaves behind depends on which work was running; the reply says. A no-op if nothing
+    is running.
     """
     try:
         with service_client(namespace, context) as (client, target):
@@ -80,8 +81,9 @@ def stop(campaign, namespace, context):
                 return
             result = client.stop(campaign_id)
             if result.ok:
-                click.echo(f"Stop requested for '{campaign_id}'. "
-                           "The campaign will end after the current batch.")
+                # The service's own reply says which work was stopped and what that
+                # leaves; restating it here would be a second answer to one question.
+                click.echo(f"Stop requested for '{campaign_id}': {result.message}")
             else:
                 click.echo(f"Stop failed: {result.message}")
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing

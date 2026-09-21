@@ -43,6 +43,7 @@ from .config_plugins import ensure_workspace_plugins
 from .errors import (ActionableError, AuxContainerUnavailable, ExecPathUnavailable,
                      missing_input_error)
 from .file_cache2 import CacheKey, FileCache2
+from .stop import run_watching_stop
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
                                run_input_generators)
 from .plugin_ref import file_ref_path, is_file_ref, iter_file_refs, load_ref
@@ -1662,7 +1663,7 @@ def _result_from_transport(data: dict, output_dir) -> dict:
 
 def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                       tolerate_infeasible=False, image_project=None,
-                      image_project_tag=None, container_queries=True):
+                      image_project_tag=None, container_queries=True, should_stop=None):
     """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
 
     The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
@@ -1672,6 +1673,10 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     artifacts are written into the shared *output_dir* on disk. The worker's output
     (pip install progress, composition progress, and any plugin traceback) is
     streamed live and, on failure, surfaced in the raised error.
+
+    *should_stop* ends the worker: composing a sweep installs the plugins and may drive
+    auxiliary containers per configuration, which is the longest a campaign goes before
+    its first run, and the parent is the only side that can reach the worker's group.
     """
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="robovast_isolated_compose_")
@@ -1724,16 +1729,15 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
         try:
             # Merge stderr into stdout so a full pipe on either stream cannot deadlock;
             # the plugin traceback (stderr) is interleaved and captured for the error.
-            proc = subprocess.Popen(  # nosec B603 - fixed module, config-derived job file
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env)
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip("\n")
+            def _echo(line):
                 output_lines.append(line)
                 print(line, flush=True)
                 progress_update_callback(line)
-            returncode = proc.wait()
+
+            returncode = run_watching_stop(  # nosec B603 - fixed module, config-derived job file
+                cmd, should_stop=should_stop, on_line=_echo,
+                stopped_reason="stopped while composing the campaign's configurations",
+                bufsize=1, env=env)
         finally:
             # After the worker is gone, and unconditionally: a worker that raised
             # mid-composition leaves runners open, and the parent is the only side left
@@ -1758,7 +1762,7 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     return _result_from_transport(transport, output_dir)
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None, container_queries=True):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None, container_queries=True, should_stop=None):
     """Generate all scenario variation configs from a .vast file.
 
     ``image_project`` / ``image_project_tag`` select which project the RoboVAST image
@@ -2024,7 +2028,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                                  tolerate_infeasible, image_project=image_project,
                                  image_project_tag=image_project_tag,
-                                 container_queries=container_queries)
+                                 container_queries=container_queries,
+                                 should_stop=should_stop)
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's

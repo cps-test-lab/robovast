@@ -54,6 +54,7 @@ import time
 from pathlib import Path
 
 from robovast.common.config import SCENARIO_CONTAINER
+from robovast.common.errors import CampaignStopped
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
                                                STOP_SCOPE_MESSAGES, Phase,
                                                stop_scope_for_phase)
@@ -2147,24 +2148,38 @@ class ClusterService(LocalTransport):
         return specs, project_dir, cfg, registry
 
     def _start_build_images(self, project, campaign_config, image_project=None,
-                            image_project_tag=None) -> list:
+                            image_project_tag=None, should_stop=None) -> list:
         """Submit (or join) an in-cluster BuildKit Job per image this campaign builds.
 
         Returns as soon as each build has a handle; ``LocalTransport._await_build_image``
         waits on them over the interface, so both lanes share one wait loop.
+
+        *should_stop* lands between resolving the build context and submitting anything,
+        which is where this lane's time goes -- the registry reads that resolve a
+        ``family:`` base and the store's own checks -- and is the last moment at which a
+        stopped campaign can still avoid queueing a build Job.
         """
         resolved = self._campaign_build_context(
             project, campaign_config, image_project=image_project,
             image_project_tag=image_project_tag)
         if resolved is None:
             return []
+        if should_stop is not None and should_stop():
+            raise CampaignStopped(
+                "stopped before submitting the campaign's image build")
         specs, project_dir, cfg, registry = resolved
         return [self._start_cluster_build(spec, project_dir, cfg, registry)
                 for spec in specs.values()]
 
     def _resolve_built_images(self, project, campaign_config, image_project=None,
-                              image_project_tag=None) -> dict:
-        """Concrete registry refs to pin, by container name."""
+                              image_project_tag=None, should_stop=None) -> dict:
+        """Concrete registry refs to pin, by container name.
+
+        *should_stop* is read before the registry is asked to form the refs: the builds
+        are done by now, so the only thing left to save a stopped campaign is the reads.
+        """
+        if should_stop is not None and should_stop():
+            raise CampaignStopped("stopped before pinning the campaign's image refs")
         specs, project_dir, _cfg, registry = self._campaign_build_context(
             project, campaign_config, image_project=image_project,
             image_project_tag=image_project_tag)
@@ -2245,13 +2260,12 @@ class ClusterService(LocalTransport):
         """Stop a campaign this process is driving.
 
         The driver is in this process, so the cooperative flag is a direct state
-        write. That flag alone only ends a *search* between generations, though — a
-        batch campaign's wait loop blocks until its Jobs finish on their own, so the
-        flag would appear to do nothing. We therefore also tear down the campaign's
-        cluster workloads (the same cleanup ``vast cluster
-        jobs-cleanup`` performs): the running pods terminate now, the batch wait loop
-        unblocks (``get_remaining_jobs`` treats a gone Job as finished), and the
-        driver winds the campaign down.
+        write, and every wait the campaign's own thread sits in ends on it within that
+        wait's poll interval. What a flag cannot end is the **pods**, which run on other
+        machines, so this also tears down the campaign's cluster workloads (the same
+        cleanup ``vast cluster jobs-cleanup`` performs): the running pods terminate now,
+        and the batch loop finds them gone (``get_remaining_jobs`` treats a gone Job as
+        finished) rather than waiting out runs the campaign has already given up on.
 
         A campaign still in ``building`` is stopped by the flag alone: that teardown is
         label-scoped to ``jobgroup=scenario-runs`` and cannot reach the

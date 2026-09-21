@@ -1946,11 +1946,12 @@ Control operations
 ^^^^^^^^^^^^^^^^^^^
 
 * ``stop`` (``client.stop``) — sets a cooperative flag on the campaign's
-  ``ControllerState`` (``request_stop``); the loop ends after the current batch. In
-  the service this is a direct in-process call. A campaign already **postprocessing** is
-  stopped by the same flag — the pipeline polls it and tears down the step in flight — but
-  ends as ``finished`` without its derived data rather than as ``stopped``, since its runs
-  are complete; see :doc:`architecture`.
+  ``ControllerState`` (``request_stop``); in the service this is a direct in-process call.
+  Every wait the campaign's thread sits in ends on that flag (``wait_for_stop``), and
+  every boundary between two steps gives up on it (``raise_if_stopped``), so the phase a
+  campaign happens to be in does not decide how long the stop takes. Which work a stop
+  lands on, and what each one leaves behind, is the
+  :ref:`per-phase table <stopping-a-campaign>` in :doc:`architecture`.
 * ``get_campaign_logs`` — serves ``controller.log`` from a byte offset, the same file on
   the service's results volume while the campaign runs and after. The web UI polls it to
   stream the log; ``vast … monitor`` renders live status from ``get_status``.

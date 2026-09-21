@@ -7,14 +7,7 @@ import types
 from robovast.client.status import Phase
 from robovast.common import config_plugins
 from robovast.execution import controller
-
-
-class _State:
-    def __init__(self):
-        self.phase = None
-
-    def set_phase(self, phase, stage=None):
-        self.phase = phase
+from robovast.execution.control_server import ControllerState
 
 
 def _campaign_config(plugins):
@@ -25,10 +18,10 @@ def test_no_plugins_is_a_noop(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(config_plugins, "ensure_workspace_plugins",
                         lambda *a, **k: called.append((a, k)))
-    state = _State()
+    state = ControllerState()
     controller._install_plugins(str(tmp_path / "x.vast"), _campaign_config(None),
                                 str(tmp_path / "camp"), state)
-    assert state.phase is None                 # phase unchanged
+    assert state.snapshot().phase == Phase.INITIALIZING   # phase unchanged
     assert called == []                        # no install attempted
     assert not (tmp_path / "camp" / "_execution" / "plugin_install.log").exists()
 
@@ -36,22 +29,28 @@ def test_no_plugins_is_a_noop(tmp_path, monkeypatch):
 def test_plugins_phase_installs_and_logs(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_ensure(vast_dir, specs, force=False, add_to_path=True):
-        seen.update(vast_dir=vast_dir, specs=list(specs), add_to_path=add_to_path)
+    def fake_ensure(vast_dir, specs, force=False, add_to_path=True, should_stop=None):
+        seen.update(vast_dir=vast_dir, specs=list(specs), add_to_path=add_to_path,
+                    should_stop=should_stop)
 
     monkeypatch.setattr(config_plugins, "ensure_workspace_plugins", fake_ensure)
     vast = tmp_path / "x.vast"
     vast.write_text("version: 4\n")
     campaign_root = tmp_path / "camp"
-    state = _State()
+    state = ControllerState()
 
     controller._install_plugins(str(vast), _campaign_config(["foo==1"]),
                                 str(campaign_root), state)
 
-    assert state.phase == Phase.PLUGIN_INSTALL
+    assert state.snapshot().phase == Phase.PLUGIN_INSTALL
     assert seen["specs"] == ["foo==1"]
     assert seen["vast_dir"] == str(tmp_path)   # dir of the .vast
     # Materialize-only: the driver installs but does not import onto its own sys.path.
     assert seen["add_to_path"] is False
     # The install log lands in the campaign results dir like the other phase files.
     assert (campaign_root / "_execution" / "plugin_install.log").is_file()
+    # And the install can be ended: this phase is pip cloning repositories, so a stop
+    # asked for during a launch most often lands here and must not wait it out.
+    assert seen["should_stop"]() is False
+    state.request_stop()
+    assert seen["should_stop"]() is True

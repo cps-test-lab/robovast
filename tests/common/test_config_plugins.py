@@ -68,7 +68,7 @@ def test_no_plugins_is_noop(tmp_path):
 def test_installs_into_workspace_venv_and_adds_syspath(tmp_path, monkeypatch):
     calls = {}
 
-    def fake_install(venv_dir, specs):
+    def fake_install(venv_dir, specs, **kw):
         calls["venv"] = venv_dir
         calls["specs"] = list(specs)
 
@@ -88,7 +88,7 @@ def test_installs_into_workspace_venv_and_adds_syspath(tmp_path, monkeypatch):
 
 def test_marker_hit_skips_install(tmp_path, monkeypatch):
     # First call installs (stubbed) and writes the marker.
-    monkeypatch.setattr(cp, "_install_into", lambda d, s: None)
+    monkeypatch.setattr(cp, "_install_into", lambda d, s, **kw: None)
     specs = ["made-up==2.0"]
     ensure_workspace_plugins(str(tmp_path), specs)
 
@@ -104,7 +104,7 @@ def test_marker_hit_skips_install(tmp_path, monkeypatch):
 
 def test_changed_specs_reinstall(tmp_path, monkeypatch):
     seen = []
-    monkeypatch.setattr(cp, "_install_into", lambda d, s: seen.append(list(s)))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s, **kw: seen.append(list(s)))
     ensure_workspace_plugins(str(tmp_path), ["a==1"])
     ensure_workspace_plugins(str(tmp_path), ["a==2"])  # different hash -> reinstall
     assert seen == [["a==1"], ["a==2"]]
@@ -211,14 +211,14 @@ def test_detects_already_installed_and_skips(tmp_path, monkeypatch):
 def test_force_materializes_even_if_installed(tmp_path, monkeypatch):
     """Staging path: force installs every spec into the dir for the bare pod."""
     seen = {}
-    monkeypatch.setattr(cp, "_install_into", lambda d, s: seen.update(specs=list(s)))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s, **kw: seen.update(specs=list(s)))
     site = ensure_workspace_plugins(str(tmp_path), ["pytest"], force=True)
     assert site == plugin_site_dir(str(tmp_path))
     assert seen["specs"] == ["pytest"]     # installed despite being importable
 
 
 def test_force_install_warns_when_already_loaded(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(cp, "_install_into", lambda d, s: None)
+    monkeypatch.setattr(cp, "_install_into", lambda d, s, **kw: None)
     with caplog.at_level("WARNING"):
         ensure_workspace_plugins(str(tmp_path), ["pytest"], force=True)
     assert any("already present" in r.message for r in caplog.records)
@@ -312,7 +312,7 @@ def test_plugin_specs_from_vast(tmp_path):
 def test_ensure_plugins_importable_installs_recorded_specs(tmp_path, monkeypatch):
     """A re-run reads plugins: from the campaign's .vast and installs-if-absent."""
     seen = {}
-    monkeypatch.setattr(cp, "_install_into", lambda d, s: seen.update(specs=list(s)))
+    monkeypatch.setattr(cp, "_install_into", lambda d, s, **kw: seen.update(specs=list(s)))
     (tmp_path / "c.vast").write_text(
         "version: 1\nplugins:\n  - made-up-pp==9\nexecution:\n  image: i\n")
     cp.ensure_plugins_importable(str(tmp_path))  # vast auto-discovered
@@ -537,3 +537,27 @@ def test_a_plugin_registering_robovast_entry_points_is_not_mistaken_for_the_host
     assert cp.host_dependent_plugins(str(tmp_path)) == {}
     assert cp.staged_variation_type_names(str(tmp_path)) == {"SemanticGeneration"}
     assert cp._registers_plugins(site) is True
+
+
+def test_a_stopped_campaign_does_not_wait_for_pip(tmp_path, monkeypatch):
+    """A git+https spec clones repositories: minutes a stopped campaign must not spend.
+
+    The install is the first slow step of a launch, so a stop requested while a campaign
+    is starting meets this and nothing else.
+    """
+    import time
+
+    from robovast.common.errors import CampaignStopped
+
+    script = tmp_path / "slow_pip.sh"
+    script.write_text("#!/usr/bin/env bash\ntrap 'exit 130' SIGTERM\nsleep 120\n")
+    script.chmod(0o755)
+    # The install runs ``<sys.executable> -m pip ...``; the script ignores its arguments
+    # and sleeps, which is the shape of a clone that will not be waited for.
+    monkeypatch.setattr(cp.sys, "executable", str(script))
+
+    started = time.monotonic()
+    with pytest.raises(CampaignStopped, match="installing the campaign's plugins"):
+        ensure_workspace_plugins(str(tmp_path), ["made-up==1.0"],
+                                 should_stop=lambda: True)
+    assert time.monotonic() - started < 30

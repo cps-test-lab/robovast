@@ -42,6 +42,7 @@ from typing import Optional
 from robovast.client.status import (  # noqa: F401  # pylint: disable=unused-import; Re-exported on purpose: see this module's docstring. flake8 needs the noqa,; pylint needs the disable, and neither implies the other.
     RUNNING_PHASES, TERMINAL_PHASES, BudgetItem, Phase, RunProgress, Status, failure_detail,
     is_running, is_terminal)
+from robovast.common.errors import CampaignStopped
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,34 @@ class ControllerState:
         """Whether *scope*'s work was asked to end."""
         return self._stop_events[scope].is_set()
 
+    def wait_for_stop(self, timeout: float, scope: str = STOP_RUNS) -> bool:
+        """Wait up to *timeout* seconds, returning early and True if *scope* is stopped.
+
+        The replacement for ``time.sleep`` in every poll loop the campaign's own thread
+        runs: a sleeping loop only notices a stop at the end of the interval it happened
+        to be in, so the interval that makes a poll cheap is also the delay a stop pays.
+        Waiting on the event instead makes the two independent -- the poll stays as rare
+        as it should be, and the stop lands the instant it is requested.
+
+        Returns what :meth:`stop_requested_for` would answer, so a caller can wait and
+        decide in one step.
+        """
+        if scope not in self._stop_events:
+            raise ValueError(f"unknown stop scope {scope!r}; expected one of {STOP_SCOPES}")
+        return self._stop_events[scope].wait(timeout)
+
+    def raise_if_stopped(self, reason: str, scope: str = STOP_RUNS) -> None:
+        """End the caller with :class:`CampaignStopped` when *scope* was asked to stop.
+
+        For the boundaries *between* steps, where the wait primitive has nothing to wait
+        on: a campaign staging its project, installing plugins or composing its sweep is
+        doing bounded work in sequence, and the cheapest honest place to give up is before
+        the next step rather than in the middle of one. *reason* names the step, because
+        it becomes the campaign's recorded stop message.
+        """
+        if self.stop_requested_for(scope):
+            raise CampaignStopped(reason)
+
     @property
     def stop_requested(self) -> bool:
         """Whether the campaign's **runs** were asked to end.
@@ -355,8 +384,8 @@ STOP_SCOPE_MESSAGES = {
 }
 
 
-def stop_checker(state):
-    """A ``should_stop`` predicate over *state*, or ``None`` when nothing is driving it.
+def stop_checker(state, scope: str = STOP_POSTPROCESSING):
+    """A ``should_stop`` predicate over *state*'s *scope*, or ``None`` with no state.
 
     The counterpart of :func:`stage_output_callback` for the other direction: that one
     publishes what postprocessing is doing, this one tells it when to give up. Both take a
@@ -368,10 +397,14 @@ def stop_checker(state):
     know only "is this still wanted", not what a campaign or a phase is. That is also what
     makes those layers testable without one.
 
-    Reads the **postprocessing** scope, not the runs. A stop aimed at the runs leaves the
-    analysis of the batches that did finish to complete, which is what puts their results
-    in the index; only a stop aimed at the analysis ends it here.
+    Defaults to the **postprocessing** scope, not the runs, because that is what the
+    postprocessing pipeline asks: a stop aimed at the runs leaves the analysis of the
+    batches that did finish to complete, which is what puts their results in the index;
+    only a stop aimed at the analysis ends it there. The scope is a parameter because the
+    same predicate shape is what the pre-run steps and a search's per-batch conversion
+    need over the **runs** scope -- one function, so a caller cannot build a predicate
+    that reads a scope nobody sets.
     """
     if state is None:
         return None
-    return lambda: state.postprocessing_stop_requested
+    return lambda: state.stop_requested_for(scope)
