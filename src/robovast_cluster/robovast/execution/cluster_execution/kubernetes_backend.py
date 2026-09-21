@@ -74,6 +74,7 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        job_artifact_rel, node_label, read_job_links,
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
+from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
                                          ShareStopped)
@@ -367,10 +368,13 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     if not figures:
         return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
 
-    from .node_calibration import MIN_CPU  # noqa: PLC0415
+    from .node_calibration import MIN_CPU, MIN_MEMORY  # noqa: PLC0415
 
     settings = settings or {}
     headroom = settings.get("headroom") or {}
+    # What an author stated, over the built-in floor for this container's role. Both are floors
+    # and the larger wins; the declared ceiling still wins over either.
+    floor = settings.get("min") or {}
     # The bootstrap is the BASE on this path too, not only where no figures exist. Only the
     # measured resources are overwritten below, so everything else -- memory where the probe
     # could not read it, and the ceiling under `limit: declared` -- has to come from
@@ -382,7 +386,8 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
 
     cores = figures.get("cores")
     if cores:
-        cpu = max(MIN_CPU, round(cores * float(headroom.get("cpu") or 1.0), 3))
+        cpu = max(MIN_CPU, float(floor.get("cpu") or 0),
+                  round(cores * float(headroom.get("cpu") or 1.0), 3))
         out["cpu"] = min(cpu, ceiling) if ceiling else cpu
         if settings.get("limit") == "request":
             # Request == limit: the container never throttles, and its budget is the same in
@@ -397,6 +402,11 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     peak_bytes = figures.get("memory_peak")
     if peak_bytes:
         sized = _memory_reservation(peak_bytes, float(headroom.get("memory") or 1.0))
+        # The floors first, then the ceiling. A measurement below what a container needs to
+        # exist is the one thing this cannot detect for itself -- the probe reports a number,
+        # not whether its run got far enough for that number to mean anything -- and unlike
+        # CPU the cost of being wrong is the run rather than its speed.
+        sized = max(sized, MIN_MEMORY, to_bytes(floor.get("memory")) or 0)
         declared_bytes = _declared_bytes(declared) or _declared_bytes(out)
         if declared_bytes:
             sized = min(sized, declared_bytes)
@@ -1913,6 +1923,13 @@ class BatchJobRunner:
                 **out["headroom"],
                 **{f: _field(headroom, f) for f in ("cpu", "memory")
                    if _field(headroom, f) is not None}}
+        floor = _field(declared, "min")
+        if floor is not None:
+            # Per field for the same reason, over an empty default: a floor an author states is
+            # something they know about this container, and no role rule can know it for them.
+            out["min"] = {**(out.get("min") or {}),
+                          **{f: _field(floor, f) for f in ("cpu", "memory")
+                             if _field(floor, f) is not None}}
         return out
 
     def _calibration_by_container(self) -> dict:

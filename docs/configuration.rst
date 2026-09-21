@@ -1561,6 +1561,9 @@ field optional and defaulted from the role and the deployment:
            headroom:
              cpu: 1.4          # margin above the measurement; per resource
              memory: 1.5
+           min:
+             cpu: 1            # the LEAST it may be sized to, whatever was measured
+             memory: 2Gi       # never above `resources`, which stays the ceiling
 
 ``size_on`` is worth knowing about for one reason beyond tuning: *which* statistic the system
 under test is sized on is a decision this substrate asserts rather than a measured fact, and
@@ -1568,6 +1571,19 @@ setting it is how a campaign tests that decision. Doing so costs comparability �
 under test read below its maximum **will** be throttled mid-plan, which
 ``run_validity_view.quota_bound`` flags, and its runs cannot be compared with a campaign sized
 any other way. That is the point when it is the experiment, and a mistake when it is not.
+
+**Neither resource is ever sized below a floor.** CPU keeps a quarter core, memory keeps 512M.
+They are what let a ``.vast`` say nothing about sizing and still get an allocation its containers
+can live in: a probe reports a number, not whether its run got far enough for that number to mean
+anything, and one that stopped during bring-up measures a fraction of what every later run needs.
+Each floor is what a container that has actually started a stack uses, rather than a description
+of any particular one — what a *given* container needs is what ``resources`` and ``min`` say.
+
+``min`` raises a floor for a container you know needs more, and answers what ``headroom``
+cannot: a multiplier scales a measurement that is wrong, a floor bounds it. ``cpu`` is in cores
+and ``memory`` a Kubernetes quantity, as in ``resources``. Neither ever lifts a container above
+``resources`` — a floor stated above that ceiling is refused, because no allocation satisfies
+both.
 
 The block is read only under ``calibrated``; declaring one under ``fixed`` is refused rather
 than ignored, since nothing there would read it.
