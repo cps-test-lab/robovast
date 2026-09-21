@@ -258,10 +258,8 @@ def write_provenance_entry(
 # any topic can be named here, so the element type and the count travel with the bytes and
 # :func:`decode_numeric_array` needs nothing but the string.
 #
-# Keeping the values as bytes is also what keeps a non-finite one a number. ``inf`` is what
-# a laser reports for a beam that returned nothing; spelled out as text it makes the whole
-# column text, and a text column holds no numbers at all. In the payload it is an IEEE-754
-# bit pattern like every other value and comes back as ``inf``.
+# A non-finite value -- ``inf`` is what a laser reports for a beam that returned nothing --
+# is an IEEE-754 bit pattern in the payload like every other value and comes back as ``inf``.
 
 #: Opens an encoded cell, so a reader can tell one from a string a topic itself carried.
 ARRAY_CELL_TAG = "num1"
@@ -333,9 +331,8 @@ def gen_msg_values(msg, prefix=""):
     :func:`encode_numeric_array`); a sequence of sub-messages keeps a column per element
     per field, which is what a handful of waypoints or a diagnostic array is read as.
 
-    A non-finite float is ``None``, which a CSV writes as an empty cell and the ingest
-    stores as ``NULL``: no number an index can hold means no reading, and writing the word
-    would turn the column and every number already in it into text.
+    A non-finite float is yielded as it is: a CSV writes it ``inf`` or ``nan``, and the
+    ingest stores that as the number (see :mod:`~robovast.results_processing.csv_types`).
     """
     if isinstance(msg, list):
         for i, val in enumerate(msg):
@@ -352,8 +349,6 @@ def gen_msg_values(msg, prefix=""):
                     yield from gen_msg_values(aval, f"{full_field_name}[{i}]")
             else:
                 yield from gen_msg_values(val, full_field_name)
-    elif isinstance(msg, float) and not math.isfinite(msg):
-        yield prefix, None
     else:
         yield prefix, msg
 

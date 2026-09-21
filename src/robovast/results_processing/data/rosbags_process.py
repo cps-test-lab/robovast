@@ -179,9 +179,7 @@ class ToCsvHandler(RosbagHandler):
     an image's pixels, a covariance -- is *one* column holding the whole array, packed by
     :func:`~rosbags_common.encode_numeric_array` and read back with
     :func:`~rosbags_common.decode_numeric_array`. A non-finite float, which is how a laser
-    spells "no return", is an empty cell: the column stays numeric, and the columns it
-    happened in are named on stdout so a reader knows those NULLs are the sensor's and not
-    a gap in the recording.
+    spells "no return", is written ``inf`` or ``nan`` and ingested as that number.
     """
 
     def __init__(self, topics_list: List[str]) -> None:
@@ -217,12 +215,8 @@ class ToCsvHandler(RosbagHandler):
                 print(f"  ✗ {self._bag_name} [{topic}]: no messages")
                 continue
             fieldnames_set: set = set()
-            nulled: Dict[str, int] = {}
             for r in records:
                 fieldnames_set.update(r.keys())
-                for field, value in r.items():
-                    if value is None:
-                        nulled[field] = nulled.get(field, 0) + 1
             other_fields = sorted(fieldnames_set - set(base_fields))
             fieldnames = base_fields + other_fields
             output_file = os.path.join(
@@ -235,12 +229,6 @@ class ToCsvHandler(RosbagHandler):
                 for r in records:
                     writer.writerow(r)
             print(f"  ✓ {output_file}: {len(records)} messages")
-            if nulled:
-                named = [f"{field} ({count})" for field, count in sorted(nulled.items())]
-                shown = ", ".join(named[:8])
-                if len(named) > 8:
-                    shown += f", and {len(named) - 8} more"
-                print(f"    ℹ non-finite values stored as NULL: {shown}")
             total += len(records)
             output_files.append(output_file)
         return total, output_files

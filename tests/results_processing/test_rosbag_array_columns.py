@@ -178,15 +178,16 @@ def test_one_beam_with_no_return_does_not_turn_the_scan_table_to_text(tmp_path):
         "type", "header.frame_id", "intensities", "ranges"]
 
 
-def test_a_non_finite_scalar_is_a_null_and_not_a_word(tmp_path):
-    """A ``sensor_msgs/Range`` reporting no return leaves its column numeric and empty."""
+def test_a_non_finite_scalar_stays_a_number(tmp_path):
+    """A ``sensor_msgs/Range`` reporting no return is written as the infinity it is, and the
+    column stays numeric -- distinct from an empty cell, which means nothing was read."""
     def ranged(value):
         return {"timestamp": 1, "type": "Range",
                 **dict(gen_msg_values(_Msg({"range": "float"}, range=value)))}
 
     rows = _write_csv([ranged(0.8), ranged(math.inf), ranged(math.nan)],
                       tmp_path / "range.csv")
-    assert [row["range"] for row in rows] == ["0.8", "", ""]
+    assert [row["range"] for row in rows] == ["0.8", "inf", "nan"]
     assert infer_column_types(rows, rows[0].keys())["range"] == REAL
 
 
