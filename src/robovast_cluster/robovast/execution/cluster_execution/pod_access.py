@@ -32,7 +32,8 @@ such pod needs to agree on with the service:
   spec would be readable in every one of them; a slot's token is a pod-lifetime value
   in the pod's own env, scoped to a scratch tree that is deleted with it;
 * **the two shell forms** a container uses: ``curl | tar`` to land a stream on a mount,
-  ``tar | curl`` to deliver one. Both stream; neither touches the pod's disk twice.
+  ``tar | curl`` to deliver one. Both stream; neither touches the pod's disk twice;
+* **the retry schedule** both follow, which outlasts a service being upgraded.
 
 A pod carries nothing else that reaches a campaign.
 """
@@ -145,23 +146,76 @@ def staged_pod_env(namespace: str, token: str) -> list:
 #: an HTTP failure is an exit status rather than a body that ``tar`` then fails to parse.
 _CURL = f'curl -sSf -H "Authorization: Bearer ${TOKEN_ENV}"'
 
-#: A fetch retries inside curl: the transient refusals a service being rolled produces,
-#: and ``--retry-all-errors`` because a connection refused during the roll is exactly the
-#: case worth retrying. A delivery cannot -- its body is a pipe curl cannot rewind -- so
-#: its retries are the caller's loop, re-running the whole pipeline.
-_FETCH_RETRY = "--retry 5 --retry-all-errors --retry-delay 3"
+#: The retry schedule of every transfer between a pod and the data plane: attempt *n* is
+#: followed by a sleep of ``n * TRANSFER_BACKOFF_S`` seconds, so a transfer keeps trying for
+#: :func:`transfer_retry_window_s`.
+#:
+#: That window has to exceed the service's own startup budget,
+#: ``service_deploy.STARTUP_PROBE_PERIOD_SECONDS * STARTUP_PROBE_FAILURE_THRESHOLD``: a
+#: service being upgraded resumes every interrupted campaign before it answers, and may take
+#: the whole of that budget to do so. A pod that gave up sooner would fail for the upgrade,
+#: not for anything it did -- a Job that finished meanwhile, or one that was starting.
+#:
+#: Every attempt re-runs the whole pipeline, never a retry inside ``curl``: both ends of a
+#: transfer are a pipe, which ``curl`` cannot rewind, so its own retry would send a second
+#: stream after the part of the first it already passed on -- a delivery the service cannot
+#: parse, or a fetch ``tar`` refuses. ``tests/execution/test_pod_transfer_retry.py`` holds
+#: the window to the startup budget.
+TRANSFER_ATTEMPTS = 13
+TRANSFER_BACKOFF_S = 30
 
 
-def fetch_command(route: str, dest: str, query: str = "") -> str:
+def transfer_retry_window_s(attempts: int = TRANSFER_ATTEMPTS,
+                            backoff_s: int = TRANSFER_BACKOFF_S) -> int:
+    """The seconds between the first attempt and the last, under linear backoff."""
+    return backoff_s * attempts * (attempts - 1) // 2
+
+
+#: A fetch, as a subshell so it composes with ``&&``. ``curl``'s status travels through a
+#: file because the pipeline's is ``tar``'s, and the two say different things: a transfer
+#: that failed is retried -- a refused connection while the service rolls, a stream cut
+#: short, a 5xx -- unless the service answered 4xx, which a retry would only repeat; an
+#: extraction that failed on a whole stream is the node's (its disk), and is not. ``23`` is
+#: ``curl`` unable to write on because ``tar`` stopped reading, so ``tar`` has the cause.
+#: Each attempt extracts over what the last one left: the same archive, so every file it
+#: cut short is written again whole. The exit status is ``curl``'s when the transfer failed
+#: and ``tar``'s when the extraction did.
+_FETCH = '''mkdir -p @@DEST@@ && (
+attempt=1
+while :; do
+    err=$(mktemp) && rcf=$(mktemp) || exit 1
+    { @@CURL@@ "@@URL@@" 2>"$err"; echo $? >"$rcf"; } | tar -x -C @@DEST@@
+    tar_rc=$?
+    curl_rc=$(cat "$rcf")
+    cat "$err" >&2
+    status=$(sed -n 's/.*returned error: \\([0-9][0-9][0-9]\\).*/\\1/p' "$err" | head -n 1)
+    rm -f "$err" "$rcf"
+    case "$curl_rc" in 0|23) exit "$tar_rc" ;; esac
+    case "$status" in 4[0-9][0-9]) exit "$curl_rc" ;; esac
+    [ "$attempt" -lt @@ATTEMPTS@@ ] || exit "$curl_rc"
+    echo "[fetch] curl exit $curl_rc${status:+, HTTP $status} (attempt $attempt/@@ATTEMPTS@@); retrying in $((attempt * @@BACKOFF_S@@))s" >&2
+    sleep $((attempt * @@BACKOFF_S@@))
+    attempt=$((attempt + 1))
+done
+)'''
+
+
+def fetch_command(route: str, dest: str, query: str = "", *,
+                  attempts: int = TRANSFER_ATTEMPTS, backoff_s: int = TRANSFER_BACKOFF_S) -> str:
     """Shell that lands the tar at ``$ROBOVAST_DATA_URL<route>[?query]`` under *dest*.
 
     *route* is the path **after** the data prefix (``/campaigns/<id>/inputs``); the
     prefix is what the env carries. *query* is appended verbatim and must already be
-    URL-safe (the caller quotes it).
+    URL-safe (the caller quotes it). *attempts* and *backoff_s* are the retry schedule and
+    exist so a test can run it in seconds; a pod takes the defaults.
     """
     url = f"${DATA_URL_ENV}{route}" + (f"?{query}" if query else "")
-    return (f'mkdir -p {shlex.quote(dest)} && {_CURL} {_FETCH_RETRY} "{url}" | '
-            f'tar -x -C {shlex.quote(dest)}')
+    return (_FETCH
+            .replace("@@DEST@@", shlex.quote(dest))
+            .replace("@@CURL@@", _CURL)
+            .replace("@@URL@@", url)
+            .replace("@@ATTEMPTS@@", str(int(attempts)))
+            .replace("@@BACKOFF_S@@", str(int(backoff_s))))
 
 
 def deliver_command(src: str, route: str, exclude: "tuple[str, ...]" = (),

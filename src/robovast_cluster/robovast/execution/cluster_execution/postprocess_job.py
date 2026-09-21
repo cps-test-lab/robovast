@@ -836,22 +836,36 @@ def campaign_dir(campaign_id: str) -> str:
 
 #: What the stage container's exit code says, for :func:`pod_failure_reason`.
 #:
-#: The container is ``curl | tar`` under a shell, so its status is the pipeline's: tar's
-#: whenever tar had something to say, which it does on every stream curl cut short, and
-#: curl's own only when tar took what arrived. Either way curl prints its report -- the HTTP
-#: status, or the address it could not reach -- to the container's log, and the pod's log is
-#: published as the campaign's POSTPROCESSING section when the Job fails, so the exit code
-#: is the headline and the log is where the reason is read.
+#: The container is :func:`pod_access.fetch_command`, whose status is ``curl``'s when the
+#: transfer failed -- after the retry schedule, unless the service answered 4xx -- and
+#: ``tar``'s when a whole stream would not extract. Either way curl prints its report -- the
+#: HTTP status, or the address it could not reach -- to the container's log, and the pod's
+#: log is published as the campaign's POSTPROCESSING section when the Job fails, so the exit
+#: code is the headline and the log is where the reason is read.
 STAGE_EXIT_REASONS: dict[int, str] = {
-    7: "could not connect to the service's data plane",
+    7: "could not connect to the service's data plane for the whole retry window",
+    18: "had the campaign archive cut short on every attempt",
     22: "was refused the campaign archive by the data plane (an HTTP error; the status is "
         "in the POSTPROCESSING section)",
+    56: "lost the connection to the data plane on every attempt",
 }
 
-#: The stage's failure when the exit code is tar's: the stream stopped before a whole archive
-#: had arrived, or the node had no room to extract it.
-STAGE_TAR_FAILED = ("could not extract the campaign archive: the fetch was cut short (curl's "
-                    "report is in the POSTPROCESSING section) or the node's disk filled")
+#: tar's exit codes. A stream cut short is curl's to report, so tar failing means a whole
+#: archive would not extract onto the node.
+STAGE_TAR_CODES = (1, 2)
+STAGE_TAR_FAILED = ("could not extract the campaign archive onto the node (tar's report is in "
+                    "the POSTPROCESSING section; a full disk is the usual cause)")
+
+#: Any other curl failure, named by its code in the headline and explained by curl's report.
+STAGE_FETCH_FAILED = ("could not fetch the campaign archive (curl's report is in the "
+                      "POSTPROCESSING section)")
+
+
+def _stage_failure(code: int) -> str:
+    """What the stage container's exit *code* says, in the fetch's own vocabulary."""
+    if code in STAGE_EXIT_REASONS:
+        return STAGE_EXIT_REASONS[code]
+    return STAGE_TAR_FAILED if code in STAGE_TAR_CODES else STAGE_FETCH_FAILED
 
 
 def _stage_query(skip_bags: bool, batch_jobs: str, part: str = "") -> str:
@@ -1455,9 +1469,7 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
                 # The stage container is `curl | tar`, whose codes have a vocabulary of
                 # their own; `exited 1 (Error)` names none of them.
                 if name == STAGE_CONTAINER:
-                    return (f"container {name} "
-                            f"{STAGE_EXIT_REASONS.get(code, STAGE_TAR_FAILED)} "
-                            f"(exit {code})")
+                    return f"container {name} {_stage_failure(code)} (exit {code})"
                 detail = (getattr(term, "reason", None) or "").strip()
                 exited = f"container {name} exited {code}"
                 return f"{exited} ({detail})" if detail else exited

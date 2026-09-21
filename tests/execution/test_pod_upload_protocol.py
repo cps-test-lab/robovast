@@ -238,20 +238,6 @@ def test_a_service_being_rolled_is_retried(tmp_path):
     assert pod.calls() == 2
 
 
-def test_the_retry_window_outlasts_a_service_upgrade():
-    """A service resuming its campaigns may take its whole startup budget to answer, and an
-    uploader that gave up sooner would fail exactly the Jobs that finished meanwhile."""
-    from robovast.execution.cluster_execution.service_deploy import (
-        STARTUP_PROBE_FAILURE_THRESHOLD, STARTUP_PROBE_PERIOD_SECONDS)
-    budget = STARTUP_PROBE_PERIOD_SECONDS * STARTUP_PROBE_FAILURE_THRESHOLD
-    assert budget >= 30 * 60
-    assert pod_upload.upload_retry_window_s() > budget
-    # The schedule the script carries is the one the window was computed from.
-    script = uploader_script("c-1", [])
-    assert f"ATTEMPTS={pod_upload.UPLOAD_ATTEMPTS}\n" in script
-    assert f"BACKOFF_S={pod_upload.UPLOAD_BACKOFF_S}\n" in script
-
-
 # -- termination ------------------------------------------------------------------------
 
 def test_a_term_before_the_markers_uploads_what_is_there(tmp_path):

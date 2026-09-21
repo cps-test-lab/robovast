@@ -37,7 +37,7 @@ import tarfile
 import threading
 import time
 
-from . import pod_access, pod_upload, postprocess_usage
+from . import pod_access, postprocess_usage
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +96,13 @@ NOT_CAMPAIGN_DATA = frozenset({".robovast_rosbags_process_cache"})
 IMAGE_STEPS_MARKER = ".image-steps-started"
 
 #: How many times the delivery is attempted, and the backoff step between attempts: attempt
-#: *n* is followed by ``n * _DELIVERY_RETRY_S`` seconds. The scenario pods' uploader's
-#: schedule, and for its reasons (:data:`pod_upload.UPLOAD_ATTEMPTS`): a service being rolled
-#: may take its whole startup budget to answer, and a full results volume takes the delivery
-#: once space is freed. A streamed body cannot be replayed by the client library, so a retry
-#: is the whole pipeline again.
-_DELIVERY_ATTEMPTS = pod_upload.UPLOAD_ATTEMPTS
-_DELIVERY_RETRY_S = pod_upload.UPLOAD_BACKOFF_S
+#: *n* is followed by ``n * _DELIVERY_RETRY_S`` seconds. Every transfer's schedule, and for
+#: its reasons (:data:`pod_access.TRANSFER_ATTEMPTS`): a service being rolled may take its
+#: whole startup budget to answer, and a full results volume takes the delivery once space is
+#: freed. A streamed body cannot be replayed by the client library, so a retry is the whole
+#: pipeline again.
+_DELIVERY_ATTEMPTS = pod_access.TRANSFER_ATTEMPTS
+_DELIVERY_RETRY_S = pod_access.TRANSFER_BACKOFF_S
 
 
 def _snapshot(root: str) -> dict:
