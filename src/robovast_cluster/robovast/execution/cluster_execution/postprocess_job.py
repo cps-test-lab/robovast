@@ -540,12 +540,14 @@ def campaign_vast(campaign_root) -> str:
 
 
 def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False) -> tuple:
-    """``(image_cmds, image, tolerate_under, convert_resources)`` from the campaign tree.
+    """``(image_cmds, image, tolerate_under, convert_resources, split)`` from the campaign
+    tree.
 
-    The four facts the manifest needs about a campaign, and all four come from files in
-    its directory on the service: the ``.vast`` says which steps run in the execution image
-    and how much they may use, ``execution.yaml`` names that image, and the intervention
-    ledger names the runs whose output was cut short mid-write.
+    The five facts a postprocess needs about a campaign, and all five come from files in
+    its directory on the service: the ``.vast`` says which steps run in the execution image,
+    how much they may use and which of them can be split across Jobs (:func:`_plan_split`),
+    ``execution.yaml`` names that image, and the intervention ledger names the runs whose
+    output was cut short mid-write.
     """
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
         postprocess_convert_resources)
@@ -553,19 +555,21 @@ def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False
         _interrupted_job_dirs)
 
     vast_path = campaign_vast(campaign_root)
+    # A host-only campaign can still be split: its run-scoped host steps are a map too.
+    split = _plan_split(campaign_root, vast_path, skip=skip, skip_rosout=skip_rosout)
     image_cmds = image_commands_for(campaign_root, skip=skip, skip_rosout=skip_rosout)
     if not image_cmds:
         # No image is resolved at all for a host-only campaign: nothing in the pod pulls
         # one, so a campaign whose execution image has since gone from the registry still
         # postprocesses. The sizing goes the same way: with no conversion container there is
         # nothing for it to size.
-        return [], None, (), None
+        return [], None, (), None, split
     # The same seam the local lane reads, for the same reason: a bag belonging to a job
     # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
     # must not fail the conversion for every job that finished.
     return (image_cmds, campaign_execution_image(campaign_root),
             tuple(_interrupted_job_dirs(campaign_root)),
-            postprocess_convert_resources(vast_path))
+            postprocess_convert_resources(vast_path), split)
 
 
 def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  # pylint: disable=unused-argument
@@ -608,9 +612,8 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  
     rather than doubling it. What a cancelled campaign never has is the provenance record
     that says it carries derived data, because that is written after everything else.
     """
-    image_cmds, image, tolerate_under, convert_resources = _read_submit_inputs(
+    image_cmds, image, tolerate_under, convert_resources, split = _read_submit_inputs(
         campaign_root, skip=skip, skip_rosout=skip_rosout)
-    split = _plan_split(campaign_root, skip=skip, skip_rosout=skip_rosout)
     if split is not None:
         return _postprocess_split(
             cluster_config, campaign_id, campaign_root, namespace, split, image,
@@ -629,7 +632,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  
                               should_stop=should_stop)
 
 
-def _plan_split(campaign_root: str, skip=None, skip_rosout: bool = False):
+def _plan_split(campaign_root: str, vast_path: str, skip=None, skip_rosout: bool = False):
     """``(map_cmds, reduce_cmds, parts)`` when this campaign's postprocessing is split, or
     ``None`` to run it in one Job: no run-scoped steps, a cap of one
     (``ROBOVAST_POSTPROCESS_MAX_PARALLEL``), or fewer than two units of work.
@@ -643,11 +646,9 @@ def _plan_split(campaign_root: str, skip=None, skip_rosout: bool = False):
 
     from .postprocess_parts import max_parallel, plan_parts  # noqa: PLC0415
 
-    limit = max_parallel(
-        convert_cpu=postprocess_convert_resources(campaign_vast(campaign_root))["cpu"])
+    limit = max_parallel(convert_cpu=postprocess_convert_resources(vast_path)["cpu"])
     if limit < 2:
         return None
-    vast_path = campaign_vast(campaign_root)
     map_cmds, reduce_cmds = split_postprocessing(
         campaign_postprocessing_commands(vast_path, skip=skip, skip_rosout=skip_rosout),
         os.path.dirname(vast_path))
@@ -1595,6 +1596,21 @@ class JobRole:
         """A search's per-batch conversion: this batch's own commands, and nothing more."""
         return cls(discriminator=tag, host_commands=list(commands))
 
+    @property
+    def batch_jobs(self) -> str:
+        """The batch whose job artifacts the stage is narrowed to, or ``""`` for all of them.
+
+        Only a search batch's Job has one: its discriminator is the batch's tag. A part also
+        has a discriminator and host commands, but it is narrowed by its runs instead.
+        """
+        if self.host_commands is None or self.part:
+            return ""
+        return self.discriminator
+
+    def skips_bags(self, steps) -> bool:
+        """Whether the stage leaves the rosbags out: unless a step in this pod opens one."""
+        return not (steps if self.stage_bags is None else self.stage_bags)
+
 
 def build_manifest(campaign_id: str, image, steps: list, namespace: str,
                    role: "JobRole | None" = None, force: bool = False,
@@ -1657,7 +1673,7 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
 
     role = role or JobRole.campaign()
     discriminator, part = role.discriminator, role.part
-    batch_commands, skip_map, stage_bags = role.host_commands, role.skip_map, role.stage_bags
+    batch_commands, skip_map = role.host_commands, role.skip_map
 
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
         POSTPROCESS_CONVERT_DEFAULTS)
@@ -1692,12 +1708,11 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
             # rosbags, which is the bulk of a campaign by orders of magnitude. Staging them
             # anyway would spend the whole download and the whole node disk on data
             # nothing in the pod reads.
-            skip_bags=not (steps if stage_bags is None else stage_bags),
+            skip_bags=role.skips_bags(steps),
             # One batch's job artifacts, for a per-batch Job. The bags are the bulk of a
             # campaign and every batch's sit under the same tree, so without this a search
             # stages every earlier batch again on every batch.
-            batch_jobs=(discriminator if batch_commands is not None and discriminator
-                        and not part else ""),
+            batch_jobs=role.batch_jobs,
             # A part of a split postprocess stages its own runs and their jobs.
             part=part)],
         "env": data_plane_env,
@@ -2214,10 +2229,8 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
         campaign_id, image, steps, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         role=role, skip=skip, convert_resources=convert_resources,
-        stage_bytes=stage_bytes(
-            campaign_root,
-            skip_bags=not (steps if role.stage_bags is None else role.stage_bags),
-            batch_jobs=discriminator if batch_commands is not None else ""))
+        stage_bytes=stage_bytes(campaign_root, skip_bags=role.skips_bags(steps),
+                                batch_jobs=role.batch_jobs, part=role.part))
     name = manifest["metadata"]["name"]
 
     # Whether a Job of this name is already running is decided HERE, ahead of every write,

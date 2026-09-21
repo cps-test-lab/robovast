@@ -51,6 +51,13 @@ def _pod_spec(rosbag_cmds=None, **kw):
     return m["spec"]["template"]["spec"]
 
 
+#: Every kind of postprocessing pod: the unsplit Job, one with no conversion container, a
+#: search batch's, a part of a split and the Job that completes one.
+_SHAPES = ({}, {"rosbag_cmds": []}, {"role": pj.JobRole.search_batch("batch-0", [])},
+           {"role": pj.JobRole.for_part("part-1", [])},
+           {"role": pj.JobRole.reduce(stage_bags=False)})
+
+
 def _by_name(spec):
     return {c["name"]: c for c in spec.get("initContainers", []) + spec["containers"]}
 
@@ -245,7 +252,7 @@ def test_every_container_in_every_shape_reserves_cpu_and_memory():
     Every shape, because the shapes differ in which containers exist: a container that
     declares nothing is only ever missed in the shape nobody checked.
     """
-    for shape in ({}, {"batch_commands": []}, {"rosbag_cmds": []}):
+    for shape in _SHAPES:
         for name, container in _by_name(_pod_spec(**shape)).items():
             requests = container["resources"]["requests"]
             assert requests["cpu"] and requests["memory"], (shape, name)
@@ -261,7 +268,7 @@ def test_the_shared_campaign_volume_is_backed_by_a_storage_request():
     pod's requests as the max over initContainers and the sum over the rest, and a
     container that omits it drops the reservation for as long as it is the one running.
     """
-    for shape in ({}, {"batch_commands": []}, {"rosbag_cmds": []}):
+    for shape in _SHAPES:
         spec = _pod_spec(**shape)
         # One emptyDir, mounted everywhere: there is exactly one copy of the data.
         assert {"name": "campaign", "emptyDir": {}} in spec["volumes"]

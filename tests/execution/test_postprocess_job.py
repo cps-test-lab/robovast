@@ -40,11 +40,12 @@ def _steps_without_a_campaign_tree(monkeypatch):
 
 
 def _inputs(monkeypatch, rosbag_cmds=None):
-    """The four facts the manifest needs, without a campaign tree to read them from."""
+    """The five facts a postprocess needs, without a campaign tree to read them from: an
+    unsplit campaign."""
     monkeypatch.setattr(pj, "_read_submit_inputs",
                         lambda root, skip=None, skip_rosout=False:
                         (CMDS if rosbag_cmds is None else rosbag_cmds,
-                         "img", (), None))
+                         "img", (), None, None))
 
 
 def _postprocess(monkeypatch, root, verdict, **kwargs):
@@ -84,7 +85,7 @@ def test_the_submit_reads_its_inputs_from_the_campaigns_directory(tmp_path):
     (tmp_path / "_execution" / "interventions.json").write_text(
         '[{"kind": "invalid", "job_dir": "_jobs/batch-1/job-27"}]')
 
-    rosbag_cmds, image, tolerate, _sized = pj._read_submit_inputs(str(tmp_path))
+    rosbag_cmds, image, tolerate, _sized, _split = pj._read_submit_inputs(str(tmp_path))
 
     assert rosbag_cmds and image == "img:1"
     assert "_jobs/batch-1/job-27" in tolerate
@@ -277,15 +278,29 @@ def test_the_stage_asks_for_what_the_pod_reads():
     batch = _stage(pj.build_manifest(
         "c1", "img:1", _CMDS, "ns",
         role=pj.JobRole.search_batch("batch-3/reps-5", [])))["command"][-1]
-    campaign_level = _stage(pj.build_manifest("c1", "img:1", _CMDS, "ns",
-                                              role=pj.JobRole.search_batch("batch-3", []))
-                            )["command"][-1]
+    part = _stage(pj.build_manifest("c1", "img:1", _CMDS, "ns",
+                                    role=pj.JobRole.for_part("part-1", [])))["command"][-1]
+    reduce_ = _stage(pj.build_manifest("c1", "img:1", _CMDS, "ns",
+                                       role=pj.JobRole.reduce(stage_bags=False)))["command"][-1]
 
     assert "skip_bags=false" in with_bags and "batch_jobs" not in with_bags
     assert "skip_bags=true" in without
     assert "batch_jobs=batch-3%2Freps-5" in batch
-    # A discriminator without batch commands is not a batch Job: nothing is narrowed.
-    assert "batch_jobs" not in campaign_level
+    # A part has a discriminator and host commands too, but it is narrowed by its runs.
+    assert "part=part-1" in part and "batch_jobs" not in part
+    assert "batch_jobs" not in reduce_ and "skip_bags=true" in reduce_
+
+
+def test_the_stage_and_its_storage_estimate_select_the_same_tree():
+    """The manifest's stage query and the ephemeral-storage estimate both read these two
+    rules from the role, so the pod is sized for exactly what it fetches."""
+    assert pj.JobRole.search_batch("batch-3", []).batch_jobs == "batch-3"
+    for role in (pj.JobRole.campaign(), pj.JobRole.for_part("part-1", []),
+                 pj.JobRole.reduce(stage_bags=True)):
+        assert role.batch_jobs == ""
+    assert pj.JobRole.campaign().skips_bags([]) and not pj.JobRole.campaign().skips_bags(["s"])
+    assert not pj.JobRole.reduce(stage_bags=True).skips_bags([])
+    assert pj.JobRole.reduce(stage_bags=False).skips_bags(["s"])
 
 
 def test_the_stage_hands_the_tree_to_the_pods_group():
