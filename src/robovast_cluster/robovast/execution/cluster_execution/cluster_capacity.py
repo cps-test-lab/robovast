@@ -84,6 +84,11 @@ def recorded_maximum() -> "Tuple[Optional[float], Optional[int]]":
     return cpu, mem
 
 
+def _requests(container) -> dict:
+    """A container spec's resource requests, ``{}`` where it declares none."""
+    return (container.resources.requests if container.resources else None) or {}
+
+
 def _headroom() -> "Tuple[float, int]":
     """The cluster-wide reserve, from the service's environment.
 
@@ -141,7 +146,8 @@ class ClusterBudgetProvider:
         return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
                          memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
                          gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
-                         node_id=ids.get(name))
+                         node_id=ids.get(name),
+                         ephemeral=int(parse_resource(a.get("ephemeral-storage"))))
                 for name, a in self._allocatables().items()]
 
     def _declared_total(self):
@@ -200,12 +206,14 @@ class ClusterBudgetProvider:
         head_cpu, head_mem = _headroom()
         nodes = []
         for name, a in alloc.items():
-            used = per_node.get(name, (0.0, 0, 0))
+            used = per_node.get(name, (0.0, 0, 0, 0))
             nodes.append(NodeBudget(
                 node_id=ids.get(name),
                 free_cpu=max(0.0, parse_resource(a.get("cpu")) - used[0] - head_cpu),
                 free_memory=max(0, int(parse_resource(a.get("memory"))) - used[1] - head_mem),
-                free_gpu=max(0, int(parse_resource(a.get("nvidia.com/gpu"))) - used[2])))
+                free_gpu=max(0, int(parse_resource(a.get("nvidia.com/gpu"))) - used[2]),
+                free_ephemeral=max(
+                    0, int(parse_resource(a.get("ephemeral-storage"))) - used[3])))
         return Budget(nodes=tuple(nodes), counted_jobs=seen, growable=self._growable())
 
     def _growable(self) -> bool:
@@ -298,7 +306,7 @@ class ClusterBudgetProvider:
                 or node_is_schedulable(n, CAMPAIGN_NODE_TOLERATIONS)}
 
     def _committed(self, node_names: set):
-        """``{node: (cpu, memory, gpu)}`` requested on each, and the Job names among them.
+        """``{node: (cpu, memory, gpu, ephemeral)}`` requested on each, and the Job names.
 
         Filtered server-side to non-terminal pods: a Succeeded pod still exists as an object
         but holds nothing, and counting it would shrink the cluster by everything that ever
@@ -309,6 +317,14 @@ class ClusterBudgetProvider:
 
         Every workload container, native sidecars included, because Kubernetes adds their
         requests to the pod's effective total and so does the scheduler.
+
+        **Disk is charged as the scheduler charges it, which cpu here is not.** A pod's
+        effective request is the larger of its workload containers' sum and its largest
+        one-shot init container, and for cpu and memory the init term is small enough to
+        drop. For disk it is the whole figure: a postprocessing pod stages its campaign in
+        an init container, whose request is the size of that campaign, while its workload
+        container asks for a floor. Summing workload containers alone would report the
+        node's disk as free while the scheduler holds it for that pod.
         """
         core = self._core_api_factory()
         pods = core.list_pod_for_all_namespaces(
@@ -324,11 +340,17 @@ class ClusterBudgetProvider:
             job_name = _pod_job_name(pod)
             if job_name:
                 seen.add(job_name)
-            cpu, mem, gpu = per_node.get(node, (0.0, 0, 0))
+            cpu, mem, gpu, disk = per_node.get(node, (0.0, 0, 0, 0))
+            workload_disk = 0
             for container in pod_workload_containers(pod):
-                requests = (container.resources.requests if container.resources else None) or {}
+                requests = _requests(container)
                 cpu += parse_resource(requests.get("cpu"))
                 mem += int(parse_resource(requests.get("memory")))
                 gpu += int(parse_resource(requests.get("nvidia.com/gpu")))
-            per_node[node] = (cpu, mem, gpu)
+                workload_disk += int(parse_resource(requests.get("ephemeral-storage")))
+            one_shot = [int(parse_resource(_requests(c).get("ephemeral-storage")))
+                        for c in (getattr(pod.spec, "init_containers", None) or [])
+                        if getattr(c, "restart_policy", None) != "Always"]
+            disk += max([workload_disk, *one_shot])
+            per_node[node] = (cpu, mem, gpu, disk)
         return per_node, frozenset(seen)
