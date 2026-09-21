@@ -298,7 +298,7 @@ cannot be compared with a campaign's. A run, a sweep or a repeated trial is
 `start_campaign`.
 
 The loop:
-1. `create_workspace`, then `write_file` a `.vast` into it.
+1. `create_workspace` or `create_upload` — a workspace holding the `.vast` and its files.
 2. `validate_project`, before any compute is spent.
 3. `preview_configurations` — what the sweep expands to.
 4. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
@@ -315,7 +315,8 @@ If no service is reachable, every control tool says so. **Stop and report that**
 local run silently answers a different question.
 
 Files: `/results/<campaign_id>/<path>` (read-only), `/sources/<workspace_id>/<path>`
-(writable).
+(writable). Move file bytes over HTTP, not through your context: `create_upload` returns
+a URL to PUT a file to, and `read_file` returns a `url` to GET a large or binary one.
 """
 
 
