@@ -995,9 +995,10 @@ part matters as much as the first — an asynchronous render would have to stash
 somewhere the caller could find later, which is exactly the in-memory dictionary that makes a
 failed scene build visible to nothing but ``get_run_scene_status``.
 
-**Costmap delivery.** Occupancy grids can't ride the generic CSV flatten (a grid becomes
-thousands of per-cell columns, past SQLite's column limit; and the read path caps a cell at
-2 KB). The ``rosbags_costmap_to_csv`` handler
+**Costmap delivery.** A grid needs a table of its own. The generic topic flatten packs an
+array field into one cell and the read path caps a cell at 2 KB, so a run view reading SQL
+could never get a frame out whole, and the flattened table carries none of the geometry a
+frame has to be drawn against. The ``rosbags_costmap_to_csv`` handler
 (:class:`robovast.results_processing.data.rosbags_process.CostmapToCsvHandler`) instead
 decodes each grid once during postprocessing and re-encodes it compactly — int8 cells
 zlib-compressed, base64 in a ``costmaps`` table row with the pose/geometry metadata. The
