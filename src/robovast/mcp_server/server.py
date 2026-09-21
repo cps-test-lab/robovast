@@ -320,6 +320,29 @@ a URL to PUT a file to, and `read_file` returns a `url` to GET a large or binary
 """
 
 
+def compose_instructions(plugins) -> str:
+    """:data:`_INSTRUCTIONS`, followed by the line each loaded plugin adds.
+
+    A plugin's ``instructions`` attribute is optional: where a plugin's tools answer a
+    question an agent would otherwise put to a core tool, the plugin says so here, because
+    this is the text read before any tool is chosen -- and it says so only where the plugin
+    is installed, so the core never names a tool that may not exist.
+
+    Raises :class:`RuntimeError` when the result is longer than
+    :data:`INSTRUCTIONS_LIMIT`: a client would cut it, and the cut falls on a plugin's
+    line or the core's without either being told.
+    """
+    lines = [(p.name, (getattr(p, "instructions", "") or "").strip()) for p in plugins]
+    text = _INSTRUCTIONS + "".join(f"\n{line}\n" for _, line in lines if line)
+    if len(text) > INSTRUCTIONS_LIMIT:
+        added = ", ".join(f"{name}: {len(line)}" for name, line in lines if line) or "none"
+        raise RuntimeError(
+            f"The server instructions are {len(text)} characters, over the "
+            f"{INSTRUCTIONS_LIMIT} a client shows ({len(_INSTRUCTIONS)} core; plugin "
+            f"lines {added}). Shorten a plugin's instructions.")
+    return text
+
+
 def create_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
@@ -338,7 +361,7 @@ def create_server(
         ``0`` disables it, ``1`` logs each tool call with its arguments, and
         ``2`` also logs the result.
     """
-    mcp = FastMCP(name="RoboVAST", instructions=_INSTRUCTIONS,
+    mcp = FastMCP(name="RoboVAST",
                 icons=[
                     Icon(
                         src="https://raw.githubusercontent.com/cps-test-lab/robovast/refs/heads/main/docs/images/icon.png",
@@ -349,6 +372,7 @@ def create_server(
 
     plugins = load_plugins(mcp)
     plugin_names = [p.name for p in plugins]
+    mcp.instructions = compose_instructions(plugins)
 
     _install_warning_forwarding(mcp)
     _install_argument_help(mcp)

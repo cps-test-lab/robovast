@@ -25,11 +25,14 @@ image, no recorded provenance and no repetitions, so its output cannot be compar
 campaign's; the instructions say so, and so does ``start_campaign``. Two MCP prompts
 cover the halves: ``run_experiments`` and ``analyze_campaigns``.
 
+.. _mcp-instructions-limit:
+
 The instructions are the only text a client puts in front of the model before any tool
 is chosen, and a client shows only so much of them: Claude Code cuts them at 2048
-characters, without a mark the model can act on. They are kept under that
-(``INSTRUCTIONS_LIMIT``, checked by the test suite), so they carry the loop and the rules
-it cannot do without, and each tool's own description carries the rest.
+characters, without a mark the model can act on. They carry the loop and the rules it
+cannot do without, and each tool's own description carries the rest. An installed MCP
+plugin may add one paragraph routing a question to its tools; the server refuses to start
+when core text and plugin paragraphs together exceed ``INSTRUCTIONS_LIMIT``.
 
 A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
 binding the service accepts, and ``config_path`` selects among several

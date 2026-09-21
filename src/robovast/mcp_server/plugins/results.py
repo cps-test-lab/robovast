@@ -406,7 +406,7 @@ async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -
 
 async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
                                   ctx: Context | None = None) -> dict:
-    """Run one read-only ``SELECT`` over a campaign's data. This answers most questions.
+    """Run one read-only ``SELECT`` over a campaign's data.
 
     Get the schema from ``describe_campaign_data`` first; ``run_view`` and ``config_view``
     are the entry points and are queried unqualified. Join ``run_view`` (or ``runs``) to
@@ -416,6 +416,11 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
     When the result is capped, a ``csv_url`` comes back with it: the same query, streamed
     uncapped over HTTP. Follow it (or give it to the user) instead of paging thousands of
     rows through this interface.
+
+    **A tool that answers the question comes first.** An installed plugin's analysis
+    tools (the server instructions name them) reduce the same tables over every recorded
+    row; the same question in SQL gets a different number over a thinned or unjoined
+    result. Reach for SQL when no tool fits.
 
     Args:
         campaign_id: Campaign identifier or absolute path (schema ``main``).
