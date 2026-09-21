@@ -2080,17 +2080,39 @@ class LocalTransport(RobovastInterface):
         authoring loop composes the same file repeatedly and would otherwise pay a cold
         start every time. An unbounded span is the one that needs a reaper.
 
-        No-op locally, and deliberately: with no factory installed
+        No factory is installed locally, and deliberately: with none,
         ``_make_container_runner`` falls back to an ephemeral ``docker run`` on the service
         host, which is what a local service — and the CLI, which has no transport at all —
         already wants, and where holding would buy about a second. The cluster lane
         overrides this, having no ``docker`` in the pod and a pull to amortize.
 
-        *should_stop*, when a campaign passes one, is polled by whatever this lane waits
-        for. Nothing here waits, so nothing reads it.
+        What the span does register is *should_stop*, when a campaign passes one: the
+        fallback hands it to the runner it builds, so a campaign stopped while a variation
+        is waiting on a helper image removes that container instead of waiting it out. A
+        preview passes none and its containers run to their own end.
         """
-        del tag, project, hold, should_stop
-        return contextlib.nullcontext()
+        del hold
+        if should_stop is None:
+            return contextlib.nullcontext()
+
+        @contextlib.contextmanager
+        def _span():
+            from robovast.common.config_generation import set_aux_stop_predicate
+            token = set_aux_stop_predicate(should_stop)
+            logger.debug("Auxiliary containers of %s are stoppable for this span "
+                         "(project %s)", tag, getattr(project, "config_path", ""))
+            try:
+                yield
+            finally:
+                # Restored rather than cleared, for the reason ``_reset_factory`` gives
+                # about the factory beside it: a span entered inside another must hand the
+                # outer one its predicate back, not disarm it.
+                try:
+                    token.var.reset(token)
+                except (AttributeError, LookupError, ValueError):
+                    set_aux_stop_predicate(None)
+
+        return _span()
 
     def _postprocess_in_process(self) -> bool:
         """True when the worker runs analysis postprocessing after the loop.

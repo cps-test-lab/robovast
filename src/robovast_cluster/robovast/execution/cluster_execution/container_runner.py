@@ -497,7 +497,7 @@ class AuxPodSession:
             return ClusterContainerRunner(
                 spec, self._pod_for(spec), self.namespace, self._client(),
                 stage_dir=self._stage_dir, kube_context=self._kube_context,
-                reprovision=self.replace)
+                reprovision=self.replace, should_stop=self._should_stop)
         return factory
 
     def provision(self, spec):
@@ -635,8 +635,13 @@ class ClusterContainerRunner:
     def __init__(self, spec, pod_name, namespace, core_v1=None,
                  exec_limit_s: float = AUX_EXEC_LIMIT_S, *, stage_dir,
                  kube_context: str | None = None, container: str = "",
-                 reprovision=None):
+                 reprovision=None, should_stop=None):
         self._spec = spec
+        # The span's own flag, read by every exec this runner makes: mirroring the
+        # workspace in, running the command, mirroring it back. A command in a pod is
+        # bounded only by ``exec_limit_s``, which is hours, so without this a campaign
+        # stopped while a variation is composing waited for it.
+        self._should_stop = should_stop
         self._pod = pod_name
         self._namespace = namespace
         self._core_v1 = core_v1
@@ -743,6 +748,9 @@ class ClusterContainerRunner:
         command that runs past :data:`AUX_EXEC_LIMIT_S` is one of those failures: an
         unbounded loop here lets a helper that hangs take the campaign's worker thread
         with it, with nothing in the log to say what it was waiting for.
+
+        A stopped span raises ``CampaignStopped`` out of the exec instead, which is not a
+        failure and must not be dressed as one.
         """
         from .kube_client import exec_stream
 
@@ -751,7 +759,8 @@ class ClusterContainerRunner:
         code, out, err, timed_out = exec_stream(
             self._pod, self._namespace, container or self._container, command,
             limit_s=self._exec_limit_s, stdin_data=stdin_data,
-            on_stdout_line=progress_update_callback, on_stderr_line=stderr_sink)
+            on_stdout_line=progress_update_callback, on_stderr_line=stderr_sink,
+            should_stop=self._should_stop)
         if timed_out:
             raise subprocess.CalledProcessError(
                 code, command,
