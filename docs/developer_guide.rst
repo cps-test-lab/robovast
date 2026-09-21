@@ -1461,8 +1461,27 @@ Share provider API reference
    :members:
 
 
+.. _add-mcp-plugin:
+
 Add a MCP Plugin
 ^^^^^^^^^^^^^^^^
+
+**Contribute data, not read tools.** A domain package (a robot type, a stack) makes its
+results readable through core rather than through tools of its own. A per-domain read tool
+is a second reader of facts the index already holds: it drifts from the first, it exists
+only where its package is installed, and every domain that adds one spends the tool budget
+every client pays for. The seams that make a domain's facts readable everywhere:
+
+* **A table that follows a contract.** A pose table that follows the
+  :ref:`pose contract <pose-contract>` appears in ``pose_track_view`` with no registration.
+  A measurement outside a contract is still a table, and its meaning goes into column notes.
+* **Scene markers.** A variation's ``config_view_data`` places neutral markers (a planned
+  path, goals, obstacles). The config view draws them, ``get_config_contribution`` serves them,
+  ``get_track_deviation`` measures against a ``path`` marker, and ``draw_config`` draws them.
+* **A config panel's** ``plot``. A package that renders a contributed file in the browser
+  draws it for ``draw_config`` too (:ref:`web-ui-internals`).
+
+An MCP plugin is for what these cannot carry, such as an *action* a domain offers.
 
 Create a class with a ``name`` property and a ``register(mcp)`` method:
 
@@ -1493,7 +1512,7 @@ The plugin is picked up automatically the next time the server starts.
 
 A call the tool rejects — an unknown or missing argument — is answered with the arguments
 the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
-declare why with :func:`robovast.mcp_server.lacks.absent`, and the reason is added to that
+declare why with :func:`robovast.mcp_server.lacks.lacks`, and the reason is added to that
 answer instead of costing description tokens on every request:
 
 .. code-block:: python
@@ -1506,8 +1525,8 @@ answer instead of costing description tokens on every request:
    @lacks("there is only one, and it belongs to the service")
    def stop_it() -> dict: ...
 
-Where the plugin's tools answer a question an agent would otherwise put to a core tool —
-the nav tools against ``query_campaign_data_sql``, say — give the class an
+Where the plugin's tools answer a question an agent would otherwise put to a core tool,
+give the class an
 ``instructions`` attribute: one short paragraph appended to the server's MCP
 instructions, the only text a client shows before any tool is chosen. Core text names no
 plugin tool, so the routing exists exactly where the plugin is installed. The server

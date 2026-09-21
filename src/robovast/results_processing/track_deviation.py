@@ -38,6 +38,7 @@ from typing import Any
 import numpy as np
 
 from robovast.results_processing import index_query
+from robovast.results_processing.campaign_ingest import pose_clock
 
 #: Poses per block of the distance computation, so a long track against a long path does
 #: not allocate one pose-by-segment matrix for the whole recording.
@@ -120,7 +121,7 @@ def track_deviation(campaign_id: str, config_name: str, run_id: int, *, path: di
         if dims == 3 and "position.z" not in columns:
             raise ValueError(f"the path states heights but {source!r} records no position.z, "
                              "so a 3D distance cannot be measured")
-        clock = "stamp" if "stamp" in columns else "timestamp"
+        clock = pose_clock(columns)
         z = ', CAST("position.z" AS double precision)' if dims == 3 else ""
         track = (f'FROM "{source}" WHERE campaign_id = {_lit(campaign_id)} '
                  f"AND config_name = {_lit(config_name)} "
