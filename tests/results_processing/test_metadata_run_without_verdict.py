@@ -102,3 +102,73 @@ def test_a_campaign_with_no_runs_at_all_is_not_reported_as_verdictless(tmp_path)
 
     assert metadata["configurations"][0]["test_results"] == []
     assert "runs_without_verdict" not in metadata
+
+
+# -- a campaign the operator stopped --------------------------------------------------------
+#
+# It has fewer runs than it planned, and the runs the stop cut short never reached a verdict.
+# Both used to fail the record, so every campaign stopped before its runs were done ended with
+# a postprocessing error and no provenance record, though its data was complete and queryable.
+
+def _ended(root, planned, phase):
+    """Plan *planned* runs and record that the campaign ended in *phase*."""
+    from robovast.client.status import Status
+    from robovast.common.campaign_data import write_execution_outcome
+
+    (root / "_execution" / "execution.yaml").write_text(yaml.safe_dump({
+        "runs": planned, "execution_type": "cluster"}))
+    write_execution_outcome(root, Status(phase=phase))
+    return root
+
+
+def test_a_stopped_campaign_is_described_with_the_runs_it_has(tmp_path):
+    """Stopped mid-run: three of four runs started, none reached a verdict."""
+    from robovast.client.status import Phase
+
+    root = _ended(_campaign(tmp_path, [(0, False), (1, False), (2, False)]), 4, Phase.STOPPED)
+
+    metadata = _generate(root)
+
+    assert metadata["stopped"] is True
+    assert len(metadata["configurations"][0]["test_results"]) == 3
+    assert metadata["runs_without_verdict"] == ["cfg/0", "cfg/1", "cfg/2"]
+
+
+def test_a_campaign_stopped_before_any_run_is_described_too(tmp_path):
+    from robovast.client.status import Phase
+
+    root = _ended(_campaign(tmp_path, []), 4, Phase.STOPPED)
+
+    metadata = _generate(root)
+
+    assert metadata["stopped"] is True
+    assert metadata["configurations"][0]["test_results"] == []
+
+
+def test_a_shortfall_without_a_recorded_stop_still_fails(tmp_path):
+    """The shortfall alone is what an accidental gap looks like too -- only the recorded
+    outcome may excuse it."""
+    from robovast.client.status import Phase
+
+    root = _ended(_campaign(tmp_path, [(0, True), (1, True), (2, True)]), 4, Phase.FINISHED)
+
+    with pytest.raises(ValueError, match="has 3 run directories but expected 4"):
+        _generate(root)
+
+
+def test_a_stopped_campaign_with_more_runs_than_it_planned_still_fails(tmp_path):
+    """Fewer is what a stop leaves; more is wrong however the campaign ended."""
+    from robovast.client.status import Phase
+
+    root = _ended(_campaign(tmp_path, [(0, True), (1, True), (2, True)]), 2, Phase.STOPPED)
+
+    with pytest.raises(ValueError, match="has 3 run directories but expected 2"):
+        _generate(root)
+
+
+def test_a_finished_campaign_says_nothing_about_stopping(tmp_path):
+    from robovast.client.status import Phase
+
+    root = _ended(_campaign(tmp_path, [(0, True)]), 1, Phase.FINISHED)
+
+    assert "stopped" not in _generate(root)

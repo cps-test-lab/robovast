@@ -672,7 +672,13 @@ class AdmissionController:
             self._items.pop(key, None)
 
     def cancel(self, owner: str) -> int:
-        """Drop an owner's planned items and release its held reservations.
+        """Drop an owner's items and release its held reservations; return how many were
+        still planned.
+
+        Only the planned ones are counted, because that is the number a caller can report
+        honestly: they are work that will now never exist. A created item is a Job that
+        exists or existed, and counting it here made a batch stopped mid-run announce that it
+        had released its jobs "that were never created" while every one of them was running.
 
         Called from a ``finally``, because a campaign that raises on its way out would
         otherwise leak its reservations for the life of the process -- shrinking every other
@@ -689,13 +695,14 @@ class AdmissionController:
         """
         with self._lock:
             keys = [k for k, i in self._items.items() if i.owner == owner]
+            planned = sum(1 for k in keys if self._items[k].state == PLANNED)
             for key in keys:
                 self._items.pop(key, None)
                 self._held.pop(key, None)
             for key in [k for k, h in self._held.items() if h.owner == owner]:
                 self._held.pop(key, None)
             self._refusals.pop(owner, None)
-            return len(keys)
+            return planned
 
     def forget_calibration(self, owner: str) -> bool:
         """Drop an owner's calibration, once its campaign is over. Returns whether there was one.

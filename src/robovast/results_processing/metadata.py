@@ -38,8 +38,10 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from robovast.common.campaign_data import (read_execution_metadata, read_interventions,
-                                           read_launch_record, read_sysinfo, read_test_result)
+from robovast.client.status import Phase
+from robovast.common.campaign_data import (read_execution_metadata, read_execution_outcome,
+                                           read_interventions, read_launch_record, read_sysinfo,
+                                           read_test_result)
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir
 from robovast.common.results_utils import find_campaign_vast_file
@@ -216,6 +218,17 @@ class MetadataGenerator:
 
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
+        # A campaign the operator stopped has fewer runs than it planned, by definition, and
+        # the ones a stop cut short never reached a verdict. Both are what the stop leaves
+        # behind rather than a broken input, so the two guards below give way for it -- and
+        # only for it: the recorded outcome is what says so, never a shortfall on its own,
+        # which is exactly what an accidental gap looks like too. Named at the top level, like
+        # `runs_without_verdict`, because a reader has to know the campaign is partial before
+        # reading any number out of it.
+        outcome = read_execution_outcome(self.campaign_dir)
+        stopped = outcome is not None and outcome.phase == Phase.STOPPED
+        if stopped:
+            metadata["stopped"] = True
         for config_entry in metadata["configurations"]:
             config_name = config_entry.get("name", "")
             config_dir_path = self.campaign_dir / config_name
@@ -229,10 +242,12 @@ class MetadataGenerator:
             test_dirs.sort()
 
             if expected_runs is not None and len(test_dirs) != expected_runs:
-                raise ValueError(
-                    f"Config '{config_name}' has {len(test_dirs)} run directories "
-                    f"but expected {expected_runs} runs"
-                )
+                # Fewer is what a stop leaves; more is wrong however the campaign ended.
+                if not (stopped and len(test_dirs) < expected_runs):
+                    raise ValueError(
+                        f"Config '{config_name}' has {len(test_dirs)} run directories "
+                        f"but expected {expected_runs} runs"
+                    )
 
             # Transient files
             transient_dir = config_dir_path / "_transient"
@@ -328,12 +343,14 @@ class MetadataGenerator:
                 config_entry["test_results"].append(entry)
 
         # A campaign where not one run can be described is a broken input, not a campaign
-        # with some failed runs in it, and a record listing nothing describes nothing. The
+        # with some failed runs in it, and a record listing nothing describes nothing --
+        # unless it was stopped, when runs cut short before their verdict are the expected
+        # shape and the record's `stopped` says why. The
         # count is recorded either way, so a reader can tell a campaign carrying a few
         # verdict-less runs from one that is mostly holes without reading every entry.
         described = sum(len(c.get("test_results") or [])
                         for c in metadata["configurations"])
-        if described and len(self._runs_without_verdict) == described:
+        if described and len(self._runs_without_verdict) == described and not stopped:
             raise ValueError(
                 f"no run of this campaign recorded a verdict ({described} run(s) "
                 f"checked), so there is nothing to describe: "

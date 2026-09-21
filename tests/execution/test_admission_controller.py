@@ -13,7 +13,8 @@ campaign, so the two take turns instead of the older one finishing.
 import pytest
 
 from robovast.execution.cluster_execution import node_admission
-from robovast.execution.cluster_execution.node_admission import (AdmissionController,
+from robovast.execution.cluster_execution.node_admission import (CREATED, PLANNED,
+                                                                 AdmissionController,
                                                                  AdmissionRefused, Budget,
                                                                  Capacity, JobSizing,
                                                                  NodeBudget)
@@ -396,9 +397,25 @@ def test_cancel_drops_one_owners_work_and_not_anothers():
     _items(c, "a", 2, cpu=2.0)
     _items(c, "b", 2, cpu=2.0, started_at=50.0)
     c.drain()
-    assert c.cancel("a") >= 1
+    c.cancel("a")
     assert set(c.states("a")) == set()
     assert set(c.states("b"))
+
+
+def test_cancel_counts_only_the_work_that_will_now_never_exist():
+    """What a batch reports as released "never created" -- so a created job must not count.
+
+    Counting every item made a batch stopped mid-run announce it had released its jobs "that
+    were never created" while each of them was running, which is the one moment a reader is
+    checking whether a stop left anything behind.
+    """
+    c = _controller(FakeProvider(cpu=2.0))
+    _items(c, "a", 2, cpu=2.0)          # room for one: one is created, one stays planned
+    c.drain()
+    assert sorted(c.states("a").values()) == [CREATED, PLANNED]
+
+    assert c.cancel("a") == 1
+    assert c.states("a") == {}
 
 
 def test_a_create_that_raises_leaves_the_job_planned_and_holds_no_reservation():
