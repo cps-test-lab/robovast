@@ -78,6 +78,9 @@ _FORBIDDEN_NAMES = [
     "nav_get_planned_path", "nav_get_path",
     "nav_get_trajectory_stats",        # -> nav_get_trajectory(stats_only=True)
     "nav_get_map_occupancy_stats",     # -> nav_get_map_info(occupancy=True)
+    # Answered by core for any robot, from what a configuration's variations contributed.
+    "nav_get_obstacles",               # -> get_config_contribution
+    "nav_get_path_deviation",          # -> get_track_deviation
     "display_simulation_screenshot",   # -> get_simulation_screenshot
     "resource_usage",                  # -> get_resource_usage
     # Built, then deliberately dropped: waiting for a campaign is `vast exec wait`, a
@@ -300,7 +303,7 @@ def test_no_phantom_tool_names_in_llm_facing_text(phantom):
     """A retired tool name in text an LLM reads is a name it will try to call.
 
     Matched on word boundaries, so ``resource_usage`` does not flag its own replacement
-    ``get_resource_usage``, nor ``nav_get_path`` flag ``nav_get_path_deviation``.
+    ``get_resource_usage``.
     """
     pattern = re.compile(rf"\b{re.escape(phantom)}\b")
     hits = [where for where, text in _llm_facing_text().items() if pattern.search(text)]
@@ -473,6 +476,9 @@ _PARAMETER_VOCABULARY = {
     "job_name", "build_id", "container", "node", "name", "group", "catalog", "topic",
     "frame", "camera", "backend", "scenario_path", "world_path", "from_campaign",
     "campaign_name", "targets", "entities", "phase", "entries", "content",
+    # Which recorded table a track comes from, and which marker of a configuration to
+    # measure against: pose_track_view and the contribution spell them the same way.
+    "source", "marker_label",
     "old_string", "new_string", "sql", "command", "description", "reason",
     "archive_path", "occupancy",
     # how much, and from where

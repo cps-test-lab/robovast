@@ -348,16 +348,9 @@ def _config_view_contribution(config: dict, vast_dir: str) -> dict:
     (:meth:`Variation.config_view_data`). That keeps it off the ``isolate_plugins`` IPC
     path and out of the composition cache, and means a cache hit still gets its markers.
     """
-    from robovast.common.config_generation import \
-        _get_variation_classes  # pylint: disable=import-outside-toplevel
     from robovast.common.scene_markers import \
-        collect_contributions  # pylint: disable=import-outside-toplevel
-    block = config.get("_config_block") or {}
-    try:
-        classes = [cls for cls, _params, _ref in _get_variation_classes(block, vast_dir)]
-    except Exception as exc:  # noqa: BLE001 - an unresolvable plugin is reported, not raised
-        return {"markers": [], "files": {}, "errors": [f"variation types: {exc}"]}
-    return collect_contributions(config, classes, vast_dir)
+        contribution_for_block  # pylint: disable=import-outside-toplevel
+    return contribution_for_block(config, config.get("_config_block") or {}, vast_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -5256,6 +5249,24 @@ class LocalTransport(RobovastInterface):
                     plots.append({"title": p.get("title", ""), "query": p["query"],
                                   "vega_lite": p.get("vega_lite") or {}})
         return CampaignPlotsResponse(campaign_id=campaign_id, plots=plots)
+
+    def get_config_contribution(self, campaign_id: str,
+                                config_name: str) -> "ServedContribution":
+        from robovast.common.scene_markers import campaign_contribution
+        from robovast.service.interface import ServedContribution
+        return ServedContribution.model_validate(
+            campaign_contribution(self.campaign_dir(campaign_id), config_name))
+
+    def get_track_deviation(self, campaign_id: str, config_name: str, run_id: int,
+                            source: str = "poses", frame: str = "base_link",
+                            marker_label=None) -> "TrackDeviation":
+        from robovast.results_processing.track_deviation import choose_path, track_deviation
+        from robovast.service.interface import TrackDeviation
+        contribution = self.get_config_contribution(campaign_id, config_name)
+        markers = [m.model_dump() for m in contribution.markers]
+        path = choose_path(markers, marker_label)
+        return TrackDeviation(**track_deviation(
+            campaign_id, config_name, run_id, path=path, source=source, frame=frame))
 
     def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
         # Raw-load (not full validation) — reading declared panels must not depend on
