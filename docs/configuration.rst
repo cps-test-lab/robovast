@@ -1215,7 +1215,9 @@ run_as_user
 
 **Required:** No
 
-The user ID (UID) to run the container as. Defaults to ``1000`` if not specified. If your container requires running as root, set this to ``0``.
+The user ID (UID) to run the container as. If not specified, a local run uses the UID of the service and a cluster run uses ``1000``. If your container requires running as root, set this to ``0``.
+
+On a local run, the run output belongs to this UID. If it differs from the service's, the service cannot remove that output, and ``vast campaign delete`` reports the paths it had to leave; remove them as that user, then delete again.
 
 .. code-block:: yaml
 

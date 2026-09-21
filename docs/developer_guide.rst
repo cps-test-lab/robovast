@@ -1959,8 +1959,9 @@ Control operations
   the moment the runs finish, *before* analysis postprocessing. A share failure never
   loses the campaign: it stays ``finished`` and the reason is recorded on
   ``share_error`` (durable). Local backends write the ``tar.gz`` to
-  ``<results>/_archives/`` instead; cluster backends stream it to the share provider
-  with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
+  ``<results>/_archives/`` instead (``$ROBOVAST_ARCHIVE_DIR`` overrides it, resolved by
+  ``campaign_archive.local_archive_dir``), and ``delete_campaign`` removes them with the
+  campaign; cluster backends stream it to the share provider with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
   stream (the campaign as the service holds it, tarred on the fly off the results volume).
 * ``run_share`` (``client.run_share``) — re-triggers the upload-to-share on a finished
   campaign, from the stored campaign alone (works after a service restart, no live

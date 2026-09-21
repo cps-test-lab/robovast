@@ -127,10 +127,13 @@ def run_share(campaign_id: str) -> dict:
 
 
 def delete_campaign(campaign_id: str) -> dict:
-    """Irreversibly remove a campaign: its directory, and on a cluster its leftover Jobs.
+    """Irreversibly remove a campaign: its directory, the local archives beside it, its
+    index rows, and on a cluster its leftover Jobs.
 
     Runs through the robovast-service — no kubeconfig or namespace here. A running campaign
-    is refused; stop it first. The external share copy is never touched.
+    is refused; stop it first. ``ok=false`` names a path that could not be removed (often
+    run output owned by another container user); deleting again retries only what is
+    left. The copy on an external share provider is never touched.
 
     Args:
         campaign_id: The campaign to remove.

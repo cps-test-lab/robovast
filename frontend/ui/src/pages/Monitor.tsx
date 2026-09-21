@@ -451,9 +451,16 @@ function CampaignCard({ summary, newest, openedByLink }: {
     onError: failed('Delete failed.', `delete:${id}`),
     // The row (and every cached query for this campaign) is gone on success — which is also why
     // the toast is the only thing left that can say what went.
-    onSuccess: () => {
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
-      notify({ severity: 'success', message: `Deleted ${id}` })
+      // A partial delete is answered, not raised: an error, because what is left still takes
+      // the space, and the message names the path that could not be removed.
+      if (res && !res.ok) {
+        notify({ severity: 'error', key: `delete:${id}`, message: `${id} was not fully deleted.`,
+                 note: res.message || undefined })
+        return
+      }
+      notify({ severity: 'success', message: res?.message || `Deleted ${id}` })
     },
   })
 
