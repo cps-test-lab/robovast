@@ -677,7 +677,8 @@ class CalibrationConfig(BaseModel):
     headroom: Optional[CalibrationHeadroom] = None
 
     #: The least this container may be sized to, per resource, whatever the probe measured.
-    #: Omitted, only the built-in CPU floor applies.
+    #: Omitted, the built-in floors apply (``MIN_CPU`` and ``MIN_MEMORY`` in
+    #: ``node_calibration``); a stated one wins where it is higher.
     min: Optional[CalibrationFloor] = None
 
     @field_validator('size_on')
@@ -766,6 +767,20 @@ class ContainerConfig(BaseModel):
     #: ``sizing: calibrated``; see :class:`CalibrationConfig`.
     calibration: Optional[CalibrationConfig] = None
 
+    #: Simulator backend entry point (``simulation`` role only) -- a name in the
+    #: ``robovast.simulators`` group, or a ``.vast``-relative ``<file>.py:<Class>`` ref.
+    #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
+    backend: Optional[str] = None
+    #: Configuration files this container reads, ``{source name: path}`` -- what the
+    #: ``sut:`` channel addresses. A value is the ``.vast``-relative path, or
+    #: ``{file: <path>, format: <name>}`` where the extension does not name the format.
+    #:
+    #: Named ``config_files`` and not ``config`` because the ``simulation`` container's
+    #: ``config`` is a *backend* key (the world it loads, validated by the backend's own
+    #: CONFIG_CLASS). One key meaning a backend's world on one container and RoboVAST's
+    #: source map on another is a collision rather than a parallel.
+    config_files: Optional[dict[str, Union[str, dict[str, str]]]] = None
+
     @model_validator(mode="after")
     def _floor_fits_under_the_ceiling(self):
         """A calibration floor above the declared ceiling is refused, not quietly clipped.
@@ -796,19 +811,6 @@ class ContainerConfig(BaseModel):
                 f"resources.memory ({self.resources.memory}): the floor is the least it may "
                 f"be sized to and resources is the most, so no allocation satisfies both")
         return self
-    #: Simulator backend entry point (``simulation`` role only) -- a name in the
-    #: ``robovast.simulators`` group, or a ``.vast``-relative ``<file>.py:<Class>`` ref.
-    #: The backend's own keys ride alongside it and are validated by its CONFIG_CLASS.
-    backend: Optional[str] = None
-    #: Configuration files this container reads, ``{source name: path}`` -- what the
-    #: ``sut:`` channel addresses. A value is the ``.vast``-relative path, or
-    #: ``{file: <path>, format: <name>}`` where the extension does not name the format.
-    #:
-    #: Named ``config_files`` and not ``config`` because the ``simulation`` container's
-    #: ``config`` is a *backend* key (the world it loads, validated by the backend's own
-    #: CONFIG_CLASS). One key meaning a backend's world on one container and RoboVAST's
-    #: source map on another is a collision rather than a parallel.
-    config_files: Optional[dict[str, Union[str, dict[str, str]]]] = None
 
     @field_validator('system_packages')
     @classmethod

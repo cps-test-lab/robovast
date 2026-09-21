@@ -66,16 +66,15 @@ CALIBRATION_HEADROOM = 1.25
 #: cannot tell "this container genuinely idles" from "this run stopped before it started".
 MIN_CPU = 0.25
 
-#: The same floor for memory, and the resource that needs it more: a container given too little
-#: CPU runs slowly, one given too little memory is killed. A probe whose run stopped before the
-#: stack was up measures a fraction of what every later run needs, and without a floor that
-#: fraction becomes the ceiling those runs die against.
+#: The same last-resort floor for memory, where a wrong measurement costs more: a container
+#: given too little CPU runs slowly, one given too little memory is killed. It is not the
+#: defence against a short probe either -- :data:`MIN_PROBE_SAMPLES` and the verdict gate are --
+#: but a probe that reached a failure verdict during bring-up passes both, and this bounds
+#: what its figure can do to every later run.
 #:
-#: One figure for every role, like :data:`MIN_CPU`: what a container that has actually started a
-#: stack uses, rather than a description of any particular one. A stated ``resources.memory``
-#: and ``calibration.min.memory`` both still win over it -- this only has to make a ``.vast``
-#: that says nothing about sizing safe.
-MIN_MEMORY = "512M"
+#: One figure for every role, like :data:`MIN_CPU`, in bytes (``512M``). A stated
+#: ``resources.memory`` or ``calibration.min.memory`` wins over it.
+MIN_MEMORY = 512 * 1000 ** 2
 
 #: Fewest ticks a percentile may be read from. **A statistical floor, and only that.**
 #:
@@ -645,21 +644,6 @@ def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
 #: the stack's own miss count was counted at each level, and carries the same caveat -- it is
 #: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
 PROBE_THROTTLE_REFUSE_RATIO = 0.005
-
-def min_memory_bytes() -> int:
-    """:data:`MIN_MEMORY` in bytes.
-
-    Read through :func:`~robovast.common.quantity.to_bytes` so the floor is written in the same
-    units a ``.vast`` states memory in, and so a malformed one fails here rather than becoming a
-    silently tiny floor at sizing time.
-    """
-    from robovast.common.quantity import to_bytes  # noqa: PLC0415
-
-    floor = to_bytes(MIN_MEMORY)
-    if not floor:
-        raise ValueError(f"the built-in memory floor is not a quantity: {MIN_MEMORY!r}")
-    return floor
-
 
 def probe_refuse_ratio(percentile: float) -> float:
     """How much throttling invalidates a probe's measurement of ONE container.

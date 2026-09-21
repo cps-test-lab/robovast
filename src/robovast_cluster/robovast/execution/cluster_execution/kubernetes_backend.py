@@ -368,7 +368,7 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     if not figures:
         return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
 
-    from .node_calibration import MIN_CPU, min_memory_bytes  # noqa: PLC0415
+    from .node_calibration import MIN_CPU, MIN_MEMORY  # noqa: PLC0415
 
     settings = settings or {}
     headroom = settings.get("headroom") or {}
@@ -406,7 +406,7 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
         # exist is the one thing this cannot detect for itself -- the probe reports a number,
         # not whether its run got far enough for that number to mean anything -- and unlike
         # CPU the cost of being wrong is the run rather than its speed.
-        sized = max(sized, min_memory_bytes(), to_bytes(floor.get("memory")) or 0)
+        sized = max(sized, MIN_MEMORY, to_bytes(floor.get("memory")) or 0)
         declared_bytes = _declared_bytes(declared) or _declared_bytes(out)
         if declared_bytes:
             sized = min(sized, declared_bytes)

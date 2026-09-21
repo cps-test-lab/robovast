@@ -1124,11 +1124,9 @@ def test_a_left_out_node_reaches_a_watcher_through_the_status():
 def test_memory_has_the_floor_cpu_always_had():
     """A container given too little CPU runs slowly; one given too little memory is killed --
     so the resource that needed a floor most was the one without one."""
-    from robovast.execution.cluster_execution.node_calibration import (MIN_CPU, MIN_MEMORY,
-                                                                       min_memory_bytes)
+    from robovast.execution.cluster_execution.node_calibration import MIN_CPU, MIN_MEMORY
     assert MIN_CPU == 0.25
-    assert MIN_MEMORY == "512M"
-    assert min_memory_bytes() == 512 * 1000 ** 2
+    assert MIN_MEMORY == 512 * 1000 ** 2
 
 
 def test_a_measurement_is_never_sized_below_the_floor():
@@ -1136,26 +1134,26 @@ def test_a_measurement_is_never_sized_below_the_floor():
     anything: one that stopped before the stack was up measures a fraction of what every later
     run needs."""
     from robovast.common.quantity import to_bytes
-    from robovast.execution.cluster_execution.node_calibration import min_memory_bytes
+    from robovast.execution.cluster_execution.node_calibration import MIN_MEMORY
 
     figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
     sized = kb.calibrated_resources({"memory": "2Gi"}, "sut", figures, roles=("sut",),
                                     bootstrap=True, settings={"headroom": {"memory": 1.0}})
-    assert to_bytes(sized["memory"]) == min_memory_bytes()
+    assert to_bytes(sized["memory"]) == MIN_MEMORY
 
 
 def test_every_role_keeps_the_same_floor():
     """One figure, like MIN_CPU: it bounds a measurement rather than describing a workload, and
     what a particular container needs is what `resources` and `calibration.min` are for."""
     from robovast.common.quantity import to_bytes
-    from robovast.execution.cluster_execution.node_calibration import min_memory_bytes
+    from robovast.execution.cluster_execution.node_calibration import MIN_MEMORY
 
     figures = {"cores": 1.0, "memory_peak": 10 * 1024 ** 2, "samples": 90}
     for role in ("sut", "scenario", "simulation"):
         sized = kb.calibrated_resources({"memory": "2Gi"}, role, {role: figures},
                                         roles=(role,), bootstrap=True,
                                         settings={"headroom": {"memory": 1.0}})
-        assert to_bytes(sized["memory"]) == min_memory_bytes(), role
+        assert to_bytes(sized["memory"]) == MIN_MEMORY, role
 
 
 def test_a_measurement_above_the_floor_is_left_alone():
