@@ -221,14 +221,14 @@ def test_a_censored_param_stays_a_value_a_query_can_read(conn, tmp_path):
     campaign_ingest.ingest_campaign(conn, str(tree), "camp-a")
 
     row = _runs(conn)[0]
-    assert row["param_clearance"] == "inf"
+    assert row["param_clearance"] == float("inf")
     assert json.loads(row["param_gaps"]) == [1.0, "nan"]
     assert conn.execute(
         "SELECT param_gaps::jsonb ->> 1 FROM runs").fetchone()[0] == "nan"
     types = dict(conn.execute(
         "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_schema = %s AND table_name = 'runs'", (SCHEMA,)).fetchall())
-    assert types["param_clearance"] == "text"
+    assert types["param_clearance"] == "double precision"
 
 
 def test_every_config_gets_every_siblings_param_column(conn, tmp_path):

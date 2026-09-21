@@ -979,22 +979,23 @@ A measurement with no finite value
 
 A metric can come out infinite or undefined and still be right: a range sensor reports no
 return, a trial produced no trajectory so its path length is infinite, a ratio had no
-denominator. Such a value is stored as its own spelling — ``inf``, ``-inf`` or ``nan`` — in
-a column that is ``TEXT`` for the whole campaign, which is the type
-``describe_campaign_data`` reports for it and what tells you a cast is needed. A value
-nobody measured is ``NULL``, so the two never have to be told apart by guesswork.
+denominator. Such a value is stored as a number — ``double precision``'s ``Infinity``,
+``-Infinity`` or ``NaN`` — in a column that stays numeric, whether the CSV wrote it ``inf``,
+``-inf`` or ``nan``. A value nobody measured is ``NULL``, so the two never have to be told
+apart by guesswork::
 
-Read one back by casting, in SQL or in Python: ``float()`` and Postgres'
-``double precision`` accept exactly these three spellings::
+    SELECT AVG(path_length) FROM nav_metrics;                 -- Infinity if any trial was censored
+    SELECT * FROM nav_metrics WHERE path_length = 'Infinity'; -- the censored trials
+    SELECT * FROM nav_metrics WHERE path_length = 'NaN';      -- the undefined ones
+    SELECT * FROM nav_metrics WHERE path_length IS NULL;      -- and the unmeasured ones
 
-    -- the average, infinite if any trial was censored
-    SELECT AVG(CAST(path_length AS double precision)) FROM nav_metrics;
-    SELECT * FROM nav_metrics WHERE path_length = 'inf';     -- the censored trials
-    SELECT * FROM nav_metrics WHERE path_length IS NULL;     -- and the unmeasured ones
+In Postgres, ``NaN`` equals itself and sorts above every number, infinity included, so an
+``ORDER BY`` or a ``MAX`` over such a column puts it last.
 
 Inside a JSON-encoded value — a container-valued ``param_*`` column, ``channels_json`` —
-the same three appear as JSON strings, so ``param_gaps::jsonb ->> 1`` is ``nan`` rather
-than a token that would make the cast fail.
+the same three appear as the JSON strings ``"inf"``, ``"-inf"`` and ``"nan"``, so
+``param_gaps::jsonb ->> 1`` is ``nan`` rather than a token that would make the cast fail,
+and ``(param_gaps::jsonb ->> 1)::double precision`` is the number.
 
 .. _reading-result-files:
 

@@ -25,40 +25,35 @@ values say the column is numeric, and converts them so the index stores real
 ``INTEGER``/``REAL`` values and plain SQL means what it says.
 
 The rule is deliberately strict — a column is numeric only if *every* non-empty
-value in it is a plain decimal number:
+value in it is a number:
 
 * ``"1"``, ``"-3"``                       -> ``INTEGER``
 * ``"1.5"``, ``"-0.5"``, ``"1e-3"``       -> ``REAL`` (any ``.`` or exponent)
+* ``"inf"``, ``"-inf"``, ``"nan"``        -> ``REAL``, stored as ``double precision``'s own
+  ``Infinity``, ``-Infinity``, ``NaN``
 * ``""``                                  -> ``NULL``, and no evidence either way
-* anything else, including ``"nan"``,
-  ``"inf"``, ``"1e999"``, ``"1,5"``,
-  ``"007"``                               -> ``TEXT``, stored verbatim
+* anything else, including ``"1e999"``,
+  ``"1,5"``, ``"007"``                    -> ``TEXT``, stored verbatim
 
-Two exclusions are load-bearing rather than fussy. Leading zeros mark an
-identifier whose text matters (``"007"`` must not become ``7``), and a value no
-SQLite number can hold is refused outright rather than mangled: ``nan`` (which
-``sqlite3`` would store as ``NULL``), an infinity — whether written ``inf`` or
-reached by overflow, so ``"1e999"`` is text too — and an integer past 8 bytes.
-Accepting any of them would *delete* data under the guise of typing it. In every
-such case the whole column stays ``TEXT`` and the raw strings survive for
-inspection.
+**A non-finite value is a measurement, so it is stored as one.** "No return", "no
+trajectory came back, so the path length is infinite" and "the ratio had no denominator"
+are results a query has to be able to find, and ``double precision`` holds them as values
+that order and compare: infinity above every number, ``NaN`` equal to itself and above
+infinity. They stay distinct from the ``NULL`` that means nothing was measured, and the
+column stays numeric, so one censored trial does not turn a column of numbers into text.
 
-**A non-finite float is a measurement, so it is stored rather than dropped.** "No
-return", "no trajectory came back, so the path length is infinite" and "the ratio
-had no denominator" are results a query has to be able to find, and they arrive
-both as CSV text and as Python floats. Each is stored as its own spelling —
-``"inf"``, ``"-inf"``, ``"nan"`` (:data:`NON_FINITE_TEXT`) — which ``float()``
-reads back and Postgres accepts as ``double precision`` input, and which stays
-distinct from the ``NULL`` that means nothing was measured. The column is ``TEXT``
-for the same reason the string spellings make it ``TEXT``, so the declaration and
-the stored value agree.
+Two exclusions are load-bearing rather than fussy. Leading zeros mark an identifier whose
+text matters (``"007"`` must not become ``7``), and a finite literal no number column can
+hold is refused rather than mangled: one that overflows ``double precision`` (``"1e999"``
+would become an infinity nobody measured) and an integer past ``bigint``'s 8 bytes. In
+either case the whole column stays ``TEXT`` and the raw strings survive for inspection.
 
-**A container is encoded with those substitutions and with** ``allow_nan=False``.
-Python's ``json`` writes three tokens JSON does not have — ``Infinity``,
-``-Infinity``, ``NaN`` — and reads them back without complaint, so a record that
-carries one looks right everywhere until SQL casts the column: Postgres rejects
-the token and fails the *whole query*, not the offending row, taking every other
-field of every other run with it.
+**A container is JSON-encoded with** ``allow_nan=False``. JSON has no token for a
+non-finite number, and Python's ``json`` writes ``Infinity``, ``-Infinity`` and ``NaN``
+anyway, reading them back without complaint -- so a record carrying one looks right until
+SQL casts the column to ``jsonb``, and Postgres then fails the *whole query*, not the
+offending row. Inside a container each non-finite float is written as the string
+``"inf"``, ``"-inf"`` or ``"nan"`` (:data:`NON_FINITE_TEXT`) instead.
 """
 
 import json
@@ -66,9 +61,13 @@ import math
 import re
 
 # A plain decimal number, optionally signed, optionally with an exponent. Anything
-# outside this — hex, thousands separators, units, "nan"/"inf", surrounding
+# outside this and :data:`_NON_FINITE_RE` — hex, thousands separators, units, surrounding
 # whitespace — is text.
 _NUMBER_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+# The spellings of a non-finite number that ``float()`` reads: ``inf``, ``infinity`` and
+# ``nan``, signed or not, in any case -- what Python's ``csv`` writes for one, and what a
+# metric script prints.
+_NON_FINITE_RE = re.compile(r"^[+-]?(?:inf|infinity|nan)$", re.IGNORECASE)
 # A leading zero before another digit ("007", "01.5") means the text is an
 # identifier or a zero-padded field, not a quantity.
 _LEADING_ZERO_RE = re.compile(r"^[+-]?0\d")
@@ -90,8 +89,8 @@ UNKNOWN = "UNKNOWN"
 _RANK = {UNKNOWN: 0, INTEGER: 1, REAL: 2, TEXT: 3}
 
 
-# SQLite stores integers in at most 8 bytes; a wider one would raise on insert, so
-# it stays text (a 20-digit id is not a quantity anyone averages).
+# ``bigint`` holds integers in 8 bytes; a wider one would fail the insert, so it stays
+# text (a 20-digit id is not a quantity anyone averages).
 _INT64_MIN, _INT64_MAX = -2**63, 2**63 - 1
 
 
@@ -101,20 +100,19 @@ def value_type(value) -> str:
         return UNKNOWN
     if not isinstance(value, str):
         # Already-typed values (scenario params from campaign.db, sysinfo) — trust
-        # Python's type. bool is an int subclass and stores as 0/1, which is what
-        # SQLite does with booleans anyway.
+        # Python's type. bool is an int subclass and stores as 0/1 (see :func:`coerce`).
         if isinstance(value, int):
             return INTEGER if _INT64_MIN <= value <= _INT64_MAX else TEXT
         if isinstance(value, float):
-            # A non-finite float is stored as its spelling, so the column must be text
-            # too -- the same verdict "inf" and "nan" get when they arrive as strings.
-            return REAL if math.isfinite(value) else TEXT
+            return REAL
         return TEXT
+    if _NON_FINITE_RE.match(value):
+        return REAL
     if not _NUMBER_RE.match(value) or _LEADING_ZERO_RE.match(value):
         return TEXT
     if _REAL_MARKER_RE.search(value):
-        # An exponent can overflow to infinity ("1e999"), which is the same data loss
-        # as accepting a literal "inf" — refuse both.
+        # An exponent can overflow to infinity ("1e999"): a finite literal stored as an
+        # infinity nobody measured.
         return REAL if math.isfinite(float(value)) else TEXT
     return INTEGER if _INT64_MIN <= int(value) <= _INT64_MAX else TEXT
 
@@ -130,7 +128,7 @@ def widest(*types: str) -> str:
 
 
 def infer_column_types(rows, columns) -> dict:
-    """Infer a SQLite type per column from *rows* (an iterable of dict rows).
+    """Infer a column type per column from *rows* (an iterable of dict rows).
 
     Returns ``{column: INTEGER|REAL|TEXT|UNKNOWN}``. A column is numeric only when
     every non-empty value in *rows* is numeric, so one stray label demotes it to
@@ -148,11 +146,9 @@ def infer_column_types(rows, columns) -> dict:
 def coerce(value, col_type: str):
     """Convert a CSV string to *col_type*, or return it unchanged if it cannot be.
 
-    Conversion is explicit rather than left to SQLite's column affinity so the
-    stored value is right even when a later run widens the column (affinity only
-    converts when it is lossless, and silently keeps text otherwise). A value that
-    does not fit is returned verbatim — the caller reports the mixed column rather
-    than dropping the row.
+    Conversion is explicit so the stored value is right even when a later run widens
+    the column. A value that does not fit is returned verbatim — the caller reports the
+    mixed column rather than dropping the row.
     """
     if value is None or value == "":
         return None
@@ -174,21 +170,17 @@ def coerce(value, col_type: str):
         return value
 
 
-#: The spelling each non-finite float is stored under, in the order
-#: ``+inf``, ``-inf``, ``nan``. These are what :func:`float` parses and what Postgres
-#: accepts for ``double precision``, so the stored value is readable as a number by the
-#: analysis and by SQL, and is still distinguishable from a ``NULL`` that means the value
-#: was never measured.
+#: The spelling each non-finite float takes inside a JSON-encoded container, where JSON has
+#: no token for one, in the order ``+inf``, ``-inf``, ``nan``. These are what
+#: :func:`float` parses and what Postgres accepts for ``double precision``, so
+#: ``(col::jsonb ->> 0)::double precision`` reads one back as the number.
 NON_FINITE_TEXT = ("inf", "-inf", "nan")
 _POSITIVE_INFINITY, _NEGATIVE_INFINITY, _NOT_A_NUMBER = NON_FINITE_TEXT
 
 
 def as_stored(value):
-    """*value* with every non-finite float replaced by its :data:`NON_FINITE_TEXT` spelling.
-
-    Recurses into lists, tuples and dicts: one such float nested in a JSON-encoded
-    container makes the column as unreadable as a bare one does.
-    """
+    """*value* with every non-finite float replaced by its :data:`NON_FINITE_TEXT` spelling,
+    for JSON encoding. Recurses into lists, tuples and dicts."""
     if isinstance(value, float) and not math.isfinite(value):
         if math.isnan(value):
             return _NOT_A_NUMBER
@@ -213,14 +205,13 @@ def json_text(value, **dumps_kwargs) -> str:
 def sql_value(value, col_type: str):
     """A CSV or param value ready to insert: containers JSON-encoded, numbers typed.
 
-    Nothing non-finite reaches the driver, in a container or on its own: it goes in as
-    its :data:`NON_FINITE_TEXT` spelling, which is what :func:`value_type` types the
-    column for.
+    A non-finite number on its own goes to the driver as the float it is, which
+    ``double precision`` stores natively; inside a container it is written as its
+    :data:`NON_FINITE_TEXT` spelling (:func:`json_text`).
     """
     if isinstance(value, (list, dict)):
         return json_text(value)
-    converted = coerce(value, col_type)
-    return as_stored(converted) if isinstance(converted, float) else converted
+    return coerce(value, col_type)
 
 
 def column_def(name: str, col_type: str) -> str:

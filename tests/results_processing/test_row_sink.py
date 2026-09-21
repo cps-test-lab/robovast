@@ -9,6 +9,7 @@ arrives as a number or as its own text.
 Set ``ROBOVAST_TEST_PG_DSN`` to run them; without it they skip.
 """
 
+import math
 import os
 
 import pytest
@@ -142,20 +143,19 @@ def test_a_container_value_is_json_encoded(conn):
 
 
 def test_a_censored_measurement_reaches_the_index_as_a_number(conn):
-    """A sensor with no return, ingested: the value is there and is not a NULL.
-
-    The column is text, because that is what holds all three spellings, and the cast
-    back to a number is what an analysis writes -- so the row that was censored is
-    still in the answer instead of being indistinguishable from one nobody measured.
-    """
+    """A sensor with no return, ingested: the value is a number and is not a NULL, and
+    the column stays numeric -- so the row that was censored is still in the answer, in
+    order, instead of being indistinguishable from one nobody measured."""
     sink = PostgresRowSink(conn, campaign_id="camp-1")
-    rows = [{"distance": "1.5"}, {"distance": ""}, {"distance": float("inf")}]
+    rows = [{"distance": "1.5"}, {"distance": ""}, {"distance": "inf"},
+            {"distance": float("nan")}, {"distance": "10.25"}]
 
     sink.write("out", rows, context={"config_name": "goal-1", "run_id": 0})
 
-    got = conn.execute('SELECT distance::double precision FROM out '
-                       'WHERE distance IS NOT NULL ORDER BY 1').fetchall()
-    assert got == [(1.5,), (float("inf"),)]
+    got = [r[0] for r in conn.execute(
+        "SELECT distance FROM out WHERE distance IS NOT NULL ORDER BY distance").fetchall()]
+    assert got[:3] == [1.5, 10.25, float("inf")], "ordered as numbers, not as text"
+    assert math.isnan(got[3]), "NaN sorts above every number in Postgres"
     assert conn.execute(
         "SELECT count(*) FROM out WHERE distance IS NULL").fetchone()[0] == 1
 
