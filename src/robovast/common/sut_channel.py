@@ -170,12 +170,13 @@ def declared_sources(execution: dict, vast_dir: str) -> dict:
 
 
 def source_paths(execution: dict, vast_dir: str) -> list:
-    """The ``.vast``-relative path of every declared source, for content hashing.
+    """The ``.vast``-relative path of every declared source, for hashing and archiving.
 
     These files are inputs to configuration generation exactly as a world is, so editing
     one has to change a configuration's identity -- otherwise a re-run reuses an expansion
-    built from the previous content, silently. They cannot travel in ``run_files`` to get
-    that for free, because ``run_files`` also *stages* what it hashes.
+    built from the previous content, silently -- and ``_config/`` has to archive them, or
+    the campaign cannot be composed from it again. They cannot travel in ``run_files`` to
+    get either for free, because ``run_files`` is also what a run *mounts*.
 
     Best effort: a campaign whose declaration is malformed is refused elsewhere, with a
     message about the declaration rather than about hashing.

@@ -1812,6 +1812,21 @@ def _copy_into(src, dst) -> None:
     shutil.copy2(src, dst)
 
 
+def snapshot_files(campaign_data, vast_dir) -> list:
+    """Every project-relative file ``<campaign>/_config/`` must hold beyond the ``.vast``
+    and the scenario: what composition reads, so the campaign can be composed again from it.
+
+    That is ``_run_files`` plus the config files the ``sut:`` channel declares. The two
+    differ only in what a run sees: a run mounts ``_run_files``, and never a declared source
+    -- it gets its configuration's rewritten copy instead, which composition writes from the
+    archived original.
+    """
+    run_files = list(campaign_data.get("_run_files") or [])
+    sources = [rel for rel in sut_source_paths(campaign_data.get("execution") or {}, vast_dir)
+               if rel not in run_files]
+    return run_files + sources
+
+
 def _archive_vast_sources(vast_src, campaign_config_dir):
     """Copy the campaign's ``.vast`` and every base it extends into ``_config/``.
 
@@ -1956,8 +1971,8 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     # thing available here -- is identical across every resolution of them.
     _record_resolved_plugins(out_dir, vast_file_path, campaign_data)
 
-    # Copy run files
-    for config_file in campaign_data.get("_run_files", []):
+    # Copy what composition reads, so the campaign can be composed again from _config/
+    for config_file in snapshot_files(campaign_data, vast_file_path):
         src_path = os.path.join(vast_file_path, config_file)
         dst_path = os.path.join(campaign_config_dir, config_file)
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)

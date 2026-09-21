@@ -741,11 +741,14 @@ def missing_run_files(source_dir, staging_dir) -> list:
 
     ``_transient/configurations.yaml`` records the expanded file list from the original run, so
     it is the thing to compare against; an absent record makes no coverage claim and yields no
-    findings. ``_input_files`` are only warned about -- the original staging also skipped a
-    missing one, so reporting them would condemn campaigns that were already short an analysis
-    notebook when they ran.
+    findings. What is compared is :func:`~robovast.common.execution.snapshot_files` of that
+    record, the set staging archived. ``_input_files`` are only warned about -- the original
+    staging also skipped a missing one, so reporting them would condemn campaigns that were
+    already short an analysis notebook when they ran.
     """
     import yaml
+
+    from robovast.common.execution import snapshot_files
     source_dir, staging_dir = Path(source_dir), Path(staging_dir)
     recorded = source_dir / "_transient" / "configurations.yaml"
     if not recorded.is_file():
@@ -760,7 +763,7 @@ def missing_run_files(source_dir, staging_dir) -> list:
             "Campaign config snapshot archived no %s; the original run skipped them too, so a "
             "project rebuilt from it is short the same files.", ", ".join(sorted(absent_inputs)))
 
-    return [rel for rel in (data.get("_run_files") or [])
+    return [rel for rel in snapshot_files(data, str(staging_dir))
             if not (staging_dir / rel).is_file()]
 
 
