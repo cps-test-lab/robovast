@@ -972,6 +972,31 @@ or would not fit an identifier even at full length. Those get no column and are 
 warning level during ingest, naming the destination: a column silently missing is the same
 wrong answer as a column silently shared.
 
+.. _non-finite-values:
+
+A measurement with no finite value
+----------------------------------
+
+A metric can come out infinite or undefined and still be right: a range sensor reports no
+return, a trial produced no trajectory so its path length is infinite, a ratio had no
+denominator. Such a value is stored as a number — ``double precision``'s ``Infinity``,
+``-Infinity`` or ``NaN`` — in a column that stays numeric, whether the CSV wrote it ``inf``,
+``-inf`` or ``nan``. A value nobody measured is ``NULL``, so the two never have to be told
+apart by guesswork::
+
+    SELECT AVG(path_length) FROM nav_metrics;                 -- Infinity if any trial was censored
+    SELECT * FROM nav_metrics WHERE path_length = 'Infinity'; -- the censored trials
+    SELECT * FROM nav_metrics WHERE path_length = 'NaN';      -- the undefined ones
+    SELECT * FROM nav_metrics WHERE path_length IS NULL;      -- and the unmeasured ones
+
+In Postgres, ``NaN`` equals itself and sorts above every number, infinity included, so an
+``ORDER BY`` or a ``MAX`` over such a column puts it last.
+
+Inside a JSON-encoded value — a container-valued ``param_*`` column, ``channels_json`` —
+the same three appear as the JSON strings ``"inf"``, ``"-inf"`` and ``"nan"``, so
+``param_gaps::jsonb ->> 1`` is ``nan`` rather than a token that would make the cast fail,
+and ``(param_gaps::jsonb ->> 1)::double precision`` is the number.
+
 .. _reading-result-files:
 
 Reading these files
@@ -1029,7 +1054,7 @@ single file.
 The file is produced by a four-phase pipeline:
 
 1. **Generic metadata** — collected by ``MetadataGenerator``
-   (``robovast.common.metadata``).  This includes configurations, test
+   (``robovast.results_processing.metadata``).  This includes configurations, test
    results (pass/fail, timing, output files, sysinfo), execution metadata,
    run files, and the scenario file reference.
 
@@ -1052,6 +1077,14 @@ The file is produced by a four-phase pipeline:
    ``prov:wasDerivedFrom`` edge from the cell to that configuration in
    ``metadata.prov.json``.  A configuration that records no parent carries no
    such field.
+
+A campaign whose recorded outcome says it ended early — ``stopped``, ``failed`` or
+``crashed`` — is described with the runs it has: ``execution.ended_early`` names the phase,
+a configuration may have fewer run directories than ``execution.runs`` planned, and the
+campaign may have no run with a verdict, since the ending cuts runs short before they reach
+one. Any other campaign with fewer runs than it planned, or none with a verdict, is refused
+as a broken input — a shortfall on its own is also what an accidental gap looks like. More
+runs than planned is refused however the campaign ended.
 
 Example structure of ``metadata.yaml``:
 

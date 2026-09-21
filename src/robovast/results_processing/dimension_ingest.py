@@ -57,11 +57,14 @@ FKs that do carry information (``unit.batch_id``, ``run.unit_id``, ``run.job_id`
 and are read together with ``campaign_id``.
 """
 
+import json
 import logging
+import re
 import sqlite3
 
 from robovast.results_processing import index_schema
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN)
+from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
+                                                   json_text)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,24 @@ def _tables_in(store: sqlite3.Connection) -> set:
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
+#: The tokens Python's ``json`` writes for a non-finite float, which JSON does not have.
+_NON_FINITE_JSON = re.compile(r"-?Infinity|NaN")
+
+
+def _indexable(column: str, value):
+    """*value* as the index stores it: a ``*_json`` text carrying a non-finite token is
+    re-encoded with :func:`~robovast.results_processing.csv_types.json_text`.
+
+    ``campaign.db`` is written with Python's ``json``, which writes ``Infinity`` and ``NaN``
+    and reads them back, so the record round-trips for the code that reads it. Postgres
+    refuses those tokens when the column is cast to ``jsonb`` and fails the whole query, so
+    they are rewritten here, on the way into the index, and nowhere else.
+    """
+    if column.endswith("_json") and isinstance(value, str) and _NON_FINITE_JSON.search(value):
+        return json_text(json.loads(value))
+    return value
+
+
 def mirror_campaign_record(conn, store_path: str, campaign_id: str) -> dict:
     """Mirror ``campaign.db`` at *store_path* into the index; return rows per table.
 
@@ -139,7 +160,8 @@ def mirror_campaign_record(conn, store_path: str, campaign_id: str) -> dict:
             count = 0
             with conn.cursor().copy(f"COPY {name} ({quoted}) FROM STDIN") as copy:
                 for row in rows:
-                    copy.write_row(tuple([campaign_id] + [row[c] for c in types]))
+                    copy.write_row(
+                        tuple([campaign_id] + [_indexable(c, row[c]) for c in types]))
                     count += 1
             written[table] = count
         logger.info("index: mirrored %s record for %s (%s)", store_path, campaign_id,
