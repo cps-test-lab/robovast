@@ -83,6 +83,12 @@ def terminate_group(process: "subprocess.Popen", grace_s: float = DEFAULT_GRACE_
     the container client too, which forwards it to the container; the script's trap then
     runs and removes it.
 
+    A process that was **not** started in a session of its own shares ours, and signalling
+    that group would end the service, the CLI or the test runner that asked for the stop --
+    so such a process is signalled alone. Starting the child with ``start_new_session=True``
+    is what makes the group reachable, and every caller here that means to kill a group
+    does.
+
     Every failure here is survivable and none is worth raising: the process may have exited
     between the check and the signal, and a stop that cannot be delivered is no reason to
     fail a campaign that is ending anyway.
@@ -91,15 +97,23 @@ def terminate_group(process: "subprocess.Popen", grace_s: float = DEFAULT_GRACE_
         pgid = os.getpgid(process.pid)
     except (OSError, ProcessLookupError):
         return
+    own_group = pgid == os.getpgid(0)
+    if own_group:
+        logger.debug("pid %d shares this process group; signalling it alone", process.pid)
     with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGTERM)
+        if own_group:
+            process.terminate()
+        else:
+            os.killpg(pgid, signal.SIGTERM)
     try:
         process.wait(timeout=grace_s)
     except subprocess.TimeoutExpired:
-        logger.warning("pid %d did not exit after SIGTERM; killing its process group",
-                       process.pid)
+        logger.warning("pid %d did not exit after SIGTERM; killing it", process.pid)
         with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGKILL)
+            if own_group:
+                process.kill()
+            else:
+                os.killpg(pgid, signal.SIGKILL)
 
 
 class StopWatch:
@@ -125,9 +139,12 @@ def watch_stop(should_stop, process: "subprocess.Popen", *,
     blocked in a read on work that prints only now and then -- so a check there would fire
     when the process felt like talking, not when the operator asked it to stop.
 
-    *terminate* replaces the default :func:`terminate_group` for work whose group is the
-    wrong handle: an ephemeral container is ended by removing it, because a signalled
-    client detaches and leaves the container running.
+    *terminate* is called with the process and replaces the default
+    :func:`terminate_group` for work whose group is the wrong handle: an ephemeral
+    container is ended by removing it, because a signalled client detaches and leaves the
+    container running. Whatever it does, it must leave nothing for the caller to keep
+    waiting on -- a caller blocked reading the process's output is only released when the
+    process ends.
 
     A no-op context when no predicate was given, so the ordinary path -- a CLI run, a
     campaign nobody stops -- starts no thread at all. Yields a :class:`StopWatch`.
@@ -142,7 +159,10 @@ def watch_stop(should_stop, process: "subprocess.Popen", *,
         while not done.wait(poll):
             if should_stop():
                 watch.stopped = True
-                (terminate or (lambda: terminate_group(process, grace_s)))()
+                if terminate is None:
+                    terminate_group(process, grace_s)
+                else:
+                    terminate(process)
                 return
 
     thread = threading.Thread(target=_watch, name="robovast-stop-watch", daemon=True)

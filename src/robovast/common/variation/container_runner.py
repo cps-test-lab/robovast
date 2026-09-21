@@ -47,17 +47,27 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Protocol, runtime_checkable
+
+from robovast.common.errors import CampaignStopped
+from robovast.common.stop import terminate_group, watch_stop
 
 logger = logging.getLogger(__name__)
 
 
-def run_with_live_output(cmd, progress_update_callback):
+def run_with_live_output(cmd, progress_update_callback, *, should_stop=None,
+                         terminate=None, stopped_reason=""):
     """Run *cmd*, streaming each output line to *progress_update_callback*.
 
     Raises :class:`subprocess.CalledProcessError` on a non-zero exit code (after
     logging the full captured output at ERROR level).
+
+    With *should_stop*, the command is ended as soon as the work is no longer wanted and
+    :class:`CampaignStopped` is raised instead -- a killed command exits non-zero like a
+    broken one, and only the watch can tell the two apart. *terminate* is how this
+    particular command is ended when its own process group is the wrong handle.
     """
     logger.debug("Executing: %s", ' '.join(cmd))
     output_lines = []
@@ -66,12 +76,20 @@ def run_with_live_output(cmd, progress_update_callback):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # A session of its own only where something may end it: the backstop in
+        # :func:`~robovast.common.stop.terminate_group` signals the group, and a child
+        # sharing ours would take the caller with it. Where nothing can stop the command,
+        # staying in the caller's group is what keeps an interactive Ctrl+C reaching it.
+        start_new_session=should_stop is not None,
     ) as proc:
-        for line in proc.stdout:
-            stripped = line.rstrip('\n')
-            progress_update_callback(stripped)
-            output_lines.append(stripped)
-        proc.wait()
+        with watch_stop(should_stop, proc, terminate=terminate) as watch:
+            for line in proc.stdout:
+                stripped = line.rstrip('\n')
+                progress_update_callback(stripped)
+                output_lines.append(stripped)
+            proc.wait()
+        if watch.stopped:
+            raise CampaignStopped(stopped_reason or f"{cmd[0]} stopped by request")
         if proc.returncode != 0:
             logger.error(
                 "Command failed (exit %d): %s\nOutput:\n%s",
@@ -83,6 +101,30 @@ def run_with_live_output(cmd, progress_update_callback):
             # the cause, and the reason a build failed lived only in the service log.
             raise subprocess.CalledProcessError(proc.returncode, cmd,
                                                 output='\n'.join(output_lines))
+
+
+def _end_container(name: str, proc) -> None:
+    """End the named container and the ``docker run`` attached to it.
+
+    The removal first, because that is what actually ends the work: a signalled client
+    detaches and leaves the container running, and an entrypoint that ignores SIGTERM
+    ignores a forwarded one. Removing the container makes the attached client exit, which
+    is what releases the caller reading its output.
+
+    Then the client's own group regardless, as the backstop: a removal that fails -- a
+    daemon that will not answer, a name that resolves to nothing -- would otherwise leave
+    the caller blocked on a stream that never closes, which is the exact stall a stop is
+    supposed to end.
+
+    Best-effort and never raised: a stop that cannot be delivered is no reason to fail a
+    campaign that is ending anyway.
+    """
+    try:
+        subprocess.run(["docker", "rm", "-f", name],  # nosec B603 B607 - fixed argv
+                       check=False, capture_output=True)
+    except OSError as e:
+        logger.debug("could not remove auxiliary container %s: %s", name, e)
+    terminate_group(proc)
 
 
 @dataclass
@@ -168,8 +210,12 @@ class LocalContainerRunner:
     workspace paths are valid on both sides. Cleanup is automatic via ``--rm``.
     """
 
-    def __init__(self, spec: ContainerSpec):
+    def __init__(self, spec: ContainerSpec, *, should_stop=None):
         self._spec = spec
+        # Whoever arranged this runner for a span that can be stopped -- a campaign --
+        # passes its flag as a predicate. A preview or a CLI run passes none and the
+        # container runs to its own end.
+        self._should_stop = should_stop
         self._tmp = tempfile.mkdtemp(prefix="robovast_aux_")
         # mkdtemp is 0700; make it traversable so a container running as a
         # different uid than us (spec.run_as_user) can reach staged files —
@@ -195,8 +241,12 @@ class LocalContainerRunner:
         user = self._spec.run_as_user or f"{os.getuid()}:{os.getgid()}"
         full_cmd = list(self._spec.command_prefix) + list(command)
 
+        # Named so a stop has something to end. Unique per call, because ``--rm`` means a
+        # name is only taken for as long as the container runs and a campaign composing
+        # several configurations reuses this runner.
+        name = f"{self._spec.container_name()}-{uuid.uuid4().hex[:8]}"
         docker_cmd = [
-            "docker", "run", "--rm",
+            "docker", "run", "--rm", "--name", name,
             "--user", user,
             "--network", "host",
             "-v", f"{self.workspace}:{self.workspace}",
@@ -213,7 +263,14 @@ class LocalContainerRunner:
         docker_cmd += [self._spec.image]
         docker_cmd += full_cmd[1:]
 
-        run_with_live_output(docker_cmd, progress_update_callback)
+        run_with_live_output(
+            docker_cmd, progress_update_callback, should_stop=self._should_stop,
+            # The container, not the client's process group: a signalled ``docker run``
+            # detaches and leaves the container running, and an entrypoint that ignores
+            # SIGTERM ignores a forwarded one. Removing it is what actually ends the work.
+            terminate=lambda proc: _end_container(name, proc),
+            stopped_reason=(f"auxiliary container {self._spec.image} stopped by request "
+                            f"while composing"))
 
     def close(self) -> None:
         if self._tmp and os.path.isdir(self._tmp):

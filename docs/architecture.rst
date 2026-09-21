@@ -134,7 +134,9 @@ Which work a stop lands on, and what it leaves:
      - What the campaign is left as
    * - ``initializing``, ``starting``, ``variation``
      - runs
-     - the boundary between two steps; the composition worker's process group is terminated
+     - the boundary between two steps; the composition worker's process group, and the
+       auxiliary container a variation is waiting on -- removed locally, and in-cluster
+       the exec is given up and the span's pod goes with it
      - ``stopped``, with no results: the campaign was ended before its first run
    * - ``plugin install``
      - runs

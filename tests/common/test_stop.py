@@ -139,3 +139,20 @@ def test_sleep_unless_stopped_sleeps_its_interval_when_nobody_stops_it():
     started = time.monotonic()
     assert sleep_unless_stopped(0.2, lambda: False, poll=0.05) is False
     assert time.monotonic() - started >= 0.2
+
+
+def test_a_child_in_our_own_group_is_ended_alone():
+    """Signalling the group would end whoever asked for the stop.
+
+    A child started without a session of its own shares the caller's group -- the service,
+    the CLI, a test runner -- so the group is exactly what must not be signalled. The
+    caller that means to kill a group starts the child with ``start_new_session=True``.
+    """
+    process = subprocess.Popen(["bash", "-c", "sleep 30"])  # noqa: S603,S607 - our group
+    try:
+        terminate_group(process, grace_s=2)
+        assert process.wait(timeout=5) != 0      # it was ended...
+        assert os.getpgid(0) == os.getpgid(0)    # ...and we are still here
+    finally:
+        if process.poll() is None:               # pragma: no cover - only on a failure
+            process.kill()

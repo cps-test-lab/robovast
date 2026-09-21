@@ -40,8 +40,8 @@ from .config_channels import SCENARIO, SIM, SUT, channel
 from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_location import variation_line
 from .config_plugins import ensure_workspace_plugins
-from .errors import (ActionableError, AuxContainerUnavailable, ExecPathUnavailable,
-                     missing_input_error)
+from .errors import (ActionableError, AuxContainerUnavailable, CampaignStopped,
+                     ExecPathUnavailable, missing_input_error)
 from .file_cache2 import CacheKey, FileCache2
 from .stop import run_watching_stop
 from .input_generation import (collect_output_files, parse_generate_entry, resolve_out_dir,
@@ -122,6 +122,28 @@ def set_container_runner_factory(factory):
     return _container_runner_factory.set(factory)
 
 
+# Whether the composition this context is doing is still wanted, for the auxiliary
+# containers it runs. A ContextVar beside the factory above and for the same reason: the
+# service composes several campaigns as threads in one process, and each one's stop flag
+# must reach its own containers and no other's.
+#
+# Beside the factory rather than inside it because the LOCAL runner is built by the
+# fallback below, which is also what resolves a ``family:`` ref and what refuses when
+# there is no docker -- a factory installed to carry the flag would have to repeat both.
+_aux_stop_predicate: "contextvars.ContextVar" = contextvars.ContextVar(
+    "robovast_aux_stop_predicate", default=None)
+
+
+def set_aux_stop_predicate(should_stop):
+    """Register ``should_stop`` for the auxiliary containers of this context.
+
+    Scoped like :func:`set_container_runner_factory`, and returns its ``Token`` the same
+    way. A caller with nothing to stop -- a CLI run, a preview -- registers nothing, and
+    its containers run to their own end.
+    """
+    return _aux_stop_predicate.set(should_stop)
+
+
 #: Set in the child environment of the isolated compose subprocess. Its presence
 #: makes ``generate_scenario_variations`` run the composition in-process (no further
 #: fork) — see ``_compose_isolated`` and the dispatch in that function.
@@ -149,6 +171,10 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
     in the refusal below -- the caller knows it and this function does not, and a refusal that
     cannot say what wanted the container leaves the reader to guess which of a sweep's
     variations it was.
+
+    The local runner is given this context's stop predicate (:func:`set_aux_stop_predicate`),
+    so a campaign stopped while a variation is running a helper image ends that container
+    rather than waiting for it.
     """
     if spec is None:
         return None
@@ -184,7 +210,7 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
         spec = replace(spec, image=resolve_family_image(
             spec.image, project=image_project, tag=image_project_tag,
             role="image for an auxiliary container"))
-    return LocalContainerRunner(spec)
+    return LocalContainerRunner(spec, should_stop=_aux_stop_predicate.get())
 
 
 def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
@@ -213,6 +239,12 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
         logger.error(msg)
         progress_update_callback(msg)
         raise VariationInfeasibleError(msg, config_name=e.config_name) from e
+    except CampaignStopped:
+        # Not the variation's doing: the auxiliary container it was waiting on was removed
+        # because the campaign was stopped, and the plugin saw its command die. Dressed as
+        # a ``VariationFailed`` this would name the plugin as the cause of an operator's
+        # own request -- and a search would read a generation as unscorable.
+        raise
     except Exception as e:
         # A bug in the plugin. The progress line names it; the exception carries the frames,
         # rendered here, once: the surfaces it reaches print an exception's message and
