@@ -50,11 +50,9 @@ import math
 import os
 import re
 import shutil
-import signal
 import subprocess
 import tarfile
 import tempfile
-import threading
 from importlib.resources import files
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -66,6 +64,7 @@ from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT,
                                        is_campaign_dir)
 from robovast.common.quantity import to_bytes, to_cores
 from robovast.common.results_utils import campaign_vast
+from robovast.common.stop import terminate_group, watch_stop
 
 logger = logging.getLogger(__name__)
 
@@ -343,77 +342,6 @@ def _interrupted_job_dirs(results_dir: str) -> list:
                    if e.get("job_dir") and e.get("kind") in (KIND_KILLED, KIND_INVALID)})
 
 
-#: How long a cancelled conversion is given to tear itself down before it is killed
-#: outright. The term reaches the ``docker run`` client, which forwards it to the container;
-#: ``docker_exec.sh``'s trap then spends up to two three-second timeouts killing and
-#: removing it. A shorter wait would escalate to SIGKILL on a conversion that is shutting
-#: down correctly, which leaves the container to the daemon's own reaping rather than the
-#: script's.
-_CANCEL_GRACE_S = 15.0
-
-#: How often a cancelled-yet? check runs while the conversion streams its output. The
-#: conversion is minutes to hours long, so a second's latency is free; polling faster only
-#: costs wake-ups on the far more common path where nobody stops anything.
-_CANCEL_POLL_S = 1.0
-
-
-def _terminate_group(process: "subprocess.Popen") -> None:
-    """Signal the conversion's whole process group, escalating if it does not go.
-
-    The **group**, not the process: bash defers a trap until its foreground child returns,
-    so a signal to ``docker_exec.sh`` alone would sit unhandled for as long as the
-    conversion it is waiting on -- which is the entire thing being cancelled. Signalling the
-    group reaches the ``docker run`` client too, which forwards it to the container; the
-    script's trap then runs and removes it.
-
-    Every failure here is survivable and none is worth raising: the process may have exited
-    between the check and the signal, and a stop that cannot be delivered is no reason to
-    fail a campaign that is ending anyway. The conversion's container runs under ``--rm``,
-    so it goes when its process does, however this ends.
-    """
-    try:
-        pgid = os.getpgid(process.pid)
-    except (OSError, ProcessLookupError):
-        return
-    with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGTERM)
-    try:
-        process.wait(timeout=_CANCEL_GRACE_S)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(OSError, ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGKILL)
-
-
-@contextlib.contextmanager
-def _cancelled_by(should_stop, process: "subprocess.Popen"):
-    """Kill *process*'s group as soon as *should_stop* says the work is no longer wanted.
-
-    A watching thread rather than a check in the output loop, because that loop is blocked
-    in a read on a conversion that prints only every few bags -- so a check there would fire
-    when the conversion felt like talking, not when the operator asked it to stop.
-
-    A no-op context when no predicate was given, so the ordinary path -- a CLI run, a
-    campaign nobody stops -- starts no thread at all.
-    """
-    if should_stop is None:
-        yield
-        return
-    done = threading.Event()
-
-    def watch():
-        while not done.wait(_CANCEL_POLL_S):
-            if should_stop():
-                _terminate_group(process)
-                return
-
-    thread = threading.Thread(target=watch, name="robovast-cancel-watch", daemon=True)
-    thread.start()
-    try:
-        yield
-    finally:
-        done.set()
-
-
 #: Where a ``rosbags_process`` entry looks for bags when it names none.
 DEFAULT_BAG_DIR = "rosbag2"
 
@@ -574,7 +502,8 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
         process = None
         try:
             # In a session of its own so the step can be signalled as one group -- see
-            # :func:`_terminate_group`, which is the only thing that can end it early. The
+            # :func:`~robovast.common.stop.terminate_group`, which is the only thing that
+            # can end it early. The
             # cost of that session is that Ctrl+C no longer arrives here for free, since
             # this is no longer in the terminal's foreground group; the KeyboardInterrupt
             # branch below forwards it, so an interactive run tears the container down.
@@ -589,7 +518,10 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
             )
             output_lines: List[str] = []
             last_was_progress = False
-            with _cancelled_by(should_stop, process):
+            # A second's latency on a step that runs for minutes to hours is free, and
+            # the grace is what lets ``docker_exec.sh``'s trap kill and remove the
+            # container rather than leaving it to the daemon's reaping.
+            with watch_stop(should_stop, process, poll=1.0, grace_s=15.0):
                 for line in process.stdout:
                     line = line.rstrip("\n")
                     output_lines.append(line)
@@ -624,7 +556,7 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
             # process but no longer the step's group, so without forwarding it an
             # interactive Ctrl+C would leave a container running with nobody reading it.
             if process is not None:
-                _terminate_group(process)
+                terminate_group(process)
             raise
         except Exception as e:  # pylint: disable=broad-except
             return False, f"Error executing {name}: {e}"

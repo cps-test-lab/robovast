@@ -120,20 +120,28 @@ def resolve_postprocessing_plugin(plugin_name: str, config_dir: str,
 
 def run_postprocessing_commands(commands, results_dir: str, config_dir: str,
                                 output=print, execution_image: Optional[str] = None,
-                                debug: bool = False, force: bool = False
-                                ) -> Tuple[bool, List[dict]]:
+                                debug: bool = False, force: bool = False,
+                                should_stop=None) -> Tuple[bool, List[dict]]:
     """Resolve and run a list of postprocessing commands over *results_dir*.
 
     Shared by ``run_postprocessing`` (the ``results_processing.postprocessing``
     path) and the campaign controller (the ``search.postprocessing`` path), so
     both load plugins identically (entry-point name or local file ref) and apply
     the same execution contract. Returns ``(success, provenance_entries)``.
+
+    *should_stop* is read between commands and handed to each plugin that accepts it,
+    exactly as in :func:`run_postprocessing`: the conversion is killed in flight and
+    everything after it is given up before it starts, so what a cancelled pass leaves is
+    whole steps, never half of one.
     """
     plugins = load_postprocessing_plugins()
     success = True
     entries: List[dict] = []
     with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
         for i, command in enumerate(commands, 1):
+            if should_stop is not None and should_stop():
+                output(f"⏹  {POSTPROCESSING_CANCELLED}")
+                return False, entries
             if isinstance(command, str):
                 plugin_name, params = command, {}
             elif isinstance(command, dict) and len(command) == 1:
@@ -154,7 +162,8 @@ def run_postprocessing_commands(commands, results_dir: str, config_dir: str,
                 plugin_name=plugin_name, plugin_func=plugin_func, params=params,
                 results_dir=results_dir, config_dir=config_dir,
                 provenance_file=os.path.join(temp_dir, f"{i}_provenance.json"),
-                execution_image=execution_image, debug=debug, force=force)
+                execution_image=execution_image, debug=debug, force=force,
+                should_stop=should_stop)
             entries.extend(prov)
             if not ok:
                 output(f"✗ {message}")

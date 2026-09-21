@@ -68,11 +68,12 @@ import logging
 import os
 import re
 import shutil
-import subprocess  # nosec B404 - pip on trusted, config-declared specs
 import sys
 import sysconfig
 import venv
 from importlib.metadata import PackageNotFoundError, distributions, version
+
+from robovast.common.stop import run_watching_stop
 
 logger = logging.getLogger(__name__)
 
@@ -540,7 +541,7 @@ def _failure_excerpt(stderr: str, tail: int = 8) -> str:
     return "\n".join([*cause[-tail:], "  ...", *tail_lines])
 
 
-def _install_into(venv_dir: str, specs) -> None:
+def _install_into(venv_dir: str, specs, should_stop=None) -> None:
     """``pip install`` the specs into the workspace venv (with dependencies).
 
     The outer pip targets the venv through ``--python`` rather than the venv running a
@@ -554,6 +555,10 @@ def _install_into(venv_dir: str, specs) -> None:
     A configured GitHub token (mounted file, or the local/dev env fallback) is supplied to
     git for this one subprocess only, via a transient ``GIT_ASKPASS`` helper in an
     owner-only temp dir --- never in the parent environment, gitconfig, or a command line.
+
+    *should_stop* ends the install: a git+https spec clones repositories, which is minutes
+    a campaign that has been stopped should not spend, and pip would otherwise run to the
+    end with nobody left waiting for it.
     """
     import tempfile
 
@@ -580,24 +585,22 @@ def _install_into(venv_dir: str, specs) -> None:
            # progress so the long clone/build phase is visible while piped.
            "-v", "--progress-bar", "off", *specs]
     output_lines: list[str] = []
+
+    def _echo(line: str) -> None:
+        output_lines.append(line)
+        logger.info("pip: %s", line)
+        print(f"  pip | {line}", flush=True)
+
     try:
         try:
-            proc = subprocess.Popen(  # nosec B603 - specs come from the trusted campaign .vast
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=env,
-            )
+            returncode = run_watching_stop(
+                cmd, should_stop=should_stop, on_line=_echo,
+                stopped_reason="stopped while installing the campaign's plugins",
+                bufsize=1, env=env)
         except FileNotFoundError as exc:  # pip / python missing
             raise RuntimeError(
                 f"Could not run pip to install variation plugin(s) {list(specs)}: {exc}"
             ) from exc
-
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            output_lines.append(line)
-            logger.info("pip: %s", line)
-            print(f"  pip | {line}", flush=True)
-        returncode = proc.wait()
     finally:
         if askpass_dir:
             shutil.rmtree(askpass_dir, ignore_errors=True)
@@ -782,7 +785,7 @@ def staged_variation_type_names(vast_dir: str) -> set:
 
 def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
                              add_to_path: bool = True,
-                             position: str = "prepend") -> str | None:
+                             position: str = "prepend", should_stop=None) -> str | None:
     """Ensure the ``.vast``'s ``plugins:`` are installed and importable.
 
     Two modes:
@@ -807,6 +810,9 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
             the isolated compose subprocess does the ``sys.path`` + import later.
         position: ``"prepend"`` for a subprocess that exists to compose one project;
             ``"append"`` in the long-lived service. See :func:`_add_sys_path`.
+        should_stop: predicate ending the install when the work is no longer wanted. A
+            campaign's own install is minutes long, so a stop that could not reach it
+            would wait for packages nobody is going to use.
 
     Returns:
         The importable ``site-packages`` path when it exists, else ``None``.
@@ -814,6 +820,7 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
     Raises:
         RuntimeError: an install was attempted and ``pip`` failed (actionable message ---
             auth vs unreachable --- surfaced synchronously to the caller).
+        CampaignStopped: *should_stop* said so while pip was running.
     """
     _reclaim_pre_venv_layout(vast_dir)
     venv_dir = _venv_dir(vast_dir)
@@ -861,7 +868,8 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
         logger.info("Installing %d plugin(s) into %s: %s",
                     len(to_install), venv_dir, ", ".join(to_install))
         _ensure_venv(venv_dir)
-        _install_into(venv_dir, _resolve_local_specs(vast_dir, to_install))
+        _install_into(venv_dir, _resolve_local_specs(vast_dir, to_install),
+                      should_stop=should_stop)
         os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, "w", encoding="utf-8") as f:
             f.write(want)

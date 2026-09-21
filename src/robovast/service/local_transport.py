@@ -59,7 +59,7 @@ from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
                                                ControllerState, Phase, Status, failure_detail,
-                                               is_terminal, stop_scope_for_phase)
+                                               is_terminal, stop_checker, stop_scope_for_phase)
 from robovast.service.interface import (ActionResult, ArchiveSelection, CampaignOrigin, CampaignRef,
                                         OutputsIngested,
                                         UpgradeInfo,
@@ -1581,8 +1581,8 @@ class LocalTransport(RobovastInterface):
         exactly as an auto-chained run does; without it a retrigger was the case where the
         view showed ``postprocessing`` and nothing else for the whole run.
         """
-        from robovast.execution.control_server import (  # pylint: disable=import-outside-toplevel
-            stage_output_callback, stop_checker)
+        from robovast.execution.control_server import \
+            stage_output_callback  # pylint: disable=import-outside-toplevel
         from robovast.results_processing.postprocessing import \
             run_postprocessing  # pylint: disable=import-outside-toplevel
         return run_postprocessing(
@@ -2452,6 +2452,34 @@ class LocalTransport(RobovastInterface):
             # returns while postprocessing is still to come, so the one notification
             # that says "this campaign is over" has to be sent from out here.
             notifier = self._notifier(campaign_id)
+
+            def _record_stop():
+                """Persist the stop and run the analysis the finished batches are owed.
+
+                Persisted so ``stopped`` survives a service restart instead of
+                reconstructing as an ambiguous ``finished``. The batches that DID finish
+                are complete on disk, so their analysis is still owed:
+                ``controller._finish_campaign`` cannot run it on this path -- on Ctrl+C the
+                storage tunnel dies with the controller's process group -- but the service
+                can, and ``_record_campaign_stopped`` draws exactly that line ("succeeds
+                for a Stop-button stop; on Ctrl+C the tunnel is already gone"). It ends
+                back at ``stopped``: how the campaign ended is not this step's to restate.
+
+                Skipped while shutting down, for that same tunnel reason, and skipped for a
+                campaign that asked for no postprocessing.
+                """
+                logger.info("Campaign %s stopped by request", campaign_id)
+                # Here rather than only in the controller: a stop that lands before the
+                # runs begin -- staging, the plugin install, the image wait -- is raised by
+                # the driver itself, and the outcome recorded below is written from the
+                # phase, so a campaign stopped while starting would persist as ``starting``
+                # and reconstruct after a restart as something that never ended.
+                state.set_phase(Phase.STOPPED)
+                self._record_campaign_stopped(campaign_id, results_dir, state, backend)
+                if request.postprocess and not self._shutting_down:
+                    self._postprocess(campaign_id, results_dir, state, entry,
+                                      ends_at=Phase.STOPPED)
+
             try:
                 # How the campaign was ASKED FOR, recorded next to it. Here rather than in the
                 # request handler for the same reason as the line above: a record written later
@@ -2464,14 +2492,17 @@ class LocalTransport(RobovastInterface):
                     # without this "staging the project" is still the reported stage for the
                     # whole run — and, on a campaign that fails later, names the wrong step.
                     state.set_phase(Phase.STARTING, stage="")
+                    state.raise_if_stopped("stopped while staging the project")
                 if target.pinned_images is not None:
                     # Not a build, but still ``_build_specs_for``: it is what installs the
                     # campaign's ``plugins:`` into the project dir, which the cluster lane's
                     # _campaign_context reads before anything else. (``_install_plugins`` in
                     # run_batch_campaign runs later, too late for that.) Cheap and pure — it
                     # never touches the build context, which is absent here by definition.
-                    self._build_specs_for(target, campaign_config)
+                    self._build_specs_for(target, campaign_config,
+                                          should_stop=stop_checker(state, scope=STOP_RUNS))
                     options.images = dict(target.pinned_images)
+                    state.raise_if_stopped("stopped while installing the campaign's plugins")
                 else:
                     # Build (or join a sibling's build of) the experiment image and pin the
                     # concrete ref, so the backend uses it (explicit wins in
@@ -2484,14 +2515,16 @@ class LocalTransport(RobovastInterface):
                     builds = self._start_build_images(
                         target, campaign_config,
                         image_project=options.image_project,
-                        image_project_tag=options.image_project_tag)
+                        image_project_tag=options.image_project_tag,
+                        should_stop=stop_checker(state, scope=STOP_RUNS))
                     for build in builds:
                         self._await_build_image(build.build_id, state, campaign_root)
                     if builds:
                         options.images = self._resolve_built_images(
                             target, campaign_config,
                             image_project=options.image_project,
-                            image_project_tag=options.image_project_tag)
+                            image_project_tag=options.image_project_tag,
+                            should_stop=stop_checker(state, scope=STOP_RUNS))
                 # Re-record the launch, now that the symbolic image refs have become
                 # concrete ones. Written here rather than merged in later because this is
                 # the last moment before the campaign starts spending compute, and the
@@ -2500,6 +2533,9 @@ class LocalTransport(RobovastInterface):
                 self._record_launch(campaign_id, results_dir, request,
                                     images=options.images)
                 state.set_phase(Phase.STARTING)
+                # The last boundary before the lane's own pre-flight -- a project push, a
+                # registry read, the object-store tunnel -- none of which reads the flag.
+                state.raise_if_stopped("stopped before the campaign's runs began")
                 with self._campaign_context(campaign_id, target,
                                             should_stop=lambda: state.stop_requested):
                     backend = self._build_backend(state)
@@ -2523,25 +2559,22 @@ class LocalTransport(RobovastInterface):
                             created_by=request.created_by, origin=target.origin)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
-                # phase "stopped". Not a failure — no error, no traceback. Persist the
-                # outcome so "stopped" survives a service restart.
-                logger.info("Campaign %s stopped by request", campaign_id)
-                self._record_campaign_stopped(campaign_id, results_dir, state, backend)
-                # The batches that DID finish are complete on disk, so their analysis is
-                # still owed. `controller._finish_campaign` cannot run it on this path --
-                # on Ctrl+C the storage tunnel dies with the controller's process group --
-                # but the service can, and `_record_campaign_stopped` above draws exactly
-                # that line ("succeeds for a Stop-button stop; on Ctrl+C the tunnel is
-                # already gone"). So it runs here, ending back at `stopped`: how the
-                # campaign ended is not this step's to restate.
-                #
-                # Skipped while shutting down, for that same tunnel reason, and skipped
-                # for a campaign that asked for no postprocessing.
-                if request.postprocess and not self._shutting_down:
-                    self._postprocess(campaign_id, results_dir, state, entry,
-                                      ends_at=Phase.STOPPED)
+                # phase "stopped". Not a failure — no error, no traceback.
+                _record_stop()
                 return
             except Exception as e:  # noqa: BLE001 - surfaced via status
+                if state.stop_requested and not self._shutting_down:
+                    # A stop whose first visible effect was something else failing: a
+                    # composition worker killed mid-line, an auxiliary container removed
+                    # under the command it was running, a lane pre-flight whose connection
+                    # went with them. The exception describes the consequence and the flag
+                    # describes the cause, and filing this as a failure would send whoever
+                    # reads it after a bug in a step that was working. The same rule
+                    # ``CampaignController.run`` applies to the loop's own exceptions.
+                    logger.info("Campaign %s stopped by request (surfaced as %s)",
+                                campaign_id, e)
+                    _record_stop()
+                    return
                 # Not every failed campaign is a bug. A typo'd --config filter, a
                 # missing input file, an image build pip could not resolve: the message
                 # is self-contained and actionable and the stack names nothing it does
@@ -2617,7 +2650,7 @@ class LocalTransport(RobovastInterface):
         return store
 
     def _build_specs_for(self, project, campaign_config, image_project=None,
-                         image_project_tag=None):
+                         image_project_tag=None, should_stop=None):
         """Return ({container name: BuildSpec}, project_dir) for a project.
 
         A campaign may build several images — a system under test, and a scenario or
@@ -2636,9 +2669,11 @@ class LocalTransport(RobovastInterface):
         # validated fine and then failed at start_campaign with "Unknown
         # robovast.simulators plugin", which reads as a broken .vast rather than a
         # service that had not installed what the .vast asked for.
+        # *should_stop* because this is a pip install: minutes on a campaign whose
+        # plugins are not cached, and the first thing a stop requested at launch meets.
         ensure_workspace_plugins(str(project_dir),
                                  getattr(campaign_config, 'plugins', None),
-                                 position="append")
+                                 position="append", should_stop=should_stop)
         # base_dir also lets a backend named as a `<file>.py:<Class>` ref next to the
         # .vast resolve here -- the documented escape hatch, which silently did not work
         # on this path because nothing passed the directory it resolves against.
@@ -2650,26 +2685,29 @@ class LocalTransport(RobovastInterface):
         return specs, project_dir
 
     def _start_build_images(self, project, campaign_config, image_project=None,
-                            image_project_tag=None) -> list:
+                            image_project_tag=None, should_stop=None) -> list:
         """Submit (or join) each container's image build; return their refs.
 
         Empty when nothing needs building. Returns as soon as each build has a
         *handle* — it does not wait; :meth:`_await_build_image` does that, on the
         campaign's own worker thread. Overridden by :class:`ClusterService` for the
         in-cluster BuildKit Job.
+
+        *should_stop* reaches the plugin install inside :meth:`_build_specs_for`, which is
+        the long step here and the one a stop has to be able to end.
         """
         specs, project_dir = self._build_specs_for(
             project, campaign_config, image_project=image_project,
-            image_project_tag=image_project_tag)
+            image_project_tag=image_project_tag, should_stop=should_stop)
         return [self._images.start(spec, project_dir)
                 for spec in specs.values()]
 
     def _resolve_built_images(self, project, campaign_config, image_project=None,
-                              image_project_tag=None) -> dict:
+                              image_project_tag=None, should_stop=None) -> dict:
         """Concrete image refs to pin once the builds are done, by container name."""
         specs, project_dir = self._build_specs_for(
             project, campaign_config, image_project=image_project,
-            image_project_tag=image_project_tag)
+            image_project_tag=image_project_tag, should_stop=should_stop)
         return {name: self._images.ref_for(spec, project_dir).ref
                 for name, spec in specs.items()}
 

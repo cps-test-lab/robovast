@@ -12,20 +12,27 @@ import types
 
 from robovast.execution import controller
 from robovast.execution.backends import RunOptions
-from robovast.execution.control_server import Phase
+from robovast.execution.control_server import ControllerState, Phase
 
 
 def _state(stop_requested, phase=Phase.RUNNING):
-    """A control-channel double whose phase actually moves.
+    """The real control channel, stopped or not, at *phase*.
 
-    ``_finish_campaign`` now *ends* the campaign as well as finishing its work, so a
-    double that cannot record a phase change would pass while the thing under test
-    silently failed to publish one.
+    The thing itself rather than a double: what is under test here is how the campaign
+    reads its own stop -- through ``stop_requested``, ``raise_if_stopped`` and the phase
+    it publishes -- and a stand-in for that is a second implementation of the contract,
+    which passes while the one that ships does not.
     """
-    st = types.SimpleNamespace(stop_requested=stop_requested, phase=phase)
-    st.snapshot = lambda: types.SimpleNamespace(phase=st.phase, stage=None)
-    st.set_phase = lambda p, **kw: setattr(st, "phase", p)
+    st = ControllerState()
+    if stop_requested:
+        st.request_stop()
+    st.set_phase(phase)
     return st
+
+
+def _phase(state):
+    """The phase *state* publishes, which is what a waiter and the record read."""
+    return state.snapshot().phase
 
 
 def test_finish_campaign_skips_work_when_stopped(monkeypatch):
@@ -42,7 +49,7 @@ def test_finish_campaign_skips_work_when_stopped(monkeypatch):
     # ...but the campaign is still ended. Skipping the work is not the same as leaving
     # the campaign non-terminal: a stop that never published one would hang every
     # waiter until its timeout and look identical to a campaign still running.
-    assert state.phase == Phase.FINISHED
+    assert _phase(state) == Phase.FINISHED
 
 
 def test_finish_campaign_runs_normally_when_not_stopped(monkeypatch):
@@ -56,7 +63,7 @@ def test_finish_campaign_runs_normally_when_not_stopped(monkeypatch):
     controller._finish_campaign(object(), "/root", "camp-1", state, None)
 
     assert calls == ["postprocess", "finalize"]  # postprocess before finalize
-    assert state.phase == Phase.FINISHED
+    assert _phase(state) == Phase.FINISHED
 
 
 def test_finish_campaign_skips_postprocess_but_finalizes_on_failure(monkeypatch):
@@ -75,7 +82,7 @@ def test_finish_campaign_skips_postprocess_but_finalizes_on_failure(monkeypatch)
     assert calls == ["finalize"]  # postprocessing skipped, finalize still runs
     # FAILED is already terminal, so ending the campaign must not overwrite it with
     # FINISHED — that would paint a failed campaign green.
-    assert state.phase == Phase.FAILED
+    assert _phase(state) == Phase.FAILED
 
 
 def test_finish_campaign_runs_when_no_state(monkeypatch):
@@ -117,16 +124,17 @@ def test_a_failed_campaign_that_also_uploads_still_skips_postprocessing(monkeypa
                                 RunOptions(upload_to_share=True))
 
     assert calls == ["share", "finalize"]  # the upload happened; postprocessing did not
-    assert state.phase == Phase.FAILED     # and the campaign still says it failed
+    assert _phase(state) == Phase.FAILED     # and the campaign still says it failed
 
 
 def test_a_stop_during_composition_ends_the_campaign(monkeypatch, tmp_path):
-    """Composition has no stop check of its own, and the batch loop is the next reader.
+    """The boundary after composition, for a sweep composed in this process.
 
-    Composing can take minutes -- a variation searching for a path, a helper image being
-    pulled -- and without this the stop was answered only after the whole sweep had been
-    composed, submitted a batch and released it again, which the log then reported as a
-    batch that produced no results.
+    Composing takes minutes -- a variation searching for a path, a helper image being
+    pulled -- and a campaign whose plugins compose in a worker is ended inside it. One
+    composed here reaches this boundary instead, and without it the batch would be
+    submitted and released again, which the log then reports as a batch that produced no
+    results: a failure's wording for an operator's own request.
     """
     import pytest
 

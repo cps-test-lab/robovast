@@ -36,7 +36,8 @@ def _svc(tmp_path):
     return transport
 
 
-def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=False):
+def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=False,
+            raises=None, stop_while_staging=False):
     """Run a campaign whose loop raises ``CampaignStopped``, through the real worker.
 
     Driven end to end rather than restated: a test that re-implements the branch asserts
@@ -59,6 +60,12 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
         content="scenario pilot:\n"))
 
     def run(*a, **k):
+        if raises is not None:
+            # A stop whose first visible effect is something else failing: the campaign's
+            # own container or worker was killed under the step it was in, and the
+            # exception describes that consequence rather than the stop.
+            k["state"].request_stop(STOP_RUNS)
+            raise raises
         if request_stop:
             # A stop seen at a batch boundary: the loop ends without raising, leaving only
             # the flag behind -- which is exactly what makes this case easy to miss.
@@ -70,8 +77,17 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
             raise CampaignStopped("stopped by request")
 
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign", run)
-    monkeypatch.setattr(LocalTransport, "_build_specs_for",
-                        lambda self, *a, **k: ({}, None))
+
+    def _specs(self, *a, **k):
+        if stop_while_staging:
+            # A stop that arrives before the campaign has any runs. The driver reads it at
+            # the next boundary and raises there itself, so nothing else has published a
+            # phase by the time the outcome is written.
+            for entry in svc._campaigns.values():
+                entry.state.request_stop(STOP_RUNS)
+        return {}, None
+
+    monkeypatch.setattr(LocalTransport, "_build_specs_for", _specs)
     monkeypatch.setattr(LocalTransport, "_build_backend", lambda self, state: None)
 
     done = []
@@ -229,3 +245,34 @@ def test_postprocess_defaults_to_finished(svc, tmp_path, monkeypatch):
     svc._postprocess("c1", str(tmp_path), state, None)
 
     assert state.phase == Phase.FINISHED
+
+
+def test_a_stop_that_surfaces_as_a_failure_is_still_a_stop(svc, monkeypatch):
+    """The cause is the flag, not the exception.
+
+    A stop kills what the campaign was in the middle of -- the composition worker, an
+    auxiliary container, the connection they were using -- and whichever of those notices
+    first raises its own error. Read as a failure, that files the operator's own request
+    under faults, hides the analysis the finished batches are owed behind a failed
+    campaign, and sends whoever reads it after a bug in a step that was working.
+    """
+    done, status = _launch(svc, monkeypatch, stopped=False,
+                           raises=RuntimeError("worker exited with -15"))
+
+    assert status.phase == Phase.STOPPED
+    assert not status.error, "a stop must not be recorded as the campaign's failure"
+    assert done == [Phase.STOPPED]
+
+
+def test_a_campaign_stopped_before_it_ran_still_ends_stopped(svc, monkeypatch):
+    """The driver raises this one itself, so nothing else has published a phase.
+
+    A stop asked for while a campaign is staging, installing its plugins or waiting for
+    its image is answered where it lands -- and the durable outcome is written from the
+    phase, so a campaign left saying ``starting`` would reconstruct after a restart as one
+    that never ended.
+    """
+    done, status = _launch(svc, monkeypatch, stopped=False, stop_while_staging=True)
+
+    assert status.phase == Phase.STOPPED
+    assert done == [Phase.STOPPED]

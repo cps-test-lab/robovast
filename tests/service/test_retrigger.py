@@ -337,7 +337,7 @@ def test_force_launches_past_a_blocking_axis(svc, tmp_path, monkeypatch,
     """The argument is honoured rather than advisory: an axis the caller has decided they
     understand is theirs to override, and it is the only way past."""
     _source_campaign(tmp_path / "results", execution=BUILT)
-    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c: ({}, None))
+    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
     monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: None)
@@ -354,7 +354,7 @@ def test_a_runnable_campaign_is_not_gated(svc, tmp_path, monkeypatch):
     before a field existed is the case the whole pre-flight exists to rescue, so it must
     still launch."""
     _source_campaign(tmp_path / "results", execution=BUILT)
-    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c: ({}, None))
+    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
     monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: None)
@@ -374,7 +374,7 @@ def test_the_staged_tree_is_released_when_the_campaign_ends(svc, tmp_path, monke
     _source_campaign(tmp_path / "results")
     done = threading.Event()
     monkeypatch.setattr(LocalTransport, "_build_specs_for",
-                        lambda self, t, c: ({}, None))
+                        lambda self, t, c, **kw: ({}, None))
     monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: done.set())
@@ -448,9 +448,9 @@ def test_a_pinned_launch_skips_the_build_and_uses_the_recorded_images(svc, tmp_p
         {"scenario": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}))
     started, used = [], {}
     monkeypatch.setattr(LocalTransport, "_start_build_images",
-                        lambda self, t, c: started.append(1) or [])
+                        lambda self, t, c, **kw: started.append(1) or [])
     monkeypatch.setattr(LocalTransport, "_build_specs_for",
-                        lambda self, t, c: ({}, None))
+                        lambda self, t, c, **kw: ({}, None))
     monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: used.update(k["options"].images or {}))
