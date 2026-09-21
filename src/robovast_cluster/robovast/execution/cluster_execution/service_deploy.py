@@ -1181,7 +1181,9 @@ def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
 
 #: Secret + key holding the GitHub token that lets the service install a
 #: private-repo (``git+https``) variation plugin declared in a ``.vast``'s
-#: ``plugins:``. Sourced from the host env at setup; never reaches a controller pod.
+#: ``plugins:``. Sourced from the host env at setup. It reaches the service pod and the
+#: host container of a postprocessing Job, which re-installs those plugins; never a trial's
+#: controller pod, and never a container running the campaign's own image.
 #: **Mounted read-only as a file** (not an env var) so it is not inherited by any
 #: child process/command — the path must match ``config_plugins.GIT_TOKEN_FILE``.
 GIT_SECRET_NAME = "robovast-git-credentials"
