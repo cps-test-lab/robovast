@@ -4,10 +4,10 @@
 
 The record builder holds every configuration to the campaign's planned run count, because
 in a campaign that ran to the end a missing run directory is lost data. A campaign that was
-stopped, failed or crashed holds fewer runs than it planned by construction, and it is only
-ever postprocessed by a re-run -- after its outcome record already says how it ended. The
-record then says that too, and how many runs each configuration has, instead of refusing
-to exist while the derived data of the runs that did finish is complete.
+stopped, failed or crashed holds fewer runs than it planned by construction. Its outcome
+record says how it ended before it is postprocessed -- the service writes ``stopped`` and
+then postprocesses the batches that finished -- so the record says that too, instead of
+refusing to exist while the derived data of the runs that did finish is complete.
 """
 
 import pytest
@@ -69,7 +69,7 @@ def test_the_record_says_how_the_campaign_ended_and_what_it_holds(tmp_path, phas
     assert metadata["execution"]["ended_early"] == phase
     assert metadata["execution"]["runs"] == 3, "the plan is still the plan"
     configs = {c["name"]: c for c in metadata["configurations"]}
-    assert {n: c["runs_present"] for n, c in configs.items()} == {
+    assert {n: len(c["test_results"]) for n, c in configs.items()} == {
         "cfg-a": 3, "cfg-b": 1, "cfg-c": 0}
     assert [r["dir"] for r in configs["cfg-b"]["test_results"]] == ["cfg-b/0"]
 
@@ -105,11 +105,44 @@ def test_a_finished_campaign_carries_no_ended_early_keys(tmp_path):
     metadata = MetadataGenerator(root).generate_metadata()
 
     assert "ended_early" not in metadata["execution"]
-    assert "runs_present" not in metadata["configurations"][0]
 
 
 def test_more_runs_than_planned_is_never_explained_by_ending_early(tmp_path):
     root = _campaign(tmp_path, {"cfg-a": 4}, phase="stopped")
 
     with pytest.raises(ValueError, match="has 4 run directories but expected 3 runs"):
+        MetadataGenerator(root).generate_metadata()
+
+
+@pytest.mark.parametrize("phase", ["stopped", "failed", "crashed"])
+def test_a_campaign_that_ended_before_any_verdict_is_still_described(tmp_path, phase):
+    """An ending cuts runs short before they reach a verdict, so a campaign stopped during
+    its only wave has runs and not one verdict -- the shape the ending leaves, not a broken
+    input."""
+    root = _campaign(tmp_path, {"cfg-a": 2}, phase=phase)
+    for run in (root / "cfg-a").iterdir():
+        (run / "test.xml").unlink()
+
+    metadata = MetadataGenerator(root).generate_metadata()
+
+    assert metadata["execution"]["ended_early"] == phase
+    assert metadata["runs_without_verdict"] == ["cfg-a/0", "cfg-a/1"]
+
+
+def test_a_campaign_that_ran_to_the_end_with_no_verdict_is_still_refused(tmp_path):
+    root = _campaign(tmp_path, {"cfg-a": 3}, phase="finished")
+    for run in (root / "cfg-a").iterdir():
+        (run / "test.xml").unlink()
+
+    with pytest.raises(ValueError, match="no run of this campaign recorded a verdict"):
+        MetadataGenerator(root).generate_metadata()
+
+
+def test_an_outcome_record_that_cannot_be_read_is_an_error_not_silence(tmp_path):
+    """A failed read is not a campaign that said nothing: reporting "no record of ending
+    early" for a record that exists and is broken would name the wrong cause."""
+    root = _campaign(tmp_path, {"cfg-a": 1})
+    (root / "_execution" / "outcome.json").write_text("{not json")
+
+    with pytest.raises(Exception, match="(?i)json"):
         MetadataGenerator(root).generate_metadata()
