@@ -317,17 +317,13 @@ must call the lister to learn the name the getter needs. So an **empty argument 
      - the group catalog / a group's plugins / a name search
    * - ``list_campaigns()`` / ``(running_only=True)``
      - every campaign / the live ones
-   * - ``nav_get_trajectory(…)`` / ``(…, stats_only=True)``
-     - the points / distance, duration, speeds, bounding box
-   * - ``nav_get_map_info(…)`` / ``(…, occupancy=True)``
-     - map metadata / metadata plus cell counts
 
 The same reasoning fixes the vocabulary. One concept has one argument name across the
 surface — ``campaign_id``, ``config_name``, ``run_id``, ``address``, ``limit``,
-``offset``, ``backend`` — and one name has one meaning. Two divergences were real bugs
-waiting: the nav tools took ``campaign``/``config``/``run`` while every other tool took
-the long forms, and ``config_path`` meant a *workspace-relative* path in the execution
-tools but an *absolute filesystem* path in the authoring ones. ``tail`` (last N lines)
+``offset``, ``backend`` — and one name has one meaning. A short spelling beside the long
+one, or ``config_path`` meaning a workspace-relative path on one tool and an absolute
+filesystem path on another, is a bug waiting for the caller that reads both. ``tail``
+(last N lines)
 and ``top`` (top N patterns) stay distinct from ``limit`` because they are different
 operations.
 
@@ -406,13 +402,19 @@ per container over the run, joinable to ``runs.available_cpus`` for the saturati
 and to ``poses`` for what the robot was doing at the time. The two read alike and answer
 different questions, so ``describe_campaign_data`` names the table and says which is which.
 
-**The trajectory tools follow the same rule.** ``nav_get_trajectory``,
-``nav_get_action_feedback`` and ``get_track_deviation`` query the results index — the tables
-postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``.
-Re-parsing ``poses.csv`` off local disk instead answers "campaign not found" for every
-cluster campaign, transfers a whole recording to compute eight numbers, and reads
-``orientation.x/y/z/w`` from a file that records ``orientation.roll/pitch/yaw`` — reporting
-every yaw as ``0.0``, a wrong answer with the shape of a right one.
+**Where a robot went is answered the same way, for any robot type.** A track's length,
+duration and speeds are ``pose_track_view``, over every table that follows the
+:ref:`pose contract <pose-contract>`; an action's feedback is its table. Both are SQL. What is
+not a table is served by a core tool: ``get_track_deviation`` measures a track against its
+configuration's planned path, and ``draw_config`` draws the configuration with a run's track.
+A domain package contributes to these rather than adding read tools of its own (see
+:ref:`the developer guide <add-mcp-plugin>`).
+
+What a configuration's files hold is read from the files themselves.
+``get_config_contribution`` names each one by role and campaign-relative path, so a map's
+resolution, origin, thresholds and size come from ``read_file`` on the map YAML it names --
+the same file the picture is drawn from, rather than a second reader of one format on the
+tool surface.
 
 Maps, videos and the resolved scenario parameters stay file-sourced, because no table
 holds them; they are reached through the ``/results/<campaign_id>/…`` address space, which
@@ -1339,8 +1341,8 @@ Available Tools
 
 All tools are provided by plugins loaded at startup via the
 ``robovast.mcp_plugins`` entry-point group. The table below is generated from the
-**registered** plugins, so it always reflects the tools the server actually
-exposes (installing extras such as ``nav`` adds more).
+**registered** plugins, so it always reflects the tools the server actually exposes: an
+installed distribution contributing one adds its tools to it.
 
 Use MCP Inspector or a compatible client to explore the available tools and
 their input/output schemas.

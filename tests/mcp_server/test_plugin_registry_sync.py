@@ -72,16 +72,16 @@ _FORBIDDEN_NAMES = [
     "list_running_campaigns",  # -> list_campaigns(running_only=True)
     "campaign_data_status",    # nothing transfers before a query, so nothing to probe
     "cleanup_campaign_data",   # -> delete_campaign(): a campaign has one home
-    # Nav: the stats variants became a flag on the tool that reads the same data, and the
-    # data-model blurb moved into the docstrings of the tools it described.
+    # Nav: the plugin's reads are answered by core for any robot type, from the pose
+    # contract and from what a configuration's variations contributed.
     "nav_describe_data_model",
     "nav_get_planned_path", "nav_get_path",
-    "nav_get_trajectory_stats",        # -> nav_get_trajectory(stats_only=True)
-    "nav_get_map_occupancy_stats",     # -> nav_get_map_info(occupancy=True)
-    # Answered by core for any robot, from what a configuration's variations contributed.
+    "nav_get_trajectory", "nav_get_trajectory_stats",   # -> pose_track_view
     "nav_get_obstacles",               # -> get_config_contribution
     "nav_get_path_deviation",          # -> get_track_deviation
     "draw_map",                        # -> draw_config
+    "nav_get_action_feedback",         # -> its table, through query_campaign_data_sql
+    "nav_get_map_info", "nav_get_map_occupancy_stats",  # the map is drawn by draw_config
     "display_simulation_screenshot",   # -> get_simulation_screenshot
     "resource_usage",                  # -> get_resource_usage
     # Built, then deliberately dropped: waiting for a campaign is `vast exec wait`, a
@@ -838,7 +838,8 @@ def test_instructions_a_client_would_cut_stop_the_server():
         compose_instructions([_Verbose()])
 
 
-def test_the_nav_plugin_routes_where_the_robot_went_to_its_tools():
-    pytest.importorskip("robovast_nav")
+def test_the_core_routes_where_the_robot_went_to_what_answers_it():
+    """Read before any tool is chosen, so it names the view and tools for any robot type."""
     instructions = create_server().instructions or ""
-    assert "`nav_get_trajectory`" in instructions
+    for name in ("pose_track_view", "`get_track_deviation`", "`draw_config`"):
+        assert name in instructions

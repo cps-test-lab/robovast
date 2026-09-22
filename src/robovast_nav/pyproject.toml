@@ -19,7 +19,7 @@ exclude = ["web"]
 python = ">=3.12,<3.14"
 robovast = "^2.0.0"
 scipy = "^1.11"
-# Imported by mcp_plugin (map rasters) and the notebook map visualizer. Declared here
+# Imported by the map visualizer (the map2d panel's plot, the notebooks). Declared here
 # because they are this package's imports, rather than left to robovast to carry.
 matplotlib = "^3.10"
 numpy = "^1.26"
@@ -53,9 +53,6 @@ nav2_bt_tree = "robovast_nav.postprocessing:Nav2BtTree"
 
 [tool.poetry.plugins."robovast.health_checks"]
 nav2_control_loop_rate = "robovast_nav.health_checks:ControlLoopRate"
-
-[tool.poetry.plugins."robovast.mcp_plugins"]
-nav = "robovast_nav.mcp_plugin:NavMCPPlugin"
 
 # The run view's costmap panel as an inset on a rendered video: `roqsim render --overlay costmap`.
 # A name in roqsim's documented entry-point group, nothing imported from it.

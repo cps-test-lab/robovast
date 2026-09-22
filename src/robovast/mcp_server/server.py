@@ -326,7 +326,9 @@ The loop:
    then the sweep. Always pass `description`.
 5. **Wait for it** — background `vast campaign wait <campaign_id>` from its
    `next_step`; it exits once postprocessing is done.
-6. `describe_campaign_data`, then `query_campaign_data_sql`.
+6. `describe_campaign_data`, then `query_campaign_data_sql`. Where a robot went:
+   `pose_track_view` (every recorded pose), `get_track_deviation` from its planned
+   path, `draw_config` for the picture.
 
 Images: `build_experiment_image` extends a container image with packages;
 `exec_in_container` runs a command or one config's scenario in an image, to test it

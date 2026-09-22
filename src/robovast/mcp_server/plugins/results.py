@@ -563,7 +563,8 @@ def _drawn_track(campaign_id: str, config_name: str, run_id: int, source: str,
                     for t in described.get("tables", []) if t.get("table") == source), None)
     if not columns or "position.x" not in columns:
         raise ValueError(f"{source!r} is not a pose table of {campaign_id!r}")
-    clock = "stamp" if "stamp" in columns else "timestamp"
+    from robovast.results_processing.campaign_ingest import pose_clock  # noqa: PLC0415
+    clock = pose_clock(columns)
     z = 'CAST("position.z" AS double precision)' if "position.z" in columns else "0.0"
     def lit(value):
         return "'" + str(value).replace("'", "''") + "'"
