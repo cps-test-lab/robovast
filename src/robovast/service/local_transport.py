@@ -54,7 +54,7 @@ from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
 from robovast.common.host_display import require_host_display
-from robovast.common.campaign_data import read_campaign_finished_at
+from robovast.common.campaign_data import campaign_has_runs, read_campaign_finished_at
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
@@ -2498,8 +2498,11 @@ class LocalTransport(RobovastInterface):
                 for a Stop-button stop; on Ctrl+C the tunnel is already gone"). It ends
                 back at ``stopped``: how the campaign ended is not this step's to restate.
 
-                Skipped while shutting down, for that same tunnel reason, and skipped for a
-                campaign that asked for no postprocessing.
+                Skipped while shutting down, for that same tunnel reason; skipped for a
+                campaign that asked for no postprocessing; and skipped for one that was
+                stopped before any run existed, which has nothing to derive -- on the
+                cluster lane the pass is a Job of its own, a pod scheduled to read an
+                empty campaign.
                 """
                 logger.info("Campaign %s stopped by request", campaign_id)
                 # Here rather than only in the controller: a stop that lands before the
@@ -2509,9 +2512,14 @@ class LocalTransport(RobovastInterface):
                 # and reconstruct after a restart as something that never ended.
                 state.set_phase(Phase.STOPPED)
                 self._record_campaign_stopped(campaign_id, results_dir, state, backend)
-                if request.postprocess and not self._shutting_down:
-                    self._postprocess(campaign_id, results_dir, state, entry,
-                                      ends_at=Phase.STOPPED)
+                if not request.postprocess or self._shutting_down:
+                    return
+                if not campaign_has_runs(Path(results_dir) / campaign_id):
+                    logger.info("Campaign %s was stopped before any run; there is nothing "
+                                "to postprocess", campaign_id)
+                    return
+                self._postprocess(campaign_id, results_dir, state, entry,
+                                  ends_at=Phase.STOPPED)
 
             try:
                 # How the campaign was ASKED FOR, recorded next to it. Here rather than in the

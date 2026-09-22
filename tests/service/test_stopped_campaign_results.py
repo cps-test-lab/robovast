@@ -14,6 +14,7 @@ a few batches is a normal way to end one; what it measured has to stay queryable
 # pylint: disable=protected-access  # the worker's stopped path cannot be staged publicly
 
 import types
+from pathlib import Path
 
 import pytest
 import yaml
@@ -37,11 +38,14 @@ def _svc(tmp_path):
 
 
 def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=False,
-            raises=None, stop_while_staging=False):
+            raises=None, stop_while_staging=False, ran=True):
     """Run a campaign whose loop raises ``CampaignStopped``, through the real worker.
 
     Driven end to end rather than restated: a test that re-implements the branch asserts
     its own copy, and keeps passing while the path it stands for regresses.
+
+    *ran* leaves a run directory behind, as a batch that got as far as one does: what a
+    stopped campaign is owed analysis for is what it has on disk.
 
     Returns ``(ends_at_of_each_postprocess, final_status)``.
     """
@@ -60,6 +64,8 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
         content="scenario pilot:\n"))
 
     def run(*a, **k):
+        if ran:
+            (Path(a[2]) / k["campaign_id"] / "config1" / "0").mkdir(parents=True)
         if raises is not None:
             # A stop whose first visible effect is something else failing: the campaign's
             # own container or worker was killed under the step it was in, and the
@@ -275,4 +281,18 @@ def test_a_campaign_stopped_before_it_ran_still_ends_stopped(svc, monkeypatch):
     done, status = _launch(svc, monkeypatch, stopped=False, stop_while_staging=True)
 
     assert status.phase == Phase.STOPPED
-    assert done == [Phase.STOPPED]
+    assert done == [], "nothing ran, so there is nothing to postprocess"
+
+
+def test_a_campaign_stopped_before_any_run_gets_no_postprocessing(svc, monkeypatch):
+    """The batch began but the stop landed before any run existed -- jobs still queued.
+
+    The owed pass reads run directories and nothing else, so it would derive nothing; on the
+    cluster lane it is a Job of its own, a pod scheduled to read an empty campaign. The
+    campaign still ends ``stopped`` and says so.
+    """
+    done, status = _launch(svc, monkeypatch, ran=False)
+
+    assert status.phase == Phase.STOPPED
+    assert done == []
+    assert not status.postprocessing_error, "skipping a pass with nothing to read is not a failure"

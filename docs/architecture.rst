@@ -137,7 +137,8 @@ Which work a stop lands on, and what it leaves:
      - the boundary between two steps; the composition worker's process group, and the
        auxiliary container a variation is waiting on -- removed locally, and in-cluster
        the exec is given up and the span's pod goes with it
-     - ``stopped``, with no results: the campaign was ended before its first run
+     - ``stopped``, with no results and no postprocessing pass: the campaign was
+       ended before its first run, so there is nothing for one to read
    * - ``plugin install``
      - runs
      - pip's process group is terminated
@@ -151,9 +152,9 @@ Which work a stop lands on, and what it leaves:
      - runs
      - the lane's teardown (the scenario container, or this campaign's Jobs), which the
        batch loop then sees
-     - ``stopped``, plus the analysis the batches that finished are owed — except on a
-       local batch-mode campaign, where the loop's own account is that the batch ended,
-       and the campaign reads ``finished``
+     - ``stopped``, plus the analysis the batches that finished are owed — none when no
+       run existed yet — except on a local batch-mode campaign, where the loop's own
+       account is that the batch ended, and the campaign reads ``finished``
    * - ``finishing``, ``importing``, ``postprocessing``
      - postprocessing
      - the pipeline between steps; the conversion's process group, or its Jobs
