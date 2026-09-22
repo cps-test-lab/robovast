@@ -493,6 +493,8 @@ _PARAMETER_VOCABULARY = {
     "running_only", "preflight_only",
     "stats_only", "failed_only", "allow_opaque_image", "upload_to_share", "view",
     "focus", "layers", "figsize", "title", "show_legend", "wait", "follow",
+    # Which pair of world axes a picture is drawn on (xy, xz, yz).
+    "projection",
     "skip", "data_only", "share_archive", "rebuild_store",
 }
 
