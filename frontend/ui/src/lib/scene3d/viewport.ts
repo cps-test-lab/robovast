@@ -29,13 +29,13 @@ import {
   Sphere,
   Vector2,
   Vector3,
+  Object3D,
   WebGLRenderer,
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { CANVAS, GRID, GRID_CENTER } from '@/colors'
 import { dollyToCursor } from './cursorDolly'
 import { MIN_PIVOT_M, frameObject, measureDepth, pickObject, retargetPivot } from './pivot'
-import { disposeSceneGraph } from './sceneLoader'
 
 /** The descriptor's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
 export interface SceneViewSpec {
@@ -107,6 +107,17 @@ function cameraFromView(view: SceneViewSpec): { position: Vector3; target: Vecto
   // Both are Z-up world points; the scene content lives inside the up-rotated group, so bring the
   // camera into the same (three, Y-up) frame.
   return { position: position.applyMatrix4(UP_MATRIX), target: target.applyMatrix4(UP_MATRIX) }
+}
+
+/** Take *root* out of *group*, leaving it loadable into another viewport.
+ *
+ *  The viewport shows a scene root and never owns one: a model outlives the viewport that
+ *  displayed it (`sceneModelCache` parks one for the next mount), and freeing it here would
+ *  hand the next mount an emptied graph -- a world that renders as nothing rather than as an
+ *  error. Whoever loaded the model frees it.
+ */
+export function detachSceneRoot(group: Object3D, root: Object3D | null): void {
+  if (root) group.remove(root)
 }
 
 export class SceneViewport {
@@ -286,9 +297,10 @@ export class SceneViewport {
     if (raw >= 1) this.focus = null
   }
 
-  /** Swap in the loader's scene root (replacing any previous one). */
+  /** Show the loader's scene root, in place of any previous one (see
+   *  {@link detachSceneRoot} for what happens to that one). */
   setSceneRoot(root: Group): void {
-    if (this.root) this.zUpGroup.remove(this.root)
+    detachSceneRoot(this.zUpGroup, this.root)
     this.root = root
     this.zUpGroup.add(root)
     // One traversal per scene swap, to size the far plane against the world rather than a constant.
@@ -373,8 +385,7 @@ export class SceneViewport {
     })
     this.renderer.domElement.removeEventListener('dblclick', this.onDoubleClick)
     this.controls.dispose()
-    // Free the scene root's GPU resources, through the same helper a scene *swap* uses.
-    if (this.root) disposeSceneGraph(this.root)
+    detachSceneRoot(this.zUpGroup, this.root)
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }
