@@ -35,6 +35,7 @@ from fastmcp import FastMCP
 from mcp.types import Icon
 
 from . import tool_stats
+from .lacks import arguments_it_lacks, why_it_takes_none
 from .registry import load_plugins, registered_tools
 
 logger = logging.getLogger(__name__)
@@ -174,12 +175,22 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
 #: Address-shaped tools take one string rather than the ids a caller is holding, and a
 #: caller that has just used a tool taking ``workspace_id``/``campaign_id`` reaches for
 #: those. Naming the form costs nothing until a call has already failed.
+#: What pydantic appends to each error for a human with a browser: the error type with the
+#: rejected input echoed back, and a documentation link. Noise to a model, paid on every
+#: rejected call.
+_PYDANTIC_DETAIL = re.compile(r" \[type=[^\]]*\]")
+_PYDANTIC_LINK = re.compile(r"\n\s*For further information visit \S+")
+
+#: The argument names pydantic rejects as unexpected, one per error line.
+_UNEXPECTED = re.compile(r"^(\w+)\n\s+Unexpected keyword argument", re.M)
+
 _ADDRESS_HINT = ("`address` is one string: `/sources/<workspace_id>/<path>` for a project "
                  "file, `/results/<campaign_id>/<path>` for a campaign's output")
 
 
 def _argument_help(mcp: FastMCP, tool_name: str, message: str) -> str:
-    """*message*, plus what this tool would have accepted.
+    """*message*, without pydantic's detail for humans, plus what this tool would have
+    accepted.
 
     A rejected call is answered by pydantic, which knows the argument that was wrong and
     not the ones that would have been right — so a caller is told ``address`` is missing
@@ -189,14 +200,24 @@ def _argument_help(mcp: FastMCP, tool_name: str, message: str) -> str:
     Written here rather than as parameters on each tool: alternatives would cost schema on
     every request forever to answer a question that only arises once a call has failed.
     """
+    message = _PYDANTIC_LINK.sub("", _PYDANTIC_DETAIL.sub("", message))
     try:
         tool = registered_tools(mcp).get(tool_name)
         accepted = sorted((getattr(tool, "parameters", None) or {}).get("properties", {}))
     except Exception:  # noqa: BLE001 - help is help; it must never replace the real error
         return message
-    if not accepted:
+    if tool is None:
         return message
+    if not accepted:
+        why = why_it_takes_none(tool)
+        return f"{message}\n{tool_name} takes no arguments" + (f": {why}." if why else ".")
     extra = f"{tool_name} accepts: {', '.join(accepted)}."
+    # An argument the tool lacks on purpose: the reason, which the reply would have given
+    # had the call not been rejected before it ran.
+    reasons = arguments_it_lacks(tool)
+    for name in _UNEXPECTED.findall(message):
+        if name in reasons:
+            extra += f" There is no `{name}`: {reasons[name]}."
     # Only when `address` is the argument that was missing. Matched on the error's own
     # line for it rather than on the word anywhere in the text, which any tool with
     # "address" in its *name* would have satisfied.

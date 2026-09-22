@@ -41,6 +41,7 @@ import re
 
 from robovast.common import log_summary
 from robovast.mcp_server import data_access, log_view, service_access
+from robovast.mcp_server.lacks import lacks
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,9 @@ def _as_line(row: dict) -> str:
 
 # A plain ``def``: every step below queries the service or the index, and FastMCP runs a
 # sync tool on a worker thread -- an ``async def`` with nothing to await runs on the loop.
+@lacks(tail="narrow with limit, or page the run_log table with query_campaign_data_sql",
+        top="summarize=True gives the most frequent line patterns",
+        offset="narrow with limit, or page the run_log table with query_campaign_data_sql")
 def search_run_logs(
     campaign_id: str,
     grep: str = "",
@@ -310,11 +314,6 @@ def search_run_logs(
     ``get_job_log`` (this needs postprocessing); for build/controller phases,
     ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` /
     ``hide_shutdown`` mean the same in all of them, defaults included.
-
-    It takes no ``tail``, ``top`` or ``offset``, which the log tools above do: this searches
-    across runs rather than paging one, and each argument costs schema on every request
-    whether or not it is used. Use ``query_campaign_data_sql`` for the rare question that
-    needs to page these columns directly.
 
     Args:
         campaign_id: Campaign id or path; a regex over ids when *campaign_regex*.
