@@ -1464,7 +1464,13 @@ class McpCall(BaseModel):
     ok: bool
     args: str = ""
     answer: str = ""
+    #: Who authenticated: the resolved principal's name and the source it authenticated
+    #: by. Empty where the transport resolves no principal.
     actor: str = ""
+    #: ``"<client>/<session>"`` -- which client, and which of its connections. What tells
+    #: two agents sharing one token apart, which :attr:`actor` cannot. Empty where the
+    #: transport names neither.
+    session: str = ""
 
 
 class McpToolStats(BaseModel):
@@ -1484,11 +1490,24 @@ class McpToolStats(BaseModel):
 
 
 class McpCalls(BaseModel):
-    """A page of the call log, newest first."""
+    """A page of the call log, newest first.
+
+    The page reports its own bounds, for the reason :class:`McpToolStats` reports the
+    retained window: a reader given rows and no total cannot tell a record that ended
+    from a page that did, and will read a busy afternoon as the whole month the ranking
+    beside it summarises. :attr:`offset` walks the rest.
+    """
 
     calls: list[McpCall] = Field(default_factory=list)
     status: str = "ok"
     detail: str = ""
+    #: How many rows matched, ignoring the page bound.
+    total: int = 0
+    #: True when rows matched beyond this page -- ask again with a larger :attr:`offset`.
+    truncated: bool = False
+    #: The bounds this page was read with, as applied rather than as asked for.
+    limit: int = 0
+    offset: int = 0
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
