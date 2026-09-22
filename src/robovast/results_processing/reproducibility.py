@@ -39,6 +39,7 @@ a stranger cannot fetch would refuse most real research; refusing only the ones 
 """
 
 import logging
+import re
 from pathlib import Path
 
 from robovast.common.campaign_data import image_is_pullable
@@ -85,8 +86,10 @@ def classify_campaign_inputs(campaign_dir) -> list:
 
     from robovast.common.campaign_data import campaign_image_record  # noqa: PLC0415
 
+    record = campaign_image_record(campaign_dir)
     return [*_classify_robovast(execution),
-            *_classify_images(campaign_image_record(campaign_dir)),
+            *_classify_images(record),
+            *_classify_simulator(record),
             *_classify_plugins(read_plugins_record(campaign_dir)),
             *_classify_providers(read_providers_record(campaign_dir))]
 
@@ -195,6 +198,46 @@ def _recipe_entry(label: str, role):
                   + ("" if kind == PUBLIC else
                      ", by anyone who can reach the sources it names"),
                   recipe={key: role.build_refs.get(key) for key in _RECIPE_KEYS})
+
+
+#: A full git commit, which is what ``build.sh`` resolves a ref to before it builds an image.
+#: Anything shorter is a branch or a tag: it names what the simulator was *then*, and reads as
+#: an identification while naming something that moves.
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _classify_simulator(record) -> list:
+    """Which simulator the campaign ran, from the commit its images were built with.
+
+    The image is what knows this: the build resolves the ref it clones to a commit and writes it
+    into a label, which every image derived from it keeps, and
+    :func:`~robovast.common.campaign_data.campaign_image_record` reads it back. Asking the
+    simulator at run time would answer the same question later and less well.
+
+    Contributes nothing for a campaign whose images name no simulator at all -- a backend that
+    is not roqsim, or an image built before the label -- for the reason
+    :func:`_classify_plugins` gives about inputs that do not exist.
+    """
+    by_role = {name: (role.build_refs or {}).get("roqsim_ref") or ""
+               for name, role in (record.roles if record else {}).items()}
+    named = sorted({ref for ref in by_role.values() if ref})
+    if not named:
+        return []
+    if len(named) > 1:
+        # Every run of a campaign is meant to meet one simulator. Two commits across the images
+        # means the results were not all produced by the same one, which no digest says: the
+        # images differ legitimately for other reasons too.
+        return [_entry("simulator", OPAQUE,
+                       "the campaign's images were built from different roqsim commits, so its "
+                       "runs did not all use the same simulator",
+                       commits={role: ref for role, ref in sorted(by_role.items()) if ref})]
+    commit = named[0]
+    if not _COMMIT_RE.match(commit):
+        return [_entry("simulator", OPAQUE,
+                       f"the images name roqsim as {commit!r}, which is a moving reference "
+                       f"rather than a commit, so it will not name this simulator later",
+                       roqsim_ref=commit)]
+    return [_entry("simulator", PUBLIC, "roqsim at a recorded commit", roqsim_ref=commit)]
 
 
 def _classify_plugins(record) -> list:

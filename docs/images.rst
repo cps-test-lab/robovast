@@ -372,6 +372,13 @@ cluster lane that block used to be empty for every campaign: it read labels with
 inspect``, and the controller pod that writes the file has no docker CLI. It now uses the labels
 the protocol check already read from the registry.
 
+``org.robovast.roqsim-ref`` is also how a campaign says **which simulator it ran**: the build
+resolves the ref it clones to a commit before building, and an image built ``FROM`` the family
+image keeps the label, so the commit reaches ``image_build_refs[<role>].roqsim_ref`` without the
+simulator being asked at run time. The reproducibility manifest classifies it, and reports a
+campaign whose images were built from two different roqsim commits as opaque — its runs did not
+all meet the same simulator, which no image digest says.
+
 **The recipe is only worth what it still names.** A dated archive that has been pruned fails at
 ``apt-get update`` inside a rebuild nobody runs until the year-old campaign someone actually
 needs — so ``make check-recipe`` asks the two questions that can be asked cheaply, and CI asks

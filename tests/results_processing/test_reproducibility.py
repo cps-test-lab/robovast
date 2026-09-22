@@ -332,3 +332,55 @@ def test_a_digest_still_wins_over_a_recipe(tmp_path):
     entry = next(e for e in classify_campaign_inputs(root) if e["input"] == "image[sut]")
     assert entry["class"] == "public"
     assert entry.get("digest") == digest
+
+
+# -- which simulator ran ------------------------------------------------------
+
+
+def _with_refs(refs: dict) -> dict:
+    """``_CLEAN`` whose images were built with the given ``roqsim_ref`` per role."""
+    return {**_CLEAN,
+            "images": {role: "ghcr.io/org/img:1" for role in refs},
+            "image_revisions": {role: "ghcr.io/org/img@sha256:" + "b" * 64 for role in refs},
+            "image_build_refs": {role: {"roqsim_ref": ref} for role, ref in refs.items()}}
+
+
+def test_the_simulator_is_identified_by_the_commit_its_image_was_built_with(tmp_path):
+    """The build resolves the ref it clones to a commit and labels the image with it, so the
+    campaign can say which simulator produced its results without asking the simulator."""
+    manifest = reproducibility_manifest(_campaign(
+        tmp_path, _with_refs({"simulation": "e" * 40}),
+        plugins={}, providers={}))
+
+    entry = _by_input(manifest)["simulator"]
+    assert entry["class"] == PUBLIC
+    assert entry["roqsim_ref"] == "e" * 40
+    assert manifest["publishable"] is True
+
+
+def test_a_campaign_whose_images_name_two_simulators_is_opaque(tmp_path):
+    """Its runs did not all meet the same simulator, which no image digest says: images differ
+    legitimately for other reasons too."""
+    manifest = reproducibility_manifest(_campaign(
+        tmp_path, _with_refs({"simulation": "e" * 40, "sut": "f" * 40}),
+        plugins={}, providers={}))
+
+    entry = _by_input(manifest)["simulator"]
+    assert entry["class"] == OPAQUE
+    assert entry["commits"] == {"simulation": "e" * 40, "sut": "f" * 40}
+    assert manifest["publishable"] is False
+
+
+def test_a_branch_name_is_not_an_identification(tmp_path):
+    """A ref that moves names what the simulator was then, and reads as an identification."""
+    manifest = reproducibility_manifest(_campaign(
+        tmp_path, _with_refs({"simulation": "main"}), plugins={}, providers={}))
+
+    assert _by_input(manifest)["simulator"]["class"] == OPAQUE
+
+
+def test_a_campaign_with_no_simulator_image_says_nothing_about_one(tmp_path):
+    """A backend that is not roqsim has no simulator commit to record, which is not a gap."""
+    manifest = reproducibility_manifest(_campaign(tmp_path, _CLEAN, plugins={}, providers={}))
+
+    assert "simulator" not in _by_input(manifest)
