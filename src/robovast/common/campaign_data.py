@@ -1788,10 +1788,14 @@ def campaign_has_runs(campaign_dir: Path) -> bool:
     nothing else -- so a campaign with none has nothing for postprocessing to derive,
     however far it got before it ended. ``False`` for a campaign directory that does not
     exist yet, which is where a campaign stopped while it was starting is.
+
+    Only an absent directory answers ``False`` that way: a directory that cannot be read
+    raises, because "no runs" and "unreadable" would otherwise both skip the pass, and the
+    campaign of the second one is missing its derived data with nothing said.
     """
     try:
         config_dirs = list_config_dirs(campaign_dir)
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     return any(list_run_dirs(d) for d in config_dirs)
 

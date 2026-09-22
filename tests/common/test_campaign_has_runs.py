@@ -30,3 +30,23 @@ def test_one_run_directory_is_enough(tmp_path):
     (tmp_path / "cfg-b" / "3").mkdir(parents=True)
 
     assert campaign_has_runs(tmp_path) is True
+
+
+def test_a_campaign_directory_that_cannot_be_read_raises(tmp_path):
+    """"No runs" and "unreadable" both skip postprocessing, so they must not be the same
+    answer: a campaign whose directory cannot be read is missing its derived data, and
+    nothing would say so."""
+    import os
+
+    import pytest
+
+    campaign = tmp_path / "camp"
+    (campaign / "cfg-a" / "0").mkdir(parents=True)
+    campaign.chmod(0o000)
+    try:
+        if os.access(campaign, os.R_OK):  # root reads anything; the guard is untestable
+            pytest.skip("this user can read an unreadable directory")
+        with pytest.raises(PermissionError):
+            campaign_has_runs(campaign)
+    finally:
+        campaign.chmod(0o755)
