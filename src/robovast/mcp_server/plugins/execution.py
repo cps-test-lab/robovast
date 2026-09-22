@@ -35,6 +35,7 @@ from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_po
                                     error_findings, stall_report, stopping_soon_report)
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
+from robovast.mcp_server.lacks import lacks
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
 from robovast.service.interface import Routes
 
@@ -527,6 +528,7 @@ def get_campaign_status(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
+@lacks(job_name="for one job's log use get_job_log")
 def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                      grep: str = "", tail: int = 0, min_severity: str = "",
                      summarize: bool = False, top: int = DEFAULT_TOP,
@@ -1227,6 +1229,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
     return _log_response({"next_offset": chunk.next_offset, "eof": chunk.eof}, view)
 
 
+@lacks(timeout="a command gets a fixed cap, a scenario its execution.timeout")
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
                       keep_alive: bool = False, show_gui: bool = False,
@@ -1307,6 +1310,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     return out
 
 
+@lacks("exec_in_container holds one container at a time, so there is nothing to name")
 def stop_container() -> dict:
     """Stop the held ``exec_in_container`` container. Frees the memory it holds.
 

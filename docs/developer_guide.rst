@@ -1491,6 +1491,21 @@ Then register the class as an entry point in ``pyproject.toml``:
 
 The plugin is picked up automatically the next time the server starts.
 
+A call the tool rejects — an unknown or missing argument — is answered with the arguments
+the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
+declare why with :func:`robovast.mcp_server.lacks.absent`, and the reason is added to that
+answer instead of costing description tokens on every request:
+
+.. code-block:: python
+
+   from robovast.mcp_server.lacks import lacks
+
+   @lacks(timeout="the bound follows from what is run")
+   def my_tool(command: str = "") -> dict: ...
+
+   @lacks("there is only one, and it belongs to the service")
+   def stop_it() -> dict: ...
+
 Where the plugin's tools answer a question an agent would otherwise put to a core tool —
 the nav tools against ``query_campaign_data_sql``, say — give the class an
 ``instructions`` attribute: one short paragraph appended to the server's MCP
