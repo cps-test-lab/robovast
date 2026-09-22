@@ -57,6 +57,7 @@ from matplotlib import patches as mpatches
 
 from robovast.client.file_address import RESULTS, format_address
 from robovast.mcp_server import data_access, service_access
+from robovast.mcp_server.lacks import lacks
 from robovast.results_processing import index_schema
 
 matplotlib.use("Agg")
@@ -373,6 +374,7 @@ def _reporting(fn):
 
 
 @_reporting
+@lacks(run_id="obstacles belong to the configuration, the same in every run")
 def nav_get_obstacles(campaign_id: str, config_name: str) -> dict:
     """What was in the robot's way? A configuration's static obstacles.
 
@@ -676,6 +678,7 @@ def _map_dir_and_yaml(campaign_id: str, config_name: str) -> tuple[tuple, str]:
 
 
 @_reporting
+@lacks(run_id="the map belongs to the configuration, the same in every run")
 def nav_get_map_info(campaign_id: str, config_name: str,
                      occupancy: bool = False) -> dict:
     """Get a navigation configuration's map: metadata, and optionally cell occupancy.

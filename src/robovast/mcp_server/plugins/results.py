@@ -41,6 +41,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.utilities.types import Image
 
 from robovast.mcp_server import data_access, run_artifacts, service_access
+from robovast.mcp_server.lacks import lacks
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +405,7 @@ async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -
     return await anyio.to_thread.run_sync(lambda: data_access.describe(campaign_id))
 
 
+@lacks(offset="write OFFSET in the sql; a capped reply's csv_url has the full result")
 async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
                                   ctx: Context | None = None) -> dict:
     """Run one read-only ``SELECT`` over a campaign's data.

@@ -115,3 +115,120 @@ def test_the_real_surface_answers_a_dialect_mistake():
     with pytest.raises(Exception) as excinfo:
         _call(mcp, "search_run_logs", {"campaign_id": "c", "top": 60})
     assert "search_run_logs accepts:" in str(excinfo.value)
+
+
+# -- an argument a tool lacks on purpose -------------------------------------
+
+
+def test_an_argument_the_tool_lacks_on_purpose_is_answered_with_why():
+    """The reason reaches the caller in the rejection, the one message it is sure to read,
+    and costs nothing in the tool's description."""
+    from robovast.mcp_server.lacks import lacks
+
+    mcp = FastMCP("test")
+
+    @lacks(timeout="the bound follows from what is run")
+    def runs_something(command: str = "") -> dict:
+        return {"ok": command}
+
+    mcp.tool(runs_something)
+    _install_argument_help(mcp)
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "runs_something", {"command": "ls", "timeout": 60})
+
+    message = str(excinfo.value)
+    assert "runs_something accepts: command." in message
+    assert "There is no `timeout`: the bound follows from what is run." in message
+    assert "Unexpected keyword argument" in message, "the real error stays"
+
+
+def test_an_undeclared_unexpected_argument_gets_no_invented_reason():
+    mcp = FastMCP("test")
+
+    @mcp.tool
+    def plain(command: str = "") -> dict:
+        return {"ok": command}
+
+    _install_argument_help(mcp)
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "plain", {"timeout": 60})
+
+    assert "There is no" not in str(excinfo.value)
+
+
+def test_a_tool_with_no_arguments_says_so_and_why():
+    """Nothing to list is still something to say: without it the caller gets pydantic's
+    bare error and scopes the next call the same way."""
+    from robovast.mcp_server.lacks import lacks
+
+    mcp = FastMCP("test")
+
+    @lacks("there is only one")
+    def stop_the_one() -> dict:
+        return {"stopped": True}
+
+    @mcp.tool
+    def stop_anything() -> dict:
+        return {"stopped": True}
+
+    mcp.tool(stop_the_one)
+    _install_argument_help(mcp)
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "stop_the_one", {"workspace_id": "ws-1"})
+    assert "stop_the_one takes no arguments: there is only one." in str(excinfo.value)
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "stop_anything", {"workspace_id": "ws-1"})
+    assert "stop_anything takes no arguments." in str(excinfo.value)
+
+
+def test_the_real_surface_says_why_a_container_run_has_no_timeout():
+    from robovast.mcp_server.server import create_server
+
+    mcp = create_server()
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "exec_in_container", {"command": "true", "timeout": 60})
+    assert "There is no `timeout`:" in str(excinfo.value)
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "search_run_logs", {"campaign_id": "c", "top": 60})
+    assert "There is no `top`: summarize=True" in str(excinfo.value)
+
+    with pytest.raises(Exception) as excinfo:
+        _call(mcp, "stop_container", {"workspace_id": "ws-1"})
+    assert "stop_container takes no arguments: exec_in_container holds one" in str(excinfo.value)
+
+
+def test_every_declaration_names_a_tool_and_an_argument_it_really_lacks():
+    """A declaration outlives its reason the moment the tool gains the argument or is renamed,
+    and then it explains a rejection that no longer happens."""
+    from robovast.mcp_server.lacks import arguments_it_lacks, why_it_takes_none
+    from robovast.mcp_server.registry import registered_tools
+    from robovast.mcp_server.server import create_server
+
+    declaring = 0
+    for name, tool in registered_tools(create_server()).items():
+        lacks, why = arguments_it_lacks(tool), why_it_takes_none(tool)
+        declaring += bool(lacks or why)
+        accepted = set((tool.parameters or {}).get("properties", {}))
+        assert not accepted & set(lacks), f"{name} takes an argument it declares absent"
+        if why:
+            assert not accepted, f"{name} says it takes no arguments but takes {accepted}"
+    assert declaring, "the surface declares at least the container tools"
+
+
+def test_a_rejection_carries_no_detail_meant_for_a_browser():
+    """Pydantic's error type, echoed input and documentation link are noise to a model, and
+    every rejected call would pay for them. The error itself -- which argument, what was
+    wrong -- stays."""
+    with pytest.raises(Exception) as excinfo:
+        _call(_server(), "needs_address", {"address": "/x", "top": 5})
+
+    message = str(excinfo.value)
+    assert "top\n  Unexpected keyword argument" in message
+    assert "errors.pydantic.dev" not in message
+    assert "[type=" not in message and "input_value" not in message

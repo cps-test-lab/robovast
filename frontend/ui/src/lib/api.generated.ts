@@ -2244,9 +2244,8 @@ export interface components {
          * DataDescribe
          * @description Schema of a campaign's tables in the index (+ the ``campaign`` schema).
          *
-         *     Each ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from
-         *     the query helper verbatim — kept as a dict so ``schema`` stays that key across
-         *     every client path).
+         *     Each ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in
+         *     every dump it appears in.
          */
         DataDescribe: {
             /** Campaign Id */
@@ -4434,11 +4433,8 @@ export interface components {
              * @default
              */
             name: string;
-            /**
-             * Read Only
-             * @default false
-             */
-            read_only: boolean;
+            /** Preparing Campaigns */
+            preparing_campaigns: string[];
             /** Running Campaigns */
             running_campaigns: string[];
             /** Workspace Id */
