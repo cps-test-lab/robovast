@@ -324,6 +324,17 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
   one-shot queries is the follow-up that would lift it.
 
+``validate_project``'s world check reads one more thing off the same answer: whether the image's
+own plugins publish every config key the world sets (:mod:`robovast.service.world_keys`). It
+compares two published CLI answers of that image -- the components and config paths of ``roqsim
+scenes describe``, and ``python3 -m roqsim.introspection describe <plugin>`` -- plus
+``roqsim.schema.INJECTED_KEYS``, the set of keys roqsim accepts on any component, printed by the
+image's own interpreter. RoboVAST imports none of it. The catalog answers are cached per resolved
+image identity in :mod:`robovast.service.image_catalog`, the cache the ``image_catalog`` MCP tools
+read too, and all uncached plugins of one world are asked in one exec. Its findings are advice by
+design: a docstring-published key list can be incomplete, so the finding states what the catalog
+shows rather than a verdict the check cannot make.
+
 One function runs every such query --
 :func:`robovast.common.config_generation.describe_world_payload` -- because the two callers
 (the ``sim``-override pre-check, and

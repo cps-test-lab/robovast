@@ -1732,10 +1732,13 @@ class ValidationProblem(BaseModel):
 
     - ``error`` — the campaign is wrong. It makes ``valid`` false.
     - ``advice`` — a checked fact worth saying (a large build context, a container with
-      no memory limit). ``valid`` stays true; the campaign runs.
-    - ``unchecked`` — a check this report covers could not run here, so *nothing* was
-      learned about it either way. It makes ``valid`` false without being a defect in
-      the file, and its message names what would settle it.
+      no memory limit). ``valid`` stays true; the campaign runs. An *advisory* check that
+      could not run says so as advice too: it was never part of the verdict, so silence
+      would be the only wrong answer and ``valid`` has nothing to lose.
+    - ``unchecked`` — one of the checks a caller **asks for** (``check_world``,
+      ``check_scenario``) could not run here, so *nothing* was learned about it either
+      way. It makes ``valid`` false without being a defect in the file, and its message
+      names what would settle it.
     """
 
     stage: str = ""

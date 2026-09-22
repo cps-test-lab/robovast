@@ -46,6 +46,11 @@ class _Exec:
         return self.result
 
 
+def _resolve(_request):
+    """``resolve_image``: the tests below never reach the key check's catalog lookup."""
+    raise AssertionError("no document component here, so nothing should resolve the image")
+
+
 # -- the runner: how a held container is given what a mount would provide ----
 
 
@@ -270,7 +275,7 @@ def _parameters(**execution):
 def test_a_campaign_with_no_simulator_is_not_asked_about_a_world(tmp_path):
     from robovast.service.world_query import world_problems
     called = _Exec()
-    problems = world_problems(called, workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(called, resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path),
                               parameters={"execution": {"containers": {}}})
     assert problems == []
@@ -288,7 +293,7 @@ def test_a_world_that_does_not_compile_is_reported_with_the_simulators_own_messa
         config_generation, "describe_world_payload",
         lambda *a, **k: ({"errors": {"build": "resource not found: 'meshes/shelf.obj'"}},
                          "roqsim:test"))
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert len(problems) == 1
     assert problems[0]["stage"] == "world"
@@ -307,7 +312,7 @@ def test_a_world_that_could_not_be_asked_is_an_advisory_not_a_pass(tmp_path, mon
             "this campaign's world is described by its own built image")
 
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert len(problems) == 1
     assert "was NOT checked" in problems[0]["message"]
@@ -326,7 +331,7 @@ def test_a_deployment_that_cannot_exec_is_not_reported_as_an_image_problem(
         raise ExecPathUnavailable("no command can run in a container on this deployment")
 
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert [p["severity"] for p in problems] == ["unchecked"]
     message = problems[0]["message"]
@@ -341,7 +346,7 @@ def test_a_clean_world_says_nothing_at_all(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config_generation, "describe_world_payload",
                         lambda *a, **k: ({"components": [], "errors": None}, "roqsim:test"))
-    assert world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    assert world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                           vast_dir=str(tmp_path), parameters=_parameters()) == []
 
 
@@ -358,7 +363,7 @@ def test_an_unchecked_world_is_marked_unchecked_not_error(tmp_path, monkeypatch)
         raise config_generation.WorldQueryUnavailable("no container runner is available")
 
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert [p["severity"] for p in problems] == ["unchecked"]
 
@@ -370,7 +375,7 @@ def test_a_world_that_does_not_load_is_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         config_generation, "describe_world_payload",
         lambda *a, **k: ({"errors": {"build": "resource not found"}}, "roqsim:test"))
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert [p["severity"] for p in problems] == ["error"]
 
@@ -386,7 +391,7 @@ def test_the_reason_a_query_could_not_run_names_what_would_settle_it(tmp_path, m
             "roqsim could not describe this world", next_step="check the lane")
 
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert "Next: check the lane" in problems[0]["message"]
 
@@ -405,7 +410,7 @@ def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_lane(tmp_path):
         raise ImageNotBuilt("the image for container 'simulation' is not built.",
                             next_step="build_experiment_image(container='simulation')")
 
-    problems = world_problems(_refuse, workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_refuse, resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert [p["severity"] for p in problems] == ["unchecked"]
     message = problems[0]["message"]
@@ -437,7 +442,7 @@ def test_one_lane_failure_is_reported_once_not_once_per_world(tmp_path, monkeypa
 
     _two_worlds(monkeypatch)
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert len(problems) == 1, "one cause, one problem"
     assert problems[0]["config"] is None, "it is about the campaign, not one cell"
@@ -474,7 +479,7 @@ def test_two_worlds_failing_differently_stay_two_problems(tmp_path, monkeypatch)
 
     _two_worlds(monkeypatch)
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
-    problems = world_problems(_Exec(), workspace_id="ws-1", config_path="a.vast",
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert len(problems) == 2
     assert {p["config"] for p in problems} == {None, "other"}
@@ -498,6 +503,9 @@ class _Transport:
     store = _Store()
 
     def exec_in_container(self, _request):
+        raise AssertionError("the world query is patched out in these tests")
+
+    def resolve_image(self, _request):
         raise AssertionError("the world query is patched out in these tests")
 
 

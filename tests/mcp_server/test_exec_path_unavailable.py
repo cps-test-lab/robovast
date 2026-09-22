@@ -20,6 +20,7 @@ import pytest
 from robovast.common.errors import ExecPathUnavailable
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import image_catalog
+from robovast.service import image_catalog as catalog_cache
 from robovast.service.interface import EXEC_PATH_UNAVAILABLE, ImageResolution, ServiceError
 
 _SAID = "no command can run in a container on this deployment: the connection was never upgraded"
@@ -70,9 +71,9 @@ class _NoExecPath:
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
-    image_catalog._cache.clear()
+    catalog_cache.LIST_CACHE.clear()
     yield
-    image_catalog._cache.clear()
+    catalog_cache.LIST_CACHE.clear()
 
 
 def test_a_catalog_reports_the_deployment_not_the_image(monkeypatch):

@@ -997,7 +997,8 @@ run files, and author the ``.vast`` in the Monaco editor.
 The ``.vast`` JSON Schema
 (from the service) drives completion and inline validation as you type, and the
 service validates the whole project (schema + scenario references + plugin refs)
-after each edit — problems appear in the panel below the editor. **Generate** expands
+after each edit — problems appear in the panel below the editor, and so does advice on a
+valid project (listed under the pass, since it does not take it away). **Generate** expands
 the config and lists the resolved configurations with their parameters, without
 running anything. Variation plugins declared in the ``.vast`` ``plugins:`` list are
 installed server-side automatically, so validation and preview resolve them.

@@ -16,6 +16,7 @@ import pytest
 
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import image_catalog
+from robovast.service import image_catalog as catalog_cache
 from robovast.service.interface import ExecResult, ImageResolution
 
 _ACTIONS_PAYLOAD = {
@@ -81,11 +82,11 @@ class _DescribingClient(_FakeClient):
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """The catalog cache is module-level and process-lifetime -- reset between tests."""
-    image_catalog._cache.clear()
-    image_catalog._detail_cache.clear()
+    catalog_cache.LIST_CACHE.clear()
+    catalog_cache.DETAIL_CACHE.clear()
     yield
-    image_catalog._cache.clear()
-    image_catalog._detail_cache.clear()
+    catalog_cache.LIST_CACHE.clear()
+    catalog_cache.DETAIL_CACHE.clear()
 
 
 @pytest.fixture

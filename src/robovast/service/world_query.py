@@ -326,15 +326,20 @@ def _unchecked(reason, step: str = "") -> str:
             + (f" Next: {step}" if step else ""))
 
 
-def world_problems(exec_call, *, workspace_id: str, config_path: str,
+def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: str,
                    vast_dir: str, parameters: dict) -> list:
-    """Does this campaign's world load, and does its model compile?
+    """Does this campaign's world load, does its model compile, and does its image know its keys?
 
-    One problem per distinct world that does not, in the flat shape the rest of
-    ``validate_project`` returns. An empty list means every world was asked and answered
-    cleanly — **not** that nothing was checked: a campaign with no simulator backend
-    returns early, and anything that could not be asked comes back as an ``unchecked``
-    problem naming what would settle it. Silence never stands for a pass.
+    One problem per distinct world that does not load or compile, in the flat shape the rest of
+    ``validate_project`` returns -- plus an ``advice`` problem for each world component that sets
+    a config key the image's own plugin does not publish (:mod:`robovast.service.world_keys`).
+    *resolve_call* is the transport's ``resolve_image``: the key check reads the image's plugin
+    catalog through the cache that is keyed by the image's resolved identity.
+
+    An empty list means every world was asked and answered cleanly — **not** that nothing
+    was checked: a campaign with no simulator backend returns early, and anything that could
+    not be asked comes back as an ``unchecked`` problem naming what would settle it. Silence
+    never stands for a pass.
 
     Always ``--entities``, i.e. always compiling the model. Measured, the compile adds
     0.1-1.0 s to a container that costs 1-15 s, so the cheaper half-answer buys nothing
@@ -345,9 +350,12 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
                                                    set_container_runner_factory)
     from robovast.common.errors import ActionableError, ExecPathUnavailable
 
+    from robovast.service.world_keys import unknown_key_advice
+
     execution = parameters.get("execution", {}) or {}
     blocks = _distinct_blocks(parameters, vast_dir)
     problems = []
+    advice = []
     for config_name, block in blocks:
         runner = ExecSlotContainerRunner(
             exec_call, workspace_id=workspace_id, config_path=config_path)
@@ -407,7 +415,31 @@ def world_problems(exec_call, *, workspace_id: str, config_path: str,
             problems.append(_problem(
                 f"{world} loads but its model does not compile in {image}: "
                 f"{build_error}", config=config_name))
-    return _collapse_lane_wide(problems, len(blocks))
+        advice += unknown_key_advice(
+            payload or {}, image=image, exec_call=exec_call, resolve_call=resolve_call,
+            request_kwargs={"workspace_id": workspace_id, "config_path": config_path},
+            config=config_name)
+    # Advice is kept out of the collapse: that folds one lane failure repeated per world, and an
+    # advisory about a checked world is neither.
+    return _collapse_lane_wide(problems, len(blocks)) + _merge_repeated(advice)
+
+
+def _merge_repeated(advice: list) -> list:
+    """One advisory for a finding every world that carries it shares.
+
+    Two configurations that vary something else in the same world describe the same component,
+    so the same sentence would otherwise arrive once per configuration. It is then about the
+    campaign rather than one cell, and says so with no ``config``.
+    """
+    merged, index = [], {}
+    for problem in advice:
+        key = problem["message"]
+        if key in index:
+            merged[index[key]] = {**merged[index[key]], "config": None}
+            continue
+        index[key] = len(merged)
+        merged.append(problem)
+    return merged
 
 
 def _reset_factory(token) -> None:
