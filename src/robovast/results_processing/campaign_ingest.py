@@ -876,16 +876,30 @@ _STATIC_COLUMN_NOTES: dict = {
 }
 
 
+def pose_clock(columns) -> str | None:
+    """The MEASUREMENT-time column of a pose-contract table holding *columns*; ``None`` if it
+    holds no pose.
+
+    ``stamp`` for a table converted from a transport, whose ``timestamp`` is arrival; else
+    ``timestamp``, which a table the simulator wrote takes inside the simulator. The one place
+    that decides it, so the column notes and ``pose_track_view`` cannot name different clocks.
+    """
+    if "position.x" not in columns:
+        return None
+    return "stamp" if "stamp" in columns else "timestamp"
+
+
 def pose_notes_for(columns) -> dict:
     """The pose-contract notes that apply to a table holding *columns*; ``{}`` if it holds no pose.
 
     Pure, and separate from :func:`record_column_notes`, because which notes a table earns is the
-    part with a decision in it -- and a decision that silently annotates nothing (the case a
-    simulator-written table used to fall into) is one worth asserting without a database.
+    part with a decision in it -- and a decision that silently annotates nothing is one worth
+    asserting without a database.
     """
-    if "position.x" not in columns:
+    clock = pose_clock(columns)
+    if clock is None:
         return {}
-    clock_notes = (_POSE_TRANSPORT_CLOCK_NOTES if "stamp" in columns
+    clock_notes = (_POSE_TRANSPORT_CLOCK_NOTES if clock == "stamp"
                    else _POSE_NATIVE_CLOCK_NOTES)
     return {column: note for column, note in {**clock_notes, **_POSE_ORIENTATION_NOTES}.items()
             if column in columns}

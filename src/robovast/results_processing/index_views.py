@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 CAMPAIGN_VIEW_NAMES = ("run_view", "config_view", "container_failure_view")
 
 #: Views over the measurements.
-METRIC_VIEW_NAMES = ("run_validity_view",)
+METRIC_VIEW_NAMES = ("run_validity_view", "pose_track_view")
 
 
 def _c(table: str) -> str:
@@ -84,9 +84,15 @@ def _resolve(conn, schema: str) -> str:
 
 
 def _tables_in(conn, schema: str) -> set:
-    """Table names present in *schema*."""
+    """Table names present in *schema*.
+
+    Base tables only: ``information_schema.tables`` lists views too, and a view built over these
+    is not one of the things they are read for -- a rebuild would offer the previous run's own
+    output as an input to itself.
+    """
     rows = conn.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = %s AND table_type = 'BASE TABLE'",
         (_resolve(conn, schema),)).fetchall()
     return {r[0] for r in rows}
 
@@ -265,7 +271,11 @@ def metric_view_sql(conn) -> dict:
                          THROTTLE_WARN_RATIO)
 
     views = {}
-    if "system_usage" not in _tables_in(conn, ""):
+    tables = _tables_in(conn, "")
+    pose_track = _pose_track_sql(conn, tables)
+    if pose_track:
+        views["pose_track_view"] = pose_track
+    if "system_usage" not in tables:
         return views
 
     columns = _columns_in(conn, "", "system_usage")
@@ -325,6 +335,99 @@ def metric_view_sql(conn) -> dict:
         FROM per_run
     """
     return views
+
+
+#: The key one track is identified by. ``source`` is the table, because the same entity can be
+#: recorded by two producers (TF and the simulator) and their samples must not interleave.
+_TRACK_KEY = "source, campaign_id, config_name, run_id, frame"
+
+#: What a branch of the view selects from a pose table, beside the clock and ``position.x``
+#: that :func:`~robovast.results_processing.campaign_ingest.pose_clock` answers for, and beside
+#: ``position.z``/``orientation.yaw``, which a branch substitutes for when they are absent.
+_BRANCH_COLUMNS = {"campaign_id", "config_name", "run_id", "frame", "position.y"}
+
+
+def _pose_track_sql(conn, tables) -> str | None:
+    """``pose_track_view``: one row per recorded track, summarised over every one of its poses.
+
+    A track is one entity (``frame``) of one run, as one pose-contract table recorded it. The
+    view spans every such table the index holds -- ``poses`` from a bag, ``sim_poses`` from
+    the simulator, whatever a later producer writes -- because the contract, not the table
+    name, is what makes the arithmetic valid. It exists for the reason ``run_validity_view``
+    does: the derivation is a trap, and one every consumer of these tables has to walk past.
+    A speed differenced on the arrival clock measures the transport; one ordered by it is
+    ordered arbitrarily within a tick; and a length summed without the campaign predicate
+    joins two campaigns' tracks into one with a jump across the map.
+
+    Each table contributes on its own measurement clock (:func:`campaign_ingest.pose_clock`).
+    A sample with no measurement time -- a latched ``/tf_static`` transform -- is not a point
+    on a track and is left out. ``position.z`` is part of the length where the table has it,
+    so a drone or an end effector moving vertically has one.
+
+    A reposition is travel here: a body spawned at the world origin and then placed at its
+    start pose contributes that jump to ``length_m`` and ``max_speed_m_s``. The view does not
+    guess a threshold to drop it; ``max_step_m`` makes it visible instead. The window partitions by the
+    whole key, which is what lets ``WHERE campaign_id = ...`` reach every table underneath
+    rather than being applied after the corpus has been windowed.
+    """
+    from .campaign_ingest import \
+        pose_clock  # pylint: disable=import-outside-toplevel
+
+    branches = []
+    for table in sorted(tables):
+        columns = _columns_in(conn, "", table)
+        clock = pose_clock(columns)
+        # Every column a branch names, not only the ones that make it a pose table: a branch
+        # naming a column its table lacks raises on CREATE VIEW, which `_rebuild` catches -- so
+        # one odd table would take the whole view away from every campaign.
+        if clock is None or not _BRANCH_COLUMNS <= columns:
+            continue
+        z = 'CAST("position.z" AS double precision)' if "position.z" in columns else "0.0"
+        yaw = ('CAST("orientation.yaw" AS double precision)' if "orientation.yaw" in columns
+               else "NULL::double precision")
+        branches.append(f"""
+            SELECT '{table}'::text AS source, campaign_id, config_name,
+                   CAST(run_id AS integer) AS run_id, frame,
+                   CAST("{clock}" AS double precision) AS t,
+                   CAST("position.x" AS double precision) AS x,
+                   CAST("position.y" AS double precision) AS y,
+                   {z} AS z, {yaw} AS yaw
+            FROM "{table}"
+            WHERE "{clock}" IS NOT NULL""")
+    if not branches:
+        return None
+    return f"""
+        WITH p AS ({" UNION ALL ".join(branches)}),
+             d AS (SELECT {_TRACK_KEY}, t, x, y, z,
+                          SQRT(POWER(x - LAG(x) OVER w, 2) + POWER(y - LAG(y) OVER w, 2)
+                               + POWER(z - LAG(z) OVER w, 2)) AS step_m,
+                          t - LAG(t) OVER w AS dt,
+                          FIRST_VALUE(x) OVER w AS start_x, FIRST_VALUE(y) OVER w AS start_y,
+                          FIRST_VALUE(z) OVER w AS start_z,
+                          FIRST_VALUE(yaw) OVER w AS start_yaw,
+                          LAST_VALUE(x) OVER wf AS end_x, LAST_VALUE(y) OVER wf AS end_y,
+                          LAST_VALUE(z) OVER wf AS end_z, LAST_VALUE(yaw) OVER wf AS end_yaw
+                   FROM p
+                   WINDOW w AS (PARTITION BY {_TRACK_KEY} ORDER BY t),
+                          wf AS (PARTITION BY {_TRACK_KEY} ORDER BY t
+                                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING))
+        SELECT {_TRACK_KEY},
+               COUNT(*) AS points,
+               COALESCE(SUM(step_m), 0) AS length_m,
+               MAX(t) - MIN(t) AS duration_s,
+               CASE WHEN MAX(t) > MIN(t)
+                    THEN COALESCE(SUM(step_m), 0) / (MAX(t) - MIN(t)) END AS avg_speed_m_s,
+               MAX(CASE WHEN dt > 0 THEN step_m / dt END) AS max_speed_m_s,
+               MAX(step_m) AS max_step_m,
+               MIN(start_x) AS start_x, MIN(start_y) AS start_y, MIN(start_z) AS start_z,
+               MIN(start_yaw) AS start_yaw,
+               MIN(end_x) AS end_x, MIN(end_y) AS end_y, MIN(end_z) AS end_z,
+               MIN(end_yaw) AS end_yaw,
+               MIN(x) AS min_x, MAX(x) AS max_x, MIN(y) AS min_y, MAX(y) AS max_y,
+               MIN(z) AS min_z, MAX(z) AS max_z
+        FROM d
+        GROUP BY {_TRACK_KEY}
+    """
 
 
 def create_views(conn) -> list:

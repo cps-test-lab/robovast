@@ -388,6 +388,12 @@ query that filters on ``run_id`` alone silently returns rows from every configur
 averages across them — it does not fail. Making the join part of the schema removes that
 failure mode instead of documenting it.
 
+Two more views carry a derivation that is easy to get wrong by hand. ``run_validity_view``
+says whether a run was a clean observation or was capped at its CPU limit.
+``pose_track_view`` summarises every recorded track (length, duration, speeds, start and end
+pose) over every pose, on the measurement clock (:ref:`pose-contract`). Both are listed with
+their columns by ``describe_campaign_data``.
+
 What survives as a tool is the one aggregate asked constantly —
 ``get_campaign_summary`` (pass/fail counts plus the campaign's provenance), itself
 implemented over the same SQL — and ``list_campaigns``, which spans campaigns rather than

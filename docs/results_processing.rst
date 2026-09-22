@@ -342,6 +342,25 @@ derivative from the same column. Read that column together with the table it cam
 is the *exact* base on a simulator-written table and the *degraded* one on a transport-derived
 table that carries no ``stamp``, and the two are not comparable despite the identical label.
 
+**Every table that follows the contract gets a track summary, ``pose_track_view``.** One row per
+track, meaning one ``frame`` of one run as one table recorded it: ``points``, ``length_m``,
+``duration_s``, ``avg_speed_m_s``, ``max_speed_m_s``, ``max_step_m``, start and end pose, and the
+bounding box.
+It is computed over every recorded pose, on each table's measurement clock (``stamp`` where the
+table has one, else ``timestamp``), with ``position.z`` in the length where the table carries it.
+``source`` names the table, since the same entity recorded by two producers is two tracks. A
+sample with no measurement time, such as a latched ``/tf_static`` transform, is not a point on a
+track. A reposition counts as travel: a body spawned at the origin and then placed at its start
+pose adds that jump to ``length_m``, and ``max_step_m`` (the largest single step) is where it
+shows. The view is built over whichever pose tables the index holds, so a new producer's table
+appears in it on the next ingest without being registered.
+
+.. code-block:: sql
+
+   SELECT source, frame, points, length_m, duration_s, max_speed_m_s
+   FROM pose_track_view
+   WHERE campaign_id = '<id>' AND config_name = '<config>' AND run_id = 0;
+
 **Quaternion in, yaw out.** Producers emit a quaternion and nothing else: roll/pitch/yaw is lossy
 the moment a body pitches or rolls, which rules out a drone, a tilting arm, or a robot on a ramp.
 The ingest then derives ``orientation.yaw`` for any table that has the quaternion columns and no
