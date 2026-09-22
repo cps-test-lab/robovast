@@ -4428,11 +4428,6 @@ export interface components {
             name: string;
             /** Preparing Campaigns */
             preparing_campaigns: string[];
-            /**
-             * Read Only
-             * @default false
-             */
-            read_only: boolean;
             /** Running Campaigns */
             running_campaigns: string[];
             /** Workspace Id */

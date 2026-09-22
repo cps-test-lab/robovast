@@ -272,7 +272,7 @@ def test_pinned_dir_is_used_in_place_and_listed(pinned):
     assert store.registry.project_dir(wid) == src
     entry = store.registry.get(wid)
     # Pinned says *where the files live*, not that they may not be written.
-    assert entry["read_only"] is False and entry["name"] == "myproj"
+    assert entry["name"] == "myproj"
 
 
 def test_pinned_id_is_stable_across_reload(tmp_path):
