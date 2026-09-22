@@ -19,7 +19,6 @@
 #   ./container/robovast/build.sh [--image robovast|roqsim|all] [--project <prefix>] \
 #                                 [--tag <tag>] [--ros-distro <distro>] [--push] \
 #                                 [--ubuntu-mirror <url>] [--ubuntu-snapshot <stamp|none>] \
-#                                 [--roqsim-src <path>] [--scenario-execution-src <path>] \
 #                                 [-- <extra docker build args>]
 #
 # --ubuntu-mirror points the dated Ubuntu archive at a mirror of the snapshot service, for a
@@ -35,14 +34,13 @@
 # image cannot be rebuilt to the same software rather than naming a date it never used. Only
 # ever a deliberate trade -- a dated archive is what makes a year-old campaign rebuildable.
 #
-# The two --*-src flags are the development hatch: each repo is otherwise cloned BY THE
-# DOCKERFILE at a pinned ref, which cannot build a commit that is not pushed yet. A flag
-# replaces that clone stage with a local tree via buildx's --build-context, so both paths reach
-# the same COPY. A build that used one says so in its log, because the resulting image no longer
-# corresponds to the pin.
+# Each repository the images carry is cloned BY THE DOCKERFILE at a pinned ref, so an image is
+# built from commits anyone can fetch -- which is what makes a campaign's provenance answer
+# "rebuild it from what?". A one-off build from a tree on disk is buildx's own
+# `--build-context <stage>=<path>`, which replaces a clone stage without a flag here.
 #
-# roqsim is not a public repository yet, so the clone needs a token: set GITHUB_TOKEN (or
-# ROBOVAST_GIT_TOKEN) and it is passed as a BuildKit secret, or use --roqsim-src.
+# A clone of a private fork needs a token: set GITHUB_TOKEN (or ROBOVAST_GIT_TOKEN) and it is
+# passed as a BuildKit secret.
 
 BASEDIR=$(cd "$(dirname "$0")" && pwd)
 ROS_DISTRO="jazzy"
@@ -58,8 +56,6 @@ IMAGE="robovast"
 # cannot be four different digests. It is also how a second ROS distro gets its own
 # images, the job the old `_${ROS_DISTRO}` name suffix did.
 TAG="latest"
-ROQSIM_SRC=""
-SCENARIO_EXECUTION_SRC=""
 ROQSIM_REPO="${ROQSIM_REPO:-https://github.com/cps-test-lab/roqsim.git}"
 UBUNTU_SNAPSHOT_MIRROR="${UBUNTU_SNAPSHOT_MIRROR:-}"
 # Empty means "whatever the Dockerfile pins", which is the answer for every build but an
@@ -93,14 +89,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tag)
       TAG="$2"
-      shift 2
-      ;;
-    --roqsim-src)
-      ROQSIM_SRC="$2"
-      shift 2
-      ;;
-    --scenario-execution-src)
-      SCENARIO_EXECUTION_SRC="$2"
       shift 2
       ;;
     --ros-distro)
@@ -292,18 +280,15 @@ case "$IMAGE" in
   roqsim) ask_push "${PROJECT}robovast-roqsim:${TAG}" ;;
 esac
 
-# One throwaway directory for both jobs: the empty build context every image is built against
-# (nothing is read from the context -- see build_base), and a home for any working tree
-# src_context stages for --build-context. Removed on every exit path, including a failed build.
-SRC_STAGING=$(mktemp -d) || exit 1
-trap 'rm -rf "$SRC_STAGING"' EXIT
-EMPTY_CTX="$SRC_STAGING/empty"
-mkdir -p "$EMPTY_CTX"
+# The empty build context every image is built against: nothing is read from the context (see
+# build_base), and the daemon receives an empty directory rather than the working tree. Removed
+# on every exit path, including a failed build.
+EMPTY_CTX=$(mktemp -d) || exit 1
+trap 'rm -rf "$EMPTY_CTX"' EXIT
 
-# A --secret for the Dockerfiles' clone stages, when a token is available. Needed while roqsim
-# is not a public repository: without it the clone gets git prompting for a password on a
-# terminal that does not exist. Nothing here fails when no token is set -- a public repo needs
-# none, and a --roqsim-src build never clones.
+# A --secret for the Dockerfiles' clone stages, when a token is available: a clone of a private
+# fork otherwise has git prompting for a password on a terminal that does not exist. Nothing
+# here fails when no token is set, since a public repository needs none.
 #
 # env= rather than the value on the command line, so it does not reach the process table.
 git_secret() {
@@ -316,67 +301,10 @@ git_secret() {
   fi
 }
 
-# A source override for one of the Dockerfile's ``*-src`` stages, or nothing.
-#
-# ``--build-context <stage>=<dir>`` replaces that stage with a local tree, which is buildx's
-# own mechanism for exactly this and leaves the Dockerfile with ONE code path: the default
-# clone and a working checkout arrive at the same COPY. The alternative -- staging a directory
-# into a temp context and branching on whether it is empty -- makes the Dockerfiles unbuildable
-# by anything but this script, CI included.
-#
-# rsync rather than passing the path straight through, because the excludes matter: a .git of
-# several hundred MB, a host venv whose binaries are wrong for the image, colcon build/ and
-# install/ trees that would be found ahead of what colcon builds inside the image, and (for
-# roqsim) `external/`, where a checkout keeps the upstream trees it fetched -- hundreds of MB
-# that nothing installed below reads. Its manifest of external assets is the exception.
-src_context() {
-  local stage="$1" src="$2" label="$3"
-  SRC_CONTEXT=()
-  if [[ -z "$src" ]]; then
-    echo "$label source: clone at the Dockerfile's pinned ref"
-    return 0
-  fi
-  echo "$label source: $src (local checkout)"
-  local staged="$SRC_STAGING/$stage"
-  mkdir -p "$staged" || return 1
-  # The manifest of external assets goes in -- the Dockerfile reads it to refuse any that
-  # arrived -- and the assets it names come out: they live in the package trees, fetched or
-  # converted by a developer's checkout where a clone has none, and several are under licences
-  # that forbid redistribution. They must not ride into a published image through this hatch.
-  rsync -a --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-        --exclude='*.egg-info' --exclude='build/' --exclude='install/' --exclude='log/' \
-        --include='/external/' --include='/external/external_assets.yaml' \
-        --exclude='/external/*' --exclude='docs/build/' \
-        "${src%/}/" "$staged/" || return 1
-  if [[ -f "$staged/external/external_assets.yaml" ]]; then
-    python3 - "$staged" <<'PY' || return 1
-import pathlib
-import shutil
-import sys
-
-import yaml
-
-root = pathlib.Path(sys.argv[1])
-resources = yaml.safe_load((root / "external/external_assets.yaml").read_text())["resources"]
-for target in (t for r in resources for t in r.get("targets", [])):
-    path = root / target
-    if path.is_dir():
-        shutil.rmtree(path)
-    elif path.exists():
-        path.unlink()
-    else:
-        continue
-    print(f"  left out {target}: an external asset the source repository does not publish")
-PY
-  fi
-  SRC_CONTEXT=(--build-context "$stage=$staged")
-}
-
 build_base() {
   # An empty context: every input this Dockerfile reads arrives as a build stage or a
   # --build-context, so there is nothing for the daemon to receive. Passing the repo root sent
   # the whole working tree (frontend/ui/node_modules included) on every build for no reason.
-  src_context scenario-execution-src "$SCENARIO_EXECUTION_SRC" scenario-execution || return $?
   git_secret
 
   buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" \
@@ -392,7 +320,6 @@ build_base() {
 
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
-    "${SRC_CONTEXT[@]}" \
     "${GIT_SECRET[@]}" \
     "${GIT_REVISION_ARGS[@]}" \
     "${COMPAT_VERSION_ARGS[@]}" \
@@ -411,47 +338,38 @@ build_roqsim() {
   # why the compat check needs no second home.
   local base="${BASE_IMAGE:-${PROJECT}robovast:${TAG}}"
 
-  src_context roqsim-src "$ROQSIM_SRC" roqsim || return $?
   git_secret
-  # ROQSIM_REF only reaches the clone, so it is meaningless alongside a local checkout --
-  # saying so beats building the wrong tree and reporting success.
-  if [[ -n "$ROQSIM_SRC" && -n "${ROQSIM_REF:-}" ]]; then
-    echo "note: ROQSIM_REF=$ROQSIM_REF ignored -- --roqsim-src takes precedence" >&2
-  elif [[ -z "$ROQSIM_SRC" ]]; then
-    # Resolve the ref to a commit BEFORE building, and pass that.
-    #
-    # Not a nicety: the clone happens in a build layer whose cache key is the command text and
-    # its ARGs, so with a branch name in ROQSIM_REF the cache serves the tree from the first
-    # build forever -- a week later the same command silently produces the same stale roqsim,
-    # and the image looks freshly built. Passing the sha makes the key change exactly when the
-    # remote does.
-    #
-    # It also turns the build log into a record of what was built, which a branch name is not.
-    local ref="${ROQSIM_REF:-main}" resolved
-    if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
-      resolved="$ref"
-    else
-      resolved=$(git ls-remote "$ROQSIM_REPO" "$ref" 2>/dev/null | awk 'NR==1{print $1}')
-      if [[ -z "$resolved" ]]; then
-        # Do not fall back to the branch name: that would quietly restore the stale-cache
-        # behaviour this exists to remove.
-        echo "error: cannot resolve '$ref' in $ROQSIM_REPO." >&2
-        echo "       roqsim is public, so this is a ref that does not exist rather than an" >&2
-        echo "       access problem -- check the branch/tag name, or use --roqsim-src <path>" >&2
-        echo "       to build from a checkout." >&2
-        return 1
-      fi
-      echo "roqsim ref: $ref -> $resolved"
+  # Resolve the ref to a commit BEFORE building, and pass that.
+  #
+  # Not a nicety: the clone happens in a build layer whose cache key is the command text and
+  # its ARGs, so with a branch name in ROQSIM_REF the cache serves the tree from the first
+  # build forever -- a week later the same command silently produces the same stale roqsim,
+  # and the image looks freshly built. Passing the sha makes the key change exactly when the
+  # remote does.
+  #
+  # It also turns the build log into a record of what was built, which a branch name is not.
+  local ref="${ROQSIM_REF:-main}" resolved
+  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+    resolved="$ref"
+  else
+    resolved=$(git ls-remote "$ROQSIM_REPO" "$ref" 2>/dev/null | awk 'NR==1{print $1}')
+    if [[ -z "$resolved" ]]; then
+      # Do not fall back to the branch name: that would quietly restore the stale-cache
+      # behaviour this exists to remove.
+      echo "error: cannot resolve '$ref' in $ROQSIM_REPO." >&2
+      echo "       roqsim is public, so this is a ref that does not exist rather than an" >&2
+      echo "       access problem -- check the branch/tag name." >&2
+      return 1
     fi
-    ROQSIM_REF="$resolved"
+    echo "roqsim ref: $ref -> $resolved"
   fi
+  ROQSIM_REF="$resolved"
 
   buildx_args "${PLATFORM:-${PUSH:+$CLUSTER_PLATFORM}}" \
     "robovast-roqsim:${TAG}" "${PROJECT}robovast-roqsim:${TAG}" || return $?
 
   docker buildx build \
     "${BUILDX_ARGS[@]}" \
-    "${SRC_CONTEXT[@]}" \
     "${GIT_SECRET[@]}" \
     --build-arg BASE_IMAGE="$base" \
     ${ROQSIM_REF:+--build-arg ROQSIM_REF="$ROQSIM_REF"} \

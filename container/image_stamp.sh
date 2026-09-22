@@ -79,9 +79,8 @@ image_stamp_args() {
   [[ -n "$dirty" ]] && sha="${sha}+dirty"
   GIT_REVISION_ARGS=(--build-arg "ROBOVAST_GIT_REVISION=$sha")
 
-  # Said out loud, like a --roqsim-src build says so: the image no longer corresponds to a
-  # commit anyone else can check out, and the one line of build output is where that is
-  # noticeable.
+  # Said out loud: the image no longer corresponds to a commit anyone else can check out, and
+  # the one line of build output is where that is noticeable.
   echo "Baking revision:  $sha"
   if [[ "$sha" == *+dirty ]]; then
     echo "  the tree has uncommitted changes, so this image is not reproducible from a commit;"
