@@ -659,6 +659,35 @@ class WorldQueryUnavailable(RuntimeError):
         self.next_step = next_step
 
 
+def _description_key(backend, block: dict, values_matter: bool) -> str:
+    """What a world description depends on: the block, or the block with its override values
+    replaced by the paths they address. See :func:`_check_sim_against_world`."""
+    from robovast.common.simulators import sim_override_paths  # pylint: disable=import-outside-toplevel
+
+    if values_matter:
+        return json.dumps(block, sort_keys=True, default=str)
+    root = getattr(backend, "DOTTED_ROOT", None)
+    rest = {k: v for k, v in (block or {}).items() if k != root}
+    paths = sorted(".".join(p) for p in sim_override_paths(backend, block))
+    return json.dumps([rest, paths], sort_keys=True, default=str)
+
+
+def _files_key(node):
+    """A block with every non-string leaf dropped: what its input files can depend on.
+
+    A file is named by a string -- a mesh path, a trajectory CSV, a world to extend -- and a
+    number, a flag or a vector of either names nothing, so two blocks that differ only in those
+    are made of the same files. Lists are kept as their string members, positionally.
+    """
+    if isinstance(node, dict):
+        kept = {k: _files_key(v) for k, v in node.items()}
+        return {k: v for k, v in kept.items() if v is not None}
+    if isinstance(node, (list, tuple)):
+        kept = [_files_key(v) for v in node]
+        return [v for v in kept if v is not None] or None
+    return node if isinstance(node, str) else None
+
+
 def describe_world_payload(execution, block, vast_dir, *, entities: bool = False,
                            targets: str = "") -> tuple[dict, str]:
     """Ask the simulator what a world provides. Returns ``(payload, image)``.
@@ -770,8 +799,15 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
     and only then is refused by ``apply_overrides``. Nothing before the container could tell,
     because resolving a world's ``extends`` chain needs the simulator.
 
-    Checked per **distinct** block, and only when the campaign actually overrides something --
+    Checked per **distinct** question, and only when the campaign actually overrides something --
     a container run is not free, and a campaign that only selects worlds has nothing to check.
+    What a world offers depends on the world and on WHICH paths are overridden, not on the values
+    written to them, so blocks that differ only in their values share one description. The one
+    exception is a scenario that names entities: overrides can add those (an obstacle placement),
+    so there the values are part of the question and every distinct block is asked. Keyed this
+    way because a campaign sweeping a numeric world value has one distinct block per level -- a
+    contact draw per seed is hundreds -- and asking a container per level turned composition into
+    minutes of model compiles for an answer that never changed.
 
     Only the *plugin key* is verified. A path a world leaves at its default is legitimately
     absent from what the simulator reports, so flagging it would refuse a correct campaign;
@@ -796,12 +832,13 @@ def _check_sim_against_world(execution, configs, vast_dir, scenario_parameters=N
     backend = resolve_backend(name, vast_dir)
     entity_params = entity_bearing_parameters(scenario_parameters)
 
-    # Group by resolved block: what a world offers depends on the world, not on the
-    # configuration, so one description serves every configuration sharing it.
+    # Group by the question, not by the block: one description serves every configuration
+    # whose world and override PATHS agree, unless entities are in play (see the docstring).
+    values_matter = bool(entity_params)
     by_block = {}
     for config in configs:
         block = config.get("sim") or {}
-        by_block.setdefault(json.dumps(block, sort_keys=True, default=str),
+        by_block.setdefault(_description_key(backend, block, values_matter),
                             (block, []))[1].append(config)
 
     for block, sharing in by_block.values():
@@ -1038,8 +1075,9 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     Two things come out of it. Each configuration carries its resolved block (recorded in
     ``configurations.yaml``, written to ``sim.config``, and read by both lanes at dispatch),
     and the **union** of the worlds those blocks name joins ``run_files`` -- once per
-    distinct block, since a campaign varying its world has several and each has to be
-    mounted for the simulator to open it.
+    distinct set of files a block can name (its string values; a numeric override names no
+    file), since a campaign varying its world has several and each has to be mounted for the
+    simulator to open it, while one varying a number has one world however many levels.
 
     Where the backend answers with a question for the simulator's image, each distinct
     question is asked once. A query may depend on less than the block it is asked for -- one
@@ -1063,7 +1101,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                 for c in (parameters.get("configuration") or [])}
     uses_channel = any(authored.values()) or any(c.get("sim") for c in configs)
 
-    seen_blocks = []
+    seen_blocks = {}
     for config in configs:
         # The authored per-configuration block first, then what variations wrote, so a
         # variation's value wins over the fixed one it varies -- the same precedence
@@ -1080,8 +1118,8 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
             logger.debug("simulator backend contributed no sim block: %s", exc)
             return
         config["sim"] = resolved
-        if resolved not in seen_blocks:
-            seen_blocks.append(resolved)
+        seen_blocks.setdefault(
+            json.dumps(_files_key(resolved), sort_keys=True, default=str), resolved)
 
     # True when the failure happened *inside* the query rather than while resolving the
     # backend around it -- the same line `_backend_run_files` draws, drawn from in here
@@ -1103,7 +1141,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
             raise
         return answers[key]
 
-    for block in seen_blocks:
+    for block in seen_blocks.values():
         query_failed.clear()
         try:
             declared = sim_input_files(execution, block, vast_dir,

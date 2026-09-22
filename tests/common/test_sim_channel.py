@@ -396,3 +396,93 @@ def test_a_chunk_that_would_straddle_two_cells_is_split():
     items = [_owner(cn, ["files/nav2_params.yaml"], r)
              for cn in ("c1", "c2") for r in range(3)]
     assert [len(j) for j in FixedK(2).pack(items)] == [2, 1, 2, 1]
+
+
+# -- a container is asked once per question, not once per value ------------------------
+
+
+def _blocks_varying_a_number(execution, n):
+    return [S.merge_sim_block(execution, {"components.floor.friction": 0.1 * i})
+            for i in range(n)]
+
+
+def test_the_component_check_asks_once_for_blocks_that_differ_only_in_values(
+        backend, execution, monkeypatch):
+    """A sweep over a numeric world value is one question per level as far as the world's
+    components are concerned, and one container run answers it for every level."""
+    from robovast.common import config_generation as G
+
+    asked = []
+
+    def _describe(execution_, block, vast_dir, *, entities=False, targets=""):
+        asked.append(block)
+        return {"addresses": ["floor"]}, "img"
+
+    monkeypatch.setattr(G, "describe_world_payload", _describe)
+    configs = [{"name": f"c-{i}", "config": {}, "sim": b}
+               for i, b in enumerate(_blocks_varying_a_number(execution, 40))]
+    G._check_sim_against_world(execution, configs, "", {})
+    assert len(asked) == 1
+
+
+def test_the_component_check_asks_per_path_set_and_per_world(backend, execution, monkeypatch):
+    from robovast.common import config_generation as G
+
+    asked = []
+    monkeypatch.setattr(
+        G, "describe_world_payload",
+        lambda e, b, d, *, entities=False, targets="": (asked.append(b),
+                                                       {"addresses": ["floor", "lamp"]})[1:] + ("img",))
+    blocks = [
+        S.merge_sim_block(execution, {"components.floor.friction": 0.2}),
+        S.merge_sim_block(execution, {"components.lamp.on": True}),
+        S.merge_sim_block(execution, {"config": "worlds/b.yaml", "components.floor.friction": 0.2}),
+    ]
+    configs = [{"name": f"c-{i}", "config": {}, "sim": b} for i, b in enumerate(blocks)]
+    G._check_sim_against_world(execution, configs, "", {})
+    assert len(asked) == 3
+
+
+def test_the_component_check_keeps_the_values_when_the_scenario_names_entities(
+        backend, execution, monkeypatch):
+    """Overrides can ADD entities (an obstacle placement), so a scenario that names entities
+    is checked against every distinct block, values included."""
+    from robovast.common import config_generation as G
+
+    asked = []
+    monkeypatch.setattr(
+        G, "describe_world_payload",
+        lambda e, b, d, *, entities=False, targets="": (asked.append(b),
+                                                       {"addresses": ["floor"],
+                                                        "entities": ["obstacle_1"]})[1:] + ("img",))
+    params = {"obstacles": {"type": "list of spawn_entity"}}
+    monkeypatch.setattr(G, "entity_bearing_parameters", lambda p: ["obstacles"])
+    monkeypatch.setattr(G, "_entity_names_in", lambda v: {"obstacle_1"})
+    configs = [{"name": f"c-{i}", "config": {"obstacles": []}, "sim": b}
+               for i, b in enumerate(_blocks_varying_a_number(execution, 5))]
+    G._check_sim_against_world(execution, configs, "", params)
+    assert len(asked) == 5
+
+
+def test_the_input_files_query_runs_once_for_blocks_that_name_the_same_files(
+        backend, execution, monkeypatch):
+    """A number names no file, so forty levels of one are one query; a different string is
+    a different set of files and a second one."""
+    from robovast.common import config_generation as G
+
+    asked = []
+
+    def _input_files(self, cfg, execution_, vast_dir):
+        return S.ContainerQuery(spec=object(), command=["ls"])
+
+    monkeypatch.setattr(_StubBackend, "input_files", _input_files)
+    monkeypatch.setattr(G, "_run_input_files_query",
+                        lambda q, d, **kw: (asked.append(q), [])[1])
+    configs = [{"name": f"c-{i}", "config": {},
+                "sim": {"components.floor.friction": 0.1 * i}} for i in range(40)]
+    configs.append({"name": "c-mesh", "config": {},
+                    "sim": {"components.floor.mesh": "meshes/other.stl"}})
+    run_files = []
+    G._resolve_config_sim_blocks(configs, {"execution": execution, "configuration": []},
+                                 "", run_files)
+    assert len(asked) == 2
