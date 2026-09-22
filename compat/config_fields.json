@@ -40,9 +40,31 @@
       "Union[Literal[request, declared], NoneType]"
     ],
     [
+      "min",
+      false,
+      "Union[CalibrationFloor, NoneType]"
+    ],
+    [
       "size_on",
       false,
       "Union[float, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "CalibrationFloor": [
+    [
+      "cpu",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "memory",
+      false,
+      "Union[str, NoneType]"
     ],
     [
       "<extra>",
