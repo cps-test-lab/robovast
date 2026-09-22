@@ -560,6 +560,21 @@ class HTTPTransport(RobovastInterface):
             params = {k: v for k, v in selection.model_dump().items() if v}
         return self._stream(Routes.campaign_archive(campaign_id), **params)
 
+    def workspace_tar_stream(self, workspace_id: str):
+        """Stream the workspace archive through, chunk by chunk.
+
+        The same shape as :meth:`campaign_tar_stream` and for the same reason -- neither
+        end decides how large a project tree somebody put an input into.
+        """
+        return self._stream(Routes.workspace_archive(workspace_id))
+
+    def export_workspace(self, workspace_id: str) -> "ShareWorkspaceArchive":
+        # The data timeout, not the control one: the call holds while the service tars the
+        # project and pushes it to the share, which is a transfer to somewhere else.
+        from robovast.service.interface import ShareWorkspaceArchive
+        return ShareWorkspaceArchive.model_validate(
+            self._post(Routes.workspace_share(workspace_id), timeout=self.DATA_TIMEOUT))
+
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags, config_files=None):
         return self._stream(Routes.campaign_inputs(campaign_id), job=list(job_tags),
                             config_file=[f"{cn}:{rel}" for cn, rel in (config_files or ())])

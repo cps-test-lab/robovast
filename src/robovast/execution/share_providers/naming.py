@@ -15,9 +15,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""How a campaign archive is named on a share, and how that name is read back.
+"""How an archive is named on a share, and how that name is read back.
 
-The name carries the *variant* because a share holds both kinds and they are not
+A share holds two kinds of archive, and the name is the only thing that tells them
+apart: ``<campaign-id>.<variant>.tar.gz`` for a campaign's results and
+``<slug>.workspace.tar.gz`` for a workspace's project files. The two grammars cannot
+collide -- a campaign id must match :func:`is_campaign_dir` once its token is taken
+off, and a workspace slug is read only from a name carrying the ``.workspace`` token,
+which that pattern never leaves behind -- so a listing can classify every object it
+sees without opening any of them.
+
+A campaign's name carries the *variant* because a share holds both and they are not
 interchangeable: a ``raw`` archive is the campaign as it stood before
 postprocessing, so importing one has metrics still to compute, while a
 ``postprocessed`` one is complete. Nothing else records this -- there is no
@@ -30,6 +38,7 @@ helper that drags in ``click`` or a provider ABC would be imported by none of th
 willingly.
 """
 
+import re
 from pathlib import Path
 
 #: Postprocessing's provenance record, campaign-relative. Written by
@@ -40,8 +49,10 @@ from robovast.common.campaign_data import POSTPROCESSING_RECORD
 from robovast.common.execution import is_campaign_dir
 
 __all__ = ["RAW", "POSTPROCESSED", "INCOMPLETE", "VARIANTS", "SHARE_VARIANTS",
-           "POSTPROCESSING_RECORD",
-           "archive_name", "parse_archive_name", "campaign_variant", "variant_from_record"]
+           "POSTPROCESSING_RECORD", "WORKSPACE",
+           "archive_name", "parse_archive_name", "campaign_variant", "variant_from_record",
+           "workspace_slug", "workspace_archive_name", "parse_workspace_archive_name",
+           "is_share_archive_name"]
 
 RAW = "raw"
 POSTPROCESSED = "postprocessed"
@@ -61,7 +72,17 @@ VARIANTS = (POSTPROCESSED, INCOMPLETE, RAW)
 #: is *read* against, because a name that arrives from elsewhere is not ours to bound.
 SHARE_VARIANTS = (POSTPROCESSED, RAW)
 
+#: The token naming a workspace archive, in the slot a campaign archive keeps its variant
+#: in. A workspace has no variants -- a project tree is whatever it currently is -- so the
+#: token is the *kind* instead, and it is what makes the two grammars mutually exclusive.
+WORKSPACE = "workspace"
+
 _SUFFIX = ".tar.gz"
+
+#: What a workspace name may keep in an object name. Everything else becomes ``-``: a name
+#: is free text a person typed, and it travels through provider keys, URLs and a
+#: downloads directory, none of which agree about spaces, slashes or quoting.
+_SLUG_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def archive_name(campaign_id: str, variant: str = RAW) -> str:
@@ -146,3 +167,63 @@ def campaign_variant(campaign_root) -> str:
     except FileNotFoundError:
         record = None
     return variant_from_record(record)
+
+
+def workspace_slug(name: str, fallback: str = "") -> str:
+    """The share-safe slug a workspace called *name* is published under.
+
+    A workspace name is free text, so it is reduced to ``[A-Za-z0-9._-]`` and falls back
+    to *fallback* (the workspace id) when nothing survives. The slug is what identifies
+    the archive on the share and what an import offers as the new workspace's name --
+    there is no manifest inside the archive, because a workspace that arrives somewhere
+    else is a project to be worked on, not a record to be preserved under its old
+    identity.
+
+    Two workspaces whose names slug the same publish to the same object, exactly as
+    re-exporting one does: the share holds the latest upload under a name, and which
+    workspace is *here* is the registry's answer, not the share's.
+    """
+    slug = _SLUG_SAFE.sub("-", name).strip("-")
+    return slug or fallback
+
+
+def workspace_archive_name(slug: str) -> str:
+    """``<slug>.workspace.tar.gz`` -- the object name a workspace is stored under.
+
+    *slug* comes from :func:`workspace_slug`; passing a raw name here would put whatever
+    it contains into a provider key.
+    """
+    if not slug or _SLUG_SAFE.search(slug):
+        raise ValueError(f"{slug!r} is not a share-safe workspace slug; "
+                         "build it with workspace_slug()")
+    return f"{slug}.{WORKSPACE}{_SUFFIX}"
+
+
+def parse_workspace_archive_name(basename: str):
+    """Read the workspace slug out of *basename*, or ``None`` if it is not one.
+
+    The mirror of :func:`parse_archive_name`, and refuses a separator for the same
+    reason: what comes back is used as a name, so a key that slipped through instead of
+    a base name would carry a path into it.
+    """
+    if not basename.endswith(_SUFFIX):
+        return None
+    if "/" in basename or "\\" in basename:
+        return None
+    stem = basename[: -len(_SUFFIX)]
+    token = f".{WORKSPACE}"
+    if not stem.endswith(token):
+        return None
+    slug = stem[: -len(token)]
+    return slug or None
+
+
+def is_share_archive_name(basename: str) -> bool:
+    """Whether *basename* is an archive this system put on the share, of either kind.
+
+    What a provider listing keeps. A share is somebody's storage and holds other things;
+    an object that is neither a campaign nor a workspace archive is not ours to report,
+    and a listing that guessed would offer an import of a file nothing here wrote.
+    """
+    return (parse_archive_name(basename) is not None
+            or parse_workspace_archive_name(basename) is not None)

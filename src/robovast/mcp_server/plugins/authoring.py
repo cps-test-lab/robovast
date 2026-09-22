@@ -32,19 +32,20 @@ from robovast.mcp_server.service_access import NO_SERVICE
 logger = logging.getLogger(__name__)
 
 
-def create_workspace(name: str = "", from_campaign: str = "") -> dict:
+def create_workspace(name: str = "", from_campaign: str = "", from_share: str = "") -> dict:
     """Create a workspace — the only project binding a campaign can be started from.
 
-    Holds editable inputs only, and is independent of campaigns: a started campaign is
-    self-contained, so editing or deleting the workspace never affects its results.
-    Put ``.vast``/``.osc`` in it with ``write_file``, anything else with
-    ``create_upload``. A whole directory at once is ``vast workspace init <dir>`` from
-    the machine that holds it -- this interface cannot reach your filesystem.
+    Holds editable inputs only: a started campaign is self-contained, so editing or
+    deleting the workspace never affects its results. Put ``.vast``/``.osc`` in it with
+    ``write_file``, anything else with ``create_upload``. A whole directory at once is
+    ``vast workspace init <dir>``, from the machine that holds it.
 
     Args:
-        name: Optional human-friendly label.
+        name: Optional label; defaults to the archive's slug with ``from_share``.
         from_campaign: Seed it from this campaign's frozen config, to adapt a campaign that
             already ran instead of re-authoring its project. Refuses an incomplete snapshot.
+        from_share: A workspace archive on the share, by slug. Always a new workspace;
+            not with ``from_campaign``.
 
     Returns:
         ``{workspace_id, name, created_at}``.
@@ -52,7 +53,8 @@ def create_workspace(name: str = "", from_campaign: str = "") -> dict:
     from robovast.service.interface import CreateWorkspaceRequest
     try:
         return service_access.client_or_local().create_workspace(
-            CreateWorkspaceRequest(name=name, from_campaign=from_campaign)).model_dump()
+            CreateWorkspaceRequest(name=name, from_campaign=from_campaign,
+                                   from_share=from_share)).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -85,6 +87,24 @@ def delete_workspace(workspace_id: str) -> dict:
     """Delete a workspace and its inputs. Existing campaigns are unaffected."""
     try:
         return service_access.client_or_local().delete_workspace(workspace_id).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def export_workspace(workspace_id: str) -> dict:
+    """Publish a workspace to the share, for another service to import.
+
+    Named after the workspace, replacing an earlier export. Take one back with
+    ``create_workspace(from_share=...)``.
+
+    Args:
+        workspace_id: The workspace to publish.
+
+    Returns:
+        ``{slug, object_name, size, url}``, or ``{error}``.
+    """
+    try:
+        return service_access.client_or_local().export_workspace(workspace_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -526,6 +546,7 @@ _TOOLS = [
     create_workspace,
     list_workspaces,
     delete_workspace,
+    export_workspace,
     create_upload,
     validate_project,
     preview_configurations,

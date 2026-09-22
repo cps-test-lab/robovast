@@ -423,9 +423,9 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
     remote service and worked on locally -- and so a workspace somebody else authored can be
     inspected without the web UI.
 
-    File by file over the existing calls rather than as one archive: a workspace is a source
-    project, where that is adequate. A campaign is the case that needs an archive, because it
-    holds rosbags -- see ``vast campaign download``.
+    One archive, extracted into DIRECTORY: the same bytes ``vast share export --workspace``
+    publishes, so a project taken off a service and one taken off the share are the same
+    tree.
 
     \b
       vast workspace download growth-sim ./growth-sim

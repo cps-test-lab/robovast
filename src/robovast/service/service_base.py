@@ -855,10 +855,25 @@ class ServiceBase(RobovastInterface):
     # -- workspaces ---------------------------------------------------------
 
     def create_workspace(self, request: CreateWorkspaceRequest) -> WorkspaceInfo:
-        entry = self.store.registry.create(request.name)
-        if request.from_campaign:
+        if request.from_campaign and request.from_share:
+            raise ValueError(
+                "a workspace is seeded from a campaign or from the share, not both; "
+                "pass one of from_campaign and from_share")
+        # The share's archive names the workspace when the caller did not, so the slug is
+        # resolved BEFORE the registry entry exists -- a name is chosen once, and a create
+        # that would have to be renamed afterwards is one the registry cannot suffix
+        # against its own entry.
+        name, object_name = request.name, ""
+        if request.from_share:
+            object_name, slug = self._find_share_workspace(request.from_share)
+            name = name or slug
+        entry = self.store.registry.create(name)
+        if request.from_campaign or object_name:
             try:
-                self._seed_from_campaign(entry["workspace_id"], request.from_campaign)
+                if object_name:
+                    self._seed_from_share(entry["workspace_id"], object_name)
+                else:
+                    self._seed_from_campaign(entry["workspace_id"], request.from_campaign)
             except BaseException:
                 # A half-populated workspace is worse than none: it would sit in the dropdown
                 # looking like a project, and the caller was told the create failed.
@@ -913,6 +928,77 @@ class ServiceBase(RobovastInterface):
                 f"its own run used: {', '.join(sorted(missing))}. A workspace seeded from it "
                 f"would name that campaign's configuration while running a different one, so "
                 f"this refuses instead.")
+
+    def _seed_from_share(self, workspace_id: str, object_name: str) -> None:
+        """Fill a new workspace with the project files in *object_name* on the share.
+
+        The service downloads with its own credentials -- the caller may be a browser,
+        which has none -- into the same staging area an imported campaign uses, and the
+        staged file is removed whether or not the extraction succeeds.
+
+        The archive's single top-level directory is stripped, because it names the
+        workspace it was exported *from* and this is a different workspace with a
+        different id. Anything else is refused rather than flattened: an archive with two
+        top-level entries is not one of ours, and guessing which to take would seed a
+        project from half of something.
+        """
+        import tarfile  # pylint: disable=import-outside-toplevel
+
+        from robovast.client.safe_path import \
+            UnsafePathError  # pylint: disable=import-outside-toplevel
+
+        provider = self._share_provider()
+        project_dir = self.store.registry.project_dir(workspace_id)
+        staging = self._staging_dir()
+        staging.mkdir(parents=True, exist_ok=True)
+        staged = staging / f"{secrets.token_urlsafe(16)}.tar.gz"
+        try:
+            provider.download_archive(object_name, str(staged))
+            with tarfile.open(staged, "r:gz") as tar:
+                members = tar.getmembers()
+                # `./` is not a top-level entry: `tar` writes it for the archive root, so an
+                # archive rolled by hand carries one and reading it as the project's
+                # directory would nest the whole tree one level down -- silently, which is
+                # worse than the refusal below. Stripped the way the campaign side strips it.
+                paths = {m: m.name.removeprefix("./").strip("/") for m in members}
+                roots = {rel.split("/", 1)[0] for rel in paths.values() if rel}
+                if len(roots) != 1:
+                    raise ValueError(
+                        f"{object_name!r} holds {len(roots)} top-level entries, so it is not a "
+                        f"workspace archive; one is the whole project under a single directory")
+                root = roots.pop()
+                for member in members:
+                    rel = paths[member][len(root):].lstrip("/")
+                    if not rel:
+                        continue
+                    # `safe_join` rather than a prefix check: a member may name `..` or an
+                    # absolute path, and an archive is the one input that arrives from
+                    # somewhere this service does not control.
+                    target = safe_join(project_dir, rel)
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not member.isfile():
+                        # A symlink or a device node in a project tree is not something a
+                        # workspace can hold: `/sources` serves files, and a link is a path
+                        # into a tree the importing service does not have.
+                        continue
+                    source = tar.extractfile(member)
+                    if source is None:
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target, "wb") as fh:
+                        shutil.copyfileobj(source, fh)
+                    # The executable bit and nothing else: the rest of the mode is whoever
+                    # exported it, and a project file arriving unreadable helps no one.
+                    if member.mode & 0o111:
+                        target.chmod(target.stat().st_mode | 0o111)
+        except UnsafePathError as e:
+            raise ValueError(
+                f"{object_name!r} holds a member that would land outside the workspace "
+                f"({e}), so it is not extracted") from e
+        finally:
+            staged.unlink(missing_ok=True)
 
     def list_workspaces(self) -> ListWorkspacesResponse:
         busy, preparing = self._workspaces_in_use()
@@ -1214,6 +1300,63 @@ class ServiceBase(RobovastInterface):
             campaign_id, selection, live=live,
             facts=self._snapshot_facts(campaign_id) if live else None)
 
+    def _workspace_tar_members(self, workspace_id: str):
+        """``(add_members, workspace_id)`` for tarring a workspace's project tree.
+
+        Shared by the download and the share export so the two cannot produce different
+        archives -- the export is the download, sent somewhere else.
+
+        A pinned workspace is a live directory on disk, so the listing's own skip rule is
+        applied here too (``WorkspaceStore.skip_entry``): ``.git`` and a ``results/`` tree
+        are not project input, and an archive that carried them would not round-trip
+        through a workspace that hides them.
+        """
+        workspace_id = self.store.registry.require(workspace_id)["workspace_id"]
+        project_dir = self.store.registry.project_dir(workspace_id)
+        skip = self.store.skip_entry(workspace_id)
+
+        def _filter(info):
+            rel = info.name[len(workspace_id):].lstrip("/")
+            if rel and skip is not None and skip(rel, info.isdir()):
+                return None
+            return info
+
+        def _add(tar):
+            tar.add(str(project_dir), arcname=workspace_id,
+                    filter=_filter if skip is not None else None)
+
+        return _add, workspace_id
+
+    def workspace_tar_stream(self, workspace_id: str):
+        from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+        add_members, _ = self._workspace_tar_members(workspace_id)
+        return campaign_archive.iter_tar(add_members)
+
+    def export_workspace(self, workspace_id: str) -> "ShareWorkspaceArchive":
+        """Tar the workspace straight into the share, with no file on the way.
+
+        ``upload_archive_stream`` rather than a staged file: the archive is produced by
+        reading the project tree, so writing it to disk first would only add a copy this
+        service has to have room for and clean up.
+        """
+        from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
+        from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
+            workspace_archive_name, workspace_slug)
+        from robovast.service.interface import \
+            ShareWorkspaceArchive  # pylint: disable=import-outside-toplevel
+
+        entry = self.store.registry.require(workspace_id)
+        provider = self._share_provider()
+        slug = workspace_slug(entry.get("name") or "", entry["workspace_id"])
+        object_name = workspace_archive_name(slug)
+        add_members, _ = self._workspace_tar_members(entry["workspace_id"])
+        with campaign_archive.tar_stream(add_members) as fh:
+            provider.upload_archive_stream(fh, object_name)
+        logger.info("workspace %s exported to the %s share as %s",
+                    entry["workspace_id"], provider.SHARE_TYPE, object_name)
+        return ShareWorkspaceArchive(slug=slug, object_name=object_name,
+                                     url=provider.archive_url(object_name))
+
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
         return self._data_plane().campaign_inputs_tar_stream(campaign_id, job_tags,
@@ -1315,18 +1458,28 @@ class ServiceBase(RobovastInterface):
             get_campaign_timestamp  # pylint: disable=import-outside-toplevel
         from robovast.execution.share_providers import \
             share_type_configured  # pylint: disable=import-outside-toplevel
-        from robovast.execution.share_providers.naming import \
-            parse_archive_name  # pylint: disable=import-outside-toplevel
-        from robovast.service.interface import \
-            ShareArchive  # pylint: disable=import-outside-toplevel
+        from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
+            parse_archive_name, parse_workspace_archive_name)
+        from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+            ShareArchive, ShareWorkspaceArchive)
 
         if not share_type_configured():
             return ShareListing(configured=False)
         provider = self._share_provider()
         archives = []
-        for object_name, size in provider.list_campaign_archives_with_size():
-            parsed = parse_archive_name(os.path.basename(object_name))
+        workspaces = []
+        # One listing, classified by name: the provider reports every archive it holds, and
+        # which kind each is, is this layer's question -- a provider that had to answer it
+        # would be four implementations of one grammar.
+        for object_name, size in provider.list_archives_with_size():
+            basename = os.path.basename(object_name)
+            parsed = parse_archive_name(basename)
             if parsed is None:
+                slug = parse_workspace_archive_name(basename)
+                if slug is not None:
+                    workspaces.append(ShareWorkspaceArchive(
+                        slug=slug, object_name=object_name, size=size,
+                        url=provider.archive_url(object_name)))
                 continue
             campaign_id, variant = parsed
             archives.append(ShareArchive(
@@ -1334,7 +1487,7 @@ class ServiceBase(RobovastInterface):
                 size=size, url=provider.archive_url(object_name)))
         # Newest first, keyed on the timestamp inside the campaign id rather than on any
         # modification time: no provider reports one -- every
-        # `list_campaign_archives_with_size` yields `(name, size)` -- and what a reader of
+        # `list_archives_with_size` yields `(name, size)` -- and what a reader of
         # this listing wants is when the campaign ran, not when somebody last touched its
         # object. `parse_archive_name` has already accepted each id as a campaign id, so
         # the parser's fall-back to the whole name is unreachable here.
@@ -1346,8 +1499,11 @@ class ServiceBase(RobovastInterface):
             key=lambda a: (get_campaign_timestamp(a.campaign_id), a.campaign_id,
                            a.object_name),
             reverse=True)
+        # By slug, which is the only order a workspace archive has: no timestamp in the
+        # name and no modification time from any provider.
+        workspaces.sort(key=lambda w: (w.slug, w.object_name))
         return ShareListing(configured=True, share_type=provider.SHARE_TYPE,
-                            archives=archives)
+                            archives=archives, workspaces=workspaces)
 
     def import_campaign(self, request: ImportCampaignRequest) -> CampaignRef:
         """Take a campaign in, as a tracked background operation.
@@ -1457,7 +1613,7 @@ class ServiceBase(RobovastInterface):
 
         provider = self._share_provider()
         available = []
-        for object_name, _size in provider.list_campaign_archives_with_size():
+        for object_name, _size in provider.list_archives_with_size():
             parsed = parse_archive_name(os.path.basename(object_name))
             if parsed is None:
                 continue
@@ -1468,6 +1624,30 @@ class ServiceBase(RobovastInterface):
         raise KeyError(
             f"no archive for {wanted!r} on the {provider.SHARE_TYPE} share. "
             f"It holds: {', '.join(sorted(available)[:10]) or '(nothing)'}")
+
+    def _find_share_workspace(self, wanted: str):
+        """``(object_name, slug)`` for the workspace archive *wanted* on the share.
+
+        *wanted* is a slug or a full object name, resolved through the share's own
+        listing like :meth:`_find_share_archive` -- so a name that is not there is an
+        error saying what is, rather than a download of nothing.
+        """
+        from robovast.execution.share_providers.naming import \
+            parse_workspace_archive_name  # pylint: disable=import-outside-toplevel
+
+        provider = self._share_provider()
+        available = []
+        for object_name, _size in provider.list_archives_with_size():
+            basename = os.path.basename(object_name)
+            slug = parse_workspace_archive_name(basename)
+            if slug is None:
+                continue
+            available.append(slug)
+            if wanted in (slug, basename):
+                return object_name, slug
+        raise KeyError(
+            f"no workspace archive for {wanted!r} on the {provider.SHARE_TYPE} share. "
+            f"It holds: {', '.join(sorted(available)[:10]) or '(no workspaces)'}")
 
     def _run_import(self, state, campaign_id: str, fetch, request) -> None:
         """The import itself: claim, fetch, extract, register, and postprocess if raw.
