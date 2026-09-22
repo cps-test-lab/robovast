@@ -672,22 +672,6 @@ def _description_key(backend, block: dict, values_matter: bool) -> str:
     return json.dumps([rest, paths], sort_keys=True, default=str)
 
 
-def _files_key(node):
-    """A block with every non-string leaf dropped: what its input files can depend on.
-
-    A file is named by a string -- a mesh path, a trajectory CSV, a world to extend -- and a
-    number, a flag or a vector of either names nothing, so two blocks that differ only in those
-    are made of the same files. Lists are kept as their string members, positionally.
-    """
-    if isinstance(node, dict):
-        kept = {k: _files_key(v) for k, v in node.items()}
-        return {k: v for k, v in kept.items() if v is not None}
-    if isinstance(node, (list, tuple)):
-        kept = [_files_key(v) for v in node]
-        return [v for v in kept if v is not None] or None
-    return node if isinstance(node, str) else None
-
-
 def describe_world_payload(execution, block, vast_dir, *, entities: bool = False,
                            targets: str = "") -> tuple[dict, str]:
     """Ask the simulator what a world provides. Returns ``(payload, image)``.
@@ -1074,16 +1058,16 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
 
     Two things come out of it. Each configuration carries its resolved block (recorded in
     ``configurations.yaml``, written to ``sim.config``, and read by both lanes at dispatch),
-    and the **union** of the worlds those blocks name joins ``run_files`` -- once per
-    distinct set of files a block can name (its string values; a numeric override names no
-    file), since a campaign varying its world has several and each has to be mounted for the
-    simulator to open it, while one varying a number has one world however many levels.
+    and the **union** of the worlds those blocks name joins ``run_files``, once per distinct
+    block, since a campaign varying its world has several and each has to be mounted for the
+    simulator to open it.
 
     Where the backend answers with a question for the simulator's image, each distinct
-    question is asked once. A query may depend on less than the block it is asked for -- one
-    naming only the world, while the block also carries an override that swaps a mesh -- and
-    a sweep varying such an override is then one question however many blocks it has. Each
-    ask is a container round trip, which is what makes the distinction worth keeping.
+    *question* is asked once (:func:`_query_key`), not each distinct block: a query may
+    depend on less than the block it is asked for -- one naming only the world, while the
+    block also carries an override that swaps a mesh -- so a sweep varying such an override
+    is one question however many blocks it has. Each ask is a container round trip, which is
+    what makes asking per question rather than per block worth it.
 
     Errors are raised when the campaign actually uses the channel and swallowed when it does
     not: a ``sim:`` path that no backend accepts is a mistake worth failing composition for,
@@ -1118,8 +1102,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
             logger.debug("simulator backend contributed no sim block: %s", exc)
             return
         config["sim"] = resolved
-        seen_blocks.setdefault(
-            json.dumps(_files_key(resolved), sort_keys=True, default=str), resolved)
+        seen_blocks.setdefault(json.dumps(resolved, sort_keys=True, default=str), resolved)
 
     # True when the failure happened *inside* the query rather than while resolving the
     # backend around it -- the same line `_backend_run_files` draws, drawn from in here
