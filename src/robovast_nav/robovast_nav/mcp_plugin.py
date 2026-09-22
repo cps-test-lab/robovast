@@ -41,26 +41,20 @@ service's, on whatever host it runs, and a local-path read finds none of them.
 from __future__ import annotations
 
 import contextlib
-import io
 import logging
 import tempfile
 from pathlib import Path
 from typing import Any
 
-import matplotlib
 import numpy as np
 import yaml
 from fastmcp import FastMCP
-from fastmcp.utilities.types import Image
-from matplotlib import patches as mpatches
 
 from robovast.client.file_address import RESULTS, format_address
 from robovast.mcp_server import data_access, service_access
 from robovast.mcp_server.lacks import lacks
 from robovast.results_processing import index_schema
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402  # pylint: disable=wrong-import-position,ungrouped-imports
 
 logger = logging.getLogger(__name__)
 
@@ -613,157 +607,6 @@ def nav_get_map_info(campaign_id: str, config_name: str,
     return result
 
 
-def draw_map(
-    campaign_id: str,
-    config_name: str,
-    layers: list[dict] | None = None,
-    figsize: list[int] | None = None,
-    title: str | None = None,
-    show_legend: bool = True,
-) -> Image:
-    """Render the configuration's map with overlays — a trajectory, goals, obstacles.
-
-    All coordinates are world meters. Feed it points from ``nav_get_trajectory`` or the
-    markers of ``get_config_contribution``.
-
-    Returns a PNG, so a configuration with no map **raises** rather than coming back as
-    ``{error}``.
-
-    Args:
-        campaign_id: Campaign identifier.
-        config_name: Configuration directory name.
-        layers: Drawn in order. Every layer takes ``color``, ``alpha``, ``label``
-            (matplotlib names), plus by ``type``:
-            ``path`` — ``points`` [[x,y],…], ``linewidth``, ``show_endpoints``;
-            ``points`` — ``points``, ``marker`` (matplotlib code), ``size``;
-            ``circle`` — ``x``, ``y``, ``radius``;
-            ``rectangle`` — ``x``, ``y``, ``width``, ``height``, ``yaw``;
-            ``polygon`` — ``points`` (≥3);
-            ``arrow`` — ``x``, ``y``, ``dx``, ``dy``, ``head_width``.
-        figsize: ``[width, height]`` in inches (default ``[12, 10]``).
-        title: Title drawn above the map.
-        show_legend: Draw a legend when any layer has a ``label``.
-
-    Raises:
-        NavDataError: The configuration has no map (an image tool has no result dict to
-            carry an ``{"error": …}`` in, so it raises instead).
-    """
-    from robovast_nav.map_visualizer import \
-        MapVisualizer  # pylint: disable=import-outside-toplevel
-
-    # Straight from the configuration's own resolved scenario parameters, rather than the
-    # campaign metadata.yaml: that file is written by postprocessing, so reading it would
-    # fail to draw the map of a campaign that has merely run.
-    prefix, yaml_name = _map_dir_and_yaml(campaign_id, config_name)
-    map_config = _read_yaml(campaign_id, *prefix, yaml_name)
-    image_name = map_config.get("image")
-    if not image_name:
-        raise NavDataError(f"map {yaml_name!r} declares no 'image' to draw.")
-
-    # The visualizer opens a path, and the map is read from the service over HTTP.
-    # Both files land in one temp dir under their own names so the YAML's relative
-    # ``image:`` reference still resolves.
-    with _materialized(campaign_id, prefix, [yaml_name, image_name]) as root:
-        viz = MapVisualizer()
-        if not viz.load_map(str(root / yaml_name)):
-            raise NavDataError(f"could not load the map of config {config_name!r}")
-        fw, fh = (figsize[0], figsize[1]) if figsize and len(figsize) == 2 else (12, 10)
-        fig, ax = viz.create_figure(figsize=(fw, fh))
-
-    if title:
-        ax.set_title(title)
-
-    for layer in layers or []:
-        ltype = layer.get("type", "").lower()
-        color = layer.get("color", "red")
-        alpha = layer.get("alpha", 0.8)
-        label = layer.get("label", None)
-
-        if ltype == "path":
-            raw = layer.get("points", [])
-            if len(raw) >= 2:
-                viz.draw_path(
-                    [(p[0], p[1]) for p in raw],
-                    color=color,
-                    linewidth=layer.get("linewidth", 2.0),
-                    alpha=alpha,
-                    label=label or "Path",
-                    show_endpoints=layer.get("show_endpoints", True),
-                )
-
-        elif ltype == "points":
-            raw = layer.get("points", [])
-            if raw:
-                ax.plot(
-                    [p[0] for p in raw],
-                    [p[1] for p in raw],
-                    color=color,
-                    marker=layer.get("marker", "o"),
-                    markersize=layer.get("size", 8),
-                    alpha=alpha,
-                    label=label or "Points",
-                    linestyle="None",
-                )
-
-        elif ltype == "circle":
-            ax.add_patch(plt.Circle(
-                (layer["x"], layer["y"]),
-                layer.get("radius", 0.5),
-                color=color, alpha=alpha, label=label,
-            ))
-
-        elif ltype == "rectangle":
-            x, y = layer["x"], layer["y"]
-            w, h = layer.get("width", 1.0), layer.get("height", 1.0)
-            yaw = layer.get("yaw", 0.0)
-            corners = np.array([
-                [-w / 2, -h / 2],
-                [w / 2, -h / 2],
-                [w / 2, h / 2],
-                [-w / 2, h / 2],
-            ])
-            if yaw != 0.0:
-                c, s = np.cos(yaw), np.sin(yaw)
-                corners = corners @ np.array([[c, -s], [s, c]]).T
-            corners[:, 0] += x
-            corners[:, 1] += y
-            ax.add_patch(mpatches.Polygon(
-                corners, closed=True,
-                color=color, alpha=alpha, label=label,
-            ))
-
-        elif ltype == "polygon":
-            raw = layer.get("points", [])
-            if len(raw) >= 3:
-                ax.add_patch(mpatches.Polygon(
-                    np.array([[p[0], p[1]] for p in raw]),
-                    closed=True,
-                    color=color, alpha=alpha, label=label,
-                ))
-
-        elif ltype == "arrow":
-            head_w = layer.get("head_width", 0.1)
-            ax.arrow(
-                layer["x"], layer["y"],
-                layer.get("dx", 0.0), layer.get("dy", 0.0),
-                head_width=head_w, head_length=head_w,
-                fc=color, ec=color, alpha=alpha,
-                label=label,
-                length_includes_head=True,
-            )
-
-    if show_legend:
-        handles, labels_list = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(handles, labels_list)
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return Image(data=buf.getvalue(), format="png")
-
-
 # ---------------------------------------------------------------------------
 # Plugin class
 # ---------------------------------------------------------------------------
@@ -772,7 +615,6 @@ _TOOLS = [
     nav_get_trajectory,
     nav_get_action_feedback,
     nav_get_map_info,
-    draw_map,
 ]
 
 
