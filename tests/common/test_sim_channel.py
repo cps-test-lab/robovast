@@ -464,25 +464,27 @@ def test_the_component_check_keeps_the_values_when_the_scenario_names_entities(
     assert len(asked) == 5
 
 
-def test_the_input_files_query_runs_once_for_blocks_that_name_the_same_files(
+def test_one_question_is_asked_once_however_many_blocks_ask_it(
         backend, execution, monkeypatch):
-    """A number names no file, so forty levels of one are one query; a different string is
-    a different set of files and a second one."""
+    """Each ask is a container round trip, and a query may depend on less than the block it
+    is asked for -- so a sweep of forty numeric levels whose query names only the world asks
+    once, and a block whose query names another world asks again."""
     from robovast.common import config_generation as G
+    from robovast.common.variation.container_runner import ContainerSpec
 
     asked = []
 
     def _input_files(self, cfg, execution_, vast_dir):
-        return S.ContainerQuery(spec=object(), command=["ls"])
+        world = getattr(cfg, "config", "") or ""
+        return S.ContainerQuery(ContainerSpec(image="sim:1"), ["inputs", world])
 
     monkeypatch.setattr(_StubBackend, "input_files", _input_files)
     monkeypatch.setattr(G, "_run_input_files_query",
-                        lambda q, d, **kw: (asked.append(q), [])[1])
+                        lambda q, d, **kw: (asked.append(q.command), [])[1])
     configs = [{"name": f"c-{i}", "config": {},
                 "sim": {"components.floor.friction": 0.1 * i}} for i in range(40)]
-    configs.append({"name": "c-mesh", "config": {},
-                    "sim": {"components.floor.mesh": "meshes/other.stl"}})
-    run_files = []
+    configs.append({"name": "c-other", "config": {}, "sim": {"config": "other.yaml"}})
     G._resolve_config_sim_blocks(configs, {"execution": execution, "configuration": []},
-                                 "", run_files)
-    assert len(asked) == 2
+                                 "", [])
+
+    assert asked == [["inputs", "worlds/depot.yaml"], ["inputs", "other.yaml"]]
