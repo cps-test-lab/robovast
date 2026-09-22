@@ -64,8 +64,9 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
                                         RunShareRequest, SceneStatus, SearchHistory,
-                                        ServiceConfig, ServiceEvent, ServiceEvents, ServiceSetting,
-                                        StagedArchive, StatusResponse,
+                                        ServedContribution, ServiceConfig, ServiceEvent,
+                                        ServiceEvents, ServiceSetting,
+                                        StagedArchive, StatusResponse, TrackDeviation,
                                         status_response,
                                         UpdatePanelsSourceRequest, UpdatePostprocessingRequest,
                                         UpdatePostprocessingSourceRequest, UploadGrant,
@@ -1784,6 +1785,20 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
              tags=["results"])
     def list_campaign_plots(campaign_id: str) -> CampaignPlotsResponse:
         return _guard(lambda: impl.list_campaign_plots(campaign_id))
+
+    @app.get(Routes.campaign_contribution("{campaign_id}"), response_model=ServedContribution,
+             tags=["results"])
+    def get_config_contribution(campaign_id: str, config_name: str) -> ServedContribution:
+        return _guard(lambda: impl.get_config_contribution(campaign_id, config_name))
+
+    @app.get(Routes.campaign_track_deviation("{campaign_id}"), response_model=TrackDeviation,
+             tags=["results"])
+    def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
+                            source: str = "poses", frame: str = "base_link",
+                            marker_label: Optional[str] = None) -> TrackDeviation:
+        return _guard(lambda: impl.get_track_deviation(
+            campaign_id, config_name, run_id, source=source, frame=frame,
+            marker_label=marker_label))
 
     @app.get(Routes.campaign_panels("{campaign_id}"), response_model=CampaignPanelsResponse,
              tags=["results"])

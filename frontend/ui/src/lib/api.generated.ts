@@ -371,6 +371,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/contribution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Config Contribution */
+        get: operations["get_config_contribution_campaigns__campaign_id__contribution_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/costmap": {
         parameters: {
             query?: never;
@@ -994,6 +1011,23 @@ export interface paths {
         put?: never;
         /** Stop */
         post: operations["stop_campaigns__campaign_id__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/track_deviation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Track Deviation */
+        get: operations["get_track_deviation_campaigns__campaign_id__track_deviation_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3983,6 +4017,59 @@ export interface components {
              */
             waiting_for_capacity: boolean;
         };
+        /**
+         * TrackDeviation
+         * @description How far one recorded track stayed from a path its configuration contributed.
+         *
+         *     Computed over **every** pose of the track, so ``points`` is the whole recording rather
+         *     than a sample of it. ``planar`` says whether heights were ignored: a path
+         *     whose points state no height (a floor plan's) is compared in the plane, since the tracked
+         *     frame sits above the floor -- and both lengths are then measured in the plane too, so the
+         *     two are comparable.
+         */
+        TrackDeviation: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Config Name */
+            config_name: string;
+            /** Efficiency */
+            efficiency: number | null;
+            /** Frame */
+            frame: string;
+            /**
+             * Marker Label
+             * @default
+             */
+            marker_label: string;
+            /** Max M */
+            max_m: number | null;
+            /** Mean M */
+            mean_m: number | null;
+            /**
+             * Path Length M
+             * @default 0
+             */
+            path_length_m: number;
+            /**
+             * Planar
+             * @default true
+             */
+            planar: boolean;
+            /**
+             * Points
+             * @default 0
+             */
+            points: number;
+            /** Run Id */
+            run_id: number;
+            /** Source */
+            source: string;
+            /**
+             * Track Length M
+             * @default 0
+             */
+            track_length_m: number;
+        };
         /** UpdatePanelsSourceRequest */
         UpdatePanelsSourceRequest: {
             /** Campaign Id */
@@ -4978,6 +5065,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_config_contribution_campaigns__campaign_id__contribution_get: {
+        parameters: {
+            query: {
+                config_name: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServedContribution"];
                 };
             };
             /** @description Validation Error */
@@ -6141,6 +6261,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_track_deviation_campaigns__campaign_id__track_deviation_get: {
+        parameters: {
+            query: {
+                config_name: string;
+                run_id: number;
+                source?: string;
+                frame?: string;
+                marker_label?: string | null;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackDeviation"];
                 };
             };
             /** @description Validation Error */

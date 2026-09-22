@@ -491,6 +491,60 @@ def list_campaign_plots(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
+@lacks(run_id="the contribution belongs to the configuration, the same in every run")
+def get_config_contribution(campaign_id: str, config_name: str) -> dict:
+    """What this configuration's variations placed: planned path, goals, obstacles.
+
+    The markers its config view draws, and the files its panels read.
+
+    Args:
+        campaign_id: Campaign identifier.
+        config_name: Configuration name.
+
+    Returns:
+        ``{markers, files, errors}``. Markers are in world metres/radians, ``kind`` one of
+        ``box/cylinder/sphere/pose/path/point``. ``files`` maps a role to a path under
+        ``/results/<campaign_id>/``. ``errors`` names a variation that could not contribute:
+        an empty view with errors is not an empty configuration. Or ``{error}``.
+    """
+    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
+    try:
+        client = data_access.service_client() or LocalTransport()
+        return client.get_config_contribution(campaign_id, config_name).model_dump(
+            exclude_none=True)
+    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
+        return {"error": str(e)}
+
+
+def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
+                        source: str = "poses", frame: str = "base_link",
+                        marker_label: str | None = None) -> dict:
+    """How closely did it follow the plan? Every pose of a track to the nearest point of a
+    ``path`` marker of its configuration (``get_config_contribution``), over the whole
+    recording, with the driven length beside the path's.
+
+    Args:
+        campaign_id: Campaign identifier.
+        config_name: Configuration name.
+        run_id: Run index within that configuration.
+        source: Pose table (``poses`` from a bag, ``sim_poses`` from the simulator).
+        frame: Tracked entity; an unrecorded one is refused with those recorded.
+        marker_label: Which path, when there are several; none named is then refused.
+
+    Returns:
+        ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
+        has no heights. Or ``{error}``.
+    """
+    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
+    try:
+        client = data_access.service_client() or LocalTransport()
+        return client.get_track_deviation(
+            campaign_id, config_name, run_id, source=source, frame=frame,
+            marker_label=marker_label).model_dump()
+    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
+        return {"error": str(e)}
+
+
 def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) -> dict:
     """Whether a run view's 3D geometry is ready, being built, or **failed and why**.
 
@@ -715,6 +769,8 @@ _TOOLS = [
     describe_campaign_data,
     query_campaign_data_sql,
     list_campaign_plots,
+    get_config_contribution,
+    get_track_deviation,
     get_run_scene_status,
     get_camera_frame,
     get_simulation_screenshot,

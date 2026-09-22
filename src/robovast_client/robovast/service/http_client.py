@@ -651,6 +651,22 @@ class HTTPTransport(RobovastInterface):
             self._get(Routes.campaign_plots(campaign_id),
                       timeout=max(self.timeout, self.DATA_TIMEOUT)))
 
+    def get_config_contribution(self, campaign_id: str,
+                                config_name: str) -> "ServedContribution":
+        from robovast.service.interface import ServedContribution
+        return ServedContribution.model_validate(
+            self._get(Routes.campaign_contribution(campaign_id), config_name=config_name,
+                      timeout=max(self.timeout, self.DATA_TIMEOUT)))
+
+    def get_track_deviation(self, campaign_id: str, config_name: str, run_id: int,
+                            source: str = "poses", frame: str = "base_link",
+                            marker_label=None) -> "TrackDeviation":
+        from robovast.service.interface import TrackDeviation
+        return TrackDeviation.model_validate(
+            self._get(Routes.campaign_track_deviation(campaign_id), config_name=config_name,
+                      run_id=run_id, source=source, frame=frame, marker_label=marker_label,
+                      timeout=max(self.timeout, self.DATA_TIMEOUT)))
+
     def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
         from robovast.service.interface import CampaignPanelsResponse
         return CampaignPanelsResponse.model_validate(
