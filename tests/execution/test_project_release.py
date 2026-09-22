@@ -95,7 +95,5 @@ def test_a_campaign_releases_its_project_once_and_not_per_batch(tmp_path):
 def test_a_caller_supplied_release_callback_is_refused(tmp_path):
     """It would be replaced by the controller's own and never called, which is the shape
     of an argument silently ignored."""
-    from robovast.execution.backends import RunOptions
-
     with pytest.raises(ValueError, match="on_configs_staged"):
         _controller(tmp_path, options=RunOptions(on_configs_staged=lambda: None))
