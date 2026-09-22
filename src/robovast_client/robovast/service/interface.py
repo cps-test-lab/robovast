@@ -2011,6 +2011,35 @@ class DataDescribe(BaseModel):
     note: str = ""
 
 
+class TrackDeviation(BaseModel):
+    """How far one recorded track stayed from a path its configuration contributed.
+
+    Computed over **every** pose of the track, so ``points`` is the whole recording rather
+    than a sample of it. ``planar`` says whether heights were ignored: a path
+    whose points state no height (a floor plan's) is compared in the plane, since the tracked
+    frame sits above the floor -- and both lengths are then measured in the plane too, so the
+    two are comparable.
+    """
+
+    campaign_id: str
+    config_name: str
+    run_id: int
+    source: str
+    frame: str
+    marker_label: str = ""
+    planar: bool = True
+    points: int = 0
+    mean_m: Optional[float] = None
+    max_m: Optional[float] = None
+    path_length_m: float = 0.0
+    #: How far the track itself ran, summed between consecutive poses on the measurement clock.
+    track_length_m: float = 0.0
+    #: ``path_length_m / track_length_m``: how much of the driving the path accounts for. 1.0 is
+    #: a track as short as the path it followed; below it, the run drove further than the path is
+    #: long. ``None`` for a track that did not move.
+    efficiency: Optional[float] = None
+
+
 class DataQueryResult(BaseModel):
     """Rows from a read-only ``query_campaign_data_sql``."""
 
@@ -2548,6 +2577,16 @@ class Routes:
     @staticmethod
     def campaign_panels(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/panels"
+
+    @staticmethod
+    def campaign_contribution(campaign_id: str) -> str:
+        # The configuration is a query argument, like a job name: a route per config would
+        # make the config name part of the path grammar.
+        return f"/campaigns/{campaign_id}/contribution"
+
+    @staticmethod
+    def campaign_track_deviation(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/track_deviation"
 
     @staticmethod
     def campaign_panels_source(campaign_id: str) -> str:
@@ -3485,6 +3524,31 @@ class RobovastInterface(ABC):
         """Return the campaign's user-declared plots (``evaluation.plots`` in its
         snapshot ``.vast``): ``{title, query, vega_lite}`` each, rendered by the
         eval viewer against :meth:`query_campaign_data_sql`."""
+
+    @abstractmethod
+    def get_config_contribution(self, campaign_id: str,
+                                config_name: str) -> "ServedContribution":
+        """What one configuration of a campaign contributes to its view: the markers its
+        variations place (a planned path, goals, obstacles) and the files its panels read
+        (``files``, campaign-relative, e.g. the occupancy map under ``_config/``).
+
+        The same answer the workspace preview gives for the configuration it composed,
+        derived from what the campaign froze -- its ``configurations.yaml`` and its ``.vast``
+        -- rather than stored, so it cannot disagree with them. A variation whose hook
+        raises, or whose type cannot be resolved, is reported in ``errors``.
+        """
+
+    @abstractmethod
+    def get_track_deviation(self, campaign_id: str, config_name: str, run_id: int,
+                            source: str = "poses", frame: str = "base_link",
+                            marker_label: Optional[str] = None) -> "TrackDeviation":
+        """How far one recorded track (*frame* of run *run_id*, from pose table *source*)
+        stayed from a ``path`` marker of its configuration, over every pose.
+
+        *marker_label* names the path when the configuration contributes several; with one
+        it may be omitted, and with several and no label the call is refused with their
+        labels rather than guessing.
+        """
 
     @abstractmethod
     def list_campaign_panels(self, campaign_id: str) -> CampaignPanelsResponse:

@@ -28,6 +28,11 @@ It declares three attributes (duck-typed, like variation types' ``WEB_PREVIEW``)
   panel was before there was a second surface) or ``"config"`` for the Config tab's column. One
   entry-point group and one asset route serve both; this is what tells them apart, and what makes
   a run panel named in ``visualization.config.panels`` a refusal rather than a blank panel.
+* ``FILE_ROLE`` and ``plot(ax, path, projection, read)`` (optional, config panels) -- the
+  ``contribution.files`` role this panel renders, and the same rendering onto a matplotlib
+  ``Axes`` for a caller that has no browser (the ``draw_config`` MCP tool). ``read(path)``
+  returns a campaign file's bytes by its campaign-relative path; ``plot`` returns ``False``
+  for a projection it does not draw, and raises when the file cannot be drawn.
 * ``REMOTE_NAME`` (optional) -- the Module-Federation *container* name. Defaults to the
   entry-point name (one container per type). All panels here share a single ``robovast_nav``
   bundle (``robovast_nav/web`` exposes every ``PANEL_MODULE``), so they set the same
@@ -39,6 +44,7 @@ contract (``{spec, clock, data}``), so it is time-synced and queries the run's r
 exactly like a built-in panel.
 """
 
+import os
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -105,12 +111,57 @@ class Map2DPanelType:
 
     TYPE = "map2d"
     SURFACE = "config"
+    #: The ``contribution.files`` role holding the map, as ``map2d.tsx`` reads it.
+    FILE_ROLE = "map"
     #: Same attribute a variation type uses, which is what makes ``get_plugin_details`` describe a
     #: panel's fields without knowing anything about panels.
     CONFIG_CLASS = Map2DBindings
     WEB_PANEL = "web/dist"
     PANEL_MODULE = "./map2d"
     REMOTE_NAME = REMOTE_NAME
+
+    @staticmethod
+    def plot(ax, path: str, projection: str, read) -> bool:
+        """Draw the occupancy map at *path* onto *ax*; ``False`` outside the ``xy`` projection.
+
+        The map YAML names its image relative to itself, so both are fetched into one
+        directory under their own names before the map loader opens them.
+        """
+        if projection != "xy":
+            return False
+        import tempfile  # pylint: disable=import-outside-toplevel
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        import yaml  # pylint: disable=import-outside-toplevel
+
+        from robovast_nav.map_visualizer import \
+            MapVisualizer  # pylint: disable=import-outside-toplevel
+
+        yaml_bytes = read(path)
+        image = (yaml.safe_load(yaml_bytes) or {}).get("image")
+        if not image:
+            raise ValueError(f"map {path} declares no 'image' to draw")
+        # The image is read from the campaign and written under a temp directory, so both
+        # ends want a path that stays beside the map.
+        if Path(image).is_absolute():
+            raise ValueError(f"map {path} names its image by an absolute path ({image}), "
+                             "which is a path on the host that composed it, not in the campaign")
+        if os.path.normpath(image).startswith(".."):
+            raise ValueError(f"map {path} names its image outside its own directory ({image}); "
+                             "the image is read from the campaign beside the map and written "
+                             "beside it, and this path leaves both")
+        base = path.rsplit("/", 1)[0] + "/" if "/" in path else ""
+        with tempfile.TemporaryDirectory(prefix="robovast-map-") as tmp:
+            local = Path(tmp) / Path(path).name
+            local.write_bytes(yaml_bytes)
+            fetched = Path(tmp) / image
+            fetched.parent.mkdir(parents=True, exist_ok=True)
+            fetched.write_bytes(read(base + image))
+            viz = MapVisualizer()
+            if not viz.load_map(str(local)):
+                raise ValueError(f"could not load the map {path}")
+            viz.create_figure(ax=ax)
+        return True
 
 
 class Nav2BehaviorTreePanelType:

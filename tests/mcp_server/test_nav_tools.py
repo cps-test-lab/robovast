@@ -228,11 +228,6 @@ def test_an_unknown_campaign_is_an_error_result_not_an_exception(campaign_tree):
     assert "error" in result
 
 
-def test_obstacles_refuse_cleanly_when_the_config_has_no_scenario_config(campaign_tree):
-    result = nav.nav_get_obstacles(_CAMPAIGN, "cfg-a")
-    assert "error" in result
-
-
 def test_map_info_says_this_is_not_a_navigation_config(campaign_tree):
     result = nav.nav_get_map_info(_CAMPAIGN, "cfg-a")
     assert "not a navigation configuration" in result["error"]

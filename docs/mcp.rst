@@ -406,8 +406,8 @@ per container over the run, joinable to ``runs.available_cpus`` for the saturati
 and to ``poses`` for what the robot was doing at the time. The two read alike and answer
 different questions, so ``describe_campaign_data`` names the table and says which is which.
 
-**The nav analysis tools follow the same rule.** ``nav_get_trajectory``,
-``nav_get_path_deviation`` and ``nav_get_action_feedback`` query the results index — the tables
+**The trajectory tools follow the same rule.** ``nav_get_trajectory``,
+``nav_get_action_feedback`` and ``get_track_deviation`` query the results index — the tables
 postprocessing already ingested each CSV into, keyed on ``(config_name, run_id)``.
 Re-parsing ``poses.csv`` off local disk instead answers "campaign not found" for every
 cluster campaign, transfers a whole recording to compute eight numbers, and reads
@@ -416,9 +416,11 @@ every yaw as ``0.0``, a wrong answer with the shape of a right one.
 
 Maps, videos and the resolved scenario parameters stay file-sourced, because no table
 holds them; they are reached through the ``/results/<campaign_id>/…`` address space, which
-is what makes them work on the cluster too. Where a fact genuinely is not in the database
-— a nav variation's planned path is written to ``_transient/configurations.yaml`` and to
-nothing else — the tool's docstring says so and names what was checked.
+is what makes them work on the cluster too. What a configuration's variations placed — a
+planned path, goals, obstacles — is in no table either: ``get_config_contribution`` derives it
+from the campaign's frozen ``configurations.yaml`` and ``.vast``, the same markers its config
+view draws, for any robot type. ``get_track_deviation`` measures a recorded track against one
+of those ``path`` markers, over every pose.
 
 **Looking at a run: two tools, and the difference between them is the point.**
 

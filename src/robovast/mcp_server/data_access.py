@@ -68,17 +68,23 @@ def describe(campaign_id: str) -> dict:
     return result
 
 
-def query(campaign_id: str, sql: str, max_rows: int = 500) -> dict:
-    """Run a read-only ``SELECT``; ``{campaign_id, columns, rows, ...}`` or ``{error}``."""
+def query(campaign_id: str, sql: str, max_rows: int = 500,
+          max_bytes: int | None = None) -> dict:
+    """Run a read-only ``SELECT``; ``{campaign_id, columns, rows, ...}`` or ``{error}``.
+
+    *max_bytes* raises the reply's size ceiling for a caller that consumes the rows rather
+    than reading them into a context window -- a plot, say. Omitted, the reply keeps the
+    ceiling sized for an agent.
+    """
     client = service_access.service_client()
     try:
         if client is not None:
             result = client.query_campaign_data_sql(
-                campaign_id, sql, max_rows).model_dump()
+                campaign_id, sql, max_rows, max_bytes=max_bytes).model_dump()
         else:
             campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
             result = {"campaign_id": campaign_id,
-                      **query_data_db(campaign_dir, sql, max_rows)}
+                      **query_data_db(campaign_dir, sql, max_rows, max_bytes=max_bytes)}
     except _REPORTED as e:
         return {"error": _message(e, client)}
     return result

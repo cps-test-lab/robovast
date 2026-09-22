@@ -491,6 +491,149 @@ def list_campaign_plots(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
+@lacks(run_id="the contribution belongs to the configuration, the same in every run")
+def get_config_contribution(campaign_id: str, config_name: str) -> dict:
+    """What this configuration's variations placed: planned path, goals, obstacles.
+
+    The markers its config view draws, and the files its panels read.
+
+    Args:
+        campaign_id: Campaign identifier.
+        config_name: Configuration name.
+
+    Returns:
+        ``{markers, files, errors}``. Markers are in world metres/radians, ``kind`` one of
+        ``box/cylinder/sphere/pose/path/point``. ``files`` maps a role to a path under
+        ``/results/<campaign_id>/``. ``errors`` names a variation that could not contribute:
+        an empty view with errors is not an empty configuration. Or ``{error}``.
+    """
+    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
+    try:
+        client = data_access.service_client() or LocalTransport()
+        return client.get_config_contribution(campaign_id, config_name).model_dump(
+            exclude_none=True)
+    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
+        return {"error": str(e)}
+
+
+def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
+                        source: str = "poses", frame: str = "base_link",
+                        marker_label: str | None = None) -> dict:
+    """How closely did it follow the plan? Every pose of a track to the nearest point of a
+    ``path`` marker of its configuration (``get_config_contribution``), over the whole
+    recording, with the driven length beside the path's.
+
+    Args:
+        campaign_id: Campaign identifier.
+        config_name: Configuration name.
+        run_id: Run index within that configuration.
+        source: Pose table (``poses`` from a bag, ``sim_poses`` from the simulator).
+        frame: Tracked entity; an unrecorded one is refused with those recorded.
+        marker_label: Which path, when there are several; none named is then refused.
+
+    Returns:
+        ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
+        has no heights. Or ``{error}``.
+    """
+    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
+    try:
+        client = data_access.service_client() or LocalTransport()
+        return client.get_track_deviation(
+            campaign_id, config_name, run_id, source=source, frame=frame,
+            marker_label=marker_label).model_dump()
+    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
+        return {"error": str(e)}
+
+
+#: Track points a drawing asks for: an even stride over the whole run beyond that.
+_DRAWN_TRACK_POINTS = 2000
+
+
+def _drawn_track(campaign_id: str, config_name: str, run_id: int, source: str,
+                 frame: str) -> tuple[list, str]:
+    """An evenly strided track spanning the whole run, and a label saying how it was thinned.
+
+    Refuses rather than drawing a prefix: a reply cut at its size ceiling would be the start
+    of the run shown as all of it.
+    """
+    described = data_access.describe(campaign_id)
+    if "error" in described:
+        raise ValueError(described["error"])
+    columns = next((set(c.split(" ", 1)[0] for c in t.get("columns", []))
+                    for t in described.get("tables", []) if t.get("table") == source), None)
+    if not columns or "position.x" not in columns:
+        raise ValueError(f"{source!r} is not a pose table of {campaign_id!r}")
+    clock = "stamp" if "stamp" in columns else "timestamp"
+    z = 'CAST("position.z" AS double precision)' if "position.z" in columns else "0.0"
+    def lit(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    scope = (f"campaign_id = {lit(campaign_id)} AND config_name = {lit(config_name)} "
+             f"AND CAST(run_id AS integer) = {int(run_id)} AND \"{clock}\" IS NOT NULL")
+    n = _DRAWN_TRACK_POINTS
+    result = data_access.query(campaign_id, f"""
+        WITH src AS (SELECT CAST("{clock}" AS double precision) AS t,
+                            CAST("position.x" AS double precision) AS x,
+                            CAST("position.y" AS double precision) AS y, {z} AS z
+                     FROM "{source}" WHERE {scope} AND frame = {lit(frame)}),
+             idx AS (SELECT *, ROW_NUMBER() OVER (ORDER BY t) - 1 AS _i,
+                            COUNT(*) OVER () AS _n FROM src)
+        SELECT x, y, z, _n FROM idx
+        WHERE _n <= {n} OR _i % GREATEST(1, (_n + {n} - 1) / {n}) = 0 OR _i = _n - 1
+        ORDER BY _i""", max_rows=n + 1, max_bytes=8 * 1024 * 1024)
+    if "error" in result:
+        raise ValueError(result["error"])
+    if result.get("truncated"):
+        raise ValueError("the track reply was cut short, and a prefix would be drawn as the "
+                         "whole run")
+    rows = result.get("rows") or []
+    if not rows:
+        frames = data_access.query(
+            campaign_id, f'SELECT DISTINCT frame FROM "{source}" WHERE {scope}', max_rows=200)
+        raise ValueError(f"no {source} poses of frame {frame!r} in run {run_id} of "
+                         f"{config_name!r}; recorded frames: "
+                         f"{', '.join(sorted(r['frame'] for r in frames.get('rows') or []))}")
+    total = rows[0]["_n"]
+    label = f"run {run_id} {frame} ({source}"
+    label += f", {len(rows)} of {total} poses)" if total > len(rows) else ")"
+    return [(r["x"], r["y"], r["z"]) for r in rows], label
+
+
+def draw_config(campaign_id: str, config_name: str, run_id: Optional[int] = None,
+                source: str = "poses", frame: str = "base_link",
+                projection: str = "xy") -> Image:
+    """Picture a configuration: its map, planned path, goals, obstacles, and a run's track.
+
+    Draws what ``get_config_contribution`` returns -- what the config view shows -- plus, with
+    ``run_id``, that run's track, evenly thinned over the whole run and labelled so.
+
+    Args:
+        campaign_id: Campaign identifier.
+        config_name: Configuration name.
+        run_id: Overlay this run's track.
+        source: Pose table for the track (``poses``, ``sim_poses``).
+        frame: Tracked entity.
+        projection: ``xy`` (top-down, over a map), ``xz`` or ``yz`` (side views).
+
+    Returns a PNG, so a failure **raises**. What could not be drawn is printed on the image.
+    """
+    from robovast.client.file_address import \
+        RESULTS, format_address  # noqa: PLC0415
+    from robovast.common.config_plot import draw  # noqa: PLC0415
+    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
+
+    client = data_access.service_client() or LocalTransport()
+    contribution = client.get_config_contribution(campaign_id, config_name).model_dump(
+        exclude_none=True)
+    track, label = (_drawn_track(campaign_id, config_name, run_id, source, frame)
+                    if run_id is not None else (None, ""))
+    png, _notes = draw(
+        contribution, lambda path: client.read_file_bytes(
+            format_address(RESULTS, campaign_id, path)),
+        track=track, track_label=label, projection=projection,
+        title=f"{campaign_id} / {config_name}")
+    return Image(data=png, format="png")
+
+
 def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) -> dict:
     """Whether a run view's 3D geometry is ready, being built, or **failed and why**.
 
@@ -715,6 +858,9 @@ _TOOLS = [
     describe_campaign_data,
     query_campaign_data_sql,
     list_campaign_plots,
+    get_config_contribution,
+    get_track_deviation,
+    draw_config,
     get_run_scene_status,
     get_camera_frame,
     get_simulation_screenshot,

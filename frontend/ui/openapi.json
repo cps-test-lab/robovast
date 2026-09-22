@@ -3642,6 +3642,106 @@
         "title": "StatusResponse",
         "type": "object"
       },
+      "TrackDeviation": {
+        "description": "How far one recorded track stayed from a path its configuration contributed.\n\nComputed over **every** pose of the track, so ``points`` is the whole recording rather\nthan a sample of it. ``planar`` says whether heights were ignored: a path\nwhose points state no height (a floor plan's) is compared in the plane, since the tracked\nframe sits above the floor -- and both lengths are then measured in the plane too, so the\ntwo are comparable.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "config_name": {
+            "title": "Config Name",
+            "type": "string"
+          },
+          "efficiency": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Efficiency"
+          },
+          "frame": {
+            "title": "Frame",
+            "type": "string"
+          },
+          "marker_label": {
+            "default": "",
+            "title": "Marker Label",
+            "type": "string"
+          },
+          "max_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max M"
+          },
+          "mean_m": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean M"
+          },
+          "path_length_m": {
+            "default": 0.0,
+            "title": "Path Length M",
+            "type": "number"
+          },
+          "planar": {
+            "default": true,
+            "title": "Planar",
+            "type": "boolean"
+          },
+          "points": {
+            "default": 0,
+            "title": "Points",
+            "type": "integer"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "track_length_m": {
+            "default": 0.0,
+            "title": "Track Length M",
+            "type": "number"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "config_name",
+          "efficiency",
+          "frame",
+          "marker_label",
+          "max_m",
+          "mean_m",
+          "path_length_m",
+          "planar",
+          "points",
+          "run_id",
+          "source",
+          "track_length_m"
+        ],
+        "title": "TrackDeviation",
+        "type": "object"
+      },
       "UpdatePanelsSourceRequest": {
         "properties": {
           "campaign_id": {
@@ -5245,6 +5345,57 @@
         "summary": "Delete Campaign",
         "tags": [
           "campaigns"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/contribution": {
+      "get": {
+        "operationId": "get_config_contribution_campaigns__campaign_id__contribution_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "config_name",
+            "required": true,
+            "schema": {
+              "title": "Config Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServedContribution"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Config Contribution",
+        "tags": [
+          "results"
         ]
       }
     },
@@ -7151,6 +7302,102 @@
         "summary": "Stop",
         "tags": [
           "campaigns"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/track_deviation": {
+      "get": {
+        "operationId": "get_track_deviation_campaigns__campaign_id__track_deviation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "config_name",
+            "required": true,
+            "schema": {
+              "title": "Config Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "default": "poses",
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "frame",
+            "required": false,
+            "schema": {
+              "default": "base_link",
+              "title": "Frame",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "marker_label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Marker Label"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackDeviation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Track Deviation",
+        "tags": [
+          "results"
         ]
       }
     },
