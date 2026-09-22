@@ -81,7 +81,7 @@ RUN --mount=type=secret,id=git_token \
       echo "roqsim IS public, so this is most likely a ref that does not exist rather than" >&2; \
       echo "an access problem -- note that the branch is now 'main'. Either:" >&2; \
       echo "  - check the ref:          --build-arg ROQSIM_REF=<branch|tag|sha>" >&2; \
-      echo "  - build from a checkout:  build.sh --image roqsim --roqsim-src <path>" >&2; \
+      echo "  - or build a pushed branch: --build-arg ROQSIM_REF=<branch>" >&2; \
       echo "  - pass a token, for a private fork:  --secret id=git_token,env=GITHUB_TOKEN" >&2; \
       echo "  - or point elsewhere:     --build-arg ROQSIM_REPO=<url>" >&2; \
       exit 1; \
@@ -191,20 +191,21 @@ RUN apt-get update && \
 ##############################################################
 ####                      roqsim                        ####
 ##############################################################
-# From the ``roqsim-src`` stage above: a clone of the pinned ref by default, or whatever a
-# ``--build-context roqsim-src=<path>`` pointed it at. robovast vendors no copy of roqsim and
-# has no submodule, deliberately, so each repository stays publishable on its own.
+# From the ``roqsim-src`` stage above: the clone of the pinned ref, or whatever a
+# ``--build-context roqsim-src=<path>`` pointed it at for a one-off build. robovast vendors no
+# copy of roqsim and has no submodule, deliberately, so each repository stays publishable on
+# its own.
 #
-# Why the distinction matters more than it looks: a clone builds roqsim as *pushed*, which is
-# routinely not what a developer has in front of them -- and an image built from the wrong
-# source fails in ways that look like the integration is broken rather than stale.
-# ``build.sh --roqsim-src`` is the answer; the build log says which was used.
+# A published image is built from the clone, which is what lets a campaign say which roqsim it
+# ran: the image records the commit it was built from, and a commit nobody can fetch names
+# nothing. Iterating on unpushed work means pushing a branch and naming it in ``ROQSIM_REF``.
 COPY --from=roqsim-src / /opt/roqsim
 
 # No external asset roqsim lists in external/external_assets.yaml may enter the image: each is
 # fetched or generated locally and git-ignored, several under licences that forbid redistribution
 # (vendor CAD meshes, Spot's NVIDIA policy), and the package-data globs below would install them.
-# A clone never carries them; a --roqsim-src working tree can, so the build refuses one that does.
+# A clone never carries them; a working tree handed in through ``--build-context`` can, so the
+# build refuses a source tree that does.
 RUN python3 -c 'import pathlib, sys, yaml; \
 root = pathlib.Path("/opt/roqsim"); \
 resources = yaml.safe_load((root / "external/external_assets.yaml").read_text())["resources"]; \

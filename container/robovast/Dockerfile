@@ -46,10 +46,9 @@ RUN git clone "$SCENARIO_EXECUTION_REPO" /src \
  && rm -rf /src/.git
 
 # The source tree alone, so that ``--build-context scenario-execution-src=<path>`` can replace
-# it with a working checkout. That hatch is needed because the pin is a *release* control:
-# iterating on scenario-execution means building from a commit that is not pushed yet, which a
-# clone cannot do, and pushing to the shared repo first is a release decision made for the
-# wrong reason.
+# it with a working checkout for a one-off build. A published image is built from the clone: the
+# pin is a release control, and an image built from a commit nobody can fetch records an origin
+# nothing can be rebuilt from.
 FROM scratch AS scenario-execution-src
 COPY --from=scenario-execution-clone /src /
 
@@ -275,8 +274,8 @@ RUN \
 
 RUN mkdir -p /ws/src
 
-# From the ``scenario-execution-src`` stage, which is the pinned clone by default and a local
-# working tree when a build overrides it (see the stage definition at the top of this file).
+# From the ``scenario-execution-src`` stage: the pinned clone, or a local working tree when a
+# build overrides that stage (see its definition at the top of this file).
 #
 # Not a ``COPY`` of a directory a build script creates in a temp context: git cannot track an
 # empty directory, so such a COPY resolves against nothing in a plain checkout -- and CI builds

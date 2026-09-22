@@ -443,23 +443,20 @@ So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge
 bridge is installed is ``roqsim sim <world> --no-communication``, which strips the transport
 plugins, so declaring them costs the world nothing.
 
-Developing against a working tree
-`````````````````````````````````
+Building the image from your own roqsim
+```````````````````````````````````````
 
-The Dockerfile clones roqsim at a pinned ref, which is roqsim as *pushed* — not your working
-tree. To build it from a checkout on disk instead::
+The Dockerfile clones roqsim at a ref, so what reaches the image is roqsim as *pushed*. Push
+the work to a branch and name it::
 
-    container/robovast/build.sh --image roqsim --roqsim-src ../roqsim \
-        --project docker.io/<you> --push
+    container/robovast/build.sh --image roqsim \
+        --project docker.io/<you> --push -- --build-arg ROQSIM_REF=<branch>
 
-That replaces the Dockerfile's clone stage with your tree (buildx ``--build-context``), so both
-paths reach the same ``COPY`` and there is no second code path to drift. The build says in its
-log which source it used, because the resulting image does not correspond to the pinned ref.
+The image records the commit it was built from and ``roqsim --version`` reports it, which is
+what lets a campaign say which simulator it ran — a commit nobody can fetch names nothing. A
+clone of a private fork needs a token: set ``GITHUB_TOKEN`` and ``build.sh`` passes it as a
+BuildKit secret.
 
-While roqsim is not a public repository the *clone* path additionally needs a token — set
-``GITHUB_TOKEN`` and ``build.sh`` passes it as a BuildKit secret — so ``--roqsim-src`` is the
-practical route from this working tree.
-
-``make release-images PROJECT=... ROQSIM_SRC=../roqsim PUSH=1`` does the same for the whole
+``make release-images PROJECT=... ROQSIM_REF=<branch> PUSH=1`` does the same for the whole
 family at once, which is what a cluster needs — ``ROBOVAST_PROJECT`` moves all four members,
 so a project holding only one of them cannot serve a campaign.

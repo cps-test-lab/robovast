@@ -28,9 +28,9 @@ same idiom is refreshed without touching this file -- and a source pinned in som
 invisible to it, which is why the inline clones were promoted to ARGs.
 
 Note that a refreshed ``ROQSIM_REF`` only decides what a plain ``docker build`` clones:
-``container/release_images.sh`` defaults ``--roqsim-ref main`` and a superproject usually passes
-``--roqsim-src`` to build the checkout it has on disk. ``SCENARIO_EXECUTION_REF`` has no such
-override in the release path, so for that one this command is the only way the image moves.
+``container/release_images.sh`` defaults ``--roqsim-ref main``, and a caller naming a ref there
+overrides the pin. ``SCENARIO_EXECUTION_REF`` has no such override in the release path, so for
+that one this command is the only way the image moves.
 """
 
 import argparse

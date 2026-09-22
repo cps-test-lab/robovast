@@ -18,7 +18,7 @@
 #   ./container/release_images.sh --project <prefix> [--push|--ask-push] [--config-write] \
 #                                  [--ros-distro <distro>] [--ubuntu-mirror <url>] \
 #                                  [--ubuntu-snapshot <stamp|none>] \
-#                                  [--roqsim-ref <ref> | --roqsim-src <path>] \
+#                                  [--roqsim-ref <ref>] \
 #                                  [-- <extra docker build args>]
 #
 # Example:
@@ -42,11 +42,6 @@
 # it drops the dated path, installs what that archive serves today, and labels the images `none`
 # so a campaign's provenance says they cannot be rebuilt to the same versions. A published family
 # built this way is not reproducible -- worth it for a dev registry, a real cost for a release.
-#
-# --roqsim-src builds the simulator image from a checkout on disk instead of cloning, for
-# a caller that already has one -- a superproject holding roqsim as a submodule, or an
-# unpushed commit. It is the same option container/robovast/build.sh takes; this script
-# only forwards it. Mutually exclusive with --roqsim-ref, which names a commit to clone.
 
 BASEDIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -57,7 +52,6 @@ ROS_DISTRO="jazzy"
 UBUNTU_MIRROR=""
 UBUNTU_SNAPSHOT_ARG=""
 ROQSIM_REF="main"
-ROQSIM_SRC=""
 # `latest` matches CI and the built-in family default. Pass --tag <stamp> to publish an
 # immutable set, which is how a deployment is pinned: ROBOVAST_PROJECT_TAG=<stamp>.
 TAG="latest"
@@ -106,10 +100,6 @@ while [[ $# -gt 0 ]]; do
       ROQSIM_REF_SET=1
       shift 2
       ;;
-    --roqsim-src)
-      ROQSIM_SRC="$2"
-      shift 2
-      ;;
     --)
       shift
       break
@@ -123,7 +113,7 @@ done
 EXTRA_ARGS="$@"
 
 usage() {
-  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--config-write] [--ros-distro <distro>] [--ubuntu-mirror <url>] [--ubuntu-snapshot <stamp|none>] [--roqsim-ref <ref> | --roqsim-src <path>] [-- <extra docker build args>]" >&2
+  echo "Usage: $0 --project <registry/namespace> [--tag <tag>] [--push|--ask-push] [--config-write] [--ros-distro <distro>] [--ubuntu-mirror <url>] [--ubuntu-snapshot <stamp|none>] [--roqsim-ref <ref>] [-- <extra docker build args>]" >&2
   echo "Example: $0 --project ghcr.io/cps-test-lab --push" >&2
   echo "Pinned:  $0 --project ghcr.io/cps-test-lab --tag 2026-08-17 --push" >&2
 }
@@ -131,22 +121,6 @@ usage() {
 if [[ -z "$PROJECT" ]]; then
   usage
   exit 2
-fi
-
-if [[ -n "$ROQSIM_SRC" && -n "$ROQSIM_REF_SET" ]]; then
-  echo "error: --roqsim-src and --roqsim-ref both given; one checkout, one clone -- pick one." >&2
-  exit 2
-fi
-
-if [[ -n "$ROQSIM_SRC" ]]; then
-  # Resolved here because build.sh runs from its own directory and the caller's relative
-  # path (a plain ./roqsim from a superproject) would otherwise resolve somewhere else.
-  ROQSIM_SRC=$(cd "$ROQSIM_SRC" 2>/dev/null && pwd) || {
-    echo "error: --roqsim-src path does not exist" >&2; exit 2; }
-  # A wrong-but-present directory is the failure worth catching: it would build an image
-  # missing the packages rather than fail, and the image is what campaigns pin.
-  [[ -f "$ROQSIM_SRC/roqsim/pyproject.toml" ]] || {
-    echo "error: $ROQSIM_SRC is not a roqsim checkout (no roqsim/pyproject.toml)" >&2; exit 2; }
 fi
 
 # ensure PROJECT ends with a slash -- matches container/robovast/build.sh's own
@@ -171,9 +145,6 @@ BASE_TAG="${PROJECT}robovast:${TAG}"
 ROQSIM_TAG="${PROJECT}robovast-roqsim:${TAG}"
 CONTROLLER_TAG="${PROJECT}robovast-controller:${TAG}"
 SIDECAR_TAG="${PROJECT}robovast-sidecar:${TAG}"
-
-SRC_FLAG=()
-[[ -n "$ROQSIM_SRC" ]] && SRC_FLAG=(--roqsim-src "$ROQSIM_SRC")
 
 MIRROR_FLAG=()
 [[ -n "$UBUNTU_MIRROR" ]] && MIRROR_FLAG=(--ubuntu-mirror "$UBUNTU_MIRROR")
@@ -231,7 +202,7 @@ echo "== base + roqsim =="
 # mid-push; FAILED collects it instead.
 CHAIN_STATUS=0
 ROQSIM_REF="$ROQSIM_REF" "$BASEDIR/robovast/build.sh" --image all --project "$PROJECT" \
-  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${SRC_FLAG[@]}" "${MIRROR_FLAG[@]}" \
+  --tag "$TAG" --ros-distro "$ROS_DISTRO" "${MIRROR_FLAG[@]}" \
   "${PUSH_FLAG[@]}" -- $EXTRA_ARGS \
   || CHAIN_STATUS=$?
 

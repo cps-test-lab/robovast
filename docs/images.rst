@@ -314,11 +314,13 @@ re-resolves the third-party ground an image starts from (base-image digests, the
 source pin changes what our own code does, so it is a release decision and gets its own
 diff.
 
-The escape hatches, for iterating on a commit that is not pushed yet: ``--roqsim-src`` /
-``--scenario-execution-src`` build from a checkout on disk instead of cloning. Only
-``--roqsim-src`` is reachable from ``release-images`` (as ``ROQSIM_SRC``); the others need
-``container/robovast/build.sh`` directly. An image built that way carries a commit no repo
-records, which is why the pin — not the hatch — is the release path.
+Both repositories are cloned at their pinned ref, so an image is built from commits anyone can
+fetch — which is what a campaign's provenance answers "rebuild it from what?" with, and what
+lets it say which simulator it ran. Iterating on unpushed work means pushing a branch and naming
+it (``ROQSIM_REF``, ``SCENARIO_EXECUTION_REF``). A one-off build from a tree on disk is buildx's
+own ``--build-context roqsim-src=<path>`` / ``--build-context scenario-execution-src=<path>``,
+which replaces the clone stage; the image then carries a commit no repository records, which is
+why that is not the release path.
 
 Moving a cluster's images
 -------------------------
