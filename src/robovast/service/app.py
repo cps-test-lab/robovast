@@ -134,6 +134,12 @@ FRAMEWORK_PATHS = frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect", 
 #: Where the MCP server answers when :func:`build_app` mounts it (see ``mount_mcp``).
 MCP_PATH = "/mcp"
 
+#: ``Cache-Control`` for a response whose URL names its bytes, so a browser keeps it without
+#: revalidating. Only for such URLs: on a path that names a location it would pin stale bytes.
+#: ``private`` because every route is authenticated: a shared cache in between must not hand
+#: what one caller was allowed to read to the next one asking for the URL.
+IMMUTABLE_CACHE_CONTROL = "private, max-age=31536000, immutable"
+
 #: The login page. Deliberately server-rendered and dependency-free: it has to work
 #: before the SPA loads, and the SPA's bundle is behind the very session this page
 #: issues. The name field is optional — an unattributed campaign records nothing rather
@@ -1209,10 +1215,19 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, …).
 
         Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
-        results at all, it is in the service's shared cache."""
+        results at all, it is in the service's shared cache.
+
+        Cached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what
+        the entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the
+        world, its overrides and the bytes of every campaign file it reads, and an entry is written
+        once under its key and never rewritten (``scene_cache.generate`` returns a complete entry
+        untouched). Different geometry is a different key, so a different URL; a run switch between
+        runs of one world then costs no request for its assets at all. ``/results`` files get no
+        such header: their paths name a location, not the bytes in it."""
         from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
         return FileResponse(str(_guard(
-            lambda: impl.resolve_campaign_scene_asset(campaign_id, path))))
+            lambda: impl.resolve_campaign_scene_asset(campaign_id, path))),
+            headers={"Cache-Control": IMMUTABLE_CACHE_CONTROL})
 
     @app.get(Routes.workspace_scene("{workspace_id}"), response_model=SceneStatus,
              tags=["authoring"])
@@ -1447,9 +1462,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         #
         # `impl.local_file` is asked for outright rather than probed with getattr: every
         # transport implements it (they all subclass LocalTransport), so a presence check
-        # could only ever succeed. A branch guarded on it -- buffering the bytes for "a
-        # lane with no path" -- is unreachable, while the *cluster* lane falls into the
-        # local resolver and fetches an entire campaign to serve one file.
+        # could only ever succeed, so a branch guarded on it -- buffering the bytes for "a
+        # lane with no path" -- is unreachable.
         return _guard(lambda: FileResponse(impl.local_file(address), media_type=media_type))
 
     @app.get(Routes.RESULTS + "/{campaign_id}/{path:path}", tags=["files"])

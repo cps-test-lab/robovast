@@ -8,7 +8,7 @@
 // Edit-visualization editor (Monaco, same style as the config editor) that saves the campaign's
 // `visualization:` block as a .vast override and reloads the panels.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useToasts } from '@/components/ToastProvider'
 import Editor from '@monaco-editor/react'
@@ -47,7 +47,7 @@ import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon } from '@/components/viewIcons'
 import { PlaybackClock, useClock } from '@robovast/panel-kit'
-import { dbDataProvider } from '@/lib/panels/dataProvider'
+import { dbDataProvider, describeQuery } from '@/lib/panels/dataProvider'
 import { parsePanels } from '@/lib/panels/parsePanels'
 import { PanelHost } from '@/lib/panels/PanelHost'
 import { ResultsTree, runsQuery } from './ResultsTree'
@@ -343,9 +343,17 @@ export function RunView({
   const runKey = run ? `${campaignId}:${run.configName}:${run.runId}` : ''
 
   // One provider + clock per run. Recreated (and the old clock disposed) when the run changes.
+  // `/describe` is the campaign's, so it is not: every provider of this campaign reads one answer
+  // through the query cache. Versioned by what moves when the campaign's index is rewritten -- a
+  // re-postprocessing ends the campaign again -- so a refreshed summary asks again.
+  const describeVersion = `${summary?.finished_at ?? ''}:${summary?.postprocessed ? 1 : 0}`
+  const getDescribe = useCallback(
+    () => queryClient.fetchQuery(describeQuery(campaignId, describeVersion)),
+    [queryClient, campaignId, describeVersion],
+  )
   const provider = useMemo(
-    () => (run ? dbDataProvider(campaignId, run.configName, run.runId) : null),
-    [campaignId, run],
+    () => (run ? dbDataProvider(campaignId, run.configName, run.runId, getDescribe) : null),
+    [campaignId, run, getDescribe],
   )
   const clock = useMemo(() => new PlaybackClock(), [runKey])
   useEffect(() => () => clock.dispose(), [clock])

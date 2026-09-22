@@ -144,6 +144,13 @@ export interface SceneModel {
     quat: readonly [number, number, number, number],
   ) => void
   /**
+   * Put every body back at its rest transform and every joint at its initial value -- the state
+   * `loadScene` returns. What lets one model serve a second run of the same world: a body the
+   * previous run's motion moved and the next run's does not drive would otherwise stay where the
+   * previous run left it.
+   */
+  reset: () => void
+  /**
    * Release this scene's GPU resources (geometries, materials, textures).
    *
    * Needed because switching campaign switches *world*: the viewport frees whatever it is showing when
@@ -601,7 +608,6 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     bodyJoints.set(j.body, list)
   }
   const jointValues = new Map<string, number>()
-  for (const j of scene.joints) jointValues.set(j.name, scene.initialJoints[j.name] ?? 0)
 
   const recompute = (bodyId: number) => {
     const node = nodes[bodyId]
@@ -636,7 +642,12 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     }
   }
   // Seat the home pose so the arm shows its rest configuration before live data arrives.
-  for (const bodyId of bodyJoints.keys()) recompute(bodyId)
+  const seatHome = () => {
+    scene.bodies.forEach((_, i) => applyRest(i))
+    for (const j of scene.joints) jointValues.set(j.name, scene.initialJoints[j.name] ?? 0)
+    for (const bodyId of bodyJoints.keys()) recompute(bodyId)
+  }
+  seatHome()
 
   // basePose: seat a body at a **world** pose (a run capture's pose track, a /tf transform), in the
   // descriptor frame.
@@ -704,6 +715,7 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     joints: Object.keys(jointMap),
     basePose,
     view: scene.view,
+    reset: seatHome,
     dispose: () => {
       disposeSceneGraph(root)
       // A base texture only ever used through repeat-variant clones is on no material, so the graph

@@ -688,6 +688,9 @@ class LocalTransport(RobovastInterface):
         # and why it is a file stat rather than an invalidation call.
         self._summary_cache: dict[str, tuple] = {}
         self._disk_status_cache: dict[str, tuple] = {}
+        # campaign_id -> {(config_name, run_id): (key, (identity, cache key))}, the same
+        # contract for a run's scene identity; see _scene_identity for the extra key part.
+        self._scene_identity_cache: dict[str, dict] = {}
         # token -> (expiry, staged archive path) for campaign-archive uploads. In memory by
         # design; see the "taking a campaign in" section.
         self._archive_grants: dict[str, tuple[float, Path]] = {}
@@ -1052,10 +1055,11 @@ class LocalTransport(RobovastInterface):
         ``.webm`` rather than download it before playing.
 
         **Every transport implements this**, which is why callers must not test for its
-        presence: ``ClusterService`` subclasses this one, so the attribute is never absent and a ``getattr(impl, "local_file", None) is None``
-        check can only ever be False. What differs between the lanes is the *cost* of
-        answering, and each says so: here the file is already on disk, and the cluster
-        fetches the one object behind the address.
+        presence: ``ClusterService`` subclasses this one, so the attribute is never absent and
+        a ``getattr(impl, "local_file", None) is None`` check can only ever be False. The
+        lanes do not differ here either: both hold a campaign's results under the service's
+        own results root (:meth:`campaign_dir`), so the path returned is a file already on
+        this host's disk and nothing is fetched to answer.
         """
         _, _, _, target = self._address_target(address)
         self._require_file(address, target)
@@ -4591,7 +4595,8 @@ class LocalTransport(RobovastInterface):
             self._campaigns.pop(campaign_id, None)
             for cache in (self._started_at_cache, self._finished_at_cache,
                           self._description_cache, self._created_by_cache,
-                          self._origin_cache, self._summary_cache, self._disk_status_cache):
+                          self._origin_cache, self._summary_cache, self._disk_status_cache,
+                          self._scene_identity_cache):
                 cache.pop(campaign_id, None)
 
         if failed:
@@ -5374,12 +5379,40 @@ class LocalTransport(RobovastInterface):
         return None if revision == "unknown" else revision
 
     def _scene_identity(self, campaign_id, config_name, run_id):
+        """``(identity, cache key)`` of the geometry this run needs, memoised at rest.
+
+        Asked on every run switch in the run view, and not cheap: it parses the run's capture and
+        the campaign's frozen ``.vast``, hashes every byte of each ``_config/`` tree a
+        campaign-file world reads, and for a campaign that recorded only an image tag asks Docker
+        what the tag names. None of that can change for a campaign nothing is driving, so the
+        answer is kept against :meth:`_rest_key` plus the stat of the run's own capture --
+        the one input the campaign's record files do not cover. A refusal is not memoised: it
+        is cheap to repeat, and its cause (a missing capture, an unpulled image) may be fixed.
+        """
         from robovast.service import scene_cache
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        rest = self._rest_key(campaign_id, entry)
+        capture = (self.campaign_dir(campaign_id) / config_name / str(run_id)
+                   / "capture" / "capture.json")
+        try:
+            st = capture.stat()
+            memo_key = (rest, st.st_mtime_ns, st.st_size) if rest is not None else None
+        except OSError:
+            memo_key = None  # no capture: _scene_capture below raises the reason
+        run = (config_name, str(run_id))
+        if memo_key is not None:
+            hit = self._scene_identity_cache.get(campaign_id, {}).get(run)
+            if hit is not None and hit[0] == memo_key:
+                return hit[1]
         manifest = self._scene_capture(campaign_id, config_name, run_id)
         identity = scene_cache.world_identity(str(self.campaign_dir(campaign_id)), manifest,
                                               resolve_digest=self._resolve_image_digest,
                                               config_name=config_name)
-        return identity, scene_cache.cache_key(identity)
+        answer = (identity, scene_cache.cache_key(identity))
+        if memo_key is not None:
+            self._scene_identity_cache.setdefault(campaign_id, {})[run] = (memo_key, answer)
+        return answer
 
     def campaign_scene_status(self, campaign_id, config_name, run_id) -> "SceneStatus":
         from robovast.service import scene_cache

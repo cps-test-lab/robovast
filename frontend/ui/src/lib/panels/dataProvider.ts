@@ -65,19 +65,38 @@ export function buildSeriesSql(table: string, where: string, opts: SeriesOptions
   )
 }
 
+/** The react-query options for a campaign's `/describe`, shared by every reader of it.
+ *
+ *  `/describe` is per campaign, not per run, so the providers of one campaign's runs share one
+ *  answer: a run switch builds a new provider, and asking again for each would repeat a request
+ *  whose answer cannot differ. The key is the Data browser's (`['describe', campaignId]`) plus
+ *  `version`, so that browser's invalidation after it starts postprocessing reaches this entry
+ *  too, and a campaign whose index changed under a newer summary is asked again rather than
+ *  served the old table list. Never stale otherwise: nothing else changes the answer. */
+export function describeQuery(campaignId: string, version: string) {
+  return {
+    queryKey: ['describe', campaignId, version],
+    queryFn: () => robovast.describeCampaignData(campaignId),
+    staleTime: Infinity,
+    retry: false,
+  } as const
+}
+
+/**
+ * @param getDescribe the campaign's `/describe`, supplied by the host so that every provider of one
+ *   campaign shares a single answer (see {@link describeQuery}); called lazily, on the first
+ *   `has`.
+ */
 export function dbDataProvider(
   campaignId: string,
   configName: string,
   runId: string | number,
+  getDescribe: () => Promise<DataDescribe>,
 ): DataProvider {
   // run scope, reused by every query. run_id is an integer column; refuse a non-integer rather than
   // silently building broken SQL.
   if (!isInt(runId)) throw new Error(`run_id must be an integer, got ${runId!}`)
   const where = `config_name = ${sqlStr(configName)} AND run_id = ${runId}`
-
-  // /describe is per-campaign, not per-run — fetch once and share.
-  let describe: Promise<DataDescribe> | null = null
-  const getDescribe = () => (describe ??= robovast.describeCampaignData(campaignId))
 
   // A const rather than a method on the literal below, so `series` can delegate to it without `this`
   // -- a panel that destructures the provider (`const { series } = data`) must keep working.
