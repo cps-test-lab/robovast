@@ -1000,9 +1000,9 @@ class VersionInfo(BaseModel):
     #:
     #: ``/results/<campaign_id>/<path>`` is ``<results_root>/<campaign_id>/<path>``.
     #: ``/sources/<workspace_id>/<path>`` is
-    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a workspace
-    #: reporting ``read_only: true``, which is a directory pinned in place with
-    #: ``--workspace-dir`` and therefore lives outside this root.
+    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a directory
+    #: pinned in place with ``--workspace-dir``, which is used where it is and
+    #: therefore lives outside this root.
     results_root: Optional[str] = None
     sources_root: Optional[str] = None
     #: The origin to prefix a route or an address with, so a caller that cannot be handed
@@ -1459,9 +1459,6 @@ class WorkspaceInfo(BaseModel):
     workspace_id: str
     name: str = ""
     created_at: Optional[str] = None
-    #: True for a directory pinned read-only with ``vast serve --workspace-dir``:
-    #: used in place, so writes are refused — edit the files on disk instead.
-    read_only: bool = False
     #: Campaigns running *right now* out of this workspace. Live state, not a stored
     #: binding: a finished campaign is workspace-independent (which is why
     #: ``_execution/launch.yaml`` records no ``workspace_id``), and only the service
