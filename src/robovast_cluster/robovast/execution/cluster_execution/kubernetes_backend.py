@@ -605,6 +605,11 @@ class BatchJobRunner:
     #: runner built another way (offline manifest emit, tests) has no stop wired.
     _state = None
 
+    #: Called once this batch's configurations are staged, set by :meth:`for_batch`.
+    #: Class-level default for the same reason as ``_state``: a runner built another way
+    #: stages nothing anybody is waiting on.
+    on_configs_staged = None
+
     #: SUT image ref and the immutable digest captured from the run pods; class-level
     #: defaults so a runner built another way (offline manifest emit, tests) is safe.
     image = None
@@ -665,8 +670,10 @@ class BatchJobRunner:
     def for_batch(cls, *, campaign_data, campaign_id, batch_tag, runs, cluster_config,
                   namespace, image, kube_context=None, log_tree=False, state=None,
                   built_images=None, image_digest_cache=None, admission=None,
-                  image_label_cache=None, build_lock_cache=None):
+                  image_label_cache=None, build_lock_cache=None,
+                  on_configs_staged=None):
         self = cls()
+        self.on_configs_staged = on_configs_staged
         # The process-wide admission queue, or None. None means "create every job at once",
         # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
         # and what the cluster lane did before the queue existed -- so this parameter arriving
@@ -3047,9 +3054,14 @@ class BatchJobRunner:
         prepare_campaign_configs(
             campaign_root, self.campaign_data, cluster=True,
             instance_type_command=_instance_type_command(self.cluster_config))
+        # Everything this batch reads from the workspace has been read: what follows works
+        # from the campaign's own copy, so the workspace may change from here.
+        if self.on_configs_staged is not None:
+            self.on_configs_staged()
         self._write_job_param_files(campaign_root, campaign_root)
         pod_access.ensure_campaign_secret(self.k8s_client, self.namespace, self.campaign,
                                           token)
+
 
         # 2. Build and submit one Job per packed job, then wait.
         # The up-front "can these jobs ever be admitted?" check is admission.preflight()
@@ -3624,6 +3636,7 @@ class KubernetesBackend(ExecutionBackend):
             image_label_cache=self._image_label_cache,
             build_lock_cache=self._build_lock_cache,
             admission=self._admission,
+            on_configs_staged=options.on_configs_staged,
         )
         # Now, and not after the batch: the runner's plan carries the digest every pod will
         # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
