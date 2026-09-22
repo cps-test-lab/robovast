@@ -1983,6 +1983,9 @@ class VariationTypesResponse(BaseModel):
 class DataTable(BaseModel):
     """One queryable table, as :meth:`describe_campaign_data` reports it."""
 
+    #: The index schema the table is in. Spelled ``schema_`` because the bare name is a
+    #: pydantic attribute, and serialised as ``schema`` -- which is the key every client
+    #: path hands on, so a reader looking it up finds it.
     schema_: str = Field("", alias="schema")
     table: str = ""
     columns: list[str] = Field(default_factory=list)
@@ -1990,15 +1993,14 @@ class DataTable(BaseModel):
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "serialize_by_alias": True}
 
 
 class DataDescribe(BaseModel):
     """Schema of a campaign's tables in the index (+ the ``campaign`` schema).
 
-    Each ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from
-    the query helper verbatim — kept as a dict so ``schema`` stays that key across
-    every client path).
+    Each ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in
+    every dump it appears in.
     """
 
     campaign_id: str

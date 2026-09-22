@@ -865,7 +865,7 @@
         "type": "object"
       },
       "DataDescribe": {
-        "description": "Schema of a campaign's tables in the index (+ the ``campaign`` schema).\n\nEach ``tables`` entry is ``{schema, table, columns, rows}`` (passed through from\nthe query helper verbatim \u2014 kept as a dict so ``schema`` stays that key across\nevery client path).",
+        "description": "Schema of a campaign's tables in the index (+ the ``campaign`` schema).\n\nEach ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in\nevery dump it appears in.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
