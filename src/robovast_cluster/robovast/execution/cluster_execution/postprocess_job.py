@@ -65,6 +65,7 @@ from urllib.parse import quote
 from robovast.common.execution import resolve_controller_image, resolve_sidecar_image
 from robovast.execution.campaign_archive import in_part
 from robovast.common.quantity import to_bytes, to_cores
+from robovast.common.stop import sleep_unless_stopped
 
 from . import pod_access, postprocess_usage
 from .kube_client import api_transport_errors
@@ -141,6 +142,13 @@ def postprocess_owner(campaign_id: str) -> str:
 
 POLL_SECONDS = 5
 DEFAULT_TIMEOUT = 3 * 60 * 60
+
+#: What a caller is told when the campaign was stopped while its postprocessing waited for
+#: capacity. Its own message because nothing failed and nothing is wrong with the cluster:
+#: the derived data is simply missing, and a re-run is all it takes.
+POSTPROCESSING_QUEUE_CANCELLED = (
+    "postprocessing was cancelled while queued for capacity; the runs' results are "
+    "complete and re-running postprocessing derives the rest.")
 
 #: Disk the pod reserves and may use, for every step. Not settable by a campaign.
 #:
@@ -322,11 +330,13 @@ def pod_sizing(manifest: dict):
         return max([*inits, mains]) if (inits or mains) else 0
 
     return JobSizing(cpu=_charge("cpu", to_cores),
-                     memory=int(_charge("memory", to_bytes)))
+                     memory=int(_charge("memory", to_bytes)),
+                     ephemeral=int(_charge("ephemeral-storage", to_bytes)))
 
 
 def await_admission(admission, campaign_id: str, name: str, manifest: dict,
-                    timeout: float = DEFAULT_TIMEOUT, poll: float = POLL_SECONDS) -> tuple:
+                    timeout: float = DEFAULT_TIMEOUT, poll: float = POLL_SECONDS,
+                    should_stop=None) -> tuple:
     """Wait for the queue to find room for this pod. Returns ``(ok, node_id, message)``.
 
     **Why this pod queues at all.** Its cpu request equals its limit, so on a cluster kept
@@ -347,9 +357,10 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
     of one API call, and the next budget reading reconciles it against the real pod anyway.
     """
     from .node_admission import CREATED, AdmissionRefused  # noqa: PLC0415
-    from .node_admission import campaign_start_key  # noqa: PLC0415
+    from .node_admission import campaign_start_key, describe_resources  # noqa: PLC0415
 
     sizing = pod_sizing(manifest)
+    asked = describe_resources(sizing.cpu, sizing.memory, sizing.ephemeral)
     granted = {}
 
     try:
@@ -359,9 +370,9 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
         admission.preflight(sizing)
     except AdmissionRefused as exc:
         return False, None, (
-            f"postprocessing needs {sizing.cpu:g} cpu / {sizing.memory // 1024 ** 2}Mi and "
-            f"no node in this cluster is that large. Lower results_processing.resources for "
-            f"this campaign. ({exc})")
+            f"postprocessing needs {asked} and no node in this cluster is that large. Lower "
+            f"results_processing.resources for this campaign; a disk figure is what the "
+            f"campaign stages and is not set there. ({exc})")
 
     def _record_grant(node_id):
         granted["node_id"] = node_id
@@ -374,6 +385,12 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
     deadline = time.monotonic() + timeout
     logged = 0.0
     while time.monotonic() < deadline:
+        if should_stop is not None and should_stop():
+            # The submission goes with the wait. Left in the queue it would be granted room
+            # later and create a pod for a campaign nobody is waiting on -- capacity spent
+            # on work that was cancelled, which is what the queue exists to prevent.
+            admission.finished(name)
+            return False, None, POSTPROCESSING_QUEUE_CANCELLED
         # Works the GLOBAL queue, like every other caller: whichever thread is awake advances
         # everybody, which is what keeps the queue free of a thread of its own.
         admission.drain()
@@ -384,7 +401,7 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
             logged = time.monotonic()
             logger.info("Postprocessing of %s is queued for capacity: %s", campaign_id,
                         reason)
-        time.sleep(poll)
+        sleep_unless_stopped(poll, should_stop)
 
     reason = admission.refusal(owner)
     admission.finished(name)
@@ -397,9 +414,8 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
             f"{reason[len(DISK_WAIT):]} The campaign's runs are complete; delete campaigns "
             f"no longer needed, then re-run postprocessing.")
     return False, None, (
-        f"postprocessing waited {timeout:g}s for {sizing.cpu:g} cpu / "
-        f"{sizing.memory // 1024 ** 2}Mi and the cluster stayed full. The campaign's runs "
-        f"are complete; re-run postprocessing when there is room, or lower "
+        f"postprocessing waited {timeout:g}s for {asked} and the cluster stayed full. The "
+        f"campaign's runs are complete; re-run postprocessing when there is room, or lower "
         f"results_processing.resources.")
 
 
@@ -525,12 +541,14 @@ def campaign_vast(campaign_root) -> str:
 
 
 def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False) -> tuple:
-    """``(image_cmds, image, tolerate_under, convert_resources)`` from the campaign tree.
+    """``(image_cmds, image, tolerate_under, convert_resources, split)`` from the campaign
+    tree.
 
-    The four facts the manifest needs about a campaign, and all four come from files in
-    its directory on the service: the ``.vast`` says which steps run in the execution image
-    and how much they may use, ``execution.yaml`` names that image, and the intervention
-    ledger names the runs whose output was cut short mid-write.
+    The five facts a postprocess needs about a campaign, and all five come from files in
+    its directory on the service: the ``.vast`` says which steps run in the execution image,
+    how much they may use and which of them can be split across Jobs (:func:`_plan_split`),
+    ``execution.yaml`` names that image, and the intervention ledger names the runs whose
+    output was cut short mid-write.
     """
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
         postprocess_convert_resources)
@@ -538,19 +556,21 @@ def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False
         _interrupted_job_dirs)
 
     vast_path = campaign_vast(campaign_root)
+    # A host-only campaign can still be split: its run-scoped host steps are a map too.
+    split = _plan_split(campaign_root, vast_path, skip=skip, skip_rosout=skip_rosout)
     image_cmds = image_commands_for(campaign_root, skip=skip, skip_rosout=skip_rosout)
     if not image_cmds:
         # No image is resolved at all for a host-only campaign: nothing in the pod pulls
         # one, so a campaign whose execution image has since gone from the registry still
         # postprocesses. The sizing goes the same way: with no conversion container there is
         # nothing for it to size.
-        return [], None, (), None
+        return [], None, (), None, split
     # The same seam the local lane reads, for the same reason: a bag belonging to a job
     # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
     # must not fail the conversion for every job that finished.
     return (image_cmds, campaign_execution_image(campaign_root),
             tuple(_interrupted_job_dirs(campaign_root)),
-            postprocess_convert_resources(vast_path))
+            postprocess_convert_resources(vast_path), split)
 
 
 def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  # pylint: disable=unused-argument
@@ -593,9 +613,8 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  
     rather than doubling it. What a cancelled campaign never has is the provenance record
     that says it carries derived data, because that is written after everything else.
     """
-    image_cmds, image, tolerate_under, convert_resources = _read_submit_inputs(
+    image_cmds, image, tolerate_under, convert_resources, split = _read_submit_inputs(
         campaign_root, skip=skip, skip_rosout=skip_rosout)
-    split = _plan_split(campaign_root, skip=skip, skip_rosout=skip_rosout)
     if split is not None:
         return _postprocess_split(
             cluster_config, campaign_id, campaign_root, namespace, split, image,
@@ -614,7 +633,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  
                               should_stop=should_stop)
 
 
-def _plan_split(campaign_root: str, skip=None, skip_rosout: bool = False):
+def _plan_split(campaign_root: str, vast_path: str, skip=None, skip_rosout: bool = False):
     """``(map_cmds, reduce_cmds, parts)`` when this campaign's postprocessing is split, or
     ``None`` to run it in one Job: no run-scoped steps, a cap of one
     (``ROBOVAST_POSTPROCESS_MAX_PARALLEL``), or fewer than two units of work.
@@ -628,11 +647,9 @@ def _plan_split(campaign_root: str, skip=None, skip_rosout: bool = False):
 
     from .postprocess_parts import max_parallel, plan_parts  # noqa: PLC0415
 
-    limit = max_parallel(
-        convert_cpu=postprocess_convert_resources(campaign_vast(campaign_root))["cpu"])
+    limit = max_parallel(convert_cpu=postprocess_convert_resources(vast_path)["cpu"])
     if limit < 2:
         return None
-    vast_path = campaign_vast(campaign_root)
     map_cmds, reduce_cmds = split_postprocessing(
         campaign_postprocessing_commands(vast_path, skip=skip, skip_rosout=skip_rosout),
         os.path.dirname(vast_path))
@@ -821,22 +838,36 @@ def campaign_dir(campaign_id: str) -> str:
 
 #: What the stage container's exit code says, for :func:`pod_failure_reason`.
 #:
-#: The container is ``curl | tar`` under a shell, so its status is the pipeline's: tar's
-#: whenever tar had something to say, which it does on every stream curl cut short, and
-#: curl's own only when tar took what arrived. Either way curl prints its report -- the HTTP
-#: status, or the address it could not reach -- to the container's log, and the pod's log is
-#: published as the campaign's POSTPROCESSING section when the Job fails, so the exit code
-#: is the headline and the log is where the reason is read.
+#: The container is :func:`pod_access.fetch_command`, whose status is ``curl``'s when the
+#: transfer failed -- after the retry schedule, unless the service answered 4xx -- and
+#: ``tar``'s when a whole stream would not extract. Either way curl prints its report -- the
+#: HTTP status, or the address it could not reach -- to the container's log, and the pod's
+#: log is published as the campaign's POSTPROCESSING section when the Job fails, so the exit
+#: code is the headline and the log is where the reason is read.
 STAGE_EXIT_REASONS: dict[int, str] = {
-    7: "could not connect to the service's data plane",
+    7: "could not connect to the service's data plane for the whole retry window",
+    18: "had the campaign archive cut short on every attempt",
     22: "was refused the campaign archive by the data plane (an HTTP error; the status is "
         "in the POSTPROCESSING section)",
+    56: "lost the connection to the data plane on every attempt",
 }
 
-#: The stage's failure when the exit code is tar's: the stream stopped before a whole archive
-#: had arrived, or the node had no room to extract it.
-STAGE_TAR_FAILED = ("could not extract the campaign archive: the fetch was cut short (curl's "
-                    "report is in the POSTPROCESSING section) or the node's disk filled")
+#: tar's exit codes. A stream cut short is curl's to report, so tar failing means a whole
+#: archive would not extract onto the node.
+STAGE_TAR_CODES = (1, 2)
+STAGE_TAR_FAILED = ("could not extract the campaign archive onto the node (tar's report is in "
+                    "the POSTPROCESSING section; a full disk is the usual cause)")
+
+#: Any other curl failure, named by its code in the headline and explained by curl's report.
+STAGE_FETCH_FAILED = ("could not fetch the campaign archive (curl's report is in the "
+                      "POSTPROCESSING section)")
+
+
+def _stage_failure(code: int) -> str:
+    """What the stage container's exit *code* says, in the fetch's own vocabulary."""
+    if code in STAGE_EXIT_REASONS:
+        return STAGE_EXIT_REASONS[code]
+    return STAGE_TAR_FAILED if code in STAGE_TAR_CODES else STAGE_FETCH_FAILED
 
 
 def _stage_query(skip_bags: bool, batch_jobs: str, part: str = "") -> str:
@@ -1440,9 +1471,7 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
                 # The stage container is `curl | tar`, whose codes have a vocabulary of
                 # their own; `exited 1 (Error)` names none of them.
                 if name == STAGE_CONTAINER:
-                    return (f"container {name} "
-                            f"{STAGE_EXIT_REASONS.get(code, STAGE_TAR_FAILED)} "
-                            f"(exit {code})")
+                    return f"container {name} {_stage_failure(code)} (exit {code})"
                 detail = (getattr(term, "reason", None) or "").strip()
                 exited = f"container {name} exited {code}"
                 return f"{exited} ({detail})" if detail else exited
@@ -1506,6 +1535,27 @@ def _index_env(namespace: str) -> list:
     ]
 
 
+def _git_credentials() -> tuple:
+    """The host container's mount of the GitHub token Secret, and the volume behind it.
+
+    The same Secret and path the service pod gets, so ``config_plugins`` finds the token
+    where it looks on either side (:data:`~robovast.common.config_plugins.GIT_TOKEN_FILE`).
+
+    **Optional**, because the Secret exists only where the operator gave ``vast cluster
+    setup`` a token. A required Secret volume that names nothing holds the pod in
+    ``ContainerCreating``; an optional one starts it without the file, and a private
+    ``git+https`` plugin then fails its install with the message that names the missing
+    token -- the answer the operator needs, where a pod that never starts gives none.
+    """
+    from .service_deploy import GIT_SECRET_NAME, GIT_TOKEN_MOUNT_DIR  # noqa: PLC0415
+
+    mount = {"name": "git-credentials", "mountPath": GIT_TOKEN_MOUNT_DIR, "readOnly": True}
+    volume = {"name": "git-credentials",
+              "secret": {"secretName": GIT_SECRET_NAME, "defaultMode": 0o400,
+                         "optional": True}}
+    return mount, volume
+
+
 @dataclasses.dataclass(frozen=True)
 class JobRole:
     """Which postprocessing Job this is, and therefore what its pod is asked to do.
@@ -1546,6 +1596,21 @@ class JobRole:
     def search_batch(cls, tag: str, commands: list) -> "JobRole":
         """A search's per-batch conversion: this batch's own commands, and nothing more."""
         return cls(discriminator=tag, host_commands=list(commands))
+
+    @property
+    def batch_jobs(self) -> str:
+        """The batch whose job artifacts the stage is narrowed to, or ``""`` for all of them.
+
+        Only a search batch's Job has one: its discriminator is the batch's tag. A part also
+        has a discriminator and host commands, but it is narrowed by its runs instead.
+        """
+        if self.host_commands is None or self.part:
+            return ""
+        return self.discriminator
+
+    def skips_bags(self, steps) -> bool:
+        """Whether the stage leaves the rosbags out: unless a step in this pod opens one."""
+        return not (steps if self.stage_bags is None else self.stage_bags)
 
 
 def build_manifest(campaign_id: str, image, steps: list, namespace: str,
@@ -1609,7 +1674,7 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
 
     role = role or JobRole.campaign()
     discriminator, part = role.discriminator, role.part
-    batch_commands, skip_map, stage_bags = role.host_commands, role.skip_map, role.stage_bags
+    batch_commands, skip_map = role.host_commands, role.skip_map
 
     from robovast.results_processing.postprocessing import (  # noqa: PLC0415
         POSTPROCESS_CONVERT_DEFAULTS)
@@ -1629,6 +1694,7 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
     # none of this. See the conversion container below.
     data_plane_env = pod_access.campaign_pod_env(namespace, campaign_id)
     campaign_mount = {"name": "campaign", "mountPath": CAMPAIGN_MOUNT}
+    git_mount, git_volume = _git_credentials()
 
     stage = {
         "name": STAGE_CONTAINER,
@@ -1643,12 +1709,11 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
             # rosbags, which is the bulk of a campaign by orders of magnitude. Staging them
             # anyway would spend the whole download and the whole node disk on data
             # nothing in the pod reads.
-            skip_bags=not (steps if stage_bags is None else stage_bags),
+            skip_bags=role.skips_bags(steps),
             # One batch's job artifacts, for a per-batch Job. The bags are the bulk of a
             # campaign and every batch's sit under the same tree, so without this a search
             # stages every earlier batch again on every batch.
-            batch_jobs=(discriminator if batch_commands is not None and discriminator
-                        and not part else ""),
+            batch_jobs=role.batch_jobs,
             # A part of a split postprocess stages its own runs and their jobs.
             part=part)],
         "env": data_plane_env,
@@ -1696,7 +1761,11 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
             *([{"name": ENV_PART, "value": part}] if part else []),
             *([{"name": ENV_SKIP_MAP, "value": "1"}] if skip_map else []),
         ],
-        "volumeMounts": [campaign_mount],
+        # The GitHub token, for the one thing here that needs it: the host re-installs the
+        # campaign's `plugins:` before its steps run, and a `git+https` spec for a private
+        # repository cannot be cloned without it. Mounted as a file, in this container
+        # only -- the conversion runs the campaign's own image and gets nothing.
+        "volumeMounts": [campaign_mount, git_mount],
         "resources": host_block,
     }
 
@@ -1716,6 +1785,7 @@ def build_manifest(campaign_id: str, image, steps: list, namespace: str,
     volumes = [
         # One copy of the campaign, shared by every container.
         {"name": "campaign", "emptyDir": {}},
+        git_volume,
     ]
     if steps:
         # Scratch for the conversion, which is the only container that mounts it. Declared
@@ -1867,7 +1937,7 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
                 f"not about postprocessing, which has not run. Nothing about the "
                 f"campaign's results is wrong; re-run postprocessing once the pod can "
                 f"start.")
-        time.sleep(POLL_SECONDS)
+        sleep_unless_stopped(POLL_SECONDS, should_stop)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives
     # up. Reported as unknown so the campaign keeps whatever it already says about
@@ -2142,7 +2212,6 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
                          "nor the outputs route")
 
     from kubernetes import client  # noqa: PLC0415
-    from kubernetes.client.rest import ApiException  # noqa: PLC0415
 
     from robovast.common.errors import ClusterUnreachableError  # noqa: PLC0415
 
@@ -2161,10 +2230,8 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
         campaign_id, image, steps, namespace, force=force,
         pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
         role=role, skip=skip, convert_resources=convert_resources,
-        stage_bytes=stage_bytes(
-            campaign_root,
-            skip_bags=not (steps if role.stage_bags is None else role.stage_bags),
-            batch_jobs=discriminator if batch_commands is not None else ""))
+        stage_bytes=stage_bytes(campaign_root, skip_bags=role.skips_bags(steps),
+                                batch_jobs=role.batch_jobs, part=role.part))
     name = manifest["metadata"]["name"]
 
     # Whether a Job of this name is already running is decided HERE, ahead of every write,
@@ -2197,7 +2264,7 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
     admitted = False
     if admission is not None and not adopted:
         granted, node_id, message = await_admission(admission, campaign_id, name, manifest,
-                                                    timeout=timeout)
+                                                    timeout=timeout, should_stop=should_stop)
         if not granted:
             return False, message
         admitted = True

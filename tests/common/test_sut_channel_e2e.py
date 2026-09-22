@@ -271,6 +271,36 @@ def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
         assert document["params_file"] == "files/nav2_params.yaml"
 
 
+def test_the_campaign_can_be_composed_again_from_its_own_snapshot(tmp_path):
+    """`_config/` archives each declared source, though no run mounts it.
+
+    A restart re-entering a campaign, a retrigger and a workspace rebuilt from a campaign all
+    compose it from `_config/` alone, and composition reads the original to write each cell's
+    copy -- so a snapshot without it is one the campaign cannot come back from.
+    """
+    from robovast.common.execution import prepare_campaign_configs
+
+    data = _compose(tmp_path, f"""\
+        - name: inflation
+          variations:
+          - ParameterVariationList:
+              sut: {_BASE}.inflation_layer.inflation_radius
+              values: [0.30, 0.55]
+    """)
+    campaign = tmp_path / "campaign"
+    prepare_campaign_configs(str(campaign), data)
+
+    for rel in ("files/nav2_params.yaml", "files/nav2_bt.xml"):
+        assert (campaign / "_config" / rel).read_bytes() == (tmp_path / rel).read_bytes()
+        # archived, not mounted: a run still sees only its configuration's copy
+        assert rel not in data["_run_files"], data["_run_files"]
+
+    again = generate_scenario_variations(
+        variation_file=str(campaign / "_config" / "campaign.vast"),
+        output_dir=str(tmp_path / "again"), use_cache=False, isolate_plugins=False)
+    assert [c["name"] for c in again["configs"]] == [c["name"] for c in data["configs"]]
+
+
 def test_the_environment_carrier_refuses_rather_than_doing_nothing(tmp_path):
     """It is the channel's second carrier and no lane delivers it per configuration yet.
     Silently dropping it would be a campaign whose factor did not vary."""

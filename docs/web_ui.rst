@@ -108,6 +108,11 @@ It provides four views:
   Leaving the tab and coming back does not leave it behind; see `Staying up to date`_.
   Hovering a campaign's **name** says **where it came from** — the workspace and the ``.vast``
   it was launched from; see `Where a campaign came from`_.
+  A small cloud after the name says the campaign is **already on the share**: a cloud with a
+  check for its postprocessed archive, a hollow cloud when the share holds only the raw
+  campaign-end upload. Hovering it names every variant the share holds. It is read from the
+  share's own listing, so a share that is unconfigured or unreachable shows no cloud rather
+  than a wrong one.
   The phase reflects the whole lifecycle, including its two pre-run steps:
   ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign
@@ -189,8 +194,8 @@ It provides four views:
   pauses the follow while you hold it — auto-scrolling out from under a drag is what
   made a live log impossible to copy from — and dropping it resumes the tail by itself.
   **Stop** cooperatively ends the campaign *and* terminates its in-flight jobs, so
-  running work halts promptly (not only after the current batch). That is the whole
-  campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
+  running work halts within seconds whatever phase the campaign is in
+  (:ref:`what a stop ends, per phase <stopping-a-campaign>`). That is the whole campaign; to end one job and keep the rest, use the per-job **Stop** on its row above.
   It asks first, and says how many runs are in flight at that moment — the one thing a
   reader needs before pressing it that nothing else on the card shows. Worth confirming
   because there is no resume: a stopped campaign is over, and **Retrigger campaign** starts
@@ -2127,8 +2132,8 @@ least-recently-used). Two consequences worth knowing:
 
 .. _costmap-delivery:
 
-**Costmap data delivery.** Occupancy grids cannot be flattened into table columns
-usefully (a grid becomes thousands of per-cell columns). Instead the
+**Costmap data delivery.** A grid reaches the browser through a step of its own, because
+the panel needs the frame whole and with the geometry to draw it against. The
 ``rosbags_costmap_to_csv`` postprocessing step stores each grid **losslessly and
 compactly** — its int8 cells zlib-compressed — into a ``costmaps`` table, together with
 the geometry (resolution in m/cell, width/height in cells, so the map spans

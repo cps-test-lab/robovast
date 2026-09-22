@@ -3005,11 +3005,15 @@ class RobovastInterface(ABC):
     @abstractmethod
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Permanently delete **one** campaign wholesale: its directory under the results
-        root, plus, on a cluster, any leftover Jobs and its token Secret.
+        root, the archives the local lane wrote beside it (``_archives/``), a share copy
+        an import staged and kept, its rows in the central index, plus, on a cluster, any
+        leftover Jobs and its token Secret.
 
         Refuses a campaign that is still running (raises so it surfaces as a 409);
-        stop it first. A campaign that is already gone deletes idempotently. The
-        external share copy (if any) is never touched — it is a separate system.
+        stop it first. A campaign that is already gone deletes idempotently. A path that
+        could not be removed makes the result ``ok=False`` naming it; deleting again
+        retries only what is left. The copy on an external share provider (if any) is
+        never touched — it is a separate system.
         """
 
     # -- the data plane: tar streams in and out of the campaign tree --

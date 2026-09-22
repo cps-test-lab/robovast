@@ -173,7 +173,14 @@ def topic_to_filename(topic: str) -> str:
 
 
 class ToCsvHandler(RosbagHandler):
-    """Extract arbitrary ROS topics to CSV files (one file per topic per bag)."""
+    """Extract arbitrary ROS topics to CSV files (one file per topic per bag).
+
+    A scalar field is a column. A field declared as an array of numbers -- a scan's ranges,
+    an image's pixels, a covariance -- is *one* column holding the whole array, packed by
+    :func:`~rosbags_common.encode_numeric_array` and read back with
+    :func:`~rosbags_common.decode_numeric_array`. A non-finite float, which is how a laser
+    spells "no return", is written ``inf`` or ``nan`` and ingested as that number.
+    """
 
     def __init__(self, topics_list: List[str]) -> None:
         self._topics = list(dict.fromkeys(topics_list))  # dedup, preserve order
@@ -990,11 +997,14 @@ class CostmapToCsvHandler(RosbagHandler):
     Each grid's int8 cells (-1..100, row-major) are stored losslessly as zlib-compressed raw
     bytes, base64-encoded, alongside its pose metadata -- one row per message in ``costmaps.csv``
     (a ``topic`` column keeps several layers, e.g. global/local/map, in one file). The web costmap
-    panel fetches the frame nearest the playback time and inflates it in the browser. Occupancy
-    grids are highly uniform, so this is far smaller than the per-cell flatten ``to_csv`` would
-    produce (which also blows past SQLite's column limit for any real map) while keeping full
-    precision. Not a batchable-by-default step: enable it with ``rosbags_costmap_to_csv`` naming
-    the costmap topics recorded by the scenario's ``bag_record(...)``.
+    panel fetches the frame nearest the playback time and inflates it in the browser, and that is
+    what a table of its own buys over a column in the topic's: the geometry a frame is drawn
+    against sits beside its cells, and the payload carries no type tag because this column holds
+    int8 cells by definition and the browser reads an ``Int8Array`` straight out of it -- where a
+    topic table's array column has to say what it holds
+    (:func:`~rosbags_common.encode_numeric_array`). Not a batchable-by-default step: enable it
+    with ``rosbags_costmap_to_csv`` naming the costmap topics recorded by the scenario's
+    ``bag_record(...)``.
     """
 
     _FIELDNAMES = ["topic", "timestamp", "frame_id", "resolution", "width", "height",
@@ -1233,22 +1243,34 @@ def process_rosbag_worker(args: tuple) -> BagResult:
                 if t in topic_type_map:
                     topic_to_handlers.setdefault(t, []).append(h)
 
-        # Pre-load message types once for all subscribed+available topics
+        # Pre-load message types once for all subscribed+available topics. A type that does
+        # not resolve fails the bag: the topic was recorded and a handler asked for it, so
+        # skipping it would leave the step green and the campaign short a table -- a run that
+        # recorded a vendor's message without that vendor's package in the execution image
+        # would look converted. The fix is named because it is always the same one.
         msg_type_cache: Dict[str, type] = {}
+        unloadable: List[str] = []
         for topic in topic_to_handlers:
             try:
                 msg_type_cache[topic] = get_message(topic_type_map[topic])
             except Exception as e:
-                print(f"  ✗ Could not load message type for {topic}: {e}")
+                unloadable.append(f"{topic} ({topic_type_map[topic]}): {e}")
+        if unloadable:
+            for line in unloadable:
+                print(f"  ✗ Message type not loadable for {line}")
+            print(
+                "  ✗ The message package(s) are not installed where the bags are converted "
+                "(the campaign's execution image); add them with the container's "
+                "system_packages or ros_packages, or drop the topic from the handler."
+            )
+            return BagResult(bag_path, FAILED, output=captured.getvalue())
 
         # Main read loop — deserialize each message at most once
         while reader.has_next():
             topic, data, timestamp = reader.read_next()
             if topic not in topic_to_handlers:
                 continue
-            msg_cls = msg_type_cache.get(topic)
-            if msg_cls is None:
-                continue
+            msg_cls = msg_type_cache[topic]
             try:
                 msg = deserialize_message(data, msg_cls)
             except Exception as e:

@@ -58,7 +58,7 @@ from robovast.search.extractor import NoSampleError
 
 from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
                        RunOptions, ShareStopped)
-from .control_server import Phase, failure_detail, is_terminal
+from .control_server import STOP_RUNS, Phase, failure_detail, is_terminal, stop_checker
 from .notify import Notifier
 
 # Use the qualified name rather than __name__ so this module's records always
@@ -1073,6 +1073,13 @@ class CampaignController:
                     # it ever ran explains itself) never appears for a search at all.
                     with self._variation_log():
                         campaign_data, name_by_id = self.compose.compose(group, artifacts)
+                    # Before the batch is submitted, for the reason batch mode checks after
+                    # its own composition: a sweep composed in-process ends here rather than
+                    # raising, and submitting it would spend a generation's compute on a
+                    # campaign that was stopped before it had any.
+                    if self.state is not None:
+                        self.state.raise_if_stopped(
+                            f"stopped while composing batch {tag}")
                     self.backend.run_batch(
                         campaign_data, campaign_root=self.campaign_root, batch_tag=tag,
                         runs=reps, options=self.options)
@@ -1205,6 +1212,13 @@ class CampaignController:
         derived_in_pod = False
         if container:
             derived_in_pod = self._postprocess_batch_in_cluster(container, local, tag)
+        # A batch whose scoring was cut is a batch cut mid-way: the same verdict as a run
+        # cut mid-batch, and it keeps the loop from scoring a generation whose metrics were
+        # never derived -- which reads as a generation that measured nothing.
+        if self.state is not None:
+            self.state.raise_if_stopped(
+                f"stopped during the conversion of batch {tag}" if tag else
+                "stopped during this batch's conversion")
         if local and not derived_in_pod:
             # Only where the pod did not already do it: on a cluster the batch Job runs
             # BOTH halves beside the data and sends back the few rows per run they derive,
@@ -1213,7 +1227,8 @@ class CampaignController:
             # output.
             run_postprocessing_commands(
                 local, results_dir=self.campaign_root,
-                config_dir=self.vast_dir, output=logger.info)
+                config_dir=self.vast_dir, output=logger.info,
+                should_stop=stop_checker(self.state, scope=STOP_RUNS))
 
     def _postprocess_batch_in_cluster(self, image_cmds: list, local_cmds: list,
                                       tag: str = "") -> bool:
@@ -1251,7 +1266,8 @@ class CampaignController:
             from robovast.results_processing.postprocessing import run_postprocessing_commands
             run_postprocessing_commands(
                 image_cmds, results_dir=self.campaign_root,
-                config_dir=self.vast_dir, output=logger.info)
+                config_dir=self.vast_dir, output=logger.info,
+                should_stop=stop_checker(self.state, scope=STOP_RUNS))
             return False
         # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
         # opened, ever, and must not fail the conversion for every job that finished. A
@@ -1283,7 +1299,12 @@ class CampaignController:
                 # path that runs it most often.
                 convert_resources=postprocess_convert_resources(
                     str(campaign_vast(self.campaign_root))),
-                admission=getattr(self.backend, "admission", None))
+                admission=getattr(self.backend, "admission", None),
+                # The RUNS scope, not postprocessing's: this conversion is part of a batch
+                # of the search, so the stop that ends the runs ends it too -- unlike the
+                # campaign-level pass, which is what a stopped campaign's finished batches
+                # are still owed.
+                should_stop=stop_checker(self.state, scope=STOP_RUNS))
             message = complete_message(
                 message,
                 os.path.join(self.campaign_root, "_execution", "postprocessing.log"))
@@ -1407,7 +1428,6 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
         state.set_phase(Phase.POSTPROCESSING)
     try:
         from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
-        from robovast.execution.control_server import stop_checker
         ok, message = postprocess_campaign(
             cluster_config, campaign_id, campaign_root,
             options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
@@ -1953,6 +1973,9 @@ def _install_plugins(vast_file, campaign_config, campaign_root: str, state) -> N
     while importing them onto ``sys.path`` stays in the isolated compose subprocess and
     never pollutes the long-lived service process. Composition later finds them already
     installed (marker hit) and only adjusts ``sys.path`` there.
+
+    A stop ends the install rather than waiting for it: this phase is pip cloning
+    repositories, and it is where a stop requested during a launch most often lands.
     """
     specs = list(getattr(campaign_config, "plugins", None) or [])
     if not specs:
@@ -1969,7 +1992,8 @@ def _install_plugins(vast_file, campaign_config, campaign_root: str, state) -> N
                        exc_info=True)
     try:
         from robovast.common.config_plugins import ensure_workspace_plugins
-        ensure_workspace_plugins(vast_dir, specs, add_to_path=False)
+        ensure_workspace_plugins(vast_dir, specs, add_to_path=False,
+                                 should_stop=stop_checker(state, scope=STOP_RUNS))
     finally:
         remove_campaign_log_handler(handler)
 
@@ -2026,7 +2050,8 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
         evaluator=Evaluator(search_cfg, vast_dir),
         compose=Compose(vast_file, image_project=opts.image_project,
-                        image_project_tag=opts.image_project_tag),
+                        image_project_tag=opts.image_project_tag,
+                        should_stop=stop_checker(state, scope=STOP_RUNS)),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
         stop_conditions=build_stop_conditions(search_cfg),
         repetition_policy=build_repetition_policy(
@@ -2103,7 +2128,7 @@ def filter_configs_by_name(configs, config_filter):
 
 def build_campaign_data(vast_file, output_dir, config_filter=None,
                         progress_update_callback=None, image_project=None,
-                        image_project_tag=None):
+                        image_project_tag=None, should_stop=None):
     """Generate the batch campaign data and apply the optional ``--config`` filter.
 
     Shared by :func:`run_batch_campaign` and the host-side ``cluster run``
@@ -2119,13 +2144,16 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
     family images resolve from; ``None`` means the process environment's. A run passes
     the campaign's own (see :class:`~robovast.execution.backends.RunOptions`) — the
     pre-flight leaves them unset, since it only counts configs.
+
+    *should_stop* ends a composition the campaign no longer needs; the pre-flight, which
+    composes for a caller waiting on the answer, leaves it unset.
     """
     from robovast.common.config_generation import generate_scenario_variations
 
     campaign_data = generate_scenario_variations(
         variation_file=vast_file, progress_update_callback=progress_update_callback,
         output_dir=output_dir, image_project=image_project,
-        image_project_tag=image_project_tag)
+        image_project_tag=image_project_tag, should_stop=should_stop)
     if not campaign_data["configs"]:
         raise CampaignConfigError("No configs found in vast-file")
     if config_filter:
@@ -2186,17 +2214,16 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
                 vast_file, tmp, config_filter,
                 progress_update_callback=variation_logger.info,
                 image_project=opts.image_project,
-                image_project_tag=opts.image_project_tag)
+                image_project_tag=opts.image_project_tag,
+                should_stop=stop_checker(state, scope=STOP_RUNS))
         finally:
             remove_campaign_log_handler(var_handler)
-        # Composition is the one phase with no stop check of its own: it can run for
-        # minutes (a variation searching for a path, an aux container being pulled), and
-        # the loop below is where ``stop_requested`` is next read. Without this a stop
-        # asked for while composing took effect only after the whole sweep had been
-        # composed, submitted a batch and released it again -- reported as a batch that
-        # produced no results, which is a failure's wording for an operator's own request.
-        if state is not None and state.stop_requested:
-            raise CampaignStopped("stopped while composing the campaign's configurations")
+        # The boundary after composition, which the predicate above ends from within: a
+        # sweep composed in-process reaches here rather than raising, and submitting a
+        # batch for it would report an operator's own request as a batch that produced no
+        # results.
+        if state is not None:
+            state.raise_if_stopped("stopped while composing the campaign's configurations")
 
         be = backend or DockerBackend(state=state)
         _preflight_upload_to_share(be, opts)

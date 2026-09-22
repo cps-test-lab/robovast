@@ -35,6 +35,7 @@ from fastmcp import FastMCP
 from mcp.types import Icon
 
 from . import tool_stats
+from .lacks import arguments_it_lacks, why_it_takes_none
 from .registry import load_plugins, registered_tools
 
 logger = logging.getLogger(__name__)
@@ -174,12 +175,22 @@ def _install_debug_logging(mcp: FastMCP, level: int) -> None:
 #: Address-shaped tools take one string rather than the ids a caller is holding, and a
 #: caller that has just used a tool taking ``workspace_id``/``campaign_id`` reaches for
 #: those. Naming the form costs nothing until a call has already failed.
+#: What pydantic appends to each error for a human with a browser: the error type with the
+#: rejected input echoed back, and a documentation link. Noise to a model, paid on every
+#: rejected call.
+_PYDANTIC_DETAIL = re.compile(r" \[type=[^\]]*\]")
+_PYDANTIC_LINK = re.compile(r"\n\s*For further information visit \S+")
+
+#: The argument names pydantic rejects as unexpected, one per error line.
+_UNEXPECTED = re.compile(r"^(\w+)\n\s+Unexpected keyword argument", re.M)
+
 _ADDRESS_HINT = ("`address` is one string: `/sources/<workspace_id>/<path>` for a project "
                  "file, `/results/<campaign_id>/<path>` for a campaign's output")
 
 
 def _argument_help(mcp: FastMCP, tool_name: str, message: str) -> str:
-    """*message*, plus what this tool would have accepted.
+    """*message*, without pydantic's detail for humans, plus what this tool would have
+    accepted.
 
     A rejected call is answered by pydantic, which knows the argument that was wrong and
     not the ones that would have been right — so a caller is told ``address`` is missing
@@ -189,14 +200,24 @@ def _argument_help(mcp: FastMCP, tool_name: str, message: str) -> str:
     Written here rather than as parameters on each tool: alternatives would cost schema on
     every request forever to answer a question that only arises once a call has failed.
     """
+    message = _PYDANTIC_LINK.sub("", _PYDANTIC_DETAIL.sub("", message))
     try:
         tool = registered_tools(mcp).get(tool_name)
         accepted = sorted((getattr(tool, "parameters", None) or {}).get("properties", {}))
     except Exception:  # noqa: BLE001 - help is help; it must never replace the real error
         return message
-    if not accepted:
+    if tool is None:
         return message
+    if not accepted:
+        why = why_it_takes_none(tool)
+        return f"{message}\n{tool_name} takes no arguments" + (f": {why}." if why else ".")
     extra = f"{tool_name} accepts: {', '.join(accepted)}."
+    # An argument the tool lacks on purpose: the reason, which the reply would have given
+    # had the call not been rejected before it ran.
+    reasons = arguments_it_lacks(tool)
+    for name in _UNEXPECTED.findall(message):
+        if name in reasons:
+            extra += f" There is no `{name}`: {reasons[name]}."
     # Only when `address` is the argument that was missing. Matched on the error's own
     # line for it rather than on the word anywhere in the text, which any tool with
     # "address" in its *name* would have satisfied.
@@ -273,6 +294,12 @@ def _install_tool_stats(mcp: FastMCP) -> None:
     mcp.add_middleware(_ToolStatsMiddleware())
 
 
+#: The most of :data:`_INSTRUCTIONS` a client is known to show: Claude Code cuts a server's
+#: instructions at this many characters and drops the rest without a marker the model can
+#: act on, so whatever lies past it is text nobody reads.
+INSTRUCTIONS_LIMIT = 2048
+
+
 #: What every MCP client injects into the model's system prompt. This is the only text
 #: read before any tool is chosen, so it is where the server says what it is *for*.
 #:
@@ -285,39 +312,56 @@ def _install_tool_stats(mcp: FastMCP) -> None:
 _INSTRUCTIONS = """\
 RoboVAST runs robotics experiments and keeps what they produced.
 
-**Run experiments here, not on this host.** A campaign executes in a pinned container
-image on a local Docker or Kubernetes lane, repeats each configuration, and records its
-provenance, so its results are comparable and reproducible. A `docker compose`, a
-`pytest`, or a simulator started by hand has none of that: it answers a different
-question and its output cannot be compared with a campaign's. If a task needs a
-simulation run, a sweep, or a repeated trial, that is `start_campaign`.
+**Run experiments here, not on this host.** A campaign runs in a pinned image on a Docker
+or Kubernetes lane, repeats each configuration and records its provenance. A `docker
+compose`, a `pytest` or a simulator started by hand has none of that, and its output
+cannot be compared with a campaign's. A run, a sweep or a repeated trial is
+`start_campaign`.
 
 The loop:
-1. `create_workspace`, then `write_file` to put a `.vast` in it.
-2. `validate_project` — reports every problem at once, before any compute is spent.
-3. `build_experiment_image` when a container adds packages, then background the
-   `vast image wait` it hands back in `next_step`, then `exec_in_container` to check that
-   image — an import, `ros2 pkg list`, a file check, or one config's scenario. Seconds
-   here, and it produces no campaign data; the same mistake found by a campaign costs the
-   campaign.
-4. `preview_configurations` — what the sweep actually expands to.
-5. `get_resource_usage` — does this lane have room, and is it reachable?
-6. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
-   then the full sweep. Always pass `description`.
-7. **Wait for it** — background `vast campaign wait <campaign_id>`, the shell command
-   `start_campaign` hands back in `next_step`. It exits when the campaign is genuinely
-   over (past postprocessing), so you stay free meanwhile instead of holding a tool call
-   open for a run that may take days. `get_campaign_status` is the single-read version.
-   A campaign nobody waits for is one whose end nobody notices; if you will not wait, say
-   so and say that ntfy announces the end instead.
-8. Read results with SQL: `describe_campaign_data`, then `query_campaign_data_sql`.
+1. `create_workspace` or `create_upload` — a workspace holding the `.vast` and its files.
+2. `validate_project`, before any compute is spent.
+3. `preview_configurations` — what the sweep expands to.
+4. `start_campaign` — **pilot one configuration first** (`config_filter`, `runs=1`),
+   then the sweep. Always pass `description`.
+5. **Wait for it** — background `vast campaign wait <campaign_id>` from its
+   `next_step`; it exits once postprocessing is done.
+6. `describe_campaign_data`, then `query_campaign_data_sql`.
 
-If no service is reachable, every control tool says so. **Stop and report that** — do
-not substitute a local run, which silently answers a different question.
+Images: `build_experiment_image` extends a container image with packages;
+`exec_in_container` runs a command or one config's scenario in an image, to test it
+before a campaign does.
 
-Files live at `/results/<campaign_id>/<path>` (read-only) and
-`/sources/<workspace_id>/<path>` (writable) — one address space, five tools.
+If no service is reachable, every control tool says so. **Stop and report that** — a
+local run silently answers a different question.
+
+Files: `/results/<campaign_id>/<path>` (read-only), `/sources/<workspace_id>/<path>`
+(writable). Move file bytes over HTTP, not through your context: `create_upload` returns
+a URL to PUT a file to, and `read_file` returns a `url` to GET a large or binary one.
 """
+
+
+def compose_instructions(plugins) -> str:
+    """:data:`_INSTRUCTIONS`, followed by the line each loaded plugin adds.
+
+    A plugin's ``instructions`` attribute is optional: where a plugin's tools answer a
+    question an agent would otherwise put to a core tool, the plugin says so here, because
+    this is the text read before any tool is chosen -- and it says so only where the plugin
+    is installed, so the core never names a tool that may not exist.
+
+    Raises :class:`RuntimeError` when the result is longer than
+    :data:`INSTRUCTIONS_LIMIT`: a client would cut it, and the cut falls on a plugin's
+    line or the core's without either being told.
+    """
+    lines = [(p.name, (getattr(p, "instructions", "") or "").strip()) for p in plugins]
+    text = _INSTRUCTIONS + "".join(f"\n{line}\n" for _, line in lines if line)
+    if len(text) > INSTRUCTIONS_LIMIT:
+        added = ", ".join(f"{name}: {len(line)}" for name, line in lines if line) or "none"
+        raise RuntimeError(
+            f"The server instructions are {len(text)} characters, over the "
+            f"{INSTRUCTIONS_LIMIT} a client shows ({len(_INSTRUCTIONS)} core; plugin "
+            f"lines {added}). Shorten a plugin's instructions.")
+    return text
 
 
 def create_server(
@@ -338,7 +382,7 @@ def create_server(
         ``0`` disables it, ``1`` logs each tool call with its arguments, and
         ``2`` also logs the result.
     """
-    mcp = FastMCP(name="RoboVAST", instructions=_INSTRUCTIONS,
+    mcp = FastMCP(name="RoboVAST",
                 icons=[
                     Icon(
                         src="https://raw.githubusercontent.com/cps-test-lab/robovast/refs/heads/main/docs/images/icon.png",
@@ -349,6 +393,7 @@ def create_server(
 
     plugins = load_plugins(mcp)
     plugin_names = [p.name for p in plugins]
+    mcp.instructions = compose_instructions(plugins)
 
     _install_warning_forwarding(mcp)
     _install_argument_help(mcp)

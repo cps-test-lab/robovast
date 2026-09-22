@@ -32,6 +32,13 @@ class MCPPlugin(Protocol):
 
         [tool.poetry.plugins."robovast.mcp_plugins"]
         my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
+
+    A plugin may also define ``instructions``: one short paragraph appended to the
+    server's MCP instructions, the only text a client shows before any tool is chosen.
+    It is for routing -- which question the plugin's tools answer better than a core
+    tool. It is optional, so it is not a member of this protocol; the server refuses to
+    start when the instructions with every plugin's line exceed what a client shows
+    (:func:`~robovast.mcp_server.server.compose_instructions`).
     """
 
     @property

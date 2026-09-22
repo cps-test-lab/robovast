@@ -622,8 +622,9 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/retrigger/check`,
     ),
 
-  // Permanently delete one campaign wholesale (its results directory + leftover Jobs +
-  // cache). Refused by the service while the campaign is still running.
+  // Permanently delete one campaign wholesale (its results directory, the local archives beside
+  // it, its index rows, leftover Jobs). Refused by the service while the campaign is still
+  // running; `ok: false` names a path that could not be removed.
   deleteCampaign: (campaignId: string) =>
     request<ActionResult>('DELETE', `/campaigns/${encodeURIComponent(campaignId)}`),
 

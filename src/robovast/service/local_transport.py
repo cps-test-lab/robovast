@@ -59,7 +59,7 @@ from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STOP_SCOPE_MESSAGES,
                                                ControllerState, Phase, Status, failure_detail,
-                                               is_terminal, stop_scope_for_phase)
+                                               is_terminal, stop_checker, stop_scope_for_phase)
 from robovast.service.interface import (ActionResult, ArchiveSelection, CampaignOrigin, CampaignRef,
                                         OutputsIngested,
                                         UpgradeInfo,
@@ -669,7 +669,8 @@ class LocalTransport(RobovastInterface):
         self._health: dict[str, dict] = {}
         self._health_guard = threading.Lock()
         # campaign_id -> recorded start time (see _started_at_for). Only known values
-        # are held, and a recorded one never changes, so no invalidation is needed.
+        # are held, and a recorded one never changes while the campaign exists, so the only
+        # invalidation is delete_campaign's, which drops every per-campaign cache here.
         self._started_at_cache: dict[str, str] = {}
         #: campaign_id -> recorded finish time (see _finished_at_for). Unlike the caches
         #: beside it this one CAN go stale: a re-triggered postprocessing or a re-run
@@ -1244,11 +1245,12 @@ class LocalTransport(RobovastInterface):
     def _sweep_staged_archives(self) -> None:
         """Delete staged archives old enough that nothing can still be waiting on them.
 
-        Every other path already cleans up after itself: an import deletes the copy it
-        consumed, and a failed extraction deletes it too. What is left is the upload that was
-        never imported -- a refused pre-flight, or a browser that went away between the PUT and
-        the POST -- and those bytes are a campaign archive, so leaving them is leaving
-        gigabytes per attempt on the results volume.
+        An import deletes the copy it consumed. A failed import keeps it, so a retry with
+        force costs no second transfer, and deleting that campaign removes a copy fetched from
+        the share (staged under the campaign id). What is left is an upload, staged under its
+        token: one never imported -- a refused pre-flight, or a browser that went away between
+        the PUT and the POST -- or one whose import failed. Those bytes are a campaign archive,
+        so leaving them is leaving gigabytes per attempt on the results volume.
 
         Not deleted on refusal, deliberately: the answer to the commonest refusal (a campaign of
         that id is already here) is to import the *same* staged archive again with ``force``,
@@ -1581,8 +1583,8 @@ class LocalTransport(RobovastInterface):
         exactly as an auto-chained run does; without it a retrigger was the case where the
         view showed ``postprocessing`` and nothing else for the whole run.
         """
-        from robovast.execution.control_server import (  # pylint: disable=import-outside-toplevel
-            stage_output_callback, stop_checker)
+        from robovast.execution.control_server import \
+            stage_output_callback  # pylint: disable=import-outside-toplevel
         from robovast.results_processing.postprocessing import \
             run_postprocessing  # pylint: disable=import-outside-toplevel
         return run_postprocessing(
@@ -2080,17 +2082,39 @@ class LocalTransport(RobovastInterface):
         authoring loop composes the same file repeatedly and would otherwise pay a cold
         start every time. An unbounded span is the one that needs a reaper.
 
-        No-op locally, and deliberately: with no factory installed
+        No factory is installed locally, and deliberately: with none,
         ``_make_container_runner`` falls back to an ephemeral ``docker run`` on the service
         host, which is what a local service — and the CLI, which has no transport at all —
         already wants, and where holding would buy about a second. The cluster lane
         overrides this, having no ``docker`` in the pod and a pull to amortize.
 
-        *should_stop*, when a campaign passes one, is polled by whatever this lane waits
-        for. Nothing here waits, so nothing reads it.
+        What the span does register is *should_stop*, when a campaign passes one: the
+        fallback hands it to the runner it builds, so a campaign stopped while a variation
+        is waiting on a helper image removes that container instead of waiting it out. A
+        preview passes none and its containers run to their own end.
         """
-        del tag, project, hold, should_stop
-        return contextlib.nullcontext()
+        del hold
+        if should_stop is None:
+            return contextlib.nullcontext()
+
+        @contextlib.contextmanager
+        def _span():
+            from robovast.common.config_generation import set_aux_stop_predicate
+            token = set_aux_stop_predicate(should_stop)
+            logger.debug("Auxiliary containers of %s are stoppable for this span "
+                         "(project %s)", tag, getattr(project, "config_path", ""))
+            try:
+                yield
+            finally:
+                # Restored rather than cleared, for the reason ``_reset_factory`` gives
+                # about the factory beside it: a span entered inside another must hand the
+                # outer one its predicate back, not disarm it.
+                try:
+                    token.var.reset(token)
+                except (AttributeError, LookupError, ValueError):
+                    set_aux_stop_predicate(None)
+
+        return _span()
 
     def _postprocess_in_process(self) -> bool:
         """True when the worker runs analysis postprocessing after the loop.
@@ -2452,6 +2476,34 @@ class LocalTransport(RobovastInterface):
             # returns while postprocessing is still to come, so the one notification
             # that says "this campaign is over" has to be sent from out here.
             notifier = self._notifier(campaign_id)
+
+            def _record_stop():
+                """Persist the stop and run the analysis the finished batches are owed.
+
+                Persisted so ``stopped`` survives a service restart instead of
+                reconstructing as an ambiguous ``finished``. The batches that DID finish
+                are complete on disk, so their analysis is still owed:
+                ``controller._finish_campaign`` cannot run it on this path -- on Ctrl+C the
+                storage tunnel dies with the controller's process group -- but the service
+                can, and ``_record_campaign_stopped`` draws exactly that line ("succeeds
+                for a Stop-button stop; on Ctrl+C the tunnel is already gone"). It ends
+                back at ``stopped``: how the campaign ended is not this step's to restate.
+
+                Skipped while shutting down, for that same tunnel reason, and skipped for a
+                campaign that asked for no postprocessing.
+                """
+                logger.info("Campaign %s stopped by request", campaign_id)
+                # Here rather than only in the controller: a stop that lands before the
+                # runs begin -- staging, the plugin install, the image wait -- is raised by
+                # the driver itself, and the outcome recorded below is written from the
+                # phase, so a campaign stopped while starting would persist as ``starting``
+                # and reconstruct after a restart as something that never ended.
+                state.set_phase(Phase.STOPPED)
+                self._record_campaign_stopped(campaign_id, results_dir, state, backend)
+                if request.postprocess and not self._shutting_down:
+                    self._postprocess(campaign_id, results_dir, state, entry,
+                                      ends_at=Phase.STOPPED)
+
             try:
                 # How the campaign was ASKED FOR, recorded next to it. Here rather than in the
                 # request handler for the same reason as the line above: a record written later
@@ -2464,14 +2516,17 @@ class LocalTransport(RobovastInterface):
                     # without this "staging the project" is still the reported stage for the
                     # whole run — and, on a campaign that fails later, names the wrong step.
                     state.set_phase(Phase.STARTING, stage="")
+                    state.raise_if_stopped("stopped while staging the project")
                 if target.pinned_images is not None:
                     # Not a build, but still ``_build_specs_for``: it is what installs the
                     # campaign's ``plugins:`` into the project dir, which the cluster lane's
                     # _campaign_context reads before anything else. (``_install_plugins`` in
                     # run_batch_campaign runs later, too late for that.) Cheap and pure — it
                     # never touches the build context, which is absent here by definition.
-                    self._build_specs_for(target, campaign_config)
+                    self._build_specs_for(target, campaign_config,
+                                          should_stop=stop_checker(state, scope=STOP_RUNS))
                     options.images = dict(target.pinned_images)
+                    state.raise_if_stopped("stopped while installing the campaign's plugins")
                 else:
                     # Build (or join a sibling's build of) the experiment image and pin the
                     # concrete ref, so the backend uses it (explicit wins in
@@ -2484,14 +2539,16 @@ class LocalTransport(RobovastInterface):
                     builds = self._start_build_images(
                         target, campaign_config,
                         image_project=options.image_project,
-                        image_project_tag=options.image_project_tag)
+                        image_project_tag=options.image_project_tag,
+                        should_stop=stop_checker(state, scope=STOP_RUNS))
                     for build in builds:
                         self._await_build_image(build.build_id, state, campaign_root)
                     if builds:
                         options.images = self._resolve_built_images(
                             target, campaign_config,
                             image_project=options.image_project,
-                            image_project_tag=options.image_project_tag)
+                            image_project_tag=options.image_project_tag,
+                            should_stop=stop_checker(state, scope=STOP_RUNS))
                 # Re-record the launch, now that the symbolic image refs have become
                 # concrete ones. Written here rather than merged in later because this is
                 # the last moment before the campaign starts spending compute, and the
@@ -2500,6 +2557,9 @@ class LocalTransport(RobovastInterface):
                 self._record_launch(campaign_id, results_dir, request,
                                     images=options.images)
                 state.set_phase(Phase.STARTING)
+                # The last boundary before the lane's own pre-flight -- a project push, a
+                # registry read, the object-store tunnel -- none of which reads the flag.
+                state.raise_if_stopped("stopped before the campaign's runs began")
                 with self._campaign_context(campaign_id, target,
                                             should_stop=lambda: state.stop_requested):
                     backend = self._build_backend(state)
@@ -2523,25 +2583,22 @@ class LocalTransport(RobovastInterface):
                             created_by=request.created_by, origin=target.origin)
             except CampaignStopped:
                 # Clean cooperative stop (Ctrl+C / Stop): the controller already set
-                # phase "stopped". Not a failure — no error, no traceback. Persist the
-                # outcome so "stopped" survives a service restart.
-                logger.info("Campaign %s stopped by request", campaign_id)
-                self._record_campaign_stopped(campaign_id, results_dir, state, backend)
-                # The batches that DID finish are complete on disk, so their analysis is
-                # still owed. `controller._finish_campaign` cannot run it on this path --
-                # on Ctrl+C the storage tunnel dies with the controller's process group --
-                # but the service can, and `_record_campaign_stopped` above draws exactly
-                # that line ("succeeds for a Stop-button stop; on Ctrl+C the tunnel is
-                # already gone"). So it runs here, ending back at `stopped`: how the
-                # campaign ended is not this step's to restate.
-                #
-                # Skipped while shutting down, for that same tunnel reason, and skipped
-                # for a campaign that asked for no postprocessing.
-                if request.postprocess and not self._shutting_down:
-                    self._postprocess(campaign_id, results_dir, state, entry,
-                                      ends_at=Phase.STOPPED)
+                # phase "stopped". Not a failure — no error, no traceback.
+                _record_stop()
                 return
             except Exception as e:  # noqa: BLE001 - surfaced via status
+                if state.stop_requested and not self._shutting_down:
+                    # A stop whose first visible effect was something else failing: a
+                    # composition worker killed mid-line, an auxiliary container removed
+                    # under the command it was running, a lane pre-flight whose connection
+                    # went with them. The exception describes the consequence and the flag
+                    # describes the cause, and filing this as a failure would send whoever
+                    # reads it after a bug in a step that was working. The same rule
+                    # ``CampaignController.run`` applies to the loop's own exceptions.
+                    logger.info("Campaign %s stopped by request (surfaced as %s)",
+                                campaign_id, e)
+                    _record_stop()
+                    return
                 # Not every failed campaign is a bug. A typo'd --config filter, a
                 # missing input file, an image build pip could not resolve: the message
                 # is self-contained and actionable and the stack names nothing it does
@@ -2617,7 +2674,7 @@ class LocalTransport(RobovastInterface):
         return store
 
     def _build_specs_for(self, project, campaign_config, image_project=None,
-                         image_project_tag=None):
+                         image_project_tag=None, should_stop=None):
         """Return ({container name: BuildSpec}, project_dir) for a project.
 
         A campaign may build several images — a system under test, and a scenario or
@@ -2636,9 +2693,11 @@ class LocalTransport(RobovastInterface):
         # validated fine and then failed at start_campaign with "Unknown
         # robovast.simulators plugin", which reads as a broken .vast rather than a
         # service that had not installed what the .vast asked for.
+        # *should_stop* because this is a pip install: minutes on a campaign whose
+        # plugins are not cached, and the first thing a stop requested at launch meets.
         ensure_workspace_plugins(str(project_dir),
                                  getattr(campaign_config, 'plugins', None),
-                                 position="append")
+                                 position="append", should_stop=should_stop)
         # base_dir also lets a backend named as a `<file>.py:<Class>` ref next to the
         # .vast resolve here -- the documented escape hatch, which silently did not work
         # on this path because nothing passed the directory it resolves against.
@@ -2650,26 +2709,29 @@ class LocalTransport(RobovastInterface):
         return specs, project_dir
 
     def _start_build_images(self, project, campaign_config, image_project=None,
-                            image_project_tag=None) -> list:
+                            image_project_tag=None, should_stop=None) -> list:
         """Submit (or join) each container's image build; return their refs.
 
         Empty when nothing needs building. Returns as soon as each build has a
         *handle* — it does not wait; :meth:`_await_build_image` does that, on the
         campaign's own worker thread. Overridden by :class:`ClusterService` for the
         in-cluster BuildKit Job.
+
+        *should_stop* reaches the plugin install inside :meth:`_build_specs_for`, which is
+        the long step here and the one a stop has to be able to end.
         """
         specs, project_dir = self._build_specs_for(
             project, campaign_config, image_project=image_project,
-            image_project_tag=image_project_tag)
+            image_project_tag=image_project_tag, should_stop=should_stop)
         return [self._images.start(spec, project_dir)
                 for spec in specs.values()]
 
     def _resolve_built_images(self, project, campaign_config, image_project=None,
-                              image_project_tag=None) -> dict:
+                              image_project_tag=None, should_stop=None) -> dict:
         """Concrete image refs to pin once the builds are done, by container name."""
         specs, project_dir = self._build_specs_for(
             project, campaign_config, image_project=image_project,
-            image_project_tag=image_project_tag)
+            image_project_tag=image_project_tag, should_stop=should_stop)
         return {name: self._images.ref_for(spec, project_dir).ref
                 for name, spec in specs.items()}
 
@@ -3825,13 +3887,16 @@ class LocalTransport(RobovastInterface):
         """Ask every running job once, and replace what this campaign reports.
 
         Replaces rather than accumulates: a finding is a statement about the run *now*, and one
-        that has stopped being true must stop being reported. Failures are left to
-        :meth:`get_job_state` to explain -- nothing is invented here, because a finding RoboVAST
-        made up is a finding no simulator can be held to.
+        that has stopped being true must stop being reported. Two sources: what each running
+        job's simulator says about itself, and what RoboVAST recorded in the campaign's ledger
+        about faults a job cannot report -- a container killed at a figure the campaign
+        measured (:meth:`_findings_from_record`). Nothing else is inferred here; other failures
+        are left to :meth:`get_job_state` to explain.
         """
         findings: list = []
         skipped: list = []
         try:
+            findings.extend(self._findings_from_record(campaign_id))
             for job_name, *paths in self._health_targets(campaign_id):
                 document, _reason = self._read_health(campaign_id, job_name, *paths)
                 findings.extend(self._findings_from_document(job_name, document))
@@ -3845,6 +3910,37 @@ class LocalTransport(RobovastInterface):
                 entry["findings"] = findings
                 entry["skipped"] = skipped
                 entry["refreshing"] = False
+
+    def _findings_from_record(self, campaign_id: str) -> list:
+        """Findings RoboVAST itself recorded about this campaign's runs.
+
+        The other source of findings, beside the document a running job writes about itself.
+        Some faults cannot be self-reported: a container that was OOM-killed is not there to
+        say so, and the Job carrying the evidence is deleted moments later -- so the runner
+        writes what it saw into the campaign's ledger and this reads it back.
+
+        **One finding per fault, not per run.** The ledger has an entry per lost run; a reader
+        acts on the fault, and forty findings saying the same thing would hide whatever else
+        the campaign is reporting. The count is what makes it a fault rather than a flake, so
+        it is in the sentence.
+        """
+        from robovast.client.status import HealthFinding
+        from robovast.common.campaign_data import KIND_SIZING, read_interventions
+
+        entries = read_interventions(self.campaign_dir(campaign_id), KIND_SIZING)
+        if not entries:
+            return []
+        newest = entries[-1]
+        return [HealthFinding(
+            job_name=str(newest.get("job_name") or ""),
+            level="error",
+            # The slug a reader keys on, and what `vast campaign wait` takes its edge from: one
+            # check firing for every lost run is one exit, not a stream.
+            check="calibrated-memory-oom",
+            detail=(f"{len(entries)} run(s) lost: {newest.get('detail') or 'OOM-killed'}. "
+                    "Every run is sized from one probe's peak, so this meets the runs still to "
+                    "come on that node. To bound it, state `calibration.min.memory` or raise "
+                    "`resources.memory`, and run again."))]
 
     @staticmethod
     def _findings_from_document(job_name: str, document) -> list:
@@ -4421,19 +4517,82 @@ class LocalTransport(RobovastInterface):
                 logger.info("index: removed %d row(s) for deleted campaign %s",
                             sum(deleted.values()), campaign_id)
 
+    def _campaign_siblings(self, campaign_id: str) -> list[Path]:
+        """Files that belong to *campaign_id* but live outside its directory.
+
+        The local archives an upload-to-share or ``run_share`` wrote (a full copy each, on
+        the results volume), and the copy an import fetched from the share and kept because
+        the import failed. An *uploaded* archive is staged under its grant token, not the
+        campaign id, so it is not found here; ``_sweep_staged_archives`` removes it.
+        """
+        from robovast.execution.campaign_archive import \
+            local_archive_files  # pylint: disable=import-outside-toplevel
+        found = [Path(p) for p in local_archive_files(str(self._campaigns_root()),
+                                                      campaign_id)]
+        staged = self._staging_dir() / f"{campaign_id}.tar.gz"
+        if staged.is_file():
+            found.append(staged)
+        return found
+
     def delete_campaign(self, campaign_id: str) -> ActionResult:
-        """Delete the campaign's directory under the results root (see interface)."""
+        """Delete the campaign's directory and its sibling files (see interface).
+
+        Everything that can go is removed before anything is reported, so a second delete
+        retries only what is left. A path that could not be removed makes the result
+        ``ok=False`` naming it: the commonest cause is run output written by a container
+        user other than the service's (``execution.run_as_user``), which the service cannot
+        unlink, and a delete that answered "deleted" over it would leave the space taken
+        with nothing saying so.
+        """
         self._ensure_deletable(campaign_id)
         campaign_dir = self.campaign_dir(campaign_id)
         existed = campaign_dir.is_dir()
-        shutil.rmtree(campaign_dir, ignore_errors=True)
+        failed: list[tuple[str, OSError]] = []
+
+        def _record(_func, path, exc):
+            if not isinstance(exc, FileNotFoundError):
+                failed.append((path, exc))
+
+        if existed:
+            shutil.rmtree(campaign_dir, onexc=_record)
+
+        removed_archives, archive_bytes = 0, 0
+        for path in self._campaign_siblings(campaign_id):
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                failed.append((str(path), e))
+            else:
+                removed_archives += 1
+                archive_bytes += size
+
         self._forget_in_index(campaign_id)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
-        return ActionResult(
-            ok=True,
-            message=(f"Deleted campaign {campaign_id!r}." if existed
-                     else f"Campaign {campaign_id!r} had no local data; nothing to delete."))
+            for cache in (self._started_at_cache, self._finished_at_cache,
+                          self._description_cache, self._created_by_cache,
+                          self._origin_cache, self._summary_cache, self._disk_status_cache):
+                cache.pop(campaign_id, None)
+
+        if failed:
+            path, exc = failed[0]
+            return ActionResult(
+                ok=False,
+                message=(f"Campaign {campaign_id!r} was not fully deleted: {len(failed)} "
+                         f"path(s) could not be removed, the first being {path} "
+                         f"({exc.strerror or exc}). Files written by a container user other "
+                         f"than the service's (execution.run_as_user) cannot be removed by "
+                         f"the service; remove them as that user, then delete again."))
+        if not existed and not removed_archives:
+            return ActionResult(
+                ok=True,
+                message=f"Campaign {campaign_id!r} had no local data; nothing to delete.")
+        archives = (f", and {removed_archives} archive(s) of "
+                    f"{archive_bytes / 1024 ** 3:.2f} GiB beside it" if removed_archives else "")
+        return ActionResult(ok=True, message=f"Deleted campaign {campaign_id!r}{archives}.")
 
     # -- postprocessing -----------------------------------------------------
 

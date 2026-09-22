@@ -114,6 +114,26 @@ def campaign_start_key(campaign_id: str) -> float:
     return float("inf")
 
 
+def describe_resources(cpu: float, memory: int, ephemeral: int = 0) -> str:
+    """``"4 cpu / 4096Mi"``, with ``" / 150Gi disk"`` where there is a disk figure.
+
+    Disk is named only where it is asked for: most jobs request none, and a refusal that
+    prints a disk figure of nothing sends the reader to check a dimension that is fine.
+    """
+    text = f"{cpu:g} cpu / {memory // (1024 ** 2)}Mi"
+    return f"{text} / {ephemeral // (1024 ** 3)}Gi disk" if ephemeral else text
+
+
+def _asked(sizing: "JobSizing") -> str:
+    return describe_resources(sizing.cpu, sizing.memory, sizing.ephemeral)
+
+
+def _held(capacity: "Capacity", sizing: "JobSizing") -> str:
+    """What *capacity* holds, in the dimensions *sizing* asks for."""
+    return describe_resources(capacity.cpu, capacity.memory,
+                              capacity.ephemeral if sizing.ephemeral else 0)
+
+
 @dataclass(frozen=True)
 class JobSizing:
     """What one job needs, summed over its containers.
@@ -125,6 +145,11 @@ class JobSizing:
     cpu: float
     memory: int
     gpu: int = 0
+    #: ``ephemeral-storage`` bytes. The scheduler places a pod on this as it does on cpu and
+    #: memory, so a pin that ignores it sends a pod to a node that cannot take it: admission
+    #: grants the node, the pin excludes every other one, and the pod waits Unschedulable
+    #: for disk that another node had free.
+    ephemeral: int = 0
 
 
 @dataclass(frozen=True)
@@ -143,11 +168,13 @@ class Capacity:
     memory: int
     gpu: int = 0
     node_id: "str | None" = None
+    ephemeral: int = 0
 
     def holds(self, sizing: JobSizing) -> bool:
         return (self.cpu >= sizing.cpu
                 and self.memory >= sizing.memory
-                and self.gpu >= sizing.gpu)
+                and self.gpu >= sizing.gpu
+                and self.ephemeral >= sizing.ephemeral)
 
 
 @dataclass(frozen=True)
@@ -169,11 +196,13 @@ class NodeBudget:
     free_cpu: float
     free_memory: int
     free_gpu: int = 0
+    free_ephemeral: int = 0
 
     def holds(self, sizing: "JobSizing") -> bool:
         return (self.free_cpu >= sizing.cpu
                 and self.free_memory >= sizing.memory
-                and self.free_gpu >= sizing.gpu)
+                and self.free_gpu >= sizing.gpu
+                and self.free_ephemeral >= sizing.ephemeral)
 
 
 @dataclass(frozen=True)
@@ -211,6 +240,10 @@ class Budget:
     @property
     def free_gpu(self) -> int:
         return sum(n.free_gpu for n in self.nodes)
+
+    @property
+    def free_ephemeral(self) -> int:
+        return sum(n.free_ephemeral for n in self.nodes)
 
 
 class BudgetProvider(Protocol):
@@ -331,6 +364,7 @@ class _Held:
     memory: int
     gpu: int
     node_id: "str | None" = None
+    ephemeral: int = 0
 
 
 class AdmissionRefused(Exception):
@@ -643,7 +677,7 @@ class AdmissionController:
                 item.state = CREATED
                 node_id = chosen.node_id if chosen else None
                 self._held[item.key] = _Held(item.owner, need.cpu, need.memory, need.gpu,
-                                             node_id)
+                                             node_id, need.ephemeral)
                 if node_id is None:
                     unpinned += 1
                 if chosen is not None:
@@ -651,7 +685,8 @@ class AdmissionController:
                         node_id=node_id,
                         free_cpu=chosen.free_cpu - need.cpu,
                         free_memory=chosen.free_memory - need.memory,
-                        free_gpu=chosen.free_gpu - need.gpu)
+                        free_gpu=chosen.free_gpu - need.gpu,
+                        free_ephemeral=chosen.free_ephemeral - need.ephemeral)
                 # A create clears the owner's stale reason: a refusal that outlived the wait
                 # it described is the same defect as the capacity-wait flag that outlived
                 # its own, and it reads to an operator as a campaign still stuck.
@@ -672,7 +707,13 @@ class AdmissionController:
             self._items.pop(key, None)
 
     def cancel(self, owner: str) -> int:
-        """Drop an owner's planned items and release its held reservations.
+        """Drop an owner's items and release its held reservations; return how many were
+        still planned.
+
+        Only the planned ones are counted, because that is the number a caller can report as
+        released: work that will now never exist. A created item is a Job that exists or
+        existed, and counting it would have a batch stopped mid-run report its running jobs as
+        released "never created".
 
         Called from a ``finally``, because a campaign that raises on its way out would
         otherwise leak its reservations for the life of the process -- shrinking every other
@@ -680,22 +721,44 @@ class AdmissionController:
 
         **The calibration survives, and that is the point.** This runs at the end of every
         BATCH -- a search builds a fresh runner per batch -- so dropping the calibration here
-        made every batch re-probe every node. Measured on a live search: four probe runs per
-        batch instead of per campaign, and the figures moved between batches (one node's
-        system-under-test went 1.820 to 1.106 cores), so runs in different batches of the same
-        campaign were sized differently. That defeats the property calibration exists to
-        provide, which is that every run of a campaign meets the same allocation.
+        would make every batch re-probe every node, and since a figure moves between probes,
+        runs in different batches of the same campaign would be sized differently. That
+        defeats the property calibration exists to provide, which is that every run of a
+        campaign meets the same allocation.
         :meth:`forget_calibration` is what ends it, at the end of the campaign.
         """
         with self._lock:
             keys = [k for k, i in self._items.items() if i.owner == owner]
+            planned = sum(1 for k in keys if self._items[k].state == PLANNED)
             for key in keys:
                 self._items.pop(key, None)
                 self._held.pop(key, None)
             for key in [k for k, h in self._held.items() if h.owner == owner]:
                 self._held.pop(key, None)
             self._refusals.pop(owner, None)
-            return len(keys)
+            return planned
+
+    def drop_planned(self, owner: str) -> "List[str]":
+        """Drop *owner*'s items that are not created yet, keeping what it already holds.
+
+        For an owner that has nothing left for a planned item to do. A planned item keeps its
+        place in the global queue and is created the moment room appears, so leaving it there
+        spends a node's capacity on work whose submitter has no use for the result.
+
+        Not :meth:`cancel`, which also releases what the owner's CREATED items hold -- those
+        are pods that exist, and forgetting their reservation would let the queue spend the
+        same capacity twice.
+        """
+        with self._lock:
+            keys = [k for k, i in self._items.items()
+                    if i.owner == owner and i.state == PLANNED]
+            for key in keys:
+                self._items.pop(key, None)
+            if not any(i.owner == owner for i in self._items.values()):
+                # A reason that outlived the wait it described reads to an operator as an
+                # owner still stuck -- the same defect a create already clears.
+                self._refusals.pop(owner, None)
+            return keys
 
     def forget_calibration(self, owner: str) -> bool:
         """Drop an owner's calibration, once its campaign is over. Returns whether there was one.
@@ -853,9 +916,8 @@ class AdmissionController:
             if own[0].holds(sizing):
                 return
             raise AdmissionRefused(
-                f"a job needs {sizing.cpu:g} cpu / {sizing.memory // (1024 ** 2)}Mi and the "
-                f"node this campaign is confined to (execution.kubernetes.jobs.node) holds "
-                f"{own[0].cpu:g} cpu / {own[0].memory // (1024 ** 2)}Mi. Reduce "
+                f"a job needs {_asked(sizing)} and the node this campaign is confined to "
+                f"(execution.kubernetes.jobs.node) holds {_held(own[0], sizing)}. Reduce "
                 "execution.containers.*.resources, or confine it to a larger node.")
         if any(c.holds(sizing) for c in capacities):
             return
@@ -864,12 +926,16 @@ class AdmissionController:
                 return
             raise AdmissionRefused(
                 "no nodes are available to size against; the cluster reported none")
-        biggest = max(capacities, key=lambda c: c.cpu)
+        # Largest in the dimension that does not fit: a disk refusal that quoted the node
+        # with the most cores would name a disk figure smaller than the cluster's largest.
+        disk_short = sizing.ephemeral and not any(c.ephemeral >= sizing.ephemeral
+                                                  for c in capacities)
+        biggest = max(capacities, key=(lambda c: c.ephemeral) if disk_short
+                      else (lambda c: c.cpu))
         raise AdmissionRefused(
-            f"a job needs {sizing.cpu:g} cpu / {sizing.memory // (1024 ** 2)}Mi and no node is "
-            f"that large -- the biggest holds {biggest.cpu:g} cpu / "
-            f"{biggest.memory // (1024 ** 2)}Mi. Reduce execution.containers.*.resources, or "
-            "run where a node can hold it.")
+            f"a job needs {_asked(sizing)} and no node is that large -- the biggest holds "
+            f"{_held(biggest, sizing)}. Reduce execution.containers.*.resources, or run "
+            "where a node can hold it.")
 
     def _could_ever_hold_locked(self, node_id, sizing: JobSizing) -> bool:
         """Could *node_id* run *sizing* if it were empty? ``True`` when unknowable.
@@ -1009,7 +1075,8 @@ class AdmissionController:
             self._budget = self._provider.budget()
             self._budget_at = now
         budget = self._budget
-        free = {n.node_id: [n.free_cpu, n.free_memory, n.free_gpu] for n in budget.nodes}
+        free = {n.node_id: [n.free_cpu, n.free_memory, n.free_gpu, n.free_ephemeral]
+                for n in budget.nodes}
         for key, held in self._held.items():
             if key in budget.counted_jobs:
                 continue  # the reading already subtracted its real pod
@@ -1018,5 +1085,7 @@ class AdmissionController:
             free[held.node_id][0] -= held.cpu
             free[held.node_id][1] -= held.memory
             free[held.node_id][2] -= held.gpu
-        return ([NodeBudget(node_id=k, free_cpu=v[0], free_memory=v[1], free_gpu=v[2])
+            free[held.node_id][3] -= held.ephemeral
+        return ([NodeBudget(node_id=k, free_cpu=v[0], free_memory=v[1], free_gpu=v[2],
+                            free_ephemeral=v[3])
                  for k, v in free.items()], budget.growable)

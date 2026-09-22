@@ -66,6 +66,16 @@ CALIBRATION_HEADROOM = 1.25
 #: cannot tell "this container genuinely idles" from "this run stopped before it started".
 MIN_CPU = 0.25
 
+#: The same last-resort floor for memory, where a wrong measurement costs more: a container
+#: given too little CPU runs slowly, one given too little memory is killed. It is not the
+#: defence against a short probe either -- :data:`MIN_PROBE_SAMPLES` and the verdict gate are --
+#: but a probe that reached a failure verdict during bring-up passes both, and this bounds
+#: what its figure can do to every later run.
+#:
+#: One figure for every role, like :data:`MIN_CPU`, in bytes (``512M``). A stated
+#: ``resources.memory`` or ``calibration.min.memory`` wins over it.
+MIN_MEMORY = 512 * 1000 ** 2
+
 #: Fewest ticks a percentile may be read from. **A statistical floor, and only that.**
 #:
 #: It was 30 -- half a minute at the monitor's ~1 Hz -- and carried a second job it should

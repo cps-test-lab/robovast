@@ -24,7 +24,7 @@ is a join between a log and a run's verdict and a stream has nothing to join to.
 The merged ``run_log`` table can (see
 :mod:`robovast.results_processing.run_log`), so this tool is a thin shape over SQL that keeps
 the *reading* vocabulary identical to the other log tools — ``grep`` / ``min_severity`` /
-``summarize`` / ``tail`` mean exactly what they mean there, because they are the same
+``summarize`` mean exactly what they mean there, because they are the same
 :func:`~robovast.mcp_server.log_view.view_log`.
 
 Cost: the rows live in the central index, so nothing is fetched per campaign any more — a
@@ -41,6 +41,7 @@ import re
 
 from robovast.common import log_summary
 from robovast.mcp_server import data_access, log_view, service_access
+from robovast.mcp_server.lacks import lacks
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,9 @@ def _as_line(row: dict) -> str:
 
 # A plain ``def``: every step below queries the service or the index, and FastMCP runs a
 # sync tool on a worker thread -- an ``async def`` with nothing to await runs on the loop.
+@lacks(tail="narrow with limit, or page the run_log table with query_campaign_data_sql",
+        top="summarize=True gives the most frequent line patterns",
+        offset="narrow with limit, or page the run_log table with query_campaign_data_sql")
 def search_run_logs(
     campaign_id: str,
     grep: str = "",
@@ -308,7 +312,7 @@ def search_run_logs(
     The log is every container's output joined with ``/rosout``, on the run's playback clock, so
     ``t0``/``t1`` are sim-time seconds of the *trial*. For one live or just-finished run use
     ``get_job_log`` (this needs postprocessing); for build/controller phases,
-    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` / ``tail`` /
+    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` /
     ``hide_shutdown`` mean the same in all of them, defaults included.
 
     Args:

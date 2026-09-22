@@ -65,7 +65,7 @@ from kubernetes import client
 
 from robovast.common import (get_execution_env_variables, plan_containers,
                              prepare_campaign_configs, scenario_env)
-from robovast.common.campaign_data import (KIND_INVALID, PROBE_DIR,
+from robovast.common.campaign_data import (KIND_INVALID, KIND_SIZING, PROBE_DIR,
                                            record_container_failures, record_intervention)
 from robovast.common.common import get_scenario_parameters
 from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
@@ -74,9 +74,10 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        job_artifact_rel, node_label, read_job_links,
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
+from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
-from robovast.execution.backends import (CampaignConfigError, CampaignStopped, ExecutionBackend,
-                                         RunOptions, ShareStopped)
+from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
+                                         ShareStopped)
 from robovast.execution.packer import build_jobs
 
 from . import pod_access, pod_upload
@@ -86,7 +87,7 @@ from .campaign_job import apply_campaign_pod_policy, campaign_job_manifest, pin_
 from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign,
                                 previous_container_log, resolve_pull_secret,
-                                restarted_job_forensics)
+                                oom_killed_job_forensics, restarted_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
 from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAME,
                         POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
@@ -367,10 +368,13 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     if not figures:
         return _with_bootstrap(declared, container_name, roles) if bootstrap else declared
 
-    from .node_calibration import MIN_CPU  # noqa: PLC0415
+    from .node_calibration import MIN_CPU, MIN_MEMORY  # noqa: PLC0415
 
     settings = settings or {}
     headroom = settings.get("headroom") or {}
+    # What an author stated, over the built-in floor for this container's role. Both are floors
+    # and the larger wins; the declared ceiling still wins over either.
+    floor = settings.get("min") or {}
     # The bootstrap is the BASE on this path too, not only where no figures exist. Only the
     # measured resources are overwritten below, so everything else -- memory where the probe
     # could not read it, and the ceiling under `limit: declared` -- has to come from
@@ -382,7 +386,8 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
 
     cores = figures.get("cores")
     if cores:
-        cpu = max(MIN_CPU, round(cores * float(headroom.get("cpu") or 1.0), 3))
+        cpu = max(MIN_CPU, float(floor.get("cpu") or 0),
+                  round(cores * float(headroom.get("cpu") or 1.0), 3))
         out["cpu"] = min(cpu, ceiling) if ceiling else cpu
         if settings.get("limit") == "request":
             # Request == limit: the container never throttles, and its budget is the same in
@@ -397,6 +402,11 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
     peak_bytes = figures.get("memory_peak")
     if peak_bytes:
         sized = _memory_reservation(peak_bytes, float(headroom.get("memory") or 1.0))
+        # The floors first, then the ceiling. A measurement below what a container needs to
+        # exist is the one thing this cannot detect for itself -- the probe reports a number,
+        # not whether its run got far enough for that number to mean anything -- and unlike
+        # CPU the cost of being wrong is the run rather than its speed.
+        sized = max(sized, MIN_MEMORY, to_bytes(floor.get("memory")) or 0)
         declared_bytes = _declared_bytes(declared) or _declared_bytes(out)
         if declared_bytes:
             sized = min(sized, declared_bytes)
@@ -606,6 +616,13 @@ class BatchJobRunner:
     #: :meth:`for_batch`.
     _deadline_seconds = None
     _deadline_killed = frozenset()
+    #: ``(job, container)`` pairs already recorded as killed at a measured figure. A kill can
+    #: be seen on more than one poll, and through the restart path as well as the pod's end.
+    _sizing_recorded = frozenset()
+    #: Nodes whose probe this batch cancelled because it had no job left to place (see
+    #: :meth:`drop_probes_with_no_work_left_to_size`). Still held, and still unmeasured,
+    #: but not for a reason that says anything about whether the node CAN be measured.
+    _probes_cancelled = frozenset()
 
     #: How long a batch tolerates jobs stuck unable to start (image pull / config
     #: error) before failing with the Kubernetes reason. The shared value, because the
@@ -1281,6 +1298,30 @@ class BatchJobRunner:
     def _probe_owner(self) -> str:
         return f"{self.campaign}{self._PROBE_OWNER_SUFFIX}"
 
+    def _raise_if_stopped(self, what: str) -> None:
+        """End this batch when the campaign's runs were asked to stop.
+
+        *what* says where the stop landed ("before staging", "during"), because the
+        message becomes the campaign's recorded reason. Silent when no state drives this
+        runner: an offline caller has no campaign to stop.
+        """
+        if self._state is not None:
+            self._state.raise_if_stopped(
+                f"campaign {self.campaign} stopped {what} batch {self._batch_tag}")
+
+    def _poll_wait(self, seconds: float) -> None:
+        """Wait *seconds* between polls of the batch, ending the batch if a stop lands.
+
+        The batch wait is this lane's longest -- hours, on the campaigns worth stopping --
+        and it is where the stop must be read rather than slept through: the service's own
+        teardown deletes the Jobs, but it is this loop noticing that winds the campaign
+        down.
+        """
+        if self._state is None:
+            time.sleep(seconds)
+        elif self._state.wait_for_stop(seconds):
+            self._raise_if_stopped("during")
+
     def _start_probes(self, jobs, total_jobs):
         """Queue one calibration probe per uncalibrated node. Returns the calibration, or None.
 
@@ -1734,7 +1775,8 @@ class BatchJobRunner:
                 "under _calibration/, and whether its runtime exposes the cgroup counters")
 
     def abandon_outstanding_probes(self) -> int:
-        """Free every node this batch was still measuring. Returns how many.
+        """Free every node this batch was still measuring, and delete its probe. Returns how
+        many.
 
         A probe that will never report -- because the batch is over, stopped, or failed -- has
         to release its node, or ``accepts_work`` answers False for that node for the rest of
@@ -1742,20 +1784,63 @@ class BatchJobRunner:
         measurement costs the declared sizing on that node, which is what a cluster with
         calibration switched off does anyway: a worse allocation, never a wrong result.
 
-        Idempotent, and safe to call when there is no calibration at all.
+        **The pod goes with the record.** A probe is pinned, so one still running holds its
+        node against every other campaign until its own ``activeDeadlineSeconds`` -- a trial's
+        outer backstop, many times a trial -- to produce a measurement nothing will read. That
+        is the same step a crashed probe already gets, for the same reason.
+
+        Idempotent, and safe to call when there is no calibration at all. Best-effort on the
+        delete: this runs in the batch's ``finally``, where a raise would replace the reason
+        the campaign is unwinding with a consequence of it.
         """
-        calibration = self._calibration
-        if calibration is None:
-            self._probes.clear()
-            return 0
         outstanding = list(self._probes.items())
-        for key, node_id in outstanding:
-            calibration.abandon(node_id, key)
         self._probes.clear()
+        calibration = self._calibration
+        for key, node_id in outstanding:
+            if calibration is not None:
+                calibration.abandon(node_id, key)
+            try:
+                self._delete_job(key)
+            except Exception as exc:  # noqa: BLE001 - see docstring
+                logger.warning("Batch %s: could not delete the calibration probe for node "
+                               "%s: %s", self._batch_tag, node_id, exc)
         if outstanding:
             logger.info("Batch %s: abandoned %d calibration probe(s); their nodes stay on "
                         "the declared sizing", self._batch_tag, len(outstanding))
         return len(outstanding)
+
+    def drop_probes_with_no_work_left_to_size(self) -> int:
+        """Cancel the probes the queue has not created yet. Returns how many.
+
+        Called once the batch has created every job it defined: from that moment no run of
+        this batch can be placed on the node a probe is queued for, so creating it would
+        spend a trial's worth of that node on a figure nothing in this batch can use -- and
+        it would take that capacity from whatever else the cluster is running.
+
+        **A probe already created is left to finish.** It is most of a trial in already, and
+        what it measures still sizes the next batch of a search, which re-probes only the
+        nodes it has no figures for.
+
+        The node stays held until the batch ends, so nothing requeued later in the batch --
+        a retried run -- lands on it at the declared sizing beside runs sized from figures.
+        It is not charged toward :data:`~.node_calibration.UNMEASURED_BATCH_LIMIT`, though:
+        that limit tells a node that cannot be measured from one that was busy, and a probe
+        cancelled for want of work is evidence of neither. The batch reports it separately
+        (:meth:`cancelled_probe_nodes`), and the next batch probes the node again.
+        """
+        admission = self.admission
+        if admission is None or not self._probes:
+            return 0
+        dropped = admission.drop_planned(self._probe_owner())
+        self._probes_cancelled = self._probes_cancelled | {
+            self._probes[k] for k in dropped if k in self._probes}
+        if dropped:
+            logger.info(
+                "Batch %s: every job of this batch exists, so %d calibration probe(s) that "
+                "had not started were cancelled; their nodes (%s) stay on the declared "
+                "sizing", self._batch_tag, len(dropped),
+                ", ".join(sorted(str(self._probes.get(k)) for k in dropped)))
+        return len(dropped)
 
     def unmeasured_nodes(self) -> list:
         """Nodes this campaign held for measuring and never measured. Empty is the norm.
@@ -1793,11 +1878,20 @@ class BatchJobRunner:
         :data:`~.node_calibration.UNMEASURED_BATCH_LIMIT`, which is where the number a caller
         weighs this against is argued.
         """
-        nodes = self.unmeasured_nodes()
+        nodes = [n for n in self.unmeasured_nodes() if n not in self._probes_cancelled]
         calibration = self._calibration
         if not nodes or calibration is None:
             return {}
         return {node_id: calibration.unmeasured_batch(node_id) for node_id in nodes}
+
+    def cancelled_probe_nodes(self) -> list:
+        """Nodes that sat out this batch because their probe was cancelled for want of work.
+
+        Unmeasured like the nodes :meth:`weigh_unmeasured_nodes` counts, and reported beside
+        them, but never charged: the probe did not lose a race for capacity, the batch simply
+        finished placing its jobs before the queue reached it.
+        """
+        return sorted(n for n in self._probes_cancelled if n in self.unmeasured_nodes())
 
     def skip_unmeasured_nodes(self, node_ids, reason: str) -> None:
         """Leave *node_ids* out of this campaign for good.
@@ -1889,6 +1983,13 @@ class BatchJobRunner:
                 **out["headroom"],
                 **{f: _field(headroom, f) for f in ("cpu", "memory")
                    if _field(headroom, f) is not None}}
+        floor = _field(declared, "min")
+        if floor is not None:
+            # Per field for the same reason, over an empty default: a floor an author states is
+            # something they know about this container, and no role rule can know it for them.
+            out["min"] = {**(out.get("min") or {}),
+                          **{f: _field(floor, f) for f in ("cpu", "memory")
+                             if _field(floor, f) is not None}}
         return out
 
     def _calibration_by_container(self) -> dict:
@@ -2744,8 +2845,75 @@ class BatchJobRunner:
                            self._batch_tag, exc)
             return
         for job_name, entry in sorted(restarted.items()):
+            self._record_a_kill_at_a_measured_figure(job_name, entry, campaign_root)
             self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
                            campaign_root=campaign_root, forensics=entry)
+
+    def _record_a_kill_at_a_measured_figure(self, job_name, entry, campaign_root) -> None:
+        """Record a run lost to memory this campaign MEASURED, so the campaign can report it.
+
+        **A measurement is a prediction about every run, and this run disproves it.** The probe
+        sees one run's peak; every other run is sized from it, so a demand the probe did not see
+        is not met once -- the same figure meets the next run, and the next. Nothing else in the
+        loop says so: the invalidation above says a trial was lost, which is true of a flake too.
+
+        Written to the campaign's own ledger rather than kept in memory, because the Job that
+        carried the evidence is deleted moments later and the fact has to outlive it -- and
+        because that ledger is what the service reads to report it (see
+        ``LocalTransport._findings_from_record``).
+
+        Only a figure this campaign measured is recorded: a container killed at what its author
+        DECLARED is a campaign asking for too little, which the author states and this must not
+        second-guess.
+        """
+        calibration = getattr(self, "_calibration", None)
+        node = (entry or {}).get("node")
+        figures = calibration.calibrated(node) if calibration and node else None
+        if not figures:
+            return
+        for record in (entry or {}).get("containers") or ():
+            if record.get("reason") != "OOMKilled":
+                continue
+            container = record.get("container")
+            measured = (figures.get(container) or {}).get("memory_peak")
+            if not measured:
+                continue
+            if (job_name, container) in self._sizing_recorded:
+                continue
+            self._sizing_recorded = self._sizing_recorded | {(job_name, container)}
+            limit = to_bytes(record.get("memory_limit"))
+            gib = 1024 ** 3
+            at = f" at {limit / gib:.2f}GiB" if limit else ""
+            try:
+                record_intervention(
+                    Path(campaign_root), kind=KIND_SIZING, job_dir="", job_name=job_name,
+                    source="runner",
+                    detail=(f"container {container} was OOM-killed{at} -- memory this campaign "
+                            f"MEASURED on its node ({measured / gib:.2f}GiB peak)"))
+            except Exception as exc:  # noqa: BLE001 - a record must not fail the response
+                logger.warning("Batch %s: could not record the sizing fault for %s: %s",
+                               self._batch_tag, job_name, exc)
+
+    def _record_oom_kills_at_measured_figures(self, job_label, job_names,
+                                              campaign_root) -> None:
+        """Record the jobs whose pod ended on a container OOM-killed at a measured figure.
+
+        The restart path sees only a container the pod restarts. The scenario container is
+        not restarted, so its kill ends the pod instead, and is read here. Asked only once
+        some node has figures: before that there is no measured figure to be killed at.
+        """
+        calibration = getattr(self, "_calibration", None)
+        if calibration is None or not calibration.outcome().get("calibrated"):
+            return
+        try:
+            killed = oom_killed_job_forensics(self.k8s_client, self.namespace, job_label,
+                                              job_names=job_names)
+        except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+            logger.warning("Batch %s: could not check for OOM-killed containers: %s",
+                           self._batch_tag, exc)
+            return
+        for job_name, entry in sorted(killed.items()):
+            self._record_a_kill_at_a_measured_figure(job_name, entry, campaign_root)
 
     def _drop_blocked_jobs(self, expired, reasons_by_job, jobs_by_name,
                            campaign_root) -> None:
@@ -2868,6 +3036,10 @@ class BatchJobRunner:
         # Before anything is staged, probed or created: a job node alias that names no
         # usable node refuses the campaign here, so no Job of it ever exists.
         self._campaign_node_id()
+        # And before the staging itself, which writes this batch's whole config tree and
+        # mints the campaign's Secret: minutes on a large sweep, and every second of it
+        # after a stop is work for a campaign that will not read it.
+        self._raise_if_stopped("before staging")
 
         # 1. Prepare this batch's config tree + per-job parameter files, straight into the
         #    campaign root: that is what the Jobs' init containers fetch, and the campaign
@@ -2941,6 +3113,11 @@ class BatchJobRunner:
             blocked_grace=self._BLOCKED_GRACE_SECONDS,
             contended_grace=self._CONTENDED_GRACE_SECONDS,
             list_remaining=self.get_remaining_jobs)
+        # The last moment before this batch exists on the cluster. A stop that arrived
+        # while the configs were being staged has already had the service tear down
+        # whatever Jobs were there; creating this batch's now would leave Jobs behind that
+        # nothing asked for and nothing is waiting on.
+        self._raise_if_stopped("before creating the jobs of")
         if not pending:
             # Every job this batch plans already has its results. Nothing to create and
             # nothing to queue -- and nothing to probe for either: calibration measures
@@ -2997,9 +3174,7 @@ class BatchJobRunner:
         # and one shared timer prints whichever came first and hides the other.
         last_refusal_log: "dict[str, float]" = {}
         while True:
-            if self._state is not None and self._state.stop_requested:
-                raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
-                                      f"{self._batch_tag}")
+            self._raise_if_stopped("during")
             if admission is not None:
                 # **Probes first, then the drain** (in `poll`). A node is held while its
                 # probe is out and freed the moment that probe reports -- per node, so one
@@ -3017,6 +3192,10 @@ class BatchJobRunner:
             # blocked for a poll or two; its timer must not expire again.
             rnd = tracker.poll(ignore_blocked=self._invalidated or ())
             remaining, planned_count = rnd.remaining, rnd.planned
+            if not planned_count:
+                # Every job this batch defined exists, so an uncreated probe has nothing left
+                # to size and its place in the queue is capacity held from the cluster.
+                self.drop_probes_with_no_work_left_to_size()
             if admission is not None:
                 # What the drain in `poll` found about space, published as it does.
                 self._publish_space_wait(admission.space_shortfall())
@@ -3107,6 +3286,7 @@ class BatchJobRunner:
             # that job, record why, and keep going.
             self._invalidate_restarted_jobs(job_label, job_names, jobs_by_name,
                                             campaign_root)
+            self._record_oom_kills_at_measured_figures(job_label, job_names, campaign_root)
             logger.info("Batch %s: %d/%d job(s) still running...",
                         self._batch_tag, len(remaining), len(job_names))
             if admission is not None and (planned_count or self._probes):
@@ -3137,16 +3317,15 @@ class BatchJobRunner:
                         continue
                     last_refusal_log[owner] = time.monotonic()
                     logger.info("Batch %s: %s: %s", self._batch_tag, what, reason)
-            time.sleep(2)
+            self._poll_wait(2)
         # A stop that landed while the last jobs were being torn down leaves the loop
         # via the empty-remaining path; catch it here too before the result download.
-        if self._state is not None and self._state.stop_requested:
-            raise CampaignStopped(f"campaign {self.campaign} stopped during batch "
-                                  f"{self._batch_tag}")
+        self._raise_if_stopped("during")
         # The loop breaks on an empty `remaining` BEFORE probing, so a restart in the last
         # job's last seconds is otherwise never seen. The pods are still here -- cleanup
         # runs at the end of this method -- so ask once more.
         self._invalidate_restarted_jobs(job_label, job_names, jobs_by_name, campaign_root)
+        self._record_oom_kills_at_measured_figures(job_label, job_names, campaign_root)
         if self._invalidated and len(job_names) > 1 and \
                 len(self._invalidated) >= len(job_names):
             # Every job of a multi-job batch dropped is not a flake, it is a fault they
@@ -3499,6 +3678,7 @@ class KubernetesBackend(ExecutionBackend):
                 from .node_calibration import UNMEASURED_BATCH_LIMIT  # noqa: PLC0415
 
                 unmeasured = {} if batch_error else runner.weigh_unmeasured_nodes()
+                cancelled = [] if batch_error else runner.cancelled_probe_nodes()
                 runner.abandon_outstanding_probes()
                 # **Only once it has happened twice running.** A probe that could never be
                 # placed on any node is already refused before a single job exists, by the
@@ -3553,14 +3733,30 @@ class KubernetesBackend(ExecutionBackend):
                     # complaint that started all this was that nothing in the results said so.
                     logger.warning(
                         "Batch %s: %s took no work -- held for measuring and never measured. "
-                        "Re-probed on the next batch; the campaign is refused if the same "
-                        "node goes unmeasured %d batches running.", batch_tag,
+                        "Re-probed on the next batch; a node unmeasured in %d batches is left "
+                        "out of the campaign.", batch_tag,
                         ", ".join(f"{node_id} ({batches} batch(es) now)"
                                   for node_id, batches in sorted(unmeasured.items())),
                         UNMEASURED_BATCH_LIMIT)
+                if cancelled:
+                    logger.warning(
+                        "Batch %s: %s took no work -- every job of the batch was placed "
+                        "before its probe could start, so the probe was cancelled. Not "
+                        "counted toward leaving the node out; re-probed on the next batch.",
+                        batch_tag, ", ".join(cancelled))
                 if dropped:
                     logger.info("Batch %s: released %d job(s) that were never created",
                                 batch_tag, dropped)
+            if self._state is not None and self._state.stop_requested:
+                # The second and final sweep. The service's own teardown ran when the stop
+                # landed, but a batch can create Jobs after it -- a drain between that
+                # teardown and this loop's next read of the flag -- and those are Jobs
+                # nothing is waiting on and nothing else will delete. Label-scoped to this
+                # campaign's scenario runs like every other teardown, so a shared image
+                # build and another campaign's work are untouched. After the queue is
+                # cancelled above, so nothing can be created behind it.
+                runner.cleanup_jobs(campaign=campaign_id)
+                runner.cleanup_pods(campaign=campaign_id)
 
         self._record_execution_yaml(runner, campaign_root, execution_params, runs,
                                     with_locks=True)

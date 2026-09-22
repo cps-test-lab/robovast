@@ -16,6 +16,7 @@ import pytest
 from robovast.execution.backends import RunOptions
 from robovast.execution.cluster_execution.kubernetes_backend import (BatchJobRunner,
                                                                      KubernetesBackend)
+from robovast.execution.control_server import ControllerState
 
 #: What the service hands the backend for the campaign's pods to authenticate with.
 _TOKEN = "scoped-token"
@@ -109,23 +110,105 @@ def test_run_batch_in_pod_materialises_job_symlinks(monkeypatch, tmp_path):
 
 def test_run_batch_in_pod_aborts_cleanly_on_stop(monkeypatch, tmp_path):
     """A cooperative stop abandons the batch with CampaignStopped rather than finishing
-    it: the jobs are being torn down, and what they left is what the campaign has."""
+    it: the jobs are being torn down, and what they left is what the campaign has.
+
+    Before anything is staged, too. A stop that reached the campaign while it was
+    starting used to be read first in the wait loop, so the batch it was stopping was
+    staged and submitted in full and only then abandoned -- creating exactly the Jobs the
+    service had just torn down.
+    """
     from robovast.execution.backends import CampaignStopped
 
-    _no_config_preparation(monkeypatch)
+    prepared = []
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.prepare_campaign_configs",
+        lambda out_dir, data, cluster=False, instance_type_command=None:
+            prepared.append(out_dir))
 
     runner = _runner_for_batch_test([{"name": "cfgA"}])
-    runner._state = types.SimpleNamespace(stop_requested=True)
+    runner._state = ControllerState()
+    runner._state.request_stop()
 
     with pytest.raises(CampaignStopped):
         runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+    assert prepared == [], "a stopped campaign staged its configs anyway"
     # The batch never reached its tail, so it linked nothing up.
     assert not (tmp_path / "cfgA").exists()
+
+
+def test_a_stopped_batch_sweeps_up_jobs_created_after_the_teardown(monkeypatch, tmp_path):
+    """The service tore this campaign's Jobs down when the stop landed; a drain between
+    that and the loop's next read can have created more, and nothing else would.
+
+    Scoped to the campaign, so another campaign's work and a shared image build -- which
+    a sibling may still be waiting on -- are untouched.
+    """
+    from robovast.execution.backends import CampaignStopped
+
+    swept = []
+    backend = _backend()
+    backend._state = ControllerState()
+    backend._state.request_stop()
+
+    class _Runner:
+        def run_batch_in_pod(self, campaign_root, token):
+            raise CampaignStopped("stopped")
+
+        def cleanup_jobs(self, campaign=None):
+            swept.append(("jobs", campaign))
+
+        def cleanup_pods(self, campaign=None):
+            swept.append(("pods", campaign))
+
+    _stub_runner(monkeypatch, backend, _Runner())
+
+    with pytest.raises(CampaignStopped):
+        backend.run_batch({}, campaign_root=str(tmp_path / "camp-1"),
+                          batch_tag="batch-0", runs=1, options=RunOptions())
+
+    assert swept == [("jobs", "camp-1"), ("pods", "camp-1")]
+
+
+def test_a_batch_nobody_stopped_sweeps_nothing(monkeypatch, tmp_path):
+    """The ordinary end of a batch already cleans up after itself; sweeping again here
+    would delete a search's next generation out from under it."""
+    swept = []
+    backend = _backend()
+
+    class _Runner:
+        def run_batch_in_pod(self, campaign_root, token):
+            return None
+
+        def cleanup_jobs(self, campaign=None):
+            swept.append("jobs")
+
+        def cleanup_pods(self, campaign=None):
+            swept.append("pods")
+
+    _stub_runner(monkeypatch, backend, _Runner())
+
+    backend.run_batch({}, campaign_root=str(tmp_path / "camp-1"),
+                      batch_tag="batch-0", runs=1, options=RunOptions())
+
+    assert swept == []
 
 
 def _backend():
     return KubernetesBackend(cluster_config=object(), namespace="ns",
                              kube_context=None, data_token=_TOKEN)
+
+
+def _stub_runner(monkeypatch, backend, runner):
+    """Put *runner* behind ``run_batch``, with the records it writes around it stubbed.
+
+    The records are a batch's own bookkeeping -- the launch images and execution.yaml --
+    and they need a real plan to write; a test about what the batch does on its way out
+    has none and is not about them.
+    """
+    monkeypatch.setattr(BatchJobRunner, "for_batch",
+                        classmethod(lambda cls, **kw: runner))
+    for name in ("_record_launch_images", "_record_execution_yaml"):
+        monkeypatch.setattr(type(backend), name, lambda *a, **k: None)
 
 
 def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path):

@@ -55,6 +55,8 @@ import os
 import re
 from typing import NoReturn
 
+from robovast.common.errors import CampaignStopped
+
 logger = logging.getLogger(__name__)
 
 #: Seconds to wait for the TCP connection to the API server, overridable with
@@ -320,7 +322,7 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
 
 def exec_stream(pod: str, namespace: str, container: str, command,
                 *, limit_s: float, stdin_data: str | None = None,
-                on_stdout_line=None, on_stderr_line=None):
+                on_stdout_line=None, on_stderr_line=None, should_stop=None):
     """Exec *command* in a running pod. Returns ``(code, stdout, stderr, timed_out)``.
 
     The in-cluster equivalent of ``docker exec``, and the one implementation of it. A
@@ -334,6 +336,13 @@ def exec_stream(pod: str, namespace: str, container: str, command,
     Note on *stdin_data*: the stream can be written to but **cannot be half-closed**, so a
     receiver waiting for EOF never sees one. A sender must frame its payload by length (see
     ``ClusterContainerRunner._copy_in``); this function cannot do it for the caller.
+
+    *should_stop* ends the exec for work that is no longer wanted: the stream is closed
+    and :class:`CampaignStopped` raised, which is the whole cancellation this side can
+    perform -- closing a stream does not signal the process in the pod, and what ends that
+    is the pod going when its span does, seconds later on the stopped path. Without it the
+    campaign's own thread sat in this loop for as long as the command ran, which
+    ``limit_s`` bounds in hours.
 
     It streams on a client **of its own**, and is deliberately handed none.
     ``kubernetes.stream`` works by rebinding ``ApiClient.request`` for the duration of the
@@ -366,6 +375,9 @@ def exec_stream(pod: str, namespace: str, container: str, command,
         if stdin_data is not None:
             resp.write_stdin(stdin_data)
         while resp.is_open():
+            if should_stop is not None and should_stop():
+                raise CampaignStopped(
+                    f"exec in {pod}/{container} stopped by request")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True

@@ -13,7 +13,8 @@ campaign, so the two take turns instead of the older one finishing.
 import pytest
 
 from robovast.execution.cluster_execution import node_admission
-from robovast.execution.cluster_execution.node_admission import (AdmissionController,
+from robovast.execution.cluster_execution.node_admission import (CREATED, PLANNED,
+                                                                 AdmissionController,
                                                                  AdmissionRefused, Budget,
                                                                  Capacity, JobSizing,
                                                                  NodeBudget)
@@ -396,9 +397,20 @@ def test_cancel_drops_one_owners_work_and_not_anothers():
     _items(c, "a", 2, cpu=2.0)
     _items(c, "b", 2, cpu=2.0, started_at=50.0)
     c.drain()
-    assert c.cancel("a") >= 1
+    c.cancel("a")
     assert set(c.states("a")) == set()
     assert set(c.states("b"))
+
+
+def test_cancel_counts_only_the_work_that_will_now_never_exist():
+    """What a batch reports as released "never created" -- so a created job must not count."""
+    c = _controller(FakeProvider(cpu=2.0))
+    _items(c, "a", 2, cpu=2.0)          # room for one: one is created, one stays planned
+    c.drain()
+    assert sorted(c.states("a").values()) == [CREATED, PLANNED]
+
+    assert c.cancel("a") == 1
+    assert c.states("a") == {}
 
 
 def test_a_create_that_raises_leaves_the_job_planned_and_holds_no_reservation():
@@ -1184,3 +1196,44 @@ def test_the_refusal_names_the_size_the_fit_test_actually_used():
     message = c.refusal("camp")
     assert "needs 3 cpu" in message, message
     assert "5.85" not in message, "the declared figure was never the one being tested"
+
+
+# -- dropping what an owner no longer needs ----------------------------------------------
+
+
+def test_dropping_an_owners_planned_items_leaves_what_it_created():
+    """A planned item keeps its place in the queue and is created the moment room appears,
+    so an owner with nothing left for it to do must be able to take it back. What it already
+    created is a pod that exists, and forgetting that reservation would hand the same cores
+    out twice."""
+    c = _controller(FakeProvider(cpu=5.0))      # room for two 2-core jobs at a time
+    made = _items(c, "camp", 4)
+    c.drain()
+    assert sorted(made) == ["camp-0", "camp-1"]
+    assert sorted(c.drop_planned("camp")) == ["camp-2", "camp-3"]
+    assert sorted(c.states("camp")) == ["camp-0", "camp-1"]
+    c.drain()
+    assert sorted(made) == ["camp-0", "camp-1"], "a dropped item is not created later"
+
+
+def test_a_dropped_item_does_not_release_the_cores_a_created_one_holds():
+    """The hazard of using ``cancel`` for this: it releases the owner's reservations too,
+    and the pods behind them are running."""
+    c = _controller(FakeProvider(cpu=5.0))
+    _items(c, "camp", 4)
+    c.drain()
+    c.drop_planned("camp")
+    other = _items(c, "other", 1)
+    c.drain()
+    assert other == [], "4 of the 5 cores are still held by the jobs that exist"
+
+
+def test_dropping_every_planned_item_clears_the_reason_the_owner_was_waiting():
+    """A reason that outlives the wait it described reads to an operator as an owner still
+    stuck -- the same defect a create already clears."""
+    c = _controller(FakeProvider(cpu=1.0))
+    _items(c, "camp", 1, cpu=2.0)
+    c.drain()
+    assert c.refusal("camp")
+    c.drop_planned("camp")
+    assert c.refusal("camp") == ""

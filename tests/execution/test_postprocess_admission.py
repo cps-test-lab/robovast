@@ -125,6 +125,63 @@ def test_an_unpinned_grant_leaves_no_node_selector():
         manifest["spec"]["template"]["spec"].get("nodeSelector") or {})
 
 
+# -- disk ----------------------------------------------------------------------------
+
+
+GIB = 1024 ** 3
+
+
+class _TwoNodes:
+    """node-a has the most free cpu and little disk; node-b the reverse."""
+
+    def budget(self):
+        return Budget(nodes=(
+            NodeBudget(node_id="node-a", free_cpu=12.0, free_memory=64 * GIB,
+                       free_ephemeral=30 * GIB),
+            NodeBudget(node_id="node-b", free_cpu=6.0, free_memory=64 * GIB,
+                       free_ephemeral=400 * GIB)),
+            counted_jobs=frozenset(), growable=False)
+
+    def capacities(self):
+        return [Capacity(node_id="node-a", cpu=16.0, memory=64 * GIB, ephemeral=200 * GIB),
+                Capacity(node_id="node-b", cpu=8.0, memory=64 * GIB, ephemeral=450 * GIB)]
+
+
+def _staging(disk):
+    """A manifest whose stage asks for *disk* -- the size of what it stages."""
+    manifest = _manifest()
+    stage = manifest["spec"]["template"]["spec"]["initContainers"][0]
+    stage["resources"]["requests"]["ephemeral-storage"] = disk
+    return manifest
+
+
+def test_the_queue_is_asked_for_the_disk_the_stage_requests():
+    """The stage's request is the campaign's staged size, and it is an init container, so it
+    is charged as cpu is: the maximum over the steps."""
+    assert pj.pod_sizing(_staging("150Gi")).ephemeral == 150 * GIB
+
+
+def test_a_pod_is_pinned_where_its_disk_fits_not_where_the_most_cpu_is_free():
+    """The fault this exists for: the grant went to the node with the most free cpu, the pin
+    excluded every other node, and the pod waited Unschedulable for disk that the other node
+    had free."""
+    admission = AdmissionController(_TwoNodes(), budget_ttl=0.0)
+    ok, node_id, message = pj.await_admission(admission, "camp-1", "pp-job",
+                                              _staging("150Gi"), timeout=2.0, poll=0.01)
+    assert ok, message
+    assert node_id == "node-b"
+
+
+def test_a_pod_whose_disk_no_node_could_ever_hold_is_refused_and_says_disk():
+    """Permanent, and about disk: a message quoting cpu and memory the nodes do hold would
+    send the reader to lower the one thing that fits."""
+    admission = AdmissionController(_TwoNodes(), budget_ttl=0.0)
+    ok, _node, message = pj.await_admission(admission, "camp-1", "pp-job",
+                                            _staging("500Gi"), timeout=5.0, poll=0.01)
+    assert not ok
+    assert "500Gi disk" in message and "450Gi disk" in message
+
+
 # -- where it sits in the queue ------------------------------------------------------
 
 
@@ -216,3 +273,45 @@ def test_postprocessing_is_not_confined_to_the_campaigns_node():
     assert all(kw.get("reserves", True) is True for kw in submitted)
     assert "job_node_alias" not in inspect.getsource(pj), \
         "postprocessing reads no campaign node; confining it is a decision to make on purpose"
+
+
+# -- a stop reaches the queue, not only the pod ---------------------------------------
+#
+# The wait is hours long by design (a busy cluster is exactly when postprocessing queues),
+# so a campaign stopped while its analysis waits for capacity must not hold that place.
+
+def test_a_stopped_campaign_stops_waiting_for_capacity():
+    """It says what is missing and that a re-run supplies it -- nothing failed here."""
+    import time
+
+    admission = AdmissionController(_Provider(free_cpu=0.5), budget_ttl=0.0)
+
+    started = time.monotonic()
+    ok, _node, message = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                                            timeout=3 * 60 * 60, poll=30,
+                                            should_stop=lambda: True)
+
+    assert not ok
+    assert message == pj.POSTPROCESSING_QUEUE_CANCELLED
+    assert time.monotonic() - started < 30, "the wait was slept through, not ended"
+
+
+def test_a_cancelled_wait_gives_its_place_back():
+    """Left in the queue it would be granted room later and create a pod for a campaign
+    nobody is waiting on -- capacity spent on work that was cancelled."""
+    admission = AdmissionController(_Provider(free_cpu=0.5), budget_ttl=0.0)
+
+    pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                       timeout=60, poll=0.01, should_stop=lambda: True)
+
+    assert admission.states("camp-1" + pj._POSTPROCESS_OWNER_SUFFIX) == {}
+
+
+def test_a_wait_nobody_stops_is_unaffected():
+    admission = AdmissionController(_Provider(free_cpu=8.0), budget_ttl=0.0)
+
+    ok, node_id, _message = pj.await_admission(admission, "camp-1", "pp-job", _manifest(),
+                                               timeout=2.0, poll=0.01,
+                                               should_stop=lambda: False)
+
+    assert ok and node_id == "node-a"

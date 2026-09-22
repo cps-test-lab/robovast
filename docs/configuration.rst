@@ -702,7 +702,10 @@ up a map), and a source caught by one is not an author error to correct — but 
 original beside the rewritten copy would leave *which file the stack opens* deciding whether
 the campaign varied anything, and a run against unvaried configuration succeeds and reports
 normally. With one copy, a scenario still naming the old path fails on a missing file
-instead. The content still reaches the configuration's identity, hashed separately.
+instead. The content still reaches the configuration's identity, hashed separately, and the
+original is archived in ``<campaign>/_config/`` without being mounted — composition reads it
+to write each copy, so a restart, a retrigger or a workspace rebuilt from the campaign needs
+it there.
 
 What is checked before anything runs
 """"""""""""""""""""""""""""""""""""
@@ -1215,7 +1218,9 @@ run_as_user
 
 **Required:** No
 
-The user ID (UID) to run the container as. Defaults to ``1000`` if not specified. If your container requires running as root, set this to ``0``.
+The user ID (UID) to run the container as. If not specified, a local run uses the UID of the service and a cluster run uses ``1000``. If your container requires running as root, set this to ``0``.
+
+On a local run, the run output belongs to this UID. If it differs from the service's, the service cannot remove that output, and ``vast campaign delete`` reports the paths it had to leave; remove them as that user, then delete again.
 
 .. code-block:: yaml
 
@@ -1556,6 +1561,9 @@ field optional and defaulted from the role and the deployment:
            headroom:
              cpu: 1.4          # margin above the measurement; per resource
              memory: 1.5
+           min:
+             cpu: 1            # the LEAST it may be sized to, whatever was measured
+             memory: 2Gi       # never above `resources`, which stays the ceiling
 
 ``size_on`` is worth knowing about for one reason beyond tuning: *which* statistic the system
 under test is sized on is a decision this substrate asserts rather than a measured fact, and
@@ -1563,6 +1571,19 @@ setting it is how a campaign tests that decision. Doing so costs comparability �
 under test read below its maximum **will** be throttled mid-plan, which
 ``run_validity_view.quota_bound`` flags, and its runs cannot be compared with a campaign sized
 any other way. That is the point when it is the experiment, and a mistake when it is not.
+
+**Neither resource is ever sized below a floor.** CPU keeps a quarter core, memory keeps 512M.
+They are what let a ``.vast`` say nothing about sizing and still get an allocation its containers
+can live in: a probe reports a number, not whether its run got far enough for that number to mean
+anything, and one that stopped during bring-up measures a fraction of what every later run needs.
+Each floor is what a container that has actually started a stack uses, rather than a description
+of any particular one — what a *given* container needs is what ``resources`` and ``min`` say.
+
+``min`` raises a floor for a container you know needs more, and answers what ``headroom``
+cannot: a multiplier scales a measurement that is wrong, a floor bounds it. ``cpu`` is in cores
+and ``memory`` a Kubernetes quantity, as in ``resources``. Neither ever lifts a container above
+``resources`` — a floor stated above that ceiling is refused, because no allocation satisfies
+both.
 
 The block is read only under ``calibrated``; declaring one under ``fixed`` is refused rather
 than ignored, since nothing there would read it.
@@ -1928,7 +1949,7 @@ To list all available plugins and their descriptions:
 - ``rosbags_nav2bt_to_csv``: Convert nav2's behavior-tree log (``/behavior_tree_log``, ``nav2_msgs/msg/BehaviorTreeLog``) to a ``nav2_behavior_tree`` CSV — one row per status transition (``timestamp, node_name, uid, previous_status, current_status, event_timestamp``).
   ``uid`` is nav2's per-node id, the only column separating two nodes that share a ``node_name`` (an unnamed ``RecoveryNode`` appears once per instance in a default tree); it is empty for pre-Jazzy message definitions. ``timestamp`` is the bag receive time, i.e. the same clock as every other table (see :ref:`one clock per run <run-clock>`); nav2 stamps its own events from a wall clock even under ``use_sim_time``, so that stamp is kept separately as ``event_timestamp`` rather than used to key the table. The log has no tree topology; pair it with the ``robovast_nav`` plugin's ``nav2_bt_tree`` command (below) to reconstruct the tree. No parameters. Requires ``/behavior_tree_log`` in the scenario's ``bag_record(...)``.
 - ``nav2_bt_tree`` (requires the ``robovast_nav`` package): Reconstruct nav2's behavior tree by parsing the BT XML nav2 ran and joining it with the ``nav2_behavior_tree`` transitions, writing a ``nav2_behaviors`` CSV in the same schema as the ``behaviors`` table (so the Run view's tree panel renders it). Required ``bt_xml`` parameter (path, relative to the config dir, to the BT XML — must match ``bt_navigator``'s ``default_nav_to_pose_bt_xml``). List it **after** ``rosbags_nav2bt_to_csv``.
-- ``rosbags_to_csv``: Extract a specific set of ROS topics from rosbags to separate CSV files. Required ``topics`` parameter (list of topic names to extract). For each topic one CSV file per bag is written next to the bag, named ``<bag>_<topic>.csv``. (Not for occupancy grids — use ``rosbags_costmap_to_csv``, which stores grids compactly instead of one column per cell.)
+- ``rosbags_to_csv``: Extract a specific set of ROS topics from rosbags to separate CSV files. Required ``topics`` parameter (list of topic names to extract). For each topic one CSV file per bag is written next to the bag, named ``<bag>_<topic>.csv``, with one column per scalar field of the message, flattened, so a vendor's message (a robot stack's ``wheel_vels`` or ``hazard_detection``) needs no decoder of its own — only its message package installed where the bags are converted, which is the campaign's execution image (``system_packages``, or ``ros_packages`` for one built from source). A recorded topic whose type cannot be loaded there **fails the bag**, naming the topic, the type and that fix, rather than being skipped: a converted-looking run short of a table is the failure nothing downstream can detect. A field **declared** as an array of numbers — a ``LaserScan``'s ``ranges``, an ``Image``'s ``data``, a covariance — is a single column holding the whole array as ``num1:<dtype>:<count>:<base64 of the zlib-compressed little-endian values>``; read it back with ``robovast.results_processing.data.rosbags_common.decode_numeric_array``, or anywhere else with ``numpy.frombuffer(zlib.decompress(base64.b64decode(payload)), dtype='<' + dtype)``. Such a cell is wider than the per-cell limit of ordinary query results and comes back truncated there — the ``query.csv`` export (``csv_url``) returns it whole. A non-finite float, which is how a laser spells "no return", is written as ``inf`` or ``nan`` and stored as that number (:ref:`non-finite-values`), in a scalar column and inside a packed array alike. A sequence of **sub-messages** (a ``Path``'s poses) is still a column per element per field, so a topic carrying many of them is one to reduce to scalars in the run rather than to record whole. For occupancy grids use ``rosbags_costmap_to_csv``, whose ``costmaps`` table the web :ref:`Run view <run-view>` reads and which keeps the grid's geometry beside its cells.
 - ``rosbags_costmap_to_csv``: Store ``nav_msgs/msg/OccupancyGrid`` frames (nav2 costmaps, the static map) compactly and losslessly for the web :ref:`Run view <run-view>`. Required ``topics`` parameter (list of grid topics, e.g. ``[/map, /global_costmap/costmap, /local_costmap/costmap]``). Writes one ``costmaps`` table row per message: the pose/geometry metadata (resolution, width, height, origin) plus the int8 cells zlib-compressed and base64-encoded. The map's extent in meters is ``width×resolution`` by ``height×resolution``.
 - ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec), and register each in the run's :ref:`videos table <videos-table>` so the :ref:`camera panel <camera-panel>` and ``get_camera_frame`` can place it on the run's timeline. Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``). The rate is otherwise derived from the frames' own stamps as ``(n-1)/duration``, so the first and last frames land exactly on their recorded moments and only mid-run jitter drifts.
 - ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).

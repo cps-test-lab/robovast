@@ -40,27 +40,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from robovast.common import prepare_campaign_configs
-# Re-exported: config generation and campaign staging raise the same user-error
-# type, and they live in ``common`` (which the execution layer imports), so the
-# class itself has to live there too. Every caller keeps importing it from here.
+# Re-exported: config generation and campaign staging raise the same user-error type,
+# and the stop-aware subprocess helpers raise the stop one, and all of them live in
+# ``common`` (which the execution layer imports), so the classes themselves have to live
+# there too. Every caller keeps importing them from here.
 from robovast.common.errors import \
-    CampaignConfigError  # noqa: F401  # pylint: disable=unused-import
+    CampaignConfigError, CampaignStopped  # noqa: F401  # pylint: disable=unused-import
 from robovast.common.execution import resolve_robovast_image
+from robovast.common.stop import terminate_group
 from robovast.execution.execution_utils.execute_local import generate_compose_run_script
 
 logger = logging.getLogger(__name__)
-
-
-class CampaignStopped(Exception):
-    """Raised when a batch is abandoned because a cooperative stop was requested.
-
-    A *clean* terminal signal (Ctrl+C on ``vast serve``, the Stop button, an MCP
-    stop) — distinct from a genuine failure. Callers set the campaign phase to
-    ``"stopped"`` and skip the finish work that would otherwise fail noisily against a
-    torn-down cluster tunnel and produce misleading tracebacks. The analysis of the
-    batches that did finish is *not* part of what is skipped — it is owed, and the
-    service runs it (``LocalTransport.start_campaign``'s stopped path).
-    """
 
 
 class ShareStopped(Exception):
@@ -237,8 +227,7 @@ class ExecutionBackend(ABC):
         from robovast.execution.share_providers.naming import archive_name, campaign_variant
         self._refuse_unimportable(campaign_root)
         results_dir = os.path.dirname(os.path.normpath(campaign_root))
-        archive_dir = os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(
-            results_dir, "_archives")
+        archive_dir = campaign_archive.local_archive_dir(results_dir)
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
         on_member = getattr(progress_callback, "on_member", None)
         if on_member is not None:
@@ -455,8 +444,10 @@ class DockerBackend(ExecutionBackend):
         """Run *cmd* to completion, terminating it if ``stop_requested`` is set.
 
         The run script is launched in its own session (process group) so a stop
-        can SIGTERM it — firing its cleanup trap — and, if that hangs, SIGKILL the
-        whole group as a backstop.
+        can SIGTERM the group — firing the script's cleanup trap, and reaching the
+        ``docker compose`` client it is waiting on, which a signal to the script alone
+        would not until that client returned — and, if that hangs, SIGKILL the group as
+        a backstop (:func:`~robovast.common.stop.terminate_group`).
 
         Because the script runs in its *own* session it is not in the terminal's
         foreground process group, so a terminal Ctrl+C never reaches it directly.
@@ -475,7 +466,9 @@ class DockerBackend(ExecutionBackend):
             except subprocess.TimeoutExpired:
                 if not stopped and self._state is not None and self._state.stop_requested:
                     stopped = True
-                    self._terminate(proc)
+                    logger.info("Stop requested — terminating batch run script (pid %d)",
+                                proc.pid)
+                    terminate_group(proc, self._STOP_GRACE_SECONDS)
             except KeyboardInterrupt:
                 interrupted = True
                 self._forward_sigint(proc)
@@ -491,20 +484,3 @@ class DockerBackend(ExecutionBackend):
             os.killpg(os.getpgid(proc.pid), signal.SIGINT)
         except (ProcessLookupError, OSError) as e:
             logger.debug("could not forward SIGINT (process gone?): %s", e)
-
-    def _terminate(self, proc: "subprocess.Popen") -> None:
-        """SIGTERM the run script (its trap cleans up), SIGKILL the group if it hangs."""
-        logger.info("Stop requested — terminating batch run script (pid %d)", proc.pid)
-        try:
-            proc.terminate()  # SIGTERM to run.sh → 'trap cleanup; exit 130'
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=self._STOP_GRACE_SECONDS)
-            return
-        except subprocess.TimeoutExpired:
-            logger.warning("Run script did not exit after SIGTERM; killing process group")
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, OSError) as e:
-            logger.debug("process group kill failed (already gone?): %s", e)

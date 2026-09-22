@@ -38,10 +38,12 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
-from robovast.common.campaign_data import (read_execution_metadata, read_interventions,
-                                           read_launch_record, read_sysinfo, read_test_result)
+from robovast.client.status import Phase
+from robovast.common.campaign_data import (read_execution_metadata, read_execution_outcome,
+                                           read_interventions, read_launch_record,
+                                           read_sysinfo, read_test_result)
 from robovast.common.common import load_config
-from robovast.common.execution import is_campaign_dir
+from robovast.common.execution import is_campaign_dir, read_job_links
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
 
@@ -95,6 +97,21 @@ class MetadataProcessor(ABC):
 # ---------------------------------------------------------------------------
 # MetadataGenerator — generic structural metadata
 # ---------------------------------------------------------------------------
+
+def _ended_early(campaign_dir: Path) -> Optional[str]:
+    """The phase a campaign ended in, when that phase means it did not run every run it
+    planned -- a stop, a failure, a crash -- else ``None``.
+
+    Read from its durable outcome record. A campaign whose record is absent or not terminal
+    has not said it ended early, so it is held to its plan: the record of a campaign that ran
+    to the end is written after its postprocessing, which is exactly when this runs for it.
+    A record that cannot be read raises -- a failed read is not a campaign that said nothing.
+    """
+    outcome = read_execution_outcome(campaign_dir)
+    if outcome is None or outcome.phase not in (Phase.STOPPED, Phase.FAILED, Phase.CRASHED):
+        return None
+    return str(outcome.phase)
+
 
 class MetadataGenerator:
     """Collects generic structural metadata from a campaign directory."""
@@ -216,6 +233,14 @@ class MetadataGenerator:
 
         # --- test results per config -----------------------------------
         expected_runs = metadata["execution"].get("runs")
+        # A campaign that ended early holds fewer runs than it planned, and the record says
+        # so rather than refusing to exist: which way it ended. Every other campaign is held
+        # to its plan.
+        ended_early = _ended_early(self.campaign_dir)
+        if ended_early:
+            metadata["execution"]["ended_early"] = ended_early
+        # Read once for the campaign: it names every run's job.
+        job_links = read_job_links(self.campaign_dir)
         for config_entry in metadata["configurations"]:
             config_name = config_entry.get("name", "")
             config_dir_path = self.campaign_dir / config_name
@@ -228,10 +253,13 @@ class MetadataGenerator:
                         test_dirs.append(int(item.name))
             test_dirs.sort()
 
-            if expected_runs is not None and len(test_dirs) != expected_runs:
+            if expected_runs is not None and len(test_dirs) != expected_runs and not (
+                    ended_early and len(test_dirs) < expected_runs):
                 raise ValueError(
                     f"Config '{config_name}' has {len(test_dirs)} run directories "
                     f"but expected {expected_runs} runs"
+                    + ("" if ended_early else
+                       ", and the campaign has no record of ending before it ran them all")
                 )
 
             # Transient files
@@ -293,7 +321,7 @@ class MetadataGenerator:
                 # sysinfo is a real gap in what the campaign recorded, and saying so is
                 # the only way anyone finds out.
                 try:
-                    entry["sysinfo"] = read_sysinfo(run_dir)
+                    entry["sysinfo"] = read_sysinfo(run_dir, self.campaign_dir, job_links)
                 except FileNotFoundError as exc:
                     if entry.get("success") != "unknown":
                         raise FileNotFoundError(
@@ -328,12 +356,13 @@ class MetadataGenerator:
                 config_entry["test_results"].append(entry)
 
         # A campaign where not one run can be described is a broken input, not a campaign
-        # with some failed runs in it, and a record listing nothing describes nothing. The
-        # count is recorded either way, so a reader can tell a campaign carrying a few
+        # with some failed runs in it, and a record listing nothing describes nothing --
+        # unless it ended early, when runs cut short before their verdict are what the ending
+        # leaves and `execution.ended_early` says why. The count is recorded either way, so a reader can tell a campaign carrying a few
         # verdict-less runs from one that is mostly holes without reading every entry.
         described = sum(len(c.get("test_results") or [])
                         for c in metadata["configurations"])
-        if described and len(self._runs_without_verdict) == described:
+        if described and len(self._runs_without_verdict) == described and not ended_early:
             raise ValueError(
                 f"no run of this campaign recorded a verdict ({described} run(s) "
                 f"checked), so there is nothing to describe: "

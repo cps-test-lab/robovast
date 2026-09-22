@@ -940,8 +940,12 @@ def _pod_signals(k8s_core, namespace,
         formatted = _format_restarts(invalidating)
         if formatted:
             r, msg = formatted
+            # ``node`` is the machine's real name, for the runner alone: a figure is measured
+            # per node, so whether a kill happened at a MEASURED one can only be asked of the
+            # node it ran on. Deliberately not in the container records, which ship with the
+            # campaign and carry the hashed ``node_label`` instead.
             restarted[name] = {"detail": f"{r}: {msg}" if msg else r,
-                               "containers": invalidating}
+                               "containers": invalidating, "node": placed}
     return phases, blocked, terminated, restarted, contended, placed_on
 
 
@@ -980,8 +984,8 @@ def blocked_and_contended_reasons(k8s_core, namespace,
 
 def restarted_job_forensics(k8s_core, namespace, label_selector,
                             job_names=None) -> dict:
-    """Job name → ``{"detail", "containers"}`` for Jobs whose pod had a container CRASH and
-    be restarted (see :func:`pod_invalidating_restart`). Empty when nothing did.
+    """Job name → ``{"detail", "containers", "node"}`` for Jobs whose pod had a container
+    CRASH and be restarted (see :func:`pod_invalidating_restart`). Empty when nothing did.
 
     Separate from :func:`blocked_job_reasons` because it needs the opposite response.
     Blocked means "cannot start yet", so it is given a grace period. A restart has
@@ -1008,6 +1012,40 @@ def restarted_job_reasons(k8s_core, namespace, label_selector, job_names=None) -
     return {name: entry["detail"] for name, entry
             in restarted_job_forensics(k8s_core, namespace, label_selector,
                                        job_names).items()}
+
+
+def oom_killed_job_forensics(k8s_core, namespace, label_selector, job_names=None) -> dict:
+    """Job name → ``{"containers", "node"}`` for Jobs whose pod ENDED on an OOM-killed
+    container. Empty when none did.
+
+    The other half of :func:`restarted_job_forensics`. A container the pod restarts -- a
+    native sidecar -- dies into ``last_state``; one it does not, under ``restartPolicy:
+    Never`` the scenario container, dies into ``state`` and takes the pod to ``Failed``.
+    Nothing is dropped for it: the Job has already finished. This only says what killed it.
+
+    Each container record carries ``container``, ``reason`` and ``memory_limit``, the
+    fields :func:`pod_container_failures` names them by. ``node`` is the machine's real
+    name, for the runner alone, as in :func:`restarted_job_forensics`.
+    """
+    wanted = set(job_names) if job_names is not None else None
+    out = {}
+    for pod in k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items:
+        name = _pod_job_name(pod)
+        status = getattr(pod, "status", None)
+        if not name or status is None or (wanted is not None and name not in wanted):
+            continue
+        records = []
+        for cs in (list(getattr(status, "init_container_statuses", None) or [])
+                   + list(getattr(status, "container_statuses", None) or [])):
+            term = getattr(getattr(cs, "state", None), "terminated", None)
+            if term is not None and getattr(term, "reason", None) == "OOMKilled":
+                cname = getattr(cs, "name", None) or "?"
+                records.append({"container": cname, "reason": "OOMKilled",
+                                "memory_limit": _container_limit(pod, cname, "memory")})
+        if records:
+            out[name] = {"containers": records,
+                         "node": getattr(getattr(pod, "spec", None), "node_name", None)}
+    return out
 
 
 class ListedJob(NamedTuple):

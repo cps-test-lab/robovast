@@ -18,13 +18,21 @@ server spans two concerns:
 * **Analyze** — inspect campaigns, configurations, runs, logs, and tabular run
   data (read-only).
 
-That order is deliberate, and the server's MCP ``instructions`` say the same thing.
-Introducing itself as an archive — the earlier text was "provides access to the results
-created by RoboVAST" — is why assistants ran experiments by hand on the host and came
-here only to read files afterwards. A hand-started simulator has no pinned image, no
-recorded provenance and no repetitions, so its output cannot be compared with a
+That order is deliberate, and the server's MCP ``instructions`` say the same thing. A
+server that introduces itself as an archive is used as one: assistants run experiments by
+hand on the host and come here only to read files. A hand-started simulator has no pinned
+image, no recorded provenance and no repetitions, so its output cannot be compared with a
 campaign's; the instructions say so, and so does ``start_campaign``. Two MCP prompts
 cover the halves: ``run_experiments`` and ``analyze_campaigns``.
+
+.. _mcp-instructions-limit:
+
+The instructions are the only text a client puts in front of the model before any tool
+is chosen, and a client shows only so much of them: Claude Code cuts them at 2048
+characters, without a mark the model can act on. They carry the loop and the rules it
+cannot do without, and each tool's own description carries the rest. An installed MCP
+plugin may add one paragraph routing a question to its tools; the server refuses to start
+when core text and plugin paragraphs together exceed ``INSTRUCTIONS_LIMIT``.
 
 A campaign runs a **workspace's** ``.vast``: ``workspace_id`` is the only project
 binding the service accepts, and ``config_path`` selects among several
@@ -298,6 +306,7 @@ and ``top`` (top N patterns) stay distinct from ``limit`` because they are diffe
 operations.
 
 :mod:`tests.mcp_server.test_plugin_registry_sync` enforces all of this — the vocabulary,
+as an allowlist, so a new argument name fails the build until someone adds it on purpose,
 the single ``{"error": …}`` convention, that no retired name survives in text an LLM
 reads, and a ceiling on the surface's total token cost.
 
@@ -756,8 +765,8 @@ therefore stays alive to be inspected — end it with ``stop_campaign``.
 
 .. _mcp-health-findings:
 
-What the run's own simulator says about itself
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+What a running campaign says is wrong
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``stalled`` needs a declared budget and one run's worth of patience. A simulator can say
 "sim time is not advancing" within a minute of the fault and needs neither — so it is asked,
@@ -787,6 +796,17 @@ and reported, never interpreted — and ``detail`` is its observation in its own
 is therefore no per-check knowledge anywhere in RoboVAST, and any simulator shipping a
 command with this contract is understood without a line of code here. Look a slug up in the
 simulator's documentation, not in this one.
+
+**One finding is RoboVAST's own**, and it is here because the fault cannot be self-reported: a
+container that was OOM-killed is not there to answer a health command, and the Job carrying its
+evidence is deleted moments later. Under ``sizing: calibrated``, a run killed at memory the
+campaign *measured* is recorded by the runner in the campaign's ledger and reported as
+``calibrated-memory-oom`` — one finding per fault however many runs it takes, with the count in
+its ``detail``, because every run is sized from the same probe's peak and so meets the same
+figure. The campaign keeps running; ``vast campaign wait`` ends once on the finding, which is
+how an agent watching learns of it without reading a log. What to do about it — state
+``calibration.min.memory``, raise ``resources.memory``, or accept the loss — is the ``.vast``
+author's, and :ref:`configuration <config-sizing>` says how.
 
 This paragraph is the specification, deliberately: the two sides of it cannot import each
 other, and an agreed format with no written home drifts the first time either side is

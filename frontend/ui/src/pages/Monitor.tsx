@@ -32,6 +32,8 @@ import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownR
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
 import CloudDownloadRoundedIcon from '@mui/icons-material/CloudDownloadRounded'
+import CloudDoneRoundedIcon from '@mui/icons-material/CloudDoneRounded'
+import CloudQueueRoundedIcon from '@mui/icons-material/CloudQueueRounded'
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
@@ -451,9 +453,16 @@ function CampaignCard({ summary, newest, openedByLink }: {
     onError: failed('Delete failed.', `delete:${id}`),
     // The row (and every cached query for this campaign) is gone on success — which is also why
     // the toast is the only thing left that can say what went.
-    onSuccess: () => {
+    onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
-      notify({ severity: 'success', message: `Deleted ${id}` })
+      // A partial delete is answered, not raised: an error, because what is left still takes
+      // the space, and the message names the path that could not be removed.
+      if (res && !res.ok) {
+        notify({ severity: 'error', key: `delete:${id}`, message: `${id} was not fully deleted.`,
+                 note: res.message || undefined })
+        return
+      }
+      notify({ severity: 'success', message: res?.message || `Deleted ${id}` })
     },
   })
 
@@ -652,11 +661,11 @@ function CampaignCard({ summary, newest, openedByLink }: {
   // share holds twice -- raw from the campaign-end upload, postprocessed from a later export
   // -- would otherwise give this card whichever the provider happened to list first, so the
   // link it copies and the archive that dialog imports could be two different files.
-  const shareCopy =
-    shareArchives.data?.archives
-      .filter((a) => a.campaign_id === id)
-      .reduce<ShareArchive | null>((best, a) => (best ? preferredArchive(best, a) : a), null)
-    ?? null
+  const shareHeld = shareArchives.data?.archives.filter((a) => a.campaign_id === id) ?? []
+  const shareCopy = shareHeld.reduce<ShareArchive | null>(
+    (best, a) => (best ? preferredArchive(best, a) : a),
+    null,
+  )
 
   // Lane capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
   // sidebar's connection meter, so every card on the page and the sidebar share one poll
@@ -985,6 +994,25 @@ function CampaignCard({ summary, newest, openedByLink }: {
               {id}
             </Typography>
           </CampaignOrigin>
+          {/* What the share holds of this campaign, read from the page's one share listing: a
+              check for the postprocessed archive, a hollow cloud for the raw campaign-end upload
+              alone. Shape, not colour, tells them apart. The slot is kept on every card so
+              folded rows stay in columns, and a share that is unconfigured or unreachable leaves
+              it empty rather than claiming the campaign is not there. */}
+          <Box
+            title={
+              shareHeld.length
+                ? `On the share: ${[...new Set(shareHeld.map((a) => a.variant))].join(', ')}`
+                : undefined
+            }
+            sx={{ width: 18, flexShrink: 0, display: 'flex', alignItems: 'center' }}
+          >
+            {shareCopy?.variant === 'postprocessed' ? (
+              <CloudDoneRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+            ) : shareCopy ? (
+              <CloudQueueRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+            ) : null}
+          </Box>
           <LaunchedBy name={summary.created_by} />
           {/* Beside the name, not on a line of its own: this is a label on the campaign, and a
               full-width row for one short value pushed everything below it down. Only on an open

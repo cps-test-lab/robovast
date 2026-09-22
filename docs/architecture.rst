@@ -97,19 +97,75 @@ campaign still runs as their own Kubernetes workloads, because each needs to be
 one: the scenario/postprocessing **Jobs**, and — only for variations that declare
 one — a per-campaign **auxiliary-container pod** the driver execs into.
 
-Because the driver's batch wait loop blocks on the running Jobs and the
-cooperative-stop flag is only checked *between* batches (or search generations),
+.. _stopping-a-campaign:
+
+**A stop is read wherever a campaign waits.** The flag
+(``ControllerState.request_stop``) is set by the service, and the campaign's own thread
+reads it through two primitives and nothing else: ``wait_for_stop`` replaces the sleep in
+every poll loop, so a wait ends the instant the flag is set rather than at the end of
+whichever interval it was in, and ``raise_if_stopped`` ends the campaign at the boundary
+between two steps. Below the execution layer — pip, the composition worker, the
+conversion — the same thing is a ``should_stop`` predicate
+(:func:`~robovast.execution.control_server.stop_checker`) and the helpers in
+:mod:`robovast.common.stop`, which kill a running subprocess's whole process group.
+
+What a flag cannot end is work on another machine, which is why
 ``ClusterService.stop`` also tears down that campaign's in-flight Jobs — reusing the
 campaign-scoped ``cleanup_cluster_campaign`` (the same cleanup
-``vast cluster jobs-cleanup`` performs). Deleting the Jobs unblocks the wait
-loop (``running_jobs`` treats a gone Job as finished) so the campaign winds
-down promptly. The deletions are label-scoped to the one campaign, so other
-queued/running campaigns are untouched, and to its Jobs: a campaign's aux pod belongs to
-the composition span that created it and is deleted when that span ends, so a stop leaves
-it alone and only a reaper (``jobs-cleanup``, a campaign being deleted) collects one.
-Composition itself is stop-checked in two places, because it is long enough to give up
-in: the pod's ready wait ends as soon as the flag is set, and a campaign stopped while
-composing raises rather than submitting the sweep it has just composed.
+``vast cluster jobs-cleanup`` performs). The running pods terminate now, and the batch
+loop finds them gone (``running_jobs`` treats a gone Job as finished) rather than
+waiting out runs the campaign has given up on. The deletions are label-scoped to the one
+campaign, so other queued/running campaigns are untouched, and to its Jobs: a campaign's
+aux pod belongs to the composition span that created it and is deleted when that span
+ends, so a stop leaves it alone and only a reaper (``jobs-cleanup``, a campaign being
+deleted) collects one. A batch that ends while stopped sweeps its own Jobs once more on
+the way out, because the queue can create one between that teardown and the loop's next
+read of the flag, and nothing else would collect it.
+
+Which work a stop lands on, and what it leaves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 16 30 32
+
+   * - Phase
+     - Scope
+     - What ends it
+     - What the campaign is left as
+   * - ``initializing``, ``starting``, ``variation``
+     - runs
+     - the boundary between two steps; the composition worker's process group, and the
+       auxiliary container a variation is waiting on -- removed locally, and in-cluster
+       the exec is given up and the span's pod goes with it
+     - ``stopped``, with no results: the campaign was ended before its first run
+   * - ``plugin install``
+     - runs
+     - pip's process group is terminated
+     - ``stopped``
+   * - ``building``
+     - runs
+     - the wait is abandoned
+     - ``stopped``. The build itself is **never** cancelled: it is content-addressed and
+       therefore shared, so a sibling campaign may be waiting on it
+   * - ``running``
+     - runs
+     - the lane's teardown (the scenario container, or this campaign's Jobs), which the
+       batch loop then sees
+     - ``stopped``, plus the analysis the batches that finished are owed — except on a
+       local batch-mode campaign, where the loop's own account is that the batch ended,
+       and the campaign reads ``finished``
+   * - ``finishing``, ``importing``, ``postprocessing``
+     - postprocessing
+     - the pipeline between steps; the conversion's process group, or its Jobs
+     - ``finished`` with the reason on ``postprocessing_error`` and no derived data
+   * - ``sharing``
+     - share
+     - the upload's own progress callbacks
+     - ``finished`` with the reason on ``share_error``; the partial upload is discarded
+   * - terminal
+     - —
+     - nothing is running
+     - the stop is refused rather than answered with a flag nothing will read
 
 **Service shutdown** is deliberately *not* the same thing. Whether exiting tears a
 campaign down is a property of the lane, asked
@@ -121,8 +177,9 @@ is not, and it never was a good way to say it — the cooperative stop persists 
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
-A stopped campaign is reported as a **clean terminal**, not a failure. The batch wait
-loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag, the
+A stopped campaign is reported as a **clean terminal**, not a failure. On both lanes the
+batch wait loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag,
+the
 controller sets phase ``"stopped"``, and the builders' finish tail
 (``_finish_campaign``) is skipped — the per-run results the pods already delivered are
 left as the campaign's output. The ``"stopped"`` outcome is persisted like a failure
@@ -834,13 +891,24 @@ untyped ingest makes every comparison lexicographic — ``ORDER BY timestamp`` p
 ``"10.022"`` before ``"9.5"``, shuffling a trajectory and producing a path length that is
 wrong by a factor rather than an error. So ingest infers a type per column
 (:mod:`robovast.results_processing.csv_types`): a column whose every non-empty value is a
-plain decimal number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything
-else stays ``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the
-column, and ``"007"``/``"nan"`` are text (a zero-padded identifier must keep its text, and
-NaN has no SQLite representation, so accepting it would delete data instead of typing it).
+number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything else stays
+``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the column, and
+``"007"`` is text, because a zero-padded identifier must keep its text.
 ``param_*`` columns are typed the same way from their resolved values.
 ``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
 caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
+
+**A non-finite value is a measurement, so it is stored as one.** A range with no return, a
+path length for a trial where no path came back, a ratio with no denominator: these reach
+the ingest as CSV text (``inf``, ``nan``) and as Python floats, from a ``.jsonl`` file or
+from the campaign record's own parameters. ``REAL`` is ``double precision``, which holds
+``Infinity``, ``-Infinity`` and ``NaN`` natively, so the column stays numeric and ``NULL``
+is left to mean that nothing was measured. A container is JSON-encoded with
+``allow_nan=False`` and each non-finite float written as the string ``"inf"``, ``"-inf"`` or
+``"nan"``: Python's ``json`` otherwise writes ``Infinity``, ``-Infinity`` and ``NaN``,
+which JSON has no tokens for and which Postgres refuses when the column is cast — failing
+the **whole query** rather than the row that holds one. The ``*_json`` columns mirrored from
+``campaign.db`` are re-encoded the same way on their way into the index.
 
 **The declaration never outlives the evidence.** A column is declared by the first run that
 writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,
@@ -927,9 +995,10 @@ part matters as much as the first — an asynchronous render would have to stash
 somewhere the caller could find later, which is exactly the in-memory dictionary that makes a
 failed scene build visible to nothing but ``get_run_scene_status``.
 
-**Costmap delivery.** Occupancy grids can't ride the generic CSV flatten (a grid becomes
-thousands of per-cell columns, past SQLite's column limit; and the read path caps a cell at
-2 KB). The ``rosbags_costmap_to_csv`` handler
+**Costmap delivery.** A grid needs a table of its own. The generic topic flatten packs an
+array field into one cell and the read path caps a cell at 2 KB, so a run view reading SQL
+could never get a frame out whole, and the flattened table carries none of the geometry a
+frame has to be drawn against. The ``rosbags_costmap_to_csv`` handler
 (:class:`robovast.results_processing.data.rosbags_process.CostmapToCsvHandler`) instead
 decodes each grid once during postprocessing and re-encodes it compactly — int8 cells
 zlib-compressed, base64 in a ``costmaps`` table row with the pose/geometry metadata. The

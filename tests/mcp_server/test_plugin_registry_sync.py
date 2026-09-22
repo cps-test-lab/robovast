@@ -396,16 +396,28 @@ def test_the_server_says_it_runs_experiments_before_any_tool_is_read():
     assert "stop and report" in instructions
 
 
-@pytest.mark.parametrize("source", ["_RUN_PROMPT", "instructions"])
-def test_checking_the_image_is_part_of_the_loop_an_agent_is_given(source):
-    """A capability missing from the loop is a capability nobody uses.
+def test_the_instructions_fit_what_a_client_shows():
+    """A client cuts the instructions at a fixed length, and the model never sees the rest.
 
-    ``exec_in_container`` and ``build_experiment_image`` existed, were documented, and had
-    good descriptions — and the loop went ``validate → preview → usage → start_campaign``,
-    so an agent following it reached ``start_campaign`` with an unverified image and paid
-    a full campaign to learn a package was missing. That is the same mistake this file
-    already records about itself: the instructions once introduced the server as an
-    archive, and the whole execution half went unused.
+    Nothing marks the cut, so text past it fails silently: the tail of a rule reads as if
+    the rule were never stated. Measured on the server as built, with every installed
+    plugin, since that is the text a client receives.
+    """
+    from robovast.mcp_server.server import INSTRUCTIONS_LIMIT
+    instructions = create_server().instructions or ""
+    assert len(instructions) <= INSTRUCTIONS_LIMIT, (
+        f"the instructions are {len(instructions)} characters; a client shows "
+        f"{INSTRUCTIONS_LIMIT} and drops the rest")
+
+
+@pytest.mark.parametrize("source", ["_RUN_PROMPT", "instructions"])
+def test_checking_the_image_is_offered_before_a_campaign(source):
+    """A capability an agent is never shown is a capability nobody uses.
+
+    Both texts name ``build_experiment_image`` and ``exec_in_container``. The run prompt
+    walks the loop step by step, so there the check comes before the step that launches:
+    after it, the campaign that finds a missing package is already paid for. The
+    instructions keep them out of the default loop, in a section of their own.
     """
     from robovast.mcp_server.plugins import prompts
     text = (create_server().instructions if source == "instructions"
@@ -413,11 +425,9 @@ def test_checking_the_image_is_part_of_the_loop_an_agent_is_given(source):
     assert "exec_in_container" in text, (
         f"{source} never mentions it, so the cheap check is invisible where it matters")
     assert "build_experiment_image" in text
-    # Ordered before the step that launches: after it, the cycle this saves is already
-    # paid. Anchored to the *last* mention, since both texts name `start_campaign` up
-    # front in the "run it here, not on this host" framing, well before the loop.
-    assert text.index("exec_in_container") < text.rindex("start_campaign"), (
-        f"{source} mentions the check only after the campaign is launched")
+    if source == "_RUN_PROMPT":
+        assert text.index("exec_in_container") < text.rindex("start_campaign"), (
+            f"{source} mentions the check only after the campaign is launched")
 
 
 #: One name per concept, one concept per name. Each entry was a divergence: the nav tools
@@ -451,15 +461,64 @@ def _tool_parameters() -> dict[str, dict]:
             for t in asyncio.run(_tools())}
 
 
+#: Every argument name this surface may use. An allowlist: a denylist can only forbid the
+#: synonyms someone has thought of, so the next one passes. Here a new name fails the build
+#: until it is added on purpose.
+#:
+#: Adding a name is that decision. Before adding one, check it is not another word for a
+#: concept that already has a name -- "match some text", "how many", "skip ahead".
+_PARAMETER_VOCABULARY = {
+    # what to act on
+    "address", "campaign_id", "workspace_id", "config_path", "config_name", "run_id",
+    "job_name", "build_id", "container", "node", "name", "group", "catalog", "topic",
+    "frame", "camera", "backend", "scenario_path", "world_path", "from_campaign",
+    "campaign_name", "targets", "entities", "phase", "entries", "content",
+    "old_string", "new_string", "sql", "command", "description", "reason",
+    "archive_path", "occupancy",
+    # how much, and from where
+    "limit", "offset", "top", "tail", "page", "size", "runs", "max_campaigns",
+    # how to match
+    "query", "grep", "search", "pattern", "config_filter", "min_severity",
+    "campaign_regex", "t0", "t1", "at", "time",
+    # how to behave
+    "force", "recursive", "summarize", "group_by_run", "hide_shutdown", "keep_alive",
+    "show_gui", "check_world", "check_scenario", "fresh", "priority", "executable",
+    "running_only", "preflight_only",
+    "stats_only", "failed_only", "allow_opaque_image", "upload_to_share", "view",
+    "focus", "layers", "figsize", "title", "show_legend", "wait", "follow",
+    "skip", "data_only", "share_archive", "rebuild_store",
+}
+
+
 def test_tools_share_one_parameter_vocabulary():
-    """A concept must have the same argument name everywhere it appears."""
-    offenders = {}
+    """Every argument name comes from one declared vocabulary, so a concept has the same
+    name everywhere it appears."""
+    unknown = {}
     for tool, props in _tool_parameters().items():
         for param in props:
             if param in _BANNED_PARAMETERS:
-                offenders.setdefault(tool, []).append(
-                    f"{param} -> {_BANNED_PARAMETERS[param]}")
-    assert not offenders, f"tools using a retired parameter name: {offenders}"
+                unknown.setdefault(tool, []).append(
+                    f"{param} (retired -> {_BANNED_PARAMETERS[param]})")
+            elif param not in _PARAMETER_VOCABULARY:
+                unknown.setdefault(tool, []).append(f"{param} (not in the vocabulary)")
+    assert not unknown, (
+        f"arguments outside the declared vocabulary: {unknown}. If the concept already has "
+        "a name on this surface, use it; if it genuinely needs a new one, add it to "
+        "_PARAMETER_VOCABULARY so the choice is reviewed rather than inherited.")
+
+
+def test_the_vocabulary_refuses_a_synonym_nobody_listed():
+    """A synonym is refused without anyone having named it as one."""
+    for synonym in ("max_matches", "num_rows", "howmany"):
+        assert synonym not in _PARAMETER_VOCABULARY
+        assert synonym not in _BANNED_PARAMETERS, \
+            "if the denylist had it, this test proves nothing"
+
+
+def test_every_retired_name_stays_out_of_the_vocabulary():
+    """The two lists must not disagree: a name cannot be both retired and allowed."""
+    both = sorted(set(_BANNED_PARAMETERS) & _PARAMETER_VOCABULARY)
+    assert not both, f"retired names also listed as allowed: {both}"
 
 
 def test_every_tool_returns_a_dict_or_an_image():
@@ -734,3 +793,43 @@ def test_the_tool_surface_stays_within_its_token_budget():
         f"tool surface is ~{total} tokens, over the {_SURFACE_TOKEN_BUDGET} budget. "
         f"Largest: {worst}. Compress a description or merge two tools — do not just "
         "raise the budget.")
+
+
+def test_a_plugin_adds_its_own_line_to_the_instructions():
+    """Routing to a plugin's tools is said where the plugin is installed, and only there.
+
+    The core text names no plugin tool: without the plugin that name is a tool the
+    caller cannot call.
+    """
+    from robovast.mcp_server.server import _INSTRUCTIONS, compose_instructions
+
+    class _Plugin:
+        name = "extra"
+        instructions = "Ask `extra_tool` first."
+
+    class _Silent:
+        name = "silent"
+
+    text = compose_instructions([_Plugin(), _Silent()])
+    assert text.startswith(_INSTRUCTIONS)
+    assert text.endswith("\nAsk `extra_tool` first.\n")
+    assert compose_instructions([_Silent()]) == _INSTRUCTIONS
+    assert "nav_get_" not in _INSTRUCTIONS
+
+
+def test_instructions_a_client_would_cut_stop_the_server():
+    """Past the limit the cut lands on some line silently, so the server refuses to start."""
+    from robovast.mcp_server.server import INSTRUCTIONS_LIMIT, compose_instructions
+
+    class _Verbose:
+        name = "verbose"
+        instructions = "x" * INSTRUCTIONS_LIMIT
+
+    with pytest.raises(RuntimeError, match="verbose"):
+        compose_instructions([_Verbose()])
+
+
+def test_the_nav_plugin_routes_where_the_robot_went_to_its_tools():
+    pytest.importorskip("robovast_nav")
+    instructions = create_server().instructions or ""
+    assert "`nav_get_trajectory`" in instructions

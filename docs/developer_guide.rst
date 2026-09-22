@@ -1491,6 +1491,29 @@ Then register the class as an entry point in ``pyproject.toml``:
 
 The plugin is picked up automatically the next time the server starts.
 
+A call the tool rejects — an unknown or missing argument — is answered with the arguments
+the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
+declare why with :func:`robovast.mcp_server.lacks.absent`, and the reason is added to that
+answer instead of costing description tokens on every request:
+
+.. code-block:: python
+
+   from robovast.mcp_server.lacks import lacks
+
+   @lacks(timeout="the bound follows from what is run")
+   def my_tool(command: str = "") -> dict: ...
+
+   @lacks("there is only one, and it belongs to the service")
+   def stop_it() -> dict: ...
+
+Where the plugin's tools answer a question an agent would otherwise put to a core tool —
+the nav tools against ``query_campaign_data_sql``, say — give the class an
+``instructions`` attribute: one short paragraph appended to the server's MCP
+instructions, the only text a client shows before any tool is chosen. Core text names no
+plugin tool, so the routing exists exactly where the plugin is installed. The server
+refuses to start when the instructions with every plugin's paragraph exceed what a client
+shows (:ref:`the instructions limit <mcp-instructions-limit>`); keep the paragraph to a sentence or two.
+
 
 .. _extending-search-strategy:
 
@@ -1946,11 +1969,12 @@ Control operations
 ^^^^^^^^^^^^^^^^^^^
 
 * ``stop`` (``client.stop``) — sets a cooperative flag on the campaign's
-  ``ControllerState`` (``request_stop``); the loop ends after the current batch. In
-  the service this is a direct in-process call. A campaign already **postprocessing** is
-  stopped by the same flag — the pipeline polls it and tears down the step in flight — but
-  ends as ``finished`` without its derived data rather than as ``stopped``, since its runs
-  are complete; see :doc:`architecture`.
+  ``ControllerState`` (``request_stop``); in the service this is a direct in-process call.
+  Every wait the campaign's thread sits in ends on that flag (``wait_for_stop``), and
+  every boundary between two steps gives up on it (``raise_if_stopped``), so the phase a
+  campaign happens to be in does not decide how long the stop takes. Which work a stop
+  lands on, and what each one leaves behind, is the
+  :ref:`per-phase table <stopping-a-campaign>` in :doc:`architecture`.
 * ``get_campaign_logs`` — serves ``controller.log`` from a byte offset, the same file on
   the service's results volume while the campaign runs and after. The web UI polls it to
   stream the log; ``vast … monitor`` renders live status from ``get_status``.
@@ -1959,8 +1983,9 @@ Control operations
   the moment the runs finish, *before* analysis postprocessing. A share failure never
   loses the campaign: it stays ``finished`` and the reason is recorded on
   ``share_error`` (durable). Local backends write the ``tar.gz`` to
-  ``<results>/_archives/`` instead; cluster backends stream it to the share provider
-  with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
+  ``<results>/_archives/`` instead (``$ROBOVAST_ARCHIVE_DIR`` overrides it, resolved by
+  ``campaign_archive.local_archive_dir``), and ``delete_campaign`` removes them with the
+  campaign; cluster backends stream it to the share provider with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
   stream (the campaign as the service holds it, tarred on the fly off the results volume).
 * ``run_share`` (``client.run_share``) — re-triggers the upload-to-share on a finished
   campaign, from the stored campaign alone (works after a service restart, no live
