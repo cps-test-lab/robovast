@@ -336,24 +336,17 @@ class WorkItem:
         return self.campaign or self.owner
 
     def may_use(self, node: "NodeBudget") -> bool:
-        """Whether this item may be placed on *node*: the pin AND the owner's gate.
+        """The pin AND the owner's gate, never either.
 
-        Both, never either. A calibrated campaign confined to one node is pinned to it and
-        gated on that node's measurement, and it must wait for its node's probe exactly as an
-        unconfined campaign does. A probe is submitted with no gate, so it is never waiting
-        for its own measurement.
-
-        Takes the node rather than its id, because a pin and a gate ask different things of
-        it. A pin is a ``nodeSelector`` value, so it can only be honoured where the label is:
-        matching an unpinnable node's identity would create a pod whose selector names
-        nothing, and it would sit Pending forever. A gate waits for a measurement, and an
-        unpinnable node cannot be measured -- nothing can be pinned there to measure it --
-        so it is admitted unconditionally rather than waited on for ever.
+        A pin is a ``nodeSelector`` value, so it needs the label; a gate waits for a
+        measurement, which an unpinnable node can never have.
         """
         if self.pin is not None:
-            return node.pinnable and node.node_id == self.pin
-        return (self.accepts_node is None or not node.pinnable
-                or node.node_id is None or self.accepts_node(node.node_id))
+            if not node.pinnable or node.node_id != self.pin:
+                return False
+        elif not node.pinnable:
+            return True
+        return self.accepts_node is None or self.accepts_node(node.node_id)
 
     def sizing_on(self, node_id) -> "JobSizing":
         """What this job needs *on that node*, falling back to what it declared."""

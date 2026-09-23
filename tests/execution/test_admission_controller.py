@@ -813,9 +813,9 @@ def test_a_probe_with_no_gate_goes_to_its_node():
 
 def test_a_pinned_item_never_takes_an_unlabelled_node():
     """An unlabelled node takes unpinned work, so a cluster predating the identity label still
-    runs. A pinned item names a node id, and a node with none is not that node -- however much
-    room it has."""
-    p = FakeProvider(per_node=[(None, 64.0, 10240 * MIB, 0)])
+    runs. A pin is a selector value, so it cannot be honoured where the label is not -- however
+    much room the node has."""
+    p = FakeProvider(per_node=[("unlabelled", 64.0, 10240 * MIB, 0, False)])
     c = _controller(p)
     seen = []
     c.submit("pinned", [("p-0", JobSizing(2.0, MIB), lambda n=None: seen.append(("p", n)))],
@@ -825,6 +825,7 @@ def test_a_pinned_item_never_takes_an_unlabelled_node():
 
     c.submit("free", [("f-0", JobSizing(2.0, MIB), lambda n=None: seen.append(("f", n)))],
              started_at=1.0, accepts_node=lambda node: False)
+    # Created unpinned -- no label to select -- though the node is still charged.
     assert c.drain() == 1 and seen == [("f", None)], "unpinned work still takes it"
 
 
@@ -834,13 +835,19 @@ def test_may_use_composes_pin_and_gate():
     def item(**kw):
         return WorkItem(key="k", sizing=JobSizing(1.0, MIB), create=lambda n=None: None, **kw)
 
-    assert item().may_use(None) is True
-    assert item(accepts_node=lambda n: False).may_use(None) is True, \
+    def node(node_id, pinnable=True):
+        return NodeBudget(node_id=node_id, free_cpu=1.0, free_memory=MIB, free_gpu=0,
+                          pinnable=pinnable)
+
+    # Nothing measures an unpinnable node, so the gate has nothing to wait for.
+    unpinnable = node("hash-of-n9", pinnable=False)
+    assert item().may_use(unpinnable) is True
+    assert item(accepts_node=lambda n: False).may_use(unpinnable) is True, \
         "an unpinned item still takes an unlabelled node"
-    assert item(pin="n1").may_use(None) is False
-    assert item(pin="n1").may_use("n2") is False
-    assert item(pin="n1", accepts_node=lambda n: False).may_use("n1") is False
-    assert item(pin="n1", accepts_node=lambda n: True).may_use("n1") is True
+    assert item(pin="hash-of-n9").may_use(unpinnable) is False, "the selector names nothing"
+    assert item(pin="n1").may_use(node("n2")) is False
+    assert item(pin="n1", accepts_node=lambda n: False).may_use(node("n1")) is False
+    assert item(pin="n1", accepts_node=lambda n: True).may_use(node("n1")) is True
 
 
 def test_a_confined_campaign_does_not_hold_its_node_against_other_campaigns():

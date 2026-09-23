@@ -380,7 +380,6 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
     # live pod, so an unstubbed call reaches a real API server.
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
-    # Upgrade stamps node identities too; unstubbed it reaches a real API server.
     from robovast.execution.cluster_execution import node_placement
     monkeypatch.setattr(node_placement, "apply_node_id_labels", mock.Mock(return_value={}))
 
@@ -408,6 +407,8 @@ def test_upgrade_reconciles_a_tailnet_node_that_already_exists(monkeypatch):
 
     ensure = mock.Mock(return_value="robovast")
     monkeypatch.setattr(tailnet_deploy, "reconcile_existing", ensure)
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement."
+                        "apply_node_id_labels", mock.Mock(return_value={}))
     monkeypatch.setattr("robovast.execution.cluster_execution.node_placement.apply_job_node_aliases",
                         lambda *a, **k: None)
     monkeypatch.setattr(cluster_setup, "apply_controller_rbac", mock.Mock())
@@ -488,7 +489,6 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     monkeypatch.setattr(service_deploy, "reconcile_registry_ingress_path", lambda **k: False)
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
-    # Upgrade stamps node identities too; unstubbed it reaches a real API server.
     from robovast.execution.cluster_execution import node_placement
     monkeypatch.setattr(node_placement, "apply_node_id_labels", mock.Mock(return_value={}))
 
@@ -500,6 +500,29 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
     assert kwargs.get("public_origin") == "http://robovast.example.org"
     # And the host still reaches the registry config, which is what it was read for first.
     assert kwargs.get("registry_host") == "robovast.example.org"
+
+
+def test_upgrade_stamps_the_node_identity_label(monkeypatch):
+    """A node added since the last ``setup`` runs unlabelled otherwise: no pin, no
+    calibration. Above the ``--no-restart`` line because it is the node's own state, so the
+    running pod picks it up with no roll."""
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from robovast.execution.cluster_execution import cli as cluster_cli
+
+    label = mock.Mock(return_value={"n1": "node-abc"})
+    _stub_upgrade(monkeypatch, mock.Mock())
+    monkeypatch.setattr("robovast.execution.cluster_execution.node_placement."
+                        "apply_node_id_labels", label)
+
+    result = CliRunner().invoke(cluster_cli.upgrade, ["-n", "default", "--no-restart"])
+
+    assert result.exit_code == 0, result.output
+    assert label.called, "upgrade left the node identity labels unreconciled"
+    assert label.call_args.kwargs["kube_context"] is None
+    assert "labelled 1 node(s)" in result.output, result.output
 
 
 # -- the campaign job node pool ----------------------------------------------------------
