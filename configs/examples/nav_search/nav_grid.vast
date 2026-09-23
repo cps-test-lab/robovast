@@ -15,6 +15,12 @@ metadata:
 
 configuration:
 - name: grid
+  # The endpoints scenario_roqsim.osc declares: the scenario says what it needs, a campaign
+  # says what it is run with. What these two numbers have to agree with is stated there.
+  parameters:
+    scenario:
+      start_pose: {position: {x: -2.5, y: 0.0}}
+      goal_pose: {position: {x: 2.5, y: 0.0}}
   variations:
   # Doorway width, as the gaps 0.4 / 0.8 / 1.2 / 1.6 m -- the same range the search
   # campaigns declare, so the grid covers the space they explore rather than a different one.
@@ -44,6 +50,17 @@ configuration:
       values: [0.0, 2.0, 4.0, 6.0]
 
 visualization:
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "35%"}
+    # The endpoints are constants of the scenario, not factors, so no variation contributes
+    # them: bound by name, the config view and a video's costmap overlay read the same value.
+    - map2d:
+        title: Map
+        map: files/empty_room.yaml
+        markers:
+        - {kind: pose, param: start_pose, label: start, color: "#60a5fa"}
+        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
     explorer:
       notebooks:

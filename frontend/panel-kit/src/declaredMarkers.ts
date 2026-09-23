@@ -7,9 +7,11 @@
 //
 //   - scene3d:
 //       markers:
-//         - {kind: pose, pos: [-8.0, 0.0], yaw: 0.0, label: start}
+//         - {kind: pose, pose: {position: {x: -8.0, y: 0.0}}, label: start}
 //         - {kind: pose, param: goal_pose, offset: [-8.0, 0.0, 0.0], label: goal}
 //
+// `pose:` is the placement written out, in the shape a `.vast` states one everywhere else; `pos:`
+// (+ `yaw:`) is the bare-point spelling, the one SceneMarker itself carries.
 // `param:` reads a resolved scenario parameter, so the marker follows the selected configuration.
 // `offset:` is a literal translation applied afterwards — it is how a map-frame parameter is placed
 // in a world-frame scene, declared in the file where the reader can see the reason rather than
@@ -25,6 +27,10 @@ import { resolveBinding } from './bindings'
 
 /** A declared marker: a SceneMarker plus the authoring-only keys the resolver reads. */
 export interface DeclaredMarker extends SceneMarker {
+  /** The placement written out the way a `.vast` states one everywhere else:
+   *  `{position: {x, y, z}, orientation: {yaw}}`, or a bare `{x, y}`. It carries the yaw, so it
+   *  is stated instead of `pos`/`yaw` rather than beside them. */
+  pose?: unknown
   /** Name of a resolved scenario parameter to read the position (and yaw) from. */
   param?: string
   /** Name of an `_`-prefixed key a variation left behind — a pose, or a path's points. */
@@ -82,12 +88,13 @@ export function declaredMarkers(
   for (const entry of declared) {
     if (!isRecord(entry)) continue
     const marker = entry as unknown as DeclaredMarker
-    const { param, internal, offset, ...rest } = marker
+    const { pose, param, internal, offset, ...rest } = marker
 
     if (!param && !internal) {
-      const pos = translate(rest.pos, offset)
+      const stated = pose === undefined ? { pos: rest.pos, yaw: rest.yaw } : readPose(pose)
+      const pos = translate(stated.pos, offset)
       if (rest.kind === 'path' ? rest.points : pos) {
-        out.push({ ...rest, pos, group: rest.group || 'declared' })
+        out.push({ ...rest, pos, yaw: stated.yaw, group: rest.group || 'declared' })
       }
       continue
     }
