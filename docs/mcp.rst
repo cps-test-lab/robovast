@@ -205,7 +205,10 @@ It checks every world a run would load, once each: the campaign's ``simulation``
 when some configuration runs it as authored, and each distinct block a configuration's own
 ``sim:`` resolves to. A campaign whose every configuration overrides the block -- a world
 naming its mesh per configuration and none by default -- is checked on those configurations'
-worlds only, because no run opens the default as authored.
+worlds only, because no run opens the default as authored. A search counts its
+``search.parameters`` as one such configuration, the template every draw is composed from; a
+``sim:`` value there taken from the search space as ``$name`` exists only per draw, so that
+world is reported ``unchecked``.
 
 Each world that loads is also checked for **keys its image does not know**. A campaign runs a
 pinned image, and a world can be newer than it: a key a later plugin reads is, to the image's

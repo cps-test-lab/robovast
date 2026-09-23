@@ -256,6 +256,12 @@ def _collapse_lane_wide(problems: list, blocks: int) -> list:
     return [{**problems[0], "config": None}]
 
 
+#: The name :func:`_distinct_blocks` gives the block a search composes every draw from.
+#: ``search:`` and ``configuration:`` are mutually exclusive in the schema, so while a
+#: search is present no authored configuration can carry this name.
+SEARCH_TEMPLATE = "search"
+
+
 def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
     """``[(config_name_or_None, resolved sim block)]``, one per DISTINCT world.
 
@@ -268,6 +274,10 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
     every configuration overrides the block never loads the default as authored -- a
     world that names its mesh per configuration and deliberately none by default is the
     common shape -- and a verdict on it would be a verdict on a world no run opens.
+
+    A search has no ``configuration:`` block; its ``search.parameters`` is the template every
+    configuration it composes starts from, so it counts as one configuration here, named
+    ``search``.
 
     Deduplicated by the resolved block, because what a world offers depends on the world
     and not on the configuration: describing it once per cell would multiply the cost by
@@ -297,6 +307,9 @@ def _distinct_blocks(parameters: dict, vast_dir: str) -> list:
         found.append((name, block))
 
     configs = [c for c in (parameters.get("configuration") or []) if isinstance(c, dict)]
+    search = parameters.get("search")
+    if isinstance(search, dict):
+        configs.append({"name": SEARCH_TEMPLATE, "parameters": search.get("parameters")})
     if not configs or not all(channel(c, SIM) for c in configs):
         _add(None, campaign_sim_block(execution))
     for config in configs:
@@ -345,6 +358,7 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
     0.1-1.0 s to a container that costs 1-15 s, so the cheaper half-answer buys nothing
     and would leave a broken MJCF invisible until a trial hit it.
     """
+    from robovast.common.config import collect_var_refs
     from robovast.common.config_generation import (WorldQueryUnavailable,
                                                    describe_world_payload,
                                                    set_container_runner_factory)
@@ -356,7 +370,25 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
     blocks = _distinct_blocks(parameters, vast_dir)
     problems = []
     advice = []
+    # A ``$name`` is a search variable, and only the search template holds any: the search
+    # schema is what resolves these against ``search_space``. The same string in an authored
+    # block is a literal the simulator is meant to receive, and describing the world is how a
+    # wrong one is found -- so the marker check is asked of that one block, never of a world
+    # somebody wrote a dollar sign into.
+    drawn = isinstance(parameters.get("search"), dict)
     for config_name, block in blocks:
+        markers = (collect_var_refs(block)
+                   if drawn and config_name == SEARCH_TEMPLATE else set())
+        if markers:
+            named = ", ".join(f"${name}" for name in sorted(markers))
+            problems.append(_problem(
+                _unchecked(f"its sim block takes {named} from the search space, so the "
+                           "world exists only per draw",
+                           "preview_configurations composes draws and checks that each "
+                           "one's overrides name plugins the world has; whether a draw's "
+                           "world compiles is known once it runs"),
+                config=config_name, severity="unchecked"))
+            continue
         runner = ExecSlotContainerRunner(
             exec_call, workspace_id=workspace_id, config_path=config_path)
         token = set_container_runner_factory(lambda _spec, _r=runner: _r)
