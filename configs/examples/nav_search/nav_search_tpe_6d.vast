@@ -37,6 +37,16 @@ search:
     # this is a mixed environment-and-configuration space rather than a pure world sweep.
     inflation_radius: {type: float, low: 0.20, high: 0.80}
     max_speed:        {type: float, low: 0.10, high: 0.50}
+  # THE TRIAL'S ENDPOINTS. Stated here rather than defaulted in the .osc: the scenario
+  # declares what it needs, this file says what it is run with, and one value then serves
+  # the run, the config view and any figure drawn over it. start_pose seeds AMCL and must
+  # match world/empty_room.yaml's spawn_robot pose -- empty_room's map (files/empty_room.yaml,
+  # origin [-5,-5]) is co-registered with the world, so map == world and one pose serves both
+  # frames, unlike Depot where map = world + (8,0).
+  parameters:
+    scenario:
+      start_pose: {position: {x: -2.5, y: 0.0}}
+      goal_pose: {position: {x: 2.5, y: 0.0}}
   variations:
   - variations/doorway.py:DoorwayVariation:
       sim: {instances: components.barrier.instances}
@@ -116,8 +126,8 @@ visualization:
         title: Map
         map: files/empty_room.yaml
         markers:
-        - {kind: pose, pose: {position: {x: -2.5, y: 0.0}}, label: start, color: "#60a5fa"}
-        - {kind: pose, pose: {position: {x: 2.5, y: 0.0}}, label: goal, color: "#4ade80"}
+        - {kind: pose, param: start_pose, label: start, color: "#60a5fa"}
+        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
     explorer:
       notebooks:

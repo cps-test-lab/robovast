@@ -30,8 +30,8 @@ scenario test_scenario:
     # (files/empty_room.yaml, origin [-5,-5]) is co-registered with the world, so map ==
     # world and one pose serves both frames -- unlike Depot, where map = world + (8,0) and
     # every analysis has to remember the offset.
-    start_pose: pose_3d = pose_3d(position: position_3d(x: -2.5m, y: 0.0m))
-    goal_pose:  pose_3d = pose_3d(position: position_3d(x:  2.5m, y: 0.0m))
+    start_pose: pose_3d
+    goal_pose:  pose_3d
 
     # THE STACK UNDER TEST, as one file rather than as parameters mirrored from it.
     # A campaign varying the stack writes into this file on the `sut:` channel, and each
