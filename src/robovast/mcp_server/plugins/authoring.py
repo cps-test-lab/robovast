@@ -42,10 +42,9 @@ def create_workspace(name: str = "", from_campaign: str = "", from_share: str = 
 
     Args:
         name: Optional label; defaults to the archive's slug with ``from_share``.
-        from_campaign: Seed it from this campaign's frozen config, to adapt a campaign that
-            already ran instead of re-authoring its project. Refuses an incomplete snapshot.
-        from_share: A workspace archive on the share, by slug. Always a new workspace;
-            not with ``from_campaign``.
+        from_campaign: Seed it from this campaign's frozen config, to adapt a campaign
+            that already ran. Refuses an incomplete snapshot.
+        from_share: A workspace archive on the share, by slug. Always a new workspace.
 
     Returns:
         ``{workspace_id, name, created_at}``.
@@ -92,10 +91,10 @@ def delete_workspace(workspace_id: str) -> dict:
 
 
 def export_workspace(workspace_id: str) -> dict:
-    """Publish a workspace to the share, for another service to import.
-
-    Named after the workspace, replacing an earlier export. Take one back with
+    """Publish a workspace to the share, for another service to import with
     ``create_workspace(from_share=...)``.
+
+    Named after the workspace, replacing any earlier export.
 
     Args:
         workspace_id: The workspace to publish.

@@ -20,6 +20,7 @@ import { useToasts } from '@/components/ToastProvider'
 import { ConfigEditorPane } from './ConfigEditorPane'
 import { ConfigListPane } from './ConfigListPane'
 import { ConfigViewPane } from './ConfigViewPane'
+import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
 import { FilesView } from './FilesView'
 import { useConfigEditor } from './useConfigEditor'
 
@@ -44,6 +45,7 @@ export function ConfigPage({
   const { prompt, confirm } = useDialogs()
   const { notify } = useToasts()
   const [workspaceId, setWorkspaceId] = useState('')
+  const [shareOpen, setShareOpen] = useState(false)
   const [tab, setTab] = useState<'editor' | 'files'>('editor')
   const campaignMode = !!campaignId
   const source: ConfigSource = campaignMode
@@ -140,6 +142,29 @@ export function ConfigPage({
     },
   })
 
+  // The share is another system's state, so whether this deployment has one at all is read
+  // from it rather than assumed. `configured: false` hides the two share buttons: a service
+  // with no share has nowhere to export to, and offering the verb would be advertising a
+  // capability the caller does not have.
+  const share = useQuery({
+    queryKey: ['shareArchives'],
+    queryFn: () => robovast.listShareArchives(),
+    staleTime: 60_000,
+    retry: false,
+  })
+  const shareConfigured = !!share.data?.configured
+
+  const exportWs = useMutation({
+    mutationFn: (id: string) => robovast.exportWorkspace(id),
+    onSuccess: (archive) => {
+      // The object's name, not "done": it is what somebody else types to import this, and
+      // the one thing this operation produced that is not already on screen.
+      notify({ severity: 'success', message: `Exported to the share as ${archive.object_name}` })
+      qc.invalidateQueries({ queryKey: ['shareArchives'] })
+    },
+    onError: (e) => notify({ severity: 'error', message: (e as Error).message }),
+  })
+
   const removeWorkspace = async () => {
     if (!selected) return
     const ok = await confirm({
@@ -233,9 +258,44 @@ export function ConfigPage({
             >
               Delete workspace
             </Button>
+            {/* Taking a project out of the service and putting one back. A plain anchor for
+                the download — the browser's own GET, carrying the session cookie, so a
+                multi-megabyte tree never passes through this bundle's memory. */}
+            <Button
+              size="small"
+              component="a"
+              href={selected ? robovast.workspaceArchiveUrl(selected.workspace_id) : undefined}
+              download={selected ? `${selected.workspace_id}.tar.gz` : undefined}
+              disabled={!selected}
+            >
+              Download
+            </Button>
+            {shareConfigured ? (
+              <>
+                <Button
+                  size="small"
+                  onClick={() => selected && exportWs.mutate(selected.workspace_id)}
+                  disabled={!selected || exportWs.isPending}
+                >
+                  {exportWs.isPending ? 'Exporting…' : 'Export to share'}
+                </Button>
+                <Button size="small" onClick={() => setShareOpen(true)}>
+                  Import from share
+                </Button>
+              </>
+            ) : null}
           </>
         )}
       </Stack>
+
+      <ShareWorkspaceDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        onImported={(id) => {
+          qc.invalidateQueries({ queryKey: ['workspaces'] })
+          setWorkspaceId(id)
+        }}
+      />
 
       {!campaignMode && !workspaceId ? (
         <Alert severity="info" variant="outlined">

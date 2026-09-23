@@ -932,6 +932,23 @@ directory, the project lives in a server-side **workspace** (see
 :ref:`architecture`): select or create one, **upload** the scenario file and any
 run files, and author the ``.vast`` in the Monaco editor.
 
+Taking a project out and putting one back
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Three buttons beside the workspace picker:
+
+**Download** saves the selected workspace as ``<ws-id>.tar.gz`` — the project files under
+one directory, which is the same archive ``vast workspace download`` fetches.
+
+**Export to share** publishes it to the configured share, which the service uploads to with
+its own credentials (a browser has none). The toast names the object, which is what somebody
+on another deployment types to import it.
+
+**Import from share** lists the workspaces on the share and brings one in. Each import
+creates a **new** workspace named after the archive; nothing here is replaced, so importing
+twice gives you two copies. Both share buttons are absent where the deployment has no share
+configured — see :ref:`sharing-results`.
+
 .. tip::
 
    To seed a workspace from an existing project directory in one command (instead of

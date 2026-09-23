@@ -891,6 +891,11 @@
             "title": "From Campaign",
             "type": "string"
           },
+          "from_share": {
+            "default": "",
+            "title": "From Share",
+            "type": "string"
+          },
           "name": {
             "default": "",
             "title": "Name",
@@ -3360,14 +3365,61 @@
             "default": "",
             "title": "Share Type",
             "type": "string"
+          },
+          "workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/ShareWorkspaceArchive"
+            },
+            "title": "Workspaces",
+            "type": "array"
           }
         },
         "required": [
           "archives",
           "configured",
-          "share_type"
+          "share_type",
+          "workspaces"
         ],
         "title": "ShareListing",
+        "type": "object"
+      },
+      "ShareWorkspaceArchive": {
+        "description": "One workspace archive on the configured share.",
+        "properties": {
+          "object_name": {
+            "default": "",
+            "title": "Object Name",
+            "type": "string"
+          },
+          "size": {
+            "default": -1,
+            "title": "Size",
+            "type": "integer"
+          },
+          "slug": {
+            "default": "",
+            "title": "Slug",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "object_name",
+          "size",
+          "slug",
+          "url"
+        ],
+        "title": "ShareWorkspaceArchive",
         "type": "object"
       },
       "StagedArchive": {
@@ -9230,6 +9282,47 @@
         ]
       }
     },
+    "/workspaces/{workspace_id}/archive": {
+      "get": {
+        "description": "Stream the workspace's project files as a ``tar.gz``.\n\nBacks the config editor's download button and ``vast workspace download``, which\nis how a project leaves this service to be worked on somewhere else. One\ntop-level directory holding the tree, so what lands extracts on its own and can\nbe handed back to any service as a workspace archive.\n\nNot on the data routes: those serve the results volume, and a workspace is\nneither on it nor reachable from the cluster's data container.",
+        "operationId": "download_workspace_archive_workspaces__workspace_id__archive_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Workspace Archive",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
     "/workspaces/{workspace_id}/preview": {
       "post": {
         "operationId": "preview_configurations_workspaces__workspace_id__preview_post",
@@ -9434,6 +9527,48 @@
         "summary": "Workspace Scene Asset",
         "tags": [
           "authoring"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/share": {
+      "post": {
+        "operationId": "export_workspace_workspaces__workspace_id__share_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareWorkspaceArchive"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Workspace",
+        "tags": [
+          "workspaces"
         ]
       }
     },

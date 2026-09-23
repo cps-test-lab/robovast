@@ -1631,6 +1631,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspaces/{workspace_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Workspace Archive
+         * @description Stream the workspace's project files as a ``tar.gz``.
+         *
+         *     Backs the config editor's download button and ``vast workspace download``, which
+         *     is how a project leaves this service to be worked on somewhere else. One
+         *     top-level directory holding the tree, so what lands extracts on its own and can
+         *     be handed back to any service as a workspace archive.
+         *
+         *     Not on the data routes: those serve the results volume, and a workspace is
+         *     neither on it nor reachable from the cluster's data container.
+         */
+        get: operations["download_workspace_archive_workspaces__workspace_id__archive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspaces/{workspace_id}/preview": {
         parameters: {
             query?: never;
@@ -1705,6 +1733,23 @@ export interface paths {
         get: operations["workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{workspace_id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Workspace */
+        post: operations["export_workspace_workspaces__workspace_id__share_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2316,6 +2361,11 @@ export interface components {
              * @default
              */
             from_campaign: string;
+            /**
+             * From Share
+             * @default
+             */
+            from_share: string;
             /**
              * Name
              * @default
@@ -3960,6 +4010,31 @@ export interface components {
              * @default
              */
             share_type: string;
+            /** Workspaces */
+            workspaces: components["schemas"]["ShareWorkspaceArchive"][];
+        };
+        /**
+         * ShareWorkspaceArchive
+         * @description One workspace archive on the configured share.
+         */
+        ShareWorkspaceArchive: {
+            /**
+             * Object Name
+             * @default
+             */
+            object_name: string;
+            /**
+             * Size
+             * @default -1
+             */
+            size: number;
+            /**
+             * Slug
+             * @default
+             */
+            slug: string;
+            /** Url */
+            url: string | null;
         };
         /**
          * StagedArchive
@@ -7457,6 +7532,37 @@ export interface operations {
             };
         };
     };
+    download_workspace_archive_workspaces__workspace_id__archive_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     preview_configurations_workspaces__workspace_id__preview_post: {
         parameters: {
             query?: never;
@@ -7577,6 +7683,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_workspace_workspaces__workspace_id__share_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareWorkspaceArchive"];
                 };
             };
             /** @description Validation Error */
