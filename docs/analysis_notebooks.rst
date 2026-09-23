@@ -8,8 +8,8 @@ An analysis notebook is a plain Jupyter notebook a campaign declares under
 **Explorer** executes one per selected tree node — campaign, batch, configuration or run
 — server-side, and renders it as HTML.
 
-This page is about writing those notebooks and about the analysis library they read the
-campaign's data with. Where they *appear* is the Explorer; see :doc:`web_ui`.
+This page is about writing those notebooks and about ``robovast-data``, the package they read
+the campaign's data with. Where they *appear* is the Explorer; see :doc:`web_ui`.
 
 .. _evaluation-notebooks:
 
@@ -95,96 +95,113 @@ Recommended first-cell pattern
    import pandas as pd
    import numpy as np
    import matplotlib.pyplot as plt
-   import os
 
    # Set DATA_DIR to a real path for interactive development.
    # The RoboVAST GUI replaces this line automatically.
    DATA_DIR = '/path/to/results/<campaign-name>-<timestamp>/<config-name>/'
 
-   from robovast.common.analysis import read_table, read_runs
-   df = read_table(DATA_DIR, "poses")
+   from robovast_data import open_data
+   data = open_data(DATA_DIR)
+   poses = data.table("poses")
 
 .. _evaluation-reading-results:
 
 Reading results
 ---------------
 
-``read_table`` reads one of the campaign's results-index tables and **restricts it to what
-``DATA_DIR`` selects** — a run directory gives that run's rows, a configuration directory that
-configuration's, the campaign root everything. The same cell therefore serves all three
-notebook scopes, and no notebook names a file.
+A notebook reads a campaign through the ``robovast-data`` package. ``open_data(DATA_DIR)``
+walks up from the path to the campaign (the directory holding ``campaign.db``) and **scopes
+everything to the node the path names** — a run directory gives that run's rows, a
+configuration directory that configuration's, the campaign root everything. The same cell
+therefore serves all three notebook scopes, and no notebook names a file.
 
 .. code-block:: python
 
-   read_table(DATA_DIR, "behaviors")            # the scenario's behaviour tree
-   read_table(DATA_DIR, "poses", columns=["timestamp", "position.x", "position.y"])
-   read_table(DATA_DIR, "poses", where="frame = ?", params=("base_link",))
-   read_runs(DATA_DIR)                          # per-run outcome + each param_* column
-   list_tables(DATA_DIR)                        # what this campaign actually has
+   from robovast_data import open_data
 
-Tables are keyed ``(config_name, run_id)``; ``runs`` carries the same key, so joining it to a
-metric table relates what varied to what happened. ``read_sql(DATA_DIR, ...)`` is the escape
-hatch for joins and for the ``run_view`` / ``config_view`` views — it is deliberately *not*
-scoped.
+   data = open_data(DATA_DIR)
+   data.runs                                   # one row per run: outcome + each param_* column
+   data.table("behaviors")                     # the scenario's behaviour tree
+   data.table("poses", columns=["timestamp", "frame", "position.x", "position.y"])
+   data.table("poses", config="cfg-3", run=0)  # narrower than the node, never wider
+   data.table("nav_metrics", with_params=True) # each run's param_* columns beside its rows
+   data.tables                                 # what can be read here, and what is built
+   data.sql("SELECT config_name, avg(duration_s) AS s FROM runs GROUP BY 1")
 
-What a metric varied *with* is usually the question, so ``with_params=True`` attaches each
-parameter of the owning run as a column, with the ``param_`` prefix dropped
-(:func:`~robovast.common.analysis.db.attach_params` does the same to a frame you already
-have). A parameter whose name collides with a column of the table raises rather than
-shadowing it:
+``data.runs`` has one row per run with its ``status``, ``passed``, ``duration_s``,
+``objective``, the host it ran on (``instance_type``, ``node_label``, ``cpu_name``, ...),
+``probed``, and one typed ``param_<name>`` column per varied factor, whichever channel it was
+written on (:ref:`channel-param-columns`). A unit that produced no run at all — a draw that
+could not be composed, a configuration whose results never arrived — is a row with an empty
+``run_id``, so a count over ``runs`` includes the coverage that was not obtained.
 
-.. code-block:: python
+Every table is keyed ``(config_name, run_id)`` and carries ``campaign_id``; ``runs`` carries
+the same key, so joining it to a table relates what varied to what happened.
+``with_params=True`` does that join for you and keeps the ``param_`` prefix, so a factor never
+shadows a column of the table.
 
-   df = read_table(DATA_DIR, "poses", with_params=True)
-   df["map_file"]        # the parameter, beside the measurements it belongs to
+**A table is built the first time it is read.** It is decoded from each run's own recordings
+into the campaign's ``.cache/`` directory, and the next read — from this notebook or any other —
+reads the cache. A run whose table could not be built is left out of the answer with a warning
+naming the table, the run and the reason. A table that no run in scope recorded raises, naming
+the tables that do exist. Above five million rows, ``table()`` warns before it reads them all
+into memory; narrow it with ``config=`` and ``run=``, or aggregate with ``sql()``.
+
+**Which tables exist depends on the campaign.** ``runs``, ``behaviors`` (scenario_execution's
+``behaviors.jsonl``), ``run_log``, ``scenario_timestamps``, ``resource_usage``,
+``system_usage`` and ``run_clock`` are there whatever the simulator and whether or not the run
+used ROS. ``poses`` (from ``/tf``, following the :ref:`pose contract <pose-contract>`),
+``costmaps``, ``nav2_behavior_tree``, ``action_<name>_feedback`` / ``_status`` and
+``rosbag2_<topic>`` come from a rosbag, so a ``mode: base`` campaign has none of them;
+``sim_poses`` exists where the simulator writes it. Every CSV a run writes is a table named
+after its file — ``out.csv`` is ``out``, a postprocessing plugin's ``nav_metrics.csv`` is
+``nav_metrics`` — with a leading ``#`` preamble skipped. Ask ``data.tables`` rather than
+assuming.
+
+``data.sql()`` takes one DuckDB ``SELECT`` and is scoped exactly as ``table()`` is. Besides
+the tables it sees the views ``run_view``, ``config_view``, ``pose_track_view`` (every
+recorded pose of every pose table), ``run_validity_view`` and ``container_failure_view``.
+``PERCENTILE(value, p)`` takes ``p`` in 0..100 and ``REGEXP(pattern, value)`` is a search.
 
 A parameter that names a *file* — ``map_file``, ``mesh_file`` — holds a path relative to the
-campaign's ``_config/``. Resolve it with ``config_file`` rather than joining it onto
-``DATA_DIR``, which is only the campaign root at campaign scope:
+configuration's resolved ``_config/``. Read it through the configuration rather than joining
+it onto ``DATA_DIR``, which is only the campaign root at campaign scope:
 
 .. code-block:: python
 
-   config_file(DATA_DIR, df["map_file"].iloc[0])            # raises if it is not there
-   config_file(DATA_DIR, rel, config_name, must_exist=False)  # to test existence yourself
+   cfg = data.config("cfg-3")
+   cfg.files()                      # every resolved file the configuration ran with
+   cfg.yaml("scenario.config")      # parsed; cfg.text(...) for the raw text
+   cfg.path                         # the directory, to join a relative path onto
 
-**Which tables exist depends on the campaign.** ``runs``, ``behaviors``, ``run_log``,
-``resource_usage`` and ``scenario_timestamps`` are produced whatever the simulator and whether
-or not the run used ROS. ``poses``, ``costmaps``, ``action_*`` and the ``nav2_*`` tables come
-from a rosbag, so a ``mode: base`` campaign has none of them. Ask ``list_tables`` or
-``table_info`` rather than assuming, and name the columns an analysis cannot do without:
+``Campaign(path)`` is the whole campaign whatever node the path names, ``Corpus(glob)`` several
+campaigns as one (every row keeps its ``campaign_id``), and a downloaded ``.tar.gz`` opens as
+its directory does, extracted beside it on first use. ``read_table(path, name)`` and
+``read_runs(path)`` are the one-line forms.
 
-.. code-block:: python
+Reading a campaign's own record
+-------------------------------
 
-   # Raises, naming the missing column and what the table does have, rather than
-   # returning a frame that is quietly missing it.
-   read_table(DATA_DIR, "behaviors", require=["status_name", "tip_id"])
-
-Reading a search's own record
------------------------------
-
-``read_table`` and friends read *measurements*, which postprocessing builds. A search
-campaign also keeps a record of what it **proposed**: one row per evaluated configuration
-with its objectives, its quality-diversity measures and the parameters it was drawn with,
-grouped into the batches that proposed them. That record is written as the search runs, so
-:func:`~robovast.common.analysis.db.open_campaign_store` reads it without any postprocessed
-data — a
-batch or archive view therefore works on a campaign still in progress, and on one that was
-never postprocessed.
+The tables hold *measurements*, per run. The controller also keeps a **record** of the
+campaign, ``campaign.db``, written as the campaign runs: the campaign row with its resolved
+configuration and, for a search, why it stopped; the batches a search proposed; one unit per
+configuration with its objectives, its quality-diversity measures and the parameters it was
+drawn with; the runs, jobs, nodes and container failures. ``sql()`` reads it as the
+``campaign`` schema, and it is the whole campaign's at every scope:
 
 .. code-block:: python
 
-   from robovast.common.analysis import open_campaign_store
+   data.sql("SELECT idx, id FROM campaign.batch ORDER BY idx")
+   data.sql("SELECT u.config_name, u.objective, u.measures_json, b.idx AS batch "
+            "FROM campaign.unit u JOIN campaign.batch b ON b.id = u.batch_id")
+   data.sql("SELECT stop_kind, stop_reason FROM campaign.campaign")
 
-   store = open_campaign_store(DATA_DIR)          # campaign.db alone, read-only
-   store.row_factory = sqlite3.Row
-   store.execute("SELECT idx FROM batch ORDER BY idx")
-   store.execute("SELECT config_name, objective, measures_json FROM unit WHERE batch_id = ?", ...)
-
-Tables are unqualified here (``batch``, ``unit``, ``run``, ``campaign``, ``job``); the same
-tables appear under a ``campaign.`` prefix when :func:`open_campaign_db` attaches them beside
-the metrics. ``objectives_json`` and ``measures_json`` exist **only** on ``unit`` —
-``runs.objective`` lifts just the single scalar — so a multi-objective or quality-diversity
-campaign can only be read this way.
+The record's tables are ``campaign.campaign``, ``campaign.batch``, ``campaign.unit``,
+``campaign.run``, ``campaign.job``, ``campaign.node`` and ``campaign.container_failure``,
+each with the campaign's id as ``campaign_id``. ``objectives_json`` and ``measures_json``
+exist **only** on ``campaign.unit`` — ``runs.objective`` lifts just the single scalar — so a
+multi-objective or quality-diversity campaign is read there. Reading the record decodes
+nothing, so a batch or archive view works on a search still in progress.
 
 Three unit statuses are not results and must not be averaged over: ``composition_failed`` is
 a draw that could not be built into a configuration at all and never ran, ``missing`` is a
@@ -192,16 +209,11 @@ configuration the campaign was composed with whose results never reached the tre
 ``no_sample`` is one that ran and lost every run to infrastructure. All three are coverage
 that was not obtained; count them rather than dropping them, or the campaign reads as having
 explored more than it did -- and the first two carry no runs at all, so a query that joins
-through ``run`` drops them without saying so.
+through ``campaign.run`` drops them without saying so.
 
-Reading requires postprocessing to have run — the campaign is not in the index before it, and a
-campaign whose postprocessing failed still reports ``finished``. That case raises with the
-remedy in the message rather than falling back to the per-run files, which would answer a
-different question with less data. :func:`~robovast.common.analysis.files.read_run_statuses`
-reads ``test.xml`` directly and so still works when there is no database at all.
-
-The per-run file readers (:mod:`robovast.common.analysis.files`) remain available for what is
-genuinely not in the database.
+The per-run file readers (:mod:`robovast.common.analysis.files`) read a run's files as they
+are; :func:`~robovast.common.analysis.files.read_run_statuses`, for one, takes each run's
+outcome straight from its ``test.xml``.
 
 Handling missing columns defensively
 --------------------------------------
@@ -212,7 +224,7 @@ DataFrame schemas so the notebook fails clearly rather than with a cryptic
 
 .. code-block:: python
 
-   required_cols = {'run', 'config', 'timestamp', 'frame'}
+   required_cols = {'config_name', 'run_id', 'timestamp', 'frame'}
    missing = required_cols - set(df.columns)
    if missing:
        raise ValueError(f"DataFrame is missing expected columns: {missing}. "
@@ -229,7 +241,7 @@ Use paths appropriate to the *scope* of the notebook:
 
    * - Scope
      - Example ``DATA_DIR``
-     - What ``read_table`` returns
+     - What ``table()`` returns
    * - ``run``
      - ``/<campaign-name>-<timestamp>/<config>/<run-number>/``
      - that run's rows
@@ -242,8 +254,8 @@ Use paths appropriate to the *scope* of the notebook:
 
 .. note::
 
-   The scope changes which **rows** come back, not which columns: every metric table
-   carries ``config_name`` and ``run_id`` at all three levels, so a cell written for one
+   The scope changes which **rows** come back, not which columns: every table carries
+   ``config_name`` and ``run_id`` at all three levels, so a cell written for one
    scope runs unchanged at another. At run scope both columns hold a single value —
    grouping by them is redundant there but not an error, which is what lets the same
    cell serve every scope.

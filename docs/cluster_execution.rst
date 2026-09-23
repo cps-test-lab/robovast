@@ -155,8 +155,7 @@ flags (:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
-* Deploys the ``robovast`` pod — the container registry and the Postgres campaign index
-  (:ref:`the-robovast-pod`) — the ``robovast-service`` Deployment that drives campaigns
+* Deploys the ``robovast`` pod — the container registry (:ref:`the-robovast-pod`) — the ``robovast-service`` Deployment that drives campaigns
   and holds their results, and the shared build daemon. Every cluster config deploys the
   same set; what differs is how their volumes are backed.
 * Makes GPUs schedulable where the cluster has them, so a simulation container renders in
@@ -309,8 +308,7 @@ Where this deployment's own data lives
 
 The selectors above place job and control pods. This places the deployment's **own** state,
 which is node-local by default: a stock cluster ships no StorageClass, so ``hostPath`` is what
-the workspaces, the campaign results, the campaign index, the registry and the build cache
-all fall back to.
+the workspaces, the campaign results, the registry and the build cache all fall back to.
 
 **Where it goes** is one flag, ``--data-root``; **which node** it goes on needs no flag at
 all. The two are separate questions and are answered separately below.
@@ -328,7 +326,7 @@ Setup decides the node once, and records the decision as a node label:
      node-b                             48.6 GB free  (kubelet-nodefs)
    node node-a labelled robovast.io/data-node=true
    ✓ Cluster setup completed successfully!
-     workspaces, results, index and registry on node-a (chosen automatically: most free disk)
+     workspaces, results and registry on node-a (chosen automatically: most free disk)
      build cache alongside it on node-a (--buildkit-node puts it on another disk)
      recorded as a node label, so a later cleanup + setup returns here without any flag
 
@@ -404,7 +402,6 @@ That places every node-local directory this deployment keeps:
 
    /media/data/workspaces      the service's workspaces
    /media/data/results         the campaign results root, where campaigns live
-   /media/data/index           the campaign index, placed beside them
    /media/data/registry        the built experiment images
    /media/data/buildkit        the build cache
 
@@ -417,8 +414,6 @@ Flag                          Environment                     Default
 ``--workspaces-path``         ``ROBOVAST_WORKSPACES_PATH``    ``/var/lib/robovast-workspaces``
 ``--workspaces-class``        ``ROBOVAST_WORKSPACES_CLASS``   *(unset — a hostPath)*
 ``--results-size``            ``ROBOVAST_RESULTS_SIZE``       ``500Gi`` (needs a class)
-``--index-class``             ``ROBOVAST_INDEX_CLASS``        *(unset — a hostPath)*
-``--index-size``              ``ROBOVAST_INDEX_SIZE``         ``20Gi`` (needs a class)
 ``--registry-path``           ``ROBOVAST_REGISTRY_PATH``      ``/var/lib/robovast-registry``
 ``--registry-class``          ``ROBOVAST_REGISTRY_CLASS``     *(unset — a hostPath)*
 ``--buildkit-path``           ``ROBOVAST_BUILDKIT_PATH``      ``/data/robovast-buildkit``
@@ -430,26 +425,17 @@ Every one reads an environment variable, so a ``.env`` — or ``~/.config/robova
 what is true of the machine rather than of a project — sets them once instead of on every
 ``setup``.
 
-**Two tenants take no path flag**, and for the same reason: derived data must not be
-separated from its source. The campaign results sit beside the workspaces and share their
-backing, because the service pod carries both and mirrors a campaign between them. The
-campaign index sits beside the results and shares *their* backing, because every row in the
-index was ingested from a campaign on the results volume -- an index that outlived its sources
-would answer questions about campaigns nobody can reproduce or check, confidently. A path flag
-for either could only ever agree with its parent or be refused.
+**The results take no path flag.** They sit beside the workspaces and share their backing,
+because the service pod carries both and mirrors a campaign between them. A path flag for
+them could only ever agree with the workspaces or be refused. The tables a query reads are not
+a tenant of their own: each campaign builds them from its records on first use, into its own
+``.cache/`` on the results volume.
 
 How much *room* the results get is stated separately, because they are the larger half by
 orders of magnitude: ``--results-size`` sizes the claim the workspaces' class provisions,
 and the same flag on ``vast service upgrade`` raises one that already exists. Without a
 class there is no volume to size -- the results are a directory on the data node, bounded
 by that disk -- and the flag is refused rather than accepted and ignored.
-
-``--index-class`` is the one thing a derived tenant may state for itself, and it does not
-break the rule: it takes the index off its parent's *disk* without moving it off its parent's
-node. Postgres is a different workload from the bulk of the results, and on a managed node
-pool the index is what a replaced machine would take with it while the campaigns it indexed
-survive on their claim. Without it the index simply follows the results — a PVC of the
-workspaces' class where one is given, else a directory beside them on the data node.
 
 In order, the first that answers wins: what you stated (flag or environment), then
 ``--data-root``, then **what the cluster is already doing**, then the default. That third step
@@ -493,7 +479,7 @@ The move says what it abandoned, which is the only place that node is ever named
 
 .. code-block:: text
 
-     workspaces, results, index and registry on node-b (as requested)
+     workspaces, results and registry on node-b (as requested)
      build cache alongside it on node-b (--buildkit-node puts it on another disk)
      moved here from node-a; the bytes written there are NOT migrated
      so this deployment starts with an empty registry and rebuilds what it needs;
@@ -506,8 +492,8 @@ campaign this deployment has finished. Archive what matters (``vast share``) bef
 the placement.
 
 One thing a re-``setup`` cannot do by itself: applying a manifest over an object that already
-exists keeps the existing one, so a **running** ``robovast`` pod — the registry and the index
-— cannot be relocated that way. Setup refuses rather than reporting a placement it did not
+exists keeps the existing one, so a **running** ``robovast`` pod — the registry — cannot be
+relocated that way. Setup refuses rather than reporting a placement it did not
 apply, and says what recreating it costs: delete the pod, or run ``cleanup`` first.
 
 .. _cluster-gpu:
@@ -660,7 +646,7 @@ than a sweep: the campaign Jobs and their pods, the image-warm DaemonSet, buildk
 CPU governor DaemonSet, the NVIDIA device plugin, and whatever the cluster config's own
 ``cleanup_cluster`` owns.
 Deliberately kept: this deployment's data directories — the results (where every finished
-campaign lives), the workspaces, the index and the registry — buildkitd's volume claim, the
+campaign lives), the workspaces and the registry — buildkitd's volume claim, the
 node identity labels, the job node aliases (:ref:`cluster-node-alias`), and the placement
 labels — see :ref:`cluster-node-local-storage`, and ``--forget-placement`` for the last of
 those. ``vast cluster cleanup --delete-data`` empties the directories instead, irreversibly
@@ -761,8 +747,8 @@ The ending message is worth reading rather than glancing at. It is sent when the
 campaign is genuinely over, *after* postprocessing rather than when the last run
 stops, and it carries what the campaign actually produced: the run tally, and any
 postprocessing or upload failure. A campaign whose trials all passed but whose
-postprocessing failed is reported as "finished WITH PROBLEMS" — it has no CSVs
-and nothing queryable, and reporting that as a clean finish made a campaign with no
+postprocessing failed is reported as "finished WITH PROBLEMS" — its metrics were
+not computed, and reporting that as a clean finish made a campaign with no
 metrics look identical to a complete one on the one screen nobody re-reads.
 
 Notifications outlive whatever started the campaign, which is what makes them the
@@ -846,7 +832,7 @@ cluster-internal route as well.
 
    **The registry keeps serving anonymously until the** ``robovast`` **pod is recreated.**
    Setup keeps an existing pod as it is — recreating it on every run would restart the
-   registry and the index for nothing — so a changed container spec does not reach it, and
+   registry for nothing — so a changed container spec does not reach it, and
    the credential alone changes nothing. Setup says so rather than reporting the hole closed: ``vast cluster cleanup``
    then ``vast cluster setup`` is what applies it, built images are rebuilt on demand, and
    the clients already hold the credential and start using it the moment the registry asks.
@@ -1164,62 +1150,42 @@ appended when the client produced none.
 
 .. _the-robovast-pod:
 
-Where the registry and the index run
-------------------------------------
+Where the registry runs
+-----------------------
 
 ``vast cluster setup`` creates one ``robovast`` pod per deployment, holding this
-deployment's two pieces of **setup-lifetime infrastructure**:
-
-``registry``
-   the container registry experiment images are built into, published on ``/v2`` of the
-   service's own Ingress host.
-
-``index``
-   the Postgres holding every campaign's rows — one index, so a query across a search arm
-   is one ``WHERE`` clause rather than a per-campaign database. The service reaches it at
-   ``robovast.<namespace>.svc:5432``; the DSN is assembled from the Service name and the
-   namespace and handed to the service as ``ROBOVAST_INDEX_DSN``.
+deployment's **setup-lifetime infrastructure**: the container registry experiment images are
+built into, published on ``/v2`` of the service's own Ingress host.
 
 **Campaigns are not in this pod.** They live on the service's results volume
-(:ref:`campaign-home`), and everything this pod holds is re-derivable from them or rebuilt
-on demand: images are rebuilt when a campaign asks for them, and the index is re-ingested
-from the campaigns. That is why it is one replica with no standby and no backup — losing
-it costs time and nothing else.
+(:ref:`campaign-home`), and what this pod holds is rebuilt on demand: images are rebuilt
+when a campaign asks for them. That is why it is one replica with no standby and no backup —
+losing it costs time and nothing else.
 
-**Why they are not in the service pod.** ``robovast-service`` is a Deployment and every
+**Why it is not in the service pod.** ``robovast-service`` is a Deployment and every
 ``vast service upgrade`` rolls it, so a container living there is restarted by each
 upgrade — including one that only bumps the controller image — and its volume follows the
-Deployment rather than the cluster. Neither of these is service-lifetime state: the
-registry holds the images already-submitted campaigns will be pulled from, and the index
-holds rows that took hours to ingest. Here they are created once at setup and torn down
-deliberately by ``vast cluster cleanup``.
+Deployment rather than the cluster. The registry is not service-lifetime state: it holds
+the images already-submitted campaigns will be pulled from. Here it is created once at setup
+and torn down deliberately by ``vast cluster cleanup``.
 
-**The index sits beside the results and takes their backing** unless ``--index-class``
-says otherwise (:ref:`cluster-node-local-storage`). Every row in it was ingested from a
-campaign on the results volume, so it must never outlive its sources: an index that did
-would answer questions about campaigns nobody can reproduce or check, and answer them
-confidently.
-
-**Both ports are on the pod's single ClusterIP Service.** It already selects exactly this
-pod, so a second Service would duplicate the selector and add a name that must agree with
-the DSN and the Ingress rule, for no isolation — a ClusterIP is not a security boundary.
-The registry is nonetheless addressed through the service's published Ingress host,
-because an image ref is resolved twice — by BuildKit inside a pod and by the kubelet on a
-node — and only a published name works for both; what the Ingress' ``/v2`` rule points at
-is this pod's Service.
+**The registry is addressed through the service's published Ingress host**, because an
+image ref is resolved twice — by BuildKit inside a pod and by the kubelet on a node — and
+only a published name works for both; what the Ingress' ``/v2`` rule points at is this
+pod's ClusterIP Service.
 
 .. warning::
 
    **A live pod is kept as it is**, because recreating it on every setup would restart the
-   registry and the index for nothing. A pod that does not match the manifest therefore
-   does not come to match it by re-running setup, and ``vast cluster setup`` and ``vast
-   service upgrade`` both refuse rather than deploying a service whose ``/v2`` route and
-   index DSN point at containers that are not there. Two shapes are refused: a pod missing
-   the registry or the index, and a pod that carries an object-store container — nothing
-   reads such a store, so every campaign in it is one the service cannot see. The remedy
-   for both is ``vast cluster cleanup`` followed by ``vast cluster setup``. Campaigns in an
-   object store are **not migrated**, and nothing after the cleanup reads them: archive what
-   matters to a share first, and import it from there (``vast campaign import``).
+   registry for nothing. A pod that does not match the manifest therefore does not come to
+   match it by re-running setup, and ``vast cluster setup`` and ``vast service upgrade``
+   both refuse rather than deploying a service whose ``/v2`` route points at a container
+   that is not there. Two shapes are refused: a pod missing the registry, and a pod that
+   carries an object-store container — nothing reads such a store, so every campaign in it
+   is one the service cannot see. The remedy for both is ``vast cluster cleanup`` followed
+   by ``vast cluster setup``. Campaigns in an object store are **not migrated**, and
+   nothing after the cleanup reads them: archive what matters to a share first, and import
+   it from there (``vast campaign import``).
 
 .. _campaign-home:
 
@@ -1227,9 +1193,13 @@ Where a campaign lives, and how pods reach it
 ---------------------------------------------
 
 A campaign is a directory on the service's results volume,
-``<results_root>/<campaign_id>/``, and the only copy: ``campaign.db``, ``_execution/`` and every run's output are
-written into that one tree, and downloads, re-postprocessing, the
-index and ``vast share`` all read it there.
+``<results_root>/<campaign_id>/``, and the only copy: ``campaign.db``, ``_execution/`` and
+every run's output are written into that one tree, and downloads, postprocessing, queries
+and ``vast share`` all read it there. Postprocessing runs in the service process, beside the
+campaign on that volume, and needs no image and no pod of its own. The tables a query names
+are built from the campaign's records (its bags, logs, run files and ``campaign.db``) the
+first time something asks for them, into ``<campaign>/.cache/``, and SQL over them is
+answered in-process.
 
 Pods move bytes as tar streams
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1249,10 +1219,6 @@ twice on the pod and nothing is buffered on the service.
   the shared ``/ipc`` volume. The uploader is a regular container, and that is the point:
   **a Job is complete only when its results are in the campaign**, and a delivery that
   could not be made is a failed Job rather than a quiet one.
-* A **postprocessing Job** fetches the campaign — narrowed by ``stage``, ``skip_bags``,
-  ``batch_jobs`` and, for one part of a split postprocess
-  (:ref:`deployment-postprocess-parallel`), ``part`` to what it will actually read — and
-  delivers its derived files back the same way.
 * **Aux, exec and build pods** work on a **staged slot** instead
   (``GET``/``PUT /data/staged/<slot>``), which the service stages under
   ``<results_root>/_staged/<slot>/``: scratch beside the campaigns, sharing their disk and
@@ -1430,20 +1396,12 @@ only as the ``waiting N`` counter, never as a row: the per-job list mirrors the 
 actually exist there (what ``k9s`` shows), and those are the ones with a pod and a log to
 read. ``list_campaign_jobs`` still returns every one of them with its reason.
 
-The listing spans the two jobgroups a campaign creates for its own work — its trials
-(``scenario-runs``) and its postprocessing conversion (``postprocessing``) — in one
-set-based selector, because it is polled while the campaign is live and a second listing
-would double both the Job read and the pod read behind it. Each row carries the
-``JobKind`` that says which it is, and only ``run`` rows reach ``JobCounts``: the counts are
-read as facts about runs, and a conversion or a probe among them would enter the run meter
-and the ETA's divisor. The conversion is the one job a campaign in its ``postprocessing``
-phase has, so listing it is the difference between a busy campaign and an apparently idle
-one. Its row carries no log of its own, and that is deliberate: the conversion runs in init
-containers, which the per-job log does not report (it reports the containers that run for the
-pod's whole life), and every container's output is already written to the campaign's
-POSTPROCESSING section while the Job runs (:func:`publish_live_log` writes
-``_execution/postprocessing.log``) — a copy in the campaign, which is the one that is still
-readable after ``ttlSecondsAfterFinished`` has taken the pod away.
+The listing selects the campaign's own Jobs (``jobgroup=scenario-runs``). Each row carries
+the ``JobKind`` that says what it is, and only ``run`` rows reach ``JobCounts``: the counts
+are read as facts about runs, and a calibration probe among them would enter the run meter
+and the ETA's divisor. Postprocessing runs in the service process rather than as a Job, so a
+campaign in its ``postprocessing`` phase has no row here; its progress is the campaign's live
+stage and its POSTPROCESSING log section.
 
 An unreachable cluster (VPN down, cluster stopped, a kubeconfig context pointing at
 an endpoint that no longer answers) is reported the same way: one line naming the API
@@ -1452,10 +1410,9 @@ connect timeout (``ROBOVAST_KUBE_CONNECT_TIMEOUT``), so a connect that cannot su
 is not left to the operating system's multi-minute TCP timeout. Read timeouts stay
 unlimited; a slow answer is still an answer.
 
-When it happens *after* the runs — the postprocessing step that follows a finished
-campaign — the campaign stays ``finished`` with the reason on
-``postprocessing_error``; the results are already published, and
-``run_postprocessing`` re-runs the step once the cluster is back.
+Postprocessing does not reach the cluster at all: it runs in the service process against
+the campaign on the results volume, so a cluster that goes away after the runs costs it
+nothing.
 
 .. note::
 
@@ -1531,26 +1488,8 @@ first), or when a search fails either condition above. Each says which it is in 
 log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
 stays recoverable with ``vast campaign import``.
 
-**A running postprocess is re-attached to separately** (``postprocess_reattach``, called
-from startup right after the resume). Postprocessing is a Job that outlives the service
-process too, but only the *waiting* process writes the campaign's postprocessing verdict --
-so a restart mid-postprocess leaves a Job that converts every bag, finishes, and a campaign
-still carrying the previous attempt's message: fully derived data marked as none. The resume
-above cannot cover it, because a postprocess retriggered on a finished campaign runs against
-a terminal ``outcome.json``, which ``owed_work`` excludes precisely so that a campaign that
-recorded an ending is never restarted. What is owed here is a verdict, not work.
-
-The live Jobs are found with one labelled listing (``jobgroup=postprocessing``) and the
-label's campaign resolved against the campaign directories on the results volume, then confirmed against the
-campaign-level Job name -- a *discriminated* Job is a search's per-batch conversion and is
-owed to its batch's driver, not to any campaign record. A part of a split postprocess is
-neither: the split recorded its parts and options beside them
-(``_execution/postprocess_parts/plan.json``), and a live part makes the service start that
-postprocess again with those options -- it waits for the parts still running, runs the
-rest, and completes the campaign. The waiter creates and replaces
-nothing (the Job already mounts the scripts it was created with), publishes the live log
-while it waits, and records nothing at all when the Job cannot be read: a campaign whose
-conversion succeeded must never be marked failed because the API server was unreadable.
+**A postprocess is not resumed.** It runs in the service process, so a restart ends it; the
+campaign keeps the verdict it last recorded, and ``run_postprocessing`` runs it again.
 
 
 How free capacity is measured, and why it is not the whole cluster
@@ -1609,10 +1548,9 @@ that node — the fifteen-minute window, not the sixty-second one — because it
 capacity that is coming back, and the alternative is destroying a run for being patient.
 
 **RoboVAST's own infrastructure is not evenly spread.** The service pod — which carries the
-workspaces and the campaigns — the registry and the index are pinned to one node wherever
-their volumes are node directories (:ref:`cluster-node-local-storage`), so that machine has
-materially less left for campaign
-work than an even split implies. Per-node budgets see this correctly, because they measure
+workspaces and the campaigns, and runs their postprocessing — and the registry are pinned
+to one node wherever their volumes are node directories (:ref:`cluster-node-local-storage`),
+so that machine has materially less left for campaign work than an even split implies. Per-node budgets see this correctly, because they measure
 what is committed on each node rather than dividing a cluster total.
 
 **Reserve for the node itself, too.** Kubernetes hands out ``allocatable``, which is
@@ -1785,9 +1723,8 @@ under test, whose ceiling calibration does not lower. A matched pair of campaign
 directly, and ``run_health`` says whether the tighter ceilings cost the stack anything --
 provided the campaigns declared a check under ``results_processing.health_checks``. Nothing
 runs undeclared, so an empty ``run_health`` for the pair means *not graded*, never *not
-degraded*; that is the same rule as everywhere else in the table. Both campaigns' grades sit
-in the one index, so compare them in one query -- naming both ids in the query call's
-``campaigns`` argument -- rather than expecting a per-campaign database. A query that names
+degraded*; that is the same rule as everywhere else in the table. Compare both campaigns'
+grades in one query -- naming both ids in the query call's ``campaigns`` argument. A query that names
 only one campaign sees only that one, whatever its ``WHERE`` clause says.
 
 **Check the realtime factor when you do.** ``clock_map_sim_span_s / clock_map_wall_span_s``
@@ -2127,8 +2064,8 @@ GCP (Google Kubernetes Engine)
 
 **Config name:** ``gcp``
 
-The same deployment as everywhere — the ``robovast`` pod for the registry and the campaign
-index, campaigns on the service's results volume. What is provider-specific here is how
+The same deployment as everywhere — the ``robovast`` pod for the registry, campaigns on
+the service's results volume. What is provider-specific here is how
 the cluster answers for itself (which GKE cluster a context names, how far its node pools may autoscale, how a
 node reports its machine type) and how the volumes are backed.
 
@@ -2171,13 +2108,13 @@ StorageClass rather than the node's disk:
 .. code-block:: bash
 
    vast cluster setup gcp \
-     --workspaces-class standard-rwo --index-class standard-rwo \
+     --workspaces-class standard-rwo \
      --registry-class standard-rwo --buildkit-class premium-rwo --buildkit-size 200Gi
 
 ``--workspaces-class`` backs the campaign results too, which is where the campaigns are,
 and ``--results-size`` says how large that claim is (:ref:`cluster-node-local-storage`).
 Left on hostPaths, a replaced node takes the
-campaigns, the index, the built images and the workspaces with it — and setup reports
+campaigns, the built images and the workspaces with it — and setup reports
 success on the empty replacement. These are zonal disks, so the pods that mount them are
 bound to one zone; that is the cost, and it is the intended one. Keeping the disks
 themselves is the operator's snapshot schedule, which RoboVAST does not manage.
@@ -2196,7 +2133,7 @@ StorageClass — ``managed-csi`` is the stock one:
 .. code-block:: bash
 
    vast cluster setup azure \
-     --workspaces-class managed-csi --index-class managed-csi \
+     --workspaces-class managed-csi \
      --registry-class managed-csi --buildkit-class managed-csi
 
 ``--workspaces-class`` backs the campaign results with it, which is where the campaigns
@@ -2311,8 +2248,8 @@ Minikube
 **Config name:** ``minikube``
 
 Targets a local `minikube <https://minikube.sigs.k8s.io/>`_ cluster.  The same deployment
-as RKE2 — node directories for everything, the ``robovast`` pod for the registry and the
-index, campaigns on the service's results volume — on a machine that is usually the
+as RKE2 — node directories for everything, the ``robovast`` pod for the registry,
+campaigns on the service's results volume — on a machine that is usually the
 developer's own.  Intended for development and local integration tests.
 
 **Prerequisites:**

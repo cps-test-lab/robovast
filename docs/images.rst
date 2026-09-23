@@ -37,8 +37,8 @@ The four images
      - An alpine helper carrying ``curl`` and GNU ``tar`` — the two halves of every
        ``curl | tar`` fetch and ``tar | curl`` delivery a pod makes against the service's
        data plane. It is the init container that lands a job's inputs, the ``uploader``
-       that delivers its ``/out``, the ``stage`` step of the postprocessing Job, and the
-       context fetch of an **experiment-image build** Job — which is why that Job carries
+       that delivers its ``/out``, and the context fetch of an **experiment-image build**
+       Job — which is why that Job carries
        the deployment's registry pull Secret: on a private registry a credential-less
        build pod cannot fetch its own helper, and the build fails before it has read a
        line of the project.

@@ -70,8 +70,8 @@ Large uploads take the side channel instead: ``POST /uploads`` grants a token, a
 
 The **data plane** is the third namespace, ``/data``: every route that moves a campaign's
 or a staged slot's bytes as one tar stream. ``GET /data/campaigns/{id}/archive`` is the
-campaign as a tar.gz (narrowed by ``stage``, ``skip_bags`` and ``batch_jobs`` to what a
-postprocessing pod reads, and a plain tar with ``uncompressed``); ``GET .../inputs`` is what a job pod extracts into its
+whole campaign's records as a tar.gz -- postprocessed if they have been, raw if not --
+and never its ``.cache/`` table cache; ``GET .../inputs`` is what a job pod extracts into its
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened, only the
 named jobs' own documents (``job=<tag>``, required) taken from the per-job ones, and a
 cell's own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
@@ -135,7 +135,7 @@ the meaning of a status is uniform across every route:
        workspaces are not configured on this service.
    * - ``503``
      - A dependency did not answer, so the request could not be attempted: the object
-       store, the index, or the exec path into a container. Worth retrying, unlike the
+       store, or the exec path into a container. Worth retrying, unlike the
        codes above.
    * - ``507``
      - The service is out of disk space, or low enough that it declines new work (see
@@ -251,13 +251,13 @@ requested by the panel displaying them and never carried on a polled payload. Th
 aggregate **over** the call log rather than a counter maintained beside it, so the two cannot
 drift; the CSV is the same rows as a download.
 
-Their record lives in the central index rather than in ``events.db``, which is the one place these
-depart from the events above: the rows carry a truncated copy of each call's arguments and answer,
-so they are bulky and they age out (30 days, or 200 000 calls, whichever bites first), where the
-event log's whole point is that it is small and durable. Both bounds are reported on the response,
-because a reader told "a month" during a burst that emptied it in a day would be told a wrong
-thing. An unreachable index is reported as ``status`` rather than as an empty list, for the same
-reason: "nothing was called" and "the record cannot be read" are different answers.
+Their record is a SQLite file of its own, ``mcp_calls.db`` on the workspaces volume beside
+``events.db``, rather than rows in the event log, which is the one place these depart from the
+events above: the rows carry a truncated copy of each call's arguments and answer, so they are
+bulky and they age out (30 days, or 200 000 calls, whichever bites first), where the event log's
+whole point is that it is small and durable. Both bounds are reported on the ranking's response
+(``max_age_s``, ``max_rows``), because a reader told "a month" during a burst that emptied it in
+a day would be told a wrong thing.
 
 A page of ``/admin/mcp-calls`` reports the same way. It carries ``total``, ``truncated`` and the
 ``limit``/``offset`` it was actually read with, because a page that reported none of them read as
@@ -312,9 +312,14 @@ builders for parameterized ones. Both the app and ``HTTPTransport`` use it so th
 bindings cannot drift — a route renamed in one place is renamed for the client too.
 
 The table below is **generated from the running application**, not maintained by hand: it
-is what the service registers, including routes added by installed endpoint plugins. A
-hand-written endpoint list is exactly how the retired synthetic run-file route came to look
-documented while matching no directory on disk.
+is what the service registers, including routes added by installed endpoint plugins, so a
+route that exists is listed and one that does not is not.
+
+A campaign's tables have two routes of their own, neither needed for an answer — a query
+builds what it names: ``POST /campaigns/{id}/tables/build`` builds a finished campaign's tables
+for every run in the background (a ``tables`` list narrows it; progress is the campaign log's
+``TABLES`` section), and ``DELETE /campaigns/{id}/tables`` removes them to free storage,
+refused while the campaign runs or its tables are being built.
 
 Routes
 ======

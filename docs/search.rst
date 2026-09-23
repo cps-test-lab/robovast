@@ -215,7 +215,7 @@ Marker rules:
    That set is recorded as ``composition_failed`` (visible in the store's ``unit``
    table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
    may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to
-   cope: ingest what arrived, or — if its optimiser cannot take a short generation —
+   cope: take what arrived, or — if its optimiser cannot take a short generation —
    skip that generation. Never fill the hole with a stand-in objective: the measures
    would have to be invented too, and an invented measure vector lands the fabrication
    in a real archive cell where the search then chases it.
@@ -519,13 +519,13 @@ Stopping a search part-way
 
 Ending a search by hand is a normal way to end one — the budget is a ceiling, not a
 target — and **what it measured stays queryable**. Stopping the runs stops only the runs:
-the batches that completed are postprocessed and indexed like any other campaign's, so the
+the batches that completed are postprocessed like any other campaign's, so the
 campaign ends with its derived data present.
 
 Which phase it ends in says where the stop landed. A stop seen at a batch boundary is an
 ordinary stopping criterion to the loop — recorded as ``stop_kind = 'external'`` — and the
 campaign ends ``finished``; one that cut a batch short ends ``stopped``. Either way the
-cells it did score are in the index.
+cells it did score are in its record, and queryable.
 
 Its cells are read the way a finished search's are:
 
@@ -697,8 +697,8 @@ Postprocessing plugins (``BasePostprocessingPlugin``) are loaded identically
 wherever they appear — by entry-point name **or** a local ``./path.py:Class`` file
 reference — via one shared resolver/runner. They are configured in two places:
 
-* ``results_processing.postprocessing`` — runs at analysis time
-  (``vast campaign postprocess``, then the web UI's Results views).
+* ``results_processing.postprocessing`` — runs when the campaign ends, and again on a
+  re-run (``vast campaign postprocess``, or the web UI's retrigger).
 * ``search.postprocessing`` — runs over each batch's results during a search,
   before ``extract``.
 

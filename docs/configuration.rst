@@ -12,7 +12,7 @@ A ``.vast`` configuration file has the following top-level structure:
 
 .. code-block:: yaml
 
-   version: 4
+   version: 5
    extends: common/base.vast     # optional; see Extends
    metadata:
      title: "Project Title"
@@ -40,7 +40,7 @@ declare only the current one:
 
 .. code-block:: yaml
 
-   version: 4
+   version: 5
 
 An **older** version is migrated forward rather than refused:
 
@@ -53,6 +53,19 @@ An **older** version is migrated forward rather than refused:
 A **newer** version is refused: a format from a later robovast cannot be migrated backwards,
 so the answer is to upgrade robovast. See ``src/robovast/common/migrations/README.md`` for
 the ladder itself and for when the version is bumped at all.
+
+**Version 4 → 5.** A campaign's tables are built from its records by the decoder, so three
+things a version-4 file could say about how postprocessing produced them have nothing left to
+act on. The step, applied the same way to ``search.postprocessing``:
+
+* ``results_processing.resources`` is removed. It sized the pod that converted a campaign's bags;
+  no run and no table depends on it.
+* a bare ``run_log`` or ``resource_usage`` entry in ``postprocessing`` is removed: both tables are
+  built for every run.
+* ``run_log`` or ``resource_usage`` **with parameters** — ``run_log: {min_severity: warn}`` — is
+  refused, and the upgrade leaves a marker in its place. The ``run_log`` table holds every line;
+  filter by severity where it is read (every log surface takes a minimum severity), then delete
+  the marker.
 
 
 .. note::
@@ -96,7 +109,7 @@ meant to change -- a container's resources, a postprocessing step, a dashboard.
 
 .. code-block:: yaml
 
-   version: 4
+   version: 5
    extends: common/nav2-base.vast
    execution:
      containers:
@@ -980,7 +993,7 @@ tens to a few hundred KB, beside a rosbag measured in MB — and not recording i
 the *live* answer, since ``get_job_state`` reads it to say which action a wedged run is stuck
 in. There is no campaign worth paying that for.
 
-The file is ingested into the ``behaviors`` table of the results index — one row per behaviour
+The file is the run's ``behaviors`` table, like every data file of a run — one row per behaviour
 status change, plus a full snapshot of the tree at ``timestamp`` 0 so branches that never
 executed are still present. Each row carries ``parent_id`` and ``child_index`` (structure),
 ``tip_id`` (which leaf determined an ancestor's status) and ``osc_file``/``osc_line``
@@ -1002,10 +1015,10 @@ axes are sim and it cannot carry that relation at any price. ROS images only; ig
 
 .. note::
 
-   The output directory keeps its historical name ``logs/rosout_bag``: it is an address the
-   postprocessing map, the docs and every existing campaign already use.
+   The output directory is ``logs/rosout_bag`` although it holds ``/clock`` too: it is the
+   address the decoder reads the infrastructure recording from, in every campaign.
 
-   An execution image whose ``scenario_execution`` predates ``--bt-log`` ignores the flag
+   An execution image whose ``scenario_execution`` has no ``--bt-log`` option ignores the flag
    rather than failing, so the run still succeeds — it simply produces no ``behaviors.jsonl``
    and no ``behaviors`` table.
 
@@ -1081,19 +1094,24 @@ default exists to avoid. Declare a size only to raise or lower the reservation:
      shm_size: 2Gi        # only because this campaign measured a peak above the default
 
 **Picking the number.** Do not guess it twice: every run records what the pool actually held,
-so a campaign that has run once says what its successor should declare.
+in the ``resource_usage`` table, so a campaign that has run once says what its successor should
+declare.
 
 .. code-block:: sql
 
-   SELECT MAX(shm_peak_bytes), MAX(shm_limit_bytes) FROM runs;
+   SELECT MAX(peak) AS shm_peak, MAX(pool) AS shm_limit
+   FROM (SELECT config_name, run_id,
+                MAX(shm_used_bytes) AS peak, MAX(shm_total_bytes) AS pool
+         FROM resource_usage GROUP BY config_name, run_id);
 
-``shm_peak_bytes`` is the high-water mark over every tick of the run, bring-up included — a
-participant allocates its segments as it starts, and a SIGBUS there loses the run just as
-completely as one mid-trial. ``shm_limit_bytes`` is the size that was in force, which is how a
-declaration is *checked* rather than assumed: it shows whether the size in force reached the
-mount. ``NULL`` in either means unmeasured — a
-campaign recorded before the monitor sampled the pool, or a runtime without ``/dev/shm`` — and
-is not the same answer as "used none of it".
+``/dev/shm`` is one pool per run, so its figures repeat across a tick's process rows and across
+containers: a run's high-water mark is a ``MAX`` over its rows, never a sum. It is taken over
+every tick of the run, bring-up included — a participant allocates its segments as it starts,
+and a SIGBUS there loses the run just as completely as one mid-trial. ``shm_total_bytes`` is the
+size that was in force, which is how a declaration is *checked* rather than assumed: it shows
+whether the size in force reached the mount. ``NULL`` in either means unmeasured — a run whose
+monitor did not sample the pool, or a runtime without ``/dev/shm`` — and is not the same answer
+as "used none of it".
 
 ``get_campaign_summary`` turns the same two numbers into advice (``shm_under_reserved`` when
 the peak outgrew the size in force, ``shm_over_reserved`` when the reservation is paying for
@@ -1752,156 +1770,159 @@ keys never affected its run, so they are dropped from the copy with a log line.
 Results Processing Section
 --------------------------
 
-The ``results_processing`` section defines how run results should be processed after execution.
-
-resources
-^^^^^^^^^
-
-**Type:** Mapping with ``cpu`` and ``memory``
-
-**Required:** No
-
-How much of a machine this campaign's postprocessing may use. Omitted, it takes a shared
-default sized for an ordinary campaign; a campaign that converts unusually many or unusually
-large rosbags, or whose own analysis plugins are hungry, raises it here.
-
-.. code-block:: yaml
-
-   results_processing:
-     resources:
-       cpu: 8
-       memory: 16Gi
-     postprocessing:
-       - rosbags_to_csv:
-           topics: [/cmd_vel, /odom]
-
-``cpu`` takes cores (``8``, ``0.5``) or millicores (``"500m"``); ``memory`` takes a Kubernetes
-quantity (``16Gi``, ``512Mi``). Either may instead be a per-cluster list, exactly as in
-:ref:`execution resources <config-resources>`::
-
-   resources:
-     cpu:
-       - my-big-cluster: 8
-       - my-laptop: 2
-
-**``cpu`` also decides how many rosbags are converted at once.** The conversion runs one
-process per bag and reads the CPU it is actually allowed rather than the machine's core count,
-so this is the single knob that makes conversion faster — there is no separate worker setting
-to keep in step with it. (``rosbags_process`` accepts a ``workers`` parameter to override just
-the fan-out, for bags large enough that fewer, fatter workers win.)
-
-**It applies to the whole campaign, including a search's per-batch conversions.** A search
-converts inside its loop, once per batch (see :ref:`the search section <search>`),
-and those conversions take this figure too — there is no separate key under ``search``.
-
-.. note::
-
-   **The reservation is also the ceiling, and there is no ``cpu_limit``/``memory_limit`` here**
-   — unlike :ref:`execution resources <config-resources>`, where splitting the two
-   deliberately buys density. Postprocessing runs on the same machines as trials, so a
-   postprocessing step allowed past its reservation takes cores from a run that reserved
-   honestly, and that run's timing then depends on which campaign happened to be
-   postprocessing beside it. Nothing in a run's results records that, so it would be a
-   hidden variable in the measurement rather than a visible cost.
-
-.. note::
-
-   **This raises what postprocessing reserves; it does not lower it below what the fixed steps
-   need.** Postprocessing also stages the campaign and ingests its results, and those steps
-   have figures of their own that a campaign cannot know better than the deployment does —
-   asking for less than they need would trade a slow step for a step killed for running out of
-   memory. So a figure below them still holds the *conversion* (and its fan-out) to what was
-   asked, while what the whole postprocessing step reserves stops at that floor.
+The ``results_processing`` section says how a campaign's records become tables, what runs when
+its runs end, and how its results are published. How tables are built, cached and queried is
+described in :ref:`results-processing`; this section is the reference for the keys.
 
 postprocessing
 ^^^^^^^^^^^^^^
 
-**Type:** List of strings (plugin commands)
+**Type:** List of strings or dictionaries
 
 **Required:** No
 
-Commands to run for postprocessing run results. These are executed before the evaluation GUI is launched and typically convert raw data files into more analysis-friendly formats.
+Each entry is a name, or a one-key mapping from the name to its parameters. Two kinds of entry
+share the list, and they do different things:
 
-**All postprocessing commands are plugins.** Each command is specified either as:
-- A simple string (for commands without parameters)
-- A dictionary with the plugin name as key and parameters as value
+* **Decoder entries** — the ``rosbags_*`` names and ``rosbags_process``. They run nothing: they
+  configure how the campaign's recordings become tables, refining the defaults for the topics
+  they name. They are written to the campaign's ``_execution/tables.yaml`` when it launches and
+  whenever its postprocessing runs, and every table is built from them the first time something
+  names it (see :ref:`results-decoder-config`).
+* **Steps** — every other entry. A step is a plugin, named by its entry point in
+  ``robovast.postprocessing_commands`` or by ``./path.py:Class`` beside the ``.vast``, that runs
+  in order when the campaign's runs end (and on every re-run of its postprocessing). A file a step
+  writes into a run directory is a table like any other.
+
+A campaign that declares nothing still gets every table its records can give: the derived tables
+(``run_log``, ``scenario_timestamps``, ``resource_usage``, ``system_usage``, ``run_clock``) for
+every run, and a table per recorded topic.
 
 .. code-block:: yaml
 
    results_processing:
      postprocessing:
-       - rosbags_tf_to_csv:
-           frames: [base_link, turtlebot4_base_link_gt]
-       - rosbags_to_webm:
-           topic: /camera/image_raw/compressed
-           fps: 30
-       - rosbags_action_to_csv:
+       - rosbags_tf_to_csv:                 # decoder: which frames `poses` must have
+           frames: all
+           require: [base_link, turtlebot4_base_link_gt]
+       - rosbags_action_to_csv:             # decoder: an action's feedback and status
            action: navigate_to_pose
-       - command:
+       - rosbags_to_webm:                   # decoder: a camera, encoded for the run view
+           topic: /camera/image_raw/compressed
+       - command:                           # step: a script of your own
            script: tools/custom_script.sh
            args: [--arg, value]
 
-To list all available plugins and their descriptions:
+**Decoder entries.** Each also takes ``bag_dir``, the recording it applies to (below the run for
+the scenario's, ``logs/rosout_bag`` for the job's infrastructure recording):
+
+- ``rosbags_tf_to_csv``: the ``poses`` table — TF resolved against ``map``, one row per frame
+  per sample. ``frames`` is a list of child frame names, or ``all`` for every child frame that
+  resolves against ``map`` (default ``[base_link]``; with no entry at all, every frame is
+  resolved). ``all`` is for the web :ref:`Run view <run-view>`'s 3D panel, which animates one
+  scene body per frame: a world with people or movable props has a frame per skeleton bone and
+  per prop, and listing them is per-world busywork that adding a prop silently invalidates.
+  ``require`` (list) names the frames that **must** be present — a required frame yielding
+  nothing fails the table for that run, naming the transforms the recording does hold, which is
+  how a ground-truth frame missing from one simulator's bags gets caught instead of silently
+  analyzed as absent. An explicit ``frames`` list requires itself, so ``frames: all`` is normally
+  paired with ``require``. ``csv_filename`` renames the table. A frame latched once on
+  ``/tf_static`` before the dynamic chain to ``map`` exists is resolved when it arrives and never
+  again, exactly as a ``tf2`` lookup at that moment would be.
+- ``rosbags_nav2bt_to_csv``: the ``nav2_behavior_tree`` table from nav2's ``/behavior_tree_log``
+  (``nav2_msgs/msg/BehaviorTreeLog``) — one row per status transition (``timestamp, node_name,
+  uid, previous_status, current_status, event_timestamp``). ``uid`` is nav2's per-node id, the
+  only column separating two nodes that share a ``node_name`` (an unnamed ``RecoveryNode``
+  appears once per instance in a default tree). ``timestamp`` is the bag receive time, the same
+  clock as every other table (see :ref:`one clock per run <run-clock>`); nav2 stamps its own
+  events from a wall clock even under ``use_sim_time``, so that stamp is kept as
+  ``event_timestamp``. The log has no tree topology; the ``nav2_bt_tree`` step (below)
+  reconstructs the tree. No parameters. Requires ``/behavior_tree_log`` in the scenario's
+  ``bag_record(...)``; a recording that carries it gets this table without the entry.
+- ``rosbags_to_csv``: a ``rosbag2_<topic>`` table for each of the listed ``topics`` (``/cmd_vel``
+  → ``rosbag2_cmd_vel``), one row per message with one column per scalar field, flattened, and
+  ``timestamp`` the receive time in nanoseconds. Every recorded topic gets such a table by
+  default; listing one also tabulates a topic that is otherwise left out, such as a
+  ``LaserScan``. A vendor's message (a robot stack's ``wheel_vels`` or ``hazard_detection``) needs
+  no decoder of its own and no installed package: its definition travels in the recording and in
+  the bag's ``message_definitions.json``. A topic whose type none of those define is reported in
+  the run's ``_recording`` table with that reason rather than skipped silently. A field
+  **declared** as an array of numbers — a ``LaserScan``'s ``ranges``, a covariance — is a single
+  column holding the whole array as ``num1:<dtype>:<count>:<base64 of the zlib-compressed
+  little-endian values>``; read it back with ``numpy.frombuffer(zlib.decompress(
+  base64.b64decode(payload)), dtype='<' + dtype)``. Such a cell is wider than the per-cell limit
+  of ordinary query results and comes back truncated there — the ``query.csv`` export
+  (``csv_url``) returns it whole. A non-finite float, which is how a laser spells "no return", is
+  stored as that number (:ref:`non-finite-values`), in a scalar column and inside a packed array
+  alike. A sequence of **sub-messages** (a ``Path``'s poses) is still a column per element per
+  field, so a topic carrying many of them is one to reduce to scalars in the run rather than to
+  record whole. For occupancy grids use ``rosbags_costmap_to_csv``.
+- ``rosbags_costmap_to_csv``: the ``costmaps`` table from ``nav_msgs/msg/OccupancyGrid`` topics
+  (nav2 costmaps, the static map), stored compactly and losslessly for the web
+  :ref:`Run view <run-view>`: one row per message with its ``topic``, the geometry (resolution,
+  width, height, origin) and the int8 cells zlib-compressed and base64-encoded. The map's extent
+  in meters is ``width×resolution`` by ``height×resolution``. ``topics`` lists the grids; every
+  ``OccupancyGrid`` topic is tabulated this way by default.
+- ``rosbags_to_webm``: the ``videos`` table — a ``sensor_msgs/msg/CompressedImage`` topic encoded
+  to a WebM (VP9) file in the run directory, registered so the :ref:`camera panel <camera-panel>`
+  and ``get_camera_frame`` can place it on the run's timeline (:ref:`videos-table`). Optional
+  ``topic`` (default ``/camera/image_raw/compressed``) and ``fps`` (default ``30``, used only when
+  the frames span no time). The rate is otherwise derived from the frames' own stamps as
+  ``(n-1)/duration``, so the first and last frames land exactly on their recorded moments and only
+  mid-run jitter drifts. One entry per camera. Encoding needs ``ffmpeg`` where the table is built.
+- ``rosbags_action_to_csv``: ``action_<action>_feedback`` and ``action_<action>_status`` from
+  ``/<action>/_action/feedback`` and ``/<action>/_action/status``, nested data flattened to
+  columns. Required ``action`` (e.g. ``navigate_to_pose``); optional ``filename_prefix``
+  (default ``action_<action>``) renames both tables. Every recorded action gets these tables by
+  default.
+- ``rosbags_rosout_to_csv``: the ``rosout`` table from the infrastructure recording's
+  ``/rosout``. Optional ``min_level`` (``DEBUG``, ``INFO``, ``WARN``, ``ERROR``, ``FATAL``;
+  default ``DEBUG``) keeps only lines at or above it. ``run_log`` holds every line whatever this
+  says.
+- ``rosbags_clock_to_csv``: the ``clock_map`` table from the infrastructure recording's
+  ``/clock`` (:ref:`clock-map`). Optional ``tolerance_s`` (default ``0.005``): how far the
+  decimated map may mispredict sim time.
+- ``rosbags_process``: the same handlers written per recording, by handler ``type``
+  (``tf_to_csv``, ``to_csv``, ``nav2_bt_to_csv``, ``action_to_csv``, ``costmap_to_csv``,
+  ``to_webm``, ``rosout_to_csv``, ``clock_to_csv``) — ``groups: [{bag_dir, plugins}]``, or
+  ``plugins`` with an optional ``bag_dir`` for one recording:
+
+  .. code-block:: yaml
+
+     postprocessing:
+       - rosbags_process:
+           plugins:
+             - type: tf_to_csv
+               frames: [base_link]
+             - type: to_csv
+               topics: [/cmd_vel, /odom]
+
+  Every decoder entry of the list, and of ``search.postprocessing``, is combined into one
+  configuration, recording by recording.
+
+**Steps:**
+
+- ``command``: run a script. Required ``script`` (a path relative to the ``.vast``, copied into
+  the campaign's ``_config/`` so a re-run finds it); optional ``args`` (list).
+- ``compress``: write a gzipped tarball of the campaign. Optional ``output_dir`` (default: the
+  directory holding the ``.vast``; relative paths resolve from there, and it must not be inside
+  the results directory), ``exclude_dirs`` (directory names to leave out, default ``['.cache']``),
+  ``overwrite`` (default ``true``; ``false`` skips a campaign whose tarball exists).
+- ``nav2_bt_tree`` (requires the ``robovast_nav`` package): reconstruct nav2's behavior tree by
+  parsing the BT XML nav2 ran and joining it with the ``nav2_behavior_tree`` table, writing each
+  run's ``nav2_behaviors.csv`` — the ``nav2_behaviors`` table — in the same schema as the
+  ``behaviors`` table, so the Run view's tree panel renders it. Required ``bt_xml`` (path,
+  relative to the config dir, to the BT XML — must match ``bt_navigator``'s
+  ``default_nav_to_pose_bt_xml``). A run whose file is newer than ``bt_xml`` is left as it is
+  unless postprocessing runs with ``--force``.
+
+To list the installed steps and their parameters:
 
 .. code-block:: bash
 
    vast results postprocess-commands
 
-**Built-in Postprocessing Plugins:**
-
-- ``rosbags_tf_to_csv``: Convert ROS TF transformations to a ``poses`` CSV, map-relative, one row per frame per sample. ``frames`` is a list of child frame names, or ``all`` for every child frame that resolves against ``map``. ``all`` is for the web :ref:`Run view <run-view>`'s 3D panel, which animates one scene body per frame: a world with people or movable props has a frame per skeleton bone and per prop, and listing them is per-world busywork that adding a prop silently invalidates. ``require`` (list) names the frames that **must** be present — a required frame yielding nothing fails the step, which is how a ground-truth frame missing from one simulator's bags gets caught instead of silently analyzed as absent. An explicit ``frames`` list requires itself, so ``frames: all`` is normally paired with ``require``. Note that a frame latched once on ``/tf_static`` before the dynamic chain to ``map`` exists never resolves and so is not written (a body welded in a scene is already baked at that pose, so this costs a viewer nothing).
-- ``rosbags_nav2bt_to_csv``: Convert nav2's behavior-tree log (``/behavior_tree_log``, ``nav2_msgs/msg/BehaviorTreeLog``) to a ``nav2_behavior_tree`` CSV — one row per status transition (``timestamp, node_name, uid, previous_status, current_status, event_timestamp``).
-  ``uid`` is nav2's per-node id, the only column separating two nodes that share a ``node_name`` (an unnamed ``RecoveryNode`` appears once per instance in a default tree); it is empty for pre-Jazzy message definitions. ``timestamp`` is the bag receive time, i.e. the same clock as every other table (see :ref:`one clock per run <run-clock>`); nav2 stamps its own events from a wall clock even under ``use_sim_time``, so that stamp is kept separately as ``event_timestamp`` rather than used to key the table. The log has no tree topology; pair it with the ``robovast_nav`` plugin's ``nav2_bt_tree`` command (below) to reconstruct the tree. No parameters. Requires ``/behavior_tree_log`` in the scenario's ``bag_record(...)``.
-- ``nav2_bt_tree`` (requires the ``robovast_nav`` package): Reconstruct nav2's behavior tree by parsing the BT XML nav2 ran and joining it with the ``nav2_behavior_tree`` transitions, writing a ``nav2_behaviors`` CSV in the same schema as the ``behaviors`` table (so the Run view's tree panel renders it). Required ``bt_xml`` parameter (path, relative to the config dir, to the BT XML — must match ``bt_navigator``'s ``default_nav_to_pose_bt_xml``). List it **after** ``rosbags_nav2bt_to_csv``.
-- ``rosbags_to_csv``: Extract a specific set of ROS topics from rosbags to separate CSV files. Required ``topics`` parameter (list of topic names to extract). For each topic one CSV file per bag is written next to the bag, named ``<bag>_<topic>.csv``, with one column per scalar field of the message, flattened, so a vendor's message (a robot stack's ``wheel_vels`` or ``hazard_detection``) needs no decoder of its own — only its message package installed where the bags are converted, which is the campaign's execution image (``system_packages``, or ``ros_packages`` for one built from source). A recorded topic whose type cannot be loaded there **fails the bag**, naming the topic, the type and that fix, rather than being skipped: a converted-looking run short of a table is the failure nothing downstream can detect. A field **declared** as an array of numbers — a ``LaserScan``'s ``ranges``, an ``Image``'s ``data``, a covariance — is a single column holding the whole array as ``num1:<dtype>:<count>:<base64 of the zlib-compressed little-endian values>``; read it back with ``robovast.results_processing.data.rosbags_common.decode_numeric_array``, or anywhere else with ``numpy.frombuffer(zlib.decompress(base64.b64decode(payload)), dtype='<' + dtype)``. Such a cell is wider than the per-cell limit of ordinary query results and comes back truncated there — the ``query.csv`` export (``csv_url``) returns it whole. A non-finite float, which is how a laser spells "no return", is written as ``inf`` or ``nan`` and stored as that number (:ref:`non-finite-values`), in a scalar column and inside a packed array alike. A sequence of **sub-messages** (a ``Path``'s poses) is still a column per element per field, so a topic carrying many of them is one to reduce to scalars in the run rather than to record whole. For occupancy grids use ``rosbags_costmap_to_csv``, whose ``costmaps`` table the web :ref:`Run view <run-view>` reads and which keeps the grid's geometry beside its cells.
-- ``rosbags_costmap_to_csv``: Store ``nav_msgs/msg/OccupancyGrid`` frames (nav2 costmaps, the static map) compactly and losslessly for the web :ref:`Run view <run-view>`. Required ``topics`` parameter (list of grid topics, e.g. ``[/map, /global_costmap/costmap, /local_costmap/costmap]``). Writes one ``costmaps`` table row per message: the pose/geometry metadata (resolution, width, height, origin) plus the int8 cells zlib-compressed and base64-encoded. The map's extent in meters is ``width×resolution`` by ``height×resolution``.
-- ``rosbags_to_webm``: Convert a ``sensor_msgs/msg/CompressedImage`` topic from ROS bags to WebM video files (VP9 codec), and register each in the run's :ref:`videos table <videos-table>` so the :ref:`camera panel <camera-panel>` and ``get_camera_frame`` can place it on the run's timeline. Optional ``topic`` parameter (compressed image topic name, default ``/camera/image_raw/compressed``) and ``fps`` parameter (fallback frame rate when timestamps are unavailable, default ``30``). The rate is otherwise derived from the frames' own stamps as ``(n-1)/duration``, so the first and last frames land exactly on their recorded moments and only mid-run jitter drifts.
-- ``rosbags_action_to_csv``: Extract ROS2 action feedback and status messages to two CSV files (``<filename_prefix>_feedback.csv`` and ``<filename_prefix>_status.csv``). Reads ``/<action>/_action/feedback`` and ``/<action>/_action/status`` topics. Nested data is flattened to columns. Required ``action`` parameter (action name, e.g. ``navigate_to_pose``). Optional ``filename_prefix`` parameter (default: ``action_<action>``).
-- ``rosbags_rosout_to_csv``: Extract ROS log messages from the ``/rosout`` topic in ROS bags to a CSV file. Optional ``skip_levels`` parameter (list of log levels to skip, e.g. ``[ERROR, FATAL]``).
-- ``run_log``: Merge every container's stdout with ``/rosout`` into one ``run_log.csv`` per run, on the run's playback clock (see :ref:`merged-run-log`). Optional ``min_severity`` (``warn``/``error``; empty keeps everything, which is the default). **Auto-injected** — see the note below.
-- ``resource_usage``: Slice the job's resource-monitor samples into one ``resource_usage.csv`` per run — CPU and memory per container, per process name, per ~1 s tick (see :ref:`per-run-resource-usage`). No parameters. **Auto-injected** — see the note below.
-- ``command``: Execute arbitrary commands or scripts. Requires ``script`` parameter, optional ``args`` parameter (list).
-- ``compress``: Create a gzipped tarball (``<name>-<timestamp>.tar.gz``) for each campaign directory; runs on the host (no Docker). Optional ``output_dir`` (default: results directory), ``exclude_dirs`` (directory names to exclude, default ``['.cache']``), ``overwrite`` (if ``false``, skip when a tarball already exists; default ``false``).
-
-.. note::
-
-   **``run_log`` and ``resource_usage`` run for every campaign without being declared.**
-   Both turn a *job*-level artifact into a per-*run* table, and a run whose output cannot be
-   read afterwards cannot be explained — so they are appended after the rosbag conversions
-   (which produce the ``/rosout`` and ``/clock`` data they read) rather than waiting to be
-   asked for. Declare one explicitly only to change a parameter, which also keeps its own
-   position in the order; opt out with ``--skip run_log`` / ``--skip resource_usage``.
-
-.. note::
-
-   The ``rosbags_*`` names above are handled by a single unified plugin,
-   ``rosbags_process`` — the one that shows up in ``vast configuration plugins``
-   and the ``list_plugins`` MCP tool. When several ``rosbags_*`` commands appear
-   in a config, they are transparently batched into one ``rosbags_process`` call
-   so each rosbag is read only once, and every kind of bag — a run's own ``rosbag2``
-   and the infrastructure ``logs/rosout_bag`` — is converted in the same scan and
-   worker pool. You can keep using the individual ``rosbags_*`` names (they remain
-   valid), or write ``rosbags_process`` directly with a list of handler ``type``
-   entries when you need finer control:
-
-   .. code-block:: yaml
-
-      postprocessing:
-        - rosbags_process:
-            plugins:
-              - type: tf_to_csv
-                frames: [base_link]
-              - type: to_csv
-                topics: [/cmd_vel, /odom]
-
-   ``plugins`` converts the bags in ``bag_dir`` (default ``rosbag2``). Every
-   ``rosbags_process`` entry and every ``rosbags_*`` name in the list is combined into
-   the one conversion, bag directory by bag directory, and the ``logs/rosout_bag``
-   handlers (``rosout_to_csv``, ``clock_to_csv``) are added to it unless an entry
-   declares them itself or they are skipped — so write an entry per bag directory
-   whose handlers you set, and nothing for the rest.
-
-See :ref:`extending-postprocessing` for how to add custom postprocessing plugins.
+See :ref:`extending-postprocessing` for how to add custom postprocessing steps.
 
 .. _videos-table:
 
@@ -1916,7 +1937,7 @@ campaign — so here they are together. A reader who finds only one of them gets
    # 1. the scenario records the image topic          (in the .osc, not the .vast)
    #    bag_record(['/static_camera/image/compressed', ...])
 
-   # 2. postprocessing turns the recorded frames into a video, and registers it
+   # 2. the decoder encodes the recorded frames into a video, and registers it
    results_processing:
      postprocessing:
      - rosbags_to_webm:
@@ -1931,12 +1952,13 @@ campaign — so here they are together. A reader who finds only one of them gets
              title: Monitor camera
              position: {anchor: center, width: 560, height: 560}
 
-Validation catches the common half-step: a ``camera`` panel with no step that produces a video
-is refused before the campaign runs, rather than showing an empty panel after the compute is
-spent.
+Validation catches the common half-step: a ``camera`` panel with no ``rosbags_to_webm`` entry
+(and no ``source.path`` of its own) is refused before the campaign runs, rather than showing an
+empty panel after the compute is spent.
 
-**The** ``videos`` **table** is what joins steps 2 and 3. One row per recording, in the run's
-``videos.csv``:
+**The** ``videos`` **table** is what joins steps 2 and 3: one row per encoded camera, built with
+the campaign's other tables and at campaign end when an entry declares it. The WebM files land
+in the run directory, beside the recording:
 
 .. list-table::
    :header-rows: 1
@@ -1958,12 +1980,49 @@ spent.
 the bag stamps, so the file alone cannot say when its first frame was — and a camera that came
 up ten seconds into a trial would otherwise replay as though it had run from the start.
 
-This is a **contract, not** ``rosbags_to_webm``'s **private file**. That step is the first
-producer, not the owner: anything that puts a video in a run directory may write the same row —
-another postprocessing step, a simulator that renders its own, a script of your own — and the
-camera panel and ``get_camera_frame`` then work for it unchanged. Without that, the only way to
+This is a **contract, not** ``rosbags_to_webm``'s **private format**. The decoder is the first
+producer, not the owner: anything that puts a video in a run directory may register it with a
+``videos.csv`` of the same columns beside it — another postprocessing step, a simulator that
+renders its own, a script of your own — which is the run's ``videos`` table like any data file,
+and the camera panel and ``get_camera_frame`` then work for it unchanged. A run gets its
+``videos`` table from one producer: where ``rosbags_to_webm`` builds it, a ``videos.csv`` is
+refused rather than merged. Without that, the only way to
 reach the panel would be "record a ``CompressedImage`` through a rosbag", which is a
 ROS-shaped assumption in a feature that has no reason to carry one.
+
+health_checks
+^^^^^^^^^^^^^
+
+**Type:** List of strings
+
+**Required:** No
+
+The checks that grade each run into the ``run_health`` table when the campaign's postprocessing
+runs. Each is an installed ``robovast.health_checks`` plugin by name (``robovast_nav`` ships
+``nav2_control_loop_rate``) or a local ``./path.py:Class``, which is how a system under test ships
+a check without packaging one.
+
+.. code-block:: yaml
+
+   results_processing:
+     health_checks:
+       - nav2_control_loop_rate
+       - ./checks/arm_health.py:ArmHealth
+
+A check is called ``check(conn, campaign_id)``. ``conn`` is a read-only connection to this
+campaign's tables: ``conn.execute(sql, params)`` builds the tables the statement names and runs
+it with DuckDB (placeholders ``?``), returning a cursor whose rows read by position and by column
+name. The campaign's record is the ``campaign`` schema (``campaign.job``), tables are unqualified
+(``runs``, ``run_log``, …), and only this campaign's rows are there to read. It returns rows of
+``config_name``, ``run_id``, ``check``, ``level`` (``ok`` / ``warn`` / ``error``), and
+optionally ``detail``, ``value`` and ``unit``.
+
+**Nothing runs undeclared.** A check that ran everywhere would grade campaigns it knows nothing
+about — nav2's control-loop check would write ``ok`` for every run of a MoveIt 2 campaign — and
+declaring is what makes the campaign record say which checks were *meant* to run. A declared check
+that is not installed is logged and skipped; a check that raises or returns an unusable row is
+logged, and its runs read as not checked. **Health never decides pass/fail**, and a run with no
+row for a check was not checked rather than passed.
 
 publication
 ^^^^^^^^^^^
@@ -2166,7 +2225,7 @@ Here's a complete example showing all major configuration options:
 
 .. code-block:: yaml
 
-   version: 4
+   version: 5
    configuration:
    - name: parameter-sweep
      scenario_file: scenario.osc
@@ -2211,7 +2270,8 @@ Here's a complete example showing all major configuration options:
      postprocessing:
      - rosbags_tf_to_csv:
         frames: [base_link]
-     - rosbags_to_csv
+     - rosbags_to_csv:
+        topics: [/cmd_vel, /odom]
      - rosbags_to_webm
    visualization:
      results:
