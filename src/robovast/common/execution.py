@@ -1201,7 +1201,7 @@ _RUN_ENV_NOTE_FN = "_robovast_env_note"
 # The log helper both entrypoints share, substituted into ``# @@LOG_BLOCK@@``.
 #
 # One definition because the two scripts must emit the *same* line format: the merged run log
-# parses one grammar (``robovast.common.log_summary._STAMP``), and a sidecar whose format drifted
+# parses one grammar (``robovast_decode.log_summary._STAMP``), and a sidecar whose format drifted
 # from the main container's would not error -- it would silently lose its timestamps and fall back
 # to inheriting a neighbour's. Duplicated shell is how that drift happens.
 #
@@ -1688,12 +1688,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     definitions_src = str(files('robovast.execution.data').joinpath(DEFINITIONS_SCRIPT))
     shutil.copy2(definitions_src, os.path.join(campaign_transient_dir, DEFINITIONS_SCRIPT))
 
-    # Copy rosbag processing scripts into _transient/ for host-side post-run processing
-    for script_name in ('rosbags_process.py', 'rosbags_common.py', 'ros2_exec.sh'):
-        src = str(files('robovast.results_processing.data').joinpath(script_name))
-        shutil.copy2(src, os.path.join(campaign_transient_dir, script_name))
-    os.chmod(os.path.join(campaign_transient_dir, 'ros2_exec.sh'), 0o755)
-
     vast_file_path = os.path.dirname(campaign_data["vast"])
 
     # Prepare campaign_data for configurations.yaml (strip internal keys)
@@ -1746,7 +1740,13 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     # A campaign extending nothing takes the same path and copies one file, byte for byte,
     # comments and anchors intact.
     vast_src = campaign_data["vast"]
-    _archive_vast_sources(vast_src, campaign_config_dir)
+    own_vast = _archive_vast_sources(vast_src, campaign_config_dir)
+
+    # How the campaign's records become tables, recorded with the frozen config so the tables
+    # of a running campaign, and of any copy of it, are built the way its .vast says.
+    from robovast.results_processing.campaign_tables import \
+        write_decoder_config  # pylint: disable=import-outside-toplevel
+    write_decoder_config(out_dir, own_vast)
 
     # What the declared plugin specs resolved to. Recorded HERE because this is where the
     # .vast directory -- and so its .robovast_plugins/ install dir -- is in hand; the
@@ -1970,7 +1970,6 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
     "collect_sysinfo.py", "monitor_resources.py", DEFINITIONS_SCRIPT,
-    "rosbags_process.py", "rosbags_common.py", "ros2_exec.sh",
     "configurations.yaml", JOB_LINKS_MANIFEST,
     "scenario.config", "scenario.params.yaml",
     os.path.basename(SIM_OVERRIDES_MOUNT),
@@ -2225,8 +2224,8 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the
-            runs ran — and postprocessing reuses it (``campaign_execution_image``). Falls
-            back to the docker daemon's image id (``unknown`` without one) when None.
+            runs ran. Falls back to the docker daemon's image id (``unknown`` without one)
+            when None.
     """
     if execution_params is None:
         execution_params = {}

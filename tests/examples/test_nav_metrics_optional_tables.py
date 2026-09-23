@@ -17,9 +17,12 @@ The third was written as a guard inside a generator expression::
 
 which guards nothing: the source expression is evaluated before any condition runs, so
 ``_rows(None)`` was called every time and raised ``AttributeError: 'NoneType' object has no
-attribute 'exists'``. `NavMetrics` runs as ``search.postprocessing``, before each batch is
+attribute 'exists'``. ``NavMetrics`` runs as ``search.postprocessing``, before each batch is
 scored, so on a campaign whose bags carry no behaviour topic that aborted every batch -- and
 the traceback named ``NoneType``, nowhere near the missing table.
+
+Each run here carries its tables as its own files and no recording, so ``poses.csv`` is its
+``poses`` table and ``rosbag2_collision.csv`` its ``rosbag2_collision`` table.
 """
 
 import csv
@@ -27,6 +30,8 @@ import importlib.util
 import pathlib
 
 import pytest
+
+from tests.robovast_data.conftest import write_store
 
 EXAMPLE = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples" / "nav_search"
 
@@ -42,8 +47,10 @@ def _module():
 
 
 def _run_dir(tmp_path, *, clearance=True, collision=True, behaviours=False):
-    run = tmp_path / "c0" / "0"
+    campaign = tmp_path / "nav-2026-01-01-00000000"
+    run = campaign / "c0" / "0"
     run.mkdir(parents=True)
+    write_store(campaign, {"c0": {"runs": {0: "passed"}}})
     (run / "poses.csv").write_text(
         "timestamp,frame,position.x,position.y\n"
         "0.0,base_link_gt,-2.5,0.0\n"
@@ -66,7 +73,7 @@ def test_a_run_without_a_behaviours_table_is_measured_with_no_recoveries(tmp_pat
     module = _module()
     run = _run_dir(tmp_path, behaviours=False)
 
-    metrics = module._metrics_for_run(run, "poses.csv", "_gt", (2.5, 0.0))
+    metrics = module._metrics_for_run(run, "poses", "_gt", (2.5, 0.0))
 
     assert metrics is not None
     assert metrics["recovery_count"] == 0
@@ -78,7 +85,7 @@ def test_a_behaviours_table_is_still_counted_when_present(tmp_path):
     module = _module()
     run = _run_dir(tmp_path, behaviours=True)
 
-    metrics = module._metrics_for_run(run, "poses.csv", "_gt", (2.5, 0.0))
+    metrics = module._metrics_for_run(run, "poses", "_gt", (2.5, 0.0))
 
     assert metrics["recovery_count"] == 2      # the two RUNNING transitions, not the third
 
@@ -88,13 +95,38 @@ def test_the_plugin_writes_a_metrics_row_for_such_a_run(tmp_path):
     module = _module()
     run = _run_dir(tmp_path, behaviours=False)
 
-    ok, note = module.NavMetrics()(str(tmp_path), str(tmp_path / "c0"))
+    ok, note = module.NavMetrics()(str(run.parent.parent), str(tmp_path))
 
     assert ok
     assert "1 run(s)" in note
     with open(run / "nav_metrics.csv", newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     assert row["recovery_count"] == "0"
+
+
+def test_a_run_already_measured_is_left_unless_forced(tmp_path):
+    module = _module()
+    run = _run_dir(tmp_path)
+    plugin = module.NavMetrics()
+    plugin(str(run.parent.parent), str(tmp_path))
+
+    _ok, note = plugin(str(run.parent.parent), str(tmp_path))
+    assert "0 run(s) (1 up-to-date)" in note
+    _ok, note = plugin(str(run.parent.parent), str(tmp_path), force=True)
+    assert "for 1 run(s)" in note
+
+
+def test_the_recorded_tables_are_read_from_the_recording(tmp_path):
+    """The decoder's fixture recording: its ``/collision`` topic is the collision table."""
+    from tests.robovast_data.conftest import nav_campaign
+
+    module = _module()
+    run = nav_campaign(tmp_path / "nav-2026-01-01-00000000") / "cfg" / "0"
+
+    metrics = module._metrics_for_run(run, "poses", "robot_gt", (2.5, 0.0))
+
+    assert metrics is not None and metrics["collided"] == 1  # it records True twice
+    assert metrics["min_clearance"] == ""
 
 
 def test_a_missing_collision_oracle_is_still_refused(tmp_path):
@@ -104,13 +136,13 @@ def test_a_missing_collision_oracle_is_still_refused(tmp_path):
     run = _run_dir(tmp_path, collision=False)
 
     with pytest.raises(FileNotFoundError):
-        module._metrics_for_run(run, "poses.csv", "_gt", (2.5, 0.0))
+        module._metrics_for_run(run, "poses", "_gt", (2.5, 0.0))
 
 
 def test_a_missing_clearance_table_still_leaves_an_empty_cell(tmp_path):
     module = _module()
     run = _run_dir(tmp_path, clearance=False)
 
-    metrics = module._metrics_for_run(run, "poses.csv", "_gt", (2.5, 0.0))
+    metrics = module._metrics_for_run(run, "poses", "_gt", (2.5, 0.0))
 
     assert metrics["min_clearance"] == ""

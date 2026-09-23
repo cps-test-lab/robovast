@@ -13,14 +13,13 @@ Everything about versioning and migration in robovast starts here. If you were a
 
 `registry.py` enumerates them programmatically, so nothing has to be kept in sync by hand.
 
-**The central index has no ladder, on purpose.** It is *derived* from the campaign
-directories: re-ingesting a campaign is the definition of correct, so a version that says
-"this copy predates the column you asked for" would only ever describe a copy that should
-be rebuilt. The tables are created and widened as rows arrive
-(`results_processing/index_schema.py`), and the recovery for any shape question is to run
-postprocessing again -- which re-executes no trial. `campaign.db` is the opposite case and
-keeps its ladder: it is authored as the campaign runs and cannot be regenerated from
-anything.
+**A campaign's built tables have no ladder, on purpose.** They are *derived* from the
+campaign's records into its `.cache/`, and building them again is the definition of correct:
+each table's manifest entry records the decoder version that wrote it, a newer decoder
+rebuilds what an older one wrote the next time the table is named, and a manifest of another
+format is refused with the instruction to clear the campaign's tables. `campaign.db` is the
+opposite case and keeps its ladder: it is authored as the campaign runs and cannot be
+regenerated from anything.
 
 **Why the sqlite ladders are not in this package.** `store.py`'s `_MIGRATIONS` has to sit
 beside `_SCHEMA`: a new column must be mirrored into both *in the same order*, and

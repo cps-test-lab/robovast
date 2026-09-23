@@ -296,9 +296,9 @@ def _install_tool_stats(mcp: FastMCP) -> None:
     The recording is in a ``finally`` and cannot fail the call -- a failed call is the one
     most worth having in the log, so the failure path records and re-raises.
 
-    It runs on a worker thread: a record may flush the buffer to the index, and that
-    connect-and-``COPY`` on the event loop would stall every request the service is serving
-    for as long as the index takes to answer.
+    It runs on a worker thread: a record is a write to the call log's SQLite file, and that
+    write on the event loop would stall every request the service is serving for as long as
+    the disk takes to answer.
     """
     import functools  # pylint: disable=import-outside-toplevel
 

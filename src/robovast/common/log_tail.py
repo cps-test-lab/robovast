@@ -24,14 +24,7 @@ per-line RFC3339 timestamp.
 
 from __future__ import annotations
 
-#: What the main container is called. The runtime container is ``robovast`` (the pod's
-#: container in ``manifests.py``) -- NOT ``scenario``, which is the
-#: container plan's *role* name. Defined here, beside :func:`tag_line`, because two readers depend
-#: on it agreeing: the live job log tags its lines with it, and the merged ``run_log`` table files
-#: its rows under it. They differed once (``robovast`` vs ``main``), which made one campaign read
-#: as two different sets of containers depending on which surface you opened.
-MAIN_CONTAINER = "robovast"
-
+from robovast_decode.layout import MAIN_CONTAINER
 
 #: The main container's log file. Every reader of a job's log dir has to agree on which file is
 #: whose container, so the naming lives here with :data:`MAIN_CONTAINER`. The names are written

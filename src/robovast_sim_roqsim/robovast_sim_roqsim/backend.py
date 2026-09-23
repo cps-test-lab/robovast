@@ -187,7 +187,7 @@ class RoqsimBackend(SimulatorBackend):
             "ROQSIM_RECORD": _RECORD_FILE,
             "ROQSIM_CAPTURE_EXPORT_DIR": "capture",
             # The pose series, streamed per sample beside the recording as
-            # `run.sim_poses.csv` -> the `sim_poses` table. Unlike the two above it
+            # `sim_poses.csv` -> the `sim_poses` table. Unlike the two above it
             # survives a kill, because every row is flushed as it is taken.
             #
             # Always on, for two reasons a campaign never has to weigh. It is the only

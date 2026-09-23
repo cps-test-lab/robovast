@@ -7,12 +7,10 @@
 // answering "what did it find?". That boundary is why there is no per-config breakdown here.
 //
 // Nothing below depends on a postprocessing plugin a campaign happens to declare: the run rows
-// come from `run_view` (the campaign record mirrored into the index, so it needs no measurements --
-// though it does need the campaign to have been ingested, which postprocessing is what does)
-// and the CPU rows from `resource_usage`, which is written by an
-// **auto**-injected plugin for every campaign. CPU is therefore the one part that can be
-// missing — a campaign that was never postprocessed has no `resource_usage` table — and it
-// degrades to absent rather than to zero.
+// come from `run_view` (a view over the campaign record, so it needs no measurements) and the CPU
+// rows from `resource_usage`, which is built from what every run's containers sampled. CPU is
+// therefore the one part that can be missing — a run whose monitor recorded nothing contributes no
+// rows — and it degrades to absent rather than to zero.
 
 // ---------------------------------------------------------------------------------------------
 // Queries
@@ -20,8 +18,8 @@
 
 /** Per-run facts: what each run did, how long it took, and which round proposed it.
  *
- *  `run_view` rather than the postprocessed `runs` table, for the same reason `resultsTree.ts`
- *  uses it: it is a view over `campaign.db`, so a campaign with no `data.db` still has rows. */
+ *  `run_view` rather than the `runs` table, for the same reason `resultsTree.ts` uses it: it is a
+ *  view over the campaign record, so a campaign with no measurements still has rows. */
 export const DETAILS_RUNS_SQL =
   'SELECT config_name, run_id, batch, status, duration_s, start_time FROM run_view ' +
   'ORDER BY batch, start_time'
@@ -41,10 +39,13 @@ export const DETAILS_RUNS_SQL =
  *  SQL rather than shipped as samples: a campaign's raw ticks run to tens of thousands of rows
  *  per container, and the box needs six numbers.
  *
+ *  A tick is `wall_ts`, the moment the monitor sampled: `timestamp` is sim time and is empty
+ *  wherever the clock map cannot place a sample, which would pool those ticks into one.
+ *
  *  `in_window = 1` keeps this to the run's own window; bring-up and teardown are the job's cost.
  *
- *  PERCENTILE is registered on the service's connection (see results_processing/data_query.py),
- *  not a SQLite built-in — this query only runs through the campaign query endpoint. */
+ *  PERCENTILE(v, p) (p in 0..100) is a macro of the query engine behind the campaign query
+ *  endpoint, not a standard SQL aggregate. */
 export const DETAILS_CPU_SQL =
   'SELECT container, PERCENTILE(cores, 5) AS p05, PERCENTILE(cores, 25) AS p25, ' +
   'PERCENTILE(cores, 50) AS p50, PERCENTILE(cores, 75) AS p75, PERCENTILE(cores, 95) AS p95, ' +
@@ -52,10 +53,10 @@ export const DETAILS_CPU_SQL =
   'PERCENTILE(bytes, 5) AS m05, PERCENTILE(bytes, 25) AS m25, PERCENTILE(bytes, 50) AS m50, ' +
   'PERCENTILE(bytes, 75) AS m75, PERCENTILE(bytes, 95) AS m95, MAX(bytes) AS m_peak, ' +
   'SUM(bytes) AS byte_seconds FROM (' +
-  'SELECT container, config_name, run_id, timestamp, SUM(cpu_percent)/100.0 AS cores, ' +
+  'SELECT container, config_name, run_id, wall_ts, SUM(cpu_percent)/100.0 AS cores, ' +
   'SUM(memory_rss_bytes) AS bytes ' +
   'FROM resource_usage WHERE in_window = 1 ' +
-  'GROUP BY container, config_name, run_id, timestamp) GROUP BY container'
+  'GROUP BY container, config_name, run_id, wall_ts) GROUP BY container'
 
 /** The containers the `.vast` declares, and the cpu it reserved for each.
  *
@@ -73,9 +74,8 @@ export const DETAILS_CPU_SQL =
  *  rows, isolated by excluding anything with a further dot (LIKE's `%` spans dots, so
  *  `NOT LIKE '….%.%'` is what makes the first pattern mean "one segment deep").
  *
- *  The `fullkey` filter, not `parent = '$.execution.containers'`: `parent` is the parent's
- *  fullkey on the Postgres index, but it was an opaque node id on the SQLite view this query
- *  was written against, so matching on `fullkey` is the spelling that holds either way. */
+ *  Each row's path is its `fullkey`, so one pattern over it selects the containers and their
+ *  resources in a single pass. */
 export const DETAILS_DECLARED_CPU_SQL =
   "SELECT fullkey, value FROM config_view WHERE " +
   "(fullkey LIKE '$.execution.containers.%' AND fullkey NOT LIKE '$.execution.containers.%.%') " +
@@ -336,7 +336,7 @@ export const MEASURED_MAIN_CONTAINER = 'robovast'
  *
  *  Not a plain name join: `resource_usage` records the MAIN container under the fixed role name
  *  `robovast` while the campaign declares it by its own name (`scenario`, in every campaign on
- *  this machine) — see `expected_container_files` in results_processing/resource_usage.py, which
+ *  this machine) — see `expected_container_files` in robovast_decode/resource_usage.py, which
  *  names the main file for its ROLE and every sidecar for its container. Secondaries do match
  *  exactly.
  *

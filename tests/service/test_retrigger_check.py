@@ -60,7 +60,7 @@ def test_an_old_config_is_upgradable_and_names_the_steps(tmp_path):
     root = _campaign(tmp_path, config={"version": 1, "execution": {"image": "img:1"}})
     axis = check(root, root.name)["axes"]["config"]
     assert axis["verdict"] == AXIS_UPGRADABLE
-    assert axis["steps"] == ["1_to_2", "2_to_3", "3_to_4"]
+    assert axis["steps"] == ["1_to_2", "2_to_3", "3_to_4", "4_to_5"]
     assert "not modified" in axis["detail"]
     assert check(root, root.name)["runnable"] is True
 
@@ -200,10 +200,10 @@ def test_a_version_1_campaign_can_be_prepared_at_all(tmp_path):
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
                              description_limit=200, request_model=Request)
     try:
-        assert plan.config_migration == {"from": 1, "to": 4,
-                                         "steps": ["1_to_2", "2_to_3", "3_to_4"]}
+        assert plan.config_migration == {"from": 1, "to": 5,
+                                         "steps": ["1_to_2", "2_to_3", "3_to_4", "4_to_5"]}
         staged = yaml.safe_load(pathlib.Path(plan.config_path).read_text(encoding="utf-8"))
-        assert staged["version"] == 4
+        assert staged["version"] == 5
         # v1's execution.image became a container, which is what the rest of prepare() reads.
         assert staged["execution"]["containers"]["scenario"]["image"] == "ghcr.io/x/y:1"
         assert (source / "_config" / "campaign.vast").read_text(encoding="utf-8") == archived

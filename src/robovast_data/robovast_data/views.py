@@ -139,6 +139,11 @@ def run_view_sql(have: set, unit_columns: set) -> Optional[str]:
     """
 
 
+#: The counters ``run_validity_view`` reads; a ``system_usage`` without them (a sampler with no
+#: cgroup v2) has no view rather than an empty one, which would read as "nothing was capped".
+VALIDITY_COLUMNS = frozenset({"nr_periods", "nr_throttled", "throttled_usec"})
+
+
 def run_validity_sql(columns: set) -> str:
     """``run_validity_view`` over ``system_usage`` holding *columns*.
 
@@ -267,4 +272,5 @@ def pose_track_sql(tables: dict) -> Optional[str]:
 
 
 __all__ = ["POSE_COLUMNS", "STALL_WARN_RATIO", "THROTTLE_WARN_RATIO", "VIEWS", "VIEW_TABLES",
-           "is_pose_table", "pose_clock", "pose_track_sql", "run_validity_sql", "run_view_sql"]
+           "VALIDITY_COLUMNS", "is_pose_table", "pose_clock", "pose_track_sql", "run_validity_sql",
+           "run_view_sql"]

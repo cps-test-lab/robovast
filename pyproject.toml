@@ -110,18 +110,6 @@ robovast-decode = {path = "src/robovast_decode"}
 # service answers every query through it, so a notebook using the same package reads the
 # same rows. Not optional; it depends on robovast-decode and nothing else of ours.
 robovast-data = {path = "src/robovast_data"}
-# The central index driver. Not optional: every campaign's data lives in Postgres now, so
-# a robovast without it can neither ingest nor read -- and pretending otherwise would
-# surface as an ImportError from somewhere deep instead of the one sentence
-# IndexUnreachableError already says.
-#
-# Deliberately NOT in robovast-client. That package exists to run four HTTP verbs in ~30 MB
-# against a service that does the work; a database driver there would be the fourth
-# dependency its own comment refuses without a reason surviving "could the service do this
-# instead?" -- and the service does.
-#
-# The binary wheel so an image needs no libpq or compiler at build time.
-psycopg = {extras = ["binary"], version = "^3.2"}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"
@@ -219,9 +207,6 @@ shell = "robovast.common.input_generation:Shell"
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
 compress = "robovast.results_processing.postprocessing_plugins:Compress"
-resource_usage = "robovast.results_processing.postprocessing_plugins:ResourceUsage"
-rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
-run_log = "robovast.results_processing.postprocessing_plugins:RunLog"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"

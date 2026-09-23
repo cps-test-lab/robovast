@@ -32,11 +32,11 @@ from fastmcp import FastMCP
 
 from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
                                     error_findings, stall_report, stopping_soon_report)
-from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
 from robovast.service.interface import Routes
+from robovast_decode.log_summary import DEFAULT_TOP
 
 logger = logging.getLogger(__name__)
 
@@ -840,9 +840,10 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
     same configuration and perturbs nothing, and a fault that does **not** reproduce there is
     itself the finding that sends you here (contention, a particular draw, a long warm-up).
 
-    **This marks the run as probed** (``runs.probed`` in the results index), recorded before the command
-    runs. Confirming a cause is the point; making a wedged run go green is not -- the fix belongs
-    in the ``.vast`` and the number to a clean relaunch, with this run dropped.
+    **This marks the run as probed** (``runs.probed`` in the campaign's tables), recorded
+    before the command runs. Confirming a cause is the point; making a wedged run go green
+    is not -- the fix belongs in the ``.vast`` and the number to a clean relaunch, with this
+    run dropped.
 
     Args:
         campaign_id: The id from ``start_campaign``.

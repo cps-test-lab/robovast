@@ -29,6 +29,7 @@ import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // derive-statistics-from-data icon; the replay arrow goes to the entry that actually runs
 // the campaign again.
 import QueryStatsRoundedIcon from '@mui/icons-material/QueryStatsRounded'
+import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
@@ -70,6 +71,7 @@ import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
 import { offersQueueControls, priorityInputError, priorityLabel } from '@/lib/queueStanding'
+import { BUILD_TABLES_MESSAGE, BUILD_TABLES_TITLE, offersBuildTables } from '@/lib/campaignTables'
 import {
   NO_CAMPAIGN_FILTER,
   campaignFilterIsEmpty,
@@ -574,6 +576,30 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     share.mutate()
   }
 
+  // Optional by design: every table is built the first time something names it, so this only
+  // moves that cost forward. Its progress is the campaign log's, so accepting it is not toasted.
+  const buildTables = useMutation({
+    mutationFn: () => robovast.buildCampaignTables(id),
+    onError: failed('Building the tables failed.', `tables:${id}`),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['describe', id] })
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `tables:${id}`,
+                 message: 'The tables were not built.', note: res.message || undefined })
+      }
+    },
+  })
+
+  const onBuildTables = async () => {
+    closeMenu()
+    const ok = await confirm({
+      title: BUILD_TABLES_TITLE,
+      message: BUILD_TABLES_MESSAGE,
+      confirmLabel: 'Build',
+    })
+    if (ok) buildTables.mutate()
+  }
+
   const onDelete = async () => {
     closeMenu()
     const ok = await confirm({
@@ -896,6 +922,14 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           <ListItemIcon><QueryStatsRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Retrigger postprocessing</ListItemText>
         </MenuItem>,
+        ...(offersBuildTables(phase)
+          ? [
+              <MenuItem key="tables" onClick={onBuildTables} disabled={buildTables.isPending}>
+                <ListItemIcon><TableChartRoundedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Build all tables</ListItemText>
+              </MenuItem>,
+            ]
+          : []),
         // Named, because which variant lands is not a choice here and never was:
         // `campaign_variant` reads it off the campaign directory, and once postprocessing has
         // written into that tree the raw campaign no longer exists to export. Saying which one

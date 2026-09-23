@@ -480,6 +480,8 @@ _PARAMETER_VOCABULARY = {
     # Which recorded table a track comes from, and which marker of a configuration to
     # measure against: pose_track_view and the contribution spell them the same way.
     "source", "marker_label",
+    # Which of a campaign's tables to build: the names describe_campaign_data lists.
+    "tables",
     "old_string", "new_string", "sql", "command", "description", "reason",
     "archive_path", "occupancy",
     # how much, and from where

@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """``/admin/mcp-tools``, ``/admin/mcp-calls`` and the CSV export of the latter.
 
-The properties that carry these routes: a tool nobody has called is still a row, an
-unreachable index is said rather than drawn as zero, and the export is the log.
+The properties that carry these routes: a tool nobody has called is still a row, the
+retained window is reported, and the export is the log.
 """
-
-import os
 
 import pytest
 
@@ -16,32 +14,17 @@ from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-
-SCHEMA = "mcp_route_test"
-
-
 @pytest.fixture(name="client")
 def _client(tmp_path, monkeypatch):
-    if not DSN:
-        pytest.skip("ROBOVAST_TEST_PG_DSN is not set")
-    psycopg = pytest.importorskip("psycopg")
     from starlette.testclient import TestClient
 
-    from robovast.common import index_db
-
-    with psycopg.connect(DSN, autocommit=True) as setup:
-        setup.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        setup.execute(f"CREATE SCHEMA {SCHEMA}")
-    monkeypatch.setenv(index_db.DSN_ENV, f"{DSN} options=-csearch_path={SCHEMA}")
-    monkeypatch.setattr(tool_stats, "LOG", tool_stats.ToolCallLog())
+    log = tool_stats.ToolCallLog()
+    log.open(tmp_path / "workspaces" / tool_stats.FILENAME)
+    monkeypatch.setattr(tool_stats, "LOG", log)
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
     app = build_app(NullService(store=store), mount_mcp=False, auth_token="t")
-    yield TestClient(app, headers={"Authorization": "Bearer t"})
-
-    with psycopg.connect(DSN, autocommit=True) as teardown:
-        teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+    return TestClient(app, headers={"Authorization": "Bearer t"})
 
 
 def _record(*calls):
@@ -55,7 +38,7 @@ def test_the_ranking_answers_with_counts_and_durations(client):
             ("read_file", 5.0, True))
 
     body = client.get(Routes.ADMIN_MCP_TOOLS).json()
-    assert body["status"] == "ok"
+    assert "status" not in body
     by_tool = {row["tool"]: row for row in body["tools"]}
     assert by_tool["search_docs"]["calls"] == 2
     assert by_tool["search_docs"]["errors"] == 1
@@ -172,15 +155,3 @@ def test_the_record_says_who_called_and_over_which_session(client):
     assert row["session"] == "an-editor/session-7"
     csv_text = client.get(Routes.ADMIN_MCP_CALLS_CSV).text
     assert "ada (token)" in csv_text and "an-editor/session-7" in csv_text
-
-
-def test_an_unreachable_index_is_said_rather_than_drawn_as_zero(client, monkeypatch):
-    from robovast.common import index_db
-    monkeypatch.delenv(index_db.DSN_ENV, raising=False)
-
-    body = client.get(Routes.ADMIN_MCP_TOOLS).json()
-    assert body["status"] == "index-unreachable"
-    assert body["detail"], "a panel that cannot say why it is empty invents a fact"
-    assert client.get(Routes.ADMIN_MCP_CALLS).json()["status"] == "index-unreachable"
-    # A download carries no status field, so it has to fail rather than send an empty file.
-    assert client.get(Routes.ADMIN_MCP_CALLS_CSV).status_code == 503

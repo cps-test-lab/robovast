@@ -19,7 +19,7 @@
 
 RoboVAST runs three sequential infrastructure phases — variation (config
 generation / composition), run (the controller driving batches/runs), and
-postprocessing (rosbags → CSV → the results index). Each phase writes its own file
+postprocessing (the campaign's steps and its tables). Each phase writes its own file
 under the campaign's ``_execution/`` directory. Because the phases are strictly
 sequential, an earlier phase's file is frozen before the next phase's file
 appears, so concatenating them in phase order yields an **append-only** virtual
@@ -47,6 +47,7 @@ INFRA_PHASES: list[tuple[str, str]] = [
     ("RUN", "controller.log"),
     ("POSTPROCESSING", "postprocessing.log"),
     ("SHARE", "share.log"),
+    ("TABLES", "tables.log"),
 ]
 
 #: The phases that happen exactly once, in this order, at the head of the log. They are
@@ -60,7 +61,8 @@ HEAD_PHASES: list[tuple[str, str]] = INFRA_PHASES[:4]
 #: A reader streaming it by byte offset has consumed past that point and never sees them,
 #: so a live postprocess appears frozen at whatever ran last.
 REPEATABLE_PHASES: dict[str, str] = {"postprocessing.log": "POSTPROCESSING",
-                                     "share.log": "SHARE"}
+                                     "share.log": "SHARE",
+                                     "tables.log": "TABLES"}
 
 #: Where a finished run of a repeatable phase is kept, so the next run starts an empty
 #: file instead of replacing it: ``_execution/sections/<seq>-<phase>.log``. The sequence

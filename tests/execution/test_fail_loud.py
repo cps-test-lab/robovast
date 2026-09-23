@@ -12,8 +12,6 @@ from unittest import mock
 
 import pytest
 
-from .image_steps_helper import CMDS, stub_image_steps
-
 # -- A1: the auxiliary container a composition needs -------------------------
 
 # Whether a composition needs an auxiliary container is answered by asking for one, so there is no
@@ -209,51 +207,3 @@ def test_load_kube_config_prefers_in_cluster():
     from robovast.execution.cluster_execution.kube_client import load_kube_config
     with mock.patch.object(kc, "load_incluster_config", return_value=None):
         assert load_kube_config() == "in-cluster"
-# -- A6: postprocessing survives an unreachable cluster ----------------------
-#
-# Postprocessing chains AFTER the runs are published, so a
-# cluster that has gone away must be a reported, re-runnable failure rather than an
-# exception out of the conversion step. The load-bearing detail is that the very first
-# call touching the API server is the one that has to translate the transport error.
-
-def test_unreachable_cluster_only_ends_postprocessing(monkeypatch):
-    """The runs are already published when postprocessing chains, so an unreachable
-    cluster is a reported, re-runnable postprocessing failure -- never an exception out
-    of the conversion step."""
-    import urllib3.exceptions
-
-    from robovast.common.index_db import DSN_ENV
-    from robovast.execution.cluster_execution import postprocess_job
-
-    cluster_config = mock.Mock()
-    boom = urllib3.exceptions.MaxRetryError(
-        pool=mock.Mock(), url="/api/v1/namespaces/ns/configmaps",
-        reason=urllib3.exceptions.ConnectTimeoutError("connect timed out"))
-    core = mock.Mock()
-    core.create_namespaced_config_map.side_effect = boom
-    # The submit reads whether a Job of this name is already running BEFORE it writes the
-    # scripts ConfigMap -- adopting a live Job must not rewrite what that Job mounts -- so
-    # that read is the first call to touch the API server and the one that has to translate
-    # the transport error.
-    batch = mock.Mock()
-    batch.read_namespaced_job.side_effect = boom
-
-    # The Job's host container is the index ingest, so the manifest is not built at all
-    # without a DSN in the submitting process -- and this test is about the transport to
-    # the API server, not about that refusal.
-    stub_image_steps(monkeypatch)
-    with mock.patch.dict("os.environ",
-                         {DSN_ENV: "host=index.example.com dbname=robovast"}), \
-         mock.patch("robovast.execution.cluster_execution.kube_client.load_kube_config"), \
-         mock.patch("kubernetes.client.CoreV1Api", return_value=core), \
-         mock.patch("kubernetes.client.BatchV1Api", return_value=batch), \
-         mock.patch("robovast.execution.cluster_execution.cluster_execution."
-                    "resolve_pull_secret", return_value=""):
-        ok, message = postprocess_job.run_conversion_job(
-            cluster_config, "camp", "/results/camp", "ns", "img", CMDS,
-            token="campaign:camp.0123abcd")
-
-    assert ok is False
-    assert "unreachable" in message
-    # One sentence, not a urllib3 traceback: the transport failing IS the whole fact.
-    assert "MaxRetryError" not in message

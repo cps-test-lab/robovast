@@ -8,16 +8,14 @@ as all of it.
 """
 
 import io
-import os
 
 import pytest
 import yaml
 
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import results
+from tests.robovast_data.conftest import write_store
 
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-SCHEMA = "mcp_draw_config_test"
 CAMPAIGN = "camp-draw-2026-09-21-120000"
 _POSES = 5001
 
@@ -45,37 +43,19 @@ def _campaign(results_root):
     lines += [f"{i * 0.01},{i * 0.01},base_link,{i * 10.0 / (_POSES - 1)},0.2"
               for i in range(_POSES)]
     (run / "poses.csv").write_text("\n".join(lines) + "\n")
+    write_store(root, {"cfg-a": {"runs": {0: "passed"}}})
     return root
 
 
 @pytest.fixture(name="campaign")
-def _ingested(monkeypatch, tmp_path):
-    if not DSN:
-        pytest.skip("ROBOVAST_TEST_PG_DSN is not set")
-    psycopg = pytest.importorskip("psycopg")
+def _campaign_fixture(monkeypatch, tmp_path):
     pytest.importorskip("robovast_nav")
     pytest.importorskip("matplotlib")
-    from robovast.common import index_db
-    from robovast.results_processing import campaign_ingest, index_query, index_views
-
-    with psycopg.connect(DSN, autocommit=True) as setup:
-        for statement in (f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE",
-                          "DROP SCHEMA IF EXISTS campaign CASCADE",
-                          f"CREATE SCHEMA {SCHEMA}"):
-            setup.execute(statement)
-    monkeypatch.setenv(index_db.DSN_ENV, f"{DSN} options=-csearch_path={SCHEMA}")
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
     from tests.service.null_service import serving
     service = serving(tmp_path / "results", tmp_path / "workspaces")
     monkeypatch.setattr(service_access, "service_client", lambda: service)
-    root = _campaign(tmp_path / "results")
-    with index_query.open_index(readonly=False) as conn:
-        campaign_ingest.ingest_campaign(conn, str(root), CAMPAIGN)
-        index_views.create_views(conn)
-    yield root
-    with psycopg.connect(DSN, autocommit=True) as teardown:
-        teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        teardown.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
+    return _campaign(tmp_path / "results")
 
 
 def test_the_drawn_track_spans_the_whole_run_and_says_it_was_thinned(campaign):

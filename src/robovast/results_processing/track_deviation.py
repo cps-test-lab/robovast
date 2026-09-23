@@ -16,14 +16,13 @@
 
 """How far one recorded track stayed from a path its configuration contributed.
 
-The two halves live in different places. The track is rows of a pose-contract table in the
-index; the path is a ``path`` marker a variation contributed for the configuration
+The two halves live in different places. The track is rows of a pose-contract table of the
+run; the path is a ``path`` marker a variation contributed for the configuration
 (:func:`robovast.common.scene_markers.campaign_contribution`), which no table holds. The
-track is read in full on a connection scoped to its campaign -- no reply cap applies to a
-cursor, so nothing is thinned or cut off -- and the distance of every pose to the nearest
-point of the path is computed here, vectorised. Doing it in SQL instead means one
-pose-by-segment row per pair, which the index aggregates an order of magnitude slower than
-the arithmetic itself takes.
+track is read in full on a connection scoped to its run -- no reply cap applies to it, so
+nothing is thinned or cut off -- and the distance of every pose to the nearest point of the
+path is computed here, vectorised. Doing it in SQL instead means one pose-by-segment row per
+pair, an order of magnitude slower than the arithmetic itself.
 
 The distance is 3D when every point of the path states a height and planar when any omits
 it. A path drawn on a floor plan has no height, and a robot's reference frame sits above
@@ -37,8 +36,8 @@ from typing import Any
 
 import numpy as np
 
-from robovast.results_processing import index_query
-from robovast.results_processing.campaign_ingest import pose_clock
+from robovast_data import Engine, QueryError, Scope
+from robovast_data.views import pose_clock
 
 #: Poses per block of the distance computation, so a long track against a long path does
 #: not allocate one pose-by-segment matrix for the whole recording.
@@ -89,7 +88,7 @@ def _distances(poses: np.ndarray, path: np.ndarray) -> np.ndarray:
     return nearest
 
 
-def track_deviation(campaign_id: str, config_name: str, run_id: int, *, path: dict,
+def track_deviation(campaign_dir, config_name: str, run_id: int, *, path: dict,
                     source: str = "poses", frame: str = "base_link") -> dict[str, Any]:
     """Distance from every pose of one track to *path*: ``{points, mean_m, max_m, ...}``.
 
@@ -106,37 +105,35 @@ def track_deviation(campaign_id: str, config_name: str, run_id: int, *, path: di
     dims = 2 if planar else 3
     polyline = np.array([[float(v) for v in p[:dims]] for p in points])
 
-    with index_query.open_index(readonly=True, campaigns=[campaign_id]) as conn:
-        tables: dict[str, set] = {}
-        for table, column in conn.execute(
-                "SELECT table_name, column_name FROM information_schema.columns "
-                "WHERE table_schema = current_schema()").fetchall():
-            tables.setdefault(table, set()).add(column)
-        pose_tables = sorted(t for t, cols in tables.items()
-                             if "position.x" in cols and "frame" in cols)
-        if source not in pose_tables:
-            raise ValueError(f"{source!r} is not a pose table in the index; the pose tables "
-                             f"are {', '.join(pose_tables) or 'none'}")
-        columns = tables[source]
-        if dims == 3 and "position.z" not in columns:
-            raise ValueError(f"the path states heights but {source!r} records no position.z, "
-                             "so a 3D distance cannot be measured")
-        clock = pose_clock(columns)
-        z = ', CAST("position.z" AS double precision)' if dims == 3 else ""
-        track = (f'FROM "{source}" WHERE campaign_id = {_lit(campaign_id)} '
-                 f"AND config_name = {_lit(config_name)} "
-                 f"AND CAST(run_id AS integer) = {int(run_id)} AND \"{clock}\" IS NOT NULL")
-        frames = [r[0] for r in conn.execute(f"SELECT DISTINCT frame {track}").fetchall()]
-        if frame not in frames:
-            raise KeyError(f"no {source} poses of frame {frame!r} in run {run_id} of "
-                           f"{config_name!r}; recorded frames: "
-                           f"{', '.join(sorted(frames)) or 'none'}")
-        # Ordered by the measurement clock: the distances do not need an order, the length
-        # travelled between consecutive poses does, and a table returns its rows in none.
-        rows = conn.execute(
-            'SELECT CAST("position.x" AS double precision), '
-            f'CAST("position.y" AS double precision){z} {track} AND frame = {_lit(frame)} '
-            f'ORDER BY "{clock}"').fetchall()
+    engine = Engine([Scope(str(campaign_dir), config_name, int(run_id))], workers=1)
+    campaign_id = engine.scopes[0].campaign_id
+    try:
+        with engine.execute(f'SELECT * FROM "{source}" LIMIT 0') as (con, _problems):
+            columns = {d[0] for d in con.description}
+    except QueryError as exc:
+        raise ValueError(f"{source!r} is not a table of run {run_id} of {config_name!r}: "
+                         f"{exc}") from exc
+    if "position.x" not in columns or "frame" not in columns:
+        raise ValueError(f"{source!r} is not a pose table: it has no position.x and frame; "
+                         f"the pose tables of this run: {', '.join(engine.pose_tables())}")
+    if dims == 3 and "position.z" not in columns:
+        raise ValueError(f"the path states heights but {source!r} records no position.z, "
+                         "so a 3D distance cannot be measured")
+    clock = pose_clock(columns)
+    z = ', CAST("position.z" AS DOUBLE)' if dims == 3 else ""
+    track = f'FROM "{source}" WHERE "{clock}" IS NOT NULL'
+    with engine.execute(f"SELECT DISTINCT frame {track}") as (con, _problems):
+        frames = [r[0] for r in con.fetchall()]
+    if frame not in frames:
+        raise KeyError(f"no {source} poses of frame {frame!r} in run {run_id} of "
+                       f"{config_name!r}; recorded frames: "
+                       f"{', '.join(sorted(frames)) or 'none'}")
+    # Ordered by the measurement clock: the distances do not need an order, the length
+    # travelled between consecutive poses does, and a table returns its rows in none.
+    with engine.execute('SELECT CAST("position.x" AS DOUBLE), '
+                        f'CAST("position.y" AS DOUBLE){z} {track} AND frame = {_lit(frame)} '
+                        f'ORDER BY "{clock}"') as (con, _problems):
+        rows = con.fetchall()
 
     track_points = np.array(rows, dtype=float)
     distances = _distances(track_points, polyline)

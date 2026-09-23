@@ -64,16 +64,15 @@ def test_nothing_is_adopted_before_the_auth_token_is_bound():
                         cluster_config_kwargs={}, reap_on_start=True)
     cs.reap_orphans = lambda: calls.append("reap")
     cs.resume_interrupted_campaigns = lambda: calls.append("resume") or {}
-    cs.reattach_live_postprocessing = lambda: calls.append("reattach")
 
     assert calls == [], "the constructor adopted before anything could bind the secret"
     cs.bind_auth_token("master-secret")
     cs.start_serving()
-    assert calls == ["reap", "resume", "reattach"]
+    assert calls == ["reap", "resume"]
     assert cs.scoped_token("campaign:c-1")
 
     cs.start_serving()
-    assert calls == ["reap", "resume", "reattach"], "adopted twice"
+    assert calls == ["reap", "resume"], "adopted twice"
 
 
 def test_a_service_that_adopts_nothing_stays_quiet():
@@ -197,7 +196,7 @@ def _project_needing_a_build(tmp_path, python_packages=None):
     from robovast.common.config import validate_config
     (tmp_path / "p.vast").write_text("")
     campaign_config = validate_config({
-        "version": 4,
+        "version": 5,
         "execution": {"runs": 1, "containers": {"scenario": {
             "image": "base:1",
             "python_packages": python_packages or ["shapely>=2.0"]}}}})
@@ -247,17 +246,12 @@ def test_a_broken_build_section_is_a_config_error_too(cs, monkeypatch, tmp_path)
 
 # -- jobs (live) ------------------------------------------------------------
 
-def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None,
-         jobgroup="scenario-runs"):
+def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None):
     ann = {"job-name-full": full} if full is not None else {}
-    # No ``labels`` attribute at all unless a kind or a jobgroup other than the batch's is
-    # asked for: that is a Job created before the label existed, and the listing has to read
-    # it as one of the campaign's runs.
-    labels = {"jobgroup": jobgroup}
-    if kind is not None:
-        labels["job-kind"] = kind
-    meta = ({"name": name} if kind is None and jobgroup == "scenario-runs"
-            else {"name": name, "labels": labels})
+    # No ``labels`` attribute at all unless a kind is asked for: the listing has to read an
+    # unlabelled Job as one of the campaign's runs.
+    meta = ({"name": name} if kind is None
+            else {"name": name, "labels": {"jobgroup": "scenario-runs", "job-kind": kind}})
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(**meta),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
@@ -334,10 +328,7 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     resp = cs.list_jobs("camp-2026-07-17-120000")
 
     assert seen["namespace"] == "ns1"
-    # One selector for both of the campaign's jobgroups -- its trials and its conversion --
-    # because this is polled every couple of seconds per live campaign and a second listing
-    # would double the Job and pod reads behind it.
-    assert "jobgroup in (scenario-runs,postprocessing)" in seen["label_selector"]
+    assert "jobgroup=scenario-runs" in seen["label_selector"]
     assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
     assert (resp.counts.running, resp.counts.completed, resp.counts.failed,
             resp.counts.pending, resp.counts.total) == (1, 1, 1, 1, 4)
@@ -380,40 +371,6 @@ def test_a_calibration_probe_is_listed_but_not_counted_as_a_run(cs, monkeypatch)
     assert resp.counts.calibration == 1
     assert resp.counts.failed == 0, "the probe's failure is not a run's"
     assert (resp.counts.running, resp.counts.total) == (1, 1)
-
-
-def test_the_postprocessing_conversion_is_listed_but_not_counted_as_a_run(cs, monkeypatch):
-    """The conversion is what a campaign in its ``postprocessing`` phase is doing, and the
-    only thing it is doing: without it the jobs list is empty for as long as the conversion
-    takes, which reads as an idle campaign rather than a busy one.
-
-    It is not a trial, so it stays out of the counts on the same terms as a probe -- they
-    feed the run meter, the ``done/total`` label and the ETA's divisor -- and it is named for
-    the work rather than for its Job, whose name is the campaign id with a hash on it.
-    """
-    jobs = [
-        _job("j-run", succeeded=1, full="camp-2026-07-17-120000-batch-0-job-0"),
-        _job("robovast-postproc-camp-2026-07-17-120000", active=1,
-             jobgroup="postprocessing"),
-    ]
-
-    class _Batch:
-        def list_namespaced_job(self, namespace, label_selector):
-            return types.SimpleNamespace(items=jobs)
-
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
-    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods(
-        [_job_pod("robovast-postproc-camp-2026-07-17-120000")]))
-    resp = cs.list_jobs("camp-2026-07-17-120000")
-
-    conversion = next(j for j in resp.jobs
-                      if j.job_name == "robovast-postproc-camp-2026-07-17-120000")
-    assert conversion.kind == "postprocessing"
-    assert conversion.status == "running"
-    assert conversion.display_name == "rosbag conversion"
-    assert resp.counts.postprocessing == 1
-    assert resp.counts.running == 0, "the conversion is not a running trial"
-    assert (resp.counts.completed, resp.counts.total) == (1, 1)
 
 
 def _job_pod(job_name, phase="Running"):
@@ -1390,8 +1347,8 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
 
 
 def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
-    """The postprocessing Job is in ``jobgroup=postprocessing``, so the teardown below
-    cannot reach it and the flag is what ends it (``await_job`` polls it).
+    """Postprocessing runs in the service process, so the flag is what ends it: the
+    pipeline polls it between steps.
 
     The reply has to say so, because the outcome differs from stopping a run: the runs are
     over and every result they produced is kept -- what the stop gives up is the derived
@@ -1647,7 +1604,7 @@ def _stepped_campaign(tmp_path, revision):
         yaml.safe_dump({"image_revision": revision}))
     (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 4, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
+        {"version": 5, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
                                                     "simulation": {}}}}))
     return tmp_path
 
@@ -1684,7 +1641,7 @@ def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
         yaml.safe_dump({"image_revision": "reg/scenario@sha256:" + "a" * 64}))
     (tmp_path / "_config").mkdir(parents=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 4, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
+        {"version": 5, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
                                                     "simulation": {"image": "reg/sim:1"}}}}))
     with pytest.raises(scene_cache.SceneUnavailable) as err:
         scene_cache.world_identity(tmp_path, {"world": "w.yaml", "overrides": {}})
@@ -1702,7 +1659,7 @@ def _scene_identity_for(tmp_path, world, archive=True):
     # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
     vast = tmp_path / "_config" / "p.vast"
     vast.parent.mkdir(parents=True, exist_ok=True)
-    vast.write_text("version: 4\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+    vast.write_text("version: 5\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
                     "      backend: roqsim\n      config: roqsim_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
@@ -1974,14 +1931,12 @@ def test_the_health_pull_asks_a_calibration_probe_as_it_asks_a_run(cs, monkeypat
     the jobs' -- and the health read is part of that shape: a process the service starts inside
     the simulator's container, charged to the simulator's memory. A probe spared it is sized
     without it, and every job then meets, over a limit with no room for it, the one cost the probe
-    never saw. The postprocessing conversion is the job that carries no run, and stays skipped."""
+    never saw."""
     pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
     _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
         types.SimpleNamespace(job_name="scenario-abc", status="running",
                               kind=JobKind.CALIBRATION),
-        types.SimpleNamespace(job_name="scenario-pp", status="running",
-                              kind=JobKind.POSTPROCESSING),
     ]))
 
     assert [name for name, *_ in cs._health_targets("camp-1")] == ["scenario-abc"]
@@ -2124,8 +2079,7 @@ def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
     """``vast serve --results-dir`` decides ClusterService's results root.
 
     The results volume is where a cluster campaign lives: its pods deliver their runs into
-    it, per-run extraction reads it through a path, and postprocessing derives ``data.db``
-    from it. Without the flag that root is ``local_results_root``'s
+    it, per-run extraction reads it through a path, and postprocessing runs against it. Without the flag that root is ``local_results_root``'s
     ``<workspaces_root>/../results``, which in the deployed pod is one directory outside
     the only mount it has: every restart would discard it, and since resume reads it before
     the port is bound, a restart with live campaigns could never finish.

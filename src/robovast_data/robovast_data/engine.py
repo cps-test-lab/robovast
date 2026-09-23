@@ -60,10 +60,10 @@ import pyarrow as pa
 
 from robovast_decode import __version__ as DECODER_VERSION
 from robovast_decode.authored import header, run_files
-from robovast_decode.build import (DERIVED_TABLES, RECORDING_TABLE, Run, available_tables, build,
-                                   find_runs)
+from robovast_decode.build import (CAMPAIGN_TABLES, DERIVED_TABLES, RECORDING_TABLE, Run,
+                                   available_tables, build, find_runs)
 from robovast_decode.layout import decoder_config
-from robovast_decode.runs import RUNS_TABLE, build_runs
+from robovast_decode.runs import RUNS_TABLE, StoreError, build_runs
 from robovast_decode.tables import TABLES_DIR, cache_root, read_manifest, schema_of
 
 from . import record, views
@@ -187,7 +187,7 @@ class Engine:
     def ensure(self, tables: Iterable[str], narrowing: Optional[Dict[str, Narrowing]] = None
                ) -> List[Problem]:
         """Build *tables* for the runs in scope that lack them; what could not be built."""
-        tables = sorted(set(tables) - DERIVED_TABLES | ({RECORDING_TABLE} & set(tables)))
+        tables = sorted(set(tables) - CAMPAIGN_TABLES - {RUNS_TABLE})
         narrowing = narrowing or {}
         work: List[Tuple[Scope, dict, str, Tuple[str, ...]]] = []
         demanded: List[Tuple[Scope, str, str]] = []
@@ -248,7 +248,7 @@ class Engine:
 
     # -- what a query names ----------------------------------------------------------------
 
-    def _pose_candidates(self) -> List[str]:
+    def pose_tables(self) -> List[str]:
         """Tables that may follow the pose contract: ``poses`` and every run file that does."""
         names = {"poses"}
         for scope in self.scopes:
@@ -269,7 +269,7 @@ class Engine:
                     RUNS_TABLE, "run_view", "config_view", "container_failure_view"):
                 continue
             if relation == "pose_track_view":
-                out.update(self._pose_candidates())
+                out.update(self.pose_tables())
             elif relation in views.VIEW_TABLES:
                 out.update(views.VIEW_TABLES[relation])
             else:
@@ -300,6 +300,10 @@ class Engine:
                     continue
                 files.extend(os.path.join(root, f) for f in entry["files"])
                 schemas.append(schema_of(manifest, entry))
+            whole = manifest.get("tables", {}).get(table, {}).get("campaign")
+            if whole and whole.get("files"):
+                files.extend(os.path.join(root, f) for f in whole["files"])
+                schemas.append(schema_of(manifest, whole))
         return files, schemas
 
     def _examined(self, table: str) -> bool:
@@ -329,8 +333,12 @@ class Engine:
                 return {"campaign_id", "config_name", "run_id"}
             return None
         listed = ", ".join(_quote(f) for f in files)
+        # A campaign-level file holds every run's rows, so a scope narrower than the campaign
+        # is applied to the rows as well as to the file set.
+        where = ("" if all(s.whole for s in self.scopes)
+                 else " WHERE " + " OR ".join(s.predicate() for s in self.scopes))
         con.execute(f"CREATE VIEW {_ident(table)} AS SELECT * FROM "
-                    f"read_parquet([{listed}], union_by_name = true)")
+                    f"read_parquet([{listed}], union_by_name = true){where}")
         return {name for schema in schemas for name, _ in schema}
 
     def _define_record(self, con) -> None:
@@ -357,7 +365,10 @@ class Engine:
     def _define_runs(self, con) -> None:
         parts = []
         for scope in self.scopes:
-            rows = build_runs(scope.campaign_dir)
+            try:
+                rows = build_runs(scope.campaign_dir)
+            except StoreError as exc:
+                raise QueryError(f"the runs of {scope.campaign_id} cannot be read: {exc}") from exc
             if not scope.whole:
                 keep = [scope.admits(c, r) for c, r in zip(rows.column("config_name").to_pylist(),
                                                            rows.column("run_id").to_pylist())]
@@ -388,7 +399,8 @@ class Engine:
                 found = self._define_table(con, table)
                 if found is not None:
                     columns[table] = found
-            if "run_validity_view" in relations and "system_usage" in columns:
+            if ("run_validity_view" in relations
+                    and views.VALIDITY_COLUMNS <= columns.get("system_usage", set())):
                 con.execute("CREATE VIEW run_validity_view AS "
                             + views.run_validity_sql(columns["system_usage"]))
             if "pose_track_view" in relations:
@@ -466,9 +478,12 @@ class Engine:
                                                     "failed": {}})
             for table, count in counts.items():
                 entry = out.setdefault(table, {"kind": "table", "runs": 0, "built": 0,
-                                               "failed": {}, "columns": None})
+                                               "failed": {}, "columns": None, "rows": 0})
                 entry["runs"] += count["runs"]
                 entry["built"] += count["built"]
+                built = manifest.get("tables", {}).get(table, {}).get("runs", {})
+                entry["rows"] += sum(e.get("rows", 0) for k, e in built.items()
+                                     if keys is None or k in keys)
                 entry["failed"].update({f"{scope.campaign_id}/{k}": v
                                         for k, v in count["failed"].items()})
                 runs = manifest.get("tables", {}).get(table, {}).get("runs", {})
@@ -477,16 +492,31 @@ class Engine:
                         columns = entry["columns"] = entry["columns"] or []
                         if [name, kind] not in columns and name not in {c for c, _ in columns}:
                             columns.append([name, kind])
-        con = self.connect()
+        ready = [name for name, reads in views.VIEW_TABLES.items()
+                 if all(out.get(t, {}).get("built", 0) >= out.get(t, {}).get("runs", 0)
+                        for t in reads)]
+        con = self.connect(ready)
         try:
             for name, kind in _relations(con):
+                if out.get(name, {}).get("kind") == "table":
+                    continue      # a measurement table: its counts come from the manifest
+                rows = con.execute(f"SELECT count(*) FROM {_qualified(name)}").fetchone()[0]
                 out[name] = {"kind": "view" if name in views.VIEWS else kind, "runs": None,
-                             "built": None, "failed": {}, "columns": _columns(con, name)}
+                             "built": None, "failed": {}, "columns": _columns(con, name),
+                             "rows": rows}
         finally:
             con.close()
-        for name in views.VIEW_TABLES:
-            out.setdefault(name, {"kind": "view", "runs": None, "built": None, "failed": {},
-                                  "columns": None})
+        for name, reads in views.VIEW_TABLES.items():
+            if name in out:
+                continue
+            # A view not defined over what is built is listed while a table it reads is still
+            # to be built; once all of them are, it is absent because what it needs was never
+            # recorded, and listing it would promise an answer the campaign cannot give.
+            if reads and all(out.get(t, {}).get("built", 0) >= out.get(t, {}).get("runs", 0)
+                             for t in reads):
+                continue
+            out[name] = {"kind": "view", "runs": None, "built": None, "failed": {},
+                         "columns": None, "rows": None}
         return out
 
 
@@ -500,6 +530,11 @@ def _relations(con) -> List[Tuple[str, str]]:
         qualified = name if schema == "main" else f"{schema}.{name}"
         out.append((qualified, "record" if schema == RECORD_SCHEMA else kind))
     return out
+
+
+def _qualified(name: str) -> str:
+    schema, _, table = name.rpartition(".")
+    return f"{_ident(schema)}.{_ident(table)}" if schema else _ident(table)
 
 
 def _columns(con, name: str) -> List[List[str]]:

@@ -5,8 +5,9 @@
 The archive is streamed rather than refused, has one top-level entry named for the campaign,
 and answers a missing campaign with 404.
 
-``_postproc/`` is excluded alongside ``.cache``: it is postprocessing's staging area, not part
-of the campaign, and shipping it would make an archive's size depend on when it was taken.
+``.cache/`` is excluded: it holds the campaign's built tables, which are rebuilt from the
+records wherever a table is next named, and shipping it would make an archive's size depend on
+what somebody happened to query.
 """
 
 import tarfile
@@ -46,12 +47,9 @@ def _env(monkeypatch, tmp_path):
                                                     encoding="utf-8")
     (root / "_execution").mkdir()
     (root / "_execution" / "execution.yaml").write_text("runs: 1\n", encoding="utf-8")
-    # Both excluded, and for different reasons: `.cache` is postprocessing's hash cache and
-    # `_postproc` its staging tree.
-    (root / ".cache").mkdir()
-    (root / ".cache" / "hashes.json").write_text("{}", encoding="utf-8")
-    (root / "_postproc").mkdir()
-    (root / "_postproc" / "scratch.csv").write_text("a,b\n", encoding="utf-8")
+    # Excluded: the built tables are rebuilt from the records.
+    (root / ".cache" / "tables").mkdir(parents=True)
+    (root / ".cache" / "MANIFEST.json").write_text("{}", encoding="utf-8")
     with TestClient(build_app(transport)) as client:
         yield client
 
@@ -74,11 +72,11 @@ def test_the_service_streams_a_campaign_from_its_results_root(env):
     assert f"{_CAMPAIGN}/_config/campaign.vast" in names
 
 
-def test_postprocessing_scratch_is_left_out(env):
-    """``.cache`` and ``_postproc`` are staging, not campaign content."""
+def test_the_table_cache_is_left_out(env):
+    """``.cache`` is rebuilt from the records, not campaign content."""
     names = _members(env.get(Routes.campaign_archive(_CAMPAIGN)).content)
-    assert not [n for n in names if "/.cache" in n or "/_postproc" in n], \
-        f"staging directories were shipped in the archive: {sorted(names)}"
+    assert not [n for n in names if "/.cache" in n], \
+        f"the table cache was shipped in the archive: {sorted(names)}"
 
 
 def test_an_unknown_campaign_is_a_404(env):

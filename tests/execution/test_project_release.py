@@ -22,7 +22,7 @@ def _controller(tmp_path, mode="batch", **kw):
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
     (project / "sweep.vast").write_text(textwrap.dedent("""\
-        version: 4
+        version: 5
         execution:
           containers: {scenario: {image: ghcr.io/cps-test-lab/robovast:latest}}
           runs: 1

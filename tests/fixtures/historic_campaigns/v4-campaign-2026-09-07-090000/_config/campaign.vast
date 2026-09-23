@@ -38,3 +38,12 @@ execution:
   timeout: 600
   shm_size: 512Mi
   scenario_file: scenario.osc
+results_processing:
+  # What v5 took away: the pod that converted the bags, and a step for a table that is now
+  # built for every run.
+  resources:
+    cpu: 2
+    memory: 4Gi
+  postprocessing:
+  - run_log
+  - rosbags_tf_to_csv

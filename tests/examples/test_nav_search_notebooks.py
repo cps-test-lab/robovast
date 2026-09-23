@@ -32,22 +32,13 @@ NotebookClient = pytest.importorskip("nbclient").NotebookClient
 pytest.importorskip("matplotlib")
 pytest.importorskip("pandas")
 yaml = pytest.importorskip("yaml")
+pytest.importorskip("robovast_data")
+
+from robovast.common.store import CampaignStore  # noqa: E402
 
 EXAMPLE = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples" / "nav_search"
 MODES = ["none", "collision", "timeout", "goal_miss"]
 
-#: The schema the notebooks query, verbatim from ``robovast.common.store`` -- only the two
-#: tables they read. Written out rather than imported because the point is to catch a
-#: notebook that drifts from the schema, and building the fixture through the writer would
-#: hide exactly that drift.
-SCHEMA = """
-CREATE TABLE batch (id INTEGER PRIMARY KEY, campaign_id INTEGER, idx INTEGER, dir TEXT,
-                    created_at REAL);
-CREATE TABLE unit (id INTEGER PRIMARY KEY, batch_id INTEGER, paramset_id TEXT,
-                   config_name TEXT, params_json TEXT, objective REAL,
-                   objectives_json TEXT, measures_json TEXT, n_samples INTEGER,
-                   status TEXT, result_dir TEXT, created_at REAL);
-"""
 
 
 def _declared_notebook(vast):
@@ -90,9 +81,15 @@ def _sample(spec, rnd):
 
 
 def _campaign_db(path, space):
-    """A search's ``campaign.db`` with 20 cells across 4 batches, 18 of them scored."""
+    """A search's ``campaign.db`` with 20 cells across 4 batches, 18 of them scored.
+
+    The store's own layout, so the notebooks are read against the schema a campaign has; the
+    rows are written here as plain SQL rather than through the writer, so the fixture states
+    exactly what each column holds.
+    """
+    CampaignStore(path).close()
     conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA)
+    conn.execute("INSERT INTO campaign (id, name, mode) VALUES (1, 'fixture', 'search')")
     rnd = random.Random(7)
     uid = 0
     for batch in range(4):

@@ -1,8 +1,8 @@
 // Preview run rows: a running campaign's runs, derived from its output directories.
 //
-// A campaign that is still running has NO rows in the index — they are written by postprocessing
-// (`index_query.missing_campaign_note` says so outright) — so `CAMPAIGN_RUNS_SQL` answers nothing for
-// one, and the Run view's preview has to learn its runs from the campaign's own output tree instead.
+// The Run view's preview of a campaign that is still running learns its runs from the campaign's own
+// output tree rather than from `CAMPAIGN_RUNS_SQL`, because what it offers is a run that has written
+// a recording to replay, and only the tree says which have.
 //
 // The rows this produces carry the **same column names** `CAMPAIGN_RUNS_SQL` selects, which is the
 // whole design: `buildCampaignChildren`, `resolveSelection`, `firstRunSelection` and the node-id

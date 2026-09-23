@@ -285,7 +285,7 @@ CREATE TABLE IF NOT EXISTS unit (
 # ``n_samples`` and ``status`` are lossy roll-ups of runs that had no row of their
 # own. The ``run`` table completes ``campaign -> batch -> unit -> run`` and mirrors
 # each run's ``test.xml`` (the runner's contract), so pass/fail is queryable live
-# and the results index can be built from it instead of re-parsing the XML.
+# and the ``runs`` table can be built from it instead of re-parsing the XML.
 _MIGRATION_ADD_RUN = """
 CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,
@@ -491,7 +491,7 @@ ALTER TABLE unit ADD COLUMN n_reps INTEGER;
 # `config` block, and on a search campaign it is the parameter set the strategy proposed --
 # which the replay feeds back to the strategy, so it cannot carry anything else. A factor
 # written on the `sim:` or `sut:` channel therefore reached the results tree as a file and
-# the index not at all, and two factors on adjacent lines of one .vast were not equally
+# the ``runs`` table not at all, and two factors on adjacent lines of one .vast were not equally
 # analysable.
 #
 # Kept beside `params_json` rather than merged into it for that reason: the two answer

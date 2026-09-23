@@ -18,7 +18,7 @@ from robovast.common.config_validation import _safe_load
 from robovast.common.yaml_strict import DuplicateKeyError, load, load_all
 
 CAMPAIGN = """\
-version: 4
+version: 5
 execution:
   containers: {scenario: {image: a}}
   runs: 1

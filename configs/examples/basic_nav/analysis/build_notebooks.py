@@ -17,9 +17,9 @@ dir -- before every cell is executed and exported to HTML.
 
 **These are deliberately basic.** They exist to exercise the results explorer across the
 three deployment shapes (local / cluster / cluster --attach), so they lean on what every
-run has -- ``test.xml``, and ``behaviors.jsonl`` when postprocessing produced it -- and
-degrade to a printed note rather than a traceback when richer data (poses, rosbags) is
-absent. A notebook that fails on missing data cannot tell you whether the *deployment* is
+run writes itself -- ``test.xml``, and ``behaviors.jsonl`` from scenario_execution -- and
+degrade to a printed note rather than a traceback when richer data (the ``poses`` table
+built from the recorded transforms) is absent. A notebook that fails on missing data cannot tell you whether the *deployment* is
 broken, which is the entire question here.
 """
 
@@ -83,7 +83,7 @@ def status_overview(scope: str) -> str:
     """Cell: the pass/fail table, which every scope shows the same way."""
     return f"""\
 # Pass/fail comes from each run's test.xml, the one artifact every run writes -- so this
-# table is populated even when postprocessing failed and the campaign is not in the index.
+# table is populated even when postprocessing failed.
 statuses = read_run_statuses(DATA_DIR)
 if statuses.empty:
     note('no test.xml under DATA_DIR - has any run finished?')
@@ -194,38 +194,35 @@ else:
 
 
 POSES_IF_PRESENT = """\
-# Trajectory, when postprocessing produced poses.csv. Optional on purpose: it is absent
-# for a run whose rosbag conversion failed, and that must not hide the tables above.
-from robovast.common.analysis import read_output_csv, read_output_files
+# Trajectory, from the `poses` table: built from each run's recorded transforms the first
+# time it is read. Optional on purpose: a run that recorded no poses must not hide the
+# tables above.
+from robovast_data import open_data
 
 try:
-    poses = read_output_files(DATA_DIR, lambda d: read_output_csv(d, 'poses.csv'))
+    poses = open_data(DATA_DIR).table('poses')
 except Exception as exc:  # noqa: BLE001 - optional data; say so and carry on
     poses = None
-    note(f'no poses.csv ({type(exc).__name__}) - run postprocessing to populate it')
+    note(f'no poses table ({type(exc).__name__}: {exc})')
 
-# rosbag-derived poses flatten the ROS message, so the columns are `position.x` /
-# `position.y`; plain `x`/`y` is accepted as a fallback.
-xcol = next((c for c in ('position.x', 'x') if poses is not None and c in poses.columns), None)
-ycol = next((c for c in ('position.y', 'y') if poses is not None and c in poses.columns), None)
-
-if poses is not None and not poses.empty and xcol and ycol:
+if poses is not None and not poses.empty:
     # Several frames are recorded (odom, amcl, ground truth). Ground truth is the one
     # worth plotting: it is where the robot WAS, not where it believed it was.
-    if 'frame' in poses.columns:
-        gt = [f for f in poses['frame'].unique() if str(f).endswith('_gt')]
-        if gt:
-            poses = poses[poses['frame'] == gt[0]]
+    gt = [f for f in poses['frame'].unique() if str(f).endswith('_gt')]
+    if gt:
+        poses = poses[poses['frame'] == gt[0]]
     fig, ax = plt.subplots(figsize=(7, 7))
-    key = next((c for c in ('config', 'run') if c in poses.columns), None)
-    if key and poses[key].nunique() > 1:
+    key = next((c for c in ('config_name', 'run_id') if poses[c].nunique() > 1), None)
+    if key:
         for name, group in poses.groupby(key):
-            ax.plot(group[xcol], group[ycol], linewidth=1, label=str(name))
+            ax.plot(group['position.x'], group['position.y'], linewidth=1, label=str(name))
         ax.legend(title=key, fontsize='small')
     else:
-        ax.plot(poses[xcol], poses[ycol], linewidth=1, color='#2e9599')
-    ax.plot(poses[xcol].iloc[0], poses[ycol].iloc[0], 'o', color='#2f7d31', label='start')
-    ax.plot(poses[xcol].iloc[-1], poses[ycol].iloc[-1], 'x', color='#c9611e', label='end')
+        ax.plot(poses['position.x'], poses['position.y'], linewidth=1, color='#2e9599')
+    ax.plot(poses['position.x'].iloc[0], poses['position.y'].iloc[0], 'o', color='#2f7d31',
+            label='start')
+    ax.plot(poses['position.x'].iloc[-1], poses['position.y'].iloc[-1], 'x', color='#c9611e',
+            label='end')
     ax.set_aspect('equal', 'datalim')
     ax.set_xlabel('x (m)')
     ax.set_ylabel('y (m)')
@@ -233,7 +230,7 @@ if poses is not None and not poses.empty and xcol and ycol:
     plt.tight_layout()
     plt.show()
 elif poses is not None:
-    note(f'poses.csv has no usable position columns: {list(poses.columns)[:8]}')
+    note('the poses table has no rows here')
 """
 
 

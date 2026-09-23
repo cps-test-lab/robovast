@@ -16,8 +16,7 @@
 
 """A set of campaign Jobs the admission queue creates as room appears, tracked to their end.
 
-Scenario runs and postprocessing both submit several Jobs under one owner and wait for all
-of them. The queue (:class:`~.node_admission.AdmissionController`) decides *when* each is
+A batch of scenario runs submits several Jobs under one owner and waits for all of them. The queue (:class:`~.node_admission.AdmissionController`) decides *when* each is
 created, by calling the create callback it was given; this module holds the other half --
 which of them exist, which are still running, which have finished and must release their
 reservation, and which cannot start. Each round is one :meth:`AdmittedJobs.poll`; what a

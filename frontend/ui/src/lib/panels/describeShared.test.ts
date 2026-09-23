@@ -5,7 +5,8 @@ import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const describeCampaignData = vi.fn()
-vi.mock('@/lib/robovastClient', () => ({ robovast: { describeCampaignData } }))
+const queryCampaignDataSql = vi.fn()
+vi.mock('@/lib/robovastClient', () => ({ robovast: { describeCampaignData, queryCampaignDataSql } }))
 
 const { dbDataProvider, describeQuery } = await import('./dataProvider')
 
@@ -45,10 +46,35 @@ describe('describe is per campaign', () => {
 
   it('does not keep a failure: the next reader asks again', async () => {
     const client = new QueryClient()
-    describeCampaignData.mockRejectedValueOnce(new Error('not in the index'))
+    describeCampaignData.mockRejectedValueOnce(new Error('no campaign'))
     const [a, b] = providers(client)
-    await expect(a.has('poses')).rejects.toThrow('not in the index')
+    await expect(a.has('poses')).rejects.toThrow('no campaign')
     expect(await b.has('poses')).toBe(true)
     expect(describeCampaignData).toHaveBeenCalledTimes(2)
+  })
+})
+
+// A table is built for a run the first time a query names it, and /describe lists its columns only
+// once it is built for some run -- so an unbuilt table must not read as one missing every column.
+describe('a table not built yet', () => {
+  beforeEach(() => {
+    describeCampaignData.mockReset()
+    queryCampaignDataSql.mockReset()
+    describeCampaignData.mockResolvedValue({ tables: [{ table: 'poses', columns: [] }] })
+    queryCampaignDataSql.mockResolvedValue({ columns: ['timestamp', 'x'], rows: [] })
+  })
+
+  it('asks the run for its columns with an empty page scoped to that run', async () => {
+    const [p] = providers(new QueryClient())
+    expect(await p.has('poses', ['x'])).toBe(true)
+    expect(await p.has('poses', ['y'])).toBe(false)
+    expect(queryCampaignDataSql).toHaveBeenCalledWith(
+      'c', `SELECT * FROM "poses" WHERE config_name = 'cfg' AND run_id = 0 LIMIT 0`, 1)
+  })
+
+  it('needs no query to say the table exists', async () => {
+    const [p] = providers(new QueryClient())
+    expect(await p.has('poses')).toBe(true)
+    expect(queryCampaignDataSql).not.toHaveBeenCalled()
   })
 })

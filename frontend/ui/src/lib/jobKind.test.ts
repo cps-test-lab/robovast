@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { JobSummary } from './robovastClient'
-import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from './jobKind'
+import { isCalibrationJob, nonRunsFirst } from './jobKind'
 
 function job(job_name: string, kind?: string): JobSummary {
   // `kind` omitted models a service older than the field, which the generated type says cannot
@@ -20,7 +20,6 @@ describe('isCalibrationJob', () => {
   it('is true only for a calibration probe', () => {
     expect(isCalibrationJob(job('a', 'calibration'))).toBe(true)
     expect(isCalibrationJob(job('b', 'run'))).toBe(false)
-    expect(isCalibrationJob(job('c', 'postprocessing'))).toBe(false)
   })
 
   it('reads a job from a service older than the field as a run', () => {
@@ -32,25 +31,12 @@ describe('isCalibrationJob', () => {
   })
 })
 
-describe('isPostprocessingJob', () => {
-  it('is true only for the postprocessing conversion', () => {
-    expect(isPostprocessingJob(job('a', 'postprocessing'))).toBe(true)
-    expect(isPostprocessingJob(job('b', 'run'))).toBe(false)
-    expect(isPostprocessingJob(job('c', 'calibration'))).toBe(false)
-  })
-
-  it('reads a job from a service older than the field as a run', () => {
-    expect(isPostprocessingJob(job('d'))).toBe(false)
-    expect(isPostprocessingJob(job('e', 'something-later'))).toBe(false)
-  })
-})
-
 describe('nonRunsFirst', () => {
   it('hoists what is not a trial and leaves the runs in the order the service returned them', () => {
     const jobs = [job('r1', 'run'), job('p1', 'calibration'), job('r2', 'run'),
-                  job('pp', 'postprocessing'), job('r3', 'run')]
+                  job('p2', 'calibration'), job('r3', 'run')]
     expect(nonRunsFirst(jobs).map((j) => j.job_name))
-      .toEqual(['p1', 'pp', 'r1', 'r2', 'r3'])
+      .toEqual(['p1', 'p2', 'r1', 'r2', 'r3'])
   })
 
   it('does not mutate its argument', () => {

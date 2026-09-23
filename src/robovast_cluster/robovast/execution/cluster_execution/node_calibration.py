@@ -830,11 +830,11 @@ def read_probe_measurement(read, prefix: str, containers, limits=None,
     without one. *containers* maps a container name to the file the monitor wrote for it
     (``main`` for the pod's main container, the role name for each sidecar).
 
-    **Read directly, never through postprocessing.** The file the monitor writes IS the
-    measurement -- postprocessing only lifts it into the results index, and does so at the end of a
-    campaign or a batch, which is far too late to size the job that comes next. It is also
-    why the probe's directory being skipped by postprocessing costs nothing: there was never
-    anything to gain from it going through.
+    **Read directly, never through the campaign's tables.** The file the monitor writes IS the
+    measurement -- a table only lifts it into a queryable form, which is too late and too
+    indirect to size the job that comes next. It is also why the probe's directory being
+    skipped by postprocessing costs nothing: there was never anything to gain from it going
+    through.
 
     A container whose file is missing or unreadable is simply absent from the result, which
     the caller must read as "not measured" -- and, because a partial pod cannot be sized

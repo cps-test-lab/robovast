@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """``campaign_pinned_images`` — which images a campaign can be RE-RUN from.
 
-A third resolver beside ``campaign_role_image`` and ``campaign_execution_image``, and the
-distinction is the whole point: those two identify bytes for a cache key and pick an image to
-postprocess in, where this one has to name something a *new run* can actually start. Bytes that
+A resolver beside ``campaign_role_image``, and the distinction is the whole point: that one
+identifies bytes for a cache key, where this one has to name something a *new run* can
+actually start. Bytes that
 merely identify are not enough, so the local ``sha256:<id>`` the cache resolver happily accepts
 is refused here — compose reads it as ``name:tag`` and goes looking for ``docker.io/library/sha256``.
 

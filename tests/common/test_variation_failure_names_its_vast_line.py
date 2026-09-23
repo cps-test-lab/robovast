@@ -57,7 +57,7 @@ _PLUGINS = textwrap.dedent("""\
 #: Two blocks; the failing entry is the second variation of the second block, so the line
 #: reported has to be that one and not the first match of anything.
 _VAST = """\
-version: 4
+version: 5
 metadata: {name: vast-line-test}
 configuration:
 - name: cell0
@@ -111,7 +111,7 @@ def test_a_variation_a_block_takes_from_a_preset_is_found_where_it_is_written(tm
     """``use:`` copies a preset's variations into the block; the file writes them once."""
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 4
+        version: 5
         configuration_presets:
           contact:
             variations:

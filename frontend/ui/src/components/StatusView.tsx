@@ -31,7 +31,7 @@ import {
   noResultRuns,
   ringBudget,
 } from '@/lib/eta'
-import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from '@/lib/jobKind'
+import { isCalibrationJob, nonRunsFirst } from '@/lib/jobKind'
 import { jobAgeSeconds, jobMeters, type UsageMeter } from '@/lib/jobUsage'
 import { CHIP_COLOURS, distinctColorer } from '@/lib/nameColor'
 import { formatBytes, formatDuration } from '@/lib/format'
@@ -592,10 +592,6 @@ export function StatusView({
     // that has started nothing because it is still measuring its nodes otherwise reads as
     // `waiting N` with nothing anywhere saying what it is waiting for.
     counts && counts.calibration > 0 ? `calibrating ${counts.calibration}` : null,
-    // Beside them for the same reason, and with the opposite problem to solve: by the time
-    // the conversion runs every run state is zero, so a summary without this is an empty
-    // line on a campaign that is still working.
-    counts && counts.postprocessing > 0 ? 'converting rosbags' : null,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -888,13 +884,11 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
   blocked: 'error',
 }
 
-// Two of the campaign's jobs are not trials: a node-calibration probe, which measures the
-// machine the runs will be sized against, and the postprocessing conversion, which turns the
-// finished runs' rosbags into CSV. Both are listed because they hold real capacity, and both
-// are marked because they are not runs — unmarked, a probe arrives carrying batch job 0's
-// display name and a conversion reads as a run that outlived the batch.
+// One kind of the campaign's jobs is not a trial: a node-calibration probe, which measures the
+// machine the runs will be sized against. It is listed because it holds real capacity, and it is
+// marked because it is not a run — unmarked, a probe arrives carrying batch job 0's display name.
 //
-// Marked with a second chip rather than by recolouring the status one, for two reasons. Their
+// Marked with a second chip rather than by recolouring the status one, for two reasons. Its
 // `status` is telling the truth — a failed probe must still read as failed, and that is the
 // one probe worth looking at. And the four status hues are the only colours on this
 // screen that carry a meaning (see `colors.ts`): the band is held to one lightness on purpose
@@ -945,8 +939,7 @@ function JobsSection({
 }) {
   // What is not a trial goes ahead of the cap, not behind it: a batch wide enough to truncate
   // is exactly the one where a probe is both the reason nothing has started and the row that
-  // falls off the end, and where the conversion is the one row saying what the campaign is
-  // doing. There is at most one probe per node and one conversion, so the runs lose nothing.
+  // falls off the end. There is at most one probe per node, so the runs lose nothing.
   const shown = nonRunsFirst(jobs).slice(0, JOBS_RENDER_CAP)
   // The empty state is the reason this renders at all now. As a foldable section it simply
   // vanished when the live set emptied -- which happens whenever no job is running. A TAB that vanished would take the tab bar's shape with it,
@@ -1108,13 +1101,11 @@ function JobRow({
   stopping?: boolean
 }) {
   const calibration = isCalibrationJob(job)
-  const postprocessing = isPostprocessingJob(job)
   // Offered only on a `running` job — the same rule the service enforces, so the UI never
   // shows a button the server would refuse. A pending or queued job has not started, and a
-  // blocked one has a cause that deleting it does not fix. Nor on a probe or a conversion:
-  // neither carries a run, so the service refuses to record one as killed.
-  const canStop =
-    Boolean(onStopJob) && job.status === 'running' && !calibration && !postprocessing
+  // blocked one has a cause that deleting it does not fix. Nor on a probe: it carries no run,
+  // so the service refuses to record one as killed.
+  const canStop = Boolean(onStopJob) && job.status === 'running' && !calibration
   // Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message — so a job
   // that can never start is legible without opening its (empty) log.
   const detail = job.detail ? (
@@ -1154,12 +1145,6 @@ function JobRow({
             title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one."
           />
         ) : null}
-        {postprocessing ? (
-          <NonRunChip
-            label="postprocessing"
-            title="The campaign's postprocessing: it converts the finished runs' rosbags in the execution image they were recorded with. Not one of the campaign's runs, and not counted as one. What it prints goes to the campaign log's POSTPROCESSING section, which is why this row does not open."
-          />
-        ) : null}
         <Chip
           label={job.status}
           size="small"
@@ -1174,20 +1159,9 @@ function JobRow({
     // this to mute the colour would take the accessible name off every job row.
     title: job.display_name || job.job_name,
     meta: <JobVitals job={job} nodeColour={nodeColour} />,
-    // Where a postprocessing row's output is lives on its chip's tooltip, not here: `note` is
-    // a line under every such row for the life of the campaign, and it would be spent saying
-    // that nothing is missing. What belongs in this always-visible slot is a job in trouble.
+    // What belongs in this always-visible slot is a job in trouble.
     note: detail,
   }
-  // The postprocessing row is a header and nothing else, because the log it would open is not
-  // this pod's to serve. The conversion runs in initContainers -- the bag download, then the
-  // conversion itself -- and a pod log reader reports the containers that run for the pod's
-  // whole life, so through the entire conversion the panel had nothing to show and said so.
-  // The output is not missing: every container's, init ones included, is published to the
-  // campaign's POSTPROCESSING section as it runs, and that copy is on the results volume, so it
-  // is still there minutes later when `ttlSecondsAfterFinished` has taken the pod away --
-  // which is exactly when someone reads a failed postprocess.
-  if (postprocessing) return <CollapsibleBox {...header} collapsible={false} />
   return (
     <CollapsibleBox {...header} open={open} onToggle={onToggle}>
       <LogPanel

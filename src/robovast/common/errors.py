@@ -120,31 +120,6 @@ class ExecTargetGone(RuntimeError):
     """
 
 
-class IndexUnreachableError(RuntimeError):
-    """Raised when the central index did not answer at all.
-
-    A Postgres that is starting, a sidecar that went away, a volume that failed to
-    mount, and a wrong port all reach the caller as different psycopg exceptions
-    that mean one thing -- no answer -- wrapped in a traceback through the driver and
-    the ASGI stack that names no cause the one sentence here does not.
-
-    Distinct from a query error: the index *answered*, and what it answered (an
-    undefined column, a syntax error in caller SQL) is the caller's to interpret.
-
-    **This must never degrade into a fallback.** Postgres is a hard dependency of
-    the service, so a reader that quietly returned "no data" when the index is
-    down would present an empty campaign as a finished one -- the failure mode the
-    whole design exists to avoid. Say the index is unreachable and let the caller
-    decide.
-
-    A ``RuntimeError`` like its sibling, but unlike it ``_guard`` carries no arm of its
-    own for this type: it falls through to the ``RuntimeError`` arm and reaches a client as
-    409 rather than 503. The routes that must tell it apart catch it themselves.
-    """
-
-    include_traceback = False
-
-
 class ImageBuildFailed(RuntimeError):
     """Raised when a campaign's experiment image did not build.
 
@@ -222,46 +197,6 @@ class AuxContainerUnavailable(ActionableError):
     """
 
 
-class TableColumnLimitExceeded(ActionableError):
-    """A CSV would give an index table more columns than Postgres allows.
-
-    The generic ``to_csv`` handler flattens a message into one column per scalar field,
-    with no bound on how many a message produces -- fine for a handful of fields, ruinous
-    for an array-valued topic like a costmap or a path, where it is one column per array
-    element. Postgres refuses a table past 1600 columns outright, and this is raised
-    *before* that DDL ever reaches the database: an ``ALTER``/``CREATE`` that fails there
-    mid-statement leaves the surrounding transaction aborted, which would silently take
-    every other, well-behaved table in the same campaign down with it.
-
-    Raised per table, not per campaign: the caller (:func:`~robovast.results_processing.
-    campaign_ingest.ingest_run`) catches this for one data file and lets every other file
-    and every other run in the campaign ingest normally -- the whole point is that one
-    misconfigured extractor must not cost the rest of an otherwise-healthy campaign its
-    queryable index.
-    """
-    include_traceback = False
-
-
-class CampaignNotIngestable(ActionableError):
-    """A directory carries no campaign, so ingesting it would assert something false.
-
-    The registry exists to separate "ingested and measured nothing" from "never ingested",
-    and each tolerance on the ingest path is right on its own: a missing ``campaign.db`` is
-    survivable, because a campaign that ended badly still has its runs on disk and is
-    exactly the one worth reading; an empty run walk is survivable, because a campaign
-    whose every draw failed to compose really did produce no runs. Together they would let
-    a directory holding neither -- a cluster cache dir the service never filled, an extract
-    that stopped partway -- be recorded as ingested, after which a query answers ``0`` rows
-    with no note and a reader takes a pipeline failure for a fact about the experiment.
-
-    So the pair is refused where either alone is not: no record *and* no run directory
-    means the ingest was aimed at something that is not this campaign's data. Refused
-    before the campaign's existing rows are cleared, so a mis-aimed ingest cannot empty a
-    campaign that has them.
-    """
-    include_traceback = False
-
-
 class ImageStoreUnavailable(RuntimeError):
     """Raised when an image store could not be asked whether an image is there.
 
@@ -299,9 +234,6 @@ STORAGE_FULL_DETAIL = (
     "itself is fine: free space on the service's storage -- deleting campaigns that are "
     "no longer needed is the usual way -- then retry.")
 
-#: Postgres's SQLSTATE for ``disk_full``: what the index answers when its volume is full.
-_PG_DISK_FULL = "53100"
-
 #: SQLite's primary result code for a full disk: what a campaign's ``campaign.db`` answers
 #: when the results volume is full.
 _SQLITE_FULL = sqlite3.SQLITE_FULL
@@ -310,11 +242,9 @@ _SQLITE_FULL = sqlite3.SQLITE_FULL
 def is_storage_full(exc: BaseException) -> bool:
     """Whether *exc*, or anything that caused it, says the storage behind a write is full.
 
-    Three shapes carry that fact: the kernel's ``ENOSPC``/``EDQUOT`` on a file write,
-    Postgres's ``disk_full`` on an index write -- matched on the SQLSTATE attribute rather
-    than the psycopg class, so this module does not import the driver -- and SQLite's
-    ``SQLITE_FULL`` on a write to a campaign's store, which SQLite raises as its own error
-    rather than the ``OSError`` behind it.
+    Two shapes carry that fact: the kernel's ``ENOSPC``/``EDQUOT`` on a file write, and
+    SQLite's ``SQLITE_FULL`` on a write to a campaign's store, which SQLite raises as its own
+    error rather than the ``OSError`` behind it.
 
     The cause chain is followed because a layer that translates an ``OSError`` into its own
     refusal (an archive that could not be extracted is a ``ValueError``) would otherwise
@@ -325,8 +255,6 @@ def is_storage_full(exc: BaseException) -> bool:
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
         if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
-            return True
-        if getattr(exc, "sqlstate", None) == _PG_DISK_FULL:
             return True
         if getattr(exc, "sqlite_errorcode", None) == _SQLITE_FULL:
             return True

@@ -48,10 +48,12 @@ from typing import Dict, Iterable, List, Optional
 
 import yaml
 
-from . import __version__
+from . import __version__, clock_map, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
 from .decode import decode_bag, segments
+from .derived import DERIVED, INPUTS, JobRun, derive_job
 from .framing import Channel, McapTail
+from .handlers import Videos
 from .layout import job_links, run_dirs
 from .registry import INFRA_BAG, SCENARIO_BAG, narrow, plan_for
 from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_run_absent,
@@ -60,10 +62,13 @@ from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_ru
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
 
+#: Tables written for the whole campaign by its campaign-end pass rather than built per run
+#: here: the health checks' verdicts and the record of how each table was made.
+CAMPAIGN_TABLES = frozenset({"run_health", "postprocessing_steps"})
+
 #: Tables built from a campaign's records rather than read from a file of that name: a run's
 #: data file claiming one is refused, since its rows and the built ones would be one table.
-DERIVED_TABLES = frozenset({RECORDING_TABLE, "runs", "scenario_timestamps", "run_health",
-                            "postprocessing_steps"})
+DERIVED_TABLES = frozenset({RECORDING_TABLE, "runs", *CAMPAIGN_TABLES, *DERIVED})
 RECORDING_FIELDS = ["recording", "topic", "type", "messages", "bytes", "table", "reason"]
 
 _ATTEMPT = re.compile(r"^rosbag2(?:_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})?$")
@@ -87,6 +92,9 @@ class BuildReport:
     skipped: Dict[str, List[str]] = field(default_factory=dict)    # table -> run keys current
     failed: Dict[str, Dict[str, str]] = field(default_factory=dict)  # table -> run -> reason
     unknown: List[str] = field(default_factory=list)
+    #: What a derivation could not do without failing: a container that recorded nothing, a
+    #: run with no clock map. Findings about the records, reported with the build.
+    notes: List[str] = field(default_factory=list)
 
 
 def find_runs(campaign_dir: str) -> List[Run]:
@@ -168,7 +176,13 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     campaign_dir = os.path.abspath(campaign_dir)
     campaign_id = os.path.basename(campaign_dir)
     wanted_runs = set(runs) if runs is not None else None
-    wanted_tables = list(tables) if tables is not None else None
+    derived_wanted = [t for t in DERIVED if tables is None or t in tables]
+    wanted_tables = None
+    if tables is not None:
+        # The derived tables are built after the recordings, from the job's inputs.
+        wanted_tables = [t for t in tables if t not in DERIVED]
+        if derived_wanted:
+            wanted_tables += [t for t in INPUTS if t not in wanted_tables]
     groups = _groups(config)
     report = BuildReport()
     all_runs = find_runs(campaign_dir)
@@ -204,6 +218,10 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
             known_tables.update(plan.tables)
             run_bag_tables.update(plan.tables)
             handlers, _unknown = narrow(plan, wanted_tables)
+            for handler in handlers:
+                if isinstance(handler, Videos):
+                    handler.output_dir = owner.path
+                    handler.bag_name = os.path.basename(bag_dir)
             size = sizes[os.path.relpath(bag_dir, campaign_dir)]
             context = _context(campaign_id, role, owner, runs_of_job)
             run_key = context["key"]
@@ -257,9 +275,91 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
         if wanted_tables is not None:
             _record_absent(campaign_dir, run, wanted_tables, report, sizes,
                            known=run_bag_tables | file_tables | {RECORDING_TABLE})
+    if derived_wanted:
+        _build_derived(campaign_dir, campaign_id, selected, runs_of_job, derived_wanted,
+                       (config or {}).get("containers"), force, report)
     if wanted_tables is not None:
         report.unknown = [t for t in wanted_tables if t not in known_tables]
     return report
+
+
+def _derived_sources(campaign_dir: str, job_dir: Optional[str], runs: List[Run],
+                     manifest: dict, input_keys: List[str]) -> Dict[str, int]:
+    """What a job's derived tables are built from, as ``{source: size or rows}``."""
+    sources: Dict[str, int] = {}
+    paths = []
+    if job_dir and os.path.isdir(job_dir):
+        paths += [os.path.join(job_dir, n) for n in os.listdir(job_dir)
+                  if n.startswith(("resource_usage_", "system_usage_")) and n.endswith(".csv")]
+        logs = os.path.join(job_dir, "logs")
+        if os.path.isdir(logs):
+            paths += [os.path.join(logs, n) for n in os.listdir(logs)
+                      if run_slices.container_of(n) is not None and n.endswith(".log")]
+    for run in runs:
+        paths += [os.path.join(run.path, n) for n in os.listdir(run.path)
+                  if n == "test.xml" or n.endswith(clock_map.ROQSIM_SUFFIX)]
+    for path in sorted(paths):
+        sources[os.path.relpath(path, campaign_dir)] = os.path.getsize(path)
+    for table in INPUTS:
+        entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
+        sources[f"table:{table}"] = sum((entries.get(k) or {}).get("rows", 0)
+                                        for k in input_keys)
+    return sources
+
+
+def _build_derived(campaign_dir: str, campaign_id: str, selected: List[Run],
+                   runs_of_job: Dict[str, List[Run]], tables: List[str], containers,
+                   force: bool, report: BuildReport) -> None:
+    """The derived tables of every job a selected run belongs to, for all of its runs."""
+    jobs: Dict[str, List[Run]] = {}
+    for run in selected:
+        if run.job_dir:
+            jobs.setdefault(run.job_dir, runs_of_job[run.job_dir])
+        else:
+            jobs.setdefault(run.path, [run])
+    for key, runs in jobs.items():
+        job_dir = key if runs[0].job_dir else None
+        input_keys = ([runs[0].key] if len(runs) == 1
+                      else [f"_jobs/{os.path.basename(job_dir)}"])
+        manifest = read_manifest(campaign_dir)
+        sources = _derived_sources(campaign_dir, job_dir, runs, manifest, input_keys)
+        entries = {t: manifest.get("tables", {}).get(t, {}).get("runs", {}) for t in tables}
+        if not force and all((entries[t].get(r.key) or {}).get("sources") == sources
+                             and entries[t][r.key].get("decoder") == __version__
+                             for t in tables for r in runs):
+            for table in tables:
+                report.skipped.setdefault(table, []).extend(r.key for r in runs)
+            continue
+        derivation = derive_job(campaign_dir, campaign_id, job_dir,
+                                [JobRun(r.key, r.config_name, r.run_id, r.path) for r in runs],
+                                tables, manifest, input_keys, containers)
+        report.notes.extend(derivation.notes)
+        complete = all(os.path.isfile(os.path.join(r.path, "test.xml")) for r in runs)
+        written = []
+        for table in tables:
+            for run in runs:
+                rows = derivation.tables.get(table, {}).get(run.key)
+                if rows is None:
+                    continue
+                rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
+                write_table(campaign_dir, rel, rows)
+                written.append((table, run.key, rel, rows))
+        with manifest_lock(campaign_dir):
+            fresh = read_manifest(campaign_dir)
+            done = set()
+            for table, run_key, rel, rows in written:
+                record_run_table(fresh, table, run_key, files=[rel], rows=rows.num_rows,
+                                 schema=rows.schema, sources=sources, complete=complete)
+                report.built.setdefault(table, []).append(run_key)
+                done.add((table, run_key))
+            for table in tables:
+                for run in runs:
+                    if (table, run.key) not in done:
+                        # A run with no verdict line has no scenario_timestamps row: a table
+                        # it has, and that came out empty.
+                        record_run_absent(fresh, table, run.key, sources=sources,
+                                          complete=complete, known=True)
+            write_manifest(campaign_dir, fresh)
 
 
 def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, force: bool,
@@ -413,6 +513,8 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
                 keys.setdefault(table, set()).add(key)
         for table in run_files(run.path, reserved=bag_tables | DERIVED_TABLES).tables:
             keys.setdefault(table, set()).add(run.key)
+        for table in DERIVED:
+            keys.setdefault(table, set()).add(run.key)
     out: Dict[str, dict] = {}
     for table, table_keys in keys.items():
         entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
@@ -423,6 +525,6 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     return out
 
 
-__all__ = ["BuildReport", "DERIVED_TABLES", "RECORDING_TABLE", "Run",
+__all__ = ["BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE", "Run",
            "available_tables", "build", "find_runs", "recorded_topics",
            "scenario_recording"]

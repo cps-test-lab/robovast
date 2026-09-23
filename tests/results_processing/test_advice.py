@@ -246,7 +246,7 @@ def test_no_advice_when_the_pool_was_never_measured():
     """NULL is a campaign recorded before the monitor sampled the pool, or a runtime with no
     /dev/shm. Neither is "used none of it", so neither may produce a size.
 
-    The empty-list case is a data.db built before the columns existed: the query fails and
+    The empty-list case is a campaign with no ``resource_usage`` at all: the query fails and
     ``data_access.rows`` hands back ``[]``, which has to read as "nothing to say" rather than
     take out the whole summary the advice is one key of.
     """
@@ -356,56 +356,72 @@ def test_a_campaign_that_recorded_no_mode_reads_as_the_mode_it_had():
 # -- the SQL constants themselves -------------------------------------------
 #
 # Every test above builds its rows by hand and checks the advice derived from them. That is
-# the right shape for the judgement each function makes, and it is also why a real break went
-# unseen: the constants are strings until a live campaign runs them. When the substrate moved
-# from SQLite to the central Postgres index they still said `json_extract(...)` and `FROM job`
-# -- legal SQLite, and in Postgres respectively a function that does not exist and a table
-# that is now in the `campaign` schema. A caller asking for advice would have got
-# "function json_extract(...) does not exist" instead.
-#
-# Executing them here was the first instinct and is the wrong tool: PREPARE needs every table
-# a statement mentions, so a fixture campaign that legitimately has no `resource_usage` would
-# fail tests about SQL validity for reasons that are nothing to do with it. These two checks
-# need no database and always run.
+# the right shape for the judgement each function makes, and it is also why a broken
+# statement goes unseen: the constants are strings until a campaign runs them. So each is
+# executed here, against a campaign directory whose jobs recorded the per-container samples
+# the statements read.
 
 _STATEMENTS = {name: getattr(A, name) for name in dir(A)
                if name.endswith("_SQL") and isinstance(getattr(A, name), str)}
 
-#: Campaign dimensions were `ATTACH`ed as a database named `campaign`, so `FROM job` resolved.
-#: They are now a *schema* of the one index, which holds every campaign -- so an unqualified
-#: name either fails to resolve or, worse, finds a metric table of the same name.
+#: The campaign's record is the ``campaign`` schema; an unqualified name either fails to
+#: resolve or finds a table of the same name.
 _DIMENSION_TABLES = ("campaign", "batch", "unit", "run", "job", "node", "container_failure")
 
-#: SQLite's JSON functions, none of which Postgres has. The Postgres spellings are `->`/`->>`
-#: for a field and `jsonb_array_elements` for a fan-out.
-_SQLITE_JSON = ("json_extract", "json_each", "json_tree", "json_quote")
+_RESOURCE_CSV = ("timestamp,pid,name,cpu_percent,memory_rss_bytes,shm_used_bytes,"
+                 "shm_total_bytes\n"
+                 "1780000000,1,python3,50.0,1000,{low},{pool}\n"
+                 "1780000000,2,ros2,25.0,500,{low},{pool}\n"
+                 "1780000001,1,python3,50.0,1000,{high},{pool}\n")
+#: Every column a statement reads, as a node that could answer all of them records it.
+_SYSTEM_CSV = ("timestamp,nr_periods,nr_throttled,throttled_usec,memory_peak,memory_anon,"
+               "memory_shmem,memory_slab,cpu_stall_full_usec,node_cpu_stall_some_usec\n"
+               "1780000000,0,0,0,1000,500,10,20,0,0\n"
+               "1780000001,1000,100,500,2000,800,10,20,300,400\n")
+
+
+@pytest.fixture(name="sampled_campaign")
+def _sampled_campaign(tmp_path):
+    from tests.robovast_data.conftest import nav_campaign  # pylint: disable=import-outside-toplevel
+    root = nav_campaign(tmp_path / "nav-2026-01-01-00000000",
+                        runs=(("cfg-a", 0), ("cfg-b", 0)))
+    for i, job in enumerate(sorted((root / "_jobs").iterdir())):
+        (job / "resource_usage_main.csv").write_text(_RESOURCE_CSV.format(
+            low=10 * _MIB, high=(100 + 50 * i) * _MIB, pool=_GIB))
+        (job / "system_usage_main.csv").write_text(_SYSTEM_CSV)
+    return root
 
 
 def test_there_are_sql_constants_to_check():
-    """Guards the two tests below: a rename emptying this dict would pass them vacuously."""
+    """Guards the tests below: a rename emptying this dict would pass them vacuously."""
     assert _STATEMENTS
 
 
 @pytest.mark.parametrize("name", sorted(_STATEMENTS))
-def test_no_advice_statement_uses_a_sqlite_only_json_function(name):
-    lowered = _STATEMENTS[name].lower()
-    used = [fn for fn in _SQLITE_JSON if fn in lowered]
-    assert not used, (
-        f"{name} calls {', '.join(used)}, which Postgres does not have -- the index would "
-        f"reject the statement outright. Use -> / ->> for a field, jsonb_array_elements "
-        f"for a fan-out.")
+def test_every_advice_statement_runs(sampled_campaign, name):
+    from robovast.results_processing.data_query import \
+        query_data_db  # pylint: disable=import-outside-toplevel
+    result = query_data_db(sampled_campaign, _STATEMENTS[name])
+    assert result["columns"], f"{name} returned no columns"
+
+
+def test_the_shared_memory_peak_is_the_highest_run_high_water_mark(sampled_campaign):
+    """``/dev/shm`` is one pool per run, repeated on every process row of a tick, so a run's
+    high-water mark is a MAX over its rows and the campaign's the highest of those."""
+    from robovast.results_processing.data_query import \
+        query_data_db  # pylint: disable=import-outside-toplevel
+    (row,) = query_data_db(sampled_campaign, A.SHM_SQL)["rows"]
+    assert row == {"shm_peak": 150 * _MIB, "shm_limit": _GIB}
 
 
 @pytest.mark.parametrize("name", sorted(_STATEMENTS))
 def test_every_campaign_dimension_is_schema_qualified(name):
-    """One index holds every campaign, so an unqualified dimension name is a real hazard."""
     pattern = re.compile(
         r"\b(?:from|join)\s+(?!campaign\.)([a-z_][a-z0-9_]*)\b", re.IGNORECASE)
     bare = {m for m in pattern.findall(_STATEMENTS[name]) if m.lower() in _DIMENSION_TABLES}
     assert not bare, (
         f"{name} names campaign dimension(s) {', '.join(sorted(bare))} without the "
-        f"`campaign.` schema. These used to be an ATTACHed database; unqualified they now "
-        f"resolve to nothing, or to a metric table that happens to share the name.")
+        f"`campaign.` schema, where the campaign's record is.")
 
 
 # -- which memory measurement a suggestion rests on ----------------------------------------

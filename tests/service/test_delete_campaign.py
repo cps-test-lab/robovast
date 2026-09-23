@@ -14,23 +14,12 @@ import pytest
 CID = "gone-2026-09-01-101500"
 
 
-class _NullIndexConn:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch):
     from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
-    monkeypatch.setattr("robovast.results_processing.index_schema.forget_campaign",
-                        lambda conn, cid: {})
-    monkeypatch.setattr("robovast.common.index_db.connect",
-                        lambda *a, **k: _NullIndexConn())
+    monkeypatch.delenv("ROBOVAST_ARCHIVE_DIR", raising=False)
     results = tmp_path / "results"
     (results / CID / "cfg" / "0").mkdir(parents=True)
     (results / CID / "cfg" / "0" / "out.bag").write_bytes(b"x" * 16)

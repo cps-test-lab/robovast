@@ -36,26 +36,18 @@ would be graded by nav2's idea of healthy.
    without re-running anything. That is why ``value`` exists at all: a finding says *bad*, a
    measure says *how bad*, and a floor is found in the knee of a curve.
 
-**What a check reads.** The campaign's already-derived tables in the central index -- for
-nav2 that would be ``nav2_behaviors``, ``nav2_behavior_tree`` and the control-loop warnings
-in ``run_log``; for MoveIt 2, planning time and solve failures. None of that is known here.
+**What a check reads.** The campaign's tables -- for nav2 that would be ``nav2_behaviors``,
+``nav2_behavior_tree`` and the control-loop warnings in ``run_log``; for MoveIt 2, planning
+time and solve failures. None of that is known here.
 
-**The check contract is** ``check(conn, campaign_id)``, **and the second argument is not
-optional.** The index holds every campaign in one set of tables, so a query without
-``WHERE campaign_id = %s`` reads the whole corpus: a check would grade runs from campaigns
-it never saw, and the rows it wrote would be attributed to this one. *campaign_id* is a
-required positional parameter with no default precisely so an unported third-party check
-raises rather than doing that quietly -- an arity error is recoverable, a corpus-wide
-``ok`` row is not. What the arity cannot catch is a ported check that takes the argument
-and forgets to use it in one of its statements; that stays the check author's
-responsibility, and it is the single thing to look for when reviewing one.
-
-Placeholders are Postgres' ``%s``, not SQLite's ``?``. Campaign dimension tables (
-``campaign``, ``batch``, ``unit``, ``run``, ``job``, ``node``, ``container_failure``) live
-in the ``campaign`` schema and must be written ``campaign.job``; metric tables (``runs``,
-``run_log``, ...) are unqualified. ``CAST(x AS REAL)`` is a trap carried over from SQLite:
-Postgres' ``real`` is 4 bytes and silently mangles epoch timestamps -- use
-``double precision``.
+**The check contract is** ``check(conn, campaign_id)``. *conn* is a read-only connection to
+this campaign's tables (:class:`~robovast.results_processing.data_query.CampaignConnection`):
+``conn.execute(sql, params)`` builds what the statement names and returns a cursor whose
+rows read by position and by column name. It sees this campaign's rows and no other's, so a
+``WHERE campaign_id = ?`` is redundant but harmless. Placeholders are ``?``. The campaign's
+record (``campaign``, ``batch``, ``unit``, ``run``, ``job``, ``node``, ``container_failure``)
+is the ``campaign`` schema, written ``campaign.job``; tables (``runs``, ``run_log``, ...)
+are unqualified. The engine is DuckDB.
 
 **Scoping to the trial, without a phase system.** ``run_log`` carries ``sim_time`` (NULL for
 every row written before the clock existed) and ``in_window`` (the trial window). So "after
@@ -72,8 +64,7 @@ import logging
 from dataclasses import dataclass
 from importlib.metadata import entry_points
 
-from robovast.results_processing import index_schema
-from robovast_decode.types import REAL, TEXT
+import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +113,10 @@ def load_health_checks(declared=None, config_dir=None) -> dict:
     ``./path.py:Class`` ref is loaded from beside the config, which is how a system under
     test ships a check for itself without packaging one.
 
-    **An earlier version ran every installed check automatically**, on the reasoning that a
-    check only reads tables that already exist, so the campaigns most in need of grading --
-    the ones nobody thought about -- would otherwise be the ones without it. That is recorded
-    rather than quietly dropped, because it is a real argument and it lost to a better one:
-    a check that runs everywhere grades campaigns it knows nothing about. ``nav2``'s
+    **Why not run every installed check automatically.** The argument for it is real: a check
+    only reads tables, so the campaigns most in need of grading -- the ones nobody thought
+    about -- would otherwise be the ones without it. It loses to a better one: a check that
+    runs everywhere grades campaigns it knows nothing about. ``nav2``'s
     control-loop check finds no misses in a MoveIt 2 campaign and would write ``ok`` for every
     run of it -- a clean bill for a stack that was never there, which is exactly the
     confusion rule 2 exists to prevent, arriving through the mechanism meant to serve it.
@@ -191,23 +181,11 @@ def _rows_from(check_name, result):
 
 
 #: The table's columns, declared rather than inferred so it has its full shape even for a
-#: campaign whose checks had nothing to say. ``value`` is ``REAL`` -- ``double precision``
-#: in the index -- because it carries a measure whose scale the plugin chooses.
-_RUN_HEALTH_COLUMNS = {
-    "check_name": TEXT, "level": TEXT, "value": REAL, "unit": TEXT,
-    "detail": TEXT, "source": TEXT,
-}
-
-#: What a check that still has the pre-index signature is told. Spelled out rather than left
-#: as a bare ``TypeError`` because the fix is not obvious from the traceback: the argument is
-#: new, and the reason it is required is a correctness property of the shared index.
-_OLD_SIGNATURE = (
-    "health check %r has the OLD check(conn) signature; the contract is now "
-    "check(conn, campaign_id). The index holds every campaign in one set of tables, so "
-    "every statement in the check needs a `WHERE campaign_id = %%s` predicate (and "
-    "Postgres `%%s` placeholders, not SQLite `?`). Skipped: its runs are recorded as NOT "
-    "CHECKED rather than graded against the whole corpus."
-)
+#: campaign whose checks had nothing to say. ``value`` is a double because it carries a
+#: measure whose scale the plugin chooses.
+_COLUMNS = (("config_name", pa.string()), ("run_id", pa.int64()), ("check_name", pa.string()),
+            ("level", pa.string()), ("value", pa.float64()), ("unit", pa.string()),
+            ("detail", pa.string()), ("source", pa.string()))
 
 
 def _accepts_campaign_id(check) -> bool:
@@ -227,27 +205,18 @@ def _accepts_campaign_id(check) -> bool:
     return True
 
 
-def build_run_health_table(sink, conn, campaign_id: str, checks=None,
-                           source: str = SOURCE_STACK) -> int:
-    """Run *checks* against one campaign in the index and write their rows; return the count.
+def run_checks(conn, campaign_id: str, checks=None, source: str = SOURCE_STACK) -> list:
+    """Run *checks* against one campaign; the rows they returned, as dicts.
 
-    Each check is called ``check(conn, campaign_id)`` and must scope every statement it
-    issues to *campaign_id* -- see the module docstring on why that argument is required.
-
-    **The table is created even when nothing fills it.** An absent table and an empty one say
-    different things -- "this campaign predates health checks" versus "they ran and found
-    nothing to say" -- and only the second is evidence. Rule 2 is about runs; this is the same
-    rule one level up.
-
-    **Nothing is dropped here.** The old per-campaign writer began by dropping the table; in
-    one shared index that would take every other campaign's grades with it. Idempotence comes
-    from :func:`~robovast.results_processing.index_schema.clear_campaign`, which the ingest
-    runs for this campaign alone before anything is written.
+    Each check is called ``check(conn, campaign_id)``. A check that fails or returns what
+    cannot be interpreted is logged and skipped, never allowed to cost the campaign its other
+    grades; its runs then read as not checked, which is what they are.
     """
     rows = []
     for name, check in (checks or {}).items():
         if not _accepts_campaign_id(check):
-            logger.error(_OLD_SIGNATURE, name)
+            logger.error("health check %r is not callable as check(conn, campaign_id); "
+                         "skipped, so its runs are recorded as NOT CHECKED", name)
             continue
         try:
             result = check(conn, campaign_id)
@@ -259,9 +228,12 @@ def build_run_health_table(sink, conn, campaign_id: str, checks=None,
              "level": r.level, "value": None if r.value is None else float(r.value),
              "unit": r.unit, "detail": r.detail, "source": source}
             for r in _rows_from(name, result))
+    return rows
 
-    # ``context`` carries no config_name/run_id: this table's rows each name their own run,
-    # so the per-row value must win over a batch-wide one.
-    return sink.write(TABLE, rows, context={},
-                      types={**dict(index_schema.CONTEXT_COLUMNS), **_RUN_HEALTH_COLUMNS},
-                      source=f"{campaign_id}/health")
+
+def to_table(rows: list, campaign_id: str) -> pa.Table:
+    """*rows* as the ``run_health`` table, with ``campaign_id`` in every row."""
+    arrays = {"campaign_id": pa.array([campaign_id] * len(rows), type=pa.string())}
+    for column, kind in _COLUMNS:
+        arrays[column] = pa.array([r.get(column) for r in rows], type=kind)
+    return pa.table(arrays)

@@ -190,28 +190,17 @@ def test_a_body_that_is_not_a_tar_is_a_400(client):
     assert resp.status_code == 400, resp.text
 
 
-def test_the_archive_narrows_to_what_a_postprocess_pod_reads(client, root):
+def test_the_archive_carries_the_records_and_never_the_table_cache(client, root):
     campaign = root / _CAMPAIGN
     (campaign / "_calibration").mkdir()
     (campaign / "_calibration" / "probe.mcap").write_bytes(b"probe")
-    (campaign / "_jobs" / "batch-1" / "job-0" / "rosbag2").mkdir(parents=True)
-    (campaign / "_jobs" / "batch-1" / "job-0" / "rosbag2" / "a.mcap").write_bytes(b"bag")
-    (campaign / "_jobs" / "batch-2" / "job-0").mkdir(parents=True)
-    (campaign / "_jobs" / "batch-2" / "job-0" / "sysinfo.yaml").write_text("n: 1\n")
-    (campaign / "_execution" / "postprocessing.log").write_text("previous attempt\n")
+    (campaign / ".cache" / "tables").mkdir(parents=True)
+    (campaign / ".cache" / "tables" / "poses.parquet").write_bytes(b"PAR1")
 
-    everything = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content, gz=True)
-    assert f"{_CAMPAIGN}/_calibration/probe.mcap" in everything
-
-    staged = _names(client.get(Routes.campaign_archive(_CAMPAIGN),
-                               params={"stage": "true", "skip_bags": "true",
-                                       "batch_jobs": "batch-2",
-                                       "uncompressed": "true"}).content)
-    assert f"{_CAMPAIGN}/_calibration/probe.mcap" not in staged
-    assert f"{_CAMPAIGN}/_jobs/batch-1/job-0/rosbag2/a.mcap" not in staged
-    assert f"{_CAMPAIGN}/_execution/postprocessing.log" not in staged
-    assert f"{_CAMPAIGN}/_jobs/batch-2/job-0/sysinfo.yaml" in staged
-    assert f"{_CAMPAIGN}/_config/campaign.vast" in staged
+    names = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content, gz=True)
+    assert f"{_CAMPAIGN}/_calibration/probe.mcap" in names
+    assert f"{_CAMPAIGN}/_config/campaign.vast" in names
+    assert not [n for n in names if "/.cache" in n]
 
 
 def test_the_standalone_plane_reads_liveness_from_the_tree(standalone, root):
@@ -337,11 +326,6 @@ def test_only_an_archive_that_leaves_the_cluster_is_compressed(client, root):
     assert resp.headers["content-disposition"].endswith('.tar.gz"')
     _names(resp.content, gz=True)
 
-    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"uncompressed": "true"})
-    assert resp.headers["content-type"] == "application/x-tar"
-    assert resp.headers["content-disposition"].endswith('.tar"')
-    assert f"{_CAMPAIGN}/_config/campaign.vast" in _names(resp.content)
-
     resp = client.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB)
     assert resp.headers["content-type"] == "application/x-tar"
     _names(resp.content)
@@ -354,30 +338,3 @@ def test_an_upload_is_read_compressed_or_not(client, root):
                           content=_tar([(f"cell-a/{n}/test.xml", b"<testsuite/>")], gz=gz))
         assert resp.status_code == 200, resp.text
         assert (root / _CAMPAIGN / "cell-a" / str(n) / "test.xml").exists()
-
-
-def test_a_part_is_given_its_runs_and_nothing_of_another_parts(client, root):
-    from robovast.execution.campaign_archive import write_part
-
-    campaign = root / _CAMPAIGN
-    for run in ("0", "1"):
-        (campaign / "cell-a" / run).mkdir()
-        (campaign / "cell-a" / run / "test.xml").write_text("<t/>")
-        job = campaign / "_jobs" / "batch-0" / f"job-{run}"
-        job.mkdir(parents=True)
-        (job / "log.txt").write_text("x\n")
-    write_part(str(campaign), "m1", ["cell-a/1"], ["_jobs/batch-0/job-1"])
-
-    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"stage": True, "part": "m1",
-                                                                 "uncompressed": True})
-    assert resp.status_code == 200, resp.text
-    names = set(_names(resp.content))
-    assert f"{_CAMPAIGN}/cell-a/1/test.xml" in names
-    assert f"{_CAMPAIGN}/_jobs/batch-0/job-1/log.txt" in names
-    assert f"{_CAMPAIGN}/_config/campaign.vast" in names
-    assert not any("cell-a/0/" in n or "job-0/" in n for n in names)
-
-
-def test_a_part_nobody_planned_is_not_found(client):
-    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"stage": True, "part": "m9"})
-    assert resp.status_code == 404

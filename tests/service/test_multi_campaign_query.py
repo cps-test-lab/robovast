@@ -1,47 +1,30 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``NullService.query_campaign_data_sql`` spanning campaigns, through one index.
+"""``NullService.query_campaign_data_sql`` spanning campaigns.
 
-The feature is unchanged and now cheaper: an A/B question -- "how did the nine campaigns
-of this search arm compare?" -- must be answerable in one query through the service
-interface, not only through the direct MCP local path.
+An A/B question -- "how did the nine campaigns of this search arm compare?" -- must be
+answerable in one query through the service interface, not only through the direct MCP
+local path. Spanning is a list of ids on the call; each campaign's tables are read from its
+own directory, and every row carries its ``campaign_id``.
 
-**What changed is how.** Comparing campaigns used to mean attaching one ``data.db`` per
-campaign under the schema aliases ``c1``, ``c2``, ... which cost a fetch per campaign
-(~10 GB to answer one question about a nine-campaign arm). Every campaign's rows now live
-in one Postgres index, so spanning them is a list of ids on the call and the aliases
-are gone.
-
-The property to protect is the same one the aliases existed to provide, and it has two
-directions -- only both together pin it:
+The property to protect has two directions -- only both together pin it:
 
 * a cross-campaign query really does see both campaigns; and
 * a query naming one campaign sees **only** its own rows.
 
-The second is the dangerous half now. With one table per campaign a scoping mistake meant
-a missing file; with one shared table it means a frame of the right shape, the right
-columns and the wrong experiment -- nothing raised, nothing empty, and the only symptom a
-number. Both campaigns here therefore use the same configuration name and the same run
-ids, which are exactly the keys that collide once one table holds everything.
-
-Which is why spanning campaigns is now **asked for** rather than assumed: the session is
-confined to ``campaign_id`` by the index itself, and ``campaigns=[...]`` names the ids a
-query may see (see :mod:`robovast.results_processing.index_scope`). The capability is
-unchanged; what changed is that reaching it by forgetting a predicate no longer works.
+The second is the dangerous half: a scoping mistake returns a frame of the right shape, the
+right columns and the wrong experiment -- nothing raised, nothing empty, and the only
+symptom a number. Both campaigns here therefore use the same configuration name and the
+same run ids, which are exactly the keys that collide in a query spanning both.
 """
 
 import csv
-import os
 
 import pytest
 
 from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-SCHEMA = "multi_campaign_query_test"
-
-pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
+from tests.robovast_data.conftest import write_store
 
 CAMP_A = "camp-a-2026-08-20-00000001"
 CAMP_B = "camp-b-2026-08-20-00000002"
@@ -52,15 +35,11 @@ OBJECTIVES_B = [0.3, 0.4, 0.5]
 
 
 def _make_campaign(root, name, objectives):
-    """A campaign directory shaped like a real one: one run dir per run, one CSV each.
+    """A campaign directory shaped like a real one: its record, one run dir per run, one
+    metric CSV each.
 
-    No ``_execution/data.db`` any more -- the rows go to the index, and the tree on disk is
-    only what names the campaign.
-
-    The metric file is ``objectives.csv`` and not ``runs.csv``: ``runs`` is a table the
-    ingest builds itself from the campaign record, and a data file claiming it is refused
-    (see :func:`test_a_data_file_may_not_claim_a_table_the_ingest_builds`). This fixture
-    used the reserved name and every run was ingested twice.
+    The metric file is ``objectives.csv`` and not ``runs.csv``: ``runs`` is a table built
+    from the campaign record, and a data file may not claim it.
     """
     cdir = root / name
     (cdir / "_execution").mkdir(parents=True)
@@ -71,6 +50,7 @@ def _make_campaign(root, name, objectives):
             writer = csv.writer(handle)
             writer.writerow(["objective"])
             writer.writerow([objective])
+    write_store(cdir, {"nominal": {"runs": {i: "passed" for i in range(len(objectives))}}})
     return cdir
 
 
@@ -82,33 +62,16 @@ def _transport(tmp_path):
 
 @pytest.fixture(name="campaigns")
 def _campaigns(transport):
-    """Two campaigns on this transport's results root, both ingested into the index."""
-    psycopg = pytest.importorskip("psycopg")
-    from robovast.results_processing import campaign_ingest, index_query
-
-    os.environ["ROBOVAST_INDEX_DSN"] = f"{DSN} options=-csearch_path={SCHEMA}"
-    with psycopg.connect(DSN, autocommit=True) as setup:
-        setup.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        setup.execute(f"CREATE SCHEMA {SCHEMA}")
-
+    """Two campaigns on this transport's results root."""
     root = transport._campaigns_root()  # pylint: disable=protected-access
     root.mkdir(parents=True, exist_ok=True)
     _make_campaign(root, CAMP_A, OBJECTIVES_A)
     _make_campaign(root, CAMP_B, OBJECTIVES_B)
-    with index_query.open_index(readonly=False) as conn:
-        campaign_ingest.ingest_campaign(conn, str(root / CAMP_A), CAMP_A)
-        campaign_ingest.ingest_campaign(conn, str(root / CAMP_B), CAMP_B)
-
-    yield transport
-
-    with psycopg.connect(DSN, autocommit=True) as teardown:
-        teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-    # The autouse environment fixture in tests/conftest.py restores ROBOVAST_INDEX_DSN.
+    return transport
 
 
-@pg
 def test_one_query_spans_several_campaigns(campaigns):
-    """The A/B case, which is now a predicate rather than nine attached databases."""
+    """The A/B case: one query, the campaigns named on the call."""
     res = campaigns.query_campaign_data_sql(
         CAMP_A,
         "SELECT campaign_id, COUNT(*) AS n FROM objectives "
@@ -119,9 +82,8 @@ def test_one_query_spans_several_campaigns(campaigns):
         (CAMP_A, len(OBJECTIVES_A)), (CAMP_B, len(OBJECTIVES_B))]
 
 
-@pg
 def test_a_single_campaign_query_never_sees_the_other_campaigns_rows(campaigns):
-    """The other direction, and the one a shared table makes easy to get wrong.
+    """The other direction.
 
     Asserted for both campaigns, so a scope pinned to the wrong constant would still fail
     rather than pass on whichever campaign happened to be asked about first. The SQL
@@ -134,9 +96,8 @@ def test_a_single_campaign_query_never_sees_the_other_campaigns_rows(campaigns):
         assert sorted(r["objective"] for r in res.rows) == sorted(objectives)
 
 
-@pg
 def test_the_campaign_named_by_the_caller_is_reported_back(campaigns):
-    """The result still says which campaign was asked about; only the scoping moved."""
+    """The result says which campaign was asked about."""
     res = campaigns.query_campaign_data_sql(
         CAMP_A, "SELECT COUNT(*) AS n FROM objectives")
     assert res.campaign_id == CAMP_A

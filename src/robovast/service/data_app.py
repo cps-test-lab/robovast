@@ -16,10 +16,10 @@
 
 """The data plane: tar streams in and out of the results tree, and nothing else.
 
-Every byte a pod exchanges with the service goes through the four routes here -- the
-inputs a job extracts into ``/config``, the outputs it delivers when it is done, the
-campaign a postprocessing pod stages, the scratch tree a build or exec pod is handed --
-plus the campaign download the web UI and ``vast campaign download`` use. They are a
+Every byte a pod exchanges with the service goes through the routes here -- the inputs a
+job extracts into ``/config``, the outputs it delivers when it is done, the scratch tree a
+build or exec pod is handed -- plus the campaign download the web UI and ``vast campaign
+download`` use. They are a
 separate FastAPI app for one reason: **bulk bytes must not share a process with the
 control plane.** A dozen pods delivering gigabytes at once should slow each other down,
 never the run view or the admission loop, and the way to make that structural rather than
@@ -47,7 +47,7 @@ import os
 from pathlib import Path
 
 from robovast.client.safe_path import UnsafePathError, check_relative, safe_join
-from robovast.service.interface import ArchiveSelection, OutputsIngested, Routes
+from robovast.service.interface import OutputsIngested, Routes
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +126,8 @@ class DataPlane:
 
     # -- the five operations --
 
-    def campaign_tar_stream(self, campaign_id: str, selection: "ArchiveSelection | None" = None,
-                            *, live: "bool | None" = None, facts: "dict | None" = None):
+    def campaign_tar_stream(self, campaign_id: str, *, live: "bool | None" = None,
+                            facts: "dict | None" = None):
         """The campaign as a tar stream; see the interface method of the same name.
 
         *live* is whether the campaign is still being written -- a caller that knows says
@@ -140,22 +140,8 @@ class DataPlane:
         if live is None:
             live = not self.campaign_is_finished(campaign_id)
         snapshot = dict(facts or {}) if live else None
-        include = None
-        if selection is not None and (selection.stage or selection.skip_bags
-                                      or selection.batch_jobs or selection.part):
-            include = campaign_archive.stage_include(skip_bags=selection.skip_bags,
-                                                     batch_jobs=selection.batch_jobs)
-            if selection.part:
-                staged = include
-                in_part = campaign_archive.part_include(str(campaign_dir), selection.part)
-
-                def include(rel, is_dir):  # pylint: disable=function-redefined
-                    return staged(rel, is_dir) and in_part(rel, is_dir)
         return campaign_archive.iter_campaign_tar(
-            str(campaign_dir),
-            exclude=campaign_archive.DEFAULT_EXCLUDE | {"_postproc"},
-            snapshot=snapshot, include=include,
-            compress=not (selection is not None and selection.uncompressed))
+            str(campaign_dir), exclude=campaign_archive.DEFAULT_EXCLUDE, snapshot=snapshot)
 
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
@@ -291,33 +277,24 @@ def data_router(source):
         return result
 
     @router.get(Routes.campaign_archive("{campaign_id}"))
-    def download_campaign_archive(campaign_id: str, stage: bool = False,
-                                  skip_bags: bool = False, batch_jobs: str = "",
-                                  uncompressed: bool = False, part: str = ""):
-        """Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
+    def download_campaign_archive(campaign_id: str):
+        """Stream the campaign as a ``tar.gz``.
 
-        Backs ``vast campaign download``, the web UI's download button and the
-        postprocessing pod's stage, which asks for the plain tar, being in the cluster.
-        What comes out is the campaign as this service holds
-        it -- postprocessed if it has been, raw if it has not; derived data is an addition
-        to a campaign, never the condition for reading one. ``stage``, ``skip_bags``,
-        ``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads
-        (:class:`ArchiveSelection`).
+        Backs ``vast campaign download`` and the web UI's download button. What comes out
+        is the campaign's records as this service holds them -- postprocessed if it has
+        been, raw if it has not -- never its table cache: derived data is an addition to a
+        campaign, never the condition for reading one.
 
         Nothing is buffered and no scratch is used: the tree is tarred into the response
         as it is read. Decisive for campaigns that run to terabytes.
         """
-        selection = ArchiveSelection(stage=stage, skip_bags=skip_bags, batch_jobs=batch_jobs,
-                                     uncompressed=uncompressed, part=part)
         # The name before the stream: a running campaign is offered as
         # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
         # -- which saves whatever this says and never sees the marker inside the archive.
         name = _guard(lambda: source.campaign_archive_name(campaign_id))
-        if uncompressed:
-            name = name.removesuffix(".gz")
         return StreamingResponse(
-            _guard(lambda: source.campaign_tar_stream(campaign_id, selection)),
-            media_type=TAR_MEDIA_TYPE if uncompressed else GZIP_MEDIA_TYPE,
+            _guard(lambda: source.campaign_tar_stream(campaign_id)),
+            media_type=GZIP_MEDIA_TYPE,
             headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @router.get(Routes.campaign_inputs("{campaign_id}"))

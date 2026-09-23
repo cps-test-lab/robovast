@@ -189,6 +189,7 @@ export type RetriggerReport = Schemas['RetriggerReport']
 export type RetriggerAxis = Schemas['RetriggerAxis']
 
 export type ActionResult = Schemas['ActionResult']
+export type CampaignTablesCleared = Schemas['CampaignTablesCleared']
 export type DeleteCampaignsResponse = Schemas['DeleteCampaignsResponse']
 export type CampaignDeletion = Schemas['CampaignDeletion']
 
@@ -322,12 +323,7 @@ export type VariationTypesResponse = Schemas['VariationTypesResponse']
 
 // -- results data query (eval viewer) ---------------------------------------
 
-export interface DataTable {
-  schema: string
-  table: string
-  columns: string[]
-  rows: number | null
-}
+export type DataTable = Schemas['DataTable']
 
 export type DataDescribe = Schemas['DataDescribe']
 
@@ -947,6 +943,21 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/run`,
       { campaign_id: campaignId, force, skip: [] },
     ),
+
+  // Build a finished campaign's tables now instead of the first time each is named; returns at
+  // once, and progress goes to the campaign log's TABLES section. `tables` omitted or empty
+  // builds every table the campaign's records can give.
+  buildCampaignTables: (campaignId: string, tables: string[] = []) =>
+    request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/tables/build`,
+      { campaign_id: campaignId, tables },
+    ),
+
+  // Remove a campaign's built tables to free storage; each is built again on use.
+  clearCampaignTables: (campaignId: string) =>
+    request<CampaignTablesCleared>(
+      'DELETE', `/campaigns/${encodeURIComponent(campaignId)}/tables`),
 
   // (Re)trigger upload-to-share for a finished campaign. Works from disk after a
   // restart; the target provider comes from the service environment.

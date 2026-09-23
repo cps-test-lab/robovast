@@ -32,7 +32,6 @@ def test_the_defaults_are_the_paths_a_deployment_already_uses():
     assert defaults == {
         "workspaces": "/var/lib/robovast-workspaces",
         "results": "/var/lib/robovast-results",
-        "index": "/var/lib/robovast-index",
         "registry": "/var/lib/robovast-registry",
         "buildkit": "/data/robovast-buildkit",
     }
@@ -128,53 +127,12 @@ def test_a_relative_root_is_refused_because_the_kubelet_resolves_it():
 def test_only_placeable_tenants_take_path_flags():
     """A path flag for a derived tenant could only agree with its parent or be refused."""
     assert "results" not in data_paths.PLACEABLE
-    assert "index" not in data_paths.PLACEABLE
     assert set(data_paths.PLACEABLE) == {"workspaces", "registry", "buildkit"}
 
 
-@pytest.mark.parametrize("workspaces, expected", [
-    ("/var/lib/robovast-workspaces", "/var/lib/robovast-index"),
-    ("/media/data/workspaces", "/media/data/index"),
-    ("/mnt/ws", "/mnt/ws-index"),
-])
-def test_the_index_sits_beside_the_results_it_was_ingested_from(workspaces, expected):
-    """The index is derived data, so it must never outlive its sources.
-
-    The results follow the workspaces and the index follows the results: one disk holds all
-    three, so they are one thing to place and one thing to delete -- rather than an
-    invariant somebody has to remember at cleanup time.
-    """
-    resolved = data_paths.resolve({"workspaces_path": workspaces})
-    assert resolved["index"].path == expected
-    assert data_paths.TENANTS_BY_NAME["index"].derived_from == "results"
-
-
-def test_a_root_places_the_index_beside_the_results_too():
-    resolved = data_paths.resolve(data_root="/media/data")
-    assert resolved["results"].path == "/media/data/results"
-    assert resolved["index"].path == "/media/data/index"
-
-
-def test_the_index_takes_the_results_backing_unless_given_its_own():
-    """A hostPath index on a managed node pool goes with the node while the PVC-backed
-    results survive, so a class of its own is the one flag a derived tenant may take."""
-    following = data_paths.resolve({"workspaces_class": "standard-rwo"})
-    assert following["index"].storage_class == "standard-rwo"
-
-    own = data_paths.resolve({"workspaces_class": "standard-rwo", "index_class": "premium-rwo"})
-    assert own["index"].storage_class == "premium-rwo"
-    assert own["results"].storage_class == "standard-rwo"
-
-    alone = data_paths.resolve({"index_class": "premium-rwo"})
-    assert alone["index"].storage_class == "premium-rwo"
-    assert alone["results"].is_node_local
-
-
-def test_an_index_size_is_checked_against_the_class_the_index_actually_gets():
-    """Sized under the workspaces' class, the index claim is created, so the size applies."""
-    data_paths.refuse_conflicts({"workspaces_class": "standard-rwo"}, sizes={"index": "50Gi"})
-    data_paths.refuse_conflicts({"index_class": "premium-rwo"}, sizes={"index": "50Gi"})
+def test_a_results_size_is_checked_against_the_class_the_results_actually_get():
+    """Sized under the workspaces' class, the results claim is created, so the size applies."""
+    data_paths.refuse_conflicts({"workspaces_class": "standard-rwo"}, sizes={"results": "50Gi"})
     with pytest.raises(ValueError) as excinfo:
-        data_paths.refuse_conflicts({}, sizes={"index": "50Gi"})
-    assert "--index-size" in str(excinfo.value)
-    assert "--index-class" in str(excinfo.value)
+        data_paths.refuse_conflicts({}, sizes={"results": "50Gi"})
+    assert "--results-size" in str(excinfo.value)

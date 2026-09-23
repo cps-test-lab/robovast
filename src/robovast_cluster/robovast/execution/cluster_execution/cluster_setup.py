@@ -279,7 +279,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
             (see ``buildkitd_deploy.apply_buildkitd``). Its own channel rather than a
             ``cluster_kwargs`` entry for the reason below: these are not provider options and
             must not be splatted into ``setup_cluster``.
-        data_node (str): Node to hold the workspaces, the results, the index and the
+        data_node (str): Node to hold the workspaces, the results and the
             registry -- and, unless *buildkit_node* says otherwise, the build cache too, so
             one name moves the whole deployment's on-disk state. Naming a node moves it off
             whatever node holds it now, without a second confirming flag; the bytes are not
@@ -341,7 +341,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
         key_label = f" for context '{context_key}'" if context_key else ""
         # Point at `upgrade` first, because it is what almost everyone reaching this
         # message actually wants. `setup` *provisions*: it re-runs the device plugin and
-        # the registry/index pod, and it takes its ingress/registry/storage options as
+        # the registry pod, and it takes its ingress/registry/storage options as
         # arguments -- so a re-run without the flags of the original run re-provisions
         # with different ones. `upgrade` reads those back from the live
         # cluster and touches only the image, RBAC and the env-derived Secrets.
@@ -464,7 +464,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
         core, DATA_NODE_LABEL,
         # The workspaces class decides for the *service* pod, whose results volume follows
         # it. The `robovast` pod's own placement is decided below and is what the registry
-        # and index hostPaths follow.
+        # hostPath follows.
         node_local=not service_kwargs.get("workspaces_storage_class"),
         requested=data_node, extra_labels=control_node_labels)
     service_kwargs["node_selector"] = data_placement.selector if data_placement else {}
@@ -490,29 +490,20 @@ def setup_server(config_name=None, list_configs=False, force=False,
         requested=buildkit_node, tolerations=CAMPAIGN_NODE_TOLERATIONS)
     buildkit_kwargs["node_selector"] = build_placement.selector if build_placement else {}
 
-    # The `robovast` pod (registry + index) is a pod like any other, so it takes the data
+    # The `robovast` pod (the registry) is a pod like any other, so it takes the data
     # node's selector -- ANDed with whatever pool the operator's `control.node_labels`
     # allows, not replaced by it: a pool selector alone lets the pod float within the pool,
     # which is the unpinned placement below at a smaller scale.
     #
-    # Pinned whenever the data node is: the registry's blobs and the campaign index are
-    # hostPath-backed unless a class says otherwise, so an unpinned pod would come back on
-    # another node with an empty registry and an empty index while everything reported
-    # healthy.
+    # Pinned whenever the data node is: the registry's blobs are hostPath-backed unless a
+    # class says otherwise, so an unpinned pod would come back on another node with an empty
+    # registry while everything reported healthy.
     store_selector = dict(control_node_labels or {})
     if data_placement is not None:
         store_selector.update(data_placement.selector)
 
-    # The index password must exist BEFORE the pod is created: its Postgres container
-    # reads the Secret as POSTGRES_PASSWORD, and a pod created without it sits in
-    # CreateContainerConfigError. `deploy_service` below reads this same value back rather
-    # than minting a second one -- the password is never rotated (see
-    # `service_deploy.existing_index_password`).
-    from .service_deploy import ensure_index_secret  # pylint: disable=import-outside-toplevel
-    ensure_index_secret(namespace, kube_context)
-
-    # The registry's password file, for the same reason and at the same moment: the pod
-    # mounts it. Empty host -> no credential, because an unpublished deployment has no
+    # The registry's password file must exist BEFORE the pod is created: the pod mounts
+    # it. Empty host -> no credential, because an unpublished deployment has no
     # route to its registry and cannot build at all; publishing is what makes it reachable,
     # so publishing is what turns auth on.
     from .service_deploy import \
@@ -520,18 +511,13 @@ def setup_server(config_name=None, list_configs=False, force=False,
     registry_host = _resolve_registry_host(service_kwargs, namespace, kube_context)
     registry_password = ensure_registry_htpasswd(namespace, kube_context, registry_host)
 
-    # The storage flags for the registry and the index travel to the `robovast` pod, not to
-    # the service Deployment: that is where both volumes live. Passed as named arguments
-    # rather than through `cluster_kwargs`, which is the `-o key=value` channel and is
-    # persisted as this cluster's recorded provider config. The index's path and class are
-    # already derived from the results' by the CLI (`data_paths`): beside the campaigns it
-    # was ingested from, on their backing unless --index-class said otherwise.
+    # The storage flags for the registry travel to the `robovast` pod, not to the service
+    # Deployment: that is where its volume lives. Passed as named arguments rather than
+    # through `cluster_kwargs`, which is the `-o key=value` channel and is persisted as this
+    # cluster's recorded provider config.
     cluster_config.setup_cluster(
         kube_context=kube_context,
         control_node_labels=store_selector or None,
-        index_storage_path=service_kwargs.pop("index_storage_path", ""),
-        index_storage_class=service_kwargs.pop("index_storage_class", ""),
-        index_storage_size=service_kwargs.pop("index_storage_size", ""),
         registry_storage_path=service_kwargs.pop("registry_storage_path", ""),
         registry_storage_class=service_kwargs.pop("registry_storage_class", ""),
         registry_authenticated=bool(registry_password),
@@ -542,11 +528,10 @@ def setup_server(config_name=None, list_configs=False, force=False,
     )
 
     # An existing `robovast` pod is deliberately KEPT on a 409 (see
-    # `kubernetes.apply_manifests`), so a live pod that lacks the registry or the index --
-    # or carries an object store -- does not change here. Refuse now, naming the
-    # destructive remedy, rather than deploying a service whose registry route and index
-    # DSN point at containers that do not exist, or whose campaigns sit in a store nothing
-    # reads.
+    # `kubernetes.apply_manifests`), so a live pod that lacks the registry -- or carries an
+    # object store -- does not change here. Refuse now, naming the destructive remedy, rather
+    # than deploying a service whose registry route points at a container that does not
+    # exist, or whose campaigns sit in a store nothing reads.
     from .service_deploy import \
         verify_store_pod_infrastructure  # pylint: disable=import-outside-toplevel
     verify_store_pod_infrastructure(namespace, kube_context,

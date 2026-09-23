@@ -41,16 +41,11 @@ _CONSTANT_REL = "src/robovast/common/execution.py"
 #: Changing any of these plausibly changes what an image must provide, or what the host will
 #: ask of it. Deliberately short: every path here is one that can raise a false alarm, and a
 #: check that cries wolf is one whose escape hatch becomes reflex.
-#:
-#: ``docker_exec.sh`` is NOT here even though it drives a container. It runs on the host, and it
-#: is where the compat check itself lives -- so it would fire on every change to this mechanism
-#: and teach everyone to bypass it.
 _CONTRACT_PATHS = (
     "container/robovast/Dockerfile",
     "container/robovast/Dockerfile.roqsim",
     "src/robovast/execution/data/entrypoint.sh",
     "src/robovast/execution/data/secondary_entrypoint.sh",
-    "src/robovast/results_processing/data/ros2_exec.sh",
 )
 
 _TRAILER = "Compat-Unchanged:"

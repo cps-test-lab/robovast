@@ -43,8 +43,7 @@ def test_the_registry_runs_in_the_store_pod_not_the_service_pod():
     assert [c["name"] for c in service_pod["containers"]] == [
         sd.SERVICE_NAME, front_deploy.DATA_CONTAINER_NAME, front_deploy.FRONT_CONTAINER_NAME]
 
-    assert [c["name"] for c in _pod()["containers"]] == [
-        rd.REGISTRY_CONTAINER_NAME, "index"]
+    assert [c["name"] for c in _pod()["containers"]] == [rd.REGISTRY_CONTAINER_NAME]
 
 
 def test_the_registry_has_somewhere_durable_to_keep_blobs():
@@ -88,22 +87,14 @@ def test_the_registry_is_reachable_through_the_store_pods_service():
         p["port"] for p in sd._service_manifest("default")["spec"]["ports"]]
 
 
-def test_the_infrastructure_containers_request_a_floor_not_an_estimate():
+def test_the_registry_requests_a_floor_not_an_estimate():
     """Requests are subtracted from what campaign jobs can be admitted against.
 
-    And the asymmetry in the limits is deliberate: the index may not be OOMKilled during a
-    bulk ingest at the end of an expensive campaign, and neither is CPU-capped, because a
-    CPU limit throttles rather than fails and nobody attributes slow postprocessing to a
-    cgroup.
+    Not CPU-capped, because a CPU limit throttles rather than fails and nobody attributes a
+    slow push to a cgroup.
     """
-    from robovast.execution.cluster_execution import index_deploy
-
-    for resources in (rd.REGISTRY_RESOURCES, index_deploy.INDEX_RESOURCES):
-        assert "cpu" not in resources.get("limits", {})
-        assert resources["requests"]["cpu"].endswith("m")
-
-    assert index_deploy.INDEX_RESOURCES["limits"]["memory"] == "2Gi", \
-        "stock shared_buffers is 128MB and ingest bulk-COPYs millions of rows"
+    assert "cpu" not in rd.REGISTRY_RESOURCES.get("limits", {})
+    assert rd.REGISTRY_RESOURCES["requests"]["cpu"].endswith("m")
 
 
 def test_deletes_are_enabled_so_a_rebuilt_image_can_be_reclaimed():

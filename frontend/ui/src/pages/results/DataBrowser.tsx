@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -27,8 +27,8 @@ import {
   type DataQueryResult,
   type PlotSpec,
 } from '@/lib/robovastClient'
+import { browseSql, columnsPlaceholder, tableLabel } from '@/lib/dataTables'
 import { FailureBox } from '@/components/StatusView'
-import { useToasts } from '@/components/ToastProvider'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
@@ -71,8 +71,6 @@ export function DataBrowser({
   refresh: ResultsRefresh
   sqlRequest?: SqlRequest
 }) {
-  const qc = useQueryClient()
-  const { notify } = useToasts()
   const [sqlBuffer, setSqlBuffer] = useState(DEFAULT_SQL)
   const [activeSql, setActiveSql] = useState(DEFAULT_SQL)
   const [x, setX] = useState('')
@@ -122,40 +120,6 @@ export function DataBrowser({
     retry: false,
   })
   const failure = status.data?.phase === 'failed' ? status.data.error : null
-
-  // A campaign has no queryable data until analysis postprocessing has run (it ingests the
-  // campaign into the central index). Offer to run it right here when that's the case.
-  //
-  // Matched on the index's own "not in the index" wording, from
-  // `results_processing.index_query.missing_campaign_note`. This used to test for `data.db`,
-  // the per-campaign file postprocessing wrote before the index — a predicate that stayed
-  // true-looking while being permanently false, so the offer silently stopped appearing.
-  const noData = /not in the index/i.test(
-    (describe.error as Error | null)?.message ?? (result.error as Error | null)?.message ?? '',
-  )
-  const postprocess = useMutation({
-    mutationFn: () => robovast.runPostprocessing(campaignId),
-    onSuccess: (res) => {
-      // `ok: false` is the busy guard refusing because something is already running. It used to
-      // land here and be discarded, which left the button looking like it had worked.
-      if (!res.ok) {
-        notify({
-          severity: 'warning',
-          message: 'Postprocessing was not started',
-          note: res.message || 'Another operation is already running on this campaign.',
-        })
-        return
-      }
-      qc.invalidateQueries({ queryKey: ['describe', campaignId] })
-      qc.invalidateQueries({ queryKey: ['query', campaignId] })
-      qc.invalidateQueries({ queryKey: ['plots', campaignId] })
-      notify({
-        severity: 'info',
-        message: 'Postprocessing started',
-        note: 'These results refresh when it finishes.',
-      })
-    },
-  })
 
   // Seed the chart axes from the result columns.
   const cols = result.data?.columns ?? []
@@ -242,25 +206,6 @@ export function DataBrowser({
           </Alert>
           <FailureBox error={failure} />
         </Stack>
-      ) : noData ? (
-        <Alert
-          severity="info"
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              startIcon={<PlayArrowRoundedIcon />}
-              disabled={postprocess.isPending}
-              onClick={() => postprocess.mutate()}
-            >
-              {postprocess.isPending ? 'Postprocessing…' : 'Run postprocessing'}
-            </Button>
-          }
-        >
-          {postprocess.isError
-            ? `Postprocessing failed: ${(postprocess.error as Error).message}`
-            : 'This campaign has no queryable data yet — run analysis postprocessing to index it.'}
-        </Alert>
       ) : (
         <Box sx={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 2 }}>
           {/* Schema panel */}
@@ -278,18 +223,17 @@ export function DataBrowser({
                   <Typography
                     variant="caption"
                     sx={{ fontFamily: 'monospace', cursor: 'pointer' }}
+                    title={t.description || undefined}
                     onClick={() => {
-                      const q = `SELECT * FROM ${t.schema === 'main' ? '' : t.schema + '.'}${t.table} LIMIT 500`
+                      const q = browseSql(t)
                       setSqlBuffer(q)
                       setActiveSql(q)
                     }}
                   >
-                    {t.schema === 'main' ? '' : `${t.schema}.`}
-                    {t.table}
-                    {t.rows != null ? ` (${t.rows})` : ''}
+                    {tableLabel(t)}
                   </Typography>
                   <Box sx={{ pl: 1, color: 'text.secondary', fontSize: 11 }}>
-                    {t.columns.join(', ')}
+                    {t.columns.length ? t.columns.join(', ') : columnsPlaceholder(t)}
                   </Box>
                 </Box>
               ))

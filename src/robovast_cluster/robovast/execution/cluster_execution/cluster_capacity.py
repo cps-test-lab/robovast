@@ -350,10 +350,10 @@ class ClusterBudgetProvider:
         **Disk is charged as the scheduler charges it, which cpu here is not.** A pod's
         effective request is the larger of its workload containers' sum and its largest
         one-shot init container, and for cpu and memory the init term is small enough to
-        drop. For disk it is the whole figure: a postprocessing pod stages its campaign in
-        an init container, whose request is the size of that campaign, while its workload
-        container asks for a floor. Summing workload containers alone would report the
-        node's disk as free while the scheduler holds it for that pod.
+        drop. For disk it is the whole figure: a pod that stages its inputs in an init
+        container requests their size there, while its workload container asks for a floor.
+        Summing workload containers alone would report the node's disk as free while the
+        scheduler holds it for that pod.
         """
         core = self._core_api_factory()
         pods = core.list_pod_for_all_namespaces(

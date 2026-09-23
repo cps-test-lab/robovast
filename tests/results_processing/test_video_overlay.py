@@ -1,4 +1,8 @@
-"""The costmap video overlay, on a synthetic run directory: no service, no ROS, no roqsim."""
+"""The costmap video overlay, on a synthetic run: no service, no ROS, no roqsim.
+
+The run carries its own ``costmaps.csv`` and ``poses.csv`` and no recording, so those files
+are its ``costmaps`` and ``poses`` tables.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import pytest
 import yaml
 
 from robovast_nav import video_overlay as vo
+from tests.robovast_data.conftest import write_store
 
 
 class Placement:
@@ -39,6 +44,7 @@ def run_dir(tmp_path):
     """<campaign>/<config>/<run>/ with a map, a local costmap in odom, poses and a configuration."""
     run = tmp_path / "campaign" / "cfg" / "0"
     run.mkdir(parents=True)
+    write_store(tmp_path / "campaign", {"cfg": {"runs": {0: "passed"}}})
 
     # /map: 10x8 cells at 0.5 m, origin (-1, -1), an occupied border.
     world = np.zeros((8, 10), dtype=np.int8)
@@ -178,9 +184,9 @@ def test_no_binding_and_none_of_the_default_topics_is_refused(run_dir):
         _overlay(run_dir)
 
 
-def test_a_missing_costmaps_file_names_the_postprocessing_step(run_dir, layers):
+def test_a_run_without_costmaps_names_the_decoder_entry(run_dir, layers):
     (run_dir / "costmaps.csv").unlink()
-    with pytest.raises(vo.NavVideoError, match="rosbags_costmap_to_csv"):
+    with pytest.raises(vo.NavVideoError, match="no costmaps table: .*rosbags_costmap_to_csv"):
         _overlay(run_dir, layers=layers)
 
 
@@ -192,6 +198,23 @@ def test_a_grid_in_a_frame_the_poses_lack_is_refused(run_dir, layers):
         writer.writerows(r for r in rows if r["frame"] != "odom")
     with pytest.raises(vo.NavVideoError, match=r"in odom, which .* \(it has: base_link\)"):
         _overlay(run_dir, layers=layers)
+
+
+def test_a_run_outside_a_campaign_is_refused(tmp_path, layers):
+    run = tmp_path / "loose" / "cfg" / "0"
+    run.mkdir(parents=True)
+    with pytest.raises(vo.NavVideoError, match="not inside a campaign directory"):
+        _overlay(run, layers=layers)
+
+
+def test_the_poses_come_from_the_recording_when_the_run_has_one(tmp_path):
+    """The table the decoder builds from a recording, read the same way as a run's own file."""
+    from tests.robovast_data.conftest import nav_campaign
+
+    run = nav_campaign(tmp_path / "nav-2026-01-01-00000000") / "cfg" / "0"
+    poses = vo.read_poses(vo.run_table(run, "poses", "test"))
+    assert "base_link" in poses and len(poses["base_link"].times) > 1
+    assert list(poses["base_link"].times) == sorted(poses["base_link"].times)
 
 
 def test_an_unknown_robot_frame_lists_the_frames_present(run_dir, layers):

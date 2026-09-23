@@ -86,7 +86,7 @@ def apply_manifests(k8s_client, manifests: list, namespace=None):
                 # over the pod it created last time, which already exists.
                 #
                 # Kept rather than replaced, because the object is a running pod holding
-                # the image registry and the campaign index -- recreating it on every
+                # the image registry -- recreating it on every
                 # setup would be a far worse default. That does mean a *changed* manifest
                 # does not take effect, which is worth a warning rather than silence: the
                 # setup would otherwise report success while the cluster kept the old

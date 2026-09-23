@@ -18,7 +18,7 @@ import subprocess
 import pytest
 
 from robovast.common.execution import _LOG_BLOCK, render_entrypoint
-from robovast.common.log_summary import peel_prefixes, severity_of
+from robovast_decode.log_summary import peel_prefixes, severity_of
 
 SCRIPTS = ("entrypoint.sh", "secondary_entrypoint.sh")
 

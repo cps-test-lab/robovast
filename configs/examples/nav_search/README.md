@@ -362,21 +362,7 @@ campaigns against each other is `analysis/compare.py`, above.
   campaign's copy would have been — and drops the original from `run_files`, so exactly one
   copy exists and it is the running cell's. The trial finds it by writing the ordinary path
   relative to its own directory, which is that mount.
-- **Do not saturate the cluster a search is running on -- its own scoring is what loses the
-  race.** A search scores each batch before proposing the next, and on a cluster that means a
-  small conversion Job scheduled alongside the batch's runs. The runs are the bulk and get
-  placed; the little job does not, and a batch whose conversion never ran has no
-  `nav_metrics.csv` for the extractor to read. It refuses that batch -- correctly, and it says
-  exactly why -- but the runs are already spent. On a contended cluster a search can lose a
-  large fraction of its batches this way, so **much of its simulator buys nothing** and its
-  archive is built from a fraction of the feedback it paid for.
-
-  `no_sample` units in `campaign.db` are where this shows up, and a campaign with a high
-  `no_sample` count should be read as a scheduling failure rather than as a search that found
-  nothing: `SELECT status, count(*) FROM unit GROUP BY status`. Re-running postprocessing
-  afterwards recovers the per-run metrics, but **not the search** -- the proposals were made
-  blind and cannot be un-made.
-- **`rosbags_to_csv` writes `rosbag2_<topic>.csv`**, not `<topic>.csv`.
+- **`rosbags_to_csv` names a topic's table `rosbag2_<topic>`**, not `<topic>`.
 - **The ground-truth arrival radius is not nav2's `xy_goal_tolerance`.** nav2 declares
   success against its estimated pose at the instant it stops; the metric measures ground
   truth at the last recorded sample. Runs that *passed* ended 0.23–0.51 m out, so comparing

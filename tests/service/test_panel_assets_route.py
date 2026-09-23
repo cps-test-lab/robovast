@@ -51,7 +51,7 @@ def _make_campaign(tmp_path):
     cfg = tmp_path / "camp-1" / "_config"
     (cfg / "panels" / "my").mkdir(parents=True)
     (cfg / "camp.vast").write_text(
-        "version: 4\n"
+        "version: 5\n"
         "visualization:\n"
         "  results:\n"
         "    run_view:\n"
@@ -126,7 +126,7 @@ def test_a_campaign_with_no_visualization_block_still_gets_the_transport(tmp_pat
     say there is nothing to look at while still showing a working transport."""
     cfg = tmp_path / "camp-2" / "_config"
     cfg.mkdir(parents=True)
-    (cfg / "camp.vast").write_text("version: 4\n")
+    (cfg / "camp.vast").write_text("version: 5\n")
     with TestClient(build_app(_null_service(tmp_path))) as client:
         body = client.get("/campaigns/camp-2/panels").json()
         assert [p["type"] for p in body["panels"]] == ["playback"]
@@ -139,7 +139,7 @@ def test_declaring_only_the_transport_is_still_a_bare_run_view(tmp_path):
     cfg = tmp_path / "camp-3" / "_config"
     cfg.mkdir(parents=True)
     (cfg / "camp.vast").write_text(
-        "version: 4\n"
+        "version: 5\n"
         "visualization:\n"
         "  results:\n"
         "    run_view:\n"
@@ -171,7 +171,7 @@ def test_a_panel_the_simulator_contributes_is_content(tmp_path, monkeypatch):
     cfg = tmp_path / "camp-4" / "_config"
     cfg.mkdir(parents=True)
     (cfg / "camp.vast").write_text(
-        "version: 4\n"
+        "version: 5\n"
         "execution:\n"
         "  mode: ros2\n"
         "  containers:\n"
