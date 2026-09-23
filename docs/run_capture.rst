@@ -91,10 +91,10 @@ The manifest
     "time": {"base": "sim", "t0": 0.002, "t1": 29.324,
              "off": 0, "dtype": "f8", "samples": 734, "width": 1},
     "producer": "roqsim",
-    "producer_version": "0.1.0",
+    "producer_version": "<version>",
     "world": "tiago_pick:tiago_pick",
     "overrides": {},
-    "packages": {"roqsim": "0.1.0", "mujoco": "3.11.0", "numpy": "2.5.1"},
+    "packages": {"roqsim": "<version>", "mujoco": "<version>", "numpy": "<version>"},
     "seed": 1869948900,
     "tracks": [
      {"kind": "joint", "name": "arm_1_joint", "unit": "rad",
@@ -144,7 +144,10 @@ overrides it actually built with.
 ``producer`` when track names fail to resolve, because "this capture was recorded against a different
 world" is the diagnosis in nearly every such case. ``packages`` carries the producer's own library
 versions (for roqsim: ``roqsim``/``mujoco``/``numpy``), so a format or geometry mismatch across a version bump
-is legible rather than mysterious. ``seed`` may be ``null`` when the producer had none.
+is legible rather than mysterious. Each is whatever the image that recorded the run held, which is why
+the sample above writes them ``<version>`` where every other field carries a real value; ``version``
+at the top is not one of them -- that is the format's own number and a reader refuses an unknown one.
+``seed`` may be ``null`` when the producer had none.
 
 .. _run-capture-versions:
 
