@@ -164,7 +164,7 @@ way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
   every postprocessed artifact was present -- the campaign-level counters were never
-  populated. **Traced** for the local lane: ``DockerBackend.count_run_artifacts``
+  populated. **Traced** for the local lane: ``ExecutionBackend.count_run_artifacts``
   returned ``None`` ("results are already on disk"), which made
   ``_start_progress_poller`` return early, so nothing ever wrote the counters and a live
   local campaign also published a ``progress`` that could not move. It now counts the
