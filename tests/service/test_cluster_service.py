@@ -1472,6 +1472,28 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
     assert stopped == []    # and no cooperative stop, which would end the campaign
 
 
+def test_the_cluster_lane_cannot_reach_the_local_container_teardown(cs, monkeypatch):
+    """The ``docker rm -f`` is the local lane's answer to exiting, and only the local
+    lane's ``_shutdown_running_campaigns`` reaches it. Left on a shared ``shutdown`` behind
+    a predicate, it was one flag away from running inside a controller pod, where there is
+    no daemon and the container name means nothing.
+    """
+    import subprocess
+
+    def _no_daemon_here(*_a, **_k):
+        raise AssertionError("the cluster lane shelled out on shutdown")
+
+    monkeypatch.setattr(subprocess, "run", _no_daemon_here)
+    state = types.SimpleNamespace(request_stop=lambda scope=STOP_RUNS: None)
+    cs._campaigns["camp-a"] = types.SimpleNamespace(
+        campaign_id="camp-a", state=state, thread=None)
+    monkeypatch.setattr(type(cs), "_is_done", lambda self, e: False)
+
+    cs.shutdown()
+
+    assert "_shutdown_running_campaigns" in vars(type(cs)), "the answer is the lane's own"
+
+
 def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
     """The local lane does not adopt, so exiting still kills its scenario container.
 
@@ -1481,7 +1503,6 @@ def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
     from robovast.service.local_transport import LocalTransport
 
     impl = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
-    assert impl._adopts_on_restart() is False
     killed = []
     monkeypatch.setattr(type(impl), "_kill_scenario_container",
                         lambda self: killed.append(True))

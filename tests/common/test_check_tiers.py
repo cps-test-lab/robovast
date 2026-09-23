@@ -288,7 +288,7 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
     # Held, not span-scoped: this is the authoring loop, previewed over and over.
     assert hold is True
     # And keyed on the project, so the second preview of the same file reuses the first's.
-    from robovast.service.local_transport import _preview_tag
+    from robovast.service.service_base import _preview_tag
     assert tag == _preview_tag("ws-1", "x.vast")
     # What it ran is reported, so a caller can see the answer was not free.
     assert response.aux_containers == ["aux-builder"]
@@ -303,7 +303,8 @@ def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, t
     check ran. It shares preview's tag: the two are the same authoring loop over the same
     file, and one warm container serves both.
     """
-    from robovast.service.local_transport import LocalTransport, _preview_tag
+    from robovast.service.local_transport import LocalTransport
+    from robovast.service.service_base import _preview_tag
 
     entered = []
 
@@ -327,7 +328,7 @@ def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, t
 
 def test_the_preview_tag_is_stable_per_project_and_name_safe():
     """Stable or the pod is never reused; name-safe or it cannot be a pod name at all."""
-    from robovast.service.local_transport import _preview_tag
+    from robovast.service.service_base import _preview_tag
 
     assert _preview_tag("ws-1", "a/b.vast") == _preview_tag("ws-1", "a/b.vast")
     assert _preview_tag("ws-1", "a/b.vast") != _preview_tag("ws-2", "a/b.vast")

@@ -156,8 +156,7 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     client = service_access.service_client()
     source = "service"
     if client is None:
-        from robovast.service.local_transport import LocalTransport
-        client = LocalTransport()
+        client = service_access.client_or_local()
         source = "local results root"
     try:
         if running_only:
@@ -495,9 +494,8 @@ def list_campaign_plots(campaign_id: str) -> dict:
     # ``campaign.campaign.config_json`` and has nothing until the store has a campaign
     # row. Moving to SQL would make a just-started campaign's plots unreadable and would
     # duplicate a reader the service already owns for the web UI.
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
     try:
-        client = data_access.service_client() or LocalTransport()
+        client = service_access.client_or_local()
         return client.list_campaign_plots(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
         return {"error": str(e)}

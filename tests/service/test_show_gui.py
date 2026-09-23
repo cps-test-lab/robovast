@@ -24,7 +24,8 @@ from robovast.service.client import LocalTransport
 from robovast.service.container_exec import ExecSpec
 from robovast.service.image_store import ImageRef
 from robovast.service.docker_exec_lane import DockerExecLane
-from robovast.service.interface import CreateCampaignRequest, ExecRequest
+from robovast.service.interface import (CreateCampaignRequest, ExecRequest,
+                                        UnsupportedOnLane)
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
@@ -86,7 +87,8 @@ def test_a_cluster_service_refuses_rather_than_running_windowless(cluster, reque
     req = (CreateCampaignRequest(workspace_id="w", show_gui=True)
            if request_kind == "campaign"
            else ExecRequest(command="true", workspace_id="w", show_gui=True))
-    with pytest.raises(ValueError, match="local `vast serve`"):
+    with pytest.raises(UnsupportedOnLane,
+                       match="show_gui is not supported on the cluster lane"):
         cluster._admit_show_gui(req)
 
 
@@ -135,7 +137,7 @@ def test_a_project_with_no_local_block_is_untouched_either_way():
 
 
 def test_the_show_gui_note_fires_only_when_the_project_declares_no_gui_block():
-    from robovast.service.local_transport import _show_gui_note
+    from robovast.service.service_base import _show_gui_note
     windowed = CreateCampaignRequest(workspace_id="w", show_gui=True)
     assert "execution.local.gui" in _show_gui_note(windowed, _campaign({}))
     assert _show_gui_note(

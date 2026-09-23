@@ -45,7 +45,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, UploadGrant,
+                                        ServiceCache, ServiceError, UnsupportedOnLane,
+                                        UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
@@ -75,6 +76,11 @@ class HTTPTransport(RobovastInterface):
     forgotten and 401s only for the one user who tried that feature. The session also
     brings connection pooling, which this class never had.
     """
+
+    #: What this transport declines, it declines as the caller's side of the wire: the
+    #: service it forwards to has its own lane, and a refusal from there arrives with that
+    #: lane's name in it.
+    LANE = "http"
 
     def __init__(self, base_url: str, timeout: float = 30.0,
                  token: str = "", user: str = ""):
@@ -633,14 +639,20 @@ class HTTPTransport(RobovastInterface):
 
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
         # Same as its campaign sibling: a path on the service's disk means nothing here.
-        raise NotImplementedError(
-            "a scene asset is fetched over HTTP from SceneStatus.url, not resolved to a local path")
+        del workspace_id, path
+        raise UnsupportedOnLane(
+            "resolve_workspace_scene_asset", self.LANE,
+            hint="a scene asset is fetched over HTTP from SceneStatus.url, not resolved to "
+                 "a local path")
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
         # A *path on the service's disk* has no meaning across HTTP; a remote caller fetches the bytes
         # from the address the status reports. Refusing beats returning a path that is not there.
-        raise NotImplementedError(
-            "a scene asset is fetched over HTTP from SceneStatus.url, not resolved to a local path")
+        del campaign_id, path
+        raise UnsupportedOnLane(
+            "resolve_campaign_scene_asset", self.LANE,
+            hint="a scene asset is fetched over HTTP from SceneStatus.url, not resolved to "
+                 "a local path")
 
     def query_campaign_data_sql(
         self, campaign_id: str, sql: str, max_rows: int = 500, max_bytes=None,

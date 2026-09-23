@@ -100,11 +100,11 @@ def _mark_live(transport, cid: str) -> None:
     """Register *cid* as a campaign this transport is driving, so it is genuinely live."""
     from robovast.common.store import read_campaign_created_at
     from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
 
     state = ControllerState()
     state.set_phase("running")
-    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    entry = _TrackedCampaign(cid, str(transport._campaigns_root()), state)
     entry.created_at = (read_campaign_created_at(transport.campaign_dir(cid))
                         or entry.created_at)
     with transport._lock:

@@ -122,7 +122,7 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
     from robovast.common.config import validate_config
     from robovast.common.results_utils import campaign_vast
     from robovast.service.interface import CreateCampaignRequest
-    from robovast.service.local_transport import WorkspaceTarget
+    from robovast.service.service_base import WorkspaceTarget
 
     launch = read_launch_record(campaign_root)
     if launch is None:

@@ -80,6 +80,18 @@ def test_choosing_the_cluster_lane_does_not_load_the_local_transport():
     assert "robovast.service.local_transport" not in mods
 
 
+def test_the_shared_base_loads_neither_lane_nor_either_driver():
+    """``ServiceBase`` is what both lanes subclass, so it is imported wherever either is --
+    in a pod with no Docker, on a workstation with no kubeconfig. It must reach for neither,
+    and must not import a lane: a lane reaches its driver inside the hook that needs it, and
+    the base has no hook body to reach with."""
+    mods = _imports_after("import robovast.service.service_base")
+    for forbidden in ("kubernetes", "docker",
+                      "robovast.execution.cluster_execution.cluster_service",
+                      "robovast.service.local_transport"):
+        assert forbidden not in mods, f"the shared base pulled {forbidden}"
+
+
 def test_the_conventional_port_has_one_definition():
     """8800 was declared twice -- in `service/app.py` and in the cluster deploy
     manifests -- and a client probing for a local service read the *cluster* one. One

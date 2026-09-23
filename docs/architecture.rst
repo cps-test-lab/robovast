@@ -168,12 +168,13 @@ Which work a stop lands on, and what it leaves:
      - nothing is running
      - the stop is refused rather than answered with a flag nothing will read
 
-**Service shutdown** is deliberately *not* the same thing. Whether exiting tears a
-campaign down is a property of the lane, asked
-as ``_adopts_on_restart``: the local backend answers no and kills its scenario
-container, because nothing comes back for it; the cluster lane answers yes and leaves
-its Jobs running, because they outlive any one service process and the next one adopts
-them (:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
+**Service shutdown** is deliberately *not* the same thing. What exiting does to a
+running campaign is a property of the lane, and each lane answers it in its own
+``_shutdown_running_campaigns``: the local lane kills its scenario container, because
+nothing comes back for it; the cluster lane leaves its Jobs running, because they outlive
+any one service process and the next one adopts them (:doc:`cluster_execution`). Neither
+answer is a default the other could inherit — the ``docker rm`` is written in the local
+class alone. Stopping a campaign is ``stop``; exiting the service
 is not, and it never was a good way to say it — the cooperative stop persists a
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
@@ -442,6 +443,59 @@ all, and still serves, validates, stores workspaces and runs local Docker campai
 Declining a lane is a supported configuration, not a degraded one — and where an agent is
 involved, it is the strongest available guard: a lane that is not installed cannot be
 silently substituted for the one you asked for.
+
+.. _lanes-refuse-by-name:
+
+The two lanes do not offer the same operations, and are not required to
+--------------------------------------------------------------------------
+
+The local Docker lane runs one campaign at a time, so it has no queue for a rank or a hold
+to act on and no Deployment to roll; the cluster lane runs in pods, so it has no screen to
+open a window on. Each lane is allowed to offer less than the other. What neither may do is
+answer such a request with anything but a refusal that says so: an operation a lane accepts
+and quietly does nothing with looks, to every client, exactly like one that worked.
+
+So there is one exception for it, ``UnsupportedOnLane``, and one sentence:
+``<operation> is not supported on the <lane> lane``, with a hint where there is somewhere
+else to go. Every ``RobovastInterface`` implementation declares its ``LANE`` (``local``,
+``cluster``, ``http``), and a lane raises the refusal **in its own class**, never as a
+default the other lane could inherit. The exception is a ``ServiceError``: the app maps it
+to ``501`` with the sentence as ``detail`` and ``unsupported_on_lane`` in the error header,
+the HTTP transport hands the caller the same status, code and sentence, and in process it
+is the very same object, so the CLI, the MCP tools, the web UI and a raw HTTP client all
+show one line (:doc:`http_api`, "Status codes";
+``tests/service/test_unsupported_on_lane.py``).
+
+That is also the line between "not supported" and the refusals that keep their own status:
+a second campaign on the single-flight local lane is a ``409``, because it is refused for
+*now*; a missing display on a local service is a ``400``, because it is the environment,
+not the lane. A bare ``NotImplementedError`` reaching a route is still a ``500``, because
+it still means a bug.
+
+.. _two-lanes-one-base:
+
+Two lanes, one base
+-------------------
+
+``LocalTransport`` (``robovast.service.local_transport``) and ``ClusterService``
+(``robovast-cluster``) are **siblings** over ``ServiceBase``
+(``robovast.service.service_base``), and neither subclasses the other. The base is the
+in-process half of the interface that is correct for any lane: hosting a campaign's driver
+on a worker thread, the registry of what is being driven, the workspace store, the caches
+and the event log, every reader that resolves a campaign under the results root both lanes
+share, and every operation whose body reaches the lane only through a hook. What differs is
+an ``@abstractmethod`` on the base — which backend runs a job, which exec lane a diagnostic
+runs on, what a job's log and state are read from, what exiting does to a running campaign —
+and a body in each lane's own class. A lane missing one cannot be constructed, and the
+error names it.
+
+Two things follow. The base imports neither Docker nor Kubernetes and names no driver in a
+body (``tests/service/test_lane_ledger.py`` pins that, and
+``tests/service/test_serve_backends.py`` pins that importing it loads neither lane). And a
+local answer cannot stand in for the cluster: what the cluster does not define, the base
+defines for any lane, and what only the local lane can do — the ``docker rm -f`` of its
+single-flight container, the host's own resource sampling, the container a role maps to —
+exists only in the local class.
 
 The lane ships into the **same import namespace** as the core rather than under a name of
 its own, so no import path changes: ``robovast/`` and ``robovast/execution/`` carry no
@@ -1013,14 +1067,13 @@ cannot hold different opinions about when a recording began. The panel is a **re
 clock like every other, which is why it shows no controls of its own — two things in charge of
 "now" is a run view disagreeing with itself.
 
-That path is also why ``local_file`` has to dispatch per lane. ``FileResponse`` is what carries
-``Range``, and the route asks the transport for a path outright rather than probing for the
-method: every transport has it (they all subclass ``LocalTransport``), so a presence check can
-only ever succeed. Treating it as meaningful drops a cluster campaign through to the *local*
-resolver, which pulls an entire campaign to serve one file. Each lane answers with its own cost
-instead: local hands back the path, the cluster fetches the single object behind the address —
-and ``_data_dir`` refusing on the cluster catches that fall-through outright, rather than by
-being slow.
+That path is also why the route asks the transport for a path outright rather than probing for
+the method. ``FileResponse`` is what carries ``Range``, and every transport has ``local_file``
+— the interface defines a refusal and both lanes subclass ``ServiceBase`` — so a presence check
+can only ever succeed, and treating it as meaningful is how a caller ends up believing a lane
+cannot serve a path when it can. It answers or it refuses by name; there is nothing to probe.
+Both lanes answer, because a campaign's results are under the service's own results root on
+either of them.
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
 descriptor per *world*, so one build serves every run that used it — worth a background thread,

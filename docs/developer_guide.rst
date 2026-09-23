@@ -497,8 +497,14 @@ Every remote operation is a method on
 
 #. **The interface** — the abstract method, its ``Routes`` entry and the request/response
    models. They live in ``robovast-client``, so a client install has them without the core.
-#. **Both transports** in ``robovast.service.client``: ``LocalTransport`` in process and
-   ``HTTPTransport`` over the route.
+#. **The lanes and the HTTP transport** — in
+   ``robovast.service.service_base.ServiceBase`` when both lanes answer the same way,
+   otherwise an abstract hook there and a body in each of ``LocalTransport`` and
+   ``ClusterService`` (:ref:`two-lanes-one-base`); and ``HTTPTransport`` over the route. A
+   lane may decline an operation the other offers, and then it raises ``UnsupportedOnLane``
+   naming the operation and itself, in its own class; never a default the other lane would
+   inherit, and never a ``ValueError`` that reads as bad input. The refusal crosses HTTP as
+   a ``501`` and reaches every client as the one sentence (:doc:`http_api`, "Status codes").
 #. **The HTTP route** in :mod:`robovast.service.app`.
 #. **The surfaces** — the ``vast`` CLI, the MCP tools, and, where the web UI shows the
    operation, ``frontend/ui/src/lib/robovastClient.ts`` (:ref:`web-ui-internals`).
@@ -510,8 +516,11 @@ either transport and on either execution lane.
 
 Anything the executing pod needs travels the same way: a value the controller reads must be
 passed through the cluster path (``cluster_service.py`` into the pod's environment) as well as
-the local one, or the operation works under ``vast serve --backend local`` and silently does
-nothing on the cluster.
+the local one, or the operation works under ``vast serve --backend local`` and does nothing
+on the cluster. The lanes being siblings is what keeps that failure loud rather than silent:
+a hook the cluster has not answered refuses to construct, and a body on the base is one that
+is correct for any lane, so the only way a cluster path can be missing is for the cluster's
+own class to leave it out.
 
 Keep disk and database I/O off the event loop
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1906,12 +1915,11 @@ only defense is that the first one can be found.
 Two things back it. Registration happens *before* the slow work — ``create_campaign``
 records the campaign in the lane's registry and returns, and the driver builds the image —
 so the campaign is live from ``t=0`` rather than from whenever its results directory
-appears (see :ref:`campaign-building-phase`). A multi-lane service unions its sibling
-lanes' registries into the listing via ``_extra_live_ids``: ``list_campaigns`` derives its
-id set from the *local* lane's "disk ∪ in-memory" view, so without that a cluster campaign
-would be missing from every listing for the whole length of its pre-flight — registered and
-addressable by id, but undiscoverable by anyone who did not already know the id, which is
-precisely the caller whose start response was lost.
+appears (see :ref:`campaign-building-phase`). ``list_campaigns`` unions that registry into
+its id set beside the disk scan, so a campaign is listed for the whole length of its
+pre-flight — without that it would be registered and addressable by id, but undiscoverable
+by anyone who did not already know the id, which is precisely the caller whose start
+response was lost.
 
 .. _campaign-discovery:
 
@@ -1919,7 +1927,7 @@ Discovering campaigns across a service restart
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ``list_campaigns`` builds its id set from two sources: the results root on disk, and the
-in-memory registry of what is being driven (plus ``_extra_live_ids`` for a sibling lane's).
+in-memory registry of what is being driven.
 The first is what survives the process, and it is the whole picture **on both lanes** — a
 cluster campaign is a directory under ``<results_root>/<campaign_id>/`` on the service's
 results volume, exactly as a local one is under the local results root, so a service that

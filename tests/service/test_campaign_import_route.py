@@ -429,7 +429,7 @@ def test_an_abandoned_upload_is_swept_but_a_refused_one_is_kept(env, tmp_path):
     """
     import os
 
-    from robovast.service.local_transport import STAGED_ARCHIVE_MAX_AGE_S
+    from robovast.service.service_base import STAGED_ARCHIVE_MAX_AGE_S
 
     client, _transport, _ = env
     fixture = _fixtures()[0]

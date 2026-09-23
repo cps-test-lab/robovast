@@ -50,11 +50,11 @@ def _campaign(transport, cid: str, created_at: float, *, size=None, ended=True) 
 def _mark_live(transport, cid: str) -> None:
     from robovast.common.store import read_campaign_created_at
     from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
 
     state = ControllerState()
     state.set_phase("running")
-    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    entry = _TrackedCampaign(cid, str(transport._campaigns_root()), state)
     entry.created_at = read_campaign_created_at(transport.campaign_dir(cid)) or entry.created_at
     with transport._lock:
         transport._campaigns[cid] = entry
@@ -137,11 +137,11 @@ def test_sorting_by_size_builds_a_summary_only_for_the_page(sized, monkeypatch):
 
 def test_a_settled_size_is_read_once_including_an_unmeasured_one(sized, monkeypatch):
     """The SSE stream repeats the listing once a second; the size must not cost a read each time."""
-    from robovast.service import local_transport
+    from robovast.service import service_base
 
     reads = []
-    real = local_transport.read_campaign_results_bytes
-    monkeypatch.setattr(local_transport, "read_campaign_results_bytes",
+    real = service_base.read_campaign_results_bytes
+    monkeypatch.setattr(service_base, "read_campaign_results_bytes",
                         lambda d: reads.append(d.name) or real(d))
     sized.list_campaigns(ListCampaignsRequest(sort="size"))
     first = sorted(reads)
@@ -172,9 +172,9 @@ def test_a_size_is_read_again_until_the_record_settles(transport):
 
 
 def test_the_default_order_reads_no_size(sized, monkeypatch):
-    from robovast.service import local_transport
+    from robovast.service import service_base
 
-    monkeypatch.setattr(local_transport, "read_campaign_results_bytes",
+    monkeypatch.setattr(service_base, "read_campaign_results_bytes",
                         lambda d: pytest.fail("the default listing read a size"))
     sized.list_campaigns()
 

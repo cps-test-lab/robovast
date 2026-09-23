@@ -176,9 +176,9 @@ def test_get_job_log_rejects_path_traversal(transport):
 
 def _live(transport, cid, phase, *, total=0, completed=0):
     """Register a campaign in the phase and run-progress a live controller would report."""
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
     state = ControllerState(phase=phase, runs={"total": total, "completed": completed})
-    entry = _LocalCampaign(campaign_id=cid, results_dir=str(transport._campaigns_root() / cid),
+    entry = _TrackedCampaign(campaign_id=cid, results_dir=str(transport._campaigns_root() / cid),
                            state=state)
     transport._campaigns[cid] = entry
     # The 10s memoisation in resource_usage would otherwise serve an earlier sample.

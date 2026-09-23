@@ -52,7 +52,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
-                                        EXEC_PATH_UNAVAILABLE,
+                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_ON_LANE,
+                                        UnsupportedOnLane,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
@@ -466,6 +467,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             logger.warning("%s", e)
             raise HTTPException(status_code=503, detail=str(e),
                                 headers={ERROR_CODE_HEADER: EXEC_PATH_UNAVAILABLE}) from e
+        except UnsupportedOnLane as e:
+            # 501: the operation is on the interface and this lane does not offer it. Not a
+            # 400 (the input was fine), not a 409 (nothing to retry after) and not the 500
+            # a bare NotImplementedError would become -- that one still means a bug. The
+            # code lets a client tell "this lane cannot" from every other refusal without
+            # matching on the sentence.
+            raise HTTPException(status_code=e.status, detail=str(e),
+                                headers={ERROR_CODE_HEADER: UNSUPPORTED_ON_LANE}) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -1338,10 +1347,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """
         import anyio  # pylint: disable=import-outside-toplevel
         body = await req.body()
-        redeem = getattr(impl, "redeem_upload", None)
-        if redeem is None:
-            raise HTTPException(status_code=501,
-                                detail="this service has no workspace store")
+        redeem = impl.redeem_upload
         # Write and hash on a worker thread: this route is async to read the body, and a
         # write on the event loop would stall every other request for as long as the disk
         # takes to answer.

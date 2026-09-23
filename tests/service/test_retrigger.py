@@ -25,7 +25,8 @@ import yaml
 from robovast.common.campaign_data import write_launch_record
 from robovast.service import retrigger
 from robovast.service.interface import CreateCampaignRequest
-from robovast.service.local_transport import LocalTransport, WorkspaceTarget
+from robovast.service.local_transport import LocalTransport
+from robovast.service.service_base import WorkspaceTarget
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64

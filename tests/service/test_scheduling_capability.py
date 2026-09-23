@@ -8,6 +8,8 @@ later offer an entry the service then refuses, or hide one it would accept.
 """
 
 import types
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -34,13 +36,32 @@ def test_the_local_lane_says_it_has_no_queue():
         assert _local().version().can_schedule is False
 
 
-def test_the_answer_is_the_flag_the_service_refuses_on():
-    """One source of truth: flip the refusal's flag and the handshake follows it."""
+def test_the_answer_is_the_predicate_the_service_refuses_on():
+    """One source of truth: flip the lane's own answer and both follow it.
+
+    The handshake and the admission read the same ``_queues_campaigns``, so a client is
+    never offered an entry the service would refuse, nor denied one it would accept.
+    """
     from robovast.service.client import LocalTransport
+    from robovast.service.interface import CreateCampaignRequest
 
     with patch.object(LocalTransport, "_campaigns_root", return_value="/tmp/c"), \
-            patch.object(LocalTransport, "_SUPPORTS_SCHEDULING", True):
-        assert _local().version().can_schedule is True
+            patch.object(LocalTransport, "_queues_campaigns", return_value=True):
+        lane = _local()
+        assert lane.version().can_schedule is True
+        # and the refusal is gone with it, rather than left saying the opposite
+        lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
+
+
+def test_a_lane_without_a_queue_says_so_and_refuses_in_the_same_breath():
+    from robovast.service.client import LocalTransport
+    from robovast.service.interface import CreateCampaignRequest, UnsupportedOnLane
+
+    with patch.object(LocalTransport, "_campaigns_root", return_value="/tmp/c"):
+        lane = _local()
+        assert lane.version().can_schedule is False
+        with pytest.raises(UnsupportedOnLane):
+            lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
 
 
 def test_the_cluster_lane_says_it_has_one():

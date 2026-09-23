@@ -80,7 +80,7 @@ REQUIRED_OUTPUTS = ("scene.json", "scene.bin")
 IDENTITY_FILE = ".identity.json"
 
 #: Per-key locks, so two viewers opening the same uncached world generate once and the second waits.
-#: Mirrors ``ClusterService._fetch_locks``: without it the *expensive* path is the one that races.
+#: Without it the *expensive* path is the one that races: two viewers, one generation each.
 _locks: "dict[str, threading.Lock]" = {}
 _locks_guard = threading.Lock()
 
@@ -114,10 +114,10 @@ class SceneUnavailable(RuntimeError):
 def cache_root() -> str:
     """Where generated descriptors live, shared by every campaign.
 
-    Durable on purpose. ``ClusterService._cache_dir`` uses ``/tmp`` because it caches *fetches* for a
-    pod that may be replaced at any moment; this cache exists so that work done once is never redone,
-    and putting it in ``/tmp`` would quietly reintroduce the cost the whole feature removes — a reboot
-    or a service restart and every world recompiles, looking correct the whole time, just slow.
+    Durable on purpose: this cache exists so that work done once is never redone, and putting it
+    somewhere a restart clears would quietly reintroduce the cost the whole feature removes — a
+    reboot or a service restart and every world recompiles, looking correct the whole time, just
+    slow.
     """
     root = os.environ.get("ROBOVAST_SCENE_CACHE")
     if not root:

@@ -1390,8 +1390,10 @@ def job_deadline_seconds(execution_params: dict) -> int:
     runs would be killed after the first few. A declared number is a statement about the
     job, and is taken at face value.
 
-    Only the cluster lane enforces this; locally nothing does (see ``execute_local``,
-    which says so in the generated ``run.sh``).
+    The backstop is the cluster lane's alone. The local lane enforces a **declared**
+    timeout exactly as the cluster does (``execute_local`` wraps each compose step in it),
+    but leaves an undeclared one unbounded rather than inventing an hour: enforcing a value
+    the author set is a different decision from supplying one they did not.
     """
     declared = declared_job_seconds(execution_params)
     if declared is not None:

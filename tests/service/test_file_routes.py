@@ -281,7 +281,9 @@ def test_a_transport_that_serves_no_files_says_so(tmp_path):
     and have no local file to offer; the route asks for it outright, so the refusal has
     to be a sentence rather than an ``AttributeError``.
     """
-    from robovast.service.interface import RobovastInterface
+    from robovast.service.http_client import HTTPTransport
+    from robovast.service.interface import UnsupportedOnLane
 
-    with pytest.raises(NotImplementedError, match="serves no local files"):
-        RobovastInterface.local_file(object(), "/results/camp-1/x.bin")
+    with pytest.raises(UnsupportedOnLane,
+                       match="local_file is not supported on the http lane"):
+        HTTPTransport("http://127.0.0.1:1").local_file("/results/camp-1/x.bin")

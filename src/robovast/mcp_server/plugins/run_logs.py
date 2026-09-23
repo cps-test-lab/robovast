@@ -82,11 +82,7 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool,
 
     from robovast.service.interface import \
         ListCampaignsRequest  # pylint: disable=import-outside-toplevel
-    client = service_access.service_client()
-    if client is None:
-        from robovast.service.local_transport import \
-            LocalTransport  # pylint: disable=import-outside-toplevel
-        client = LocalTransport()
+    client = service_access.client_or_local()
     page = client.list_campaigns(ListCampaignsRequest(limit=_CAMPAIGN_SCAN, offset=0))
     matched = [c.campaign_id for c in page.campaigns if pattern.search(c.campaign_id)]
     note = ""
