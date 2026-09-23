@@ -56,8 +56,8 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
 	# environment that looked like broken code.
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
-	# with no execution lane but `local`, so `vast cluster` disappears and the
-	# cross-lane tests fail on a missing plugin -- the same shape as the roqsim miss above.
+	# with no execution lane at all, so `vast cluster` disappears and the cluster tests
+	# fail on a missing plugin -- the same shape as the roqsim miss above.
 	# robovast-client goes LAST, and that ordering is load-bearing. It is a non-optional
 	# path dependency of robovast, so `pip install -e .` resolves it and installs a plain
 	# *copy* into site-packages -- silently replacing an editable install done earlier.

@@ -903,6 +903,8 @@ RESERVED_ENV_NAMES = frozenset({
     'AVAILABLE_CPUS', 'AVAILABLE_MEM',
     # how the pod reaches the service's data plane
     'ROBOVAST_DATA_URL', 'ROBOVAST_TOKEN', 'ROBOVAST_CAMPAIGN_ID',
+    # where the run happened, hashed into its provenance record
+    'NODE_NAME',
 })
 
 
@@ -1390,10 +1392,8 @@ def job_deadline_seconds(execution_params: dict) -> int:
     runs would be killed after the first few. A declared number is a statement about the
     job, and is taken at face value.
 
-    The backstop is the cluster lane's alone. The local lane enforces a **declared**
-    timeout exactly as the cluster does (``execute_local`` wraps each compose step in it),
-    but leaves an undeclared one unbounded rather than inventing an hour: enforcing a value
-    the author set is a different decision from supplying one they did not.
+    The backstop is the lane's: enforcing a value the author set is a different decision
+    from supplying one they did not, and only the lane knows what an unbounded run costs.
     """
     declared = declared_job_seconds(execution_params)
     if declared is not None:

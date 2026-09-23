@@ -42,7 +42,7 @@ computed afresh, which is visible in one place: ``execution.generate`` generator
 cache is not archived), so a stochastic generator draws new samples.
 
 This module is the pure half -- it takes a source directory and returns data. Ordering,
-threads and lanes belong to the transport (``LocalTransport.retrigger_campaign``), which is a
+threads and lanes belong to the transport (``ServiceBase.retrigger_campaign``), which is a
 thin orchestrator over :func:`prepare`. Same split as
 :mod:`robovast.service.postprocessing_edit`.
 """
@@ -653,8 +653,6 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
         # Replayed so the new id keeps the same name stem and sorts beside the source's.
         campaign_name=str(launch.get("campaign_name") or ""),
         runs=runs,
-        # A retrigger is nobody sitting at a screen, whatever the original launch asked for.
-        show_gui=False,
         postprocess=bool(launch.get("postprocess", True)),
         upload_to_share=bool(launch.get("upload_to_share", False)),
         # Replayed for the reason the filter and the run count are: the record says what this

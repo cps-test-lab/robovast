@@ -5,8 +5,7 @@
 
 Everything Kubernetes-shaped that ``vast serve`` needs lives behind this one class, so
 the core never imports the cluster package to start a service -- it resolves this by
-name. When the cluster lane becomes its own distribution, this module is what carries
-``vast serve --backend cluster`` into it.
+name through the ``robovast.execution_backends`` entry point this distribution registers.
 """
 
 from __future__ import annotations

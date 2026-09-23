@@ -30,8 +30,7 @@ A campaign runs one or more *batches*; the batch is a logical grouping recorded
 in the store, not a directory level, so batch and search share the flat layout.
 
 **Where this runs:** always *in the driving process*, against the backend for
-that deployment — the ``vast`` CLI with a ``DockerBackend`` locally, or the
-``robovast-service`` with a ``KubernetesBackend`` for cluster campaigns (one
+that deployment — the ``robovast-service`` with a ``KubernetesBackend`` (one
 worker thread per campaign). This module is a **library**, not an entrypoint:
 the per-campaign controller *pod* (and its in-pod ``main()`` / control server)
 is gone, so cluster and local now share the same driver-hosting shape.
@@ -56,8 +55,8 @@ from robovast.common.config import declared_job_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.search.extractor import NoSampleError
 
-from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
-                       RunOptions, ShareStopped)
+from .backends import (CampaignConfigError, CampaignStopped, ExecutionBackend, RunOptions,
+                       ShareStopped)
 from .control_server import STOP_RUNS, Phase, failure_detail, is_terminal, stop_checker
 from .notify import Notifier
 
@@ -1663,7 +1662,7 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
     nothing was indistinguishable from a campaign still running.
 
     ``end_campaign`` runs from a ``finally`` and only when this tail is the campaign's
-    outermost scope (``RunOptions.finalize_phase``). The local service sets that false
+    outermost scope (``RunOptions.finalize_phase``). A lane sets that false
     and ends the campaign itself, after the postprocessing it runs once this returns.
     """
     options = options or RunOptions()
@@ -1819,13 +1818,35 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
 
+def _required_backend(backend) -> ExecutionBackend:
+    """The backend a campaign runs on, which every caller names.
+
+    There is no default: a campaign's runs happen wherever its backend puts them, and
+    a driver that silently picked one would launch onto a lane nobody chose.
+    """
+    if backend is None:
+        raise ValueError("a campaign needs an execution backend; none was given")
+    return backend
+
+
+def _required_backend(backend) -> ExecutionBackend:
+    """The backend a campaign runs on, which every caller names.
+
+    There is no default: a campaign's runs happen wherever its backend puts them, and
+    a driver that silently picked one would launch onto a lane nobody chose.
+    """
+    if backend is None:
+        raise ValueError("a campaign needs an execution backend; none was given")
+    return backend
+
+
 def share_cancelled_detail(backend, stopped: ShareStopped) -> str:
     """Discard a cancelled upload's partial artifact; return what to record.
 
     The cleanup is the reason this is not just a message. A cancelled upload leaves a
     truncated archive behind, and a truncated archive "uploads, lists and downloads
     exactly like a good one, and only fails at the far end" -- the very shape
-    ``DockerBackend._refuse_unimportable`` exists to keep off a share. So the partial is
+    ``ExecutionBackend.share_campaign`` refuses to put on a share. So the partial is
     removed, and where the provider cannot remove it the sentence **names the object it
     left** rather than reporting a clean cancellation over a share that now holds a
     half-written campaign.
@@ -2067,7 +2088,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id or campaign_id_for(campaign_config)
-    be = backend or DockerBackend(state=state)
+    be = _required_backend(backend)
     opts = options or RunOptions()
     _preflight_upload_to_share(be, opts)
     # Install declared plugins first, as their own logged phase (no-op if none), before
@@ -2260,7 +2281,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         if state is not None:
             state.raise_if_stopped("stopped while composing the campaign's configurations")
 
-        be = backend or DockerBackend(state=state)
+        be = _required_backend(backend)
         _preflight_upload_to_share(be, opts)
         # One notifier drives the whole campaign: the controller fires the lifecycle
         # events, and _finish_campaign (outside the controller) fires `uploaded`.

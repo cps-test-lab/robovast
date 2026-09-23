@@ -55,17 +55,15 @@ def test_every_name_the_scripts_can_produce_maps_back_to_a_container(name, conta
     assert run_slices.container_of(name) == container
 
 
-def test_both_lanes_point_output_dir_at_the_same_job_artifact_path():
+def test_the_lane_points_output_dir_at_the_job_artifact_path():
     """``job_artifact_rel`` is the one definition of the ``_jobs/`` layout, and the plugin
     resolves through it. A lane that computed its own path would put a whole campaign's
     samples somewhere the manifest does not point."""
     from robovast.execution.cluster_execution import kubernetes_backend
-    from robovast.execution.execution_utils import execute_local
 
-    for module in (execute_local, kubernetes_backend):
-        source = _source(module)
-        assert "job_artifact_rel(" in source, f"{module.__name__} derives its own _jobs path"
-        assert "OUTPUT_DIR" in source
+    source = _source(kubernetes_backend)
+    assert "job_artifact_rel(" in source, "the lane derives its own _jobs path"
+    assert "OUTPUT_DIR" in source
 
     # And that definition is what the reader inverts.
     assert job_artifact_rel(3, "batch-0") == "batch-0/job-3"

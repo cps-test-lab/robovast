@@ -15,14 +15,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 def _transport(tmp_path):
     """A NullLane with both roots pinned under *tmp_path*, and disjoint."""
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = NullLane.__new__(NullLane)
+    lt = object.__new__(NullLane)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = store

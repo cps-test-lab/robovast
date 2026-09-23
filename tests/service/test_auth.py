@@ -20,8 +20,8 @@ from starlette.testclient import TestClient
 
 from robovast.service import auth
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
+from tests.service.null_lane import NullLane
 
 TOKEN = "correct-horse-battery-staple"
 

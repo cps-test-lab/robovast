@@ -17,6 +17,7 @@ the base's own code paths, and what it refuses is refused the way a client would
 """
 
 import contextlib
+import pathlib
 
 from robovast.execution.backends import ExecutionBackend, RunOptions
 from robovast.service.interface import (ActionResult, ResourceUsage, UnsupportedOnLane,
@@ -40,6 +41,7 @@ class NullBackend(ExecutionBackend):
         raise UnsupportedOnLane("run_batch", NullLane.LANE, hint="the null lane runs nothing")
 
 
+
 class NullLane(ServiceBase):
     """See the module docstring."""
 
@@ -58,12 +60,8 @@ class NullLane(ServiceBase):
 
     def _admit_scheduling(self, request) -> None:
         asked = [name for name in ("priority", "paused") if getattr(request, name, None)]
-        if asked:
+        if asked and not self._queues_campaigns():
             self._refuse(" and ".join(asked))
-
-    def _admit_show_gui(self, request) -> None:
-        if getattr(request, "show_gui", False):
-            self._refuse("show_gui")
 
     def _scheduling_for(self, campaign_id: str, *, live: bool) -> dict:
         del campaign_id, live
@@ -80,9 +78,6 @@ class NullLane(ServiceBase):
     def _build_backend(self, state):
         return NullBackend(state=state)
 
-    def _postprocess_in_process(self) -> bool:
-        return False
-
     def _postprocess_campaign(self, campaign_id, campaign_dir, *, force=False, skip=(),
                               state=None):
         del campaign_id, campaign_dir, force, skip, state
@@ -95,7 +90,6 @@ class NullLane(ServiceBase):
 
     def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):
         del campaign_id, identity, on_wait
-        return None
 
     def _shutdown_running_campaigns(self, running) -> None:
         del running
@@ -125,6 +119,7 @@ class NullLane(ServiceBase):
 
     def build_image(self, request):
         del request
+        self._admit_storage("build an image")
         self._refuse("build_image")
 
     def get_image_build_status(self, build_id: str):
@@ -175,14 +170,21 @@ class NullLane(ServiceBase):
 
     def run_postprocessing(self, request) -> ActionResult:
         del request
+        self._admit_storage("postprocess a campaign")
         self._refuse("run_postprocessing")
 
     # -- capacity: nothing measured, nothing reserved ------------------------------------
 
+    def _disk_space(self) -> tuple:
+        """``(DiskSpace, unavailable_reason)`` of nothing: no disk is measured here. A test
+        of the storage reserve replaces this with the reading it wants judged."""
+        return None, None
+
     def _compute_resource_usage(self) -> ResourceUsage:
+        disk, unavailable = self._disk_space()
         return ResourceUsage(backend=self.LANE, cpu_capacity=0.0, cpu_used=0.0,
                              memory_capacity_bytes=0, memory_used_bytes=0,
-                             parallel_runs=False)
+                             parallel_runs=False, disk=disk, disk_unavailable=unavailable)
 
     def _scenario_job_tally(self) -> "tuple[int, int]":
         return 0, 0
@@ -203,3 +205,16 @@ class NullLane(ServiceBase):
     def upgrade_service(self, force: bool = False) -> ActionResult:
         del force
         self._refuse("upgrade_service")
+
+
+def serving(results_root, workspaces_root) -> NullLane:
+    """A null lane over *results_root*, for a test that needs a service to answer from it.
+
+    What the MCP tools read -- listings, plots, logs, a configuration's contribution -- is
+    read by the service from its results root, so a tool test hands them this lane as the
+    service (``service_access.service_client``) rather than a disk of its own.
+    """
+    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+    lane = NullLane(store=WorkspaceStore(registry=WorkspaceRegistry(root=workspaces_root)))
+    lane._campaigns_root = lambda: pathlib.Path(results_root)  # noqa: SLF001
+    return lane

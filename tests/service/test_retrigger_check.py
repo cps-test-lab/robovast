@@ -209,7 +209,7 @@ def test_a_version_1_campaign_can_be_prepared_at_all(tmp_path):
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
             for field in ("config_filter", "campaign_name", "runs", "postprocess",
-                          "upload_to_share", "show_gui", "description", "workspace_id",
+                          "upload_to_share", "description", "workspace_id",
                           "config_path"):
                 self.__dict__.setdefault(field, None)
 
@@ -248,7 +248,7 @@ def test_the_staged_migration_keeps_the_authors_comments(tmp_path):
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
             for field in ("config_filter", "campaign_name", "runs", "postprocess",
-                          "upload_to_share", "show_gui", "description", "workspace_id",
+                          "upload_to_share", "description", "workspace_id",
                           "config_path"):
                 self.__dict__.setdefault(field, None)
 

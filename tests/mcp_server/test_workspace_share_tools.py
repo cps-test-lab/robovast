@@ -36,7 +36,7 @@ class _FakeClient:
 @pytest.fixture(name="client")
 def _client(monkeypatch):
     fake = _FakeClient()
-    monkeypatch.setattr(service_access, "client_or_local", lambda: fake)
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
     return fake
 
 
@@ -52,7 +52,7 @@ def test_export_answers_with_the_object_that_landed(client):
 def test_export_without_a_share_reports_the_refusal(monkeypatch):
     """A service with no share cannot publish. The tool says so rather than raising into
     the transport, where a model never reads it."""
-    monkeypatch.setattr(service_access, "client_or_local",
+    monkeypatch.setattr(service_access, "service_client",
                         lambda: _FakeClient(failing="this service has no share configured"))
     assert "no share configured" in authoring.export_workspace("ws-ab12")["error"]
 

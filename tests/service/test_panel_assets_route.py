@@ -35,8 +35,8 @@ def _costmap_bundle_built() -> bool:
         return False
 
 
-def _local_transport(results_root) -> NullLane:
-    lt = NullLane.__new__(NullLane)
+def _null_lane(results_root) -> NullLane:
+    lt = object.__new__(NullLane)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None
@@ -64,7 +64,7 @@ def _make_campaign(tmp_path):
     )
     (cfg / "panels" / "my" / "remoteEntry.js").write_text("// built bundle\n")
     (tmp_path / "secret.txt").write_text("outside")
-    return TestClient(build_app(_local_transport(tmp_path)))
+    return TestClient(build_app(_null_lane(tmp_path)))
 
 
 def test_panels_carry_remote_descriptors(tmp_path):
@@ -115,7 +115,7 @@ def test_unknown_package_panel_is_404(tmp_path):
 
 
 def test_custom_panel_path_escape_rejected(tmp_path):
-    lt = _local_transport(tmp_path)
+    lt = _null_lane(tmp_path)
     _make_campaign(tmp_path)  # create the layout
     with pytest.raises(ValueError):
         lt.resolve_campaign_panel_asset("camp-1", "../../secret.txt")
@@ -127,7 +127,7 @@ def test_a_campaign_with_no_visualization_block_still_gets_the_transport(tmp_pat
     cfg = tmp_path / "camp-2" / "_config"
     cfg.mkdir(parents=True)
     (cfg / "camp.vast").write_text("version: 4\n")
-    with TestClient(build_app(_local_transport(tmp_path))) as client:
+    with TestClient(build_app(_null_lane(tmp_path))) as client:
         body = client.get("/campaigns/camp-2/panels").json()
         assert [p["type"] for p in body["panels"]] == ["playback"]
         assert body["transport_only"] is True
@@ -147,7 +147,7 @@ def test_declaring_only_the_transport_is_still_a_bare_run_view(tmp_path):
         "      - playback:\n"
         "          title: Transport\n"
     )
-    with TestClient(build_app(_local_transport(tmp_path))) as client:
+    with TestClient(build_app(_null_lane(tmp_path))) as client:
         body = client.get("/campaigns/camp-3/panels").json()
         assert [p["type"] for p in body["panels"]] == ["playback"]
         assert body["transport_only"] is True
@@ -178,7 +178,7 @@ def test_a_panel_the_simulator_contributes_is_content(tmp_path, monkeypatch):
         "    simulation:\n"
         "      backend: stub\n"
     )
-    with TestClient(build_app(_local_transport(tmp_path))) as client:
+    with TestClient(build_app(_null_lane(tmp_path))) as client:
         body = client.get("/campaigns/camp-4/panels").json()
         assert [p["type"] for p in body["panels"]] == ["playback", "scene3d"]
         assert body["transport_only"] is False

@@ -74,10 +74,10 @@ def test_finish_tail_ends_the_campaign_when_it_is_outermost():
 
 
 def test_finish_tail_leaves_the_campaign_open_when_it_is_not_outermost():
-    """The local service runs postprocessing *after* this returns.
+    """A lane that runs postprocessing *after* this returns sets ``finalize_phase`` off.
 
-    Ending here would republish the original bug on that lane: terminal before the
-    metrics exist. The worker ends it instead (see LocalTransport._drive_campaign).
+    Ending here would then be terminal before the metrics exist; the worker ends it
+    instead.
     """
     state = _state()
     controller._finish_campaign(object(), "/root", "c1", state,
@@ -178,8 +178,8 @@ def test_exactly_one_terminal_message_per_campaign():
 def test_two_scopes_ending_the_same_campaign_send_one_message():
     """Both scopes legitimately end a campaign on the cluster lane.
 
-    ``ClusterService`` subclasses ``LocalTransport``, so the service worker's ``finally``
-    ends every campaign it drives — it has to, because one that failed before the builder
+    The service worker's ``finally`` (``ServiceBase._launch_campaign``) ends every
+    campaign it drives — it has to, because one that failed before the builder
     ran (an image build that could not resolve) never reaches the finish tail at all. On
     the lanes where the finish tail is *also* outermost, both fire. The phase is
     idempotent; two "Campaign finished" pushes to someone's phone are not.

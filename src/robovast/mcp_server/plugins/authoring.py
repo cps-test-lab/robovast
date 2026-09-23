@@ -51,7 +51,7 @@ def create_workspace(name: str = "", from_campaign: str = "", from_share: str = 
     """
     from robovast.service.interface import CreateWorkspaceRequest
     try:
-        return service_access.client_or_local().create_workspace(
+        return service_access.require_service().create_workspace(
             CreateWorkspaceRequest(name=name, from_campaign=from_campaign,
                                    from_share=from_share)).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -71,7 +71,7 @@ def list_workspaces(workspace_id: str = "") -> dict:
         but it is unpinned by dropping the flag rather than deleted here.
     """
     try:
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         if workspace_id:
             found = [client.get_workspace(workspace_id).model_dump()]
         else:
@@ -85,7 +85,7 @@ def list_workspaces(workspace_id: str = "") -> dict:
 def delete_workspace(workspace_id: str) -> dict:
     """Delete a workspace and its inputs. Existing campaigns are unaffected."""
     try:
-        return service_access.client_or_local().delete_workspace(workspace_id).model_dump()
+        return service_access.require_service().delete_workspace(workspace_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -103,7 +103,7 @@ def export_workspace(workspace_id: str) -> dict:
         ``{slug, object_name, size, url}``, or ``{error}``.
     """
     try:
-        return service_access.client_or_local().export_workspace(workspace_id).model_dump()
+        return service_access.require_service().export_workspace(workspace_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -125,8 +125,8 @@ def create_upload(address: str, executable: bool = False) -> dict:
         when nobody can name an origin for it (see ``service_access.web_url``).
     """
     from robovast.service.interface import CreateUploadRequest, Routes
-    client = service_access.client_or_local()
     try:
+        client = service_access.require_service()
         grant = client.create_upload(CreateUploadRequest(
             address=address, executable=executable))
     except Exception as e:  # noqa: BLE001
@@ -290,7 +290,7 @@ def validate_project(address: str, check_world: bool = True,
                           "problems": list(report.get("problems") or []) + advisory}
             return {**ValidationReport.model_validate(report).model_dump(),
                     "lane": "local file"}
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         workspace_id, rel_path = target
         report = client.validate_project(
             _resolve_workspace_id(client, workspace_id), rel_path, check_world,
@@ -358,7 +358,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                 "aux_containers": aux,
                 "lane": "local file",
             }
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         workspace_id, rel_path = target
         resp = client.preview_configurations(
             _resolve_workspace_id(client, workspace_id), limit, rel_path)
@@ -395,8 +395,8 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
         targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
             overridable *fields* only and builds no model; a glob builds one, as does
             *entities*.
-        backend: ``"local"`` or ``"cluster"``; the cluster lane refuses this query today and
-            says why.
+        backend: Which lane answers, on a service that offers several; the one lane here
+            ignores it.
 
     Returns:
         ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
@@ -414,7 +414,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
                 "describe_world needs a workspace address (/sources/<workspace_id>/<path>): "
                 "the world is described by the campaign's own image, which only the service "
                 "knows how to reach")
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         workspace_id, rel_path = target
         described = client.describe_world(
             _resolve_workspace_id(client, workspace_id), rel_path, targets, entities, backend)

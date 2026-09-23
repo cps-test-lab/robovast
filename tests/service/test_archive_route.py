@@ -22,14 +22,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 _CAMPAIGN = "camp-2026-01-01-000000"
 
 
-def _local_transport(tmp_path) -> NullLane:
+def _null_lane(tmp_path) -> NullLane:
     """A real NullLane with its results root under *tmp_path*.
 
     Constructed rather than ``__new__``-ed: streaming an archive goes through the campaign-dir
@@ -44,7 +44,7 @@ def _local_transport(tmp_path) -> NullLane:
 
 @pytest.fixture(name="env")
 def _env(monkeypatch, tmp_path):
-    transport = _local_transport(tmp_path)
+    transport = _null_lane(tmp_path)
     root = tmp_path / "results" / _CAMPAIGN
     (root / "_config").mkdir(parents=True)
     (root / "_config" / "campaign.vast").write_text("configuration:\n  name: x\n",
@@ -104,7 +104,7 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     workspace: a service with no workspaces configured answers 501 for project routes, and an
     archive download must not be dragged into that.
     """
-    lt = NullLane.__new__(NullLane)
+    lt = object.__new__(NullLane)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None
@@ -130,7 +130,7 @@ def test_a_running_campaign_downloads_as_an_incomplete_snapshot(tmp_path, monkey
     """
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
 
-    transport = _local_transport(tmp_path)
+    transport = _null_lane(tmp_path)
     root = tmp_path / "results" / _CAMPAIGN / "_config"
     root.mkdir(parents=True)
     (root / "campaign.vast").write_text("configuration:\n  name: x\n", encoding="utf-8")

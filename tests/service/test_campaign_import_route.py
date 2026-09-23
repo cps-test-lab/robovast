@@ -51,9 +51,9 @@ from robovast.client.status import TERMINAL_PHASES
 from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
 from robovast.service import retrigger
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.interface import DESCRIPTION_MAX_LEN, Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 from tests.service.conftest import CreateCampaignRequestStub
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"

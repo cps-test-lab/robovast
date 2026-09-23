@@ -17,8 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 _CAMPAIGN = "camp-2026-01-01-000000"
 

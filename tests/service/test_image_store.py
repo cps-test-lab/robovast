@@ -12,15 +12,13 @@ answers "not there" when it could not ask, and nobody hands a concrete registry 
 client.
 """
 
-import subprocess
 
 import pytest
 
 from robovast.common.errors import ImageStoreUnavailable
 from robovast.service import image_store
 from robovast.service.image_build import BuildSpec
-from robovast.service.image_store import (ImageBuildStore, ImageRef, LocalDockerImageStore,
-                                          build_identity, local_build_id)
+from robovast.service.image_store import ImageBuildStore, ImageRef
 
 try:
     from robovast.execution.cluster_execution.registry_image_store import RegistryImageStore
@@ -37,7 +35,7 @@ def _stores(tmp_path):
     The registry store needs no cluster to answer ``ref_for``: it is given a config and a
     client, both stubbed. A new lane belongs in this list -- that is the point of it.
     """
-    stores = [LocalDockerImageStore(tmp_path / "builds")]
+    stores = []
     try:
         from robovast.execution.cluster_execution.registry_image_store import \
             RegistryImageStore
@@ -126,33 +124,6 @@ def test_every_store_hashes_its_own_base(tmp_path):
 # "I could not ask" is never reported as "it is not there"
 # ---------------------------------------------------------------------------
 
-def test_the_local_store_refuses_rather_than_blaming_the_image(tmp_path, monkeypatch):
-    """The exact misdiagnosis behind the report: no docker CLI here, reported as an unbuilt
-    image. It cost an investigation, because the answer named the wrong layer entirely."""
-    store = LocalDockerImageStore(tmp_path / "builds")
-    ref = store.ref_for(SPEC, tmp_path)
-
-    def _no_docker(*a, **kw):
-        raise FileNotFoundError("docker")
-
-    monkeypatch.setattr(subprocess, "run", _no_docker)
-    with pytest.raises(ImageStoreUnavailable) as excinfo:
-        store.present(ref)
-    assert "docker CLI is not usable here" in str(excinfo.value)
-    assert "not something a rebuild fixes" in str(excinfo.value)
-
-
-def test_the_local_store_reports_a_genuinely_absent_image_as_absent(tmp_path, monkeypatch):
-    store = LocalDockerImageStore(tmp_path / "builds")
-    ref = store.ref_for(SPEC, tmp_path)
-    monkeypatch.setattr(subprocess, "run",
-                        lambda *a, **kw: subprocess.CompletedProcess(a, 1, b"", b""))
-    assert store.present(ref) is False
-    monkeypatch.setattr(subprocess, "run",
-                        lambda *a, **kw: subprocess.CompletedProcess(a, 0, b"[]", b""))
-    assert store.present(ref) is True
-
-
 def test_a_registry_that_did_not_answer_is_not_an_unbuilt_image(tmp_path, monkeypatch):
     """``manifest_exists`` deliberately fails closed for the *build* path. A caller asking
     whether it can RUN the image needs the opposite, so the store reads the tri-state."""
@@ -169,15 +140,6 @@ def test_a_registry_that_did_not_answer_is_not_an_unbuilt_image(tmp_path, monkey
     assert store.present(ref) is False
     monkeypatch.setattr(ris, "manifest_state", lambda *a, **kw: "present")
     assert store.present(ref) is True
-
-
-def test_the_local_build_id_is_the_one_start_records(tmp_path):
-    """A refusal derives the build id from the spec; ``start`` records the build under it.
-    If those two ever differ, the id in "wait for this build" names nothing."""
-    store = LocalDockerImageStore(tmp_path / "builds")
-    found = store.ref_for(SPEC, tmp_path)
-    assert found.build_id == local_build_id("sut", found.image_hash)
-    assert found.identity == build_identity("sut", found.image_hash)
 
 
 def test_every_store_folds_the_vcs_resolution_into_its_hash(tmp_path, monkeypatch):
@@ -250,5 +212,5 @@ def test_a_base_the_registry_cannot_resolve_still_answers(tmp_path, monkeypatch)
 def test_the_resolution_is_shared_rather_than_reimplemented_per_lane():
     """Concrete on the ABC, because "which commit does this ref name?" is not a property of
     where images are stored. While it lived on one store, the other simply did without it."""
-    for store_cls in (LocalDockerImageStore, *([RegistryImageStore] if RegistryImageStore else [])):
+    for store_cls in ([RegistryImageStore] if RegistryImageStore else []):
         assert store_cls.resolve_vcs is ImageBuildStore.resolve_vcs

@@ -22,7 +22,7 @@ each a little weaker than the last:
 
 * ``WorkspaceStore._safe_join`` — rejected absolute / ``~`` / ``..`` **and** verified
   the resolved path, so symlinks could not point out either.
-* ``LocalTransport.get_job_log`` — only ``campaign_dir.resolve() not in
+* the service's ``get_job_log`` — only ``campaign_dir.resolve() not in
   run_dir.parents``, with no up-front ``..``/``~`` rejection.
 * the run-artifact route's own check — only a ``str.startswith`` test on the resolved
   path.

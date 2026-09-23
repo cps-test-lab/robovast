@@ -4,7 +4,7 @@
 
 The service drives cluster campaigns **in-process** (one worker thread each) over a
 KubernetesBackend; there is no per-campaign controller pod any more, so these cover
-the launch *hooks* it overrides on LocalTransport plus the aux-pod manifest that
+the launch *hooks* it answers for ServiceBase plus the aux-pod manifest that
 replaced the old controller-pod sidecar.
 """
 
@@ -188,11 +188,6 @@ def test_run_options_carry_upload_to_share(cs):
     assert on.upload_to_share is True
     default = cs._run_options(CreateCampaignRequest(workspace_id="ws-x"))
     assert default.upload_to_share is False
-
-
-def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
-    """So data.db rides the campaign's existing upload rather than a second one."""
-    assert cs._postprocess_in_process() is False
 
 
 # -- a build the lane cannot do is a config error, not a crash ---------------
@@ -1472,11 +1467,11 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
     assert stopped == []    # and no cooperative stop, which would end the campaign
 
 
-def test_the_cluster_lane_cannot_reach_the_local_container_teardown(cs, monkeypatch):
-    """The ``docker rm -f`` is the local lane's answer to exiting, and only the local
-    lane's ``_shutdown_running_campaigns`` reaches it. Left on a shared ``shutdown`` behind
-    a predicate, it was one flag away from running inside a controller pod, where there is
-    no daemon and the container name means nothing.
+def test_shutdown_never_shells_out(cs, monkeypatch):
+    """Exiting leaves the running campaigns to the successor and touches no container
+    runtime: a teardown by shell would run inside the controller pod, where there is no
+    daemon and a container name means nothing. The answer is the lane's own hook, not a
+    predicate on a shared ``shutdown``.
     """
     import subprocess
 
@@ -1492,33 +1487,6 @@ def test_the_cluster_lane_cannot_reach_the_local_container_teardown(cs, monkeypa
     cs.shutdown()
 
     assert "_shutdown_running_campaigns" in vars(type(cs)), "the answer is the lane's own"
-
-
-def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
-    """The local lane does not adopt, so exiting still kills its scenario container.
-
-    The counterpart of the test above: nothing comes back for a local campaign's
-    containers, so leaving them would orphan them.
-    """
-    from robovast.service.local_transport import LocalTransport
-
-    impl = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
-    killed = []
-    monkeypatch.setattr(type(impl), "_kill_scenario_container",
-                        lambda self: killed.append(True))
-    stopped = []
-    state = types.SimpleNamespace(
-        request_stop=lambda scope=STOP_RUNS: stopped.append(scope))
-    impl._campaigns["camp-a"] = types.SimpleNamespace(
-        campaign_id="camp-a", state=state, thread=None)
-    monkeypatch.setattr(type(impl), "_is_done", lambda self, e: False)
-
-    impl.shutdown()
-
-    assert killed == [True]
-    # The run scope: what shutdown is for is ending the campaign so its container
-    # teardown runs before the process exits.
-    assert stopped == [STOP_RUNS]
 
 
 def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):

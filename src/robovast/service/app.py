@@ -20,9 +20,9 @@
 implementation and exposes it over the :class:`~robovast.service.interface.Routes`
 contract, so the same app serves:
 
-* a **local** ``vast serve`` (impl = :class:`~robovast.service.client.LocalTransport`,
-  Docker backend, local filesystem) — a persistent single-host service;
-* a **cluster** deployment (impl = the cluster service core).
+* a **cluster** deployment (impl = the cluster service core), which is every
+  production service;
+* the test suite's null lane, for the routes themselves.
 
 This generalizes the per-campaign FastAPI control channel in
 :mod:`robovast.execution.control_server` into a persistent, campaign-spanning
@@ -777,7 +777,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """Record one ``resource_usage()`` reading every ``_usage_sample_s``.
 
         Goes through ``impl.resource_usage`` rather than reaching past it to a lane's
-        internals, which means it runs *through* ``LocalTransport``'s 10 s usage cache: at
+        internals, which means it runs *through* the base's 10 s usage cache: at
         a 30 s cadence that never hits, so every entry here is a fresh reading, while a UI
         poll landing between two samples is still served from the cache. One pull per
         window either way -- on the cluster that pull is a ``list_node`` plus a filtered
@@ -1547,7 +1547,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         # before playing.
         #
         # `impl.local_file` is asked for outright rather than probed with getattr: every
-        # transport implements it (they all subclass LocalTransport), so a presence check
+        # transport implements it (they all subclass ServiceBase), so a presence check
         # could only ever succeed, so a branch guarded on it -- buffering the bytes for "a
         # lane with no path" -- is unreachable.
         return _guard(lambda: FileResponse(impl.local_file(address), media_type=media_type))

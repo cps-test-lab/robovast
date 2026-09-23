@@ -20,8 +20,12 @@ from robovast.mcp_server import results_resolver, service_access
 
 @pytest.fixture
 def no_project(monkeypatch, tmp_path):
-    """No ``.robovast_project`` anywhere; workspaces store rooted under tmp_path."""
+    """No ``.robovast_project`` anywhere; workspaces store rooted under tmp_path, and a
+    service answering from ``tmp_path/results``."""
+    from tests.service.null_lane import serving
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
+    lane = serving(tmp_path / "results", tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: lane)
     return tmp_path / "results"
 
 
@@ -104,10 +108,13 @@ def test_listing_prefers_the_service(monkeypatch, no_project):
     assert "description" not in result["campaigns"][1]
 
 
-def test_listing_says_when_it_fell_back_to_disk(no_project):
-    """No service is not an error — but "no campaigns here" must name where it looked."""
+def test_no_service_is_reported_rather_than_read_around(monkeypatch, no_project):
+    """The campaigns are the service's; with none answering there is nothing to list from,
+    and the tool says so rather than answering from this host's disk."""
     from robovast.mcp_server.plugins.results import list_campaigns
-    assert list_campaigns()["source"] == "local results root"
+    from robovast.mcp_server.service_access import NO_SERVICE
+    monkeypatch.setattr(service_access, "service_client", lambda: None)
+    assert list_campaigns() == {"error": NO_SERVICE}
 
 
 def test_running_only_walks_the_whole_list(monkeypatch, no_project):

@@ -20,20 +20,14 @@ import pytest
 
 from robovast.common.campaign_data import read_launch_record, write_launch_record
 from robovast.execution.cluster_execution.cluster_service import ClusterService
-from robovast.service.client import LocalTransport
-from robovast.service.interface import (PRIORITY_LIMIT, CreateCampaignRequest,
-                                        UnsupportedOnLane)
+from robovast.service.interface import PRIORITY_LIMIT, CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture
 def _store(tmp_path):
     return WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-
-
-@pytest.fixture
-def local(_store):
-    return LocalTransport(store=_store)
 
 
 class _NoCluster:
@@ -59,47 +53,16 @@ def cluster(_store):
     return service
 
 
-# -- the lane that has no queue -----------------------------------------------------------
-
-def test_the_local_lane_refuses_a_rank_at_launch(local):
-    """Accepting it is the silent failure: the campaign would run at the ordinary time and
-    nothing would ever say the rank did nothing."""
-    with pytest.raises(UnsupportedOnLane,
-                       match="priority is not supported on the local lane"):
-        local.create_campaign(CreateCampaignRequest(workspace_id="ws-x", priority=-1))
-
-
-def test_the_local_lane_refuses_a_hold_at_launch(local):
-    with pytest.raises(UnsupportedOnLane,
-                       match="paused is not supported on the local lane.*no queue"):
-        local.create_campaign(CreateCampaignRequest(workspace_id="ws-x", paused=True))
-
-
-def test_the_local_lane_admits_a_launch_that_asks_for_nothing(local):
-    """The default must stay launchable on both lanes, or every ordinary local run breaks."""
-    local._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x"))
-
-
-def test_the_local_lane_refuses_the_operation_even_at_the_default(local):
-    """Unlike a launch: a launch that never mentions scheduling is an ordinary launch, but
-    *asking* for a rank here asks for something this lane cannot do, whatever the value."""
-    with pytest.raises(UnsupportedOnLane,
-                       match="set_campaign_scheduling is not supported on the local lane"):
-        local.set_campaign_scheduling("camp-1", priority=0)
-
-
 def test_the_cluster_lane_admits_a_rank(cluster):
     cluster._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=5))
 
 
 # -- a call that asked for nothing --------------------------------------------------------
 
-@pytest.mark.parametrize("impl", ["local", "cluster"])
-def test_setting_neither_half_is_refused(impl, request):
+def test_setting_neither_half_is_refused(cluster):
     """Answering it "done" would report a change that never happened."""
-    service = request.getfixturevalue(impl)
     with pytest.raises(ValueError, match="nothing to set"):
-        service.set_campaign_scheduling("camp-1")
+        cluster.set_campaign_scheduling("camp-1")
 
 
 # -- the bound ----------------------------------------------------------------------------
@@ -184,7 +147,7 @@ def test_a_finished_campaign_reports_no_standing(cluster, tmp_path):
 # ``paused=False`` must reach the service as a value rather than being dropped with the
 # Nones -- otherwise resuming a campaign would do nothing at all.
 
-class _RecordingImpl(LocalTransport):
+class _RecordingImpl(NullLane):
     """Records the call instead of touching a queue."""
 
     def __init__(self, **kw):

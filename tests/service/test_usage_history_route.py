@@ -14,8 +14,8 @@ import pytest
 
 from robovast.service.app import build_app
 from robovast.service.interface import Routes, UsageSample
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture

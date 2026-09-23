@@ -16,9 +16,9 @@ import threading
 import time
 
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 #: How long the stuck pull would block for -- far past any graceful-shutdown deadline.
 _STUCK_S = 30

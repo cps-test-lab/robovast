@@ -44,7 +44,7 @@ PLANNED = "planned"
 #: Created in the cluster; its reservation is held until it finishes.
 CREATED = "created"
 
-#: How long a capacity reading may be reused. Shorter than ``LocalTransport._USAGE_CACHE_TTL``
+#: How long a capacity reading may be reused. Shorter than ``ServiceBase._USAGE_CACHE_TTL``
 #: (10 s) because this gates a create loop rather than a status chip: a stale reading here
 #: means either idle capacity or over-admission, where there it only means a slightly old
 #: number on a screen.

@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture(name="harness")

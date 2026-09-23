@@ -19,8 +19,8 @@
 # so `poetry install` brings it in with the root project. There is no wheel-injection shortcut -- an earlier comment here
 # described one that the launch path no longer does -- so changing any of them
 # means rebuilding this image and rolling the Deployment with `vast service upgrade`.
-# The cheaper loops are local `vast serve`, or `vast serve --backend cluster -x <ctx>`
-# driving a real cluster from an editable checkout.
+# The cheaper loop is `mirrord exec` running `vast serve` from an editable checkout
+# inside the cluster's network (see the serve command's help).
 #
 # Build context is the repository root (so pyproject + src are available):
 #   docker build -f container/controller/Dockerfile -t <you>/robovast-controller:dev .

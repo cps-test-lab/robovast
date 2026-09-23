@@ -24,10 +24,10 @@ import types
 import pytest
 
 from robovast.common.errors import ImageNotBuilt, ImageStoreUnavailable
-from tests.service.null_lane import NullLane
 from robovast.service.image_store import ImageRef
 from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 BUILT = ImageRef(ref="registry.local:5000/robovast/sut:abc123",
                  identity="build:sut@abc123", build_id="imgbuild-sut-abc123",
@@ -226,7 +226,7 @@ def test_the_simulation_container_resolves_to_the_simulators_own_image(tmp_path)
     worked on a project whose roqsim comes from the image family — and the world check would
     have inherited exactly the same silence.
     """
-    transport = NullLane.__new__(NullLane)
+    transport = object.__new__(NullLane)
     scenario = transport._resolve_exec_image(_roqsim_vast(tmp_path), "scenario")
     simulation = transport._resolve_exec_image(_roqsim_vast(tmp_path), "simulation")
     assert scenario.identity == "base:1"
@@ -247,7 +247,7 @@ def test_a_stepped_campaign_keeps_the_simulator_in_the_scenario_container(tmp_pa
                       "containers": {
                           "scenario": {},
                           "simulation": {"backend": "roqsim", "config": "world.yaml"}}}}))
-    transport = NullLane.__new__(NullLane)
+    transport = object.__new__(NullLane)
     scenario = transport._resolve_exec_image(str(vast), "scenario")
     simulation = transport._resolve_exec_image(str(vast), "simulation")
     assert simulation.identity == scenario.identity

@@ -16,10 +16,8 @@
 
 """The cluster lane's image store: experiment images in a container registry.
 
-The counterpart of :class:`~robovast.service.image_store.LocalDockerImageStore`, and the
-half of the lane that had no class of its own — its responsibilities lived as methods of
-``ClusterService``, which is why a caller could reach for the *local* store on this lane and
-be answered wrongly rather than not at all.
+The lane's :class:`~robovast.service.image_store.ImageBuildStore`, so that every caller
+asks the store by name rather than assuming where an image is.
 
 Registry knowledge stops here: the concrete ``<prefix>/<tag>:<hash>`` ref, the credentials
 that read it and the CA that verifies it are this object's business, and only

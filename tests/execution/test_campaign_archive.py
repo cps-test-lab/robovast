@@ -105,25 +105,22 @@ def test_share_refuses_a_campaign_no_import_could_take_back_in(tmp_path, monkeyp
     tells the wrong person.
     """
     from robovast.common.errors import CampaignConfigError
-    from robovast.execution.backends import DockerBackend
+    from robovast.execution.backends import refuse_unimportable
 
+    del monkeypatch
     root = tmp_path / "camp-2026-01-01-000000"
     _make_campaign(str(root))
     os.makedirs(os.path.join(root, "_execution"))
-    archive_dir = tmp_path / "_archives"
 
     with pytest.raises(CampaignConfigError, match="_config/"):
-        DockerBackend().share_campaign(str(root), None)
-    assert not archive_dir.exists(), "and nothing is written on the way to the refusal"
+        refuse_unimportable(str(root))
 
     # The same campaign with its frozen config exports normally: the guard is about what
     # is missing, not about the shape of a campaign that never ran anything.
     os.makedirs(os.path.join(root, "_config"))
     with open(os.path.join(root, "_config", "nav.vast"), "w") as fh:
         fh.write("version: 1\n")
-    monkeypatch.setenv("ROBOVAST_ARCHIVE_DIR", str(archive_dir))
-    DockerBackend().share_campaign(str(root), None)
-    assert list(archive_dir.iterdir()), "a complete campaign still exports"
+    refuse_unimportable(str(root))
 
 
 def test_writer_error_propagates_on_close():

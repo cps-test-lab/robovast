@@ -25,8 +25,8 @@ export type VersionInfo = Schemas['VersionInfo']
 
 // Live capacity/usage of the service's execution backend (mirrors
 // interface.py:ResourceUsage). Backend-neutral: `parallel_runs` says whether runs
-// go one-at-a-time (local Docker) or in parallel (cluster); CPU in cores, memory
-// in bytes. `used` is host utilization locally / summed pod requests on the cluster.
+// go one-at-a-time or in parallel (cluster); CPU in cores, memory in bytes. `used`
+// is the summed pod requests on the cluster.
 export type ResourceUsage = Schemas['ResourceUsage']
 export type UsageHistory = Schemas['UsageHistory']
 export type UsageSample = Schemas['UsageSample']
@@ -58,7 +58,7 @@ export {
 // Campaign lists arrive live-first, then in the requested order within each group (by
 // default newest first; see `CampaignListSort`); the service sorts before it applies
 // limit/offset, so the order and the page contents agree and a live campaign is on the
-// first page however old it is (see LocalTransport.list_campaigns). Rendering it as given
+// first page however old it is (see ServiceBase.list_campaigns). Rendering it as given
 // is the whole contract: there is deliberately no client-side re-sort, because a second key
 // here would have to agree with the backend's and cannot. `campaign_id` is not a usable key
 // — its `<name>-` prefix is user-supplied — and liveness is a fact only the service holds (a
@@ -578,9 +578,6 @@ export const robovast = {
       runs: 1,
       postprocess: true,
       upload_to_share: false,
-      // Never from the web UI: it cannot know whether the browser is on the serve host,
-      // and a window opening on someone else's screen is worse than no control at all.
-      show_gui: false,
       ...req,
     }),
 

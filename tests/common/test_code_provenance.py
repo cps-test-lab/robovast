@@ -115,36 +115,6 @@ def test_provenance_yaml_of_nothing_is_nothing():
     assert _provenance_yaml({}) == ""
 
 
-def test_the_local_lane_writes_parseable_provenance(monkeypatch, tmp_path):
-    """Execute the generated shell, because that is the only thing that proves the heredoc.
-
-    The local lane does not write execution.yaml from Python -- it emits a shell script that
-    does, inside the run. So a bad quote or an unindented list item here produces a file that
-    parses as something else entirely, and no amount of inspecting the Python would show it.
-    Asserting on the *parsed* result also pins that ``dirty`` survives as a bool rather than
-    the string "true".
-    """
-    import subprocess
-
-    import yaml
-
-    from robovast.common.execution import generate_execution_yaml_script
-
-    monkeypatch.setenv(GIT_REVISION_ENV, "deadbee+dirty")
-    script = generate_execution_yaml_script(3, {}, output_dir_var="$OUT",
-                                            role_images={"scenario": "img:1"})
-    sh = tmp_path / "run.sh"
-    sh.write_text(f'#!/bin/bash\nset -e\nOUT="{tmp_path}"\nEXECUTION_TIME=now\n'
-                  f'DOCKER_IMAGE=img:1\n{script}')
-    subprocess.run(["bash", str(sh)], check=True, capture_output=True)
-
-    parsed = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
-    assert parsed["robovast_revision"] == "deadbee"
-    assert parsed["robovast_revision_source"] == "baked"
-    assert parsed["robovast_dirty"] is True
-    assert parsed["runs"] == 3
-
-
 def test_the_store_keeps_unknown_dirty_as_null(tmp_path):
     """A campaign recorded before this field existed did not have a clean tree -- it had an
     unknown one. Storing 0 would assert something nobody checked, and every "which results

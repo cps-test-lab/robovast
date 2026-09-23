@@ -28,7 +28,6 @@ def _env(tmp_path, monkeypatch):
     from tests.service.null_lane import NullLane
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
-    monkeypatch.delenv("ROBOVAST_ARCHIVE_DIR", raising=False)
     monkeypatch.setattr("robovast.results_processing.index_schema.forget_campaign",
                         lambda conn, cid: {})
     monkeypatch.setattr("robovast.common.index_db.connect",
@@ -40,37 +39,6 @@ def _env(tmp_path, monkeypatch):
     transport = NullLane(store=store)
     transport._campaigns_root = lambda: results        # noqa: SLF001
     return transport, results
-
-
-def test_the_local_archives_go_with_the_campaign(env):
-    transport, results = env
-    archives = results / "_archives"
-    archives.mkdir()
-    mine = [archives / f"{CID}.raw.tar.gz", archives / f"{CID}.postprocessed.tar.gz",
-            archives / f"{CID}.raw.tar.gz.part"]
-    other = archives / "other-2026-09-01-101500.raw.tar.gz"
-    for path in [*mine, other]:
-        path.write_bytes(b"a" * 8)
-
-    result = transport.delete_campaign(CID)
-
-    assert result.ok, result.message
-    assert "3 archive(s)" in result.message
-    assert not (results / CID).exists()
-    assert not any(p.exists() for p in mine)
-    assert other.exists(), "another campaign's archive is not this delete's to remove"
-
-
-def test_the_archive_dir_override_is_honoured(env, tmp_path, monkeypatch):
-    transport, _results = env
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.setenv("ROBOVAST_ARCHIVE_DIR", str(elsewhere))
-    archive = elsewhere / f"{CID}.raw.tar.gz"
-    archive.write_bytes(b"a")
-
-    assert transport.delete_campaign(CID).ok
-    assert not archive.exists()
 
 
 def test_a_share_copy_a_failed_import_kept_is_removed(env):

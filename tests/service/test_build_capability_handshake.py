@@ -23,7 +23,6 @@ saying nothing:
 import types
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from robovast.execution.cluster_config.base_config import RegistryConfig
 from robovast.service.interface import VersionInfo
@@ -44,45 +43,6 @@ def test_extra_keys_from_a_newer_service_do_not_break_an_older_client():
     assert v.robovast_version == "2.0.0"
 
 
-# -- the local lane ----------------------------------------------------------
-
-
-@pytest.fixture
-def local():
-    """A LocalTransport with only what `version()` reads."""
-    from robovast.service.client import LocalTransport
-
-    lt = LocalTransport.__new__(LocalTransport)
-    # `store` is a plain instance attribute; `_campaigns_root` is a method.
-    lt.store = types.SimpleNamespace(registry=types.SimpleNamespace(root="/tmp/w"))
-    with patch.object(LocalTransport, "_campaigns_root", return_value="/tmp/c"):
-        yield lt
-
-
-def test_the_local_lane_can_always_build(local):
-    """It builds with `docker buildx --load` into the local daemon: no registry, no
-    Ingress, nothing an operator can misconfigure."""
-    v = local.version()
-
-    assert v.can_build_images is True
-    assert v.build_unavailable is None
-
-
-def test_it_does_not_probe_docker(local, monkeypatch):
-    """The regression that matters. Asking the Docker daemon means shelling out with a
-    timeout, and this is the call that must answer instantly."""
-    import subprocess
-
-    def _boom(*_a, **_k):
-        raise AssertionError("version() spawned a subprocess to answer a capability question")
-
-    monkeypatch.setattr(subprocess, "run", _boom)
-    monkeypatch.setattr(subprocess, "check_output", _boom)
-    monkeypatch.setattr(subprocess, "Popen", _boom)
-
-    assert local.version().can_build_images is True
-
-
 # -- the cluster lane --------------------------------------------------------
 
 
@@ -92,8 +52,6 @@ def _cluster_version(registry: RegistryConfig) -> VersionInfo:
 
     cs = ClusterService.__new__(ClusterService)
     with patch.object(ClusterService, "version", ClusterService.version), \
-            patch("robovast.service.local_transport.LocalTransport.version",
-                  return_value=VersionInfo(robovast_version="2.0.0")), \
             patch.object(ClusterService, "_api_server_url", return_value=None), \
             patch.object(ClusterService, "_cluster_config",
                          return_value=types.SimpleNamespace(
@@ -138,9 +96,7 @@ def test_an_unreadable_config_is_no_verdict_rather_than_a_false_one():
     from robovast.execution.cluster_execution.cluster_service import ClusterService
 
     cs = ClusterService.__new__(ClusterService)
-    with patch("robovast.service.local_transport.LocalTransport.version",
-               return_value=VersionInfo(robovast_version="2.0.0")), \
-            patch.object(ClusterService, "_api_server_url", return_value=None), \
+    with patch.object(ClusterService, "_api_server_url", return_value=None), \
             patch.object(ClusterService, "_cluster_config",
                          side_effect=RuntimeError("no config")):
         cs.kube_context = None

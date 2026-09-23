@@ -28,7 +28,7 @@ whose whole job would be reducing a local file path to the workspace the service
 wanted, nor a rule pruning every ``.vast`` but one so a launch could leave ``config_path``
 empty: a workspace holds as many projects as it likes, and the path names which one.
 
-Reused by the CLI; the LocalTransport/HTTP client itself stays transport-agnostic.
+Reused by the CLI; the client itself stays transport-agnostic.
 """
 
 import contextlib
@@ -98,9 +98,9 @@ def push_file(client, address: str, path: Path) -> str:
 
     ``.vast``/``.osc`` go inline (last-write-wins, so this both creates and
     overwrites); everything else streams through the PUT side channel with the
-    executable bit preserved. The one place that knows about both transports: the
-    HTTP client issues an absolute PUT URL (``grant.url``), the in-process
-    ``LocalTransport`` exposes ``client.store`` for a direct write.
+    executable bit preserved. The one place that knows how a transport carries bytes:
+    the HTTP client issues an absolute PUT URL (``grant.url``); the service's own
+    implementation, reached in process, exposes ``client.store`` for a direct write.
 
     Public and address-taking because ``vast files put`` needs exactly this and
     should not have to reach for a private helper or re-derive the address itself.
@@ -121,7 +121,7 @@ def push_file(client, address: str, path: Path) -> str:
         # would carry no credentials. The client's own raise_for_status too, so a
         # refusal reaches the caller as the sentence the service wrote.
         client.raise_for_status(client.session.put(grant.url, data=data, timeout=120))
-    elif hasattr(client, "store"):  # in-process LocalTransport
+    elif hasattr(client, "store"):  # the service itself, in process
         client.store.write_upload(grant.token, data)
     else:
         raise RuntimeError(

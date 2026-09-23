@@ -17,8 +17,8 @@ from starlette.testclient import TestClient
 
 from robovast.service import event_log
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 from tests.service.conftest import AUTH_HEADERS
 
 

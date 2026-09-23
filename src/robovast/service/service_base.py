@@ -21,19 +21,17 @@ a campaign's driver (:func:`robovast.execution.controller.run_batch_campaign`) o
 background thread, serving live status from its
 :class:`~robovast.execution.control_server.ControllerState`, the workspace store, the
 campaign registry, the service's caches and event log, and every reader that resolves a
-campaign under the results root both lanes now share. What differs between running over
-Docker beside this process and running over Kubernetes is an abstract hook here and a body
-in each lane: :class:`~robovast.service.local_transport.LocalTransport` and the cluster
-lane's service are siblings over this class, so no lane inherits the other's answer.
+campaign under the results root. What depends on where the runs happen is an abstract
+hook here and a body in the lane: the cluster lane's service is the one production
+implementer, and the test suite's null lane (``tests/service/null_lane.py``) the other,
+so the code here is exercised without a cluster.
 
 Two rules follow. A body here is correct for *any* lane, or it is a hook. And a lane that
 does not offer an operation refuses it in its own class with
-:class:`~robovast.service.interface.UnsupportedOnLane`, never through a default left here
-for the other lane to inherit.
+:class:`~robovast.service.interface.UnsupportedOnLane`, never through a default left here.
 
-This module imports neither Docker nor Kubernetes: a lane reaches its driver inside the
-hook that needs it (``tests/service/test_serve_backends.py`` pins that choosing one lane
-loads nothing of the other).
+This module imports no Kubernetes: a lane reaches its driver inside the hook that needs it
+(``tests/service/test_serve_backends.py`` pins that importing the base loads no lane).
 """
 
 from abc import abstractmethod
@@ -361,7 +359,7 @@ def _config_view_contribution(config: dict, vast_dir: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Local (in-process) transport
+# The service half
 # ---------------------------------------------------------------------------
 
 
@@ -374,8 +372,8 @@ def _no_timeout_note(raw_config: dict) -> str:
     a line in the ``.vast`` and this is the last moment before the compute is spent; four
     minutes into a wedged sweep it is only an explanation.
 
-    Advisory, not a validation error, and for the reason :func:`_show_gui_note` is: a
-    campaign with no declared per-run budget is a legitimate thing to run.
+    Advisory, not a validation error: a campaign with no declared per-run budget is a
+    legitimate thing to run.
     """
     from robovast.common.config import declared_per_run_seconds
 
@@ -387,30 +385,6 @@ def _no_timeout_note(raw_config: dict) -> str:
             "stalled: null, which is not 'healthy'. Declare it to get a verdict. (A "
             "simulator that reports on itself is unaffected: its own findings still end "
             "the wait.)")
-
-
-def _show_gui_note(request, raw_config: dict) -> str:
-    """Warn when ``show_gui`` was accepted but the project will still run headless.
-
-    The X socket and ``DISPLAY`` are wired by the lane; what actually opens a window is
-    the *scenario*, and for the simulators here that means a parameter this project has
-    to flip via ``execution.local.gui.parameter_overrides``. A project without that block
-    runs exactly as it would headless, which — without this note — is indistinguishable
-    from a display that silently refused the connection.
-
-    Not an error: a scenario is free to open its window unconditionally, and refusing
-    would break that case.
-    """
-    if not getattr(request, "show_gui", False):
-        return ""
-    local = ((raw_config or {}).get("execution") or {}).get("local") or {}
-    gui_block = local.get("gui") if isinstance(local, dict) else None
-    if isinstance(gui_block, dict) and gui_block.get("parameter_overrides"):
-        return ""
-    return ("show_gui was accepted (the host display is wired into the container), but "
-            "this project declares no execution.local.gui.parameter_overrides — so its "
-            "scenario runs with whatever headless setting it defaults to and no window "
-            "may appear. Add the block if its scenario takes a headless parameter.")
 
 
 class _TrackedCampaign:
@@ -502,7 +476,7 @@ class WorkspaceTarget:
     #: restart took away (see ``cluster_execution.campaign_resume``).
     #:
     #: This is the whole difference between a launch and a re-launch, which is why it is one
-    #: field here rather than a mode flag on :meth:`LocalTransport._launch_campaign`: that
+    #: field here rather than a mode flag on :meth:`ServiceBase._launch_campaign`: that
     #: method's contract is that everything a non-workspace project needs to say travels on
     #: this object. Setting it also waives the "already exists" guard below, because for a
     #: re-entry the directory being there is the point rather than a collision.
@@ -2018,16 +1992,6 @@ class ServiceBase(RobovastInterface):
         jobs, over *state*.
         """
 
-    @abstractmethod
-    def _admit_show_gui(self, request) -> None:
-        """Admit or refuse ``show_gui`` for this lane, at request admission.
-
-        Before an image build or a campaign directory exists, so a refusal leaves
-        nothing behind. Accepting it and rendering nowhere is the failure this
-        prevents: the run looks fine and simply never draws. A lane with no screen
-        raises :class:`UnsupportedOnLane`.
-        """
-
     def _register_scheduling(self, campaign_id: str, request) -> None:
         """Tell the queue how to treat this campaign. Nothing to do where there is no queue.
 
@@ -2087,20 +2051,12 @@ class ServiceBase(RobovastInterface):
         through, or ``None`` where each call starts an ephemeral one.
         """
 
-    @abstractmethod
-    def _postprocess_in_process(self) -> bool:
-        """Whether the driver postprocesses in this process after the runs, or hands it to a
-        workload of its own.
-        """
-
     def _record_campaign_failure(self, campaign_id, results_dir, state, exc, backend):
         """Durably record a failed campaign. Local writes ``_execution/outcome.json``."""
         self._record_outcome(campaign_id, results_dir, state)
 
     def create_campaign(self, request: CreateCampaignRequest) -> CampaignRef:
-        # Before anything is resolved or created: a lane that cannot show a window, or a
-        # serve host with no display, must refuse rather than launch a windowless run.
-        self._admit_show_gui(request)
+        # Before anything is resolved or created, so a refusal leaves nothing behind.
         self._admit_scheduling(request)
         self._admit_storage("start a campaign")
         target = self._resolve_project(request.workspace_id, request.config_path)
@@ -2326,9 +2282,8 @@ class ServiceBase(RobovastInterface):
         from robovast.execution.controller import (campaign_id_for, run_batch_campaign,
                                                    run_search_campaign)
 
-        # The raw mapping as well as the validated model: ``execution.local`` is read
-        # from the mapping everywhere (``ExecutionConfig`` does not model it), so the
-        # show_gui note has to look there too rather than at the model.
+        # The raw mapping as well as the validated model: the launch advisories read the
+        # mapping, which is what the author wrote.
         raw_config = load_config(target.config_path)
         campaign_config = validate_config(raw_config)
         # The shared root, asked for directly: it never varied per workspace.
@@ -2381,12 +2336,10 @@ class ServiceBase(RobovastInterface):
         # admitted at the ordinary rank first.
         self._register_scheduling(campaign_id, request)
         options = self._run_options(request)
-        # Who ends the campaign. The builders' finish tail is outermost only when
-        # nothing of the campaign happens after it returns — which is exactly the
-        # transport that does *not* postprocess in-process. Derived from that predicate
-        # rather than set per transport, so a new transport cannot forget it and leave
-        # its campaigns either ending early or never ending at all.
-        options.finalize_phase = not self._postprocess_in_process()
+        # Who ends the campaign: the builders' finish tail, which is outermost because
+        # nothing of the campaign happens in this process after it returns -- the lane's
+        # driver chains postprocessing inside it.
+        options.finalize_phase = True
 
         # Register the instant the campaign is accepted — before the (possibly slow)
         # image build — so it is listed with a live phase from t=0 rather than only
@@ -2594,20 +2547,18 @@ class ServiceBase(RobovastInterface):
                 return
             else:
                 # Analysis postprocessing — what the eval viewer and
-                # `query_campaign_data_sql` read. The batch/search loop leaves it
-                # separate, so run it here when the caller asked (the default).
-                #
-                # The second clause covers a stop that landed BETWEEN batches, where the
-                # loop ends cleanly rather than raising: the controller's own chain skips
-                # itself whenever a stop was requested, so on a lane that relies on that
-                # chain nothing would postprocess at all and a search stopped at a batch
-                # boundary would lose the analysis of every batch it completed.
+                # `query_campaign_data_sql` read — is chained by the lane's driver. This
+                # covers a stop that landed BETWEEN batches, where the loop ends cleanly
+                # rather than raising: the controller's own chain skips itself whenever a
+                # stop was requested, so nothing would postprocess at all and a search
+                # stopped at a batch boundary would lose the analysis of every batch it
+                # completed.
                 # Ends at `finished` either way, which is not this branch's choice: a stop
                 # seen at a batch boundary is an ordinary stopping criterion to the loop
                 # (`stop_kind="external"`), so the campaign really did finish. Only the
                 # raising path -- the run cut mid-batch -- ends `stopped`.
                 stopped_runs = state.stop_requested and not self._shutting_down
-                if request.postprocess and (self._postprocess_in_process() or stopped_runs):
+                if request.postprocess and stopped_runs:
                     self._postprocess(campaign_id, results_dir, state, entry)
             finally:
                 # This lane's outermost scope, so the campaign ends here — on every
@@ -2621,10 +2572,9 @@ class ServiceBase(RobovastInterface):
         entry.thread = thread
         thread.start()
         logger.info("Started campaign %s (search=%s)", campaign_id, is_search)
-        # Joined rather than first-wins: two independent advisories can both apply to one
-        # launch, and dropping the second would make it depend on the first being absent.
-        notes = [n for n in (_show_gui_note(request, raw_config),
-                             _no_timeout_note(raw_config)) if n]
+        # Joined rather than first-wins: independent advisories can all apply to one
+        # launch, and dropping one would make it depend on another being absent.
+        notes = [n for n in (_no_timeout_note(raw_config),) if n]
         return CampaignRef(campaign_id=campaign_id, note=" ".join(notes))
 
     # -- image builds -------------------------------------------------------
@@ -2835,15 +2785,13 @@ class ServiceBase(RobovastInterface):
         from robovast.service.container_exec import (SLOT_USER, query_slot, result_from,
                                                      stage, validate)
         validate(request)
-        # Before staging: a refused request should not have created a temp tree.
-        self._admit_show_gui(request)
         vast_file = self._exec_vast_file(request)
         spec, _campaign_data, limit_s, limit_source = stage(
             # The staged entrypoint carries the init and post-run blocks of the lane the
             # exec actually runs on; a campaign's rendered entrypoint is never copied across.
             vast_file, request.config_name,
             cluster=self.LANE == "cluster",  # pylint: disable=no-member
-            command=request.command, gui=bool(request.show_gui))
+            command=request.command)
         # Ownership of spec's staging tree passes to the manager: a held container mounts
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
@@ -2866,22 +2814,17 @@ class ServiceBase(RobovastInterface):
         except Exception:
             spec.close()
             raise
-        # show_gui belongs in the identity, not just in the env: the X11 mount can only be
-        # established when the container is created, and a follow-up call only `docker
-        # exec`s into it. Without this, asking for a window after a plain call would reuse
-        # the mount-less container and silently draw nothing.
-        #
-        # The workspace's CONTENTS belong in it for the same reason, and this is the only
-        # member of the tuple that is not already immutable. A campaign is frozen once it
+        # The workspace's CONTENTS belong in the identity, and this is the only member
+        # of the tuple that is not already immutable. A campaign is frozen once it
         # starts, so its id is an identity; a workspace is editable by definition, and the
         # project reaches a held container exactly once, when the container is created
-        # (the cluster lane mirrors it in with an init container, the local lane
-        # bind-mounts it). So a reused container answers from the tree it was staged
-        # from, and an edited workspace is answered for by the bytes it no longer holds --
-        # a validate that keeps reporting the problem its own fix already removed.
+        # (an init container mirrors it in). So a reused container answers from the tree
+        # it was staged from, and an edited workspace is answered for by the bytes it no
+        # longer holds -- a validate that keeps reporting the problem its own fix already
+        # removed.
         identity = (request.workspace_id, request.campaign_id,
                     request.config_path, request.config_name, spec.image,
-                    bool(request.show_gui), _workspace_sha(spec))
+                    _workspace_sha(spec))
         started = time.monotonic()
         query = bool(getattr(request, "query", False))
         out = self._exec_manager.run(spec, limit_s,
@@ -4072,19 +4015,12 @@ class ServiceBase(RobovastInterface):
     def _campaign_siblings(self, campaign_id: str) -> list[Path]:
         """Files that belong to *campaign_id* but live outside its directory.
 
-        The local archives an upload-to-share or ``run_share`` wrote (a full copy each, on
-        the results volume), and the copy an import fetched from the share and kept because
-        the import failed. An *uploaded* archive is staged under its grant token, not the
-        campaign id, so it is not found here; ``_sweep_staged_archives`` removes it.
+        The copy an import fetched from the share and kept because the import failed. An
+        *uploaded* archive is staged under its grant token, not the campaign id, so it is
+        not found here; ``_sweep_staged_archives`` removes it.
         """
-        from robovast.execution.campaign_archive import \
-            local_archive_files  # pylint: disable=import-outside-toplevel
-        found = [Path(p) for p in local_archive_files(str(self._campaigns_root()),
-                                                      campaign_id)]
         staged = self._staging_dir() / f"{campaign_id}.tar.gz"
-        if staged.is_file():
-            found.append(staged)
-        return found
+        return [staged] if staged.is_file() else []
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Delete one campaign (see interface): the guard, then :meth:`_delete_deletable`."""
@@ -4396,7 +4332,7 @@ class ServiceBase(RobovastInterface):
                 logger.warning("Could not open share.log for %s", request.campaign_id,
                                exc_info=True)
             backend = self._build_backend(ControllerState())
-            options = RunOptions(gui=False, upload_to_share=True)
+            options = RunOptions(upload_to_share=True)
             try:
                 logger.info("upload-to-share: %s", campaign_dir.name)
                 backend.preflight_upload_to_share()

@@ -16,14 +16,11 @@
 
 """``ClusterService`` — the in-cluster service core (the cluster mode).
 
-Runs inside the ``robovast-service`` Deployment and drives every cluster campaign
-**in this process**, exactly as :class:`~robovast.service.local_transport.LocalTransport`
-already does for Docker: one worker thread per campaign runs the unified
-``CampaignController`` against a :class:`KubernetesBackend`, which creates the
-scenario Jobs. Cluster and local therefore share the whole driver-hosting shape —
-only the backend differs — and everything below is expressed as overrides of
-the hooks of :class:`~robovast.service.service_base.ServiceBase`, which both lanes
-subclass as siblings: nothing here is inherited from the local lane.
+Runs inside the ``robovast-service`` Deployment and drives every campaign **in this
+process**: one worker thread per campaign runs the unified ``CampaignController``
+against a :class:`KubernetesBackend`, which creates the scenario Jobs. The
+driver-hosting shape is :class:`~robovast.service.service_base.ServiceBase`'s, and
+everything below is expressed as bodies for its hooks.
 
 There is **no per-campaign controller pod**: the service hosts the driver, and live
 status is a read of the in-process ``ControllerState``.
@@ -63,7 +60,7 @@ from robovast.common.campaign_data import update_launch_scheduling
 from robovast.service.service_base import ServiceBase, require_scheduling_change
 from robovast.service.interface import (ActionResult, CampaignDeletion, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
-                                        ResourceUsage, DiskSpace, UnsupportedOnLane,
+                                        ResourceUsage, DiskSpace,
                                         UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
@@ -801,17 +798,6 @@ class ClusterService(ServiceBase):
 
     # -- launch hooks (see ServiceBase.create_campaign) ----------------------
 
-    def _admit_show_gui(self, request) -> None:
-        """Refuse ``show_gui``: no screen to draw on. The work runs in pods, and the X
-        socket a window would need belongs to whatever machine the service happens to sit
-        on -- never the caller's. An explicit refusal rather than a silent windowless run.
-        """
-        if getattr(request, "show_gui", False):
-            raise UnsupportedOnLane(
-                "show_gui", self.LANE,
-                hint="only a local `vast serve` has a display to open a window on -- re-run "
-                     "without it, or run the campaign on a local service")
-
     def _queues_campaigns(self) -> bool:
         """True: campaigns here run against each other for the cluster, so there is a queue
         to order and a rank means something."""
@@ -824,9 +810,8 @@ class ClusterService(ServiceBase):
     def _guard_new_campaign(self) -> None:
         """Cluster campaigns run in parallel.
 
-        The local guard exists because Docker is single-flight; here each campaign
-        is an I/O-bound driver thread whose compute lives in Kubernetes Jobs, so
-        many run at once. Everything they touch is campaign-scoped: the
+        Each campaign is an I/O-bound driver thread whose compute lives in Kubernetes
+        Jobs, so many run at once. Everything they touch is campaign-scoped: the
         container-runner factory is a ContextVar, ``controller.log`` is filtered to
         its worker thread, and each aux pod / result prefix is keyed by campaign id.
         """
@@ -909,21 +894,9 @@ class ClusterService(ServiceBase):
 
         # postprocess travels in the options (not the process env): one process
         # drives many campaigns, and an env var could not tell them apart.
-        # gui stays False unconditionally — a show_gui request never reaches here,
-        # _admit_show_gui having refused it.
-        return RunOptions(gui=False,
-                          postprocess=bool(request.postprocess),
+        return RunOptions(postprocess=bool(request.postprocess),
                           upload_to_share=bool(getattr(request, "upload_to_share", False)),
                           namespace=self.namespace)
-
-    def _postprocess_in_process(self) -> bool:
-        """False: the builder chains postprocessing before its upload.
-
-        ``_chain_postprocessing`` runs inside the builder (rosbag→CSV as a Job, then
-        ``data.db`` here) *before* ``finalize_campaign``, so the derived data rides
-        the campaign's existing upload instead of needing one of its own.
-        """
-        return False
 
     @contextlib.contextmanager
     def _aux_runner_context(self, tag, project, *, hold=False, should_stop=None):
@@ -2158,8 +2131,8 @@ class ClusterService(ServiceBase):
                             image_project_tag=None, should_stop=None) -> list:
         """Submit (or join) an in-cluster BuildKit Job per image this campaign builds.
 
-        Returns as soon as each build has a handle; ``LocalTransport._await_build_image``
-        waits on them over the interface, so both lanes share one wait loop.
+        Returns as soon as each build has a handle; ``ServiceBase._await_build_image``
+        waits on them over the interface, so any lane shares one wait loop.
 
         *should_stop* lands between resolving the build context and submitting anything,
         which is where this lane's time goes -- the registry reads that resolve a
@@ -2314,7 +2287,7 @@ class ClusterService(ServiceBase):
         Everything that decides *what* is asked -- the simulator's own command, the scenario's own
         tree reader, which container each belongs in, the JSON passed through unreshaped, what
         "unavailable" means, and the TTL that makes one check serve every watcher -- is
-        :class:`LocalTransport`'s and shared. Only the target differs, which is the whole reason
+        :class:`ServiceBase`'s and shared. Only the target differs, which is the whole reason
         ``exec_in`` takes one.
 
         Two lane facts shape it. ``job_name`` here is the **Kubernetes Job** name rather than a run
@@ -2468,7 +2441,7 @@ class ClusterService(ServiceBase):
         # Mirrored at once, for the reason the kill is: postprocessing runs as its own in-cluster
         # Job before the campaign root is uploaded, so a probe recorded only on pod disk would be
         # lost exactly when the results are assembled.
-        from robovast.service.local_transport import _PROBE_LIMIT_S
+        from robovast.service.service_base import _PROBE_LIMIT_S
         pod, pod_container = self._job_pod_target(campaign_id, job_name, container)
         exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
             (pod, pod_container), in_run_env(command), _PROBE_LIMIT_S)

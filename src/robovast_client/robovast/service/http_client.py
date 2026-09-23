@@ -19,11 +19,10 @@
 :class:`HTTPTransport` talks to a running ``robovast-service`` (a local
 ``vast serve``, a remote VM, or an in-cluster deployment) over the HTTP contract
 in :class:`robovast.service.interface.Routes`. :func:`RobovastClient` is the
-transport-agnostic factory: a URL selects the HTTP transport, empty selects the
-in-process :class:`~robovast.service.local_transport.LocalTransport`.
+factory: a URL selects the HTTP transport, and an empty one is refused, because there is
+no service to reach without one.
 
-Split out of the former single ``client`` module; ``client`` now re-exports both
-so existing imports keep working.
+``robovast.service.client`` re-exports both so existing imports keep working.
 """
 
 import logging
@@ -184,9 +183,9 @@ class HTTPTransport(RobovastInterface):
         """This service's own recent log (see ``Routes.ADMIN_LOG``).
 
         Not on :class:`RobovastInterface`, so it is not an abstract method the other
-        transports must answer: the log describes the *serving process*, and an in-process
-        ``LocalTransport`` caller is already inside the process whose stderr it is. This is
-        the wire client for a route that only a remote caller needs.
+        transports must answer: the log describes the *serving process*, and a caller
+        inside the service is already in the process whose stderr it is. This is the
+        wire client for a route that only a remote caller needs.
         """
         return LogChunk.model_validate(self._get(Routes.ADMIN_LOG, offset=offset))
 
@@ -761,14 +760,11 @@ class HTTPTransport(RobovastInterface):
 def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802  # pylint: disable=invalid-name
                    token: str | None = None,
                    user: str | None = None) -> RobovastInterface:
-    """Return a transport-agnostic client.
+    """Return a client for the ``robovast-service`` at *service_url*.
 
-    * ``service_url`` set → :class:`HTTPTransport` to that ``robovast-service``.
-    * empty (default) → :class:`LocalTransport` (in-process local Docker), imported only
-      on that branch: the in-process server is 3,000 lines this module otherwise has no
-      use for, and an install that ships only the client does not have it at all.
-
-    Callers resolve *service_url* explicitly (see
+    An empty URL is refused rather than answered with something else: every campaign
+    runs through a service, so a caller with no URL has nothing to reach, and the
+    refusal names the remedy. Callers resolve *service_url* explicitly (see
     :func:`robovast.client.service_target.detected_service_url`); there is no
     ambient environment-variable selection of *which service*.
 
@@ -778,15 +774,9 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802  
     remote users. Pass them explicitly to override.
     """
     if not service_url:
-        try:
-            from robovast.service.local_transport import \
-                LocalTransport  # pylint: disable=import-outside-toplevel
-        except ImportError as e:  # a client-only install has no in-process server
-            raise RuntimeError(
-                "no service URL was given, and this install has no in-process service "
-                "to fall back to. Point at a running one: 'vast login <url>', or start "
-                "one with 'vast serve'.") from e
-        return LocalTransport()
+        raise RuntimeError(
+            "no service URL was given. Point at a running robovast-service: "
+            "'vast login <url>'.")
     if token is None or user is None:
         from robovast.client.login import credentials
         _url, stored_token, stored_name = credentials()

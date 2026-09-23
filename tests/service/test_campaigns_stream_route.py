@@ -12,9 +12,9 @@ distinct from the pull endpoint, which is what keeps the client contract honest.
 import threading
 
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 #: Long enough for the stream's 1 s loop to send its first quiet tick, short enough
 #: that a stream which never heartbeats fails the test rather than hanging it.

@@ -1017,7 +1017,7 @@ def write_plugins_record(campaign_root, resolved: dict) -> None:
     for exactly this reason (launch, outcome, killed).
 
     Raises rather than swallowing, like the other writers in this module -- the *caller*
-    decides that a record is best-effort and says so, exactly as ``local_transport`` does for
+    decides that a record is best-effort and says so, exactly as the service does for
     launch.yaml. Keeping that decision here would hide a real failure from the one place that
     knows whether it matters.
     """
@@ -1108,7 +1108,7 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: The written record carries one field beyond these: the resolved ``images``. See
 #: :func:`write_launch_record` for why it belongs with the replay rather than the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
-                  "upload_to_share", "show_gui", "priority", "paused")
+                  "upload_to_share", "priority", "paused")
 
 
 def write_launch_record(campaign_root: Path, request, images: dict | None = None) -> None:

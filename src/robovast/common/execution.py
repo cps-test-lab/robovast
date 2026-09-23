@@ -1625,74 +1625,6 @@ def job_node_alias(campaign_data) -> str | None:
     return node or None
 
 
-def local_parameter_overrides(campaign_data, *, gui: bool) -> list:
-    """The scenario-parameter overrides a **local** run applies, in precedence order.
-
-    Two blocks, because they answer different questions:
-
-    * ``execution.local.parameter_overrides`` — every local run, whatever it looks like.
-    * ``execution.local.gui.parameter_overrides`` — only a run with the host display
-      wired in, merged last so it wins.
-
-    Keeping them apart is what lets a project say ``headless: "False"`` without it firing
-    on a headless run, which would ask the scenario to open a window on a display that is
-    not there. The condition is in the config *path* rather than in the meaning of an
-    existing key, so ``execution.local.parameter_overrides`` still means exactly what it
-    always did.
-
-    Accepts either the raw mapping or a validated model at ``execution.local``, matching
-    the two shapes callers already pass around.
-    """
-    local = (campaign_data.get("execution") or {}).get("local")
-    if hasattr(local, "parameter_overrides"):
-        base = local.parameter_overrides or []
-        gui_block = getattr(local, "gui", None)
-    elif isinstance(local, dict):
-        base = local.get("parameter_overrides") or []
-        gui_block = local.get("gui")
-    else:
-        return []
-    overrides = list(base)
-    if gui and gui_block is not None:
-        if hasattr(gui_block, "parameter_overrides"):
-            overrides += list(gui_block.parameter_overrides or [])
-        elif isinstance(gui_block, dict):
-            overrides += list(gui_block.get("parameter_overrides") or [])
-    return overrides
-
-
-def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_names,
-                                     scenario_name, scenario_path):
-    """Apply local parameter overrides to config, validating against scenario parameters.
-
-    Args:
-        config: The scenario config dict to modify (will be mutated)
-        parameter_overrides: List of dicts, each with a single key-value (e.g. [{"headless": False}])
-        valid_param_names: Set or list of parameter names defined in the scenario
-        scenario_name: Name of the scenario (for error messages)
-        scenario_path: Path to scenario file (for error messages)
-
-    Raises:
-        ValueError: If any override key is not a valid scenario parameter
-    """
-    if not parameter_overrides:
-        return
-    merged = {}
-    for item in parameter_overrides:
-        if isinstance(item, dict):
-            merged.update(item)
-    if not merged:
-        return
-    valid_set = set(valid_param_names) if valid_param_names else set()
-    invalid = [k for k in merged if k not in valid_set]
-    if invalid:
-        raise ValueError(
-            f"Invalid parameter_overrides in execution.local for scenario '{scenario_name}': "
-            f"{invalid}. Valid parameters in {scenario_path} are: {sorted(valid_set)}"
-        )
-    config.update(merged)
-
-
 def check_campaign_inputs(campaign_data):
     """Fail with one actionable error if a required project input is missing.
 
@@ -1859,13 +1791,8 @@ def _archive_vast_sources(vast_src, campaign_config_dir):
 
 
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
-                             instance_type_command=None, gui=False):
+                             instance_type_command=None):
     """Stage a campaign's config tree, including the generated entrypoint.
-
-    *gui* selects whether ``execution.local.gui.parameter_overrides`` is staged along with
-    ``execution.local.parameter_overrides`` (see :func:`local_parameter_overrides`). It
-    defaults to **off** so a caller that does not thread it through under-applies rather
-    than staging a scenario that expects a window nobody asked for.
 
     *instance_type_command* is a shell line that sets ``INSTANCE_TYPE``, obtained from the
     cluster provider's
@@ -1935,7 +1862,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         vast_file_path,
         sut_source_paths(campaign_data.get("execution", {}) or {}, vast_file_path))
     # Config generation already resolved this against the .vast's location, so it is usable as-is
-    # (see the same note in execute_local). Re-prepending the .vast's directory doubled it -- e.g.
+    # Re-prepending the .vast's directory doubled it -- e.g.
     # `<project>/<project>/scenario.osc` -- for every project whose config path has a
     # directory part, and was a silent no-op only for the usual case of a `.vast` sitting in
     # the project's own directory.
@@ -2021,18 +1948,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             raise ValueError(f"Scenario name not found in {original_scenario_path}")
     except Exception as e:
         raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
-
-    # Resolve valid scenario parameter names for parameter_overrides validation
-    existing_scenario_parameters = next(iter(scenario_params.values())) if scenario_params else []
-    valid_param_names = [
-        p.get('name') for p in existing_scenario_parameters
-        if isinstance(p, dict) and 'name' in p
-    ]
-
-    # Local-only scenario-parameter overrides; the gui half only when this run has a
-    # display (see local_parameter_overrides).
-    parameter_overrides = [] if cluster else local_parameter_overrides(
-        campaign_data, gui=gui)
 
     for config_data in campaign_data["configs"]:
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
@@ -2131,11 +2046,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             config = config_data.get('config')
             if config is not None:
                 config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
-                if parameter_overrides:
-                    _apply_local_parameter_overrides(
-                        config_dict, parameter_overrides, valid_param_names,
-                        scenario_name, original_scenario_path
-                    )
                 wrapped_config_data = {scenario_name: config_dict}
                 dst_path = os.path.join(run_config_dir, 'scenario.config')
                 os.makedirs(run_config_dir, exist_ok=True)
@@ -2389,111 +2299,6 @@ def create_job_links(campaign_dir) -> int:
         os.symlink(target, link_path)
         created += 1
     return created
-
-
-def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}",
-                                   role_images=None):
-    """Generate shell script code to create execution.yaml with ISO formatted timestamp.
-
-    Args:
-        runs: Number of runs
-        execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
-        output_dir_var: Shell variable name for the output directory (default: ${RESULTS_DIR})
-        role_images: ``{role: image}`` for every container role this run starts, from the
-            campaign's ``ContainerPlan``. Recorded as ``images`` plus a per-role
-            ``image_revisions``, which is the same contract the cluster lane writes -- see
-            below for why a single campaign-level image is not enough.
-
-    Returns:
-        String containing shell script code to create execution.yaml
-    """
-    if execution_params is None:
-        execution_params = {}
-    role_images = role_images or {}
-
-    script = f'echo "Creating execution.yaml..."\n'
-    script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
-    # `| tr -d` + `|| true`, not `|| echo unknown`: for an image it does not have, `docker
-    # inspect` prints an empty line on stdout *and* exits non-zero, so the old form captured
-    # "\nunknown" -- a newline inside a YAML scalar, which made the whole file unparseable
-    # rather than merely unknown. Empty now means "could not inspect", defaulted below.
-    script += (f'IMAGE_REVISION=$(docker inspect --format=\'{{{{.Id}}}}\' "${{DOCKER_IMAGE}}" '
-               f'2>/dev/null | tr -d "[:space:]" || true)\n')
-    # One digest per ROLE, not just the campaign's. "The campaign's image" stopped describing
-    # a run once the simulator, the system under test and the scenario got their own
-    # containers, and anything attributing an artifact to the bytes that produced it has to
-    # name the role: the run view compiles its geometry from the world the capture names, and
-    # that world -- with the exporter that reads it -- lives in the SIMULATION image. Without
-    # this the reader fell back to the campaign image and ran the exporter in a container that
-    # had neither, which surfaced only as an exit 127 from a docker command.
-    # Deduplicated by image because roles commonly share one, and `docker inspect` is a
-    # process each.
-    for i, image in enumerate(sorted(set(role_images.values()))):
-        script += (f'ROLE_REVISION_{i}=$(docker inspect --format=\'{{{{.Id}}}}\' '
-                   f'"{image}" 2>/dev/null | tr -d "[:space:]" || true)\n')
-    script += f'mkdir -p "{output_dir_var}/_execution"\n'
-    script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
-    script += "execution_time: '${EXECUTION_TIME}'\n"
-    script += f'robovast_version: {get_app_version()}\n'
-    # Rendered here rather than in the script, because the provenance is a property of the
-    # process COMPOSING the campaign -- asking git from inside the generated script would
-    # answer for whatever directory it happens to run in, which is not the same question.
-    script += _provenance_yaml(campaign_code_provenance())
-    # Rendered at GENERATION time, not by the script: reading an image's labels needs the docker
-    # CLI and the image present, and the generated script runs inside the batch where a failed
-    # label read would be one more confusing line in a run log. Composing here also means the
-    # declared provenance -- the half robovast cannot derive -- is recorded even when no image has
-    # been pulled yet.
-    script += _build_refs_yaml(image_build_refs(execution_params.get('containers') or {},
-                                               role_images))
-    script += f'runs: {runs}\n'
-    script += f'execution_type: local\n'
-    # The image that actually ran, not the .vast's raw entry: for a `build:<tag>` project the raw
-    # entry is symbolic, and postprocessing re-runs its container from this file -- `docker run
-    # build:<tag>` finds no such image, which surfaces as a bogus "compat version <missing>".
-    script += "image: '${DOCKER_IMAGE}'\n"
-    script += 'image_revision: ${IMAGE_REVISION:-unknown}\n'
-    if role_images:
-        slot = {image: i for i, image in enumerate(sorted(set(role_images.values())))}
-        script += 'images:\n'
-        for role, image in sorted(role_images.items()):
-            script += f"  {role}: '{image}'\n"
-        # Written by the shell, one `if` per role, so a role whose image could not be
-        # inspected is OMITTED rather than recorded as "unknown". A recorded non-answer would
-        # satisfy the reader's first source and defeat the point of recording at all.
-        script += 'EOF\n'
-        script += f'echo "image_revisions:" >> "{output_dir_var}/_execution/execution.yaml"\n'
-        # `if`, not `[ ... ] && echo`: the latter exits non-zero when the test fails, which
-        # would abort the run under `set -e` for the entirely normal case of one
-        # uninspectable image.
-        for role, image in sorted(role_images.items()):
-            var = f'ROLE_REVISION_{slot[image]}'
-            script += (f'if [ -n "${{{var}}}" ]; then '
-                       f'echo "  {role}: ${{{var}}}" '
-                       f'>> "{output_dir_var}/_execution/execution.yaml"; fi\n')
-        script += f'cat >> "{output_dir_var}/_execution/execution.yaml" << EOF\n'
-    # Local executions have no cluster information attached
-    script += 'cluster_info: {}\n'
-
-    # Add run_as_user if provided
-    run_as_user = execution_params.get('run_as_user')
-    if run_as_user is not None:
-        script += f'run_as_user: {run_as_user}\n'
-
-    # Add env if provided
-    env = execution_params.get('env')
-    if env:
-        script += 'env:\n'
-        for env_item in env:
-            if isinstance(env_item, dict):
-                for key, value in env_item.items():
-                    # Escape special characters for heredoc
-                    escaped_value = str(value).replace('"', '\\"').replace('$', '\\$') if value is not None else ""
-                    script += f'  {key}: "{escaped_value}"\n'
-
-    script += 'EOF\n'
-    script += f'echo ""\n\n'
-    return script
 
 
 def _get_image_revision(image: str) -> str:

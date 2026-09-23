@@ -108,10 +108,10 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               help='Listen on this Unix socket instead of --host/--port. The in-cluster '
                    'layout: a front owns the port and routes here, and the data routes '
                    'to their own process (vast serve-data).')
-@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
-              default='auto', show_default=True,
-              help="Execution backend. 'auto' picks 'cluster' when running inside "
-                   "a Kubernetes pod, else 'local' Docker.")
+@click.option('--backend', default=None, metavar='LANE',
+              help='Which installed execution lane to run. Needed only when more than one '
+                   'is installed; with exactly one it is that one, and with none the '
+                   'service cannot start.')
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if frontend/ui/dist looks up to date '
                    '(source checkout only).')
@@ -138,26 +138,21 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'in-pod.')
 def serve(host, port, uds, backend, rebuild_ui,
           results_dir, workspace_dir, mount_mcp):
-    """Make a robovast-service reachable on the local port until Ctrl-C.
+    """Run the robovast-service process: what the in-cluster Deployment starts.
 
-    This is the one command that puts a service on ``127.0.0.1:8800``; while it
-    runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
-    and campaigns survive client exit. The service serves the web UI at the same
-    URL — from a source checkout this (re)builds ``frontend/ui/dist`` first when it
-    is missing or stale (needs ``npm``; ``--rebuild-ui`` forces it). Ways it makes
-    the port live:
+    The service runs the execution lane this install registers. The cluster lane --
+    the one ``robovast-cluster`` ships -- runs the app in-process, driving each
+    campaign against Kubernetes Jobs, and is what the ``robovast-service`` Deployment
+    runs. It reads which cluster from its own pod, and is refused outside one: the
+    campaigns' pods deliver their results back to this process, which they cannot do
+    across a developer's machine. A developer runs a service with ``vast cluster
+    setup minikube``; to debug the driver against a real cluster, run this command in
+    the cluster's network with the Service's traffic steered to it (``mirrord exec
+    --target deployment/robovast-service --steal -- vast serve``).
 
-    * **local** (default off-cluster) — runs the app in-process: local Docker +
-      local filesystem. Run it on your machine or a remote VM reached
-      over an SSH tunnel.
-    * **cluster** (in-pod only) — runs the app in-process, driving each campaign
-      against Kubernetes Jobs; this is what the in-cluster ``robovast-service``
-      Deployment runs. It reads which cluster from its own pod, and is refused
-      outside one: the campaigns' pods deliver their results back to this process,
-      which they cannot do across a developer's machine. To debug the driver against
-      a real cluster, run this command in the cluster's network with the Service's
-      traffic steered to it (``mirrord exec --target deployment/robovast-service
-      --steal -- vast serve --backend cluster``).
+    The service serves the web UI at the same URL — from a source checkout this
+    (re)builds ``frontend/ui/dist`` first when it is missing or stale (needs ``npm``;
+    ``--rebuild-ui`` forces it).
 
     Security: every request needs the shared token (``ROBOVAST_AUTH_TOKEN``). When
     none is configured one is generated at startup and printed as a login URL you
@@ -177,8 +172,6 @@ def serve(host, port, uds, backend, rebuild_ui,
     ensure_ui_built(rebuild=rebuild_ui)
 
     in_pod = bool(os.environ.get('KUBERNETES_SERVICE_HOST'))
-    if backend == 'auto':
-        backend = 'cluster' if in_pod else 'local'
 
     # Pinning uses the directory in place, so it needs the service to run on the host
     # that holds it, which rules out a pod: there is no such directory there.
@@ -190,13 +183,11 @@ def serve(host, port, uds, backend, rebuild_ui,
 
     from robovast.service.serve_backends import resolve as resolve_backend
     try:
-        lane = resolve_backend(backend)
+        backend, lane = resolve_backend(backend)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    store = None
-    if backend == 'cluster':
-        from robovast.service.workspaces import WorkspaceStore
-        store = WorkspaceStore(workspace_dir=workspace_dir)
+    from robovast.service.workspaces import WorkspaceStore
+    store = WorkspaceStore(workspace_dir=workspace_dir)
     impl = lane.build(in_pod=in_pod,
                       store=store, workspace_dir=workspace_dir,
                       results_dir=os.path.abspath(results_dir) if results_dir else None)

@@ -25,8 +25,8 @@ from importlib.metadata import version as pkg_version
 from types import SimpleNamespace
 
 from robovast.common.execution import GIT_REVISION_ENV
-from tests.service.null_lane import NullLane
 from robovast.service.service_base import ServiceBase, _package_version
+from tests.service.null_lane import NullLane
 
 BAKED = "abc1234"
 

@@ -5,7 +5,7 @@
 The contract on those two fields (``interface.VersionInfo``) is "non-null **only when the
 caller can actually open them**: the service must be backed by a local filesystem *and*
 the request must come from loopback". The transport can answer the first half; only the
-route can answer the second, and it never did — ``local_transport`` carried a comment
+route can answer the second, and it never did — the service carried a comment
 saying "``app.py`` blanks them again for a non-loopback request", describing code that
 was not there.
 

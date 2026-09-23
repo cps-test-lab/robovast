@@ -52,10 +52,9 @@ def _recorded_start_time(campaign_dir: Path) -> Optional[float]:
     """The campaign's real start time (epoch seconds), or None if unrecorded.
 
     This indexer runs *after* the campaign finished, so "now" is the indexing time —
-    not a start time. The run itself recorded one: the generated run script writes
-    ``execution_time`` into ``_execution/execution.yaml`` as it starts (see
-    ``generate_execution_yaml_script``), which is exactly the execution path whose store
-    cannot be written live. Reading it keeps ``campaign.created_at`` meaning "campaign
+    not a start time. The run itself recorded one: the lane writes ``execution_time``
+    into ``_execution/execution.yaml`` as the campaign starts, which is exactly the
+    execution path whose store cannot be written live. Reading it keeps ``campaign.created_at`` meaning "campaign
     start" in both modes, and keeps it stable across a rebuild of a stale store.
 
     Returns None (recorded as NULL) when there is no such record: an unknown start time

@@ -22,15 +22,15 @@ from types import SimpleNamespace
 import pytest
 
 from robovast.client.file_address import SOURCES, format_address
-from tests.service.null_lane import NullLane
 from robovast.service.interface import CreateWorkspaceRequest
 from robovast.service.project_push import (_resolve_workspace_id,
                                            sync_directory_to_workspace)
 from robovast.service.workspaces import WorkspaceError, WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 def _transport(root):
-    lt = NullLane.__new__(NullLane)
+    lt = object.__new__(NullLane)
     lt.store = WorkspaceStore(registry=WorkspaceRegistry(root=root))
     # ``list_workspaces`` reports which workspaces live campaigns are reading from, so
     # the campaign registry has to exist even for a store-only transport.
@@ -371,7 +371,7 @@ def test_sync_refuses_a_pinned_workspace(tmp_path, project):
     with a plain alternative (edit it on disk).
     """
     registry = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(project))
-    lt = NullLane.__new__(NullLane)
+    lt = object.__new__(NullLane)
     lt.store = WorkspaceStore(registry=registry)
     wid = registry.list()[0]["workspace_id"]
     with pytest.raises(WorkspaceError, match="pinned in place"):

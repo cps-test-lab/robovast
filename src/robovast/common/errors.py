@@ -49,7 +49,7 @@ class CampaignStopped(Exception):
     ``"stopped"`` and skip the finish work that would otherwise fail noisily against a
     torn-down cluster tunnel and produce misleading tracebacks. The analysis of the
     batches that did finish is *not* part of what is skipped — it is owed, and the
-    service runs it (``LocalTransport.start_campaign``'s stopped path).
+    service runs it (``ServiceBase._launch_campaign``'s stopped path).
     """
 
 
@@ -196,11 +196,10 @@ class AuxContainerUnavailable(ActionableError):
     """A variation needs an auxiliary container and nothing can provide one here.
 
     A runner for a *variation's* helper image is arranged **per span** by whoever is about
-    to compose (``LocalTransport._aux_runner_context``): a campaign gets one for the run, a
-    preview gets one held by the exec manager, and the local lane needs none because
-    ``docker`` on the service host is the fallback. This is raised when a composition
-    reached a variation that wants one and none of the three applied -- a process with no
-    backend and no ``docker``, or a caller that composed without arranging anything.
+    to compose (``ServiceBase._aux_runner_context``): a campaign gets one for the run and
+    a preview gets one held by the exec manager. This is raised when a composition
+    reached a variation that wants one and neither applied -- a process with no backend,
+    or a caller that composed without arranging anything.
 
     So the reason is always the *caller's context*, never the ``.vast``: the same file
     composes wherever a runner is arranged. A runner is **not** confined to a campaign's

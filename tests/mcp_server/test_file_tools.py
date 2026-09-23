@@ -13,8 +13,8 @@ import threading
 import pytest
 
 from robovast.mcp_server.plugins import files
-from robovast.service.client import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture(name="ws")
@@ -27,7 +27,7 @@ def _ws(tmp_path, monkeypatch):
     exec_dir.mkdir(parents=True)
     (exec_dir / "outcome.json").write_text('{"status": "passed"}')
 
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = object.__new__(NullLane)
     transport._campaigns = {}
     transport._lock = threading.Lock()
     transport.store = WorkspaceStore(
@@ -110,13 +110,13 @@ def test_a_non_inline_type_is_redirected_to_the_upload_channel(ws):
 # -- the transport choice ----------------------------------------------------
 
 
-def test_no_service_falls_back_to_an_explicit_local_transport(monkeypatch):
-    """Reading a campaign on this host has never required a running service, and the
-    fallback is constructed deliberately — not obtained by handing an empty URL to
-    ``RobovastClient`` and letting it substitute one."""
+def test_no_service_is_reported_rather_than_read_around(monkeypatch):
+    """The files are on the service; with none answering there is nothing to read, and
+    every tool here reports that sentence rather than answering from this host's disk."""
+    from robovast.mcp_server.service_access import NO_SERVICE
     monkeypatch.setattr(
         "robovast.client.service_target.detected_service_url", lambda *a, **k: "")
-    assert isinstance(files._client(), LocalTransport)
+    assert files.list_files("/results/camp-1/") == {"error": NO_SERVICE}
 
 
 def test_a_reachable_service_is_preferred(monkeypatch):

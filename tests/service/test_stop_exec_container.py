@@ -35,7 +35,7 @@ def manager():
 def test_it_delegates_to_the_exec_manager(manager):
     """The regression: this raised NameError before reaching the manager at all."""
     manager.stop.return_value = "stopped"
-    transport = NullLane.__new__(NullLane)
+    transport = object.__new__(NullLane)
 
     assert transport.stop_exec_container() == "stopped"
     manager.stop.assert_called_once_with()
@@ -59,7 +59,7 @@ def test_passing_one_is_rejected_rather_than_ignored():
     It happened: a CLI call site kept its positional after the parameter went, and the
     fake it was tested against accepted anything.
     """
-    transport = NullLane.__new__(NullLane)
+    transport = object.__new__(NullLane)
 
     with pytest.raises(TypeError):
         # pylint: disable-next=too-many-function-args  -- passing the removed argument is what this asserts

@@ -18,8 +18,8 @@ from pathlib import Path
 
 from robovast.common.campaign_data import KIND_SIZING, read_interventions, record_intervention
 from robovast.execution.cluster_execution import kubernetes_backend as kb
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 def _entry(container="sut", node="n1", limit="128Mi", reason="OOMKilled"):

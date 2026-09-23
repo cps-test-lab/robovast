@@ -299,7 +299,6 @@ def test_in_memory_campaign_listed_before_directory_exists(transport):
     with its live phase — the fix for the launch→list lag."""
     from robovast.execution.control_server import ControllerState, Phase
     from robovast.service.client import _TrackedCampaign
-    from tests.service.null_lane import NullLane
     cid = "campaign-2026-07-20-090000"
     state = ControllerState()
     state.set_phase(Phase.BUILDING)
@@ -321,7 +320,6 @@ def test_tracked_campaign_phase_wins_over_disk(transport):
     (the same precedence get_status uses), not the disk-reconstructed 'finished'."""
     from robovast.execution.control_server import ControllerState, Phase
     from robovast.service.client import _TrackedCampaign
-    from tests.service.null_lane import NullLane
     root = transport._campaigns_root()
     cid = "campaign-2026-07-20-091500"
     (root / cid).mkdir(parents=True)              # on disk → would reconstruct "finished"

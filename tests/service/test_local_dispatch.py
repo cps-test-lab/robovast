@@ -12,8 +12,8 @@ import threading
 import pytest
 
 from robovast.execution.control_server import Phase
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture

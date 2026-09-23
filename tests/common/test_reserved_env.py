@@ -41,10 +41,12 @@ FREE_TO_OVERRIDE = frozenset({
 #: The patterns match the *spelling* each emitter uses, so a new variable is caught wherever
 #: it is added.
 _EMITTERS = (
-    ("robovast/execution/execution_utils/execute_local.py",
-     r'- ([A-Z][A-Z0-9_]{2,})='),                       # compose `environment:` lines
     ("robovast_cluster/robovast/execution/cluster_execution/kubernetes_backend.py",
      r"'name': '([A-Z][A-Z0-9_]{2,})'"),                # container env entries
+    ("robovast_cluster/robovast/execution/cluster_execution/kubernetes_backend.py",
+     r"\('([A-Z][A-Z0-9_]{2,})', "),                    # the run's env, as (name, value) pairs
+    ("robovast_cluster/robovast/execution/cluster_execution/manifests.py",
+     r"- name: ([A-Z][A-Z0-9_]{2,})"),                  # the pod template's env entries
     ("robovast_cluster/robovast/execution/cluster_execution/pod_access.py",
      r'^[A-Z_]*ENV = "([A-Z][A-Z0-9_]{2,})"'),           # how a pod reaches the data plane
     ("robovast/common/execution.py",

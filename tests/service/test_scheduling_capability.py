@@ -17,23 +17,23 @@ from click.testing import CliRunner
 from robovast.service.interface import VersionInfo
 
 
-def _local():
-    from robovast.service.client import LocalTransport
+def _lane():
+    from tests.service.null_lane import NullLane
 
-    lt = LocalTransport.__new__(LocalTransport)
-    lt.store = types.SimpleNamespace(registry=types.SimpleNamespace(root="/tmp/w"))
-    return lt
+    lane = object.__new__(NullLane)
+    lane.store = types.SimpleNamespace(registry=types.SimpleNamespace(root="/tmp/w"))
+    return lane
 
 
 def test_a_service_that_did_not_say_has_no_verdict():
     assert VersionInfo.model_validate({"robovast_version": "2.0.0"}).can_schedule is None
 
 
-def test_the_local_lane_says_it_has_no_queue():
-    from robovast.service.client import LocalTransport
+def test_a_lane_without_a_queue_says_it_has_none():
+    from tests.service.null_lane import NullLane
 
-    with patch.object(LocalTransport, "_campaigns_root", return_value="/tmp/c"):
-        assert _local().version().can_schedule is False
+    with patch.object(NullLane, "_campaigns_root", return_value="/tmp/c"):
+        assert _lane().version().can_schedule is False
 
 
 def test_the_answer_is_the_predicate_the_service_refuses_on():
@@ -42,23 +42,23 @@ def test_the_answer_is_the_predicate_the_service_refuses_on():
     The handshake and the admission read the same ``_queues_campaigns``, so a client is
     never offered an entry the service would refuse, nor denied one it would accept.
     """
-    from robovast.service.client import LocalTransport
     from robovast.service.interface import CreateCampaignRequest
+    from tests.service.null_lane import NullLane
 
-    with patch.object(LocalTransport, "_campaigns_root", return_value="/tmp/c"), \
-            patch.object(LocalTransport, "_queues_campaigns", return_value=True):
-        lane = _local()
+    with patch.object(NullLane, "_campaigns_root", return_value="/tmp/c"), \
+            patch.object(NullLane, "_queues_campaigns", return_value=True):
+        lane = _lane()
         assert lane.version().can_schedule is True
         # and the refusal is gone with it, rather than left saying the opposite
         lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
 
 
 def test_a_lane_without_a_queue_says_so_and_refuses_in_the_same_breath():
-    from robovast.service.client import LocalTransport
     from robovast.service.interface import CreateCampaignRequest, UnsupportedOnLane
+    from tests.service.null_lane import NullLane
 
-    with patch.object(LocalTransport, "_campaigns_root", return_value="/tmp/c"):
-        lane = _local()
+    with patch.object(NullLane, "_campaigns_root", return_value="/tmp/c"):
+        lane = _lane()
         assert lane.version().can_schedule is False
         with pytest.raises(UnsupportedOnLane):
             lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))

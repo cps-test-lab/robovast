@@ -12,8 +12,8 @@ has already consumed, and a shorter run makes the stream shrink under them.
 import pytest
 
 from robovast.common.campaign_logs import assemble_log_from_dir
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture

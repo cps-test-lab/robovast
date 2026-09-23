@@ -154,10 +154,9 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     except ValidationError as e:
         return {"error": str(e)}
     client = service_access.service_client()
-    source = "service"
     if client is None:
-        client = service_access.client_or_local()
-        source = "local results root"
+        return {"error": service_access.NO_SERVICE}
+    source = "service"
     try:
         if running_only:
             from robovast.execution.control_server import is_running
@@ -481,21 +480,15 @@ def list_campaign_plots(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, plots}`` of ``{title, query, vega_lite}``, or ``{error}``.
     """
-    # Both transports implement this, so a reachable service answers for a cluster
-    # campaign and LocalTransport answers from disk otherwise. Resolved explicitly
-    # rather than through ``RobovastClient(detected_service_url())``: an empty URL there
-    # silently yields the local transport, so "no service answered" would read as a local
-    # answer instead of being reported.
-    #
     # This stays a call to the interface rather than a query over ``config_view``, and
     # that was checked rather than assumed: the service reads the campaign's immutable
-    # ``_config/<name>.vast`` snapshot (``local_transport.list_campaign_plots``), which
+    # ``_config/<name>.vast`` snapshot (``ServiceBase.list_campaign_plots``), which
     # exists from t=0, whereas ``config_view`` is built from
     # ``campaign.campaign.config_json`` and has nothing until the store has a campaign
     # row. Moving to SQL would make a just-started campaign's plots unreadable and would
     # duplicate a reader the service already owns for the web UI.
     try:
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         return client.list_campaign_plots(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
         return {"error": str(e)}
@@ -517,9 +510,8 @@ def get_config_contribution(campaign_id: str, config_name: str) -> dict:
         ``/results/<campaign_id>/``. ``errors`` names a variation that could not contribute:
         an empty view with errors is not an empty configuration. Or ``{error}``.
     """
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
     try:
-        client = data_access.service_client() or LocalTransport()
+        client = service_access.require_service()
         return client.get_config_contribution(campaign_id, config_name).model_dump(
             exclude_none=True)
     except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
@@ -545,9 +537,8 @@ def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
         ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
         has no heights. Or ``{error}``.
     """
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
     try:
-        client = data_access.service_client() or LocalTransport()
+        client = service_access.require_service()
         return client.get_track_deviation(
             campaign_id, config_name, run_id, source=source, frame=frame,
             marker_label=marker_label).model_dump()
@@ -630,9 +621,8 @@ def draw_config(campaign_id: str, config_name: str, run_id: Optional[int] = None
     from robovast.client.file_address import \
         RESULTS, format_address  # noqa: PLC0415
     from robovast.common.config_plot import draw  # noqa: PLC0415
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
 
-    client = data_access.service_client() or LocalTransport()
+    client = service_access.require_service()
     contribution = client.get_config_contribution(campaign_id, config_name).model_dump(
         exclude_none=True)
     track, label = (_drawn_track(campaign_id, config_name, run_id, source, frame)

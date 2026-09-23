@@ -1,6 +1,6 @@
 """The Kubernetes half of container exec: one aux pod, exec'd into.
 
-The in-cluster counterpart of :mod:`robovast.service.docker_exec_lane`, built on the
+The :class:`~robovast.service.container_exec.ExecLane` of the cluster lane, built on the
 same two primitives the aux-pod container runner already uses — a kept-alive pod and
 ``pods/exec``, which its docstring calls "the in-cluster equivalent of ``docker exec``".
 

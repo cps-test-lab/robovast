@@ -21,13 +21,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
-def _transport(tmp_path) -> LocalTransport:
+def _transport(tmp_path) -> NullLane:
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullLane(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 

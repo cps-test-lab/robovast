@@ -25,8 +25,8 @@ import yaml
 
 from robovast.common.campaign_data import POSTPROCESSING_RECORD
 from robovast.execution.control_server import ControllerState, Phase
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 @pytest.fixture

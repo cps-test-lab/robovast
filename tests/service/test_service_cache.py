@@ -18,10 +18,10 @@ from robovast.common.errors import InsufficientStorageError
 from robovast.service import scene_cache
 from robovast.service.app import build_app
 from robovast.service.interface import DiskSpace, Routes
-from robovast.service.local_transport import LocalTransport
 from robovast.service.service_base import SCENE_CACHE
 from robovast.common.disk_reserve import RESERVE_ENV
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 def _entry(root, name, size):
@@ -46,7 +46,7 @@ def _scenes(tmp_path, monkeypatch):
 @pytest.fixture(name="transport")
 def _transport(tmp_path, scenes):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullLane(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 
@@ -78,7 +78,7 @@ def test_a_clear_frees_every_entry_no_viewer_is_loading(transport, scenes):
     assert cleared.caches[0].size_bytes == 500, "caches report what remains"
 
 
-def test_the_local_lane_offers_no_cache_of_its_results(transport, tmp_path):
+def test_the_lane_offers_no_cache_of_its_results(transport, tmp_path):
     """Its results directory is the campaigns' durable home, not a copy of one."""
     (tmp_path / "results" / "camp-1").mkdir(parents=True)
     assert [c.name for c in transport.clear_service_cache().caches] == [SCENE_CACHE]

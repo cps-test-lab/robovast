@@ -108,9 +108,8 @@ def load_kube_config(context: str | None = None) -> str:
 
     Asserted in prose alone, that rule goes false quietly: a cluster-config provider, a
     service deploy/cleanup path or the RBAC setup loading config directly runs its API
-    calls with ``timeout=None``, which shows up as an off-cluster ``vast serve --backend
-    cluster`` hanging for minutes on an unreachable cluster and then dying in a urllib3
-    traceback. A test enforces it (``tests/execution/test_kube_loader_is_the_only_entry.py``).
+    calls with ``timeout=None``, which shows up as a ``vast cluster`` command hanging
+    for minutes on an unreachable cluster and then dying in a urllib3 traceback. A test enforces it (``tests/execution/test_kube_loader_is_the_only_entry.py``).
 
     Args:
         context: Host kubeconfig context to select when not running in-cluster.

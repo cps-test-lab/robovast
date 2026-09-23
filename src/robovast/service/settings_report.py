@@ -253,9 +253,6 @@ KNOWN: dict[str, Known] = {
         _STORAGE, "Root holding workspace sources.", Sensitivity.HOST_PATH),
     "ROBOVAST_BUILDS_ROOT": Known(
         _STORAGE, "Root holding image build contexts.", Sensitivity.HOST_PATH),
-    "ROBOVAST_ARCHIVE_DIR": Known(
-        _STORAGE, "Where the local lane writes campaign archives with no external share.",
-        Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE": Known(
         _STORAGE, "Root of the shared generated-scene cache.", Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE_BYTES": Known(

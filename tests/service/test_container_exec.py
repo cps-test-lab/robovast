@@ -168,17 +168,7 @@ def test_no_virtual_display_is_started():
     assert ce.build_env({}, {}, staged_config=True)["ENABLE_X11"] == "false"
 
 
-def test_a_windowed_exec_uses_the_hosts_display_not_a_virtual_one(monkeypatch):
-    # Xvfb stays off with gui too, and that is the point rather than an oversight: the
-    # container draws on the host's X server through the socket the lane mounts, and a
-    # virtual framebuffer would shadow exactly that.
-    monkeypatch.setenv("DISPLAY", ":7")
-    env = ce.build_env({}, {}, staged_config=True, gui=True)
-    assert env["ENABLE_X11"] == "false"
-    assert env["DISPLAY"] == ":7"
-
-
-def test_without_gui_no_display_is_handed_to_the_container(monkeypatch):
+def test_no_display_is_handed_to_the_container(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":7")
     assert "DISPLAY" not in ce.build_env({}, {}, staged_config=True)
 
@@ -201,106 +191,41 @@ def test_an_empty_command_runs_the_scenario_by_giving_the_entrypoint_no_argv():
     assert spec.runs_scenario
 
 
-# -- the Docker lane's argv (no daemon needed to check its shape) -------------
+def test_a_detached_scenario_that_dies_immediately_is_reported_as_a_failure():
+    """Starting is not the same as running, and the difference must not be silent."""
+    script = _spec(command="").detached_start_script()
+    # It checks the child is still alive, and surfaces the log when it is not.
+    assert 'kill -0 "$pid"' in script
+    assert "exited immediately" in script
+    assert "tail -20" in script
+    assert "exit 1" in script
 
 
 def test_the_entrypoint_is_always_invoked_through_bash():
-    """The staged ``entrypoint.sh`` is written 0644, so it must not be run directly.
-
-    This was a real silent failure: the detached form started
-    ``setsid nohup /config/entrypoint.sh``, which died on the missing exec bit *after*
-    the exec had already returned 0 — so a scenario that never ran reported as started,
-    and the only symptom was an ``OUTPUT_DIR`` with no results in it.
-    """
-    from robovast.service.docker_exec_lane import DockerExecLane
-    lane = DockerExecLane()
-    captured = []
-
-    def fake_capture(cmd, limit_s):
-        captured.append(cmd)
-        return (0, "", "", False)
-
-    import robovast.service.docker_exec_lane as mod
-    original, mod._capture = mod._capture, fake_capture
-    try:
-        lane.exec_in_held(_spec(command="ls"), 300, detach=False)
-        foreground = captured[-1]
-        assert "/bin/bash" in foreground
-        assert foreground.index("/bin/bash") < foreground.index("/config/entrypoint.sh")
-
-        lane.exec_in_held(_spec(command=""), 300, detach=True)
-        script = captured[-1][-1]
-        assert "setsid nohup /bin/bash /config/entrypoint.sh" in script
-    finally:
-        mod._capture = original
+    """The staged ``entrypoint.sh`` is written 0644, so it must not be run directly: a
+    detached start of ``/config/entrypoint.sh`` itself dies on the missing exec bit after
+    the exec has returned 0, so a scenario that never ran reports as started."""
+    spec = _spec(command="")
+    assert "/bin/bash /config/entrypoint.sh" in spec.detached_start_script()
+    foreground = _spec(command="ls").foreground_argv()
+    assert "/bin/bash" in foreground
+    assert foreground.index("/bin/bash") < foreground.index("/config/entrypoint.sh")
 
 
-def test_a_detached_scenario_that_dies_immediately_is_reported_as_a_failure():
-    """Starting is not the same as running, and the difference must not be silent."""
-    import robovast.service.docker_exec_lane as mod
-    from robovast.service.docker_exec_lane import DockerExecLane
-    captured = []
-
-    def fake_capture(cmd, limit_s):
-        captured.append(cmd)
-        return (0, "", "", False)
-
-    original, mod._capture = mod._capture, fake_capture
-    try:
-        DockerExecLane().exec_in_held(_spec(command=""), 300, detach=True)
-        script = captured[-1][-1]
-        # It checks the child is still alive, and surfaces the log when it is not.
-        assert 'kill -0 "$pid"' in script
-        assert "exited immediately" in script
-        assert "tail -20" in script
-        assert "exit 1" in script
-    finally:
-        mod._capture = original
-
-
-def test_both_lanes_start_a_detached_scenario_the_same_way():
-    """The duplication this removes is what let a fix reach only one lane.
-
-    Each lane had its own copy of the background-start shell, so the liveness check that
-    turned "silently never started" into a reported failure existed locally and was
-    missing in-cluster.
-    """
+def test_the_lane_starts_a_detached_scenario_from_the_shared_script():
+    """The start shell is assembled once, on the spec, so a fix to the liveness check
+    reaches the lane rather than a copy of it."""
     import inspect
 
     from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane
-    from robovast.service.docker_exec_lane import DockerExecLane
-    for lane in (DockerExecLane, KubeExecLane):
-        source = inspect.getsource(lane.exec_in_held)
-        assert "detached_start_script()" in source, f"{lane.__name__} rolls its own"
-        assert "foreground_argv()" in source
-        # ``nohup``/``mkdir -p`` only appear where the shell is actually assembled, so
-        # this catches a reintroduced copy without tripping over prose about it.
-        for built_inline in ("nohup", "mkdir -p", "kill -0"):
-            assert built_inline not in source, \
-                f"{lane.__name__} builds the start script inline again ({built_inline})"
-
-
-def test_the_config_mount_is_read_only_and_at_one_path():
-    from robovast.service.docker_exec_lane import DockerExecLane
-    spec = _spec()
-    spec.config_dir = "/host/staging/config"
-    spec.workspace_dir, spec.workspace_id = "/host/ws", "ws1"
-    args = DockerExecLane()._common_run_args(spec)
-    joined = " ".join(args)
-    assert "-v /host/staging/config:/config:ro" in joined
-    # The workspace lands at its own file address, so a path from write_file works
-    # verbatim inside the container — and read-only, since inputs are not a
-    # diagnostic's to rewrite.
-    assert "-v /host/ws:/sources/ws1:ro" in joined
-    assert ":/out" not in joined, "a diagnostic must never mount the results dir"
-
-
-def test_no_workspace_mount_when_the_source_is_a_campaign():
-    from robovast.service.docker_exec_lane import DockerExecLane
-    spec = _spec()
-    spec.config_dir = "/host/staging/config"
-    joined = " ".join(DockerExecLane()._common_run_args(spec))
-    assert "/sources/" not in joined
+    source = inspect.getsource(KubeExecLane.exec_in_held)
+    assert "detached_start_script()" in source, "the lane rolls its own"
+    assert "foreground_argv()" in source
+    # ``nohup``/``mkdir -p`` only appear where the shell is actually assembled, so
+    # this catches a reintroduced copy without tripping over prose about it.
+    for built_inline in ("nohup", "mkdir -p", "kill -0"):
+        assert built_inline not in source, \
+            f"the lane builds the start script inline again ({built_inline})"
 
 
 # -- lifetime: at most one container ----------------------------------------

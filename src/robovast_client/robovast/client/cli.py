@@ -625,16 +625,11 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
 @click.option('--priority', type=int, default=None, metavar='N',
               help='Which campaign the cluster queue admits first: higher goes first, '
                    '0 is normal, negative waits behind everything else. Ordering only — '
-                   'it never stops a run that has started. Refused by a service on the '
-                   'local Docker lane, which runs one campaign at a time.')
+                   'it never stops a run that has started. Refused by a service whose '
+                   'lane has no queue.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')
-@click.option('--show-gui', 'show_gui', is_flag=True,
-              help="Watch ONE run in the simulator's window (never a sweep). Honoured "
-                   'only by a service on a local Docker lane, which is the only '
-                   'deployment whose docker process sits at a screen; every other lane '
-                   'refuses rather than running windowless.')
 @click.option('--allow-opaque-image', is_flag=True,
               help='Launch even though a container names an image that declares no '
                    "provenance:. Refused by default because nothing in the results "
@@ -653,7 +648,7 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
               help='Seconds between status polls when --wait-and-download is set.')
 @target_options
 def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
-                  campaign_name, description, priority, upload_to_share, show_gui,
+                  campaign_name, description, priority, upload_to_share,
                   allow_opaque_image, image_project, image_project_tag,
                   wait_and_download, poll_interval, namespace, context):
     """Run a ``.vast`` — the one way to start a campaign from a project.
@@ -726,7 +721,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
                 # campaign without failing anything.
                 runs=runs or 0,
                 campaign_name=campaign_name or "", description=description or "",
-                upload_to_share=upload_to_share, show_gui=show_gui,
+                upload_to_share=upload_to_share,
                 allow_opaque_image=allow_opaque_image,
                 priority=priority or 0,
                 image_project=project, image_project_tag=project_tag))

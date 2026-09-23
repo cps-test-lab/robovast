@@ -25,9 +25,9 @@ import yaml
 from robovast.common.campaign_data import write_launch_record
 from robovast.service import retrigger
 from robovast.service.interface import CreateCampaignRequest
-from tests.service.null_lane import NullLane
 from robovast.service.service_base import WorkspaceTarget
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
 
@@ -110,7 +110,6 @@ def test_the_new_campaign_names_the_one_it_came_from(svc, tmp_path):
     plan = _prepare(svc, "pilot-2026-08-08-120000")
     assert plan.request.description.startswith("retrigger of pilot-2026-08-08-120000")
     # A retrigger is nobody sitting at a screen, whatever the original asked for.
-    assert plan.request.show_gui is False
     assert plan.request.workspace_id == ""
 
 
@@ -359,7 +358,6 @@ def test_force_launches_past_a_blocking_axis(svc, tmp_path, monkeypatch,
     understand is theirs to override, and it is the only way past."""
     _source_campaign(tmp_path / "results", execution=BUILT)
     monkeypatch.setattr(NullLane, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: None)
 
@@ -376,7 +374,6 @@ def test_a_runnable_campaign_is_not_gated(svc, tmp_path, monkeypatch):
     still launch."""
     _source_campaign(tmp_path / "results", execution=BUILT)
     monkeypatch.setattr(NullLane, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: None)
 
@@ -396,7 +393,6 @@ def test_the_staged_tree_is_released_when_the_campaign_ends(svc, tmp_path, monke
     done = threading.Event()
     monkeypatch.setattr(NullLane, "_build_specs_for",
                         lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: done.set())
     svc.retrigger_campaign("pilot-2026-08-08-120000")
@@ -420,7 +416,6 @@ def test_a_refused_launch_leaves_nothing_staged(svc, tmp_path, monkeypatch):
 
 def test_a_failure_inside_materialize_releases_the_tree(svc, tmp_path, monkeypatch):
     _source_campaign(tmp_path / "results", run_files=("files/missing.yaml",))
-    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     svc.retrigger_campaign("pilot-2026-08-08-120000")
     for entry in list(svc._campaigns.values()):        # noqa: SLF001
         if entry.thread:
@@ -472,7 +467,6 @@ def test_a_pinned_launch_skips_the_build_and_uses_the_recorded_images(svc, tmp_p
                         lambda self, t, c, **kw: started.append(1) or [])
     monkeypatch.setattr(NullLane, "_build_specs_for",
                         lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: used.update(k["options"].images or {}))
 

@@ -109,8 +109,9 @@ def check_tools(flavor: str = "") -> list[Check]:
             "Install the gcloud CLI and the GKE auth plugin "
             "(google-cloud-cli-gke-gcloud-auth-plugin); the gcp flavor uses them to "
             "authenticate and to read the autoscaler's maximum size."))
-    checks.append(_tool("docker", "Install Docker — needed only to run campaigns on "
-                                  "this machine, not for the cluster path.",
+    checks.append(_tool("docker", "Install Docker — needed only to compose variations "
+                                  "that run a helper image on this machine ('vast "
+                                  "configuration generate'), not for campaigns.",
                         optional=True, version_args=("--version",)))
     return checks
 
@@ -511,8 +512,7 @@ def check_client() -> list[Check]:
     else:
         checks.append(Check(
             "login", False, "no stored credentials",
-            "Run 'vast login <url>' with the URL and token your operator gave you. "
-            "A local service prints both when it starts."))
+            "Run 'vast login <url>' with the URL and token your operator gave you."))
 
     target = detected_service_url()
     # Handshake FIRST, because the row below claims the service is answering and must not
@@ -528,13 +528,13 @@ def check_client() -> list[Check]:
             "service", False, f"{target} not answering",
             f"The URL is configured but nothing replied ({type(err).__name__}). If this is "
             "a cluster, the pod may be mid-roll or down: 'vast service upgrade' after "
-            "it settles, or check the ingress. If it is local, start it with 'vast serve'."))
+            "it settles, or check the ingress."))
     else:
         checks.append(Check(
             "service", False, "none answering",
             "Nothing is listening on the conventional local port and no stored login "
-            "answers either. Start one with 'vast serve', or 'vast login <url>' to "
-            "point at a running one."))
+            "answers either. 'vast login <url>' points at a deployed service; "
+            "'vast cluster setup' deploys one."))
 
     if target:
         # Beside the `service` line above, because these describe the same subject -- and
@@ -678,8 +678,8 @@ def _check_service_revision(info: "VersionInfo | None",
         "service revision", False, f"{deployed} deployed, {here} here",
         "The service loaded its code at startup, so nothing edited since then is in it. "
         "Roll it onto this revision: 'make release-images PROJECT=<registry> PUSH=1' then "
-        "'vast service upgrade' for a cluster, or restart 'vast serve' for a local "
-        "one. Expected, and fine, when you are pointed at someone else's deployment.",
+        "'vast service upgrade'. Expected, and fine, when you are pointed at someone "
+        "else's deployment.",
         optional=True)]
 
 

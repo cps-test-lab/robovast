@@ -13,8 +13,8 @@ import pytest
 from robovast.mcp_server import tool_stats
 from robovast.service.app import build_app
 from robovast.service.interface import Routes
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
 

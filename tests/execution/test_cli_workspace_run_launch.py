@@ -116,11 +116,6 @@ def test_filter_and_description_are_forwarded(client):
     assert client.request.description == "pilot: 5 reps"
 
 
-def test_show_gui_reaches_the_request(client):
-    _invoke('my-experiment', '--show-gui')
-    assert client.request.show_gui is True
-
-
 def test_priority_reaches_the_request(client):
     _invoke('my-experiment', '--priority', '-3')
     assert client.request.priority == -3

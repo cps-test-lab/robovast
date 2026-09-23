@@ -628,22 +628,6 @@ def test_rebuilt_base_changes_the_hash(tmp_path):
     assert before != after
 
 
-def test_base_identity_falls_back_to_the_ref(monkeypatch):
-    """No daemon, no verdict -- and the pre-refinement value rather than an exception.
-
-    `_base_identity` sits on the path to every build decision, cache hits included, so it must
-    not fail when docker is absent; the ref is then the honest answer and the behaviour is
-    exactly what it was before the identity refinement.
-    """
-    from robovast.service import image_store
-
-    monkeypatch.setattr(image_store, "local_image_id", lambda _image: "")
-    assert image_store.LocalDockerImageStore._base_identity(BASE) == BASE
-
-    monkeypatch.setattr(image_store, "local_image_id", lambda _image: "sha256:" + "c" * 64)
-    assert image_store.LocalDockerImageStore._base_identity(BASE) == "sha256:" + "c" * 64
-
-
 def test_the_walk_survives_a_symlink_loop(tmp_path):
     """A link back to an ancestor must not make the scan run forever."""
     campaign_dir(tmp_path, "campaign-a")

@@ -16,9 +16,9 @@ import threading
 
 from robovast.common.campaign_logs import EXECUTION_DIR
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 #: Long enough for the stream's sub-second loop to deliver its first frame, short enough
 #: that a stream which never sends one fails the test rather than hanging it.

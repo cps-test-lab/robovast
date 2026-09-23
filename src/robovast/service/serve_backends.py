@@ -3,10 +3,11 @@
 
 """Which execution lane ``vast serve`` runs, resolved rather than imported.
 
-A service runs one lane, fixed when it starts. Reaching into the cluster service directly
-to build that one would make the core uninstallable without the cluster code: an install
-that legitimately has no Kubernetes at all fails on an import, from a module the user never
-named.
+A service runs one lane, fixed when it starts. The core registers none: the cluster lane
+ships in ``robovast-cluster``, and reaching into it directly would make the core
+uninstallable without the cluster code -- an install that legitimately has no Kubernetes
+at all (a client with the results tooling) would fail on an import from a module the user
+never named. A core with no lane installed serves nothing, and says so by name.
 
 Lanes register in the ``robovast.execution_backends`` entry-point group instead, exactly
 as simulators, variation types and panel types already do — and through the same resolver
@@ -60,25 +61,35 @@ def available() -> dict[str, str]:
     return {ep.name: ep.value for ep in entry_points(group=SERVE_BACKEND_GROUP)}
 
 
-def resolve(name: str) -> ServeBackend:
-    """Load the lane called *name*, or say which ones this install actually has.
+def resolve(name: "str | None" = None) -> "tuple[str, ServeBackend]":
+    """Load the lane called *name* -- or the only one installed -- and say which.
 
-    The error is the point. Without it, ``vast serve --backend cluster`` on an install
-    with no cluster package raises ``ModuleNotFoundError`` naming a module the caller
-    never mentioned — which reads as a broken install rather than a missing one.
+    The error is the point. Without it, ``vast serve`` on an install with no lane
+    package would either serve nothing quietly or raise ``ModuleNotFoundError`` naming
+    a module the caller never mentioned, which reads as a broken install rather than a
+    missing one.
     """
     from robovast.common.plugin_ref import load_ref  # pylint: disable=import-outside-toplevel
     have = available()
-    if name not in have:
-        listed = ", ".join(sorted(have)) or "(none)"
+    if not have:
         raise ValueError(
-            f"no execution lane named {name!r} is installed. Available: {listed}. "
-            f"The cluster lane ships separately -- install it, or run "
-            f"'vast serve --backend local'.")
+            "no execution lane is installed, so there is nothing for this service to run "
+            "campaigns on. The cluster lane ships as the robovast-cluster distribution; "
+            "install it beside robovast.")
+    if name is None:
+        if len(have) > 1:
+            raise ValueError(
+                f"several execution lanes are installed ({', '.join(sorted(have))}); "
+                f"name the one to run with --backend.")
+        name = next(iter(have))
+    elif name not in have:
+        raise ValueError(
+            f"no execution lane named {name!r} is installed. Available: "
+            f"{', '.join(sorted(have))}.")
     loaded = load_ref(name, SERVE_BACKEND_GROUP)
     backend = loaded() if isinstance(loaded, type) else loaded
     if not isinstance(backend, ServeBackend):
         raise ValueError(
             f"execution lane {name!r} is a {type(backend).__name__}, which does not "
             f"implement build(); see robovast.service.serve_backends.ServeBackend")
-    return backend
+    return name, backend

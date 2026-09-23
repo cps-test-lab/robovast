@@ -177,7 +177,7 @@ def _transport(root):
     from tests.service.null_lane import NullLane
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
-    lt = NullLane.__new__(NullLane)
+    lt = object.__new__(NullLane)
     lt.store = WorkspaceStore(registry=WorkspaceRegistry(root=root))
     lt._campaigns = {}
     lt._lock = threading.Lock()

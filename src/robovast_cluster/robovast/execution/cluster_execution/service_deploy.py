@@ -149,7 +149,7 @@ SERVICE_RESOURCES = {"requests": {"cpu": "100m", "memory": "512Mi"}}
 #: (:func:`registry_deploy.registry_prefix`) and for the same reason: the in-pod service is
 #: deliberately given no RBAC to read its own Ingress. Empty without an Ingress -- an
 #: unpublished service has no origin to declare, and a link nobody can open is worse than
-#: no link. Read back by ``LocalTransport._declared_web_base``, which also takes it from
+#: no link. Read back by ``ServiceBase._declared_web_base``, which also takes it from
 #: ``serve`` for a service started by hand -- one input either way.
 PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
 
@@ -2732,8 +2732,7 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
         raise click.ClickException(
             f"the Kubernetes cluster{where}{for_ctx} did not answer within "
             f"{CONNECT_TIMEOUT_SECONDS:g}s — check the cluster is up and reachable "
-            "(kubectl get nodes), or start a local-only service with "
-            "'vast serve --backend local'. Raise the limit with "
+            "(kubectl get nodes). Raise the limit with "
             "ROBOVAST_KUBE_CONNECT_TIMEOUT=<seconds> if the cluster is simply slow."
         ) from exc
     containers = dep.spec.template.spec.containers or []

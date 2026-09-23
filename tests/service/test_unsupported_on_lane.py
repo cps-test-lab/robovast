@@ -24,11 +24,11 @@ from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import execution as execution_tools
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.http_client import HTTPTransport
 from robovast.service.interface import (ERROR_CODE_HEADER, UNSUPPORTED_ON_LANE,
                                         RobovastInterface, Routes,
                                         ServiceError, UnsupportedOnLane)
+from tests.service.null_lane import NullLane
 
 _SENTENCE = "set_campaign_scheduling is not supported on the local lane"
 
@@ -65,7 +65,7 @@ def test_the_interface_itself_has_no_lane_to_name():
 
 # -- which lane is answering -------------------------------------------------------------
 
-@pytest.mark.parametrize("impl, lane", [(LocalTransport, "local"), (ClusterService, "cluster"),
+@pytest.mark.parametrize("impl, lane", [(NullLane, "null"), (ClusterService, "cluster"),
                                         (HTTPTransport, "http")])
 def test_every_transport_declares_its_lane(impl, lane):
     """The name in the sentence comes from the class, so a refusal inherited from the
@@ -150,15 +150,15 @@ def test_the_cli_prints_the_sentence_and_nothing_else(monkeypatch):
 def test_an_mcp_tool_answers_with_the_sentence_as_its_error(monkeypatch):
     """Wherever the MCP runs: mounted in the service it is handed the exception, over HTTP
     the coded ``ServiceError`` -- and both are the same sentence to the caller."""
-    class _NoWindow:
+    class _NoQueueLane:
         def create_campaign(self, request):
             del request
-            raise UnsupportedOnLane("show_gui", "cluster", hint="re-run without it")
+            raise UnsupportedOnLane("priority", "null", hint="re-run without it")
 
-    monkeypatch.setattr(service_access, "service_client", lambda: _NoWindow())
+    monkeypatch.setattr(service_access, "service_client", lambda: _NoQueueLane())
     out = execution_tools.start_campaign(workspace_id="ws-1", config_path="demo.vast",
-                                         description="d", show_gui=True)
-    assert out == {"error": "show_gui is not supported on the cluster lane. re-run without it"}
+                                         description="d", priority=1)
+    assert out == {"error": "priority is not supported on the null lane. re-run without it"}
 
 
 def test_the_mcp_does_not_dress_it_as_some_other_refusal():

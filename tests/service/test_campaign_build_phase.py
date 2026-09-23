@@ -25,8 +25,8 @@ from robovast.common.errors import ImageBuildFailed
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import ControllerState
 from robovast.service.interface import ImageBuildStatus, LogChunk
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 
 class _FakeBuild:

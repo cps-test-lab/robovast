@@ -19,9 +19,7 @@ Two invariants worth stating, because both were deliberate choices:
   bounded pool of *query* containers for read-only introspection, which the caller never
   holds state in. Slots exist because a one-shot exec stops whatever is held: while there
   was a single container, every read-only ``describe_scenario`` destroyed the one its
-  caller was debugging in. Neither name may be the campaign container's, which is
-  single-flight and force-removed by ``LocalTransport`` to unblock a stop; strays are
-  swept by name prefix (docker) or by :data:`POD_LABEL` (cluster), since a query slot's
+  caller was debugging in. Strays are swept by :data:`POD_LABEL`, since a query slot's
   key does not survive a restart.
 - **The command runs through the run's own ``entrypoint.sh``**, never a hand-rolled
   prelude. The environment a scenario sees (the ROS overlay, ``/ws/install``, the
@@ -40,14 +38,11 @@ import time
 from typing import Optional, Protocol
 
 from robovast.common.execution import prepare_campaign_configs, render_entrypoint, scenario_env
-from robovast.common.host_display import host_display
 from robovast.service.interface import ExecContainerState, ExecRequest, ExecResult, ExecStopResult
 
 logger = logging.getLogger(__name__)
 
-#: Deliberately not ``robovast``: that is the campaign container's single-flight name,
-#: and ``LocalTransport`` runs ``docker rm -f robovast`` to unblock a stop — which would
-#: kill a held diagnostic container, or be blocked by it.
+#: The held container's name, distinct from anything a campaign runs.
 CONTAINER_NAME = "robovast-exec"
 #: Cluster equivalent, for finding and reaping strays. Deliberately shared by every slot:
 #: a stray sweep has to find *all* of them, including a query container whose slot key
@@ -131,7 +126,7 @@ LIMIT_SOURCE_DEFAULT = "default"
 class ExecLane(Protocol):
     """The lane-specific half: a *named* held container, started and exec'd into.
 
-    Implemented by ``LocalTransport`` (docker) and ``ClusterService`` (an aux pod).
+    Implemented by the cluster lane's ``KubeExecLane`` (an aux pod).
 
     Every held operation takes a *slot*, and the container it addresses is
     :func:`container_name` of it. The slot was a constant until the read-only
@@ -215,7 +210,7 @@ class ExecSpec:
     def __init__(self, *, image: str, command: str, config_dir: str,
                  env: dict, workspace_dir: str = "", workspace_id: str = "",
                  config_name: str = "", log_path: str = "", staging_dir: str = "",
-                 gui: bool = False, image_identity: str = "", aux_spec=None):
+                 image_identity: str = "", aux_spec=None):
         self.image = image
         #: The :class:`~robovast.common.variation.container_runner.ContainerSpec` this
         #: container exists to *be*, when it is a variation's helper image rather than a
@@ -225,10 +220,10 @@ class ExecSpec:
         #: tree to put there and no command to run at creation. ``None`` is every other
         #: held container, whose contract is unchanged.
         self.aux_spec = aux_spec
-        #: The registry-free name of :attr:`image`, for the caller. The concrete ref is a
-        #: local docker tag on one lane and a registry-qualified one on the other, and the
-        #: second must never reach a client — but a caller still needs to know *which* image
-        #: its container is, so the two travel together rather than the wrong one going out.
+        #: The registry-free name of :attr:`image`, for the caller. The concrete ref is
+        #: registry-qualified and must never reach a client — but a caller still needs to
+        #: know *which* image its container is, so the two travel together rather than the
+        #: wrong one going out.
         self.image_identity = image_identity or image
         self.command = command
         #: Host directory mounted read-only at ``/config`` — already in final layout.
@@ -238,10 +233,6 @@ class ExecSpec:
         self.workspace_id = workspace_id
         self.config_name = config_name
         self.log_path = log_path
-        #: Mount the host's X socket so the container can draw on the serve host's
-        #: display. A lane property rather than an env one: the mount exists only from
-        #: container creation, which is why it is part of the held container's identity.
-        self.gui = gui
         #: The temp tree that owns ``config_dir``; removed by :meth:`close`.
         self._staging_dir = staging_dir or config_dir
 
@@ -360,8 +351,7 @@ def deadline_for(limit_s: int) -> int:
     return max(IDLE_WAIT_CAP_S, limit_s + DEADLINE_GRACE_S)
 
 
-def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
-              gui: bool = False) -> dict:
+def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> dict:
     """The environment the command runs under.
 
     Reuses the run's own derivation (:func:`~robovast.common.scenario_env`) so the
@@ -375,17 +365,8 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
     # config's parameters at ``<config>/_config/scenario.config``, and the assembled
     # mount puts them at ``/config/scenario.config`` — already the entrypoint's default.
     # No *virtual* framebuffer: Xvfb costs seconds we exist to save, and a command that
-    # needs one belongs in a campaign. This holds with `gui` too — there the container
-    # draws on the host's X server through a mounted socket, which costs nothing and is
-    # precisely what Xvfb would shadow.
+    # needs one belongs in a campaign.
     env["ENABLE_X11"] = "false"
-    if gui:
-        # The socket is mounted by the lane; this says which display to use. Read from
-        # the service process, defaulting like the generated compose does, so a daemon
-        # started without DISPLAY still reaches a running :0.
-        env["DISPLAY"] = host_display() or ":0"
-        env.setdefault("LIBGL_ALWAYS_SOFTWARE",
-                       os.environ.get("LIBGL_ALWAYS_SOFTWARE", "0"))
     if not staged_config:
         # Nothing is staged in the bare-image case, so /config/collect_sysinfo.py does
         # not exist — and under `set -e` the entrypoint would abort on it before ever
@@ -406,8 +387,7 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
 
 
 def stage(vast_file: str, config_name: str, *,
-          cluster: bool, command: str,
-          gui: bool = False) -> tuple[ExecSpec, dict, int, str]:
+          cluster: bool, command: str) -> tuple[ExecSpec, dict, int, str]:
     """Turn a resolved ``.vast`` into a runnable :class:`ExecSpec`.
 
     A campaign's ``_config/`` is itself a project, so both sources reach this with just
@@ -441,19 +421,15 @@ def stage(vast_file: str, config_name: str, *,
             campaign_data = build_campaign_data(vast_file, generated)
             campaign_data["configs"] = filter_configs_by_name(
                 campaign_data["configs"], config_name)
-            # gui is forwarded so ``execution.local.gui.parameter_overrides`` reaches the
-            # staged scenario: without it a windowed exec would stage the headless
-            # defaults and draw nothing on the display it just mounted.
-            prepare_campaign_configs(generated, campaign_data, cluster=cluster, gui=gui)
+            prepare_campaign_configs(generated, campaign_data, cluster=cluster)
             scenario_vars = scenario_env(campaign_data)
         execution = campaign_data.get("execution") or {}
         config_mount = _assemble_config_mount(staging, generated, campaign_data)
         limit_s, limit_source = derive_limit(campaign_data, command)
-        env = build_env(scenario_vars, execution, staged_config=bool(config_name),
-                        gui=gui)
+        env = build_env(scenario_vars, execution, staged_config=bool(config_name))
         spec = ExecSpec(
             image="", command=command, config_dir=config_mount, env=env,
-            staging_dir=staging, config_name=config_name, gui=gui,
+            staging_dir=staging, config_name=config_name,
             log_path=f"{OUTPUT_DIR}/logs/system.log" if not command.strip() else "")
         return spec, campaign_data, limit_s, limit_source
     except Exception:

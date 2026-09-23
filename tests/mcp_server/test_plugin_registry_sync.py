@@ -32,7 +32,7 @@ _FORBIDDEN_NAMES = [
     "inspect_run_data_table", "query_run_log",
     # Removed deliberately: the service has one project binding (``workspace_id``),
     # so there is nothing for an MCP-side ``vast init`` to bind. ``.robovast_project``
-    # remains a CLI-only concept -- see LocalTransport._resolve_project.
+    # remains a CLI-only concept -- see ServiceBase._resolve_project.
     "init_project",
     # The per-scope file tools, collapsed into read_file/list_files/write_file/
     # edit_file/delete_file over one address space (``/results/<campaign>/<path>`` and
@@ -492,7 +492,7 @@ _PARAMETER_VOCABULARY = {
     "sort", "order",
     # how to behave
     "force", "recursive", "summarize", "group_by_run", "hide_shutdown", "keep_alive",
-    "show_gui", "check_world", "check_scenario", "fresh", "priority", "executable",
+    "check_world", "check_scenario", "fresh", "priority", "executable",
     "running_only", "preflight_only",
     "stats_only", "failed_only", "allow_opaque_image", "upload_to_share", "view",
     "focus", "layers", "figsize", "title", "show_legend", "wait", "follow",

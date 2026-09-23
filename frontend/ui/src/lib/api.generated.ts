@@ -2336,11 +2336,6 @@ export interface components {
              */
             runs: number;
             /**
-             * Show Gui
-             * @default false
-             */
-            show_gui: boolean;
-            /**
              * Upload To Share
              * @default false
              */
@@ -2570,11 +2565,6 @@ export interface components {
              * @default false
              */
             query: boolean;
-            /**
-             * Show Gui
-             * @default false
-             */
-            show_gui: boolean;
             /**
              * Workspace Id
              * @default
@@ -2981,12 +2971,10 @@ export interface components {
          * JobSummary
          * @description One execution unit of a campaign's current batch.
          *
-         *     A "job" is whatever the backend fans a batch out into: a single **run** on the
-         *     local Docker backend (sequential, so at most one is ``running``), or a
-         *     **Kubernetes Job** on the cluster backend (which may pack several runs).
-         *     ``job_name`` is the id :meth:`RobovastInterface.get_job_log` takes; ``display_name``
-         *     is an optional human-friendly label (config/run locally, batch/job-index on the
-         *     cluster).
+         *     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
+         *     cluster backend, which may pack several runs. ``job_name`` is the id
+         *     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
+         *     human-friendly label (batch/job-index on the cluster).
          */
         JobSummary: {
             /** Detail */
@@ -3428,19 +3416,18 @@ export interface components {
          * ResourceUsage
          * @description Live compute capacity and current usage of the service's execution backend.
          *
-         *     Backend-neutral by design: the local↔cluster difference is resolved inside the
-         *     service (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``
-         *     reads the Kubernetes nodes), so a consumer — the UI chip or the MCP tool — reads
-         *     the same fields regardless of where it runs and never branches on ``backend``.
+         *     Backend-neutral by design: how the lane measures is resolved inside the service
+         *     (the cluster lane reads the Kubernetes nodes), so a consumer — the UI chip or the
+         *     MCP tool — reads the same fields regardless of where it runs and never branches on
+         *     ``backend``.
          *
          *     **Reserved and measured are two different questions, and the field names say which.**
          *     ``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually
          *     being consumed. A cluster campaign that reserves nine cores per pod and uses two
          *     reports 9 and 2, and the gap between them is the number that sizes the next sweep.
          *     Either can be ``None``, meaning **this lane has no such reading** rather than zero:
-         *     nothing reserves on the local Docker lane (it sets no container CPU/memory limits and
-         *     is single-flight), and a cluster without metrics-server cannot measure — see
-         *     ``metrics_unavailable``. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
+         *     a cluster without metrics-server cannot measure — see ``metrics_unavailable`` — and
+         *     a lane that sets no container limits reserves nothing. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
          *
          *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
          *     — the request sum on the cluster, host utilization locally — and exist because every
@@ -3458,23 +3445,22 @@ export interface components {
          *     run writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying
          *     the service pod, deliberately not a sum over the node set -- the workspaces are a
          *     ``hostPath`` there, so that is the disk which decides whether a campaign can be
-         *     written, and a total would read as tens of terabytes free while it filled. Locally it
-         *     is the campaign results root's filesystem. ``results`` is the volume the campaigns
+         *     written, and a total would read as tens of terabytes free while it filled.
+         *     ``results`` is the volume the campaigns
          *     live on, reported only where it is a separately measurable claim.
          *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
-         *     scenario runs execute one at a time (local Docker is single-flight), ``True``
-         *     means they run in parallel bounded only by free capacity (cluster). How many runs
+         *     scenario runs execute one at a time, ``True`` means they run in parallel bounded
+         *     only by free capacity (cluster). How many runs
          *     actually fit is left to the consumer, which knows each project's per-run
          *     reservation — the service does not.
          *
          *     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
-         *     this backend is driving, not one. One definition, both lanes: ``running`` is what is
+         *     this backend is driving, not one. One definition, every lane: ``running`` is what is
          *     **executing right now**, ``pending`` is work the backend has **accepted but is not
-         *     executing**. On the cluster that means planned + pod-pending + blocked Jobs;
-         *     locally it is the remainder of the current batch, with ``running`` 0 or 1 because
-         *     the Docker lane is single-flight. So the pair can be read — and summed into an
-         *     "outstanding work" total — without branching on ``backend``.
+         *     executing**. On the cluster that means planned + pod-pending + blocked Jobs. So the
+         *     pair can be read — and summed into an "outstanding work" total — without branching
+         *     on ``backend``.
          *
          *     The two counts deliberately answer a different question from ``cpu_used`` above:
          *     they include work that has been accepted but has no compute granted yet, which is
@@ -4532,7 +4518,7 @@ export interface components {
          * VariationRemote
          * @description Where a variation type's Module-Federation preview bundle is served from.
          *
-         *     Field-for-field what ``local_transport._plugin_remotes`` builds — the container name
+         *     Field-for-field what ``ServiceBase._plugin_remotes`` builds — the container name
          *     (``REMOTE_NAME``, defaulting to the entry-point name), the ``remoteEntry.js`` URL, and
          *     the exposed module.
          */

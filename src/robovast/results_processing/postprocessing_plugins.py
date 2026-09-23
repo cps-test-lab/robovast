@@ -94,11 +94,9 @@ def _campaign_config_path(results_dir: str, config_dir: str):
 def _docker_cpus(cpu) -> str:
     """A cpu declaration as ``docker run --cpus`` wants it (``"500m"`` -> ``"0.5"``).
 
-    Docker takes a decimal core count and rejects Kubernetes' millicore spelling, exactly as
-    Compose does -- see ``execute_local._compose_cpus``, which solves this for the execution
-    lane. Kept as its own function rather than imported from there because that module drives
-    campaign execution and this one runs after it; an unparseable value passes through so
-    docker's own error names it, since the config layer has already refused those.
+    Docker takes a decimal core count and rejects Kubernetes' millicore spelling. An
+    unparseable value passes through so docker's own error names it, since the config
+    layer has already refused those.
     """
     cores = to_cores(cpu)
     if cores is None:

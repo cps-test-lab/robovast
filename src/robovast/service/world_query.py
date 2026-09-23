@@ -31,8 +31,8 @@ working, and a second simulator backend is served by the same path.
 Two lane facts it reconciles, and both are the whole substance of the class:
 
 * **The project is already in the container, at a different address.** The exec lane
-  mounts the workspace read-only at ``/sources/<workspace_id>`` (``docker_exec_lane``
-  binds it, ``kube_exec_lane`` mirrors it in via an init container), while a backend's
+  mounts the workspace read-only at ``/sources/<workspace_id>`` (``kube_exec_lane``
+  mirrors it in via an init container), while a backend's
   command names the campaign directory at ``CONFIG_MOUNT``. ``expose`` of a *directory*
   is therefore honoured as a path rewrite rather than a mount: the tree is there, it is
   simply spelled differently.

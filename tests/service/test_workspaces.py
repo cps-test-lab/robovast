@@ -9,9 +9,9 @@
 import pytest
 
 from robovast.client.file_address import SOURCES, format_address
-from tests.service.null_lane import NullLane
 from robovast.service.workspaces import (INLINE_EXTENSIONS, WorkspaceError, WorkspaceRegistry,
                                          WorkspaceStore, _UploadTokens)
+from tests.service.null_lane import NullLane
 
 
 def _listing(store, workspace_id):
@@ -22,7 +22,7 @@ def _listing(store, workspace_id):
     that resolves an address — which is also what applies this store's pinned-dir skip
     rule via :meth:`WorkspaceStore.skip_entry`.
     """
-    transport = NullLane.__new__(NullLane)
+    transport = object.__new__(NullLane)
     transport.store = store
     return sorted(transport.list_files(format_address(SOURCES, workspace_id),
                                        recursive=True, limit=0).entries)

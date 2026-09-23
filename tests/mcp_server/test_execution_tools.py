@@ -85,7 +85,7 @@ class _FakeAuthoringClient:
 @pytest.fixture
 def authoring_service(monkeypatch):
     fake = _FakeAuthoringClient()
-    monkeypatch.setattr(service_access, "client_or_local", lambda: fake)
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
     return fake
 
 
@@ -240,7 +240,6 @@ def test_force_without_from_campaign_is_refused_not_ignored(service):
     {"runs": 5},
     {"campaign_name": "again"},
     {"upload_to_share": True},
-    {"show_gui": True},
     {"description": "retrying the flake"},
 ])
 def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs):

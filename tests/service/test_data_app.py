@@ -20,10 +20,10 @@ from robovast.client.status import Phase, Status
 from robovast.common.campaign_data import write_execution_outcome
 from robovast.service import auth
 from robovast.service.app import build_app
-from tests.service.null_lane import NullLane
 from robovast.service.data_app import build_data_app
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 from .conftest import TEST_TOKEN
 

@@ -20,11 +20,11 @@ from robovast.common import disk_reserve
 from robovast.service.app import build_app
 from robovast.service.interface import (DiskSpace, ImportCampaignRequest, ResourceUsage,
                                         RunPostprocessingRequest, Routes)
-from robovast.service.local_transport import LocalTransport
 from robovast.common.disk_reserve import (DEFAULT_RESERVE_FRACTION, RESERVE_ENV,
                                           configured_reserve_gb)
 from robovast.service.storage_reserve import storage_refusal
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_lane import NullLane
 
 _GB = 1000 ** 3
 
@@ -113,7 +113,7 @@ def test_a_meter_that_could_not_be_read_is_not_a_full_disk(monkeypatch):
 @pytest.fixture(name="transport")
 def _transport(tmp_path, monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullLane(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     monkeypatch.setenv(RESERVE_ENV, "150")
     # A refusal measures the service cache for its hint; keep that off the developer's own.
@@ -139,16 +139,6 @@ def test_usage_says_nothing_while_there_is_room(transport, monkeypatch):
     assert transport.resource_usage().storage_refusal is None
 
 
-def test_free_space_is_what_a_write_can_use_not_the_filesystems_total(transport, monkeypatch):
-    """Blocks held back for root are not room a campaign can write into."""
-    import psutil
-
-    Usage = namedtuple("Usage", "total used free percent")
-    monkeypatch.setattr(psutil, "disk_usage", lambda _path: Usage(1000, 600, 300, 60.0))
-    disk, _ = transport._disk_space()
-    assert disk.capacity_bytes - disk.used_bytes == 300
-
-
 # -- every operation that takes on new work is refused, and nothing else ------------------
 
 def _refusing(transport, monkeypatch):
@@ -157,7 +147,7 @@ def _refusing(transport, monkeypatch):
 
 
 @pytest.mark.parametrize("operation", [
-    lambda t: t.create_campaign(type("R", (), {"show_gui": False, "workspace_id": "w",
+    lambda t: t.create_campaign(type("R", (), {"workspace_id": "w",
                                                "config_path": "c.vast"})()),
     lambda t: t.build_image(type("R", (), {"workspace_id": "w", "config_path": "c.vast",
                                            "container": ""})()),

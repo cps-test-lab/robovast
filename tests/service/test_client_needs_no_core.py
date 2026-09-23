@@ -32,7 +32,6 @@ from click.testing import CliRunner
 CORE_ONLY = (
     "robovast.common",
     "robovast.service.client",
-    "robovast.service.local_transport",
     "robovast.service.app",
     "robovast.service.workspaces",
     "robovast.service.container_exec",
@@ -328,5 +327,5 @@ def test_no_service_url_and_no_core_is_a_clear_refusal(without_core):
 
     with pytest.raises(RuntimeError) as excinfo:
         RobovastClient("")
-    assert "no in-process service" in str(excinfo.value)
+    assert "no service URL" in str(excinfo.value)
     assert "vast login" in str(excinfo.value)

@@ -279,7 +279,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    allow_opaque_image: bool = False,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
-                   show_gui: bool = False, description: str = "", priority: int = 0,
+                   description: str = "", priority: int = 0,
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
@@ -311,9 +311,6 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
-        show_gui: Watch **one** run in the simulator's window (never a sweep). Local
-            ``vast serve`` on local Docker only, and the window opens on *that* machine.
-            **Do not close it** — the run then never returns.
         allow_opaque_image: Launch anyway when a container's own image declares no
             ``provenance:``. Refused by default: nothing in the results could then say what
             ran. Prefer fixing it — add ``provenance: {source, revision}`` there, or declare
@@ -357,7 +354,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                 ("workspace_id", workspace_id), ("config_path", config_path),
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("show_gui", show_gui), ("description", description),
+                ("description", description),
                 ("priority", priority)) if value]
             if supplied:
                 return {"error":
@@ -382,7 +379,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
             allow_opaque_image=allow_opaque_image, priority=priority,
-            upload_to_share=upload_to_share, show_gui=show_gui))
+            upload_to_share=upload_to_share))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
@@ -728,8 +725,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         both are counted apart because neither is one of the campaign's runs; neither can
         be stopped individually.
 
-        ``node`` is the machine the job's pod was placed on -- absent on the local lane, and on
-        a job the scheduler has not placed yet. Reading it across a listing says whether a
+        ``node`` is the machine the job's pod was placed on -- absent on a job the scheduler
+        has not placed yet. Reading it across a listing says whether a
         batch is spread over the cluster or piled onto one machine.
 
         ``started_at`` is epoch seconds -- subtract from now for the age; it is the JOB's
@@ -1224,7 +1221,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 @lacks(timeout="a command gets a fixed cap, a scenario its execution.timeout")
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
-                      keep_alive: bool = False, show_gui: bool = False,
+                      keep_alive: bool = False,
                       tail: int = 200, container: str = "",
                       fresh: bool = False) -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
@@ -1234,7 +1231,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
 
     Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``,
     file checks); does one config run (name a ``config_name``; empty ``command`` starts its
-    scenario, detached); what does bring-up look like (``keep_alive``, ``show_gui``).
+    scenario, detached); what does bring-up look like (``keep_alive``).
 
     **The source you name decides which image.** ``workspace_id`` runs what that project
     builds *now* from the serve host's sources — possibly stale — and never builds
@@ -1258,8 +1255,6 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         keep_alive: Leave the container running for follow-up calls.
         fresh: Replace the container rather than join a held one, so the image is
             re-fetched. Discards whatever that container held.
-        show_gui: Show the simulator's window on the serve host's display — **local ``vast
-            serve`` on local Docker only**. Changing it between calls replaces the container.
         tail: Lines kept per stream.
 
     Returns:
@@ -1276,7 +1271,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         result = client.exec_in_container(ExecRequest(
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive, show_gui=show_gui,
+            keep_alive=keep_alive,
             container=container, fresh=fresh))
     except Exception as e:  # noqa: BLE001
         return error_result(e)

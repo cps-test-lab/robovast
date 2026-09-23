@@ -47,7 +47,7 @@ function encodingNote(rows: { kind: string }[], metricsUnavailable?: string | nu
   if (has('measured') && has('reserved')) return 'filled = measured, dashed = reserved'
   if (has('reserved') && metricsUnavailable) return `reserved only — ${metricsUnavailable}`
   if (has('reserved')) return 'reserved only'
-  // The local lane: it measures and reserves nothing, so one fill is the whole truth.
+  // A lane that reserves nothing: one fill is the whole truth.
   if (has('measured')) return 'filled = measured; this lane reserves nothing'
   return ''
 }
