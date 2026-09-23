@@ -1145,7 +1145,7 @@ author naming a file outright:
        title: Map
        map: files/depot.yaml            # or {param: map_file} / {internal: _map_file} / {role: map}
        markers:
-       - {kind: pose, pos: [0.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+       - {kind: pose, pose: {position: {x: 0.0, y: 0.0}}, label: start, color: "#60a5fa"}
        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
 
 Its markers are in the **map** frame — the panel *is* the map — so a map-frame parameter
@@ -1172,7 +1172,7 @@ nothing about ``ParameterVariationList`` knows about placement, so it contribute
    - scene3d:
        markers:
        # The robot spawns at world (-8, 0), per the world's spawn_robot plugin.
-       - {kind: pose, pos: [-8.0, 0.0], yaw: 0.0, label: start, color: "#60a5fa"}
+       - {kind: pose, pose: {position: {x: -8.0, y: 0.0}}, label: start, color: "#60a5fa"}
        # goal_pose is a MAP-frame pose and map = world + (8, 0) for this world, so the
        # marker is shifted back by it.
        - {kind: pose, param: goal_pose, offset: [-8.0, 0.0, 0.0], label: goal}
@@ -1197,6 +1197,11 @@ A source naming something a configuration does not have resolves to nothing, and
 draws nothing for it — the same rule, and the same reason, as a ``param:`` that misses.
 Which fields a panel takes is in ``get_plugin_details("robovast.panel_types", "<type>")`` and
 in the served config schema, so the editor completes them.
+
+A marker states its placement once. ``pose:`` writes it out in the shape a ``.vast`` states a
+placement in everywhere else (``{position: {x, y, z}, orientation: {yaw}}``, or a bare
+``{x, y}``), and carries the yaw with it; ``pos:`` (with ``yaw:``) is the bare-point spelling,
+the one :class:`SceneMarker` itself carries, and stating both is refused.
 
 ``param:`` reads a resolved scenario parameter, so the marker follows the selection; one
 parameter holding a list of poses yields one numbered marker each. ``internal:`` reads a
