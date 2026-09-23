@@ -331,6 +331,29 @@ def clear_campaign(conn, campaign_id: str) -> dict:
     return deleted
 
 
+def analyze_tables(conn, tables) -> list:
+    """``ANALYZE`` every index table named in *tables*; return the ``(schema, table)`` done.
+
+    An ingest ends here for the tables it cleared and wrote: it has just replaced a
+    campaign's rows, and the planner otherwise keeps the statistics from before them until
+    autovacuum gets round to the table -- which on a table the ingest created a moment ago
+    means planning the first reads over it with no statistics at all. Matched by name over
+    :func:`known_tables`, so a name that exists in two schemas has both analysed.
+
+    The cost is the table's, not the ingest's: a metric table holds every campaign's rows,
+    so analysing it samples the corpus however few rows this campaign added, and two ingests
+    touching one table wait for each other on it. Only the tables an ingest wrote are named,
+    which is what keeps that bounded.
+    """
+    wanted = set(tables)
+    analysed = []
+    for schema, table in known_tables(conn):
+        if table in wanted:
+            conn.execute(f"ANALYZE {qualified(table, schema)}")
+            analysed.append((schema, table))
+    return analysed
+
+
 def ensure_table(conn, table: str, types: dict, *, source: str = "",
                  context=CONTEXT_COLUMNS, schema: str = METRIC_SCHEMA) -> list:
     """Make *table* able to hold columns *types*; return the widenings that happened.
@@ -349,47 +372,101 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
     Returns ``[(column, before, after), ...]``, empty when the table already fitted.
     """
     ensure_metadata_tables(conn)
-    name = qualified(table, schema)
+    # The common case -- a table that already fits -- is answered from one read and sends
+    # no DDL, so it takes no lock. That answer cannot go stale: a verdict only ever widens
+    # and a column is never dropped, so a table that fits this batch now still fits it after
+    # any concurrent writer's change.
     known = read_verdicts(conn, table, schema)
-    widened = []
+    if not _needs_ddl(known, types):
+        _scope().secure_table_if_needed(conn, table, schema)
+        return []
+    # Refused before queueing for the lock: a table only gains columns, so a batch too wide
+    # for the table as read is too wide for it once the lock is held. Checked again under
+    # the lock, against the verdicts the DDL is decided from.
+    _refuse_if_too_wide(table, _width_after(known, types, context), source=source)
+    with ddl_lock(conn):
+        # Read again, under the lock: the verdicts that decide the DDL must be the ones in
+        # force when it is issued. Decided from the read above, a writer could create over a
+        # table another writer created a moment ago, recording its narrower verdicts over
+        # the ones the table was built with and adding none of its columns, or retype a
+        # column another writer had just widened back to the narrower type it read.
+        known = read_verdicts(conn, table, schema)
+        if not known:
+            _create_table(conn, table, types, source=source, context=context, schema=schema)
+            return []
+        widened = _widen_table(conn, table, known, types, source=source, schema=schema)
+    # The table was here before this call, so :func:`_create_table` did not scope it --
+    # and an index written by a version without its transaction may hold one
+    # that nothing ever did. One catalog read says which, and the repair then happens at
+    # the first touch of the table rather than waiting for a whole-campaign sweep.
+    #
+    # Last, after the width guard: a batch that guard refuses must send nothing at all,
+    # and the caller discards that file's write anyway. Still before the rows themselves,
+    # which the sink copies in only once this returns.
+    _scope().secure_table_if_needed(conn, table, schema)
+    return widened
 
+
+def _needs_ddl(known: dict, types: dict) -> bool:
+    """Whether a table with verdicts *known* needs DDL to hold columns *types*."""
+    return not known or any(column not in known or widest(known[column], verdict) != known[column]
+                            for column, verdict in types.items())
+
+
+def _width_after(known: dict, types: dict, context) -> int:
+    """How many columns a table with verdicts *known* has once it holds *types*."""
     if not known:
-        columns = list(context) + [(c, types[c]) for c in types if c not in dict(context)]
-        _refuse_if_too_wide(table, len(columns), source=source)
-        defs = ", ".join(f"{_quote(name)} {_PG_TYPE[verdict]}" for name, verdict in columns)
-        # One transaction over the whole of "this table now exists", because the index
-        # connection is autocommit and the last statement in it is the one that scopes the
-        # table. Statement by statement, an ingest that died in between -- a killed
-        # postprocessing pod, a lost connection -- committed a table, and the column
-        # verdicts that make every later call take the widen path below, while leaving it
-        # uncovered by the campaign policy. Nothing then repaired it until an unrelated
-        # campaign's ingest ran its whole-index sweep, and until then every scoped read of
-        # the index was refused outright. Rolled back as a unit, the table simply is not
-        # there, and the next ingest creates and scopes it properly.
-        #
-        # Under the DDL lock as well, because none of the statements in it yields to a
-        # concurrent writer: two campaigns whose runs both write a ``poses.csv`` reach
-        # here together on a stem neither index has yet, and ``IF NOT EXISTS`` checks the
-        # catalog before it creates rather than while it does.
-        with ddl_lock(conn), conn.transaction():
-            if schema:
-                conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote(schema)}")
-            conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
-            # The one index data.db also built: every read is scoped to a run or a
-            # campaign, and a sequential scan of a pose table is the difference between a
-            # plot and a timeout.
-            index_cols = ", ".join(_quote(col) for col, _ in context)
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {_quote('idx_' + table + '_ctx')} "
-                         f"ON {name} ({index_cols})")
-            for col, verdict in columns:
-                _record_verdict(conn, table, col, verdict, schema)
-            # Here rather than once at setup: tables appear as data files appear, so a
-            # scope applied only to what existed at setup would leave every later table
-            # unscoped -- and an unscoped table does not error, it answers with the whole
-            # corpus.
-            _scope().secure_table(conn, table, schema)
-        return widened
+        return len(context) + len([c for c in types if c not in dict(context)])
+    return len(known) + len([c for c in types if c not in known])
 
+
+def _create_table(conn, table: str, types: dict, *, source: str, context, schema: str) -> None:
+    """Create *table* with *context* first and then *types*; the caller holds the DDL lock."""
+    name = qualified(table, schema)
+    columns = list(context) + [(c, types[c]) for c in types if c not in dict(context)]
+    _refuse_if_too_wide(table, len(columns), source=source)
+    defs = ", ".join(f"{_quote(name)} {_PG_TYPE[verdict]}" for name, verdict in columns)
+    # One transaction over the whole of "this table now exists", because the index
+    # connection is autocommit and the last statement in it is the one that scopes the
+    # table. Statement by statement, an ingest that died in between -- a killed
+    # postprocessing pod, a lost connection -- committed a table, and the column
+    # verdicts that make every later call take the widen path, while leaving it
+    # uncovered by the campaign policy. Nothing then repaired it until an unrelated
+    # campaign's ingest ran its whole-index sweep, and until then every scoped read of
+    # the index was refused outright. Rolled back as a unit, the table simply is not
+    # there, and the next ingest creates and scopes it properly.
+    #
+    # The caller holds the DDL lock, because none of the statements in it yields to a
+    # concurrent writer: two campaigns whose runs both write a ``poses.csv`` reach
+    # here together on a stem neither index has yet, and ``IF NOT EXISTS`` checks the
+    # catalog before it creates rather than while it does.
+    with conn.transaction():
+        if schema:
+            conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote(schema)}")
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {name} ({defs})")
+        # The one index data.db also built: every read is scoped to a run or a
+        # campaign, and a sequential scan of a pose table is the difference between a
+        # plot and a timeout.
+        index_cols = ", ".join(_quote(col) for col, _ in context)
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {_quote('idx_' + table + '_ctx')} "
+                     f"ON {name} ({index_cols})")
+        for col, verdict in columns:
+            _record_verdict(conn, table, col, verdict, schema)
+        # Here rather than once at setup: tables appear as data files appear, so a
+        # scope applied only to what existed at setup would leave every later table
+        # unscoped -- and an unscoped table does not error, it answers with the whole
+        # corpus.
+        _scope().secure_table(conn, table, schema)
+
+
+def _widen_table(conn, table: str, known: dict, types: dict, *, source: str,
+                 schema: str) -> list:
+    """Add and widen *table*'s columns for *types*; the caller holds the DDL lock.
+
+    *known* is the table's verdicts, read under that lock. Returns the widenings.
+    """
+    name = qualified(table, schema)
+    widened = []
     # Checked once, up front, for the whole batch of ALTERs this call is about to issue --
     # not inside the loop below, so a batch that would tip the table over the limit is
     # refused before its first, otherwise-fine column is added. Partial widening would
@@ -423,14 +500,4 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
         record_note(conn, table, column, note, kind=NOTE_WIDENING)
         logger.info("index: %s.%s widened %s -> %s%s",
                     table, column, current, target, f" by {source}" if source else "")
-
-    # The table was here before this call, so the create branch above did not scope it --
-    # and an index written by a version without that branch's transaction may hold one
-    # that nothing ever did. One catalog read says which, and the repair then happens at
-    # the first touch of the table rather than waiting for a whole-campaign sweep.
-    #
-    # Last, after the width guard: a batch that guard refuses must send nothing at all,
-    # and the caller discards that file's write anyway. Still before the rows themselves,
-    # which the sink copies in only once this returns.
-    _scope().secure_table_if_needed(conn, table, schema)
     return widened

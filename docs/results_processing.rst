@@ -1317,6 +1317,12 @@ exactly as after a launch:
 Postprocessing is **cached** by a hash of the results directory; when nothing changed the
 step is skipped automatically, which is what ``--force`` bypasses.
 
+Its last step loads the derived files into the central index. The index holds nothing that
+is not rebuilt from the campaign's files, so the load commits without waiting for each write
+to reach the database's disk, and it ends by refreshing the query planner's statistics on
+the tables it wrote. A crash of the index's database server during or just after a load can
+therefore lose the last rows written; postprocessing the campaign again loads them again.
+
 .. note::
 
    This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the

@@ -894,9 +894,27 @@ a ``DROP`` before a ``CREATE`` leaves a window between them, and ``CREATE AGGREG
 key on ``pg_type`` — a message naming neither the relation nor the concurrency — so every
 ``CREATE``/``DROP``/``ALTER`` against the index is issued under one session-level advisory
 lock (:func:`index_schema.ddl_lock`), and the paths that hold it ask what is missing first,
-so an ingest with nothing to change takes no lock at all. The view rebuild is one transaction
-as well as locked: a reader that arrives mid-rebuild waits for the swap instead of being told
-``run_view`` does not exist, which would read as a campaign with no runs.
+so an ingest with nothing to change takes no lock at all. A table's creation, its new columns
+and its widenings (:func:`index_schema.ensure_table`) are decided from the column verdicts
+read again *under* the lock, not from the read that found DDL necessary: decided from that
+earlier read, a writer that queued behind another could retype a column the other had just
+widened back to the narrower type it saw, or create over a table that now exists and record
+its own verdicts over the ones it was built with. The first read is safe to act on only when
+it says nothing needs to change, because a verdict only ever widens. The view rebuild is one
+transaction as well as locked: a reader that arrives mid-rebuild waits for the swap instead
+of being told ``run_view`` does not exist, which would read as a campaign with no runs.
+
+**The ingest session trades durability for speed, because the index is derived.**
+:func:`campaign_ingest.ingest_campaign` turns ``synchronous_commit`` off on its connection for
+the length of the ingest and puts the connection's own value back afterwards. Each of the
+ingest's autocommitted statements then returns without waiting for its WAL flush; a crash of
+the database server can lose the last commits before it, but cannot corrupt the index or
+apply a commit in part. Nothing but the ingest writes that way, and what it can lose is
+rebuilt from the campaign's files by ingesting them again. The ingest ends by running
+``ANALYZE`` on every table it cleared or wrote (:func:`index_schema.analyze_tables`), so the
+first queries over a campaign's fresh rows are planned with statistics that describe them
+rather than with whatever autovacuum last recorded — or, for a table the ingest just created,
+with none.
 
 ``describe_campaign_data`` lists both views first and carries the canonical query for each
 question a caller is likely to ask — the per-run lookup, a configuration's parameters, how

@@ -15,6 +15,7 @@ import sqlite3
 import pytest
 
 from robovast.results_processing import campaign_ingest, index_schema
+from robovast.results_processing.csv_types import REAL
 from robovast.results_processing.row_sink import PostgresRowSink
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
@@ -281,7 +282,7 @@ def test_clear_campaign_on_an_empty_index_is_not_an_error(conn):
 
 def test_a_sink_written_row_and_an_ingested_row_share_one_table(conn, tmp_path):
     """The RowSink seam and the CSV glob are two sources, not two schemas."""
-    from robovast.results_processing.csv_types import REAL, TEXT
+    from robovast.results_processing.csv_types import TEXT
 
     campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
     PostgresRowSink(conn, campaign_id="camp-b").write(
@@ -459,3 +460,87 @@ def test_an_unnarrated_caller_still_leaves_the_account_in_the_log(tmp_path, monk
     campaign_ingest.build_runs_table(_RecordingSink(), str(_run_tree(tmp_path, 2)))
 
     assert "index: building the run table 2/2" in logged
+
+
+def _last_analyze(conn, schema, table):
+    return conn.execute(
+        "SELECT last_analyze FROM pg_stat_user_tables WHERE schemaname = %s AND relname = %s",
+        (schema, table)).fetchone()[0]
+
+
+def test_the_ingest_analyses_the_tables_it_wrote_and_no_others(conn, tmp_path):
+    """The planner reads a campaign's fresh rows with statistics that describe them."""
+    index_schema.ensure_table(conn, "untouched", {"value": REAL})
+    campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
+
+    for schema, table in (("ing_test", "poses"), ("ing_test", "nav_metrics"),
+                          ("ing_test", campaign_ingest.RUNS_TABLE), ("campaign", "run")):
+        assert _last_analyze(conn, schema, table) is not None, f"{schema}.{table}"
+    assert _last_analyze(conn, "ing_test", "untouched") is None
+
+
+def test_statistics_that_could_not_be_gathered_do_not_fail_a_finished_ingest(conn, tmp_path,
+                                                                            monkeypatch):
+    """Every row is committed and flushed before this runs, so the campaign is indexed. Raising
+    would report a complete ingest as failed and send the caller round to redo it."""
+    def _refuse(_conn, _tables):
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(index_schema, "analyze_tables", _refuse)
+    totals = campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
+
+    assert totals
+    assert conn.execute(
+        f'SELECT 1 FROM "{index_schema.CAMPAIGNS_TABLE}" WHERE campaign_id = %s',
+        ("camp-a",)).fetchone() is not None
+
+
+def test_the_ingest_runs_without_synchronous_commit_and_restores_it(conn, tmp_path,
+                                                                     monkeypatch):
+    """Off for the ingest -- the index is rebuilt from the files -- and back afterwards on
+    the caller's connection, which may go on to write something that is not derived."""
+    seen = []
+    clear = index_schema.clear_campaign
+
+    def spy(c, campaign_id):
+        seen.append(c.execute("SHOW synchronous_commit").fetchone()[0])
+        return clear(c, campaign_id)
+
+    monkeypatch.setattr(index_schema, "clear_campaign", spy)
+    # Set explicitly: the suite's own server runs with it off, which would prove nothing.
+    conn.execute("SET synchronous_commit = on")
+    campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
+
+    assert seen == ["off"]
+    assert conn.execute("SHOW synchronous_commit").fetchone()[0] == "on"
+
+
+def test_the_registry_row_that_ends_the_ingest_commits_durably(conn, tmp_path,
+                                                               monkeypatch):
+    """The last write is what says the campaign is ingested, and postprocessing's own marker
+    rests on it: a synchronous commit flushes the WAL up to its own point, so the rows above
+    it cannot be lost while the marker survives."""
+    seen = []
+    record = index_schema.record_campaign
+
+    def spy(c, campaign_id):
+        seen.append(c.execute("SHOW synchronous_commit").fetchone()[0])
+        return record(c, campaign_id)
+
+    monkeypatch.setattr(index_schema, "record_campaign", spy)
+    conn.execute("SET synchronous_commit = off")
+    campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
+
+    assert seen == ["on"]
+    assert conn.execute("SHOW synchronous_commit").fetchone()[0] == "off"
+
+
+def test_a_refused_ingest_restores_synchronous_commit_too(conn, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    from robovast.common.errors import CampaignNotIngestable  # noqa: PLC0415
+
+    conn.execute("SET synchronous_commit = on")
+    with pytest.raises(CampaignNotIngestable):
+        campaign_ingest.ingest_campaign(conn, str(empty), "camp-a")
+    assert conn.execute("SHOW synchronous_commit").fetchone()[0] == "on"
