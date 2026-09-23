@@ -128,6 +128,21 @@ def read_rows(path: str) -> list:
     return rows
 
 
+def header(path: str) -> Optional[List[str]]:
+    """A CSV file's column names from its header line alone; ``None`` for a JSONL file.
+
+    What a file's table holds, before building it: enough to tell whether it follows a
+    contract such as the pose one.
+    """
+    if path.lower().endswith(".jsonl"):
+        return None
+    with open(path, encoding="utf-8", newline="") as fh:
+        for line in fh:
+            if not line.startswith("#"):
+                return next(csv.reader([line]), [])
+    return []
+
+
 _ARROW = {INTEGER: pa.int64(), REAL: pa.float64(), TEXT: pa.string(), UNKNOWN: pa.null()}
 
 
@@ -199,4 +214,5 @@ def run_files(run_dir: str, reserved=()) -> RunFiles:
 
 
 __all__ = ["JSONL_READERS", "MAX_TABLE_NAME_BYTES", "QUATERNION", "RaggedFile", "RunFiles",
-           "YAW", "YAW_NOTE", "read_rows", "run_files", "table_name", "to_arrow", "with_yaw"]
+           "YAW", "YAW_NOTE", "header", "read_rows", "run_files", "table_name", "to_arrow",
+           "with_yaw"]

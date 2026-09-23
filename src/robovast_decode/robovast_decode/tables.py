@@ -32,6 +32,7 @@ files are written first, then the manifest is replaced in one ``rename``.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from contextlib import contextmanager
@@ -186,6 +187,20 @@ def write_manifest(campaign_dir: str, manifest: dict) -> None:
     os.replace(tmp, path)
 
 
+def _schema_id(manifest: dict, schema: pa.Schema) -> str:
+    """The id *schema* is stored under in *manifest*: one copy per distinct schema, not per run."""
+    fields = [[f.name, str(f.type)] for f in schema]
+    key = hashlib.sha1(json.dumps(fields).encode()).hexdigest()[:16]
+    manifest.setdefault("schemas", {})[key] = fields
+    return key
+
+
+def schema_of(manifest: dict, entry: dict) -> List[List[str]]:
+    """``[[column, type], ...]`` of one run's entry; ``[]`` for a run with nothing for it."""
+    key = entry.get("schema")
+    return manifest.get("schemas", {}).get(key, []) if key else []
+
+
 def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[str], rows: int,
                      schema: pa.Schema, sources: dict, complete: bool) -> None:
     """Enter one run's contribution to *table* in *manifest* (in memory)."""
@@ -193,13 +208,33 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
     entry["runs"][run_key] = {
         "files": files,
         "rows": rows,
-        "schema": [[f.name, str(f.type)] for f in schema],
+        "schema": _schema_id(manifest, schema),
         "sources": sources,
         "complete": complete,
         "decoder": __version__,
     }
 
 
+def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict,
+                      complete: bool, reason: Optional[str] = None) -> None:
+    """Enter that a run has no rows for *table*: it recorded nothing for it, or *reason*.
+
+    Recorded, not left out, so that asking again for a finished run's table costs a lookup
+    rather than another look at its recordings; *reason* is why a build failed, which a
+    reader reports beside its answer.
+    """
+    entry = manifest["tables"].setdefault(table, {"runs": {}})
+    entry["runs"][run_key] = {
+        "files": [],
+        "rows": 0,
+        "schema": None,
+        "sources": sources,
+        "complete": complete,
+        "decoder": __version__,
+        "reason": reason,
+    }
+
+
 __all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "MANIFEST", "TableBuffer", "cache_root", "fixed",
-           "leading_then_sorted", "manifest_lock", "read_manifest", "record_run_table",
-           "run_table_path", "write_manifest", "write_table"]
+           "leading_then_sorted", "manifest_lock", "read_manifest", "record_run_absent",
+           "record_run_table", "run_table_path", "schema_of", "write_manifest", "write_table"]

@@ -54,8 +54,8 @@ from .decode import decode_bag, segments
 from .framing import Channel, McapTail
 from .layout import job_links, run_dirs
 from .registry import INFRA_BAG, SCENARIO_BAG, narrow, plan_for
-from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_run_table,
-                     run_table_path, write_manifest, write_table)
+from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_run_absent,
+                     record_run_table, run_table_path, write_manifest, write_table)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
@@ -250,6 +250,8 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
             _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
         _build_files(campaign_dir, campaign_id, run, wanted_tables, force, report, known_tables,
                      reserved=run_bag_tables | DERIVED_TABLES)
+        if wanted_tables is not None:
+            _record_absent(campaign_dir, run, wanted_tables, report, sizes)
     if wanted_tables is not None:
         report.unknown = [t for t in wanted_tables if t not in known_tables]
     return report
@@ -299,6 +301,24 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
             write_manifest(campaign_dir, fresh)
 
 
+def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildReport,
+                   sizes: dict) -> None:
+    """Enter the asked-for tables *run* has no rows for, and why where a build failed."""
+    have = {t for t, keys in report.built.items() if run.key in keys}
+    have |= {t for t, keys in report.skipped.items() if run.key in keys}
+    missing = [t for t in wanted_tables if t not in have]
+    if not missing:
+        return
+    complete = os.path.isfile(os.path.join(run.path, "test.xml"))
+    with manifest_lock(campaign_dir):
+        manifest = read_manifest(campaign_dir)
+        for table in missing:
+            reason = report.failed.get(table, {}).get(run.key)
+            record_run_absent(manifest, table, run.key, sources=sizes, complete=complete,
+                              reason=reason)
+        write_manifest(campaign_dir, manifest)
+
+
 def _context(campaign_id: str, role: str, owner: Run, runs_of_job: Dict[str, List[Run]]) -> dict:
     """The context columns and file location of one recording's rows."""
     if role == INFRA_BAG and owner.job_dir:
@@ -345,14 +365,27 @@ def _write_recording(campaign_dir: str, campaign_id: str, run: Run, buf: TableBu
         write_manifest(campaign_dir, manifest)
 
 
-def available_tables(campaign_dir: str, config: Optional[dict] = None) -> Dict[str, dict]:
-    """``{table: {"runs": n buildable, "built": n built}}`` without building anything."""
+def available_tables(campaign_dir: str, config: Optional[dict] = None,
+                     runs: Optional[Iterable[str]] = None) -> Dict[str, dict]:
+    """``{table: {"runs": n, "built": n, "failed": {run: reason}}}`` without building anything.
+
+    ``runs`` counts the runs (or, for a job that ran several, the jobs) whose records can yield
+    the table, ``built`` those it is built for. *runs* limits both to those ``config/run`` keys.
+    """
     campaign_dir = os.path.abspath(campaign_dir)
     groups = _groups(config)
     manifest = read_manifest(campaign_dir)
-    out: Dict[str, dict] = {}
+    wanted = set(runs) if runs is not None else None
+    all_runs = find_runs(campaign_dir)
+    runs_of_job: Dict[str, List[Run]] = {}
+    for run in all_runs:
+        if run.job_dir:
+            runs_of_job.setdefault(run.job_dir, []).append(run)
+    keys: Dict[str, set] = {}
     seen_jobs = set()
-    for run in find_runs(campaign_dir):
+    for run in all_runs:
+        if wanted is not None and run.key not in wanted:
+            continue
         sources = [(SCENARIO_BAG, scenario_recording(run))]
         if run.job_dir and run.job_dir not in seen_jobs:
             seen_jobs.add(run.job_dir)
@@ -363,13 +396,19 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None) -> Dict[s
         for role, bag_dir in sources:
             if bag_dir is None:
                 continue
+            key = _context("", role, run, runs_of_job)["key"]
             for table in plan_for(role, recorded_topics(bag_dir), groups.get(role)).tables:
                 bag_tables.add(table)
-                out.setdefault(table, {"runs": 0, "built": 0})["runs"] += 1
+                keys.setdefault(table, set()).add(key)
         for table in run_files(run.path, reserved=bag_tables | DERIVED_TABLES).tables:
-            out.setdefault(table, {"runs": 0, "built": 0})["runs"] += 1
-    for table, entry in manifest.get("tables", {}).items():
-        out.setdefault(table, {"runs": 0, "built": 0})["built"] = len(entry.get("runs", {}))
+            keys.setdefault(table, set()).add(run.key)
+    out: Dict[str, dict] = {}
+    for table, table_keys in keys.items():
+        entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
+        built = [k for k in table_keys if k in entries and not entries[k].get("reason")]
+        failed = {k: entries[k]["reason"] for k in table_keys
+                  if k in entries and entries[k].get("reason")}
+        out[table] = {"runs": len(table_keys), "built": len(built), "failed": failed}
     return out
 
 

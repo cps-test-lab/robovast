@@ -142,3 +142,48 @@ def test_a_pose_table_gets_its_heading(campaign):
     build(str(campaign), tables=["poses"], config={"groups": []})
     poses = pq.read_table(campaign / ".cache" / "tables" / "poses" / "cfg" / "0.parquet")
     assert "orientation.yaw" in poses.column_names
+
+
+def test_a_table_a_run_has_nothing_for_is_recorded_so_it_is_not_looked_for_again(campaign):
+    build(str(campaign), tables=["rosbag2_nope"])
+    entry = _manifest(campaign)["tables"]["rosbag2_nope"]["runs"]["cfg/0"]
+    assert entry["files"] == [] and entry["rows"] == 0 and entry["complete"] is True
+    assert entry["reason"] is None
+
+
+def test_a_failed_table_is_recorded_with_its_reason_and_counted_as_failed(campaign):
+    config = {"groups": [{"bag_dir": "rosbag2", "plugins": [
+        {"type": "tf_to_csv", "frames": "all", "require": ["nowhere"]}]}]}
+    build(str(campaign), tables=["poses"], config=config)
+    entry = _manifest(campaign)["tables"]["poses"]["runs"]["cfg/0"]
+    assert entry["files"] == [] and "nowhere" in entry["reason"]
+    counts = available_tables(str(campaign), config=config)["poses"]
+    assert counts["built"] == 0 and "nowhere" in counts["failed"]["cfg/0"]
+
+
+def test_the_catalog_counts_the_runs_a_table_is_built_for(tmp_path):
+    campaign = make_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1)))
+    build(str(campaign), tables=["rosbag2_collision"], runs=["cfg/1"])
+    counts = available_tables(str(campaign))["rosbag2_collision"]
+    assert counts == {"runs": 2, "built": 1, "failed": {}}
+    assert available_tables(str(campaign), runs=["cfg/1"])["rosbag2_collision"]["runs"] == 1
+
+
+def test_a_schema_is_stored_once_however_many_runs_share_it(tmp_path):
+    campaign = make_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1), ("cfg", 2)))
+    build(str(campaign), tables=["rosbag2_collision"])
+    manifest = _manifest(campaign)
+    ids = {e["schema"] for e in manifest["tables"]["rosbag2_collision"]["runs"].values()}
+    assert len(ids) == 1
+    assert ["run_id", "int64"] in manifest["schemas"][ids.pop()]
+
+
+def test_a_data_files_columns_are_read_from_its_header_alone(campaign):
+    from robovast_decode.authored import header
+
+    path = campaign / "cfg" / "0" / "sim_poses.csv"
+    path.write_text("# frame is the body\nframe,position.x,position.y\nrobot,1,2\n")
+    assert header(str(path)) == ["frame", "position.x", "position.y"]
+    jsonl = campaign / "cfg" / "0" / "behaviors.jsonl"
+    jsonl.write_text('{"format": "behavior_tree_log"}\n')
+    assert header(str(jsonl)) is None
