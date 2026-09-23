@@ -15,6 +15,7 @@ import { KeepAlive } from '@/components/KeepAlive'
 import { NotificationAsk } from '@/components/NotificationAsk'
 import { lazyView } from '@/lib/lazyView'
 import { CAMPAIGN_SEL, hashFor, navFromHash, nextNav, type Nav, type ResultsSel } from '@/lib/hashNav'
+import { DEFAULT_CAMPAIGN_SORT, type CampaignListSort } from '@/lib/campaignSort'
 
 // Each page is fetched on first visit rather than in the entry bundle. Config and Results
 // pull in Monaco, Plotly, Three and Vega between them — several megabytes that the campaign
@@ -81,6 +82,7 @@ const DEFAULT_NAV: Nav = {
   configCampaignId: '',
   shareImport: '',
   openCampaign: '',
+  listSort: DEFAULT_CAMPAIGN_SORT,
 }
 
 const readNav = () => navFromHash(window.location.hash, TOPICS, DEFAULT_NAV)
@@ -88,9 +90,16 @@ const readNav = () => navFromHash(window.location.hash, TOPICS, DEFAULT_NAV)
 export function App() {
   const [nav, setNav] = useState<Nav>(readNav)
 
-  // Follow back/forward (and any external hash change).
+  // Follow back/forward (and any external hash change). The campaign list's order is spelled
+  // only in the campaign view's own address, so a hash for any other page says nothing about it
+  // and the order in hand is kept -- that is what lets a jump into Results and a click back on
+  // Campaigns return to the list as it was left (see `Nav.listSort`).
   useEffect(() => {
-    const onHashChange = () => setNav(readNav())
+    const onHashChange = () =>
+      setNav((prev) => {
+        const next = readNav()
+        return next.topicId === 'execution' ? next : { ...next, listSort: prev.listSort }
+      })
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
@@ -110,6 +119,18 @@ export function App() {
       if (!prev.shareImport) return prev
       const next = { ...prev, shareImport: '' }
       window.history.replaceState(null, '', `#${hashFor(next)}`)
+      return next
+    })
+  }, [])
+
+  // The order the campaign list is shown in, chosen on the page. replaceState for `setResults`'
+  // reason below: a choice made in the view must not cost a Back press to get past.
+  const setListSort = useCallback((listSort: CampaignListSort) => {
+    setNav((prev) => {
+      const next = { ...prev, listSort }
+      if (hashFor(next) !== hashFor(prev)) {
+        window.history.replaceState(null, '', `#${hashFor(next)}`)
+      }
       return next
     })
   }, [])
@@ -162,6 +183,8 @@ export function App() {
             shareImport={nav.shareImport}
             onShareImportConsumed={clearShareImport}
             openCampaign={nav.openCampaign}
+            listSort={nav.listSort}
+            onListSortChange={setListSort}
           />
         </KeepAlive>
         <KeepAlive active={nav.topicId === 'results'}>

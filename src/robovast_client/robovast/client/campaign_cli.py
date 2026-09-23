@@ -525,23 +525,35 @@ def wait(campaign, interval, timeout, namespace, context):
 
 @campaign.command('list')
 @click.option('--limit', type=int, default=20, show_default=True,
-              help='How many to show, newest first.')
+              help='How many to show, in the listed order.')
+@click.option('--sort', 'sort_key', type=click.Choice(['recent', 'size']), default='recent',
+              show_default=True,
+              help='Order by when a campaign ended (started, while live) or by its results '
+                   'size. Live campaigns lead either way.')
+@click.option('--desc/--asc', 'descending', default=True, show_default=True,
+              help='Newest or largest first, or the reverse. A campaign with no size is '
+                   'listed last either way.')
 @target_options
-def list_cmd(limit, namespace, context):
-    """List campaigns this service knows about, newest first.
+def list_cmd(limit, sort_key, descending, namespace, context):
+    """List campaigns this service knows about: live ones first, then newest first.
 
+    The size column is what the results occupy, measured once when the campaign ended;
+    ``-`` means none is recorded (a campaign still running, or one never measured).
     ``description`` is what tells two same-day ``<name>-<timestamp>`` ids apart, which is
     why the launch verbs ask for one. A live campaign's standing with the queue follows its
     phase when it is not the default -- ``prio +2``, ``paused`` -- because a held campaign
     making no progress is otherwise indistinguishable here from a wedged one.
     """
+    from robovast.client.progress import fmt_size  # pylint: disable=import-outside-toplevel
     try:
         from robovast.service.interface import \
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
 
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
-            listed = client.list_campaigns(ListCampaignsRequest(limit=limit)).campaigns
+            listed = client.list_campaigns(ListCampaignsRequest(
+                limit=limit, sort=sort_key,
+                order='desc' if descending else 'asc')).campaigns
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
@@ -550,14 +562,18 @@ def list_cmd(limit, namespace, context):
         click.echo("no campaigns")
         return
     width = max(len(c.campaign_id) for c in listed)
-    # A column of its own, as wide as the widest standing in this listing and absent when no
-    # campaign has one: descriptions that line up are what makes the listing scannable, and a
-    # marker on some rows only would step every one of them along by its own length.
+    # Two columns of their own, each as wide as the widest value in this listing and each
+    # absent when no campaign has one: descriptions that line up are what makes the listing
+    # scannable, and a marker on some rows only would step every one of them along.
+    sizes = [fmt_size(c.results_bytes) if c.results_bytes is not None else "-"
+             for c in listed]
+    size_width = max(len(s) for s in sizes)
     standings = {c.campaign_id: _queue_standing(c) for c in listed}
-    mark = max(len(s) + 3 for s in standings.values()) if any(standings.values()) else 0
-    for summary in listed:
+    mark = max(len(t) + 3 for t in standings.values()) if any(standings.values()) else 0
+    for summary, size in zip(listed, sizes):
         standing = standings[summary.campaign_id]
         click.echo(f"  {summary.campaign_id:<{width}}  {summary.phase:<12} "
+                   + f"{size:>{size_width}}  "
                    + f"{f'[{standing}]' if standing else '':<{mark}}"
                    + f"{summary.description}")
 

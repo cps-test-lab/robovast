@@ -653,6 +653,26 @@ def read_campaign_finished_at(campaign_dir: Path) -> Optional[str]:
     return datetime.fromtimestamp(status.phase_since, tz=timezone.utc).isoformat()
 
 
+def read_campaign_results_bytes(campaign_dir: Path) -> tuple[bool, Optional[int]]:
+    """The results size recorded for the campaign, and whether that answer is settled.
+
+    Read from the same ``outcome.json`` as :func:`read_campaign_finished_at`, which is where
+    the controller records the figure once the campaign has ended (``Status.results_bytes``).
+    Returns ``(settled, bytes)``: ``settled`` is True for a **terminal** record, whose figure
+    -- a size, or ``None`` for a campaign that was never measured -- will not change unless
+    the campaign is worked on again. It is False when there is no record, an unreadable one,
+    or one written mid-campaign, because a later record may still carry a figure.
+    """
+    try:
+        status = read_execution_outcome(Path(campaign_dir))
+    except Exception:  # noqa: BLE001 - a corrupt record is "unknown", never an error here
+        return False, None
+    if status is None:
+        return False, None
+    from robovast.execution.control_server import is_terminal  # pylint: disable=import-outside-toplevel
+    return is_terminal(status.phase), status.results_bytes
+
+
 #: Intervention ledger — what a human did to a campaign *while it ran*. One file for every
 #: kind, because "what was done to this run?" is one question and answering it should not mean
 #: knowing to ask twice: a kill and a probe are the same sort of fact (a person reached into

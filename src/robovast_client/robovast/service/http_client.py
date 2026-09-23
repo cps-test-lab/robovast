@@ -346,7 +346,8 @@ class HTTPTransport(RobovastInterface):
     ) -> ListCampaignsResponse:
         request = request or ListCampaignsRequest()
         return ListCampaignsResponse.model_validate(
-            self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset))
+            self._get(Routes.CAMPAIGNS, limit=request.limit, offset=request.offset,
+                      sort=request.sort, order=request.order))
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))

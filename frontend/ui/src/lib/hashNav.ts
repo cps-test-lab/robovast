@@ -13,6 +13,8 @@
 //   #/config/campaign/<campaign>                  the deep link into one campaign's frozen config
 //   #/execution?import=<search>                   the campaign view, share-import dialog on <search>
 //   #/execution?campaign=<campaign>               the campaign view, that campaign's card opened
+//   #/execution?sort=<recent|size>&order=<desc|asc>  ...its list in that order (either request
+//                                                 may sit beside it; the default order is unspelled)
 //
 // The node's address is *positional*, and deliberately the same spelling RoboVAST uses for a run
 // everywhere else -- `<campaign>/<config>/<run>` is the on-disk layout and the `/results` REST
@@ -20,6 +22,8 @@
 // markers. Its arity never varies, so no `cfg`/`run` keywords are needed to read it. Anything that
 // is *not* part of the address (the notebook tab; a batch, which has no positional slot) goes in
 // the query instead, so nothing in the path is derivable from anything else in it.
+
+import { campaignSortFromQuery, campaignSortQuery, DEFAULT_CAMPAIGN_SORT, type CampaignListSort } from './campaignSort'
 
 /** What a topic looks like to the hash: an id, and whether it has sub-views. */
 export interface NavTopicShape {
@@ -99,6 +103,14 @@ export interface Nav {
    *  under KeepAlive, so a request addressed to one page must not be readable by another. Dropped
    *  by `nextNav`, because clicking Campaigns in the sidebar means "the list". */
   openCampaign: string
+  /** The order the campaign view lists campaigns in.
+   *
+   *  State, not an instruction -- the opposite of `openCampaign` beside it: it is what the page
+   *  is showing for as long as it shows it, so it is in the URL for a reload and a pasted link to
+   *  come back to the same order, and `nextNav` carries it, so leaving the page and clicking
+   *  Campaigns again returns to the list as it was left. Parsed for the campaign view alone,
+   *  like the two requests above. */
+  listSort: CampaignListSort
 }
 
 /** Marks the third segment as a campaign id rather than a view, for a leaf topic.
@@ -173,6 +185,12 @@ export function navFromHash(hash: string, topics: NavTopicShape[], fallback: Nav
         topic.id === EXECUTION_TOPIC
           ? (new URLSearchParams(rawQuery).get('campaign') ?? '')
           : '',
+      // An order the hash names but nobody can read (a hand-edited `?sort=name`) shows the
+      // default, and the page's sort control then says which order that is.
+      listSort:
+        topic.id === EXECUTION_TOPIC
+          ? (campaignSortFromQuery(new URLSearchParams(rawQuery)) ?? DEFAULT_CAMPAIGN_SORT)
+          : DEFAULT_CAMPAIGN_SORT,
     }
   }
   const view = topic.views.find((v) => v.id === rawView)?.id ?? topic.views[0]?.id ?? ''
@@ -188,9 +206,12 @@ export function navFromHash(hash: string, topics: NavTopicShape[], fallback: Nav
     sel: selFromHash(rawConfig, rawRun, query),
     tab: query.get('tab') ?? '',
     configCampaignId: '',
-    // A topic with views is never the campaign view, which is a leaf.
+    // A topic with views is never the campaign view, which is a leaf. Its order is not in
+    // this address, so a hash change lands on the default -- see App, which keeps the order it
+    // had when the hash does not speak for the campaign view.
     shareImport: '',
     openCampaign: '',
+    listSort: DEFAULT_CAMPAIGN_SORT,
   }
 }
 
@@ -229,9 +250,15 @@ export function hashFor(nav: Nav): string {
     // Explorer alone: a view's address may not carry a request another view would act on.
     if (topicId === EXECUTION_TOPIC) {
       // One at a time, and `import` first: both are requests to the same page, and a link
-      // carrying two of them would be asking it to do two unrelated things at once.
-      if (nav.shareImport) return `/${topicId}?import=${encodeURIComponent(nav.shareImport)}`
-      if (nav.openCampaign) return `/${topicId}?campaign=${encodeURIComponent(nav.openCampaign)}`
+      // carrying two of them would be asking it to do two unrelated things at once. The order
+      // is not a request, so it goes beside either.
+      const request = nav.shareImport
+        ? `import=${encodeURIComponent(nav.shareImport)}`
+        : nav.openCampaign
+          ? `campaign=${encodeURIComponent(nav.openCampaign)}`
+          : ''
+      const q = [request, campaignSortQuery(nav.listSort)].filter(Boolean).join('&')
+      return q ? `/${topicId}?${q}` : `/${topicId}`
     }
     return `/${topicId}`
   }
@@ -275,5 +302,6 @@ export function nextNav(
     // carrying it would re-open the share dialog every time somebody clicked Campaigns.
     shareImport: '',
     openCampaign: '',
+    listSort: nav.listSort,
   }
 }

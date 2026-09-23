@@ -22,6 +22,7 @@ import {
   type Nav,
   type ResultsSel,
 } from './hashNav'
+import { DEFAULT_CAMPAIGN_SORT } from './campaignSort'
 
 const TOPICS = [
   { id: 'config' },
@@ -36,6 +37,7 @@ const DEFAULT_NAV: Nav = {
   configCampaignId: '',
   shareImport: '',
   openCampaign: '',
+  listSort: DEFAULT_CAMPAIGN_SORT,
   sel: CAMPAIGN_SEL,
   tab: '',
 }
@@ -56,6 +58,7 @@ describe('navFromHash', () => {
       configCampaignId: '',
       shareImport: '',
       openCampaign: '',
+      listSort: DEFAULT_CAMPAIGN_SORT,
       sel: CAMPAIGN_SEL,
       tab: '',
     })
@@ -90,6 +93,7 @@ describe('navFromHash', () => {
       configCampaignId: '',
       shareImport: '',
       openCampaign: '',
+      listSort: DEFAULT_CAMPAIGN_SORT,
       sel: CAMPAIGN_SEL,
       tab: '',
     })
@@ -104,6 +108,7 @@ describe('navFromHash', () => {
       configCampaignId: '',
       shareImport: '',
       openCampaign: '',
+      listSort: DEFAULT_CAMPAIGN_SORT,
     })
     // An unknown view falls back to the topic's first, rather than rejecting the hash.
     expect(at('#/results/nope').viewId).toBe('explorer')
@@ -172,6 +177,7 @@ describe('hashFor — what each view is allowed to spell', () => {
     configCampaignId: '',
     shareImport: '',
     openCampaign: '',
+    listSort: DEFAULT_CAMPAIGN_SORT,
   })
 
   it('gives the Explorer the whole selection and its tab', () => {
@@ -241,6 +247,7 @@ describe('nextNav — which campaign survives a navigation', () => {
     configCampaignId: '',
     shareImport: '',
     openCampaign: '',
+    listSort: DEFAULT_CAMPAIGN_SORT,
     sel: CAMPAIGN_SEL,
     tab: '',
   }
@@ -251,6 +258,7 @@ describe('nextNav — which campaign survives a navigation', () => {
     configCampaignId: 'c1',
     shareImport: '',
     openCampaign: '',
+    listSort: DEFAULT_CAMPAIGN_SORT,
     sel: CAMPAIGN_SEL,
     tab: '',
   }
@@ -300,6 +308,7 @@ describe('nextNav — which campaign survives a navigation', () => {
       configCampaignId: '',
       shareImport: '',
       openCampaign: '',
+      listSort: DEFAULT_CAMPAIGN_SORT,
     })
   })
 })
@@ -331,5 +340,42 @@ describe('#/execution?campaign=', () => {
   it('does not compete with an import request in one link', () => {
     const nav = { ...DEFAULT_NAV, topicId: 'execution', shareImport: 's', openCampaign: 'c' }
     expect(hashFor(nav)).toBe('/execution?import=s')
+  })
+})
+
+describe('the campaign list order', () => {
+  it('reads the order the campaign view is showing', () => {
+    expect(at('#/execution?sort=size&order=asc').listSort).toEqual({ sort: 'size', order: 'asc' })
+    // A missing half is the service's default for that half, as it is on the wire.
+    expect(at('#/execution?sort=size').listSort).toEqual({ sort: 'size', order: 'desc' })
+    expect(at('#/execution').listSort).toEqual(DEFAULT_CAMPAIGN_SORT)
+  })
+
+  it('shows the default for an order nobody can read', () => {
+    expect(at('#/execution?sort=name').listSort).toEqual(DEFAULT_CAMPAIGN_SORT)
+    expect(at('#/execution?sort=size&order=up').listSort).toEqual(DEFAULT_CAMPAIGN_SORT)
+  })
+
+  it('is read for the campaign view alone', () => {
+    expect(at('#/config?sort=size').listSort).toEqual(DEFAULT_CAMPAIGN_SORT)
+    expect(at('#/results/explorer/nav-1?sort=size').listSort).toEqual(DEFAULT_CAMPAIGN_SORT)
+  })
+
+  it('round-trips, leaves the default unspelled, and sits beside a request', () => {
+    for (const hash of [
+      '#/execution?sort=size&order=desc',
+      '#/execution?sort=recent&order=asc',
+      '#/execution?campaign=c1&sort=size&order=asc',
+      '#/execution?import=s&sort=size&order=desc',
+    ]) {
+      expect(`#${hashFor(at(hash))}`).toBe(hash)
+    }
+    expect(hashFor({ ...DEFAULT_NAV, listSort: DEFAULT_CAMPAIGN_SORT })).toBe('/execution')
+  })
+
+  it('survives a sidebar click, because it is what the list is showing', () => {
+    const nav = at('#/execution?sort=size&order=asc')
+    expect(nextNav(nav, TOPICS, 'results').listSort).toEqual({ sort: 'size', order: 'asc' })
+    expect(hashFor(nextNav(nav, TOPICS, 'execution'))).toBe('/execution?sort=size&order=asc')
   })
 })

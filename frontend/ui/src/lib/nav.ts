@@ -9,6 +9,7 @@
 // here and there.
 
 import { CAMPAIGN_SEGMENT, hashFor, type Nav, type ResultsSel, type ResultsViewId } from './hashNav'
+import { DEFAULT_CAMPAIGN_SORT } from './campaignSort'
 
 export type { ResultsViewId }
 
@@ -33,6 +34,7 @@ export function openResultsView(
     configCampaignId: '',
     shareImport: '',
     openCampaign: '',
+    listSort: DEFAULT_CAMPAIGN_SORT,
   }
   window.location.hash = `#${hashFor(nav)}`
 }
@@ -66,6 +68,7 @@ export function shareImportLink(search: string): string {
     configCampaignId: '',
     shareImport: search,
     openCampaign: '',
+    listSort: DEFAULT_CAMPAIGN_SORT,
   }
   return `${window.location.href.split('#')[0]}#${hashFor(nav)}`
 }
@@ -89,6 +92,7 @@ export function campaignLink(campaignId: string): string {
     configCampaignId: '',
     shareImport: '',
     openCampaign: campaignId,
+    listSort: DEFAULT_CAMPAIGN_SORT,
   }
   return `${window.location.href.split('#')[0]}#${hashFor(nav)}`
 }
@@ -104,5 +108,6 @@ export function openCampaignCard(campaignId: string): void {
     configCampaignId: '',
     shareImport: '',
     openCampaign: campaignId,
+    listSort: DEFAULT_CAMPAIGN_SORT,
   })}`
 }

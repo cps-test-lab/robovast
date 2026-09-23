@@ -315,8 +315,9 @@ must call the lister to learn the name the getter needs. So an **empty argument 
      - all workspaces / one
    * - ``list_plugins()`` / ``(group=…)`` / ``(query=…)``
      - the group catalog / a group's plugins / a name search
-   * - ``list_campaigns()`` / ``(running_only=True)``
-     - every campaign / the live ones
+   * - ``list_campaigns()`` / ``(running_only=True)`` / ``(sort="size")``
+     - every campaign, live first then newest first / the live ones / largest results
+       first (``order="asc"`` reverses either order; the live ones still lead)
 
 The same reasoning fixes the vocabulary. One concept has one argument name across the
 surface — ``campaign_id``, ``config_name``, ``run_id``, ``address``, ``limit``,
