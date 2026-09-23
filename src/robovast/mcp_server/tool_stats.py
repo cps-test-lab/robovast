@@ -63,9 +63,11 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     ok          boolean NOT NULL,
     args        text NOT NULL DEFAULT '',
     answer      text NOT NULL DEFAULT '',
-    actor       text NOT NULL DEFAULT ''
+    actor       text NOT NULL DEFAULT '',
+    session     text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS {TABLE}_at ON {TABLE} (at);
+ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS session text NOT NULL DEFAULT '';
 """
 
 #: How much of a payload the log keeps, for ``args`` and for ``answer`` alike. This is the
@@ -142,7 +144,12 @@ class ToolCall:
     ok: bool
     args: str
     answer: str
+    #: Who authenticated, as the resolved principal names itself and the source it
+    #: authenticated by. Empty where the transport resolves no principal.
     actor: str
+    #: ``"<client>/<session>"`` -- which client, and which of its connections. What tells
+    #: two agents sharing one token apart, which *actor* cannot.
+    session: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,10 +177,11 @@ class ToolCallLog:
     # -- writing
 
     def record(self, tool: str, duration_ms: float, ok: bool, *,
-               args: str = "", answer: str = "", actor: str = "") -> None:
+               args: str = "", answer: str = "", actor: str = "",
+               session: str = "") -> None:
         """Buffer one call, flushing when the buffer or the clock says to."""
         call = ToolCall(time.time(), tool, duration_ms, ok,
-                        shorten(args), shorten(answer), actor or "")
+                        shorten(args), shorten(answer), actor or "", session or "")
         with self._lock:
             self._buffer.append(call)
             if len(self._buffer) > MAX_BUFFER:
@@ -195,12 +203,14 @@ class ToolCallLog:
         try:
             with index_db.connect() as conn:
                 self._ensure_schema(conn)
-                statement = (f"COPY {TABLE} (at, tool, duration_ms, ok, args, answer, actor) "
+                statement = (f"COPY {TABLE} "
+                             "(at, tool, duration_ms, ok, args, answer, actor, session) "
                              "FROM STDIN")
                 with conn.cursor().copy(statement) as copy:
                     for call in pending:
                         copy.write_row((call.at, call.tool, call.duration_ms, call.ok,
-                                        call.args, call.answer, call.actor))
+                                        call.args, call.answer, call.actor,
+                                        call.session))
                 self._flushes += 1
                 if self._flushes % _PRUNE_EVERY == 0:
                     self._prune(conn)
@@ -215,9 +225,20 @@ class ToolCallLog:
         return len(pending)
 
     def _ensure_schema(self, conn) -> None:
+        """Create the table, its index and any column it has gained, under the DDL lock.
+
+        The lock every other writer of this index takes, for the reason it documents: two
+        services reaching their first flush together both run this, and neither
+        ``IF NOT EXISTS`` checks the catalog while it creates -- they check, then create,
+        and the loser gets an error rather than the table. Losing it costs only a buffer of
+        accounting rows, which is exactly why it must not be the thing left unlocked.
+        """
         if self._schema_ready:
             return
-        conn.execute(_SCHEMA)
+        from robovast.results_processing.index_schema import \
+            ddl_lock  # pylint: disable=import-outside-toplevel
+        with ddl_lock(conn):
+            conn.execute(_SCHEMA)
         self._schema_ready = True
 
     def _prune(self, conn) -> None:
@@ -236,21 +257,45 @@ class ToolCallLog:
         return [ToolStat(tool=r[0], calls=r[1], errors=r[2], mean_ms=float(r[3] or 0.0),
                          max_ms=float(r[4] or 0.0), last_at=r[5]) for r in rows]
 
-    def read_calls(self, *, limit: int = 200, tool: str = "",
-                   failed_only: bool = False) -> list[ToolCall]:
-        """The log, newest first -- what a person opening the panel wants to see."""
+    @staticmethod
+    def _filter(tool: str, failed_only: bool) -> tuple[str, list]:
+        """The ``WHERE`` both reads share, so a count and its page never disagree."""
         where, params = [], []
         if tool:
             where.append("tool = %s")
             params.append(tool)
         if failed_only:
             where.append("NOT ok")
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
-        params.append(max(1, min(int(limit), 2000)))
+        return (" WHERE " + " AND ".join(where)) if where else "", params
+
+    def read_calls(self, *, limit: int = 200, tool: str = "", failed_only: bool = False,
+                   offset: int = 0) -> list[ToolCall]:
+        """One page of the log, newest first.
+
+        Clamped to :data:`MAX_ROWS` -- the retention cap, so the bound is the number of
+        rows that can exist rather than a smaller one invented here. A caller that wants
+        the whole record can ask for it; one that wants a panel page asks for a page. The
+        page is only half the answer, though: how many rows matched is
+        :meth:`count_calls`, and a caller that reports a page without it cannot say
+        whether the record ended or the page did.
+        """
+        clause, params = self._filter(tool, failed_only)
+        params.append(max(1, min(int(limit), MAX_ROWS)))
+        params.append(max(0, int(offset)))
         rows = self._query(
-            f"SELECT at, tool, duration_ms, ok, args, answer, actor FROM {TABLE}"
-            f"{clause} ORDER BY at DESC LIMIT %s", tuple(params))
+            f"SELECT at, tool, duration_ms, ok, args, answer, actor, session FROM {TABLE}"
+            f"{clause} ORDER BY at DESC LIMIT %s OFFSET %s", tuple(params))
         return [ToolCall(*r) for r in rows]
+
+    def count_calls(self, *, tool: str = "", failed_only: bool = False) -> int:
+        """How many rows match, ignoring any page bound.
+
+        Separate from :meth:`read_calls` because the two answer different questions and
+        a page that carried its own total would have to fetch rows to count them.
+        """
+        clause, params = self._filter(tool, failed_only)
+        rows = self._query(f"SELECT COUNT(*) FROM {TABLE}{clause}", tuple(params))
+        return int(rows[0][0]) if rows else 0
 
     def _query(self, sql: str, params: tuple = ()) -> list:
         """Read, treating an absent table as an empty log.

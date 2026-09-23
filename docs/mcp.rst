@@ -1339,6 +1339,18 @@ What it keeps, and does not:
   per call: a Postgres round-trip in front of every tool call would cost more than some of the
   tools. They therefore survive a service restart but not the results volume, which the index
   shares a lifetime with.
+* ``actor`` is the resolved principal -- the name the caller gave and the source it
+  authenticated by -- and ``session`` is ``"<client>/<session>"``: over streamable HTTP that
+  client's ``mcp-session-id``, the same for every call it makes. The principal is who the
+  service authenticated; the session is what separates two agents sharing one token. Without
+  the session the record can say a tool was called a thousand times but not whether that was a
+  thousand agents once or one agent in a loop, which are opposite findings.
+
+**A page of the record says how much of the record it is.** ``read_calls`` is one page; the total
+it was cut from is ``count_calls``, and the routes report both, so a reader can tell a record
+that ended from a page that did -- the ranking printed beside it summarises the full retained
+window. The panel's page ceiling bounds one JSON response the service holds in memory; the CSV
+export streams and so is bounded only by what is retained.
 
 **Recording never fails a tool call.** Every path in
 :mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unreachable index costs the
