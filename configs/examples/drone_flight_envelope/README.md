@@ -50,7 +50,7 @@ a boundary between two cells, and a search can walk along it.
 
 ## What is in here
 
-```
+```text
 drone_envelope.vast            factorial grid, 3 x 2 x 2 = 12 configurations   <- start here
 drone_envelope_boundary.vast   boundary search: walk the edge of the envelope
 scenario.osc                   the trial: take off, fly a square, land on the pad
