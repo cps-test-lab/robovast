@@ -113,6 +113,19 @@ It provides four views:
   campaign-end upload. Hovering it names every variant the share holds. It is read from the
   share's own listing, so a share that is unconfigured or unreachable shows no cloud rather
   than a wrong one.
+  A running campaign's **standing with the cluster queue** is a chip beside the launcher's
+  name, folded or open: ``prio +2`` / ``prio -1`` when its priority is not the default ``0``,
+  and ``paused`` when it is admitting no new runs. A campaign at the default shows neither.
+  Both are live-only, like the queue they describe: a campaign that is over has no standing
+  with it, so a finished card never carries them. They are set from the running card's
+  actions menu — **Set queue priority…** (the field starts at the current value, and only a
+  whole number is accepted) and **Pause admitting new runs** / **Resume admitting runs** —
+  the same operation as ``vast campaign priority|pause|resume``
+  (:ref:`cluster-admission`). The entries appear only on a lane with a queue, which the
+  service reports as ``can_schedule`` in ``/version``: the local Docker lane runs one
+  campaign at a time, has nothing to order, and so offers neither. A change is confirmed by a
+  notice carrying the service's own answer, the priority the campaign now has and that runs
+  already started are unaffected.
   The phase reflects the whole lifecycle, including its two pre-run steps:
   ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign

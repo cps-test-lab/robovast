@@ -1852,6 +1852,18 @@ class ServiceBase(RobovastInterface):
         """
 
     @abstractmethod
+    def _queues_campaigns(self) -> bool:
+        """Whether this lane queues campaigns against each other, so a rank and a hold mean
+        something.
+
+        One declaration per lane, read by both :meth:`version` (as ``can_schedule``) and the
+        lane's own :meth:`_admit_scheduling`, so what a client is *offered* and what the
+        service *accepts* cannot disagree -- a second answer to this question would sooner
+        or later offer an entry the service then refuses, or hide one it would accept. A
+        property of the lane, fixed when the service starts, not of how busy it is.
+        """
+
+    @abstractmethod
     def _admit_scheduling(self, request) -> None:
         """Admit or refuse a rank or a hold at launch, for this lane.
 

@@ -43,6 +43,7 @@ def _reported(monkeypatch, revision: str = BAKED):
         _campaigns_root=lambda: "/srv/campaigns",
         store=SimpleNamespace(registry=SimpleNamespace(root="/srv/sources")),
         _declared_web_base=lambda: "",
+        _queues_campaigns=lambda: LocalTransport._queues_campaigns(None),  # noqa: SLF001
     )
     fake_self._version_info = lambda **lane: ServiceBase._version_info(  # pylint: disable=no-member
         fake_self, **lane)

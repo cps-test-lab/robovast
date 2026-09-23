@@ -1385,10 +1385,17 @@ instead, that is ``vast campaign stop``.
 
 Both need a lane that queues campaigns against each other. A service on the local Docker lane
 runs one campaign at a time, so it has no queue to order and refuses rather than accepting a
-value it cannot act on.
+value it cannot act on. The service says which it is before anyone asks: ``can_schedule`` in
+its version answer, printed by ``vast service info`` as its ``queue`` line and reported by the
+MCP ``get_service_info``; the web UI offers the entries only where it is true.
 
 A campaign that is admitting nothing says which of the two reasons it is: a queued campaign
 reports what capacity it is waiting for, and a paused one reports that it is paused.
+
+``vast campaign list`` carries a live campaign's standing after its phase when it is not
+the default -- ``[prio -1]``, ``[paused]``, ``[prio +2, paused]`` -- as do the web UI's
+campaign card and the MCP ``list_campaigns``. A finished campaign has no standing with the
+queue and carries neither.
 
 Two properties are worth stating, because they are what make this safe to leave on:
 

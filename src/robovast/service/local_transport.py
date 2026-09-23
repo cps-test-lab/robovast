@@ -120,6 +120,10 @@ class LocalTransport(ServiceBase):
         # which is the last thing this call should ever wait on. `_api_server_url` in the
         # cluster lane's version() refuses to dial for the same reason.
         return self._version_info(backend="docker", can_build_images=True,
+                                  # The same predicate ``_admit_scheduling`` refuses on, so
+                                  # what a client is offered and what the service accepts
+                                  # cannot disagree.
+                                  can_schedule=self._queues_campaigns(),
                                   results_root=str(self._campaigns_root()),
                                   sources_root=str(self.store.registry.root))
     def upgrade_info(self) -> UpgradeInfo:
@@ -279,6 +283,10 @@ class LocalTransport(ServiceBase):
         if not getattr(request, "show_gui", False):
             return
         require_host_display(what="show_gui")
+    def _queues_campaigns(self) -> bool:
+        """False: this lane executes one campaign at a time, so there is nothing to order."""
+        return False
+
     def _admit_scheduling(self, request) -> None:
         """Refuse a rank or a hold at launch: this lane runs one campaign at a time, so it
         has no queue to apply either to.
@@ -291,7 +299,7 @@ class LocalTransport(ServiceBase):
         that never mentions scheduling working on both lanes.
         """
         asked = [name for name in ("priority", "paused") if getattr(request, name, None)]
-        if asked:
+        if asked and not self._queues_campaigns():
             raise UnsupportedOnLane(" and ".join(asked), self.LANE, hint=NO_CAMPAIGN_QUEUE)
     def _run_options(self, request) -> "RunOptions":  # noqa: F821
         from robovast.execution.backends import RunOptions

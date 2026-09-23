@@ -205,6 +205,8 @@ def get_service_info() -> dict:
         build needs, not that a given build will be published: a registry whose push
         credential has gone stale reads ``true`` here and is refused by
         ``build_experiment_image`` itself, before any layer is built.
+
+        ``can_schedule``: whether ``priority``/``paused`` apply (false: one campaign at a time).
     """
     from robovast.mcp_server import service_access
     from robovast.mcp_server.service_access import NO_SERVICE
@@ -262,6 +264,8 @@ def get_service_info() -> dict:
         info["can_build_images"] = v.can_build_images
         if not v.can_build_images and v.build_unavailable:
             info["build_unavailable"] = v.build_unavailable
+    if v.can_schedule is not None:
+        info["can_schedule"] = v.can_schedule
     return info
 
 

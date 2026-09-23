@@ -186,16 +186,6 @@ class ClusterService(ServiceBase):
 
     LANE = "cluster"
 
-    #: No screen to draw on: the work runs in pods, and the X socket a window would need
-    #: belongs to whatever machine the service happens to sit on — never the caller's.
-    #: ``_admit_show_gui`` turns this into an explicit refusal rather than a silent
-    #: windowless run.
-    _SUPPORTS_SHOW_GUI = False
-
-    #: Campaigns here run against each other for the cluster, so there is a queue to order and
-    #: a rank means something. ``_admit_scheduling`` accepts rather than refuses.
-    _SUPPORTS_SCHEDULING = True
-
     #: How long a kubelet Summary reading is reused -- deliberately longer than
     #: ``_USAGE_CACHE_TTL``. One Summary payload carries every pod's stats on that node
     #: (hundreds of KB on a busy one), and a disk fills over minutes, not seconds.
@@ -292,7 +282,8 @@ class ClusterService(ServiceBase):
 
     def version(self) -> VersionInfo:
         v = self._version_info(
-            backend="kubernetes", kube_context=self.kube_context,
+            backend="kubernetes", can_schedule=self._queues_campaigns(),
+            kube_context=self.kube_context,
             kube_context_source=self._kube_context_source, namespace=self.namespace,
             in_pod=bool(os.environ.get("KUBERNETES_SERVICE_HOST")),
             api_server=self._api_server_url())
@@ -821,9 +812,13 @@ class ClusterService(ServiceBase):
                 hint="only a local `vast serve` has a display to open a window on -- re-run "
                      "without it, or run the campaign on a local service")
 
+    def _queues_campaigns(self) -> bool:
+        """True: campaigns here run against each other for the cluster, so there is a queue
+        to order and a rank means something."""
+        return True
+
     def _admit_scheduling(self, request) -> None:
-        """Admit a rank or a hold: campaigns here run against each other for the cluster,
-        so there is a queue to order and a rank means something."""
+        """Admit a rank or a hold: see :meth:`_queues_campaigns`."""
         del request
 
     def _guard_new_campaign(self) -> None:
