@@ -1,6 +1,6 @@
 name: Publish to PyPI
 
-# Five distributions from one tree, released as one set: a `v*` tag publishes them to PyPI,
+# Six distributions from one tree, released as one set: a `v*` tag publishes them to PyPI,
 # and `workflow_dispatch` publishes the same set to TestPyPI, which is where every release is
 # tried by hand before it is real. Nothing but the tag reaches PyPI.
 #
@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       # One place for the version and the index: the tag without its `v` goes to PyPI, a
-      # dispatched version goes to TestPyPI. Stamped into all five distributions below, so
+      # dispatched version goes to TestPyPI. Stamped into all six distributions below, so
       # the set requires itself at exactly this number.
       - name: Resolve the version and the index
         id: version
