@@ -22,22 +22,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 _CAMPAIGN = "camp-2026-01-01-000000"
 
 
-def _local_transport(tmp_path) -> LocalTransport:
-    """A real LocalTransport with its results root under *tmp_path*.
+def _local_transport(tmp_path) -> NullLane:
+    """A real NullLane with its results root under *tmp_path*.
 
     Constructed rather than ``__new__``-ed: streaming an archive goes through the campaign-dir
     resolution the constructor's state backs, so a hand-stubbed object fails on bookkeeping
     instead of on the thing under test.
     """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullLane(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 
@@ -104,7 +104,7 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     workspace: a service with no workspaces configured answers 501 for project routes, and an
     archive download must not be dragged into that.
     """
-    lt = LocalTransport.__new__(LocalTransport)
+    lt = NullLane.__new__(NullLane)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None

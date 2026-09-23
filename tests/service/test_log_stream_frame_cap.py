@@ -16,7 +16,7 @@ import threading
 
 from robovast.common.campaign_logs import EXECUTION_DIR
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -36,7 +36,7 @@ def _app_with_log(tmp_path):
     exec_dir.mkdir(parents=True)
     (exec_dir / "controller.log").write_text("\n".join(_LINES) + "\n", encoding="utf-8")
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return build_app(LocalTransport(store=store, results_dir=str(results)))
+    return build_app(NullLane(store=store, results_dir=str(results)))
 
 
 def _stream(app, path):
@@ -92,7 +92,7 @@ def test_a_small_log_is_untouched(tmp_path):
     exec_dir.mkdir(parents=True)
     (exec_dir / "controller.log").write_text("only line\n", encoding="utf-8")
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    app = build_app(LocalTransport(store=store, results_dir=str(results)))
+    app = build_app(NullLane(store=store, results_dir=str(results)))
 
     body = _stream(app, Routes.campaign_logs_stream(_CAMPAIGN))
     assert "only line" in body

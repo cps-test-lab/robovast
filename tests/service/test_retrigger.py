@@ -25,7 +25,7 @@ import yaml
 from robovast.common.campaign_data import write_launch_record
 from robovast.service import retrigger
 from robovast.service.interface import CreateCampaignRequest
-from robovast.service.local_transport import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.service_base import WorkspaceTarget
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -72,7 +72,7 @@ def _source_campaign(root, campaign_id="pilot-2026-08-08-120000", *, vast=None,
 @pytest.fixture
 def svc(tmp_path, monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullLane(store=store)
     results = tmp_path / "results"
     results.mkdir()
     transport._campaigns_root = lambda: results        # noqa: SLF001
@@ -358,8 +358,8 @@ def test_force_launches_past_a_blocking_axis(svc, tmp_path, monkeypatch,
     """The argument is honoured rather than advisory: an axis the caller has decided they
     understand is theirs to override, and it is the only way past."""
     _source_campaign(tmp_path / "results", execution=BUILT)
-    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr(NullLane, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: None)
 
@@ -375,8 +375,8 @@ def test_a_runnable_campaign_is_not_gated(svc, tmp_path, monkeypatch):
     before a field existed is the case the whole pre-flight exists to rescue, so it must
     still launch."""
     _source_campaign(tmp_path / "results", execution=BUILT)
-    monkeypatch.setattr(LocalTransport, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr(NullLane, "_build_specs_for", lambda self, t, c, **kw: ({}, None))
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: None)
 
@@ -394,9 +394,9 @@ def test_the_staged_tree_is_released_when_the_campaign_ends(svc, tmp_path, monke
     waiting for a delete would leak a pip target tree per launch."""
     _source_campaign(tmp_path / "results")
     done = threading.Event()
-    monkeypatch.setattr(LocalTransport, "_build_specs_for",
+    monkeypatch.setattr(NullLane, "_build_specs_for",
                         lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: done.set())
     svc.retrigger_campaign("pilot-2026-08-08-120000")
@@ -411,7 +411,7 @@ def test_a_refused_launch_leaves_nothing_staged(svc, tmp_path, monkeypatch):
     """The most likely failure of all — the single-flight guard — happens before there is a
     worker, so the worker's ``finally`` cannot be what covers it."""
     _source_campaign(tmp_path / "results")
-    monkeypatch.setattr(LocalTransport, "_guard_new_campaign",
+    monkeypatch.setattr(NullLane, "_guard_new_campaign",
                         lambda self: (_ for _ in ()).throw(RuntimeError("already running")))
     with pytest.raises(RuntimeError):
         svc.retrigger_campaign("pilot-2026-08-08-120000")
@@ -420,7 +420,7 @@ def test_a_refused_launch_leaves_nothing_staged(svc, tmp_path, monkeypatch):
 
 def test_a_failure_inside_materialize_releases_the_tree(svc, tmp_path, monkeypatch):
     _source_campaign(tmp_path / "results", run_files=("files/missing.yaml",))
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     svc.retrigger_campaign("pilot-2026-08-08-120000")
     for entry in list(svc._campaigns.values()):        # noqa: SLF001
         if entry.thread:
@@ -468,11 +468,11 @@ def test_a_pinned_launch_skips_the_build_and_uses_the_recorded_images(svc, tmp_p
     _source_campaign(tmp_path / "results", execution=BUILT, vast=_vast(
         {"scenario": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}))
     started, used = [], {}
-    monkeypatch.setattr(LocalTransport, "_start_build_images",
+    monkeypatch.setattr(NullLane, "_start_build_images",
                         lambda self, t, c, **kw: started.append(1) or [])
-    monkeypatch.setattr(LocalTransport, "_build_specs_for",
+    monkeypatch.setattr(NullLane, "_build_specs_for",
                         lambda self, t, c, **kw: ({}, None))
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
                         lambda *a, **k: used.update(k["options"].images or {}))
 

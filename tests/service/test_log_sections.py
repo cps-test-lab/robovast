@@ -12,14 +12,14 @@ has already consumed, and a shorter run makes the stream shrink under them.
 import pytest
 
 from robovast.common.campaign_logs import assemble_log_from_dir
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
 @pytest.fixture
 def transport(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return LocalTransport(store=store, results_dir=str(tmp_path / "results"))
+    return NullLane(store=store, results_dir=str(tmp_path / "results"))
 
 
 def _exec_dir(transport, campaign_id="camp-1"):

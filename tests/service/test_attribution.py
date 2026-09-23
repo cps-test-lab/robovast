@@ -70,12 +70,12 @@ def test_the_service_takes_the_name_from_the_caller_not_the_body(monkeypatch):
     from starlette.testclient import TestClient
 
     from robovast.service.app import build_app
-    from robovast.service.client import LocalTransport
+    from tests.service.null_lane import NullLane
     from robovast.service.interface import CampaignRef, Routes
 
     seen = {}
 
-    class _Impl(LocalTransport):
+    class _Impl(NullLane):
         def create_campaign(self, request):
             seen["created_by"] = request.created_by
             return CampaignRef(campaign_id="camp-1")
@@ -93,12 +93,12 @@ def test_an_unnamed_caller_creates_an_unattributed_campaign():
     from starlette.testclient import TestClient
 
     from robovast.service.app import build_app
-    from robovast.service.client import LocalTransport
+    from tests.service.null_lane import NullLane
     from robovast.service.interface import CampaignRef, Routes
 
     seen = {}
 
-    class _Impl(LocalTransport):
+    class _Impl(NullLane):
         def create_campaign(self, request):
             seen["created_by"] = request.created_by
             return CampaignRef(campaign_id="camp-1")

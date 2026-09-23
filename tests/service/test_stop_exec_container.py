@@ -21,15 +21,13 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
-from robovast.service.client import LocalTransport
-
-
+from tests.service.null_lane import NullLane
 @pytest.fixture
 def manager():
     """Stand in for the exec manager. It is a *property*, so it is patched on the class --
     nothing here starts a container or touches Docker."""
     mgr = MagicMock()
-    with patch.object(LocalTransport, "_exec_manager",
+    with patch.object(NullLane, "_exec_manager",
                       new_callable=PropertyMock, return_value=mgr):
         yield mgr
 
@@ -37,7 +35,7 @@ def manager():
 def test_it_delegates_to_the_exec_manager(manager):
     """The regression: this raised NameError before reaching the manager at all."""
     manager.stop.return_value = "stopped"
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = NullLane.__new__(NullLane)
 
     assert transport.stop_exec_container() == "stopped"
     manager.stop.assert_called_once_with()
@@ -51,7 +49,7 @@ def test_it_takes_no_arguments():
     from robovast.service.interface import RobovastInterface
 
     declared = inspect.signature(RobovastInterface.stop_exec_container)
-    actual = inspect.signature(LocalTransport.stop_exec_container)
+    actual = inspect.signature(NullLane.stop_exec_container)
     assert list(actual.parameters) == list(declared.parameters) == ["self"]
 
 
@@ -61,7 +59,7 @@ def test_passing_one_is_rejected_rather_than_ignored():
     It happened: a CLI call site kept its positional after the parameter went, and the
     fake it was tested against accepted anything.
     """
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = NullLane.__new__(NullLane)
 
     with pytest.raises(TypeError):
         # pylint: disable-next=too-many-function-args  -- passing the removed argument is what this asserts

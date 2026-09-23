@@ -17,9 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
-
-
+from tests.service.null_lane import NullLane
 def _costmap_bundle_built() -> bool:
     """Whether robovast_nav's ``costmap`` panel ships a *built* WEB_PANEL bundle.
 
@@ -37,8 +35,8 @@ def _costmap_bundle_built() -> bool:
         return False
 
 
-def _local_transport(results_root) -> LocalTransport:
-    lt = LocalTransport.__new__(LocalTransport)
+def _local_transport(results_root) -> NullLane:
+    lt = NullLane.__new__(NullLane)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None

@@ -13,7 +13,7 @@ import pytest
 from robovast.mcp_server import tool_stats
 from robovast.service.app import build_app
 from robovast.service.interface import Routes
-from robovast.service.local_transport import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
@@ -37,7 +37,7 @@ def _client(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_stats, "LOG", tool_stats.ToolCallLog())
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    app = build_app(LocalTransport(store=store), mount_mcp=False, auth_token="t")
+    app = build_app(NullLane(store=store), mount_mcp=False, auth_token="t")
     yield TestClient(app, headers={"Authorization": "Bearer t"})
 
     with psycopg.connect(DSN, autocommit=True) as teardown:

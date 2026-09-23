@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
@@ -17,7 +17,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 def _harness(tmp_path):
     """A real service over a results root the test owns, plus its HTTP client."""
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    transport = LocalTransport(store=store)
+    transport = NullLane(store=store)
     root = tmp_path / "results"
     transport._campaigns_root = lambda: root
     root.mkdir(parents=True, exist_ok=True)

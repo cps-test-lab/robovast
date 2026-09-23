@@ -25,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.endpoint_plugin import (RESERVED_CAMPAIGN_ENDPOINTS, RunDataContext,
                                               load_service_endpoints)
 
@@ -171,8 +171,8 @@ def test_context_open_db_hands_a_handler_a_read_only_index_connection(tmp_path):
 
 # -- e2e over the FastAPI app ----------------------------------------------
 
-def _local_transport(results_root) -> LocalTransport:
-    lt = LocalTransport.__new__(LocalTransport)
+def _local_transport(results_root) -> NullLane:
+    lt = NullLane.__new__(NullLane)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None

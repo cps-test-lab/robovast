@@ -21,8 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from robovast.service import scene_cache
-from robovast.service.local_transport import LocalTransport
-
+from tests.service.null_lane import NullLane
 KEY = "k"
 
 
@@ -96,14 +95,14 @@ def test_a_failed_build_leaves_no_stage_behind(tmp_path, monkeypatch):
 def test_the_service_reports_the_stage_the_build_named_with_its_reason():
     scene_cache.set_stage(KEY, scene_cache.STAGE_PULLING, "ImagePullBackOff: unauthorized")
 
-    assert LocalTransport._scene_stage(KEY) == (scene_cache.STAGE_PULLING,
+    assert NullLane._scene_stage(KEY) == (scene_cache.STAGE_PULLING,
                                                 "ImagePullBackOff: unauthorized")
 
 
 def test_a_build_that_has_not_named_a_step_yet_is_compiling():
     """The gap between taking the key's lock -- which is what makes the status say a build is in
     flight -- and the build naming its first step."""
-    assert LocalTransport._scene_stage("never-started") == (scene_cache.STAGE_COMPILING, "")
+    assert NullLane._scene_stage("never-started") == (scene_cache.STAGE_COMPILING, "")
 
 
 def test_the_ui_names_every_stage_and_no_others():

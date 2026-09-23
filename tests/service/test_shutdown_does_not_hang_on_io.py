@@ -16,7 +16,7 @@ import threading
 import time
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -33,7 +33,7 @@ def test_sse_stream_closes_on_shutdown_while_a_pull_is_stuck(tmp_path):
     entered = threading.Event()
     release = threading.Event()
 
-    class _Stuck(LocalTransport):
+    class _Stuck(NullLane):
         # test double
         def list_campaigns(self, request):  # pylint: disable=signature-differs
             entered.set()

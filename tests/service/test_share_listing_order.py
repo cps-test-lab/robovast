@@ -16,9 +16,7 @@ reader of this listing is actually after.
 import pytest
 
 from robovast.service.interface import ShareListing
-from robovast.service.local_transport import LocalTransport
-
-#: Deliberately not in date order, and deliberately not in name order either -- sorting on
+from tests.service.null_lane import NullLane
 #: the id alone puts `alpha` first, which is the oldest.
 CAMPAIGNS = (
     "nav-2026-08-18-194018",
@@ -59,7 +57,7 @@ class _StubProvider:
 def _listing(monkeypatch):
     """Call ``list_share_archives`` against a stub share holding *objects*."""
     monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "stub")
-    transport = LocalTransport()
+    transport = NullLane()
 
     def call(objects) -> ShareListing:
         monkeypatch.setattr(type(transport), "_share_provider",

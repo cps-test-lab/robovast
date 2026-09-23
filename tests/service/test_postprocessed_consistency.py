@@ -25,14 +25,14 @@ import yaml
 
 from robovast.common.campaign_data import POSTPROCESSING_RECORD
 from robovast.execution.control_server import ControllerState, Phase
-from robovast.service.local_transport import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
 @pytest.fixture
 def svc(tmp_path, monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullLane(store=store)
     results = tmp_path / "results"
     results.mkdir()
     transport._campaigns_root = lambda: results        # noqa: SLF001

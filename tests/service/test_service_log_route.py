@@ -83,11 +83,11 @@ def test_an_offset_past_the_end_resyncs_rather_than_going_silent():
 
 def test_the_routes_are_registered_and_read_only(tmp_path):
     from robovast.service.app import api_routes, build_app
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_lane import NullLane
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    routes = {r.path: r.methods for r in api_routes(build_app(LocalTransport(store=store),
+    routes = {r.path: r.methods for r in api_routes(build_app(NullLane(store=store),
                                                               mount_mcp=False))}
     for path in (Routes.ADMIN_LOG, Routes.ADMIN_LOG_STREAM):
         assert path in routes, f"{path} is not served"

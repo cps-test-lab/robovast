@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""LocalTransport._dispatch_background — post-run ops as tracked, monitorable campaigns.
+"""NullLane._dispatch_background — post-run ops as tracked, monitorable campaigns.
 
 A re-run (postprocessing / share) is dispatched to a daemon thread and returns at once;
 while it runs the campaign is tracked with the operation's phase (so the Monitor shows
@@ -12,14 +12,14 @@ import threading
 import pytest
 
 from robovast.execution.control_server import Phase
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
 @pytest.fixture
 def transport(monkeypatch, tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return LocalTransport(store=store)
+    return NullLane(store=store)
 
 
 def test_dispatch_tracks_phase_then_finishes(transport):

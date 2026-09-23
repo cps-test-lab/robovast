@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from robovast.common.errors import STORAGE_FULL_DETAIL
 from robovast.mcp_server.service_access import error_result
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes, ServiceError
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -133,7 +133,7 @@ class _FullFile:
 @pytest.fixture(name="archive_client")
 def _archive_client(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    transport = LocalTransport(store=store)
+    transport = NullLane(store=store)
     transport._campaigns_root = lambda: tmp_path / "results"
     with TestClient(build_app(transport, mount_mcp=False)) as client:
         yield client, tmp_path / "results"

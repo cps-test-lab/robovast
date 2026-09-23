@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 _CAMPAIGN = "camp-2026-01-01-000000"
@@ -26,7 +26,7 @@ _CAMPAIGN = "camp-2026-01-01-000000"
 @pytest.fixture(name="client")
 def _client(monkeypatch, tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    transport = LocalTransport(store=store)
+    transport = NullLane(store=store)
     # ``None`` in sys.modules is how the import system is told a module is absent.
     monkeypatch.setitem(sys.modules, "nbclient.exceptions", None)
     with TestClient(build_app(transport), raise_server_exceptions=False) as test_client:

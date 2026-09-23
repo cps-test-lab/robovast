@@ -22,8 +22,7 @@ from fastapi.testclient import TestClient
 from robovast.common import simulators
 from robovast.service import screenshot
 from robovast.service.app import build_app
-from robovast.service.local_transport import LocalTransport
-
+from tests.service.null_lane import NullLane
 CAMPAIGN = "demo-2026-08-09-000000"
 QUERY = {"config_name": "hexagon-1", "run_id": "0"}
 
@@ -47,7 +46,7 @@ def _env(tmp_path, monkeypatch):
         encoding="utf-8")
     (run / "run.npz").write_bytes(b"not really a recording")
 
-    monkeypatch.setattr(LocalTransport, "_campaigns_root", lambda self: Path(results))
+    monkeypatch.setattr(NullLane, "_campaigns_root", lambda self: Path(results))
     monkeypatch.setattr(simulators, "run_state_filename", lambda execution, base_dir="": "run.npz")
 
     # Stands in for the backend's `roqsim render`: writes the frame the real one would, and logs
@@ -80,7 +79,7 @@ def _env(tmp_path, monkeypatch):
         return entry
 
     monkeypatch.setattr(screenshot, "_entry", local_entry)
-    with TestClient(build_app(LocalTransport())) as client:
+    with TestClient(build_app(NullLane())) as client:
         yield client, tmp_path
 
 

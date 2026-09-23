@@ -12,7 +12,7 @@ distinct from the pull endpoint, which is what keeps the client contract honest.
 import threading
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -23,7 +23,7 @@ _HEARTBEAT_BUDGET_S = 5
 
 def _app(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return build_app(LocalTransport(store=store))
+    return build_app(NullLane(store=store))
 
 
 def test_events_route_is_registered(tmp_path):

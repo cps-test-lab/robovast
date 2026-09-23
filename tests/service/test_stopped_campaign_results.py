@@ -21,7 +21,7 @@ import yaml
 
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import STOP_RUNS, Phase
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import (CreateCampaignRequest, CreateWorkspaceRequest,
                                         WriteFileRequest)
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
@@ -30,7 +30,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 @pytest.fixture(name="svc")
 def _svc(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullLane(store=store)
     results = tmp_path / "results"
     results.mkdir()
     transport._campaigns_root = lambda: results
@@ -38,7 +38,7 @@ def _svc(tmp_path):
 
 
 def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=False,
-            raises=None, stop_while_staging=False, ran=True):
+            raises=None, stop_while_staging=False, ran=True, in_process=True):
     """Run a campaign whose loop raises ``CampaignStopped``, through the real worker.
 
     Driven end to end rather than restated: a test that re-implements the branch asserts
@@ -93,12 +93,15 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
                 entry.state.request_stop(STOP_RUNS)
         return {}, None
 
-    monkeypatch.setattr(LocalTransport, "_build_specs_for", _specs)
-    monkeypatch.setattr(LocalTransport, "_build_backend", lambda self, state: None)
+    monkeypatch.setattr(NullLane, "_build_specs_for", _specs)
+    monkeypatch.setattr(NullLane, "_build_backend", lambda self, state: None)
+    # The path under test: the driver postprocesses in this process after the runs. A
+    # chaining lane, where a workload of its own does, is the ``in_process=False`` case.
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: in_process)
 
     done = []
     monkeypatch.setattr(
-        LocalTransport, "_postprocess",
+        NullLane, "_postprocess",
         lambda self, cid, rd, state, entry, ends_at=Phase.FINISHED: done.append(ends_at))
 
     ref = svc.create_campaign(CreateCampaignRequest(
@@ -141,7 +144,7 @@ def test_a_shutting_down_service_does_not_start_it(svc, monkeypatch):
     """On Ctrl+C the storage tunnel dies with the process group -- the line
     ``_record_campaign_stopped`` already draws -- and work this process cannot finish is
     not worth starting."""
-    monkeypatch.setattr(LocalTransport, "_record_campaign_stopped",
+    monkeypatch.setattr(NullLane, "_record_campaign_stopped",
                         lambda self, *a, **k: setattr(self, "_shutting_down", True))
     done, _ = _launch(svc, monkeypatch)
     assert done == []
@@ -165,7 +168,7 @@ def test_a_stop_between_batches_is_postprocessed_on_a_chaining_lane(svc, monkeyp
     It ends ``finished``, which is not this branch's choice: by the loop's own account the
     campaign finished.
     """
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    monkeypatch.setattr(NullLane, "_postprocess_in_process", lambda self: False)
     done, _ = _launch(svc, monkeypatch, stopped=False, request_stop=True)
     assert done == [Phase.FINISHED]
 
@@ -173,15 +176,14 @@ def test_a_stop_between_batches_is_postprocessed_on_a_chaining_lane(svc, monkeyp
 def test_a_chaining_lane_does_not_double_postprocess_an_ordinary_campaign(svc, monkeypatch):
     """The counterpart: with no stop, the controller's chain owns it and the service must
     keep its hands off, or every cluster campaign would postprocess twice."""
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
-    done, _ = _launch(svc, monkeypatch, stopped=False)
+    done, _ = _launch(svc, monkeypatch, stopped=False, in_process=False)
     assert done == []
 
 
 def test_shutdown_marks_the_service_before_it_tears_anything_down(tmp_path, monkeypatch):
     """The flag has to be set first, or a worker reaching its tail during the teardown
     starts the very work the flag exists to prevent."""
-    lt = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
+    lt = NullLane(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
     seen = []
     monkeypatch.setattr(type(lt), "_shutdown_running_campaigns", lambda self, running: None)
     monkeypatch.setattr(type(lt), "_is_done",

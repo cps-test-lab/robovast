@@ -4,7 +4,7 @@
 
 Campaigns created from a workspace must NOT land under ``<workspace>/results``
 (where the service's readers never look and ``delete_workspace`` would take them
-along). They belong in the shared :meth:`LocalTransport._campaigns_root`, which
+along). They belong in the shared :meth:`NullLane._campaigns_root`, which
 every read path — list / status / data query — resolves.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import ListCampaignsRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -22,7 +22,7 @@ def transport(monkeypatch, tmp_path):
     # No CWD project → _campaigns_root falls back to the dir beside the workspaces
     # (here <tmp_path>/results, kept unique per test by rooting under tmp_path).
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return LocalTransport(store=store)
+    return NullLane(store=store)
 
 
 def _make_workspace(transport) -> str:
@@ -299,7 +299,7 @@ def test_in_memory_campaign_listed_before_directory_exists(transport):
     with its live phase — the fix for the launch→list lag."""
     from robovast.execution.control_server import ControllerState, Phase
     from robovast.service.client import _TrackedCampaign
-
+    from tests.service.null_lane import NullLane
     cid = "campaign-2026-07-20-090000"
     state = ControllerState()
     state.set_phase(Phase.BUILDING)
@@ -321,7 +321,7 @@ def test_tracked_campaign_phase_wins_over_disk(transport):
     (the same precedence get_status uses), not the disk-reconstructed 'finished'."""
     from robovast.execution.control_server import ControllerState, Phase
     from robovast.service.client import _TrackedCampaign
-
+    from tests.service.null_lane import NullLane
     root = transport._campaigns_root()
     cid = "campaign-2026-07-20-091500"
     (root / cid).mkdir(parents=True)              # on disk → would reconstruct "finished"

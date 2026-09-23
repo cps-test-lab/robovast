@@ -25,7 +25,7 @@ from importlib.metadata import version as pkg_version
 from types import SimpleNamespace
 
 from robovast.common.execution import GIT_REVISION_ENV
-from robovast.service.local_transport import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.service_base import ServiceBase, _package_version
 
 BAKED = "abc1234"
@@ -40,14 +40,15 @@ def _reported(monkeypatch, revision: str = BAKED):
     """
     monkeypatch.setenv(GIT_REVISION_ENV, revision)
     fake_self = SimpleNamespace(
+        LANE=NullLane.LANE,
         _campaigns_root=lambda: "/srv/campaigns",
         store=SimpleNamespace(registry=SimpleNamespace(root="/srv/sources")),
         _declared_web_base=lambda: "",
-        _queues_campaigns=lambda: LocalTransport._queues_campaigns(None),  # noqa: SLF001
+        _queues_campaigns=lambda: NullLane._queues_campaigns(None),  # noqa: SLF001
     )
     fake_self._version_info = lambda **lane: ServiceBase._version_info(  # pylint: disable=no-member
         fake_self, **lane)
-    return LocalTransport.version(fake_self)
+    return NullLane.version(fake_self)
 
 
 def test_the_release_is_reported_where_a_revision_exists(monkeypatch):

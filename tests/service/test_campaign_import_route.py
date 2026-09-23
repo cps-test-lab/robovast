@@ -51,7 +51,7 @@ from robovast.client.status import TERMINAL_PHASES
 from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
 from robovast.service import retrigger
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.interface import DESCRIPTION_MAX_LEN, Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.conftest import CreateCampaignRequestStub
@@ -64,14 +64,14 @@ _SETTLE_TIMEOUT_S = 30
 
 
 def _transport(tmp_path):
-    """A fully constructed LocalTransport with its results root pinned under *tmp_path*.
+    """A fully constructed NullLane with its results root pinned under *tmp_path*.
 
     Really constructed, not ``__new__``-ed past its ``__init__``: these tests drive the listing
     and the background dispatcher, both of which read state the constructor sets up, so a
     half-built transport fails on bookkeeping that has nothing to do with importing.
     """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullLane(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 
@@ -82,7 +82,7 @@ def _env(monkeypatch, tmp_path):
     # Postprocessing is a different subject with its own tests, and a raw fixture would drag a
     # whole pipeline into every case here. Stubbed to a no-op so what is under test is the
     # import: the chain itself is asserted once, in its own test below.
-    monkeypatch.setattr(LocalTransport, "_postprocess_after_import",
+    monkeypatch.setattr(NullLane, "_postprocess_after_import",
                         lambda self, state, campaign_id, target: state.set_phase("finished"))
     transport = _transport(tmp_path)
     with TestClient(build_app(transport)) as client:

@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from robovast.service.client import LocalTransport
+from tests.service.null_lane import NullLane
 from robovast.service.container_exec import ExecSpec
 from robovast.service.image_store import ImageRef
 from robovast.service.interface import ExecRequest
@@ -29,7 +29,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 @pytest.fixture
 def local(tmp_path):
-    return LocalTransport(
+    return NullLane(
         store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces")))
 
 
@@ -141,11 +141,11 @@ def test_editing_a_workspace_is_a_different_container(local, monkeypatch):
     world = project / "world.yaml"
     world.write_text("pos: [40, 40]\n")
 
-    monkeypatch.setattr(LocalTransport, "_exec_manager", property(lambda self: _Mgr()))
-    monkeypatch.setattr(LocalTransport, "_exec_vast_file",
+    monkeypatch.setattr(NullLane, "_exec_manager", property(lambda self: _Mgr()))
+    monkeypatch.setattr(NullLane, "_exec_vast_file",
                         lambda self, request: "x.vast")
     monkeypatch.setattr(
-        LocalTransport, "_resolve_exec_image",
+        NullLane, "_resolve_exec_image",
         lambda self, vast, container=None, campaign_id="": ImageRef(
             ref="img", identity="img", build_id=""))
     monkeypatch.setattr("robovast.service.container_exec.validate", lambda request: None)
@@ -181,11 +181,11 @@ def test_an_untouched_workspace_still_reuses_its_container(local, monkeypatch):
     project.mkdir(parents=True, exist_ok=True)
     (project / "world.yaml").write_text("pose: {position: {x: 40, y: 40}}\n")
 
-    monkeypatch.setattr(LocalTransport, "_exec_manager", property(lambda self: _Mgr()))
-    monkeypatch.setattr(LocalTransport, "_exec_vast_file",
+    monkeypatch.setattr(NullLane, "_exec_manager", property(lambda self: _Mgr()))
+    monkeypatch.setattr(NullLane, "_exec_vast_file",
                         lambda self, request: "x.vast")
     monkeypatch.setattr(
-        LocalTransport, "_resolve_exec_image",
+        NullLane, "_resolve_exec_image",
         lambda self, vast, container=None, campaign_id="": ImageRef(
             ref="img", identity="img", build_id=""))
     monkeypatch.setattr("robovast.service.container_exec.validate", lambda request: None)
