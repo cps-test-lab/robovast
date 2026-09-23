@@ -44,6 +44,7 @@ import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
 import { FactRows, HoverFacts } from './HoverFacts'
 import { LogPanel } from './LogPanel'
+import { LiveJobLog } from './runLog/LiveJobLog'
 import { MeterBar } from './MeterBar'
 
 // The upload-to-share bar, shown only while the campaign is in the `sharing` phase.
@@ -1164,10 +1165,10 @@ function JobRow({
   }
   return (
     <CollapsibleBox {...header} open={open} onToggle={onToggle}>
-      <LogPanel
-        resetKey={`${campaignId}/${job.job_name}`}
-        streamUrl={robovast.jobLogStreamUrl(campaignId, job.job_name)}
-      />
+      {/* A fixed height: the log view fills its parent and windows its rows against it. */}
+      <Box sx={{ height: 320, display: 'flex', flexDirection: 'column' }}>
+        <LiveJobLog campaignId={campaignId} jobName={job.job_name} />
+      </Box>
     </CollapsibleBox>
   )
 }

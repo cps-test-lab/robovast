@@ -17,6 +17,7 @@ import pytest
 
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import authoring, execution, results_lifecycle
+from robovast.service.job_log import _records, _row
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GROWTH_SIM = _REPO_ROOT / "configs" / "examples" / "growth_sim" / "growth_sim.vast"
@@ -539,6 +540,15 @@ def test_get_campaign_log_tail_reports_what_matched_not_the_page_size(monkeypatc
     class _Chunk:
         text = "===== RUN =====\n" + "".join(f"line {i}\n" for i in range(20))
 
+    class _JobChunk:
+        """The job log's rows, parsed from *text* the way the service parses its files."""
+
+        def __init__(self, text):
+            self.rows = [_row(r) for _pos, r in _records(text.encode(), 0, "robovast")]
+
+        def model_dump(self):
+            return {"rows": [r.model_dump() for r in self.rows], "cursor": "c1", "eof": False}
+
     class _Fake:
         def get_campaign_logs(self, campaign_id, offset=0):
             return _Chunk()
@@ -593,12 +603,21 @@ def _service_with_log(monkeypatch, text):
             return {"text": self.text, "next_offset": self.next_offset,
                     "eof": self.eof}
 
+    class _JobChunk:
+        """The job log's rows, parsed from *text* the way the service parses its files."""
+
+        def __init__(self, text):
+            self.rows = [_row(r) for _pos, r in _records(text.encode(), 0, "robovast")]
+
+        def model_dump(self):
+            return {"rows": [r.model_dump() for r in self.rows], "cursor": "c1", "eof": False}
+
     class _Fake:
         def get_campaign_logs(self, campaign_id, offset=0):
             return _Chunk(text)
 
-        def get_job_log(self, campaign_id, job_name, offset=0):
-            return _Chunk(text)
+        def get_job_log(self, campaign_id, job_name, cursor=""):
+            return _JobChunk(text)
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Fake())
 
@@ -619,15 +638,15 @@ def test_a_flooded_campaign_log_summarizes_to_one_counted_line(monkeypatch):
     assert "content" not in out and "returned_lines" not in out
 
 
-def test_a_flooded_job_log_summarizes_and_keeps_the_poll_offset(monkeypatch):
-    """`next_offset` refers to the unfiltered stream, so summarizing must not break
-    an incremental poll loop."""
+def test_a_flooded_job_log_summarizes_and_keeps_the_poll_cursor(monkeypatch):
+    """The cursor marks the unfiltered log, so summarizing must not break an incremental
+    poll loop."""
 
-    text = _flooded_log(50)
-    _service_with_log(monkeypatch, text)
+    _service_with_log(monkeypatch, _flooded_log(50))
     out = execution.get_job_log("camp-2026-01-01-000000", "job-0", summarize=True)
     assert out["patterns"][0]["count"] == 50
-    assert out["next_offset"] == len(text)
+    assert out["severity_counts"]["warn"] == 50
+    assert out["cursor"] == "c1"
     assert "text" not in out
 
 

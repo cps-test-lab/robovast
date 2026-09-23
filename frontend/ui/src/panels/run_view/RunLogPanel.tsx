@@ -5,33 +5,33 @@
 // scope; the one thing only this host can supply is the clock. So the panel's whole job is:
 // read the clock, hand the cursor down, and let a click in the log seek it back.
 //
-// Named RunLogPanel, not LogPanel: `components/StatusView.tsx` already has a LogPanel, and
-// that one is the *live* campaign/job log streamed over SSE while a run is executing. Two
-// different questions -- what is happening now, versus what happened at t=41.2 s.
+// Named RunLogPanel, not LogPanel: `components/LogPanel.tsx` is the live text log of a campaign
+// or of the service, streamed over SSE. Two different questions -- what is happening now, versus
+// what happened at t=41.2 s.
 //
 // Bindings (vast visualization.panels) -- all optional, since the table's name and columns are
 // fixed by the merge that writes it:
 //   max_rows: cap on the initial load (default 20000; hitting it is reported in the footer)
 //   severities: push a severity floor into the query, e.g. [warn, error]
 //
-// While the campaign is still running there is no `run_log` table to read, and the panel switches
-// to `PreviewRunLog` -- the run's raw container output, unfiltered and not cursor-synced. See that
-// module for what the early view gives up and why.
+// While the campaign is still running there is no `run_log` table to read, and the panel streams
+// the run's job log instead (`LiveRunLog`): the same view, wall-time only and not cursor-synced,
+// because sim time comes from the clock map postprocessing builds.
 
 import { useMemo } from 'react'
 import { registerPanel } from '@/lib/panels/registry'
 import { RunLogView } from '@/components/runLog/RunLogView'
 import { useRunLog } from '@/components/runLog/useRunLog'
-import { PreviewRunLog } from '@/lib/preview/PreviewRunLog'
+import { LiveRunLog } from '@/components/runLog/LiveJobLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 function RunLogPanel({ spec, clock, data }: PanelProps) {
   // Set by the run view when the campaign is still running: there is no `run_log` table yet, so the
-  // panel reads the run's own container output instead. Not a binding a campaign declares -- the
+  // panel streams the run's job log instead. Not a binding a campaign declares -- the
   // host knows which mode it is drawing, and a campaign cannot.
   if (spec.config.preview)
     return (
-      <PreviewRunLog
+      <LiveRunLog
         campaignId={data.campaignId}
         configName={data.configName}
         runId={data.runId}

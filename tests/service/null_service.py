@@ -153,17 +153,9 @@ class NullService(ServiceBase):
         del campaign_id, job_name, run_dir
         self._refuse("get_job_state")
 
-    def _new_job_log_tail(self, campaign_id: str, job_name: str):
-        del campaign_id, job_name
-        self._refuse("get_job_log")
-
     def list_jobs(self, campaign_id: str):
         del campaign_id
         self._refuse("list_jobs")
-
-    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0):
-        del campaign_id, job_name, offset
-        self._refuse("get_job_log")
 
     def stop(self, campaign_id: str) -> ActionResult:
         del campaign_id

@@ -1117,14 +1117,15 @@ lives in the ``run_data`` MCP plugin):
   ``upload_to_share`` is a per-campaign launch flag on the request, not a separate
   operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``
   / ``stop`` / the ``/archive`` stream. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
-  (the current batch's execution units and a single running job's log); ``ClusterService``
-  implements them over the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``,
-  merging **every** container the job runs into one append-only
-  stream through the shared ``common.log_tail.MergedLogBuffer``, since a job is not one
-  container: the ROS shape gives the simulator and the system under test their own, and
-  on the cluster those are *native sidecars*, which live in ``spec.initContainers`` and
-  are found via ``cluster_execution.kube_client.pod_workload_containers``. They report live state only; the persisted per-run logs remain
-  part of the campaign result data, served by ``get_campaign_logs`` unchanged.
+  (the current batch's execution units and a job's log). ``list_jobs`` lists the campaign's
+  Kubernetes Jobs, whose sim and SUT containers are *native sidecars* in
+  ``spec.initContainers``, found via ``cluster_execution.kube_client.pod_workload_containers``.
+  ``get_job_log`` is ``ServiceBase``'s (:mod:`robovast.service.job_log`): it reads the job's
+  ``logs/system*.log`` files in the campaign directory, which grow while the job runs because
+  the pod's file agent delivers their growth as it happens. It returns **rows** (one per log
+  event, every container of the job in one stream) after an opaque cursor, and its SSE stream
+  pushes new rows as the files change. The campaign's own log is served by
+  ``get_campaign_logs``.
   ``GET /campaigns/events`` is a **browser-only** Server-Sent-Events transport over
   the same ``list_campaigns`` pull (the same server-side-loop idiom as the campaign
   log stream, so there is no second enumeration to drift): it pushes the full list on

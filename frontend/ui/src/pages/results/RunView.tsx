@@ -70,8 +70,8 @@ const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
 // would leave the scene with nothing driving it. It is the whole of the service's ALWAYS_ON_PANELS
 // -- a second always-on panel added there belongs here too, or it would be contributed to every run
 // view and then silently missing from this one.
-// `log` reads the run's own container output over the live job-log tail rather than the `run_log`
-// table, so it needs no index either -- see `lib/preview/PreviewRunLog`.
+// `log` streams the run's job log rather than reading the `run_log` table, so it needs no index
+// either -- see `components/runLog/useJobLogStream`.
 const PREVIEW_PANELS: ReadonlySet<string> = new Set(['scene3d', 'playback', 'log'])
 
 // Where the log sits in a preview: a full-width bar along the bottom, so it reads beside the replay

@@ -479,7 +479,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Job Log */
+        /**
+         * Get Job Log
+         * @description A job's log rows after *cursor*, running or finished.
+         */
         get: operations["get_job_log_campaigns__campaign_id__job_log_get"];
         put?: never;
         post?: never;
@@ -498,10 +501,8 @@ export interface paths {
         };
         /**
          * Stream Job Log
-         * @description Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
-         *
-         *     A **finished** job is served too, not only a running one. What the events mean,
-         *     and which residual case is still an error, is ``_sse_log_stream``'s to say.
+         * @description Server-sent events: one job's log rows as they are written (``Last-Event-ID``
+         *     resumes). A finished job is served too; see ``_sse_job_log_stream``.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -2996,6 +2997,67 @@ export interface components {
             waiting: number;
         };
         /**
+         * JobLogChunk
+         * @description The rows of a job's log that arrived after *cursor*.
+         *
+         *     Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
+         *     while the job runs, so a running job and a finished one answer alike.
+         *     Rows within a chunk are in stamp order; across chunks, in the order they arrived. The
+         *     finished, deduplicated record of a run's log is the ``run_log`` table.
+         */
+        JobLogChunk: {
+            /**
+             * Cursor
+             * @default
+             */
+            cursor: string;
+            /**
+             * Eof
+             * @default false
+             */
+            eof: boolean;
+            /** Rows */
+            rows: components["schemas"]["JobLogRow"][];
+        };
+        /**
+         * JobLogRow
+         * @description One record of a job's log: a stamped line and the unstamped lines that follow it.
+         */
+        JobLogRow: {
+            /**
+             * Container
+             * @default
+             */
+            container: string;
+            /**
+             * Level
+             * @default
+             */
+            level: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Node
+             * @default
+             */
+            node: string;
+            /**
+             * Severity
+             * @default
+             */
+            severity: string;
+            /**
+             * Time Source
+             * @default none
+             */
+            time_source: string;
+            /** Wall Ts */
+            wall_ts: number | null;
+        };
+        /**
          * JobState
          * @description What one **running** job is doing right now, as opposed to what it has logged.
          *
@@ -3322,6 +3384,8 @@ export interface components {
             files: number;
             /** Refused */
             refused: string[];
+            /** Resync */
+            resync: string[];
         };
         /**
          * PanelsSource
@@ -5466,7 +5530,7 @@ export interface operations {
         parameters: {
             query: {
                 job_name: string;
-                offset?: number;
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -5482,7 +5546,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LogChunk"];
+                    "application/json": components["schemas"]["JobLogChunk"];
                 };
             };
             /** @description Validation Error */

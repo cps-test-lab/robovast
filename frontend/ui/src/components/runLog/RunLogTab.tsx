@@ -10,7 +10,7 @@
 // colours and the windowing are the panel's own code.
 
 import Box from '@mui/material/Box'
-import { PreviewRunLog } from '@/lib/preview/PreviewRunLog'
+import { LiveRunLog } from './LiveJobLog'
 import { RunLogView } from './RunLogView'
 import { useRunLog } from './useRunLog'
 
@@ -21,9 +21,9 @@ export interface LogTabScope {
   level: string
   configName?: string
   runId?: number
-  /** The campaign is still running, so `run_log` holds nothing for it and the tab reads the run's
-   *  own container output instead. The same switch the run view's log panel makes, rendering the
-   *  same component, so the two views cannot come to say different things about one run. */
+  /** The campaign is still running, so `run_log` holds nothing for it and the tab streams the
+   *  run's job log instead. The same switch the run view's log panel makes, rendering the same
+   *  component, so the two views cannot come to say different things about one run. */
   preview?: boolean
 }
 
@@ -31,7 +31,7 @@ export function RunLogTab({ scope }: { scope: LogTabScope }) {
   if (scope.preview)
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-        <PreviewRunLog
+        <LiveRunLog
           campaignId={scope.campaignId}
           configName={scope.configName}
           runId={scope.runId}

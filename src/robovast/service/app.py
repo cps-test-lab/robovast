@@ -61,7 +61,7 @@ from robovast.service.interface import (ActionResult, BuildCampaignTablesRequest
                                         CampaignSortKey, SortOrder,
                                         ShareWorkspaceArchive,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
-                                        ListWorkspacesResponse, LogChunk,
+                                        JobLogChunk, ListWorkspacesResponse, LogChunk,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
                                         PanelsSource, ServiceCache,
                                         UpgradeInfo, UsageHistory, UsageSample,
@@ -828,6 +828,65 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 yield "event: eof\ndata: {}\n\n"
                 return
             await anyio.sleep(_sse_poll_s)
+
+    #: Most rows one job-log frame carries; a larger read is sent as several frames.
+    _sse_job_log_frame_rows = 2000
+
+    #: Longest a job-log stream waits for its files to change before it reads again and
+    #: sends a heartbeat: just past the settle time, so a record held back because its file
+    #: was still being written goes out without waiting for another write.
+    _sse_job_log_wait_s = 2.5
+
+    async def _sse_job_log_stream(request: Request, campaign_id: str, job_name: str,
+                                  cursor: str):
+        """SSE generator over a job's log rows (:meth:`ServiceBase.get_job_log`).
+
+        Each read's rows go out as ``message`` events carrying a JSON array of rows, the
+        last of them with ``id`` set to the cursor to resume from -- the browser echoes it as
+        ``Last-Event-ID`` on an automatic reconnect. Between reads the stream waits on the
+        job's log files (:class:`~robovast.service.job_log.LogWatch`), so rows go out as they
+        are written, and a wait that saw nothing sends a heartbeat. ``eof`` ends a finished
+        job's stream; an error (no such job, a cursor this service did not issue) is a
+        ``streamerror`` event followed by ``eof``.
+        """
+        yield ": open\n\n"
+        watch = await _pull_or_exit(lambda: impl.job_log_watch(campaign_id, job_name))
+        if watch is None:
+            return
+        if isinstance(watch, Exception):
+            yield f"event: streamerror\ndata: {_json.dumps(str(watch))}\n\n"
+            yield "event: eof\ndata: {}\n\n"
+            return
+        try:
+            while not app.state.should_exit():
+                if await request.is_disconnected():
+                    return
+                chunk = await _pull_or_exit(
+                    lambda: impl.get_job_log(campaign_id, job_name, cursor))
+                if chunk is None:
+                    return
+                if isinstance(chunk, Exception):
+                    yield f"event: streamerror\ndata: {_json.dumps(str(chunk))}\n\n"
+                    yield "event: eof\ndata: {}\n\n"
+                    return
+                rows = [row.model_dump() for row in chunk.rows]
+                for start in range(0, len(rows), _sse_job_log_frame_rows):
+                    frame = rows[start:start + _sse_job_log_frame_rows]
+                    last = start + _sse_job_log_frame_rows >= len(rows)
+                    head = f"id: {chunk.cursor}\n" if last else ""
+                    yield f"{head}data: {_json.dumps(frame)}\n\n"
+                cursor = chunk.cursor
+                if chunk.eof:
+                    yield "event: eof\ndata: {}\n\n"
+                    return
+                if not rows:
+                    yield _sse_heartbeat
+                    await _pull_or_exit(lambda: watch.wait(_sse_job_log_wait_s))
+                else:
+                    # Held-back rows settle without a write of their own; look again soon.
+                    await anyio.sleep(_sse_poll_s)
+        finally:
+            watch.close()
 
     #: Poll cadence of the campaign-list stream's server-side loop.
     _sse_list_poll_s = 1.0
@@ -1598,9 +1657,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def list_jobs(campaign_id: str) -> ListJobsResponse:
         return _guard(lambda: impl.list_jobs(campaign_id))
 
-    @app.get(Routes.job_log("{campaign_id}"), response_model=LogChunk, tags=["campaigns"])
-    def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        return _guard(lambda: impl.get_job_log(campaign_id, job_name, offset))
+    @app.get(Routes.job_log("{campaign_id}"), response_model=JobLogChunk, tags=["campaigns"])
+    def get_job_log(campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        """A job's log rows after *cursor*, running or finished."""
+        return _guard(lambda: impl.get_job_log(campaign_id, job_name, cursor))
 
     @app.get(Routes.campaign_logs_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_campaign_logs(campaign_id: str, request: Request):
@@ -1624,15 +1684,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
-        """Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
-
-        A **finished** job is served too, not only a running one. What the events mean,
-        and which residual case is still an error, is ``_sse_log_stream``'s to say."""
+        """Server-sent events: one job's log rows as they are written (``Last-Event-ID``
+        resumes). A finished job is served too; see ``_sse_job_log_stream``."""
         return StreamingResponse(
-            _sse_log_stream(
-                request,
-                lambda off: impl.get_job_log(campaign_id, job_name, off),
-                _last_event_offset(request)),
+            _sse_job_log_stream(request, campaign_id, job_name,
+                                request.headers.get("last-event-id") or ""),
             media_type="text/event-stream", headers=_sse_headers)
 
     @app.post(Routes.campaign_stop("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])

@@ -1027,7 +1027,7 @@ applied in this order (``search_run_logs`` below shares all but ``tail``):
        are chasing. Never silent: the response carries ``shutdown_dropped`` on every
        call, ``0`` included, and names the way back when it cut something.
 
-       ``get_campaign_log`` and ``get_job_log`` read a live stream, so they find the
+       ``get_campaign_log`` and ``get_job_log`` read a live log, so they find the
        verdict in the text (:mod:`robovast_decode.scenario_markers`); a stream that
        concatenates runs resumes at the next ``Executing scenario``. ``search_run_logs``
        reads it from :ref:`scenario_timestamps <scenario-verdict>` instead, the table the

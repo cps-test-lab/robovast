@@ -79,7 +79,7 @@ OVER_RESERVED_RATIO = 1.5
 UNDER_RESERVED_RATIO = 1.0
 
 #: What ``resource_usage`` calls the main container, regardless of what the ``.vast`` named
-#: it. Mirrors ``common/log_tail.MAIN_CONTAINER``.
+#: it. Mirrors ``robovast_decode.layout.MAIN_CONTAINER``.
 MEASURED_MAIN_CONTAINER = "robovast"
 
 #: Headroom over the shared-memory peak. Same rule as memory, and for a sharper version of

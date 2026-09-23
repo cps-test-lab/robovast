@@ -125,10 +125,10 @@ to ``runs``, and ``search_run_logs`` asks it across runs and campaigns.
 
 The open part is the **live** half. ``run_log`` is built from the job's ``system*.log`` files
 and its infra bag, and a query builds a run that is still going again rather than keeping
-what it found. A pod delivers its ``/out`` to the data plane when it ends, so until then its
-output exists only in pod logs and a running job has no ``run_log`` at all. A live source is
-the thing to design, and until it exists the live question stays with the stream tools
-(``get_job_log``).
+what it found. Those files grow in the job directory as the run goes (the pod's file agent
+delivers them), so a running campaign's ``run_log`` is current, rebuilt whole on each query.
+What is open is building it incrementally from what has already been parsed, which is the
+watcher's job; until then the live question is cheapest through ``get_job_log``.
 
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and

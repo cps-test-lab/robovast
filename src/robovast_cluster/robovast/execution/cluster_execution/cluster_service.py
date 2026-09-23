@@ -1295,123 +1295,14 @@ class ClusterService(ServiceBase):
             return full[len(campaign_id) + 1:]
         return full
 
-    def _new_job_log_tail(self, campaign_id: str, job_name: str):
-        """The tail reads a pod's containers, not a job dir's files."""
-        from .cluster_execution import PodLogTail
-        return PodLogTail()
+    def _job_artifact_hint(self, campaign_id: str, job_name: str) -> str:
+        """A Kubernetes Job's directory, read off the Job (:meth:`_job_artifact_dir`).
 
-    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        """Serve a Job's log from byte *offset* onward, live from its pod or from the campaign.
-
-        Finds the Job's pod by the auto-added ``job-name`` label and streams *all* of
-        its containers' logs merged into one stream (the main ``robovast`` container
-        plus any sim/SUT sidecars; see :class:`PodLogTail`). Reads are
-        incremental: a cached tail keeps the full assembled text so the byte offset
-        still maps onto it, but each poll only pulls the delta from the kube API
-        rather than the whole log. A pod that is gone is not an error: the log comes from
-        the campaign directory instead (:meth:`_archived_job_log`), which is the ordinary
-        state of every finished job.
-
-        A ``Pending`` pod is read like any other, and must be: the sim/SUT sidecars are
-        native sidecars, so kubelet runs them *during* the init phase, while the pod is
-        still Pending. They are already logging -- and a simulator that cannot load its
-        world says so there and then keeps the pod Pending forever. Short-circuiting on
-        the phase, as this did, threw away exactly the output that explains the hang.
-        A container with no log yet is handled a layer down, where ``PodLogTail._fetch``
-        swallows the API's 400/404 and contributes nothing.
+        A Kubernetes Job's name is not a run key, so the job-link manifest does
+        not name them; the Job carries its ``OUTPUT_DIR`` while it exists.
         """
-        from kubernetes import client
-
-        from .cluster_execution import _label_safe_campaign
-        core = self._k8s()
-        # Campaign + Job name, with no jobgroup term: the pair already identifies one pod,
-        # and adding the group would decide which of the campaign's own jobs may be read
-        # here. Every row :meth:`list_jobs` shows has to open -- a row whose log 404s is
-        # worse than no row.
-        label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
-        pods = core.list_namespaced_pod(self.namespace, label_selector=label)
-        if not pods.items:
-            return self._archived_job_log(campaign_id, job_name, offset)
-        pod = pods.items[0]
-        tail = self._job_log_tail(campaign_id, job_name)
-        try:
-            with tail.lock:
-                terminal = tail.read(core, pod, self.namespace, time.time())
-                text, next_offset = tail.merged.slice_from(offset)
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                return self._archived_job_log(campaign_id, job_name, offset)
-            raise
-        return LogChunk(text=text, next_offset=next_offset, eof=terminal)
-
-    def _archived_job_log(self, campaign_id: str, job_name: str, offset: int) -> LogChunk:
-        """A finished job's log, read from the campaign directory instead of its pod.
-
-        A pod is deleted when its Job is cleaned up, so for most of a campaign's life the
-        live source above is gone while the same output is in the campaign: the pod's
-        uploader delivers ``/out`` as it ends, which is also what makes an already-finished
-        run of a still-running campaign readable at all. Without this the log of every run
-        but the executing one is a 404.
-
-        Merged and tagged through the same :class:`MergedLogBuffer` as both live tails, so a
-        reader sees one stream with the same ``[container]`` prefixes rather than a
-        differently-shaped archive. The files are complete and immutable here, so ordering
-        is per file rather than per poll, and the whole buffer is built on each call --
-        there is no delta to track, and ``eof`` is unconditionally true.
-
-        Raises:
-            KeyError: When the campaign has no such job, or its artifacts were never
-                delivered (a run killed before its uploader could). Reported as absent
-                rather than as an empty log, which would read as a run that said nothing.
-        """
-        import yaml
-
-        from robovast.common.execution import (
-            JOB_LINKS_MANIFEST_REL, resolve_job_artifact_rel)
-        from robovast.common.log_tail import (MAIN_LOG, MergedLogBuffer,
-                                              container_of_log_file, is_sidecar_log,
-                                              tag_width)
-
-        campaign_dir = self.campaign_dir(campaign_id)
-        try:
-            manifest = (campaign_dir / JOB_LINKS_MANIFEST_REL).read_bytes()
-        except FileNotFoundError:
-            raise KeyError(
-                f"campaign {campaign_id!r} has no job-link manifest: no archived log for "
-                f"job {job_name!r}") from None
-        try:
-            job_rel = resolve_job_artifact_rel(yaml.safe_load(manifest) or {}, job_name)
-        except FileNotFoundError as e:
-            raise KeyError(f"{e} in campaign {campaign_id!r}") from None
-
-        log_dir = campaign_dir / job_rel / "logs"
-        names = sorted(p.name for p in log_dir.iterdir()) if log_dir.is_dir() else []
-        # Main container first, then the sidecars in name order -- the order the live
-        # merge uses, so the same job does not read differently once it has finished.
-        files = [n for n in names if n == MAIN_LOG]
-        files += [n for n in names if is_sidecar_log(n)]
-        if not files:
-            raise KeyError(
-                f"job {job_name!r} of campaign {campaign_id!r} uploaded no logs")
-
-        multi = len(files) > 1
-        containers = [container_of_log_file(n) for n in files]
-        width = tag_width(containers) if multi else 0
-        entries = []
-        for file_order, (name, container) in enumerate(zip(files, containers)):
-            raw = (log_dir / name).read_bytes()
-            lines = raw.decode("utf-8", errors="replace").split("\n")
-            # A file ending in a newline splits with a trailing "" that is not a line. Only
-            # the last one: a blank line inside the log is the container's own output.
-            if lines and lines[-1] == "":
-                lines.pop()
-            for line_order, line in enumerate(lines):
-                entries.append(((file_order, line_order), container, line))
-
-        merged = MergedLogBuffer()
-        merged.append(entries, multi=multi, width=width)
-        text, next_offset = merged.slice_from(offset)
-        return LogChunk(text=text, next_offset=next_offset, eof=True)
+        del campaign_id
+        return self._job_artifact_dir(job_name)
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 

@@ -165,8 +165,13 @@ class DataPlane:
         if result.refused:
             logger.warning("outputs for %s: refused %d member(s): %s", campaign_id,
                            len(result.refused), ", ".join(result.refused[:5]))
+        if result.resync:
+            # A range that does not continue the file here is the sender's to repair by
+            # sending the file whole; routine after a restart, not a fault.
+            logger.info("outputs for %s: resync %d file(s): %s", campaign_id,
+                        len(result.resync), ", ".join(result.resync[:5]))
         return OutputsIngested(files=result.files, bytes=result.bytes,
-                               refused=result.refused)
+                               refused=result.refused, resync=result.resync)
 
     def staged_tar_stream(self, slot: str, path: str = ""):
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
@@ -182,8 +187,11 @@ class DataPlane:
         root = self.staged_dir(slot)
         root.mkdir(parents=True, exist_ok=True)
         result = tar_io.extract_stream(stream, root)
+        if result.resync:
+            logger.info("staged %s: resync %d file(s): %s", slot,
+                        len(result.resync), ", ".join(result.resync[:5]))
         return OutputsIngested(files=result.files, bytes=result.bytes,
-                               refused=result.refused)
+                               refused=result.refused, resync=result.resync)
 
     def discard_staged(self, slot: str) -> bool:
         """Remove the slot's tree; ``False`` when there was none."""

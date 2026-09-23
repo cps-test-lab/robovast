@@ -7,22 +7,19 @@ import Tooltip from '@mui/material/Tooltip'
 import { useLiveStream, type LiveState } from '@/lib/liveStream'
 import { containerColorer } from './containerColor'
 
-// The one live-log renderer in the app. It lived inside StatusView, which is now only one
-// of its callers: the Admin page tails the service's own log through the same component,
-// and importing StatusView to get it would have dragged the whole campaign-status graph --
-// BatchObjectiveChart, DetailsBox, the ETA maths -- into a lazily-loaded page that needs
-// none of it.
+// The live text-log renderer: a campaign's log on the Monitor, and the service's own log on the
+// Admin page. Both are the same shape on the server (a `fetch(offset) -> LogChunk` behind one SSE
+// loop), so they are the same shape here. A job's log is rows, not text, and renders in
+// `runLog/RunLogView` through `runLog/useJobLogStream`.
 //
-// That it fits both is not a coincidence: every log this app tails is the same shape on
-// the server (a `fetch(offset) -> LogChunk` behind one SSE loop), so it is the same shape
-// here.
+// Kept out of StatusView so the lazily-loaded Admin page does not pull in the campaign-status
+// graph (BatchObjectiveChart, DetailsBox, the ETA maths) to get it.
 
-// Multi-container job logs arrive with each line tagged `[container] …` (merged
-// server-side). Color only the `[container]` prefix per container; the rest of the
-// line keeps the default text color. Lines without a tag render unchanged.
+// A line tagged `[container] …` gets its prefix coloured per container; the rest of the line
+// keeps the default text colour. Lines without a tag render unchanged.
 //
 // The colours come from the container names this text actually holds, so two of them never
-// share one (see containerColorer) -- which the bare hash did not guarantee.
+// share one (see containerColorer).
 function renderLogLines(text: string) {
   const lines = text.split('\n')
   const tags = lines.map((line) => /^(\[[^\]]+\]) ?/.exec(line))

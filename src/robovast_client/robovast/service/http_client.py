@@ -40,7 +40,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
-                                        JobState, ListJobsResponse, ListWorkspacesResponse,
+                                        JobLogChunk, JobState, ListJobsResponse,
+                                        ListWorkspacesResponse,
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
@@ -311,9 +312,9 @@ class HTTPTransport(RobovastInterface):
         return ListJobsResponse.model_validate(
             self._get(Routes.campaign_jobs(campaign_id)))
 
-    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        return LogChunk.model_validate(
-            self._get(Routes.job_log(campaign_id), job_name=job_name, offset=offset))
+    def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        return JobLogChunk.model_validate(
+            self._get(Routes.job_log(campaign_id), job_name=job_name, cursor=cursor))
 
     def get_job_state(self, campaign_id: str, job_name: str) -> JobState:
         return JobState.model_validate(

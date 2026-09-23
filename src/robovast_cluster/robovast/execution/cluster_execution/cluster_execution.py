@@ -27,7 +27,6 @@ toolkit that actually builds/submits Jobs lives in
 import logging
 import re
 import signal as _signal
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
@@ -36,7 +35,6 @@ from kubernetes import client
 
 from robovast.common.config import SCENARIO_CONTAINER
 from robovast.common.execution import node_label
-from robovast.common.log_tail import MergedLogBuffer, tag_width
 
 from .kube_client import pod_workload_containers
 from .manifests import MAIN_CONTAINER_NAME
@@ -653,120 +651,6 @@ def previous_container_log(core, namespace: str, pod_name: str, container: str,
         return "", "unavailable"
     text = text or ""
     return text, ("captured" if text.strip() else "empty")
-
-
-class PodLogTail:
-    """Incremental, cache-backed reader for a running pod's merged container logs.
-
-    Backs the byte-offset streaming protocol (:meth:`ClusterService.get_job_log`)
-    *without* re-reading the whole pod log on every poll — the pathology that made a
-    long-running job's log panel pull megabytes from the kube API every 1.5s. The
-    full assembled text is kept in :attr:`buf` so a client's byte offset still maps
-    straight onto it, but each :meth:`read` only pulls a small trailing window from
-    the API (``since_seconds``) and appends the lines it has not seen yet.
-
-    Append-only by construction, which is what the byte-offset protocol rests on: a pod's
-    containers share the node clock and logs only grow forward, so lines fetched in a later
-    poll always sort after everything already buffered. Dedup across the overlapping
-    ``since_seconds`` windows is by exact last-consumed line per container, which is
-    unique because kubelet stamps every line with a nanosecond timestamp.
-
-    The tagging and appending live in :class:`robovast.common.log_tail.MergedLogBuffer`,
-    so the live and the finished view of a job read the same. What is
-    kube-specific — the ``since_seconds`` window, the anchor dedup, the re-anchor — is here.
-    """
-
-    #: Slack (seconds) added to the since-window so a poll never misses lines written
-    #: in the same second as the previous read — ``since_seconds`` is second-granular.
-    _SINCE_SLACK = 2
-
-    def __init__(self):
-        self.merged = MergedLogBuffer()  # the stream so far; a client's offset indexes it
-        self.terminal = False
-        self._last_line = {}            # container -> last raw "<ts> msg" line consumed
-        self._last_ts = {}              # container -> last seen ts (for continuation lines)
-        self._last_wall = None          # time.time() of last successful fetch
-        self.lock = threading.Lock()    # serialize concurrent reads of the same job
-
-    def read(self, core, pod, namespace, now) -> bool:
-        """Fetch the delta since the last read, append it, and return ``terminal``."""
-        names = [c.name for c in pod_workload_containers(pod) if getattr(c, "name", None)]
-        names = names or ["robovast"]
-        multi = len(names) > 1
-        width = tag_width(names) if multi else 0
-        # First read pulls the whole log; later reads only the elapsed window + slack.
-        since = None
-        if self._last_wall is not None:
-            since = int(now - self._last_wall) + self._SINCE_SLACK
-
-        def _fetch(container, since_seconds):
-            try:
-                return core.read_namespaced_pod_log(
-                    name=pod.metadata.name, namespace=namespace, container=container,
-                    timestamps=True, since_seconds=since_seconds)
-            except client.exceptions.ApiException as e:
-                # 404: pod/container gone; 400: container waiting / no log yet.
-                if e.status in (400, 404):
-                    return None
-                raise
-
-        def _lines(raw):
-            out = (raw or "").split("\n")
-            if out and out[-1] == "":
-                out.pop()  # trailing newline from the API is not a real line
-            return out
-
-        # Concurrently, because this runs every 0.5s per open panel and a three-container
-        # job would otherwise cost three serial round-trips -- over a `kubectl
-        # port-forward` (a service running off-cluster) that is enough to
-        # make the panel visibly trail the run. The merge below sorts by timestamp, so
-        # completion order does not affect the output.
-        if len(names) > 1:
-            with ThreadPoolExecutor(max_workers=len(names)) as pool:
-                fetched = list(pool.map(lambda n: _fetch(n, since), names))
-        else:
-            fetched = [_fetch(names[0], since)]
-
-        new = []  # ((ts, container_order, line_order), container, message)
-        for order, (name, raw) in enumerate(zip(names, fetched)):
-            lines = _lines(raw)
-            last = self._last_line.get(name)
-            if last is not None:
-                fresh = _after_last(lines, last)
-                if fresh is None and since is not None:
-                    # The window slid past the boundary line (a long gap between
-                    # polls). Re-anchor with a full read so no lines are dropped.
-                    lines = _lines(_fetch(name, None))
-                    fresh = _after_last(lines, last)
-                if fresh is None:
-                    # Anchor gone even from the full log: kubelet rotated it out of
-                    # the retained window (a very chatty job). We can't tell which
-                    # fetched lines are already buffered, so skip forward to the
-                    # newest line rather than risk duplicating the whole buffer — a
-                    # few lines may be missed, but the stream stays consistent.
-                    if lines:
-                        newest = lines[-1].partition(" ")[0]
-                        if "T" in newest and newest[:1].isdigit():
-                            self._last_ts[name] = newest
-                        self._last_line[name] = lines[-1]
-                    continue
-                lines = fresh
-            if not lines:
-                continue
-            self._last_line[name] = lines[-1]
-            for line_order, line in enumerate(lines):
-                ts, _, message = line.partition(" ")
-                if "T" in ts and ts[:1].isdigit():
-                    self._last_ts[name] = ts
-                else:
-                    message = line  # continuation line: keep it whole, inherit last ts
-                cur_ts = self._last_ts.get(name, "")
-                new.append(((cur_ts, order, line_order), name, message))
-
-        self.merged.append(new, multi=multi, width=width)
-        self._last_wall = now
-        self.terminal = bool(pod.status and pod.status.phase in ("Succeeded", "Failed"))
-        return self.terminal
 
 
 #: Pod phases ranked by how far the pod got, so a Job that somehow owns more than one
