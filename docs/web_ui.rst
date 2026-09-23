@@ -1127,6 +1127,8 @@ What that costs is stated in the panel: an override that changes geometry throug
 is **not** in the mesh, only what the variation contributes as markers. This is a view of
 the base world plus placements, not a compiled preview of the exact model the run will load.
 
+.. _map2d-panel:
+
 **Map** (``map2d``, ships with ``robovast_nav``) — the occupancy map a nav campaign plans
 on, with the same markers drawn top-down. It exists beside the 3D scene because it is the
 *planning* view: a path is searched over these cells and an obstacle is placed relative to
@@ -2248,16 +2250,22 @@ inset in a corner, in step with the picture because both sides carry simulated s
        "layers": {"map": {"topic": "/map"}, "local": {"topic": "/local_costmap/costmap"},
                   "poses": {"table": "poses"}}}}' --out clip.mp4
 
-It draws what the panel draws -- the layers, the driven trail, the robot -- plus the
-configuration's planned path, goal and obstacles (``planned_path``, ``goal``,
-``obstacles``, each ``true`` unless turned off), with the panel's palette and draw order.
+It draws what the panel draws -- the layers, the driven trail, the robot -- plus what the
+config view draws for the configuration: the planned path, goal and obstacles its variations
+contributed (``planned_path``, ``goal``, ``obstacles``, each ``true`` unless turned off), and
+the markers the campaign declares on its :ref:`map2d <map2d-panel>` panel -- the map-frame
+declaration, resolved the same way (``param:`` reads the configuration). A goal that is a
+scenario constant rather than a varied parameter is therefore stated once, in the ``.vast``,
+and both the config view and the video show it. ``markers`` on the overlay takes the same
+declarations and replaces the campaign's (``markers: []`` draws none).
 ``layers`` is the panel's binding, so a set that works in the web UI works here; a layer may
 name a map ``file`` (campaign-relative) instead of a ``topic``. With no ``layers`` stated, the
 panel's default layers are taken as far as the run recorded them -- a campaign that stored only
 its global costmap gets that one, and the choice is logged -- while a stated binding is held to
 the letter. It reads **files, not the
 service**: ``costmaps.csv`` and ``poses.csv`` beside the recording, and the campaign's
-``_transient/configurations.yaml``, laid out as the campaign directory is
+``_transient/configurations.yaml`` and frozen ``_config/<name>.vast``, laid out as the campaign
+directory is
 (``<campaign>/<config>/<run>/``) -- so a run fetched to disk, or a campaign archive, is enough.
 A file it needs and cannot find is refused by name, together with the postprocessing step that
 writes it; a costmap in a frame the poses do not carry (the local costmap is in ``odom``) is
