@@ -243,6 +243,11 @@ the same on both lanes, so a downloaded campaign carries them whether it ran loc
 a cluster. Each is named, with what it was derived from, in
 ``_transient/postprocessing.yaml``.
 
+The conversion reads each bag once, and reads from it only the topics some configured handler
+converts: the bag reader is filtered to those topics, so a recorded topic no step asks for
+(a camera or laser-scan stream, say) is skipped by the storage plugin rather than handed to
+the converter and deserialized.
+
 A common example of test-specific output is a scenario-recorded ``rosbag2/``
 directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
 recorded topics and message counts). It is present only when the scenario
