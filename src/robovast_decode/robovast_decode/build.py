@@ -25,8 +25,10 @@ Where recordings live, relative to the campaign directory:
 
 * a run's scenario recording: ``<config>/<run>/rosbag2/`` (the last attempt, when a recorder
   that restarted left several ``rosbag2*`` directories);
-* a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, reached
-  through the run's ``job`` link. A job that ran one run gives its rows to that run; a job
+* a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, the job
+  found through ``_transient/job_links.yaml``, which is written before a job starts (the
+  ``job`` symlink beside a run appears only once it ends). A job that ran one run gives its
+  rows to that run; a job
   that ran several leaves ``config_name`` and ``run_id`` empty, and its file is named after the
   job, because which of its runs a row belongs to is a question of time windows.
 
@@ -77,8 +79,21 @@ class BuildReport:
     unknown: List[str] = field(default_factory=list)
 
 
+#: The campaign's ``{"<config>/<run>/job": "<target relative to the run>"}`` manifest.
+JOB_LINKS = os.path.join("_transient", "job_links.yaml")
+
+
+def job_links(campaign_dir: str) -> dict:
+    path = os.path.join(campaign_dir, JOB_LINKS)
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
 def find_runs(campaign_dir: str) -> List[Run]:
-    """Every run directory of *campaign_dir*: ``<config>/<numeric run>``."""
+    """Every run directory of *campaign_dir*: ``<config>/<numeric run>``, with its job."""
+    links = job_links(campaign_dir)
     runs = []
     for config in sorted(os.listdir(campaign_dir)):
         config_path = os.path.join(campaign_dir, config)
@@ -88,8 +103,8 @@ def find_runs(campaign_dir: str) -> List[Run]:
             path = os.path.join(config_path, run)
             if not os.path.isdir(path):
                 continue
-            link = os.path.join(path, "job")
-            job = os.path.realpath(link) if os.path.islink(link) else None
+            target = links.get(f"{config}/{run}/job")
+            job = os.path.normpath(os.path.join(path, target)) if target else None
             runs.append(Run(config, int(run), path, job if job and os.path.isdir(job) else None))
     return runs
 
@@ -313,5 +328,5 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None) -> Dict[s
     return out
 
 
-__all__ = ["BuildReport", "RECORDING_TABLE", "Run", "available_tables", "build", "find_runs",
-           "recorded_topics", "scenario_recording"]
+__all__ = ["BuildReport", "JOB_LINKS", "RECORDING_TABLE", "Run", "available_tables", "build",
+           "find_runs", "job_links", "recorded_topics", "scenario_recording"]

@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nav_run"
 
@@ -23,7 +24,12 @@ NAV_CONFIG = {"groups": [
 
 
 def make_campaign(root: Path, runs=(("cfg", 0),), shared_job=False, verdict=True) -> Path:
-    """A campaign whose every run carries the fixture recording and its job's."""
+    """A campaign whose every run carries the fixture recording and its job's.
+
+    Jobs are linked the way a campaign links them before any job has ended: through
+    ``_transient/job_links.yaml`` alone, with no ``job`` symlink beside the run.
+    """
+    links = {}
     for i, (config, run_id) in enumerate(runs):
         run = root / config / str(run_id)
         run.mkdir(parents=True)
@@ -32,9 +38,11 @@ def make_campaign(root: Path, runs=(("cfg", 0),), shared_job=False, verdict=True
         if not (job / "logs" / "rosout_bag").exists():
             (job / "logs").mkdir(parents=True, exist_ok=True)
             shutil.copytree(FIXTURE / "0" / "logs" / "rosout_bag", job / "logs" / "rosout_bag")
-        (run / "job").symlink_to(os.path.relpath(job, run))
+        links[f"{config}/{run_id}/job"] = os.path.relpath(job, run)
         if verdict:
             (run / "test.xml").write_text("<testsuite/>")
+    (root / "_transient").mkdir(parents=True, exist_ok=True)
+    (root / "_transient" / "job_links.yaml").write_text(yaml.safe_dump(links))
     return root
 
 
