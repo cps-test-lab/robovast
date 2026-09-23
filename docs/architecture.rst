@@ -635,7 +635,8 @@ over HTTP:
      - What crosses
    * - ``GET /data/campaigns/{id}/inputs``
      - what a scenario Job extracts into ``/config``: the campaign's ``_config/`` and
-       ``_transient/`` flattened, plus each cell's own declared files on top
+       ``_transient/`` flattened, with only the named ``job`` tags' own documents among the
+       per-job ones, plus each cell's own declared files on top
    * - ``PUT /data/campaigns/{id}/outputs``
      - a pod's whole ``/out``, delivered once, extracted into the campaign
    * - ``GET /data/campaigns/{id}/archive``

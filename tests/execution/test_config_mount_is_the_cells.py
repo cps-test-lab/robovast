@@ -132,7 +132,7 @@ class _FakeClusterConfig:
         return types.SimpleNamespace(pull_secret_name="")
 
 
-def _init_command(monkeypatch, configs, runs=1, runs_per_job=1):
+def _init_command(monkeypatch, configs, runs=1, runs_per_job=1, also_reads=()):
     monkeypatch.setattr(kubernetes_backend, "resolve_resources",
                         lambda res, ctx: dict(res) if isinstance(res, dict) else {})
 
@@ -156,7 +156,7 @@ def _init_command(monkeypatch, configs, runs=1, runs_per_job=1):
         cluster_config=_FakeClusterConfig(), namespace="ns", image="img:test",
         kube_context=None)
     job = runner._build_jobs()[0]
-    manifest = runner.create_job_manifest(job, total_jobs=1)
+    manifest = runner.create_job_manifest(job, total_jobs=1, also_reads=also_reads)
     spec = manifest["spec"]["template"]["spec"]
     init = next(c for c in spec["initContainers"] if c["name"] == "fetch-inputs")
     return " ".join(init["command"] + init.get("args", []))
@@ -188,6 +188,21 @@ def test_it_fetches_the_whole_view_in_one_stream(monkeypatch):
     assert command.count("curl -sSf") == 1, command
     assert "/campaigns/camp-2026-07-17-120000/inputs" in command, command
     assert "tar -x -C /config" in command, command
+
+
+def test_the_init_container_asks_for_its_own_jobs_documents(monkeypatch):
+    """The data plane sends a pod only the job documents it names, so a job names its tag
+    and nothing else: every other job's parameters would grow the download with the
+    campaign."""
+    command = _init_command(monkeypatch, _CLUSTER_CONFIGS)
+    assert "job=batch-0-job-0" in command, command
+    assert command.count("job=") == 1, command
+    assert "SCENARIO_PARAMETER_FILE" not in command
+
+
+def test_a_manifest_a_probe_derives_from_also_asks_for_the_probes_documents(monkeypatch):
+    command = _init_command(monkeypatch, _CLUSTER_CONFIGS, also_reads=["probe-n1"])
+    assert "job=batch-0-job-0" in command and "job=probe-n1" in command, command
 
 
 def test_it_never_asks_for_a_cells_records(monkeypatch):

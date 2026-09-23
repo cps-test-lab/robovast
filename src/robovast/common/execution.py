@@ -37,6 +37,7 @@ import yaml
 # and the join would go quietly empty rather than fail.
 # pylint: disable=unused-import  # the re-export below is the documented import site
 from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
+from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config import SIMULATION_CONTAINER
@@ -2211,7 +2212,7 @@ RESERVED_CONFIG_MOUNT_NAMES = frozenset({
 
 #: Per-job documents at the config mount, which carry a job tag rather than a fixed name.
 #: Matched as patterns for the same reason the set above is matched by name.
-RESERVED_CONFIG_MOUNT_PATTERNS = ("*.params.yaml", "*.sim.yaml")
+RESERVED_CONFIG_MOUNT_PATTERNS = tuple("*" + suffix for suffix in JOB_DOCUMENT_SUFFIXES)
 
 
 def job_artifact_rel(index, job_prefix="") -> str:

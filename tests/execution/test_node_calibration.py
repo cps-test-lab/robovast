@@ -1062,3 +1062,76 @@ def test_memory_is_taken_at_the_maximum_for_every_role():
     for percentile in (50, 95, 100):
         got = container_cpu_profile_from_billing(rows, percentile=percentile)
         assert got["memory_peak"] == 800 * 1024 ** 2, "the max, whatever the CPU percentile"
+
+
+def test_a_probe_asks_for_its_own_parameter_document(monkeypatch):
+    """A probe's pod is its base job's manifest with ``SCENARIO_PARAMETER_FILE`` pointed at
+    the probe's own document, and a pod is sent only the job documents it names -- so the
+    base names every probe tag beside its job's, whose simulator document the probe reads."""
+    import types
+
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+
+    asked = {}
+    runner = kb.BatchJobRunner()
+    runner.campaign = "camp-2026-01-01-000000"
+    runner._batch_tag = "batch-0"
+    runner._probes = {}
+    runner.admission = types.SimpleNamespace(
+        calibration=lambda campaign, cls: types.SimpleNamespace(
+            claim_probe=lambda node_id, key: True),
+        preflight=lambda sizing, node_id=None: None,
+        submit=lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_warn_about_containers_with_no_role", lambda: None,
+                        raising=False)
+    monkeypatch.setattr(runner, "_probe_node_ids", lambda total: ["n1", "n2"], raising=False)
+    monkeypatch.setattr(runner, "_job_sizing", lambda job, total: types.SimpleNamespace(cpu=1),
+                        raising=False)
+    monkeypatch.setattr(runner, "_campaign_node_id", lambda: None, raising=False)
+    monkeypatch.setattr(runner, "_probe_owner", lambda: "owner", raising=False)
+    monkeypatch.setattr(runner, "create_job_manifest",
+                        lambda job, total_jobs, node_figures=None, also_reads=():
+                        asked.update(also_reads=also_reads) or {}, raising=False)
+
+    runner._probe_nodes_written = ["n1", "n2"]
+
+    runner._start_probes(["job-0"], 1)
+    assert list(asked.get("also_reads", ())) == [kb.probe_tag("n1"), kb.probe_tag("n2")]
+
+
+def test_a_node_with_no_parameter_document_is_left_to_the_next_batch(monkeypatch):
+    """The node set is live, so one can appear between writing this batch's documents and
+    starting its probes. A manifest naming a tag the route has no document for is refused its
+    inputs outright, which would take every probe of the batch with it."""
+    import types
+
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+
+    asked = {}
+    claimed = []
+    runner = kb.BatchJobRunner()
+    runner.campaign = "camp-2026-01-01-000000"
+    runner._batch_tag = "batch-0"
+    runner._probes = {}
+    runner.admission = types.SimpleNamespace(
+        calibration=lambda campaign, cls: types.SimpleNamespace(
+            claim_probe=lambda node_id, key: claimed.append(node_id) or True),
+        preflight=lambda sizing, node_id=None: None,
+        submit=lambda *a, **k: None)
+    monkeypatch.setattr(runner, "_warn_about_containers_with_no_role", lambda: None,
+                        raising=False)
+    monkeypatch.setattr(runner, "_probe_node_ids", lambda total: ["n1", "joined-late"],
+                        raising=False)
+    monkeypatch.setattr(runner, "_job_sizing", lambda job, total: types.SimpleNamespace(cpu=1),
+                        raising=False)
+    monkeypatch.setattr(runner, "_campaign_node_id", lambda: None, raising=False)
+    monkeypatch.setattr(runner, "_probe_owner", lambda: "owner", raising=False)
+    monkeypatch.setattr(runner, "create_job_manifest",
+                        lambda job, total_jobs, node_figures=None, also_reads=():
+                        asked.update(also_reads=also_reads) or {}, raising=False)
+    runner._probe_nodes_written = ["n1"]
+
+    runner._start_probes(["job-0"], 1)
+
+    assert list(asked.get("also_reads", ())) == [kb.probe_tag("n1")]
+    assert claimed == ["n1"], "the node with a document is still measured"
