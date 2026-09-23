@@ -1011,6 +1011,13 @@ class VersionInfo(BaseModel):
     #: False. Never carries a registry host, prefix or credential — registry details do
     #: not cross this interface (see :class:`RegistryConfig`), and this reaches a client.
     build_unavailable: Optional[str] = None
+    #: True when this lane queues campaigns against each other, so a campaign's priority and
+    #: pause mean something (``set_campaign_scheduling``, ``--priority`` at launch); False on
+    #: a lane that runs one campaign at a time and refuses both. ``None`` when the service did
+    #: not say -- an older one has no such field -- which a consumer must read as "no
+    #: verdict", the same rule as ``can_build_images``. A property of the lane, fixed when the
+    #: service started, not of how busy it is.
+    can_schedule: Optional[bool] = None
 
     # -- how to reach files -------------------------------------------------
     #: The address templates, so a caller learns the file address space from the

@@ -42,6 +42,7 @@ def _reported(monkeypatch, revision: str = BAKED):
         _campaigns_root=lambda: "/srv/campaigns",
         store=SimpleNamespace(registry=SimpleNamespace(root="/srv/sources")),
         _declared_web_base=lambda: "",
+        _SUPPORTS_SCHEDULING=LocalTransport._SUPPORTS_SCHEDULING,  # pylint: disable=protected-access
     )
     return LocalTransport.version(fake_self)
 

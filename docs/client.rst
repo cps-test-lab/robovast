@@ -48,7 +48,8 @@ Every group is named after what it acts on, so the group tells you what you are 
      - **Launch a campaign.** The one way to run a ``.vast``. ``--push DIR`` pushes and
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
    * - ``vast campaign list|status``
-     - What has run, and where one campaign has got to.
+     - What has run, and where one campaign has got to. The list marks a live campaign whose
+       queue priority or hold is not the default (``[prio -1]``, ``[paused]``).
    * - ``vast campaign wait <id>``
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
@@ -66,7 +67,8 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``
-     - Which service is answering and which code it runs; whether the lane has room.
+     - Which service is answering, which code it runs and whether its lane has a queue to
+       order; whether the lane has room.
    * - ``vast service cache [--clear]``
      - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``

@@ -531,7 +531,9 @@ def list_cmd(limit, namespace, context):
     """List campaigns this service knows about, newest first.
 
     ``description`` is what tells two same-day ``<name>-<timestamp>`` ids apart, which is
-    why the launch verbs ask for one.
+    why the launch verbs ask for one. A live campaign's standing with the queue follows its
+    phase when it is not the default -- ``prio +2``, ``paused`` -- because a held campaign
+    making no progress is otherwise indistinguishable here from a wedged one.
     """
     try:
         from robovast.service.interface import \
@@ -548,9 +550,31 @@ def list_cmd(limit, namespace, context):
         click.echo("no campaigns")
         return
     width = max(len(c.campaign_id) for c in listed)
+    # A column of its own, as wide as the widest standing in this listing and absent when no
+    # campaign has one: descriptions that line up are what makes the listing scannable, and a
+    # marker on some rows only would step every one of them along by its own length.
+    standings = {c.campaign_id: _queue_standing(c) for c in listed}
+    mark = max(len(s) + 3 for s in standings.values()) if any(standings.values()) else 0
     for summary in listed:
+        standing = standings[summary.campaign_id]
         click.echo(f"  {summary.campaign_id:<{width}}  {summary.phase:<12} "
-                   f"{summary.description}")
+                   + f"{f'[{standing}]' if standing else '':<{mark}}"
+                   + f"{summary.description}")
+
+
+def _queue_standing(summary) -> str:
+    """A campaign's rank and hold as a listing row shows them, or ``""`` at the default.
+
+    The same labels the web UI's campaign card carries. Omitted at the default because a
+    ``prio 0`` on every row says nothing. The service reports both only while the campaign
+    is live, so a finished row never carries them.
+    """
+    parts = []
+    if summary.priority:
+        parts.append(f"prio {summary.priority:+d}")
+    if summary.paused:
+        parts.append("paused")
+    return ", ".join(parts)
 
 
 @campaign.command('status')
