@@ -1243,6 +1243,10 @@ log() {
     echo "[${level}] [$(_now)] [entrypoint]: ${msg}"
 }"""
 
+#: The script the scenario container runs at the end of a run to write each bag's message
+#: definitions beside it (:mod:`robovast.execution.data.dump_message_definitions`).
+DEFINITIONS_SCRIPT = "dump_message_definitions.py"
+
 #: The emptyDir every container of a cluster pod shares, mounted at this path in each of
 #: them: the sockets the scenario drives its sidecars over, and the done markers below.
 IPC_DIR = "/ipc"
@@ -1277,6 +1281,10 @@ if [ -f /tmp/rosbag.pid ]; then
         kill -KILL $(cat /tmp/rosbag.pid) 2>/dev/null || true
     fi
     echo "ROS bag process stopped."
+fi
+# The recordings' message definitions, beside each bag, while the types are installed here.
+if [ -f /config/dump_message_definitions.py ]; then
+    python3 /config/dump_message_definitions.py "${1:-${SCENARIO_OUTPUT_DIR:-/out}}" || true
 fi
 if [ -f /tmp/monitor.pid ]; then
     if kill -TERM $(cat /tmp/monitor.pid) 2>/dev/null; then
@@ -1361,6 +1369,10 @@ _stop_daemon() {
 }
 
 _stop_daemon "rosbag" "/tmp/rosbag.pid" "INT" "INT/30/KILL/5"
+# The recordings' message definitions, beside each bag, while the types are installed here.
+if [ -f /config/dump_message_definitions.py ]; then
+    python3 /config/dump_message_definitions.py "${1:-${SCENARIO_OUTPUT_DIR:-/out}}" || true
+fi
 _stop_daemon "monitor" "/tmp/monitor.pid" "TERM" "TERM/10/KILL/5"
 echo "[cleanup] Cleanup finished."
 CLEANUP_EOF
@@ -1671,6 +1683,11 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     monitor_src = str(files('robovast.execution.data').joinpath('monitor_resources.py'))
     shutil.copy2(monitor_src, os.path.join(campaign_transient_dir, 'monitor_resources.py'))
 
+    # The definitions writer the scenario container runs at the end of a run, beside each bag
+    # (see its module docstring): mounted at /config like the monitor.
+    definitions_src = str(files('robovast.execution.data').joinpath(DEFINITIONS_SCRIPT))
+    shutil.copy2(definitions_src, os.path.join(campaign_transient_dir, DEFINITIONS_SCRIPT))
+
     # Copy rosbag processing scripts into _transient/ for host-side post-run processing
     for script_name in ('rosbags_process.py', 'rosbags_common.py', 'ros2_exec.sh'):
         src = str(files('robovast.results_processing.data').joinpath(script_name))
@@ -1952,7 +1969,7 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 #: beside the code that writes it so the two cannot drift.
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
-    "collect_sysinfo.py", "monitor_resources.py",
+    "collect_sysinfo.py", "monitor_resources.py", DEFINITIONS_SCRIPT,
     "rosbags_process.py", "rosbags_common.py", "ros2_exec.sh",
     "configurations.yaml", JOB_LINKS_MANIFEST,
     "scenario.config", "scenario.params.yaml",

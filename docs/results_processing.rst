@@ -254,6 +254,13 @@ recorded topics and message counts). It is present only when the scenario
 records a bag, and is distinct from the separate, job-level ``/rosout``
 recording under ``_jobs/job-N/logs/``.
 
+Every bag directory also holds ``message_definitions.json``: the full definition of each type
+it recorded, written by the run's own container at its end, where the types are installed.
+rosbag2 embeds most definitions in the recording itself but none for an action-derived type
+(an action's ``_FeedbackMessage``), so this file is what lets such a topic be decoded where
+the system under test is not installed -- by ``robovast-decode`` (:doc:`architecture`), on
+any machine with Python.
+
 .. _run-clock:
 
 One clock per run
