@@ -178,7 +178,7 @@ Afterwards, read the results in the browser (``vast ui``, against a running serv
 Working across the distributions
 --------------------------------
 
-RoboVAST is four packages in one checkout (see :ref:`architecture-distributions`), which
+RoboVAST is several packages in one checkout (see :ref:`architecture-distributions`), which
 changes two things about the development loop. Both have bitten; both are silent.
 
 **Install the client last.** ``robovast-client`` is a *non-optional path dependency* of

@@ -43,7 +43,8 @@ venv: venv/.robovast_installed
 venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.toml \
                           src/robovast_sim_roqsim/pyproject.toml \
                           src/robovast_cluster/pyproject.toml \
-                          src/robovast_client/pyproject.toml
+                          src/robovast_client/pyproject.toml \
+                          src/robovast_decode/pyproject.toml
 	@if [ ! -d venv ]; then \
 		echo "Creating virtual environment..."; \
 		python3 -m venv venv; \
@@ -73,6 +74,7 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \
 		&& pip install -e src/robovast_cluster \
+		&& pip install -e src/robovast_decode \
 		&& pip install -e src/robovast_client
 
 	@touch venv/.robovast_installed
