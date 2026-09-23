@@ -1663,6 +1663,10 @@ class LocalTransport(RobovastInterface):
                            package_version=_package_version(),
                            built_at=_build_date(), backend="docker",
                            can_build_images=True,
+                           # The same flag `_admit_scheduling` refuses on, so what a client
+                           # is offered and what the service accepts cannot disagree. The
+                           # cluster lane inherits this line with its own flag set.
+                           can_schedule=self._SUPPORTS_SCHEDULING,
                            results_root=str(self._campaigns_root()),
                            sources_root=str(self.store.registry.root),
                            web_base=self._declared_web_base())

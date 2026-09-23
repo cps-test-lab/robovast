@@ -4387,6 +4387,17 @@
             ],
             "title": "Can Build Images"
           },
+          "can_schedule": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Can Schedule"
+          },
           "code_revision": {
             "default": "",
             "title": "Code Revision",
@@ -4490,6 +4501,7 @@
           "build_unavailable",
           "built_at",
           "can_build_images",
+          "can_schedule",
           "code_revision",
           "in_pod",
           "kube_context",

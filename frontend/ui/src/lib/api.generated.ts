@@ -4441,6 +4441,8 @@ export interface components {
             built_at: string;
             /** Can Build Images */
             can_build_images: boolean | null;
+            /** Can Schedule */
+            can_schedule: boolean | null;
             /**
              * Code Revision
              * @default

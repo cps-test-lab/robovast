@@ -207,6 +207,11 @@ def info(namespace, context):
     click.echo(f"  api       {version.api_version}")
     if version.backend:
         click.echo(f"  lane      {version.backend}")
+    # Only when the service said: an older one has no verdict, and printing "none" for it
+    # would claim a lane without a queue that may well have one.
+    if version.can_schedule is not None:
+        click.echo("  queue     " + ("priority and pause" if version.can_schedule
+                                     else "none (one campaign at a time)"))
     if version.kube_context:
         source = f" ({version.kube_context_source})" if version.kube_context_source else ""
         click.echo(f"  context   {version.kube_context}{source}")

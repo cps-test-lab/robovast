@@ -19,3 +19,15 @@ export function priorityInputError(typed: string): string | null {
   const t = typed.trim()
   return t && Number.isInteger(Number(t)) ? null : 'Priority must be a whole number.'
 }
+
+/** Whether to offer the priority and pause entries on a running campaign.
+ *
+ * Only on a service that says its lane queues campaigns against each other (`can_schedule`); a
+ * lane that runs one campaign at a time refuses both, and an entry that can only be refused is a
+ * capability advertised that the caller cannot use. Not offered while the answer is unknown --
+ * the version not read yet, or a service with no verdict -- for the same reason. */
+export function offersQueueControls(
+  version: { can_schedule?: boolean | null } | undefined,
+): boolean {
+  return version?.can_schedule === true
+}

@@ -61,7 +61,7 @@ import { useToasts } from '@/components/ToastProvider'
 import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
-import { priorityInputError, priorityLabel } from '@/lib/queueStanding'
+import { offersQueueControls, priorityInputError, priorityLabel } from '@/lib/queueStanding'
 import {
   NO_CAMPAIGN_FILTER,
   campaignFilterIsEmpty,
@@ -311,7 +311,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // A refusal the service returns rather than raises (the busy guard, mostly). Kept a
       // warning, as it was on the card: it is an expected answer, not a fault.
-      if (!res.ok) {
+      if (res && !res.ok) {
         notify({ severity: 'warning', key: `stop:${id}`, message: 'Stop had no effect.',
                  note: res.message || undefined })
       }
@@ -335,7 +335,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['jobs', id] })
       qc.invalidateQueries({ queryKey: ['status', id] })
-      if (!res.ok) {
+      if (res && !res.ok) {
         notify({ severity: 'warning', key: `stopjob:${id}`,
                  message: 'Stopping the job had no effect.', note: res.message || undefined })
       }
@@ -459,7 +459,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // A partial delete is answered, not raised: an error, because what is left still takes
       // the space, and the message names the path that could not be removed.
-      if (!res.ok) {
+      if (res && !res.ok) {
         notify({ severity: 'error', key: `delete:${id}`, message: `${id} was not fully deleted.`,
                  note: res.message || undefined })
         return
@@ -545,7 +545,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // Accepting the export says nothing this page does not already show — the phase chip is
       // live — so only a refusal is worth saying.
-      if (!res.ok) {
+      if (res && !res.ok) {
         notify({ severity: 'warning', key: `share:${id}`,
                  message: 'Upload-to-share had no effect.', note: res.message || undefined })
       }
@@ -827,10 +827,20 @@ function CampaignCard({ summary, newest, openedByLink }: {
         ) : null,
   ].filter(Boolean)
 
+  // Whether this service's lane has a queue to order. Shared with the admin page's reading by
+  // key, and asked only for a running card, the only one that offers the entries it gates.
+  const serviceVersion = useQuery({
+    queryKey: ['version'],
+    queryFn: robovast.version,
+    enabled: running,
+    staleTime: 5 * 60_000,
+  })
+
   // Only while it runs, and the mirror image of `actItems`: these change what the campaign
   // does NEXT without touching what it has produced, which is what makes them safe on a live
-  // campaign. A finished campaign has no standing with the queue to set.
-  const queueItems = running
+  // campaign. A finished campaign has no standing with the queue to set, and a lane that runs
+  // one campaign at a time has no queue at all (`can_schedule`).
+  const queueItems = running && offersQueueControls(serviceVersion.data)
     ? [
         <MenuItem key="priority" onClick={onSetPriority} disabled={setScheduling.isPending}>
           <ListItemIcon><LowPriorityRoundedIcon fontSize="small" /></ListItemIcon>

@@ -121,9 +121,11 @@ It provides four views:
   actions menu — **Set queue priority…** (the field starts at the current value, and only a
   whole number is accepted) and **Pause admitting new runs** / **Resume admitting runs** —
   the same operation as ``vast campaign priority|pause|resume``
-  (:ref:`cluster-admission`). A change is confirmed by a notice carrying the service's own
-  answer, the priority the campaign now has and that runs already started are unaffected; a
-  service on the local Docker lane has no queue and refuses, and that refusal is the notice.
+  (:ref:`cluster-admission`). The entries appear only on a lane with a queue, which the
+  service reports as ``can_schedule`` in ``/version``: the local Docker lane runs one
+  campaign at a time, has nothing to order, and so offers neither. A change is confirmed by a
+  notice carrying the service's own answer, the priority the campaign now has and that runs
+  already started are unaffected.
   The phase reflects the whole lifecycle, including its two pre-run steps:
   ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign

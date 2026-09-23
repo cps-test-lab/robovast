@@ -3,7 +3,7 @@
 // Scope is deliberately narrow -- see the testing convention in docs/developer_guide.rst.
 
 import { describe, expect, it } from 'vitest'
-import { priorityInputError, priorityLabel } from './queueStanding'
+import { offersQueueControls, priorityInputError, priorityLabel } from './queueStanding'
 
 describe('priorityLabel', () => {
   it('is null at the default rank', () => {
@@ -25,5 +25,17 @@ describe('priorityInputError', () => {
   })
   it('refuses fractions and text', () => {
     for (const v of ['1.5', 'high', '2x']) expect(priorityInputError(v)).not.toBeNull()
+  })
+})
+
+describe('offersQueueControls', () => {
+  it('offers them only on a lane that says it queues campaigns', () => {
+    expect(offersQueueControls({ can_schedule: true })).toBe(true)
+    expect(offersQueueControls({ can_schedule: false })).toBe(false)
+  })
+  it('does not offer them while the answer is unknown', () => {
+    expect(offersQueueControls(undefined)).toBe(false)
+    expect(offersQueueControls({ can_schedule: null })).toBe(false)
+    expect(offersQueueControls({})).toBe(false)
   })
 })
