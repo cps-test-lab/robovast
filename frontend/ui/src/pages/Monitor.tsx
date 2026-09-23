@@ -108,17 +108,18 @@ const PostprocessingDialog = lazyView('Postprocessing settings',
 // the one thing this column must never be the reason a reader cannot see.
 const ID_COLUMN = 360
 
-// The trailing controls' column: the actions menu, the fold, and on a live card the Stop button.
-// Reserved rather than shrink-to-fit because not every card has every control — a campaign still
-// building has no actions menu — and without a fixed width those rows pull their meter and age
-// sideways out of line with every other row.
+// The trailing controls' column: the actions menu, the fold, on a live card the Stop button, and
+// on a card with something to replay the Run-view shortcut. Reserved rather than shrink-to-fit
+// because not every card has every control — a campaign still building has no actions menu — and
+// without a fixed width those rows pull their meter and age sideways out of line with every other
+// row.
 //
-// Sized for the WIDEST set (three small icon buttons and the two gaps between them), not the
-// common one. A minimum that the busiest row exceeds is not a reserved column at all: the stack
-// then sizes to its content, and anything that comes and goes inside it moves the whole flexible
-// span to its left. That is what a per-poll fetch spinner did here — it appeared and vanished
-// every 1.5 s on a running card and walked the age back and forth beside it.
-const CONTROLS_COLUMN = 108
+// Sized for the WIDEST set (four small icon buttons and the three gaps between them: a running
+// campaign that can be previewed has all four), not the common one. A minimum that the busiest
+// row exceeds is not a reserved column at all: the stack then sizes to its content, and anything
+// that comes and goes inside it moves the whole flexible span to its left — a per-poll spinner
+// appearing and vanishing beside a running card walks the age back and forth every poll.
+const CONTROLS_COLUMN = 146
 
 // The age column. Fixed and right-aligned so the ages read down the page as one column; wide
 // enough for the longest string formatAge produces.
@@ -725,6 +726,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   // A finished campaign still has to have recorded runs; a previewed one must not be asked, for
   // the reason above.
   const canReplay = (canExplore && hasRecordedRuns(summary)) || previewing
+  // Named a preview wherever it is offered, so neither the button nor the menu promises the
+  // finished article and then hands over one panel.
+  const runViewLabel = previewing ? 'Open in Run View (preview)' : 'Open in Run View'
 
   // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
@@ -805,9 +809,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     canReplay ? (
       <MenuItem key="runview" onClick={() => { closeMenu(); openResultsView('run', id) }}>
         <ListItemIcon><RunViewIcon fontSize="small" /></ListItemIcon>
-        {/* Named a preview in the label as well as at the destination, so the menu does not promise
-            the finished article and then hand over one panel. */}
-        <ListItemText>{previewing ? 'Open in Run View (preview)' : 'Open in Run View'}</ListItemText>
+        <ListItemText>{runViewLabel}</ListItemText>
       </MenuItem>
     ) : null,
   ].filter(Boolean)
@@ -1186,9 +1188,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           ) : null}
         </Stack>
         {/* The controls, as a right-aligned column of their own. A fixed minimum, because which
-            of them exist varies per campaign — a stopped one has no Explorer or Run-view
-            shortcut — and without a column those two rows pushed their timestamp and meter
-            sideways, which is exactly the jitter the fixed id column exists to prevent. A minimum
+            of them exist varies per campaign — one with nothing to replay has no Run-view
+            shortcut — and without a column such a row pushes its timestamp and meter sideways,
+            which is exactly the jitter the fixed id column exists to prevent. A minimum
             rather than a fixed width so a running card's wider Stop button can still grow. */}
         <Stack
           direction="row"
@@ -1199,6 +1201,22 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           // instead (`claim`), which is the smallest thing that is not the fold.
           sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
         >
+        {/* Leftmost, so the controls every card shares keep their place whether or not it is
+            there. The one open-something entry that is also a button: replaying a run is what a
+            reader of a finished campaign most often came for, and it is offered only where there
+            is a run (or a preview) to replay — the same `canReplay` gate as its menu entry, which
+            stays so the menu still lists everything that can be opened. */}
+        {canReplay ? (
+          <Tooltip title={runViewLabel}>
+            <IconButton
+              size="small"
+              aria-label="open run view"
+              onClick={claim(() => openResultsView('run', id))}
+            >
+              <RunViewIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
         {/* Left of the menu, and an icon like everything else in this column: a labelled button
             here was the one control wide enough to set the column's width, so a live card's
             meter and age sat out of line with every folded row beneath it. The word moves to the
@@ -1226,11 +1244,12 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
             </IconButton>
           </Tooltip>
         ) : null}
-        {/* One menu, not a row of shortcuts. Config, Explorer, Run-view, Download and the actions
-            were five to seven icon buttons wide depending on the campaign — a bar of small
-            same-sized glyphs that has to be learnt before it can be used, on every row of a list
-            whose rows are meant to be scanned. In here each one is a named line instead, and the
-            row keeps two controls: this, and the fold.
+        {/* One menu, not a row of shortcuts. Config, Explorer, Run view, Download and the
+            actions as icon buttons would be five to seven wide depending on the campaign — a bar
+            of small same-sized glyphs that has to be learnt before it can be used, on every row
+            of a list whose rows are meant to be scanned. In here each one is a named line
+            instead; beside the menu and the fold, the row keeps only the Run-view shortcut and a
+            live card's Stop, the two actions worth a single click.
 
             Ordered by what the reader came for: open something, take something away, re-run
             something, destroy something. Every entry is conditional, so the button is only

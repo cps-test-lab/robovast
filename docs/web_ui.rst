@@ -1344,11 +1344,14 @@ postprocessed (the same gate the Results tab itself applies), and **Open in Run
 view** only if the campaign also recorded runs to replay. The Run view's entry appears
 **while the campaign is still running** too, reading **Open in Run View (preview)** — it leads to a
 replay of the runs that have already finished (see :ref:`run-view-preview`), and it is the only
-route to one, since the jobs list above drops a run as soon as it completes. They are named lines in a menu rather
-than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
-same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
-step, so **Back** always returns to where you came from in one press; a jump *between* views is a
-real step, so Back returns to the view you left.
+route to one, since the jobs list above drops a run as soon as it completes. The Run view is
+also a play-icon button on the card itself, first among its controls, shown under the same condition as
+its menu entry, folded or open: replaying a run is what a reader most often opens a campaign
+for. Everything else stays a named line in the menu rather than a row of icon buttons: a list
+whose rows are meant to be scanned cannot also carry five same-sized glyphs per row that have to
+be learnt before they can be used. Changing the selection inside a view updates the URL without
+adding a browser-history step, so **Back** always returns to where you came from in one press; a
+jump *between* views is a real step, so Back returns to the view you left.
 
 .. _web-ui-campaign-config:
 
