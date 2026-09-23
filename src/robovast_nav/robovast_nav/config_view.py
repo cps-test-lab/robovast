@@ -27,9 +27,8 @@ obstacle variation adds boxes along it -- and the reading of a resolved configur
 (which key holds the goals, how a pose is shaped) is the same for all of them.
 """
 
-from typing import Optional
-
-from robovast.common.scene_markers import ConfigViewContribution, SceneMarker
+from robovast.common.scene_markers import (ConfigViewContribution, SceneMarker, read_pose,
+                                           read_xy)
 
 from .object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
 
@@ -46,36 +45,6 @@ RASTER_COLOR = "#94a3b8"
 #: spawner-only path (a Gazebo-style campaign binding ``objects`` but not ``instances``),
 #: where the extents genuinely are not in the configuration.
 _FALLBACK_BOX = [0.5, 0.5, 1.0]
-
-
-def _xy(value) -> Optional[list]:
-    """``[x, y]`` from a Position/Point-ish mapping or object, else ``None``."""
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        x, y = value.get("x"), value.get("y")
-    else:
-        x, y = getattr(value, "x", None), getattr(value, "y", None)
-    if x is None or y is None:
-        return None
-    return [float(x), float(y)]
-
-
-def _pose(value) -> tuple[Optional[list], Optional[float]]:
-    """``([x, y], yaw)`` from a Pose-ish mapping or object."""
-    if value is None:
-        return None, None
-    position = value.get("position") if isinstance(value, dict) else getattr(value, "position", None)
-    orientation = (value.get("orientation") if isinstance(value, dict)
-                   else getattr(value, "orientation", None))
-    yaw = None
-    if orientation is not None:
-        yaw = (orientation.get("yaw") if isinstance(orientation, dict)
-               else getattr(orientation, "yaw", None))
-    # A bare position (no `position:` wrapper) is what a hand-written `.vast` pose looks
-    # like, so accept it rather than silently drawing nothing.
-    return _xy(position) if position is not None else _xy(value), (
-        float(yaw) if yaw is not None else None)
 
 
 def _as_list(value) -> list:
@@ -95,19 +64,19 @@ def path_markers(config: dict) -> list[SceneMarker]:
     markers: list[SceneMarker] = []
     params = config.get("config") or {}
 
-    points = [p for p in (_xy(p) for p in (config.get("_path") or [])) if p]
+    points = [p for p in (read_xy(p) for p in (config.get("_path") or [])) if p]
     if points:
         markers.append(SceneMarker(kind="path", points=points, color=PATH_COLOR,
                                    label="planned path"))
 
-    start_pos, start_yaw = _pose(params.get("start_pose"))
+    start_pos, start_yaw = read_pose(params.get("start_pose"))
     if start_pos:
         markers.append(SceneMarker(kind="pose", pos=start_pos, yaw=start_yaw,
                                    color=START_COLOR, label="start"))
 
     goals = _as_list(params.get(config.get("_goal_parameter_name")))
     for i, goal in enumerate(goals):
-        pos, yaw = _pose(goal)
+        pos, yaw = read_pose(goal)
         if pos:
             markers.append(SceneMarker(
                 kind="pose", pos=pos, yaw=yaw, color=GOAL_COLOR,
@@ -116,7 +85,7 @@ def path_markers(config: dict) -> list[SceneMarker]:
     # The candidate grid a rasterized path search sampled from. Drawn small and faint: it
     # is context for why the path went where it did, not a result.
     for point in (config.get("_raster_points") or []):
-        pos = _xy({"x": point[0], "y": point[1]}) if isinstance(point, (list, tuple)) else _xy(point)
+        pos = read_xy({"x": point[0], "y": point[1]}) if isinstance(point, (list, tuple)) else read_xy(point)
         if pos:
             markers.append(SceneMarker(kind="point", pos=pos, color=RASTER_COLOR))
 
@@ -147,7 +116,7 @@ def obstacle_markers(config: dict) -> list[SceneMarker]:
 
     for obstacle in objects:
         entry = obstacle if isinstance(obstacle, dict) else _as_dict(obstacle)
-        pos, yaw = _pose(entry.get("spawn_pose"))
+        pos, yaw = read_pose(entry.get("spawn_pose"))
         if not pos:
             continue
         declared = instances.get(entry.get("entity_name")) or {}
@@ -235,7 +204,7 @@ def trigger_contribution(config: dict) -> ConfigViewContribution:
     to know that name.
     """
     contribution = obstacle_contribution(config)
-    pos = _xy(config.get("_spawn_trigger_point"))
+    pos = read_xy(config.get("_spawn_trigger_point"))
     if pos:
 # pydantic field; pylint sees the FieldInfo
         # pylint: disable-next=no-member
