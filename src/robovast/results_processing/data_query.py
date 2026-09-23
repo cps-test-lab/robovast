@@ -788,12 +788,17 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
 
 
 def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
-    """Yield the same ``SELECT`` as CSV text, batch by batch and with **no row cap**.
+    """The same ``SELECT`` as CSV text, batch by batch and with **no row cap**.
 
     :func:`query_data_db` clamps rows because its result is a JSON payload someone has to
     hold; this is the way out for a caller who wants the data. Same engine, same fence, so
     it is exactly as read-only. Cells are **not** width-capped: that cap keeps a JSON reply
     readable, and truncating an exported value would corrupt the export.
+
+    The statement is checked and run **before** this returns, so a refused or invalid query
+    raises :class:`DataQueryError` to the caller -- which a route turns into a 400 -- rather
+    than from inside a response whose status line has already been sent. The returned
+    iterator yields the rows.
     """
     engine = _engine(campaign_dir, campaign_id)
     stack = ExitStack()
@@ -802,6 +807,10 @@ def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
     except (QueryError, FileNotFoundError) as exc:
         stack.close()
         raise DataQueryError(str(exc)) from exc
+    return _csv_batches(con, stack)
+
+
+def _csv_batches(con, stack: ExitStack):
     with stack:
         buffer = io.StringIO()
         writer = csv.writer(buffer)
@@ -820,6 +829,7 @@ def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
                 return
             writer.writerows(batch)
             yield _flush()
+
 
 __all__ = ["CampaignConnection", "DataQueryError", "Row", "campaign_id_of", "describe_data_db",
            "open_data_db", "query_data_db", "stream_query_csv"]

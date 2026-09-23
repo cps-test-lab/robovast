@@ -179,6 +179,21 @@ campaigns as one (every row keeps its ``campaign_id``), and a downloaded ``.tar.
 its directory does, extracted beside it on first use. ``read_table(path, name)`` and
 ``read_runs(path)`` are the one-line forms.
 
+A campaign on a service opens by its URL, without downloading it:
+
+.. code-block:: python
+
+   c = Campaign("https://<service>/campaigns/<campaign_id>", token="<token>")
+   c.runs
+   c.table("poses", config="cfg-3", run=0)
+   c.sql("SELECT config_name, count(*) FROM poses GROUP BY 1")
+
+The service builds what each call names from the campaign's records, as it does for the web UI,
+and sends the answer as CSV. ``vast service token`` prints the token it accepts. Three things
+differ from a campaign on disk: the columns are typed by pandas from the CSV, a query takes no
+parameters, and ``config()`` is refused, because the service does not serve a configuration's
+files through these routes.
+
 Reading a campaign's own record
 -------------------------------
 
