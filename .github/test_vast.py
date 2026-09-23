@@ -62,33 +62,19 @@ def run_command(cmd, repo_root, cwd=None, check=True, stream_output=False):
     return result.returncode
 
 
-def check_results_dir_structure(results_dir):  # pylint: disable=too-many-return-statements
-    """Check that the results directory has the expected structure."""
-    output_path = Path(results_dir)
-    
-    if not output_path.exists():
-        print(f"✗ Results directory does not exist: {results_dir}")
+def check_campaign_dir_structure(campaign_dir):  # pylint: disable=too-many-return-statements
+    """Check that one campaign's directory has the expected structure.
+
+    The campaign's own directory rather than a results root to search: on a cluster every
+    workflow of a run lands under the service's one results volume, so "the first campaign
+    directory found" would be whichever ran first, not the one just launched.
+    """
+    first_run = Path(campaign_dir)
+
+    if not first_run.is_dir():
+        print(f"✗ Campaign directory does not exist: {campaign_dir}")
         return False
-    
-    print(f"✓ Results directory exists: {results_dir}")
-    
-    # List contents
-    contents = list(output_path.iterdir())
-    print(f"  Contents: {[c.name for c in contents]}")
-    
-    # Check for campaign directories (prefer campaign-*, but accept legacy run-*)
-    campaign_dirs = [
-        d for d in contents
-        if d.is_dir() and (d.name.startswith('campaign-') or d.name.startswith('growth-sim-'))
-    ]
-    if not campaign_dirs:
-        print("✗ No campaign or run directories found (expected campaign-* or growth-sim-* directories)")
-        return False
-    
-    print(f"✓ Found {len(campaign_dirs)} campaign directory/directories")
-    
-    # Check structure of first campaign directory
-    first_run = campaign_dirs[0]
+
     print(f"  Checking structure of {first_run.name}:")
     
     # Look for expected files/directories in campaign directory
@@ -234,15 +220,34 @@ def check_job_directories(campaign_dir):
     return True
 
 
-def capture_command(cmd, repo_root, cwd=None):
-    """Run a command and return ``(exit_code, stdout)``, without raising."""
-    print(f"Running: {cmd}")
+def _scrub(text, secret=None):
+    """*text* with an access token blanked: a known *secret* by value, and anything that
+    follows ``token=`` or ``--token`` by shape.
+
+    A deployment mints its token and prints a login URL carrying it, a login prints it
+    back in the curl line it suggests, and the service log may repeat it. A CI cluster dies
+    with the runner, so a leak is short-lived, but a CI log is kept longer than that.
+    """
+    if secret:
+        text = text.replace(secret, "<scrubbed>")
+    return re.sub(r"(token[=\s]+)\S+", r"\1<scrubbed>", text)
+
+
+def capture_command(cmd, repo_root, cwd=None, secret=None, quiet=False):
+    """Run a command and return ``(exit_code, stdout)``, without raising.
+
+    *secret* is a value that must not reach the log: the command line is echoed with it
+    blanked, and the output stays with the caller, since a login prints the token back in
+    the curl line it suggests. *quiet* keeps the output with the caller for the same
+    reason when the output itself is the secret, as reading the token back is.
+    """
+    print(f"Running: {_scrub(cmd, secret)}")
     result = subprocess.run(
         ['poetry', 'run', '--directory', str(repo_root),
          'bash', '-c', f'cd {cwd} && {cmd}'],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
     )
-    if result.stdout:
+    if result.stdout and secret is None and not quiet:
         sys.stdout.write(result.stdout)
         sys.stdout.flush()
     return result.returncode, result.stdout or ""
@@ -360,7 +365,7 @@ class LocalService:
                     f"its log follows:\n{self._read_log()}")
             code, _ = capture_command(
                 f"vast login {url} --token {token} --name ci --no-link",
-                self.repo_root, cwd=self.cwd)
+                self.repo_root, cwd=self.cwd, secret=token)
             if code == 0:
                 print("✓ robovast-service is answering, and this client is logged in")
                 # Now that there are credentials, doctor can say what it was going to say.
@@ -408,6 +413,173 @@ class LocalService:
         return False
 
 
+class ClusterSession:
+    """A ``robovast-service`` deployed into a Kubernetes cluster, for the length of the script.
+
+    The cluster lane runs only inside a cluster -- a campaign's pods deliver their outputs
+    to the service over the cluster network -- so the service is deployed *into* the
+    cluster the caller names (``--context``) with ``vast cluster setup``, and reached from
+    here through a ``kubectl port-forward`` on the conventional port, which every client
+    finds. One deployment serves every workflow of a run: unlike a local service, which
+    each workflow started afresh with its own results directory, every campaign lands
+    under the service's one results volume, so a workflow is told its campaign's directory
+    rather than left to find "the" campaign under a root.
+
+    That volume is a directory on the node (``--data-root``). The caller mounts a host
+    directory there when creating the cluster -- kind's ``extraMounts``, minikube's
+    ``--mount`` -- and names the host side as ``--data-mount``, which is where this script
+    reads results from. The files arrive owned by the pods' user, so a step that must
+    *write* under them chowns first.
+
+    Images: ``--image`` sets ``ROBOVAST_PROJECT`` and ``ROBOVAST_PROJECT_TAG`` before setup
+    runs, so the service pod, the sidecars and the campaign containers all come from the
+    same family at the same tag. The cluster's kubelet has no registry login of its own,
+    so a private registry needs ``ROBOVAST_REGISTRY_SERVER`` / ``_USERNAME`` / ``_PASSWORD``
+    in the environment; setup turns them into the pull Secret every pod uses.
+    """
+
+    def __init__(self, repo_root, cwd, context, namespace, data_root, data_mount,
+                 cluster_config):
+        self.repo_root = repo_root
+        self.cwd = cwd
+        self.context = context
+        self.namespace = namespace
+        self.data_root = data_root
+        self.cluster_config = cluster_config
+        self.results_dir = os.path.join(data_mount, "results")
+        self.pf = None
+        self.pf_log = None
+        self.ready = False
+        self.token = None
+
+    # A workflow enters the session; the session outlives it.
+    def __enter__(self):
+        self.ensure_ready()
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def ensure_ready(self):
+        if self.ready:
+            return
+        os.environ['ROBOVAST_CONFIG'] = os.path.join(self.cwd, 'robovast-login.json')
+        LocalService._refuse_a_foreign_service(self)  # the same port, the same reason
+        self._setup()
+        self._wait_for_rollout()
+        self._port_forward()
+        self._login()
+        self.ready = True
+
+    def _kubectl(self, *args, timeout=300):
+        return subprocess.run(['kubectl', '--context', self.context, '-n', self.namespace,
+                               *args], capture_output=True, text=True, check=False,
+                              timeout=timeout)
+
+    def _setup(self):
+        """Deploy (or, with ``--force``, re-deploy) the service into the cluster.
+
+        ``--force`` so the script can be run twice against the same cluster; a fresh CI
+        cluster has nothing to force. ``--no-performance-governor``: that step wants to set
+        the nodes' CPU governor, which a container node has none of.
+        """
+        cmd = (f"vast cluster setup {self.cluster_config} --context {self.context} "
+               f"-n {self.namespace} --data-root {self.data_root} "
+               f"--no-performance-governor --force")
+        print(f"Deploying: {cmd}")
+        code, out = capture_command(cmd, self.repo_root, cwd=self.cwd)
+        with open(os.path.join(self.cwd, 'cluster-setup.log'), 'w', encoding='utf-8') as fh:
+            fh.write(_scrub(out))
+        if code != 0:
+            raise RuntimeError(f"vast cluster setup exited {code}; its output follows:\n"
+                               f"{_scrub(out)[-4000:]}")
+        print("✓ robovast-service deployed")
+
+    def _wait_for_rollout(self, timeout=300):
+        res = self._kubectl('rollout', 'status', 'deployment/robovast-service',
+                            f'--timeout={timeout}s', timeout=timeout + 30)
+        if res.returncode != 0:
+            raise RuntimeError(f"the service Deployment did not roll out:\n{res.stdout}"
+                               f"{res.stderr}\n{self._diagnostics()}")
+        print("✓ robovast-service rolled out")
+
+    def _token(self):
+        code, out = capture_command(
+            f"vast service token -q -x {self.context} -n {self.namespace}",
+            self.repo_root, cwd=self.cwd, quiet=True)
+        if code != 0 or not out.strip():
+            raise RuntimeError("could not read the deployed access token back")
+        self.token = out.strip().splitlines()[-1]
+        return self.token
+
+    def _port_forward(self):
+        from robovast.service.interface import DEFAULT_PORT
+
+        self.pf_log = open(os.path.join(self.cwd, 'port-forward.log'), 'w', encoding='utf-8')
+        self.pf = subprocess.Popen(
+            ['kubectl', '--context', self.context, '-n', self.namespace, 'port-forward',
+             'svc/robovast-service', f'{DEFAULT_PORT}:{DEFAULT_PORT}'],
+            stdout=self.pf_log, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+
+    def _login(self, timeout=120):
+        from robovast.service.interface import DEFAULT_PORT
+
+        url = f"http://127.0.0.1:{DEFAULT_PORT}"
+        token = self._token()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.pf.poll() is not None:
+                raise RuntimeError(f"the port-forward exited with {self.pf.returncode}")
+            code, _ = capture_command(
+                f"vast login {url} --token {token} --name ci --no-link",
+                self.repo_root, cwd=self.cwd, secret=token)
+            if code == 0:
+                print("✓ robovast-service is answering through the port-forward, and this "
+                      "client is logged in")
+                capture_command('vast doctor', self.repo_root, cwd=self.cwd)
+                return
+            time.sleep(3)
+        raise RuntimeError(f"the service did not answer within {timeout}s\n"
+                           f"{self._diagnostics()}")
+
+    def _diagnostics(self):
+        pods = self._kubectl('get', 'pods', '-o', 'wide', timeout=60)
+        events = self._kubectl('get', 'events', '--sort-by=.lastTimestamp', timeout=60)
+        return (f"--- pods ---\n{pods.stdout}{pods.stderr}\n"
+                f"--- events (tail) ---\n{events.stdout[-3000:]}{events.stderr}")
+
+    def close(self):
+        """Stop the port-forward and surface the service log, whatever happened."""
+        if self.pf is not None and self.pf.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.pf.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                self.pf.send_signal(signal.SIGTERM)
+            try:
+                self.pf.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self.pf.kill()
+        if self.pf_log is not None:
+            self.pf_log.close()
+        if self.ready or self.pf is not None:
+            log = self._kubectl('logs', 'deployment/robovast-service', '--all-containers',
+                                '--tail=150', timeout=60)
+            print("--- robovast-service log (tail) ---")
+            print(_scrub(log.stdout + log.stderr, self.token))
+
+
+#: The cluster session of this run, when ``--context`` named one; ``None`` runs the
+#: workflows on a local service started per workflow.
+_CLUSTER = None
+
+
+def service_context(repo_root, results_dir, cwd):
+    """The service a workflow runs through: the run's cluster deployment, or a local one."""
+    if _CLUSTER is not None:
+        return _CLUSTER
+    return LocalService(repo_root, results_dir, cwd)
+
+
 def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
     """Test the complete workflow: serve -> workspace init -> workspace run -> postprocess.
 
@@ -415,6 +587,10 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
     takes: a campaign runs a *workspace's* project through a service. It used to call
     ``vast exec local run``, an in-process Docker lane with no service and no workspace,
     which no longer exists -- and which tested a path the documentation did not describe.
+
+    Returns the campaign's directory on success, ``None`` on failure: on a cluster every
+    workflow's campaign lands under one results root, so the caller comparing two of them
+    needs to be told which is which.
     """
     print("\n" + "="*60)
     print("Testing: Complete VAST workflow")
@@ -431,7 +607,7 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
 
     if not config_path.exists():
         print(f"✗ Config file not found: {config_path}")
-        return False
+        return None
 
     print(f"✓ Config file found: {config_path}")
 
@@ -439,7 +615,7 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
     workspace_name = f"citest-{project_dir.name}"
 
     try:
-        with LocalService(repo_root, results_dir, test_directory):
+        with service_context(repo_root, results_dir, test_directory) as service:
             # Step 1: push the workspace. A service cannot read the caller's disk, so
             # this is the one step that has to happen client-side.
             #
@@ -456,11 +632,11 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                 repo_root, cwd=test_directory)
             if code != 0:
                 print("✗ vast workspace init failed")
-                return False
+                return None
             workspace_id = _workspace_id_from_init(out)
             if not workspace_id:
                 print(f"✗ could not read the workspace id out of:\n{out}")
-                return False
+                return None
             print(f"✓ workspace pushed as {workspace_id}")
 
             # Step 2: validate before spending any compute. Reports every problem at
@@ -471,7 +647,7 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                 repo_root, cwd=test_directory, check=False)
             if code != 0:
                 print("✗ vast workspace validate failed")
-                return False
+                return None
             print("✓ project validates")
 
             # Step 3: launch, then wait for it as its own command. `vast campaign wait`
@@ -487,11 +663,11 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
             code, out = capture_command(cmd_run, repo_root, cwd=test_directory)
             if code != 0:
                 print("✗ vast workspace run failed")
-                return False
+                return None
             campaign_id = _campaign_id_from_launch(out)
             if not campaign_id:
                 print(f"✗ could not read the campaign id out of:\n{out}")
-                return False
+                return None
             print(f"✓ launched {campaign_id}")
 
             print("\n--- Step 4: vast campaign wait ---")
@@ -503,7 +679,7 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                 print(f"✗ vast campaign wait exited {code} "
                       "(1 failed/stopped, 2 timeout, 3 no phase, 4 stalled, "
                       "5 health finding)")
-                return False
+                return None
             print("✓ campaign finished")
 
             # Step 5: re-run postprocessing through the service. Inside the service
@@ -518,29 +694,31 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                                repo_root, cwd=test_directory)
             if code != 0:
                 print("✗ vast campaign postprocess failed")
-                return False
+                return None
             code = run_command(f"vast campaign wait {campaign_id}", repo_root,
                                cwd=test_directory, check=False, stream_output=True)
             if code != 0:
                 print(f"✗ wait after postprocess exited {code}")
-                return False
+                return None
             print("✓ postprocessing re-ran through the service")
 
-        # The service is down from here: this reads the results tree directly.
-        if not check_results_dir_structure(results_dir):
-            return False
+        # The results tree is read directly from here: a local service is down, and a
+        # cluster's results volume is mounted from the host.
+        campaign_dir = Path(service.results_dir) / campaign_id
+        if not check_campaign_dir_structure(campaign_dir):
+            return None
         print("✓ Output structure is valid")
 
         print("\n✓ Complete workflow succeeded!")
-        return True
+        return campaign_dir
 
     except subprocess.CalledProcessError as e:
         print(f"✗ Command failed with exit code {e.returncode}")
-        return False
+        return None
     except Exception as e:
         print(f"✗ Unexpected error: {e}")
         traceback.print_exc()
-        return False
+        return None
 
 
 def _workspace_id_from_init(output):
@@ -564,19 +742,6 @@ def _campaign_id_from_launch(output):
     return match.group(1) if match else ""
 
 
-def _find_campaign_dir(results_dir):
-    """Return the (single) campaign directory inside a results directory."""
-    output_path = Path(results_dir)
-    if not output_path.exists():
-        return None
-    for d in sorted(output_path.iterdir()):
-        if d.is_dir() and (
-            d.name.startswith('campaign-') or d.name.startswith('growth-sim-')
-        ):
-            return d
-    return None
-
-
 def _job_dirs(jobs_dir):
     """Return the ``job-N`` artifact directories under ``_jobs/``.
 
@@ -595,6 +760,11 @@ def _count_job_dirs(campaign_dir):
     return len(_job_dirs(jobs_dir))
 
 
+#: A job's parameter file, with or without a batch prefix: ``job-3.params.yaml``,
+#: ``batch-0-job-3.params.yaml``. Per job by construction, so per packing.
+_JOB_PARAMS = re.compile(r"(?:.+-)?job-\d+\.params\.yaml")
+
+
 def _collect_non_job_files(campaign_dir):
     """Collect campaign-relative file paths, excluding all job-specific artifacts.
 
@@ -604,7 +774,9 @@ def _collect_non_job_files(campaign_dir):
 
     - the ``_jobs/`` artifact tree,
     - the per-run ``job`` symlinks,
-    - the ``_transient/`` job bookkeeping (``job_links.yaml``, ``job-N.params.yaml``).
+    - the ``_transient/`` job bookkeeping: ``job_links.yaml`` and each job's
+      ``params.yaml``, which the cluster lane namespaces by batch
+      (``batch-0-job-N.params.yaml``) and so is matched by shape, not prefix.
     """
     result = set()
     for root, dirs, files in os.walk(campaign_dir, followlinks=False):
@@ -616,8 +788,10 @@ def _collect_non_job_files(campaign_dir):
         for fn in files:
             rel = os.path.relpath(os.path.join(root, fn), campaign_dir)
             parts = rel.split(os.sep)
-            # Skip per-job transient bookkeeping (job_links.yaml, job-N.params.yaml).
-            if parts[0] == '_transient' and fn.startswith('job'):
+            # Skip per-job transient bookkeeping: job_links.yaml, and a job's params
+            # file under whichever batch prefix the lane gives it.
+            if parts[0] == '_transient' and (
+                    fn == 'job_links.yaml' or _JOB_PARAMS.fullmatch(fn)):
                 continue
             result.add(rel)
     return result
@@ -682,7 +856,8 @@ def test_runs_per_job_packing(vast_file_path, test_directory, config=None, runs=
 
     # 1. Baseline: default packing (runs_per_job=1 → one job per run).
     print("\n--- Baseline run (runs_per_job=1) ---")
-    if not test_vast_workflow(vast_file_path, base_dir, config, run_count):
+    base_campaign = test_vast_workflow(vast_file_path, base_dir, config, run_count)
+    if base_campaign is None:
         print("✗ Baseline (runs_per_job=1) workflow failed")
         return False
 
@@ -693,7 +868,8 @@ def test_runs_per_job_packing(vast_file_path, test_directory, config=None, runs=
         config_path.write_text(
             _set_runs_per_job(original_text, 10), encoding="utf-8"
         )
-        if not test_vast_workflow(vast_file_path, packed_dir, config, run_count):
+        packed_campaign = test_vast_workflow(vast_file_path, packed_dir, config, run_count)
+        if packed_campaign is None:
             print("✗ Packed (runs_per_job=10) workflow failed")
             return False
     finally:
@@ -702,11 +878,6 @@ def test_runs_per_job_packing(vast_file_path, test_directory, config=None, runs=
 
     # 3. Compare the two campaign outputs.
     print("\n--- Comparing outputs ---")
-    base_campaign = _find_campaign_dir(os.path.join(base_dir, "results"))
-    packed_campaign = _find_campaign_dir(os.path.join(packed_dir, "results"))
-    if base_campaign is None or packed_campaign is None:
-        print("✗ Could not locate campaign directories for comparison")
-        return False
 
     base_jobs = _count_job_dirs(base_campaign)
     packed_jobs = _count_job_dirs(packed_campaign)
@@ -767,6 +938,41 @@ def main():
         type=int,
         default=None,
         help='Number of runs (passed as -r <runs> to vast workspace run)'
+    )
+    parser.add_argument(
+        '--context', '-x',
+        type=str,
+        default=None,
+        help='Run through a robovast-service deployed into this kubeconfig context '
+             '(vast cluster setup) instead of a local `vast serve`. Needs --data-root and '
+             '--data-mount.'
+    )
+    parser.add_argument(
+        '--namespace', '-n',
+        type=str,
+        default='default',
+        help='Namespace the service is deployed into (with --context)'
+    )
+    parser.add_argument(
+        '--data-root',
+        type=str,
+        default=None,
+        help='Node path the deployment keeps its data under (with --context); the '
+             'results volume is <data-root>/results on the node'
+    )
+    parser.add_argument(
+        '--data-mount',
+        type=str,
+        default=None,
+        help='Host path mounted at --data-root on the node, where this script reads the '
+             'results from (with --context)'
+    )
+    parser.add_argument(
+        '--cluster-config',
+        type=str,
+        default='minikube',
+        help='The `vast cluster setup` configuration: minikube is the one-node hostPath '
+             'deployment, which is what a kind node is too'
     )
     parser.add_argument(
         '--no-packing-test',
@@ -834,6 +1040,15 @@ def main():
         os.environ['ROBOVAST_PROJECT_TAG'] = tag
         print(f"Image family: {project}/<member>:{tag}")
 
+    global _CLUSTER  # pylint: disable=global-statement
+    if args.context:
+        if not (args.data_root and args.data_mount):
+            raise SystemExit("--context needs --data-root and --data-mount")
+        _CLUSTER = ClusterSession(repo_root, args.test_directory, args.context,
+                                  args.namespace, args.data_root, args.data_mount,
+                                  args.cluster_config)
+        print(f"Service: deployed into context {args.context}, namespace {args.namespace}")
+
     tests = [
         ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),
     ]
@@ -844,14 +1059,18 @@ def main():
         )
 
     results = []
-    for name, test_func, *test_args in tests:
-        try:
-            result = test_func(*test_args)
-            results.append((name, result))
-        except Exception as e:
-            print(f"✗ Test '{name}' raised exception: {e}")
-            traceback.print_exc()
-            results.append((name, False))
+    try:
+        for name, test_func, *test_args in tests:
+            try:
+                result = test_func(*test_args)
+                results.append((name, bool(result)))
+            except Exception as e:
+                print(f"✗ Test '{name}' raised exception: {e}")
+                traceback.print_exc()
+                results.append((name, False))
+    finally:
+        if _CLUSTER is not None:
+            _CLUSTER.close()
 
     print("\n" + "="*60)
     print("Test Results Summary")
