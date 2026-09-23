@@ -12,6 +12,7 @@ CONFIG = {
         "goals": [{"x": 1.0, "y": 1.0}, {"x": 2.0, "y": 2.0}],
     },
     "_path": [{"x": 0.0, "y": 0.0}, {"x": 2.5, "y": 0.0}],
+    "_doorway": {"position": {"x": 0.0, "y": 1.5}, "orientation": {"yaw": 0.5}},
 }
 
 
@@ -68,6 +69,18 @@ def test_an_internal_path_is_read_as_the_polyline_and_offset_applies():
     [m] = declared_markers({"markers": [{"kind": "pose", "param": "goal_pose",
                                          "offset": [-8.0, 0.0, 0.0]}]}, CONFIG)
     assert m.pos == [-5.5, 0.0]
+
+
+def test_an_internal_pose_is_read_like_a_param_and_named_after_the_key():
+    """`param:` and `internal:` are one question -- where the position comes from -- so a
+    variation's leftover reads as a pose exactly as a scenario parameter does."""
+    [m] = declared_markers({"markers": [{"kind": "pose", "internal": "_doorway"}]}, CONFIG)
+    assert (m.pos, m.yaw, m.label) == ([0.0, 1.5], 0.5, "_doorway")
+
+
+def test_an_internal_the_configuration_lacks_draws_nothing():
+    """A pose silently drawn at the origin is a wrong answer; an absent one is a question."""
+    assert declared_markers({"markers": [{"kind": "pose", "internal": "_absent"}]}, CONFIG) == []
 
 
 def test_no_declaration_is_no_markers():
