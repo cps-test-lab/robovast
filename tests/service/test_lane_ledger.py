@@ -4,16 +4,16 @@
 """The two execution lanes are siblings: neither inherits the other's answer.
 
 ``LocalTransport`` and ``ClusterService`` each subclass ``ServiceBase`` and nothing else
-of each other's. Every lane bug this repository has recorded had one shape -- an image
-store asking a Docker daemon inside a pod, a build capability answered ``True`` without a
-registry, a ``docker rm -f`` one predicate away from running on shutdown in a controller
-pod -- and one cause: the cluster lane subclassed the local one, so whatever it forgot to
-override, a local body answered, invisibly, until a caller reached it on the cluster.
+of each other's. Where one lane subclasses the other, whatever it does not override is
+answered by the other lane's body -- an image store reaching a Docker daemon inside a pod,
+a build capability vouched for without a registry, a container teardown one predicate away
+from running in a controller pod -- and nothing says so until a caller reaches it on the
+lane that inherited it.
 
 What the lanes share is on the base and correct for any lane; what differs is an abstract
 hook there, answered in each lane's own class. A lane that does not offer an operation
-refuses it in its own class with ``UnsupportedOnLane``. These tests pin the shape, so the
-next local default is written where the cluster cannot inherit it.
+refuses it in its own class with ``UnsupportedOnLane``. These tests pin that shape, so a
+local default is written where the cluster cannot inherit it.
 """
 
 import inspect

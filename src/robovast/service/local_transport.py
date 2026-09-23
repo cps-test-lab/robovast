@@ -72,6 +72,7 @@ class LocalTransport(ServiceBase):
     #: run its container teardown before we exit anyway. A hair over the backend's
     #: SIGTERM grace (``_STOP_GRACE_SECONDS`` = 15s) so the trap can complete.
     _SHUTDOWN_JOIN_SECONDS = 20
+
     def _postprocess_campaign(self, campaign_id: str, campaign_dir: Path, *,
                               force: bool = False, skip=(), state=None) -> tuple:
         """Run the campaign's own postprocessing pipeline; return ``(ok, message)``.

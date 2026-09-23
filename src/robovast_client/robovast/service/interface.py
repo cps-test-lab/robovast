@@ -2291,13 +2291,14 @@ class UnsupportedOnLane(ServiceError):
     """An operation this lane does not offer, refused by name.
 
     One sentence, ``<operation> is not supported on the <lane> lane``, followed by a hint
-    when there is somewhere else to go. The same class on both sides of HTTP: a service
-    raises it, the app maps it to ``501`` with the sentence as ``detail`` and
-    :data:`UNSUPPORTED_ON_LANE` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands
-    a caller a :class:`ServiceError` carrying that status, code and sentence -- so the CLI,
-    the MCP tools, the web UI and a raw HTTP client all print the same line. In process it
-    is the very same exception, so an MCP mounted inside the service reports it the way a
-    remote one does.
+    when there is somewhere else to go. One sentence on both sides of HTTP: a service raises
+    it, the app maps it to ``501`` with the sentence as ``detail`` and
+    :data:`UNSUPPORTED_ON_LANE` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands a
+    caller a :class:`ServiceError` carrying that status, code and sentence -- so the CLI, the
+    MCP tools, the web UI and a raw HTTP client all print the same line. Across the wire the
+    class is that :class:`ServiceError` and the code is what identifies it; in process it is
+    this exception itself, so an MCP mounted inside the service reports what a remote one
+    does without matching on the words.
 
     What it is for is the difference between a lane that *cannot* and a lane that *did not*:
     a refusal that names the lane cannot be mistaken for bad input (``400``), a conflict to
