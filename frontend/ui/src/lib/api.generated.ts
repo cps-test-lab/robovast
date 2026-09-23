@@ -303,6 +303,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete Campaigns
+         * @description Delete several campaigns, each as the single delete would. Not all-or-nothing: a running campaign or an id that is not a campaign id is that id's outcome, not a refusal of the call, so the answer is 200 with one result per id -- read each one.
+         */
+        post: operations["delete_campaigns_campaigns_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/events": {
         parameters: {
             query?: never;
@@ -1932,6 +1952,23 @@ export interface components {
             size_bytes: number;
         };
         /**
+         * CampaignDeletion
+         * @description One campaign's outcome within a multi-campaign delete.
+         */
+        CampaignDeletion: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Message */
+            message: string;
+            /** Ok */
+            ok: boolean;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "deleted" | "not_found" | "partial" | "running" | "invalid";
+        };
+        /**
          * CampaignOrigin
          * @description Where a campaign's configuration came from. **A record, never a link.**
          *
@@ -2346,6 +2383,23 @@ export interface components {
              * @default
              */
             table: string;
+        };
+        /**
+         * DeleteCampaignsRequest
+         * @description The campaigns to delete in one call. Each is deleted, or refused, on its own.
+         */
+        DeleteCampaignsRequest: {
+            /** Campaign Ids */
+            campaign_ids: string[];
+        };
+        /**
+         * DeleteCampaignsResponse
+         * @description One :class:`CampaignDeletion` per requested id, in request order, duplicates
+         *     dropped. The call succeeds as a whole even when some ids fail: read each entry.
+         */
+        DeleteCampaignsResponse: {
+            /** Results */
+            results: components["schemas"]["CampaignDeletion"][];
         };
         /**
          * DiskSpace
@@ -4983,6 +5037,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StagedArchive"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_campaigns_campaigns_delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteCampaignsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteCampaignsResponse"];
                 };
             };
             /** @description Validation Error */

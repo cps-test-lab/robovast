@@ -709,34 +709,49 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
 
 
 @campaign.command('delete')
-@click.argument('campaign', metavar='CAMPAIGN')
+@click.argument('campaigns', metavar='CAMPAIGN...', nargs=-1, required=True)
 @click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
 @target_options
-def delete_cmd(campaign, yes, namespace, context):
-    """Permanently delete one CAMPAIGN wholesale.
+def delete_cmd(campaigns, yes, namespace, context):
+    """Permanently delete one or more CAMPAIGNs wholesale.
 
-    Removes the campaign's directory under the service's results root, plus, on a cluster
+    Removes each campaign's directory under the service's results root, plus, on a cluster
     service, any leftover Kubernetes Jobs. This is the full "forget this campaign" action;
     ``vast share remove`` only touches the external share, which this command leaves
     untouched.
 
-    The service refuses a campaign that is still running -- stop it first. This is
+    Each campaign is deleted or refused on its own, and reported on its own line: the
+    service refuses one that is still running (stop it first) and an id that is not a
+    campaign id, and deletes the rest. The exit status is non-zero if any campaign was not
+    fully deleted. An id that has nothing left here counts as deleted. This is
     irreversible.
     """
-    if not yes and not click.confirm(
-            f"Permanently delete campaign '{campaign}'? This cannot be undone."):
+    from robovast.service.interface import \
+        DeleteCampaignsRequest  # pylint: disable=import-outside-toplevel
+
+    ids = list(dict.fromkeys(campaigns))
+    prompt = (f"Permanently delete campaign '{ids[0]}'?" if len(ids) == 1 else
+              f"Permanently delete {len(ids)} campaigns ({', '.join(ids)})?")
+    if not yes and not click.confirm(f"{prompt} This cannot be undone."):
         click.echo("Aborted.")
         return
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
-            res = client.delete_campaign(campaign)
+            res = client.delete_campaigns(DeleteCampaignsRequest(campaign_ids=ids))
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
-    if not res.ok:
-        raise click.ClickException(res.message or "delete failed")
-    click.echo(f"✓ {res.message or f'Deleted {campaign}'}")
+    failed = 0
+    for entry in res.results:
+        if entry.ok:
+            click.echo(f"✓ {entry.message}")
+        else:
+            failed += 1
+            click.echo(f"✗ {entry.campaign_id}: {entry.message}", err=True)
+    if failed:
+        raise click.ClickException(
+            f"{failed} of {len(res.results)} campaign(s) were not fully deleted.")
 
 
 @campaign.command('download')

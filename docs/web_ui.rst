@@ -602,6 +602,21 @@ says which search emptied it, because a short list with nothing explaining it re
 deployment with nothing in it. Closing the field, or *Esc*, restores the whole list: a filter
 that outlived its own field would hide campaigns with nothing on screen saying why.
 
+**Several campaigns can be deleted at once.** The checklist button in the heading row turns
+on selection mode: every card gets a checkbox, and a bar under the heading counts what is picked
+and offers **Delete N selected**, plus a box that picks every finished campaign the list shows. A
+running campaign's checkbox is disabled, because the service refuses to delete one and a control
+that can only produce a refusal says something false about what it does; a picked campaign that
+becomes busy again, or disappears, drops out of the selection, so the count is always what would
+be sent. A campaign the search hides stays picked and is sent too, and the dialog names it.
+
+The delete asks once, in a dialog listing every id it will remove, and then answers in that same
+dialog, id by id: *deleted*, *already gone*, *not fully deleted* (with the path it had to leave —
+see ``execution.run_as_user`` in :doc:`configuration`), or refused because the campaign is
+running. It is the same operation as ``vast campaign delete A B C`` and the ``delete_campaign``
+MCP tool given a list, and like them it is not all-or-nothing: one refusal leaves the rest
+deleted rather than sending you back to retry every one.
+
 The phase is deliberately not matched. It is one value out of a known set, which is a control
 of its own rather than something to spell out in a free-text box — and matching it there would
 make a typed ``failed`` quietly mean two different things once that control exists.

@@ -42,7 +42,7 @@ operations extend :class:`RobovastInterface` in later phases.
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -819,6 +819,35 @@ class ActionResult(BaseModel):
 
     ok: bool = True
     message: Optional[str] = None
+
+
+class DeleteCampaignsRequest(BaseModel):
+    """The campaigns to delete in one call. Each is deleted, or refused, on its own."""
+
+    campaign_ids: list[str] = Field(min_length=1)
+
+
+#: What happened to one campaign of a :meth:`RobovastInterface.delete_campaigns` call.
+#: ``deleted`` and ``not_found`` leave nothing of it here (``ok``); ``partial`` removed some
+#: of it and says what stopped the rest; ``running`` and ``invalid`` touched nothing.
+DeletionOutcome = Literal["deleted", "not_found", "partial", "running", "invalid"]
+
+
+class CampaignDeletion(BaseModel):
+    """One campaign's outcome within a multi-campaign delete."""
+
+    campaign_id: str
+    outcome: DeletionOutcome
+    #: Nothing of the campaign is left on this service -- ``deleted`` or ``not_found``.
+    ok: bool
+    message: str
+
+
+class DeleteCampaignsResponse(BaseModel):
+    """One :class:`CampaignDeletion` per requested id, in request order, duplicates
+    dropped. The call succeeds as a whole even when some ids fail: read each entry."""
+
+    results: list[CampaignDeletion]
 
 
 class PostprocessingInfo(BaseModel):
@@ -2309,6 +2338,10 @@ class Routes:
     CAMPAIGN_ARCHIVES = "/campaigns/archives"
     CAMPAIGN_ARCHIVE_UPLOAD = "/campaigns/archives/{token}"
     CAMPAIGN_IMPORT = "/campaigns/import"
+    #: Delete several campaigns in one call. ``POST`` with the ids in the body rather than
+    #: ``DELETE`` on a collection: a list of ids is not a path, and a body on ``DELETE`` is
+    #: what proxies and clients drop. Cannot shadow a campaign id, as above.
+    CAMPAIGNS_DELETE = "/campaigns/delete"
     #: What is on the configured share, read by the service with the service's own
     #: credentials. Its own namespace rather than under ``/campaigns``: the share is a
     #: separate system, and what it holds is not a subset of what this service has --
@@ -3067,6 +3100,17 @@ class RobovastInterface(ABC):
         could not be removed makes the result ``ok=False`` naming it; deleting again
         retries only what is left. The copy on an external share provider (if any) is
         never touched — it is a separate system.
+        """
+
+    @abstractmethod
+    def delete_campaigns(self, request: DeleteCampaignsRequest) -> DeleteCampaignsResponse:
+        """Delete several campaigns, each exactly as :meth:`delete_campaign` would.
+
+        Not all-or-nothing: every id gets its own :class:`CampaignDeletion`, so one
+        running campaign or mistyped id neither stops the rest nor hides what happened to
+        them. What would make the single delete raise -- a running campaign, an id that is
+        not a campaign id -- is that id's outcome here instead, and nothing of it is
+        touched. Raises only for a request that names no campaign.
         """
 
     # -- the data plane: tar streams in and out of the campaign tree --

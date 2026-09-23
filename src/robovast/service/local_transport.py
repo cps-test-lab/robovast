@@ -61,7 +61,8 @@ from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS, STO
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker, stop_scope_for_phase)
 from robovast.service.interface import (ActionResult, ArchiveSelection, CampaignOrigin, CampaignRef,
-                                        OutputsIngested,
+                                        CampaignDeletion, DeleteCampaignsRequest,
+                                        DeleteCampaignsResponse, OutputsIngested,
                                         UpgradeInfo,
                                         CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
@@ -4553,16 +4554,56 @@ class LocalTransport(RobovastInterface):
         return found
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
-        """Delete the campaign's directory and its sibling files (see interface).
+        """Delete one campaign (see interface): the guard, then :meth:`_delete_deletable`."""
+        self._ensure_deletable(campaign_id)
+        done = self._delete_deletable(campaign_id)
+        return ActionResult(ok=done.ok, message=done.message)
+
+    def delete_campaigns(self, request: DeleteCampaignsRequest) -> DeleteCampaignsResponse:
+        """Delete each campaign through the same guard and removal as :meth:`delete_campaign`.
+
+        The guard's refusals become that id's outcome rather than the call's: a
+        ``ValueError`` is an id that is not a campaign id, a ``RuntimeError`` a campaign
+        still running. A removal that fails outright is that id's outcome too -- a batch
+        that raised would discard the outcomes of the ids already deleted, and the caller
+        would have no record of what is gone. Sequential, so two ids never race for the
+        same index connection or the transport lock, and the order of the results is the
+        order asked for.
+        """
+        results: list[CampaignDeletion] = []
+        for campaign_id in dict.fromkeys(request.campaign_ids):
+            try:
+                self._ensure_deletable(campaign_id)
+            except ValueError as e:
+                results.append(CampaignDeletion(campaign_id=campaign_id, outcome="invalid",
+                                                ok=False, message=str(e)))
+                continue
+            except RuntimeError as e:
+                results.append(CampaignDeletion(campaign_id=campaign_id, outcome="running",
+                                                ok=False, message=str(e)))
+                continue
+            try:
+                results.append(self._delete_deletable(campaign_id))
+            except Exception as e:  # pylint: disable=broad-except
+                logger.exception("could not delete %s", campaign_id)
+                results.append(CampaignDeletion(
+                    campaign_id=campaign_id, outcome="partial", ok=False,
+                    message=(f"Campaign {campaign_id!r} was not fully deleted: {e}. "
+                             f"Deleting it again removes whatever is left.")))
+        return DeleteCampaignsResponse(results=results)
+
+    def _delete_deletable(self, campaign_id: str) -> CampaignDeletion:
+        """Remove a campaign :meth:`_ensure_deletable` has passed: its directory and its
+        sibling files. A lane that owns more than files extends this, so the single and the
+        multi-campaign delete both reach it.
 
         Everything that can go is removed before anything is reported, so a second delete
-        retries only what is left. A path that could not be removed makes the result
-        ``ok=False`` naming it: the commonest cause is run output written by a container
-        user other than the service's (``execution.run_as_user``), which the service cannot
-        unlink, and a delete that answered "deleted" over it would leave the space taken
-        with nothing saying so.
+        retries only what is left. Anything left behind makes the outcome ``partial``, whose
+        message says what stopped it and names the path where there is one: the commonest
+        cause is run output written by a container user other than the service's
+        (``execution.run_as_user``), which the service cannot unlink, and a delete that
+        answered "deleted" over it would leave the space taken with nothing saying so.
         """
-        self._ensure_deletable(campaign_id)
         campaign_dir = self.campaign_dir(campaign_id)
         existed = campaign_dir.is_dir()
         failed: list[tuple[str, OSError]] = []
@@ -4598,20 +4639,21 @@ class LocalTransport(RobovastInterface):
 
         if failed:
             path, exc = failed[0]
-            return ActionResult(
-                ok=False,
+            return CampaignDeletion(
+                campaign_id=campaign_id, outcome="partial", ok=False,
                 message=(f"Campaign {campaign_id!r} was not fully deleted: {len(failed)} "
                          f"path(s) could not be removed, the first being {path} "
                          f"({exc.strerror or exc}). Files written by a container user other "
                          f"than the service's (execution.run_as_user) cannot be removed by "
                          f"the service; remove them as that user, then delete again."))
         if not existed and not removed_archives:
-            return ActionResult(
-                ok=True,
+            return CampaignDeletion(
+                campaign_id=campaign_id, outcome="not_found", ok=True,
                 message=f"Campaign {campaign_id!r} had no local data; nothing to delete.")
         archives = (f", and {removed_archives} archive(s) of "
                     f"{archive_bytes / 1024 ** 3:.2f} GiB beside it" if removed_archives else "")
-        return ActionResult(ok=True, message=f"Deleted campaign {campaign_id!r}{archives}.")
+        return CampaignDeletion(campaign_id=campaign_id, outcome="deleted", ok=True,
+                                message=f"Deleted campaign {campaign_id!r}{archives}.")
 
     # -- postprocessing -----------------------------------------------------
 
