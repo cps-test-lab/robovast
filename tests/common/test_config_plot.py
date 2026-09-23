@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("matplotlib")
 
-from robovast.common import config_plot  # noqa: E402
+from robovast.common import config_plot  # noqa: E402  # pylint: disable=wrong-import-position
 
 _PNG = b"\x89PNG"
 
@@ -80,8 +80,6 @@ def test_an_unknown_projection_is_refused():
 def test_a_panel_type_that_did_not_load_is_named_on_the_picture(monkeypatch):
     """"Nothing installed draws this" and "what draws it did not load" are different facts,
     and the second reads as the first on a picture that leaves the background out."""
-    from robovast.common import config_plot
-
     monkeypatch.setattr(config_plot, "backgrounds",
                         lambda: ({}, {"map2d": "No module named 'matplotlib'"}))
 

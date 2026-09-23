@@ -23,7 +23,7 @@ _POSES = 5001
 
 
 def _campaign(results_root):
-    PIL = pytest.importorskip("PIL.Image")
+    pil_image = pytest.importorskip("PIL.Image")
     root = results_root / CAMPAIGN
     run = root / "cfg-a" / "0"
     run.mkdir(parents=True)
@@ -32,7 +32,7 @@ def _campaign(results_root):
     maps.mkdir(parents=True)
     (root / "_transient").mkdir()
     buf = io.BytesIO()
-    PIL.new("L", (100, 20), 254).save(buf, format="PPM")
+    pil_image.new("L", (100, 20), 254).save(buf, format="PPM")
     (maps / "room.pgm").write_bytes(buf.getvalue())
     (maps / "room.yaml").write_text("image: room.pgm\nresolution: 0.1\norigin: [0, -1, 0]\n"
                                     "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n")
