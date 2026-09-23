@@ -370,6 +370,52 @@ def test_a_pod_that_cannot_mount_its_volumes_is_blocked_with_the_kubelets_messag
     assert blocked_job_reasons(core, "ns", "sel") == {"conv-job": f"FailedMount: {msg}"}
 
 
+class _TimedEventCore(_EventCore):
+    """Answers the per-pod Event read as well as the by-reason one."""
+
+    def list_namespaced_event(self, namespace, field_selector=None):
+        self.event_reads += 1
+        selector = field_selector or ""
+        if selector.startswith("reason="):
+            return types.SimpleNamespace(
+                items=[e for e in self._events if e.reason == selector.split("=")[-1]])
+        pod = selector.split("involvedObject.name=")[-1]
+        return types.SimpleNamespace(
+            items=[e for e in self._events if e.involved_object.name == pod])
+
+
+def _event(reason, pod_name, at_s, message=""):
+    import datetime as _dt
+    at = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc) + _dt.timedelta(seconds=at_s)
+    return types.SimpleNamespace(reason=reason, message=message, series=None,
+                                 last_timestamp=at, event_time=None, first_timestamp=at,
+                                 involved_object=types.SimpleNamespace(name=pod_name))
+
+
+def test_a_mount_failure_the_pod_got_past_is_not_blocking():
+    """An Event outlives its cause. A pod that pulls its image has mounted its volumes.
+
+    The kubelet mounts before it pulls, so a pull after the last mount failure means that
+    failure resolved -- and the pod, pulling a large image, has the same shape as one stuck
+    on a volume. Reading the failure alone would kill a pod that is starting.
+    """
+    msg = 'MountVolume.SetUp failed for volume "creds" : secret "creds" not found'
+    core = _TimedEventCore([_setup_stuck_pod()],
+                           [_event("FailedMount", "conv-job-pod", 0, msg),
+                            _event("Pulling", "conv-job-pod", 5)])
+
+    assert blocked_job_reasons(core, "ns", "sel") == {}
+
+
+def test_a_mount_failure_after_the_last_pull_still_blocks():
+    msg = 'MountVolume.SetUp failed for volume "creds" : secret "creds" not found'
+    core = _TimedEventCore([_setup_stuck_pod()],
+                           [_event("Pulled", "conv-job-pod", 0),
+                            _event("FailedMount", "conv-job-pod", 5, msg)])
+
+    assert blocked_job_reasons(core, "ns", "sel") == {"conv-job": f"FailedMount: {msg}"}
+
+
 def test_a_mount_failure_is_not_recoverable_contention():
     """`blocked - contended` is what will not recover on its own, and a ConfigMap that is
     not there never arrives -- unlike a throttled pull or a busy node."""

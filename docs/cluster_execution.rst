@@ -881,9 +881,9 @@ enough to publish the origin of a deployment that predates it, and enough to *cl
 again for one that has been unpublished: reading the Ingress is what tells those two apart
 from "nobody told me".
 
-Nothing else overwrites it. A ``setup`` re-run without ``--ingress-host`` recovers only the
-host, so it says nothing and the merge patch leaves the value alone -- as does an origin an
-operator set by hand.
+A ``setup`` re-run without ``--ingress-host`` reads it back from the live Ingress the same
+way, so the origin is always what the Ingress publishes. Every deploy replaces the Deployment
+whole, so a value set on it by hand lasts until the next ``setup`` or ``upgrade``.
 
 A service that was never published declares no origin at all, which is honest rather than
 degraded: routes and file addresses still work, and only the absolute URLs are absent.

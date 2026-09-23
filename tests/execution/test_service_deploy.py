@@ -440,16 +440,12 @@ def test_service_rbac_can_make_and_remove_a_campaigns_token_secret():
         assert verb in secret_verbs, f"the service calls {call} but the Role lacks {verb!r}"
 
 
-# The family variables are applied with a strategic-merge patch, whose merge key for
-# `containers[].env` is the variable NAME -- so a variable the patch omits is preserved, not
-# removed. While these were emitted only when set, an operator who once set
-# ROBOVAST_PROJECT_TAG could never unset it: deleting it from ./.env left it out of the next
-# patch and the stale value kept resolving the family. A deployment spent an afternoon pulling
-# images at a tag that appeared in no file on the machine.
+# The family variables are rendered on every deploy, empty included: deleting one from ./.env
+# must reset the pod to the default rather than leave a stale value resolving the family.
 
 
 def test_family_env_is_carried_even_when_unset(monkeypatch):
-    # Empty, not absent: an absent entry is what the merge patch preserves.
+    # Empty, not absent: the Deployment states what the family resolves from.
     monkeypatch.delenv("ROBOVAST_PROJECT", raising=False)
     monkeypatch.delenv("ROBOVAST_PROJECT_TAG", raising=False)
     env = {e["name"]: e["value"] for e in

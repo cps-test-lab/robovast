@@ -1103,8 +1103,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     from .service_deploy import (deploy_service, ensure_registry_htpasswd, published_url,
                                  read_service_config_from_cluster,
                                  reconcile_registry_ingress_path, running_image_digest,
-                                 verify_store_pod_infrastructure, wait_for_rollout,
-                                 wait_for_service_ready)
+                                 verify_store_pod_infrastructure, wait_for_rollout)
 
     # The build daemon's tuning, from the environment like every standing setting of the
     # deployment. Checked before anything is applied, so a typo fails the upgrade rather than
@@ -1275,8 +1274,9 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
             click.echo(f"  build daemon {change}")
         apply_buildkitd(namespace, kube_context=kube_context, **{**live, **buildkit_settings})
         click.echo("  converged the shared build daemon")
-        wait_for_service_ready(namespace=namespace, kube_context=kube_context,
-                               timeout_s=timeout)
+        # The rollout wait alone: it requires the new pod to be Available, and it is the
+        # wait that recognises one which will never start and says why.
+        #
         # No branch here, deliberately: wait_for_rollout raises on every outcome that is
         # not convergence. Returning a bool instead lets a caller print "✓ upgraded and
         # ready" regardless of it, which is how an upgrade whose pod sits in

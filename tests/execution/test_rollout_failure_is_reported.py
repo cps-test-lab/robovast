@@ -156,8 +156,10 @@ def test_still_blocked_past_the_grace_window_fails(monkeypatch):
     # An image reason is a credentials question, so the message names where they come from.
     assert "ROBOVAST_REGISTRY_PASSWORD" in message
     assert "CURRENT directory" in message, "the CWD-only .env rule is the trap here"
-    # And it must say the service is still up, or a failed upgrade reads as an outage.
-    assert "still serving" in message
+    # The Deployment recreates its pod, so the old one is gone: saying the service is still
+    # up would send the reader to an API that is not there.
+    assert "service is down" in message
+    assert "still serving" not in message
     assert "kubectl" in message, "must name how to look further"
 
 
@@ -218,6 +220,78 @@ def test_a_failed_probe_does_not_reset_the_grace_timer(monkeypatch):
         "a reset stamp delays the verdict past the deadline, downgrading a precise "
         f"diagnosis to a bare timeout: {message}")
     assert "ImagePullBackOff" in message
+
+
+def _placed_but_not_started(created):
+    """A pod on a node whose containers are all waiting: the shape a failed mount leaves."""
+    import datetime
+    pod = _pod(created, waiting_reason="ContainerCreating")
+    pod.metadata.name = "robovast-service-abc"
+    pod.spec = SimpleNamespace(node_name="node-a")
+    pod.status.start_time = datetime.datetime.now(datetime.timezone.utc)
+    return pod
+
+
+def _mount_failure(pod_name, message):
+    return SimpleNamespace(reason="FailedMount", message=message,
+                           involved_object=SimpleNamespace(name=pod_name))
+
+
+def test_a_volume_that_cannot_mount_fails_the_rollout(monkeypatch):
+    """A Secret the pod mounts and nobody created is recorded only in an Event.
+
+    Nothing on the pod says so -- every container is ``ContainerCreating``, exactly as while
+    a large image pulls -- so the Event is read, and the rollout fails with the kubelet's
+    message within the grace rather than at the timeout.
+    """
+    _, core = _cluster(monkeypatch, _seq(_deployment(available=0)),
+                       _seq(_pods(_placed_but_not_started(1))))
+    missing = 'MountVolume.SetUp failed for volume "creds" : secret "creds" not found'
+    core.list_namespaced_event.side_effect = lambda namespace, field_selector: \
+        SimpleNamespace(items=[_mount_failure("robovast-service-abc", missing)]
+                        if field_selector == "reason=FailedMount" else [])
+    said = []
+
+    with pytest.raises(RolloutNotConverged) as excinfo:
+        service_deploy.wait_for_rollout(timeout_s=30, unhealthy_grace_s=5.0,
+                                        report=said.append)
+
+    message = str(excinfo.value)
+    assert "will not recover" in message, message
+    assert 'secret "creds" not found' in message
+    assert "FailedMount" in said[0], "reported when it first appears, not at the deadline"
+    assert "logs" not in message, "nothing started, so there is no log to point at"
+
+
+def test_a_pod_still_creating_with_no_mount_failure_is_waited_for(monkeypatch):
+    """The same pod shape, no Event: a slow start, which must not be called a failure."""
+    _, core = _cluster(monkeypatch,
+                       _seq(_deployment(available=0), _deployment(available=0),
+                            _deployment()),
+                       _seq(_pods(_placed_but_not_started(1))))
+    core.list_namespaced_event.return_value = SimpleNamespace(items=[])
+
+    service_deploy.wait_for_rollout(timeout_s=30, unhealthy_grace_s=0.0)
+
+
+def test_a_mount_failure_the_pod_got_past_is_waited_for(monkeypatch):
+    """A transient mount failure followed by a long pull is a slow start, not a failure."""
+    import datetime
+
+    at = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    failed = _mount_failure("robovast-service-abc", 'secret "creds" not found')
+    failed.last_timestamp = at
+    pulling = SimpleNamespace(reason="Pulling", message="", last_timestamp=at, series=None,
+                              involved_object=SimpleNamespace(name="robovast-service-abc"))
+    _, core = _cluster(monkeypatch,
+                       _seq(_deployment(available=0), _deployment(available=0),
+                            _deployment()),
+                       _seq(_pods(_placed_but_not_started(1))))
+    core.list_namespaced_event.side_effect = lambda namespace, field_selector: \
+        SimpleNamespace(items=[failed] if field_selector == "reason=FailedMount"
+                        else [pulling] if "involvedObject.name=" in field_selector else [])
+
+    service_deploy.wait_for_rollout(timeout_s=30, unhealthy_grace_s=0.0)
 
 
 def test_the_newest_pod_is_the_one_judged(monkeypatch):
