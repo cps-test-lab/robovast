@@ -19,7 +19,7 @@ import pathlib
 import re
 import sys
 
-SIBLINGS = ("robovast-client", "robovast-nav", "robovast-sim-roqsim")
+SIBLINGS = ("robovast-client", "robovast-decode", "robovast-nav", "robovast-sim-roqsim")
 
 
 def main() -> int:

@@ -39,14 +39,14 @@ statement and the data is never copied.
 Two rules the widening obeys:
 
 * **It only ever widens** (``UNKNOWN`` -> ``INTEGER`` -> ``REAL`` -> ``TEXT``, the order
-  :mod:`robovast.results_processing.csv_types` already defines). A verdict never narrows,
+  :mod:`robovast_decode.types` already defines). A verdict never narrows,
   because the values already stored were written under the wider one.
 * **A disagreement is recorded, never fatal.** Two campaigns can write the same stem with
   a column that is numeric in one and text in the other -- in ``data.db`` that was a
   per-campaign warning, and centrally it becomes a cross-campaign fact. The column widens
   to text and the reason is written to :data:`COLUMN_NOTES_TABLE`, because a silently
   widened column is how ``ORDER BY timestamp`` starts sorting ``'10.022'`` before
-  ``'9.5'`` again -- the exact failure :mod:`csv_types` exists to prevent.
+  ``'9.5'`` again -- the exact failure :mod:`robovast_decode.types` exists to prevent.
 
 The logical verdict is tracked in :data:`COLUMN_TYPES_TABLE` rather than read back from
 ``information_schema``, because one verdict has no Postgres type: ``UNKNOWN`` means "seen,
@@ -60,7 +60,7 @@ import contextlib
 import logging
 
 from robovast.common.errors import TableColumnLimitExceeded
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, widest)
+from robovast_decode.types import (INTEGER, REAL, TEXT, UNKNOWN, widest)
 
 logger = logging.getLogger(__name__)
 
@@ -358,8 +358,8 @@ def ensure_table(conn, table: str, types: dict, *, source: str = "",
                  context=CONTEXT_COLUMNS, schema: str = METRIC_SCHEMA) -> list:
     """Make *table* able to hold columns *types*; return the widenings that happened.
 
-    *types* maps column name to a :mod:`csv_types` verdict, as
-    :func:`~robovast.results_processing.csv_types.infer_column_types` returns. The table
+    *types* maps column name to a :mod:`robovast_decode.types` verdict, as
+    :func:`~robovast_decode.types.infer_column_types` returns. The table
     is created on first sight with *context* first (:data:`CONTEXT_COLUMNS` for a metric
     table, :data:`CAMPAIGN_CONTEXT` for a dimension one); later calls add columns
     and widen existing ones. Idempotent, and cheap when nothing changed -- the common

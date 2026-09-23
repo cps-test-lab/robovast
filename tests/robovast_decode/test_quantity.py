@@ -10,7 +10,7 @@ as a number that is wrong by a factor of 10^9.
 
 import pytest
 
-from robovast.common.quantity import to_bytes, to_cores
+from robovast_decode.quantity import to_bytes, to_cores
 
 
 @pytest.mark.parametrize("value,expected", [

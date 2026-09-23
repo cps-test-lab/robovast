@@ -1133,7 +1133,7 @@ def test_a_measurement_is_never_sized_below_the_floor():
     """The probe reports a number, not whether its run got far enough for that number to mean
     anything: one that stopped before the stack was up measures a fraction of what every later
     run needs."""
-    from robovast.common.quantity import to_bytes
+    from robovast_decode.quantity import to_bytes
     from robovast.execution.cluster_execution.node_calibration import MIN_MEMORY
 
     figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
@@ -1145,7 +1145,7 @@ def test_a_measurement_is_never_sized_below_the_floor():
 def test_every_role_keeps_the_same_floor():
     """One figure, like MIN_CPU: it bounds a measurement rather than describing a workload, and
     what a particular container needs is what `resources` and `calibration.min` are for."""
-    from robovast.common.quantity import to_bytes
+    from robovast_decode.quantity import to_bytes
     from robovast.execution.cluster_execution.node_calibration import MIN_MEMORY
 
     figures = {"cores": 1.0, "memory_peak": 10 * 1024 ** 2, "samples": 90}
@@ -1158,7 +1158,7 @@ def test_every_role_keeps_the_same_floor():
 
 def test_a_measurement_above_the_floor_is_left_alone():
     """The floor is a bound, not a target: calibration sizes anywhere above it."""
-    from robovast.common.quantity import to_bytes
+    from robovast_decode.quantity import to_bytes
 
     figures = {"sut": {"cores": 2.0, "memory_peak": 3 * 1024 ** 3, "samples": 90}}
     sized = kb.calibrated_resources({"memory": "8Gi"}, "sut", figures, roles=("sut",),
@@ -1168,7 +1168,7 @@ def test_a_measurement_above_the_floor_is_left_alone():
 
 def test_no_floor_ever_beats_the_declared_ceiling():
     """``resources`` stays the most a container may have, whichever floor is under it."""
-    from robovast.common.quantity import to_bytes
+    from robovast_decode.quantity import to_bytes
 
     figures = {"sut": {"cores": 2.0, "memory_peak": 10 * 1024 ** 2, "samples": 90}}
     sized = kb.calibrated_resources({"memory": "256Mi"}, "sut", figures, roles=("sut",),
@@ -1183,7 +1183,7 @@ def test_no_floor_ever_beats_the_declared_ceiling():
 def test_a_stated_memory_floor_lifts_a_measurement_past_the_built_in_one():
     """What headroom cannot be: a multiplier scales a measurement that is wrong, a floor
     bounds it."""
-    from robovast.common.quantity import to_bytes
+    from robovast_decode.quantity import to_bytes
 
     figures = {"sut": {"cores": 2.0, "memory_peak": 100 * 1024 ** 2, "samples": 90}}
     sized = kb.calibrated_resources({"memory": "4Gi"}, "sut", figures, roles=("sut",),

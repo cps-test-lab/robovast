@@ -63,8 +63,7 @@ import re
 import sqlite3
 
 from robovast.results_processing import index_schema
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN,
-                                                   json_text)
+from robovast_decode.types import INTEGER, REAL, TEXT, UNKNOWN, json_text
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +77,7 @@ DIMENSION_TABLES = ("campaign", "batch", "unit", "job", "node", "run", "containe
 #: id -- see the module docstring.
 _REDUNDANT_COLUMNS = frozenset({"campaign_id"})
 
-#: SQLite declares these; ``csv_types`` is the vocabulary ``index_schema`` speaks.
+#: SQLite declares these; ``robovast_decode.types`` is the vocabulary ``index_schema`` speaks.
 _FROM_SQLITE = {
     "INTEGER": INTEGER, "REAL": REAL, "TEXT": TEXT, "BLOB": TEXT, "": UNKNOWN,
 }
@@ -111,7 +110,7 @@ _NON_FINITE_JSON = re.compile(r"-?Infinity|NaN")
 
 def _indexable(column: str, value):
     """*value* as the index stores it: a ``*_json`` text carrying a non-finite token is
-    re-encoded with :func:`~robovast.results_processing.csv_types.json_text`.
+    re-encoded with :func:`~robovast_decode.types.json_text`.
 
     ``campaign.db`` is written with Python's ``json``, which writes ``Infinity`` and ``NaN``
     and reads them back, so the record round-trips for the code that reads it. Postgres

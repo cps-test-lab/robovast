@@ -1,16 +1,15 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for CSV column-type inference (``robovast.results_processing.csv_types``)."""
+"""Tests for CSV and JSONL column-type inference (``robovast_decode.types``)."""
 
 import json
 import math
 
 import pytest
 
-from robovast.results_processing.csv_types import (INTEGER, REAL, TEXT, UNKNOWN, as_stored,
-                                                   cast_expr, coerce, column_def,
-                                                   infer_column_types, json_text, sql_value,
-                                                   value_type, widest)
+from robovast_decode.types import (INTEGER, REAL, TEXT, UNKNOWN, as_stored, coerce,
+                                   infer_column_types, json_text, stored_value, value_type,
+                                   widest)
 
 
 def _refuse_constant(token):
@@ -37,7 +36,7 @@ def _refuse_constant(token):
     ("1 m", TEXT),
     ("007", TEXT),          # zero-padded identifier must keep its text
     ("01.5", TEXT),
-    ("nan", REAL),          # double precision holds NaN and the infinities natively
+    ("nan", REAL),          # a double holds NaN and the infinities natively
     ("inf", REAL),
     ("-inf", REAL),
     ("1e999", TEXT),        # a finite literal that overflows: not an infinity anyone measured
@@ -101,20 +100,9 @@ def test_coerce_keeps_a_value_it_cannot_convert():
     assert coerce("n/a", REAL) == "n/a"
 
 
-def test_column_def_declares_no_type_for_an_unknown_column():
-    """UNKNOWN is a verdict, never SQL: the column is declared without a type."""
-    assert column_def("x", REAL) == '"x" REAL'
-    assert column_def("x", UNKNOWN) == '"x"'
-
-
-def test_cast_expr_retypes_a_stored_column_but_leaves_unknown_alone():
-    assert cast_expr("x", TEXT) == 'CAST("x" AS TEXT)'
-    assert cast_expr("x", UNKNOWN) == '"x"'
-
-
-def test_sql_value_json_encodes_containers():
-    assert sql_value([{"x": 1.0}], TEXT) == '[{"x": 1.0}]'
-    assert sql_value("1.5", REAL) == pytest.approx(1.5)
+def test_a_stored_value_json_encodes_containers():
+    assert stored_value([{"x": 1.0}], TEXT) == '[{"x": 1.0}]'
+    assert stored_value("1.5", REAL) == pytest.approx(1.5)
 
 
 # -- booleans, which only a .jsonl source produces ---------------------------
@@ -122,27 +110,27 @@ def test_sql_value_json_encodes_containers():
 def test_a_json_boolean_is_stored_as_one_or_zero():
     """`behaviors.jsonl` carries a real JSON `is_active`, and it must store as 1/0.
 
-    `value_type` already judges a bool INTEGER -- deliberately, since bool is an int
-    subclass and sqlite3 stored a Python bool as 1/0 whatever the column was declared.
-    The conversion has to agree, or the declared type and the written value disagree.
+    `value_type` judges a bool INTEGER -- deliberately, since bool is an int subclass.
+    The conversion has to agree, or the column's type and the written value disagree.
     """
-    assert sql_value(True, INTEGER) == 1
-    assert sql_value(False, INTEGER) == 0
+    assert stored_value(True, INTEGER) == 1
+    assert stored_value(False, INTEGER) == 0
 
 
-def test_a_boolean_is_not_left_for_the_driver_to_adapt():
-    """The regression this pins, which cost a campaign its postprocessing.
+def test_a_boolean_is_stored_as_an_integer_whatever_the_column_says():
+    """A bool left as a bool is written as a boolean into a column inferred as integer,
+    and the column's type and its values then disagree. In a text column it is the text of
+    that integer, since every value of a text column is text."""
+    for declared in (INTEGER, REAL, UNKNOWN):
+        assert stored_value(False, declared) == 0
+        assert not isinstance(stored_value(False, declared), bool)
+    assert stored_value(False, TEXT) == "0"
 
-    Left unconverted, psycopg adapts a Python bool to Postgres' own `t`/`f` literal, and
-    COPY into the bigint that inference declared for the column fails outright:
-    `invalid input syntax for type bigint: "f"`. The runs had already been paid for by
-    the time the ingest ran, so this surfaced at the most expensive possible moment.
-    """
-    for declared in (INTEGER, REAL, TEXT, UNKNOWN):
-        assert sql_value(False, declared) == 0, (
-            f"a bool must not reach the driver as a bool, whatever the column says "
-            f"it holds (declared {declared})")
-        assert not isinstance(sql_value(False, declared), bool)
+
+def test_a_number_in_a_text_column_is_stored_as_it_is_spelled():
+    assert stored_value(1.5, TEXT) == "1.5"
+    assert stored_value(7, TEXT) == "7"
+    assert stored_value(None, TEXT) is None
 
 
 def test_the_declaration_and_the_value_agree_for_a_boolean_column():
@@ -152,7 +140,7 @@ def test_the_declaration_and_the_value_agree_for_a_boolean_column():
     declared = infer_column_types(rows, ["is_active"])["is_active"]
 
     assert declared == INTEGER
-    assert all(isinstance(sql_value(r["is_active"], declared), int) for r in rows)
+    assert all(isinstance(stored_value(r["is_active"], declared), int) for r in rows)
 
 
 # -- non-finite floats, which JSON has no token for --------------------------
@@ -161,17 +149,17 @@ def test_the_declaration_and_the_value_agree_for_a_boolean_column():
 @pytest.mark.parametrize("value", [float("inf"), float("-inf"), "inf", "-inf", "+inf",
                                    "Infinity", "INF"])
 def test_an_infinity_is_a_number(value):
-    """A censored measurement is a result: ``double precision`` holds it, so the column
+    """A censored measurement is a result: a double holds it, so the column
     stays numeric and ``NULL`` is left to mean that nothing was measured."""
     assert value_type(value) == REAL
-    stored = sql_value(value, REAL)
+    stored = stored_value(value, REAL)
     assert isinstance(stored, float) and math.isinf(stored)
 
 
 @pytest.mark.parametrize("value", [float("nan"), "nan", "NaN", "-nan"])
 def test_a_nan_is_a_number(value):
     assert value_type(value) == REAL
-    stored = sql_value(value, REAL)
+    stored = stored_value(value, REAL)
     assert isinstance(stored, float) and math.isnan(stored)
 
 
@@ -197,7 +185,7 @@ def test_a_finite_literal_that_overflows_stays_text():
 def test_a_non_finite_float_in_a_container_never_becomes_a_json_token():
     """One of them anywhere in the value makes every query casting the column fail --
     the whole query, not the row -- so the substitution has to reach into the value."""
-    encoded = sql_value({"path_length": float("inf"),
+    encoded = stored_value({"path_length": float("inf"),
                          "gaps": [1.0, float("nan"), float("-inf")]}, TEXT)
 
     assert json.loads(encoded, parse_constant=_refuse_constant) == {
@@ -218,21 +206,10 @@ def test_as_stored_leaves_everything_finite_alone():
 
 def test_a_finite_value_is_unaffected():
     """The ordinary path, which the substitution must not touch."""
-    assert sql_value("1.5", REAL) == pytest.approx(1.5)
-    assert sql_value(1.5, REAL) == pytest.approx(1.5)
-    assert sql_value("1e308", REAL) == pytest.approx(1e308)
-    assert sql_value("2", INTEGER) == 2
-    assert sql_value("passed", TEXT) == "passed"
-    assert sql_value("", REAL) is None
-    assert sql_value([1.0, {"x": 2.0}], TEXT) == '[1.0, {"x": 2.0}]'
-
-
-def test_the_campaign_record_json_is_made_castable_on_its_way_into_the_index():
-    """``campaign.db`` is written with Python's ``json``, whose ``Infinity`` token Postgres
-    refuses on a ``jsonb`` cast; the mirror rewrites it and leaves everything else as is."""
-    from robovast.results_processing.dimension_ingest import _indexable
-
-    assert json.loads(_indexable("objectives_json", '{"length": Infinity, "gap": NaN}'),
-                      parse_constant=_refuse_constant) == {"length": "inf", "gap": "nan"}
-    assert _indexable("objectives_json", '{"length": 1.5}') == '{"length": 1.5}'
-    assert _indexable("status", "Infinity") == "Infinity", "only the *_json columns"
+    assert stored_value("1.5", REAL) == pytest.approx(1.5)
+    assert stored_value(1.5, REAL) == pytest.approx(1.5)
+    assert stored_value("1e308", REAL) == pytest.approx(1e308)
+    assert stored_value("2", INTEGER) == 2
+    assert stored_value("passed", TEXT) == "passed"
+    assert stored_value("", REAL) is None
+    assert stored_value([1.0, {"x": 2.0}], TEXT) == '[1.0, {"x": 2.0}]'

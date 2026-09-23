@@ -128,8 +128,8 @@ WORKDIR /opt/robovast
 # Layer 1 (heavy, rarely invalidated): install only the third-party dependencies.
 # Its cache key is just pyproject.toml + poetry.lock, so source edits below don't
 # touch it. --no-root skips the robovast project and --no-directory skips every
-# path dependency (src/robovast_client, src/robovast_nav, src/robovast_sim_roqsim);
-# all four are installed in layer 2.
+# path dependency (src/robovast_client, src/robovast_decode, src/robovast_nav,
+# src/robovast_sim_roqsim); all five are installed in layer 2.
 COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
@@ -137,10 +137,10 @@ RUN pip install --no-cache-dir poetry==1.8.2 \
         --no-root --no-directory --no-cache
 
 # Layer 2 (cheap, invalidated by any source edit): copy the source and install
-# the four local packages (robovast root + the robovast-client, robovast-nav and
-# robovast-sim-roqsim path deps) on top of the already-present dependencies.
-# Poetry sees the heavy deps as satisfied, so this only builds/installs the four
-# — fast.
+# the five local packages (robovast root + the robovast-client, robovast-decode,
+# robovast-nav and robovast-sim-roqsim path deps) on top of the already-present
+# dependencies. Poetry sees the heavy deps as satisfied, so this only builds/installs
+# the five — fast.
 COPY README.md ./
 COPY src ./src
 # The panel bundle, into the package that declares it as data -- so the wheel poetry builds

@@ -15,8 +15,8 @@ import sqlite3
 import pytest
 
 from robovast.common.campaign_data import read_config_channels
-from robovast.results_processing.campaign_ingest import (_channel_params, _flatten_channel,
-                                                         _read_units)
+from robovast.results_processing.campaign_ingest import _channel_params, _read_units
+from robovast_decode.runs import flatten_channel
 
 
 def _sim(friction, radius, retries=2):
@@ -92,10 +92,10 @@ def test_a_destination_too_long_to_name_is_reported_not_dropped_silently(caplog)
 
 def test_a_flattened_block_reads_as_the_vast_wrote_it():
     """``sut`` blocks arrive flat and must pass through untouched; ``sim`` blocks nest."""
-    assert _flatten_channel({"a": {"b": 1}, "c": 2}) == {"a.b": 1, "c": 2}
-    assert _flatten_channel({"nav2.x.y": 1}) == {"nav2.x.y": 1}
+    assert flatten_channel({"a": {"b": 1}, "c": 2}) == {"a.b": 1, "c": 2}
+    assert flatten_channel({"nav2.x.y": 1}) == {"nav2.x.y": 1}
     # An empty mapping is a leaf: there is nothing below it to name.
-    assert _flatten_channel({"a": {}}) == {"a": {}}
+    assert flatten_channel({"a": {}}) == {"a": {}}
 
 
 def _store(path, rows, *, with_channels=True):

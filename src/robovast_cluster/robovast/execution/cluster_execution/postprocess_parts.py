@@ -101,7 +101,7 @@ def max_parallel(raw=None, convert_cpu=None) -> int:
 
 def _parts_that_fit(convert_cpu=None) -> int:
     """As many parts as the cluster could run at once, for a conversion of *convert_cpu*."""
-    from robovast.common.quantity import to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_cores  # noqa: PLC0415
 
     from .cluster_capacity import recorded_maximum  # noqa: PLC0415
 

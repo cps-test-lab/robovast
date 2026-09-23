@@ -332,7 +332,7 @@ def gen_msg_values(msg, prefix=""):
     per field, which is what a handful of waypoints or a diagnostic array is read as.
 
     A non-finite float is yielded as it is: a CSV writes it ``inf`` or ``nan``, and the
-    ingest stores that as the number (see :mod:`~robovast.results_processing.csv_types`).
+    ingest stores that as the number (see :mod:`~robovast_decode.types`).
     """
     if isinstance(msg, list):
         for i, val in enumerate(msg):

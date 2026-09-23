@@ -112,7 +112,7 @@ def _index(schema, timestamp_type="REAL"):
     """
     psycopg = pytest.importorskip("psycopg")
     from robovast.results_processing import index_query, index_schema
-    from robovast.results_processing.csv_types import INTEGER, REAL, TEXT
+    from robovast_decode.types import INTEGER, REAL, TEXT
     from robovast.results_processing.row_sink import PostgresRowSink
 
     types = {"topic": TEXT, "timestamp": REAL if timestamp_type == "REAL" else TEXT,

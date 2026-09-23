@@ -64,8 +64,8 @@ from urllib.parse import quote
 
 from robovast.common.execution import resolve_controller_image, resolve_sidecar_image
 from robovast.execution.campaign_archive import in_part
-from robovast.common.quantity import to_bytes, to_cores
 from robovast.common.stop import sleep_unless_stopped
+from robovast_decode.quantity import to_bytes, to_cores
 
 from . import pod_access, postprocess_usage
 from .kube_client import api_transport_errors

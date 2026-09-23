@@ -34,7 +34,7 @@ A bag knows its message schema, so a bag-derived table's column types are declar
 rows can go straight to ``COPY`` -- which matters because a single campaign's ``sim_poses``
 is ~4M rows and buffering it to look at the values would defeat the point of streaming the
 bag in the first place. A CSV knows nothing: every value is a string, so the type has to be
-inferred by reading them (:func:`~robovast.results_processing.csv_types.infer_column_types`),
+inferred by reading them (:func:`~robovast_decode.types.infer_column_types`),
 which means buffering. That is affordable only because it is bounded -- one run's one file
 -- and it is the reason the two paths look different here rather than being unified for
 tidiness.
@@ -48,7 +48,7 @@ inserting into SQLite, building an index, and then moving a 1.1 GB file twice.
 import logging
 
 from robovast.results_processing import index_schema
-from robovast.results_processing.csv_types import infer_column_types, sql_value
+from robovast_decode.types import infer_column_types, stored_value
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +69,8 @@ class RowSink:
         every row of this call -- the campaign, configuration and run the batch belongs to
         -- so a source yields the columns it measured and nothing about where they sit.
 
-        *types* maps column name to a :mod:`csv_types` verdict when the source knows them
-        (a bag does). Omit it and the types are inferred, which requires buffering *rows*;
+        *types* maps column name to a :mod:`robovast_decode.types` verdict when the source
+        knows them (a bag does). Omit it and the types are inferred, which requires buffering *rows*;
         see the module docstring on why that asymmetry is deliberate.
 
         *source* names this batch for a column note, so a widening says which run
@@ -113,7 +113,7 @@ class PostgresRowSink(RowSink):
             for row in rows:
                 merged = {**ctx, **row}
                 copy.write_row(tuple(
-                    sql_value(merged.get(c), types.get(c, declared.get(c)))
+                    stored_value(merged.get(c), types.get(c, declared.get(c)))
                     for c in columns))
                 written += 1
         logger.debug("index: copied %d rows into %s%s",

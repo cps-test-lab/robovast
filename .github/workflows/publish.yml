@@ -28,7 +28,7 @@ permissions: read-all
 
 jobs:
   build:
-    name: Build and check all five wheels
+    name: Build and check all six wheels
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}

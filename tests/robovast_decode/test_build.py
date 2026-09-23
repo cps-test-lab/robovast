@@ -105,3 +105,40 @@ def test_the_command_line_builds_and_lists(campaign, capsys):
     out = capsys.readouterr().out
     assert "built   costmaps: 1 run(s)" in out
     assert "costmaps" in out and "built for 1 of 1" in out
+
+
+def test_a_runs_own_data_files_are_tables_typed_by_their_values(campaign):
+    run = campaign / "cfg" / "0"
+    (run / "out.csv").write_text("# units: m\ndistance,label,missing\n1.5,a,\ninf,007,\n")
+    (run / "behaviors.jsonl").write_text(
+        '{"format": "behavior_tree_log"}\n'
+        '{"id": 1, "name": "root", "status": "RUNNING", "is_active": true}\n')
+    report = build(str(campaign), tables=["out", "behaviors"])
+    assert not report.failed
+    out = pq.read_table(campaign / ".cache" / "tables" / "out" / "cfg" / "0.parquet")
+    assert out.schema.field("distance").type == "double"
+    assert out.column("label").to_pylist() == ["a", "007"]       # leading zero: text
+    assert out.column("distance").to_pylist()[1] == float("inf")
+    behaviors = pq.read_table(campaign / ".cache" / "tables" / "behaviors" / "cfg" / "0.parquet")
+    row = behaviors.to_pylist()[0]
+    assert (row["status"], row["status_name"], row["is_active"]) == (2, "RUNNING", 1)
+
+
+def test_a_data_file_claiming_a_built_table_is_refused_by_name(campaign):
+    (campaign / "cfg" / "0" / "poses.csv").write_text("frame,timestamp\nx,1\n")
+    report = build(str(campaign), tables=["poses"])
+    assert "poses.csv" in report.failed["poses"]["cfg/0"]
+
+
+def test_a_ragged_file_fails_its_own_table_only(campaign):
+    (campaign / "cfg" / "0" / "bad.csv").write_text("a,b\n1,2,3\n")
+    (campaign / "cfg" / "0" / "good.csv").write_text("a,b\n1,2\n")
+    report = build(str(campaign), tables=["bad", "good"])
+    assert "more fields than its header" in report.failed["bad"]["cfg/0"]
+    assert report.built["good"] == ["cfg/0"]
+
+
+def test_a_pose_table_gets_its_heading(campaign):
+    build(str(campaign), tables=["poses"], config={"groups": []})
+    poses = pq.read_table(campaign / ".cache" / "tables" / "poses" / "cfg" / "0.parquet")
+    assert "orientation.yaw" in poses.column_names

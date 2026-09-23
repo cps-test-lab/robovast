@@ -74,11 +74,18 @@ def test_table_matches_the_ros_converter(campaign, table, csv_name):
     with open(FIXTURE / "expected" / csv_name, encoding="utf-8") as fh:
         expected = list(csv.DictReader(fh))
 
+    columns = list(expected[0])
+    # A table with a quaternion also gets its heading, derived as the index always derived it.
+    derived = ["orientation.yaw"] if "orientation.w" in columns else []
     assert got.column_names[:3] == list(CONTEXT)
-    assert got.column_names[3:] == list(expected[0]), "column names and order"
+    assert got.column_names[3:] == columns + derived, "column names and order"
     rows = got.to_pylist()
     assert len(rows) == len(expected), "row count"
     for i, (want, have) in enumerate(zip(expected, rows)):
         for column, value in want.items():
             assert _same(value, have[column]), f"row {i} {column}: {value!r} != {have[column]!r}"
+        if derived:
+            x, y, z, w = (float(want[f"orientation.{c}"]) for c in "xyzw")
+            assert have["orientation.yaw"] == pytest.approx(
+                math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
     assert {r["campaign_id"] for r in rows} <= {campaign.name}

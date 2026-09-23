@@ -47,7 +47,7 @@ import math
 from typing import Any, Optional
 
 from robovast.common.config import DEFAULT_SHM_SIZE
-from robovast.common.quantity import to_bytes, to_cores
+from robovast_decode.quantity import to_bytes, to_cores
 
 #: Headroom over sustained CPU use. Absorbs the p95->peak gap.
 CPU_HEADROOM = 1.25

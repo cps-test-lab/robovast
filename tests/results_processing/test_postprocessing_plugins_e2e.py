@@ -18,8 +18,8 @@ import yaml
 
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
 from robovast.results_processing.campaign_ingest import _scenario_verdict
-from robovast.results_processing.csv_types import INTEGER, REAL, infer_column_types
 from robovast.results_processing.postprocessing_plugins import ResourceUsage, RunLog
+from robovast_decode.types import INTEGER, REAL, infer_column_types
 
 _HEADER = "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
 

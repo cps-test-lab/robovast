@@ -53,7 +53,6 @@ import csv
 import json
 import logging
 import os
-import re
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -63,12 +62,9 @@ import yaml
 
 from robovast.common import campaign_data, execution, scenario_markers
 from robovast.common.campaign_data import list_config_dirs, list_run_dirs
-from robovast.common.quantity import to_bytes
-from robovast.common.store import RUNLESS_UNIT_STATUSES
 from robovast.results_processing import (clock_map, dimension_ingest, index_schema,
                                          index_scope, index_views, resource_usage,
                                          run_health)
-from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, json_text, widen
 # Reused rather than reimplemented: these decide what a data file *is* -- the JSONL format
 # registry, the yaw derivation, the table-name rule -- and a second copy of any of them
 # would be a second answer to "what does this file contain?". Now that the ``data.db``
@@ -77,6 +73,9 @@ from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN, 
 from robovast.results_processing.postprocessing_plugins import (_as_float, _csv_to_table_name,
                                                                 _read_table_rows)
 from robovast.results_processing.row_sink import PostgresRowSink
+from robovast_decode.quantity import to_bytes
+from robovast_decode.runs import RUNLESS_UNIT_STATUSES, channel_column_names, flatten_channel
+from robovast_decode.types import INTEGER, REAL, TEXT, UNKNOWN, json_text, widen
 
 logger = logging.getLogger(__name__)
 
@@ -491,69 +490,6 @@ def _read_outcomes(store_path: Path) -> dict:
 #: column. A name that does not fit gets none.
 _MAX_COLUMN_BYTES = 63
 
-#: The identifier-shaped tokens of a destination, in order. A ``sim:`` path is dotted and a
-#: ``sut:`` one may be an XPath (``bt.//RecoveryNode[@name='x']/@number_of_retries``), so the
-#: split is on "what could be a column name", not on any one channel's separator.
-_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-
-def _flatten_channel(block, prefix: str = "") -> dict:
-    """Nested channel block -> ``{dotted destination: leaf value}``.
-
-    The ``sut`` block is already flat and passes through unchanged; the ``sim`` block is the
-    backend's whole resolved configuration and is flattened the same way
-    ``simulators.flatten_sim_block`` writes it, so a destination reads here exactly as it was
-    written in the ``.vast``.
-    """
-    out = {}
-    for key, value in (block or {}).items():
-        path = f"{prefix}{key}"
-        if isinstance(value, dict) and value:
-            out.update(_flatten_channel(value, f"{path}."))
-        else:
-            out[path] = value
-    return out
-
-
-def _channel_column_names(destinations) -> dict:
-    """``{(channel, destination): name}`` -- the shortest suffix unique in this campaign.
-
-    A destination is a path, and its whole path makes a column name nobody can type:
-    ``sut.nav2.local_costmap.local_costmap.ros__parameters.inflation_layer.inflation_radius``
-    does not even fit in an identifier. The name is therefore built from the *end* of the
-    destination -- ``sut_inflation_radius`` -- and grows leftwards only as far as it must to
-    stay unambiguous, so two ``friction`` keys under different components become
-    ``sim_floor_friction`` and ``sim_wall_friction`` instead of quietly sharing a column.
-
-    Uniqueness is decided over the whole campaign's destinations, not one configuration's:
-    the runs table is one shape for every row in it, so a name that is unique per cell and
-    ambiguous across cells is the one failure this must not have.
-    """
-    tokens = {(channel, path): _TOKEN.findall(path) for channel, path in destinations}
-    depth = {key: 1 for key in destinations}
-
-    def _name(key):
-        channel, _ = key
-        return f"{channel}_" + "_".join(tokens[key][-depth[key]:]) if tokens[key] else ""
-
-    names = {key: _name(key) for key in destinations}
-    # One pass per token the longest destination has: every pass either lengthens an
-    # ambiguous name or the rule has nothing left to disambiguate with.
-    for _ in range(max((len(t) for t in tokens.values()), default=0)):
-        counts: dict = {}
-        for name in names.values():
-            counts[name] = counts.get(name, 0) + 1
-        grew = False
-        for key in destinations:
-            if counts[names[key]] > 1 and depth[key] < len(tokens[key]):
-                depth[key] += 1
-                grew = True
-        if not grew:
-            break
-        names = {key: _name(key) for key in destinations}
-    return names
-
-
 def _channel_params(channels_by_config: dict) -> dict:
     """``{config_name: {param key: value}}`` for the ``sim`` and ``sut`` channels.
 
@@ -570,9 +506,9 @@ def _channel_params(channels_by_config: dict) -> dict:
         (channel, dest)
         for channels in channels_by_config.values()
         for channel in ("sim", "sut")
-        for dest in _flatten_channel(channels.get(channel) or {})
+        for dest in flatten_channel(channels.get(channel) or {})
     })
-    names = _channel_column_names(destinations)
+    names = channel_column_names(destinations)
 
     dropped = {key for key, name in names.items()
                if not name or len(f"param_{name}".encode()) > _MAX_COLUMN_BYTES}
@@ -586,7 +522,7 @@ def _channel_params(channels_by_config: dict) -> dict:
     for config_name, channels in channels_by_config.items():
         values = {}
         for channel in ("sim", "sut"):
-            for path, value in _flatten_channel(channels.get(channel) or {}).items():
+            for path, value in flatten_channel(channels.get(channel) or {}).items():
                 if (channel, path) not in dropped:
                     values[names[(channel, path)]] = value
         out[config_name] = values
@@ -640,7 +576,7 @@ def build_runs_table(sink, campaign_dir: str, output=None) -> int:
 
     # A factor is a column whichever channel it was written on. The sim and sut values are
     # merged into the scenario ones under names built across the whole campaign, so a
-    # destination means the same column in every row -- see `_channel_column_names`. A
+    # destination means the same column in every row -- see `robovast_decode.runs.channel_column_names`. A
     # scenario parameter wins a name clash, being the one an existing analysis already reads,
     # and the loser is named rather than dropped quietly.
     channel_params = _channel_params(channels_by_config)

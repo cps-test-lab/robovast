@@ -102,7 +102,7 @@ def headroom() -> "Tuple[float, int]":
     in the requests admission subtracts, the tenants the reserve protects are counted once
     already.
     """
-    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_bytes, to_cores  # noqa: PLC0415
 
     raw_cpu = (os.environ.get(HEADROOM_CPU_ENV) or "").strip() or DEFAULT_HEADROOM_CPU
     raw_mem = (os.environ.get(HEADROOM_MEMORY_ENV) or "").strip() or DEFAULT_HEADROOM_MEMORY
