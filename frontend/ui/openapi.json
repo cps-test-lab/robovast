@@ -7753,7 +7753,7 @@
     },
     "/data/campaigns/{campaign_id}/inputs": {
       "get": {
-        "description": "Stream the tar a job pod extracts into its ``/config``.\n\n``config_file`` names a cell's own input as ``<config_name>:<rel>``, repeated\nonce per file; each lands at ``<rel>`` on top of the campaign's copy.",
+        "description": "Stream the tar a job pod extracts into its ``/config``.\n\n``job`` names the tag whose documents the pod reads, repeated once per tag; every\nother job's are left out. ``config_file`` names a cell's own input as\n``<config_name>:<rel>``, repeated once per file; each lands at ``<rel>`` on top of\nthe campaign's copy.",
         "operationId": "download_campaign_inputs_data_campaigns__campaign_id__inputs_get",
         "parameters": [
           {
@@ -7763,6 +7763,18 @@
             "schema": {
               "title": "Campaign Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job",
+            "required": true,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Job",
+              "type": "array"
             }
           },
           {

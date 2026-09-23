@@ -528,6 +528,29 @@ NOT_STAGED_LOG = "_execution/postprocessing.log"
 #: The campaign's input tree and the composer's per-job files: what a job pod is given.
 INPUT_DIRS = ("_config", "_transient")
 
+#: The suffixes of a job's own documents in ``_transient/``: its scenario parameters and
+#: its simulator overrides, named by the job's tag (:func:`job_documents`).
+JOB_DOCUMENT_SUFFIXES = (".params.yaml", ".sim.yaml")
+
+
+def job_documents(tag: str) -> "tuple[str, str]":
+    """The names of job *tag*'s scenario-parameter and simulator-override documents.
+
+    The one place these names are made: the composer writes them into ``_transient/``, a
+    pod reads them from ``/config``, and :func:`iter_inputs_tar` tells a job's own
+    documents from every other job's by them.
+    """
+    params, sim = (tag + suffix for suffix in JOB_DOCUMENT_SUFFIXES)
+    return params, sim
+
+
+def _job_document_tag(name: str):
+    """The tag *name* is a job document of, or ``None`` for a campaign-wide file."""
+    for suffix in JOB_DOCUMENT_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[:-len(suffix)]
+    return None
+
 
 def stage_include(skip_bags: bool = False, batch_jobs: str = ""):
     """The selection a postprocessing pod is given of a campaign.
@@ -659,7 +682,8 @@ def part_include(campaign_root: str, part: str):
     return include
 
 
-def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CHUNK):
+def iter_inputs_tar(campaign_root: str, job_tags, config_files=None,
+                    chunk_size: int = _CHUNK):
     """Generator yielding the plain tar a job pod extracts into its ``/config``.
 
     The campaign's :data:`INPUT_DIRS` with that leading segment stripped, so ``_config/x``
@@ -667,6 +691,13 @@ def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CH
     ``<config>/_config/<rel>`` as ``<rel>``. Later members win on extraction, which is
     what makes a cell's copy land on the campaign's -- the packer keeps one file-owning
     configuration per job, so which copy wins is never in question.
+
+    Of the job documents in ``_transient/`` (:func:`job_documents`), only those of
+    *job_tags* are sent: the composer writes one pair per job of the campaign, and a pod
+    reads its own, so sending every job's would make each pod's download grow with the
+    campaign. Every other file there is campaign-wide and sent to every pod. A tag with no
+    parameter document raises ``KeyError`` before any byte is streamed -- a pod asking for
+    one would otherwise start with nothing to run.
 
     Named per declared path rather than the cell's ``_config/`` wholesale, because that
     directory also holds the cell's *records* -- ``config.yaml``, ``scenario.config``,
@@ -680,13 +711,26 @@ def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CH
     the read costs one member, not the pod.
     """
     root = os.path.normpath(str(campaign_root))
+    tags = set(job_tags)
+    if not tags:
+        raise ValueError("a job pod's inputs name the job they are for: pass at least one tag")
+    transient = os.path.join(root, "_transient")
+    for tag in sorted(tags):
+        if not tag or "/" in tag or tag in (".", ".."):
+            raise ValueError(f"a job tag is one path segment, got {tag!r}")
+        if not os.path.isfile(os.path.join(transient, job_documents(tag)[0])):
+            raise KeyError(f"no parameter document for job {tag!r} in this campaign")
+
+    def _keep(arc: str) -> bool:
+        tag = None if "/" in arc else _job_document_tag(arc)
+        return tag is None or tag in tags
 
     def _add(tar):
         for top in INPUT_DIRS:
             src = os.path.join(root, top)
             if not os.path.isdir(src):
                 continue
-            _add_tree_flat(tar, src)
+            _add_tree_flat(tar, src, keep=_keep if src == transient else None)
         for config_name, rel in (config_files or ()):
             src = os.path.join(root, config_name, "_config", rel)
             try:
@@ -699,8 +743,11 @@ def iter_inputs_tar(campaign_root: str, config_files=None, chunk_size: int = _CH
     return iter_tar(_add, chunk_size, compress=False)
 
 
-def _add_tree_flat(tar: tarfile.TarFile, src: str) -> None:
-    """Add every entry under *src* into *tar* relative to *src* itself (no top segment)."""
+def _add_tree_flat(tar: tarfile.TarFile, src: str, keep=None) -> None:
+    """Add every entry under *src* into *tar* relative to *src* itself (no top segment).
+
+    *keep*, when given, is called with a file's relative name and leaves it out on false.
+    """
     stack = [(src, "")]
     while stack:
         path, arc = stack.pop()
@@ -710,6 +757,8 @@ def _add_tree_flat(tar: tarfile.TarFile, src: str) -> None:
             continue
         for entry in entries:
             child = f"{arc}/{entry.name}" if arc else entry.name
+            if keep is not None and entry.is_file(follow_symlinks=False) and not keep(child):
+                continue
             try:
                 if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
                     tar.addfile(tar.gettarinfo(entry.path, arcname=child))

@@ -1222,9 +1222,10 @@ class LocalTransport(RobovastInterface):
             campaign_id, selection, live=live,
             facts=self._snapshot_facts(campaign_id) if live else None)
 
-    def campaign_inputs_tar_stream(self, campaign_id: str,
+    def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
-        return self._data_plane().campaign_inputs_tar_stream(campaign_id, config_files)
+        return self._data_plane().campaign_inputs_tar_stream(campaign_id, job_tags,
+                                                             config_files)
 
     def ingest_campaign_outputs(self, campaign_id: str, stream) -> "OutputsIngested":
         return self._data_plane().ingest_campaign_outputs(campaign_id, stream)

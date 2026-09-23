@@ -4,8 +4,8 @@
 
 Two processes serve these routes -- ``vast serve``'s one app and the cluster's separate
 data container -- and both are built here, over the same tree, so what one accepts the
-other does. The properties: a pod's inputs land flat and a cell's file lands on the
-campaign's; an upload streams into the campaign and refuses what the driver owns; a
+other does. The properties: a pod's inputs land flat, carry its own job documents and no
+other job's, and a cell's file lands on the campaign's; an upload streams into the campaign and refuses what the driver owns; a
 token scoped to one campaign reaches that campaign's routes and nothing else.
 """
 
@@ -29,6 +29,8 @@ from .conftest import TEST_TOKEN
 
 _CAMPAIGN = "camp-2026-01-01-000000"
 _OTHER = "camp-2026-01-02-000000"
+#: What every pod's inputs request carries: the job it is for.
+_JOB = {"job": ["job-1"]}
 
 
 def _campaign(root, campaign_id=_CAMPAIGN):
@@ -38,7 +40,11 @@ def _campaign(root, campaign_id=_CAMPAIGN):
     (campaign / "_config" / "tool.sh").write_text("#!/bin/sh\n")
     os.chmod(campaign / "_config" / "tool.sh", 0o755)
     (campaign / "_transient").mkdir()
-    (campaign / "_transient" / "job-1.params.yaml").write_text("p: 1\n")
+    (campaign / "_transient" / "configurations.yaml").write_text("- name: cell-a\n")
+    for tag in ("job-1", "job-2", "probe-n1"):
+        (campaign / "_transient" / f"{tag}.params.yaml").write_text(f"tag: {tag}\n")
+    (campaign / "_transient" / "job-1.sim.yaml").write_text("sim: 1\n")
+    (campaign / "_transient" / "job-2.sim.yaml").write_text("sim: 2\n")
     (campaign / "cell-a" / "_config").mkdir(parents=True)
     (campaign / "cell-a" / "_config" / "campaign.vast").write_text("configuration:\n  name: cell-a\n")
     (campaign / "cell-a" / "_config" / "scenario.config").write_text("record\n")
@@ -99,7 +105,7 @@ def client(request):
 
 def test_inputs_land_flat_and_a_cells_file_lands_on_the_campaigns(client):
     resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
-                      params={"config_file": ["cell-a:campaign.vast"]})
+                      params={"job": ["job-1"], "config_file": ["cell-a:campaign.vast"]})
     assert resp.status_code == 200, resp.text
     members = _names(resp.content)
     # `_config/x` is `x`: the pod extracts into its /config.
@@ -114,6 +120,40 @@ def test_inputs_land_flat_and_a_cells_file_lands_on_the_campaigns(client):
     assert "scenario.config" not in members
     # The executable bit rides in the tar.
     assert members["tool.sh"].mode & 0o100
+
+
+def test_a_pod_is_sent_its_own_job_documents_and_no_other_jobs(client):
+    """The composer writes a pair of documents per job, so a pod sent every job's would
+    download more the larger the campaign; the campaign-wide files still reach every pod."""
+    members = _names(client.get(Routes.campaign_inputs(_CAMPAIGN),
+                                params={"job": ["job-1"]}).content)
+    assert {"job-1.params.yaml", "job-1.sim.yaml", "configurations.yaml"} <= set(members)
+    assert not {"job-2.params.yaml", "job-2.sim.yaml", "probe-n1.params.yaml"} & set(members)
+
+
+def test_a_probe_is_sent_its_own_parameters_and_its_base_jobs_simulator_document(client):
+    """A probe runs a real job's manifest with its own parameter document, so it names both."""
+    members = _names(client.get(Routes.campaign_inputs(_CAMPAIGN),
+                                params={"job": ["job-2", "probe-n1"]}).content)
+    assert {"job-2.sim.yaml", "probe-n1.params.yaml"} <= set(members)
+    assert "job-1.params.yaml" not in members
+
+
+def test_inputs_that_name_no_job_are_refused(client):
+    assert client.get(Routes.campaign_inputs(_CAMPAIGN)).status_code == 422
+
+
+def test_inputs_for_a_job_the_campaign_does_not_have_are_a_404(client):
+    """Before any byte is sent: an empty stream would start a pod with nothing to run."""
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN), params={"job": ["job-1", "job-9"]})
+    assert resp.status_code == 404, resp.text
+    assert "job-9" in resp.json()["detail"]
+
+
+def test_a_job_tag_cannot_reach_outside_the_campaigns_documents(client):
+    for tag in ("../job-1", "a/b", ".."):
+        resp = client.get(Routes.campaign_inputs(_CAMPAIGN), params={"job": [tag]})
+        assert resp.status_code == 400, (tag, resp.text)
 
 
 def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, root):
@@ -217,12 +257,12 @@ def test_a_scoped_token_reaches_its_campaign_and_nothing_else(root):
     _campaign(root, _OTHER)
     headers = {"Authorization": f"Bearer {token}"}
     with TestClient(build_data_app(root, TEST_TOKEN), headers=headers) as client:
-        assert client.get(Routes.campaign_inputs(_CAMPAIGN)).status_code == 200
+        assert client.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB).status_code == 200
         assert client.put(Routes.campaign_outputs(_CAMPAIGN),
                           content=_tar([("cell-a/1/x", b"y")])).status_code == 200
         assert client.get(Routes.campaign_archive(_CAMPAIGN)).status_code == 200
         # Another campaign, a slot, the health check's neighbours: outside the scope.
-        assert client.get(Routes.campaign_inputs(_OTHER)).status_code == 403
+        assert client.get(Routes.campaign_inputs(_OTHER), params=_JOB).status_code == 403
         assert client.get(Routes.staged("image-builds/b")).status_code == 403
     # The control plane refuses it everywhere but the data routes it mounts.
     store = WorkspaceStore(registry=WorkspaceRegistry(root=root.parent / "ws"))
@@ -236,7 +276,7 @@ def test_a_scoped_token_reaches_its_campaign_and_nothing_else(root):
 
 def test_a_forged_scope_is_not_authenticated(standalone):
     forged = f"{auth.scope_for_campaign(_CAMPAIGN)}.{'0' * 64}"
-    resp = standalone.get(Routes.campaign_inputs(_CAMPAIGN),
+    resp = standalone.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB,
                           headers={"Authorization": f"Bearer {forged}"})
     assert resp.status_code == 401
 
@@ -286,7 +326,7 @@ def test_the_control_plane_mints_tokens_the_data_plane_honours(root):
     token = lt.scoped_token(auth.scope_for_campaign(_CAMPAIGN))
     with TestClient(build_data_app(root, "a-configured-secret"),
                     headers={"Authorization": f"Bearer {token}"}) as client:
-        assert client.get(Routes.campaign_inputs(_CAMPAIGN)).status_code == 200
+        assert client.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB).status_code == 200
 
 
 def test_only_an_archive_that_leaves_the_cluster_is_compressed(client, root):
@@ -302,7 +342,7 @@ def test_only_an_archive_that_leaves_the_cluster_is_compressed(client, root):
     assert resp.headers["content-disposition"].endswith('.tar"')
     assert f"{_CAMPAIGN}/_config/campaign.vast" in _names(resp.content)
 
-    resp = client.get(Routes.campaign_inputs(_CAMPAIGN))
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB)
     assert resp.headers["content-type"] == "application/x-tar"
     _names(resp.content)
 

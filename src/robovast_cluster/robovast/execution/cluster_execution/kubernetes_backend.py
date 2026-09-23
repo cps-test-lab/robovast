@@ -78,6 +78,7 @@ from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
                                          ShareStopped)
+from robovast.execution.campaign_archive import job_documents
 from robovast.execution.packer import build_jobs
 
 from . import pod_access, pod_upload
@@ -594,6 +595,13 @@ class BatchJobRunner:
     holds the campaign; the Kubernetes client uses the in-cluster service account.
     Building manifests touches no API; only :meth:`run_batch_in_pod` does.
     """
+
+    #: The nodes this batch wrote a probe parameter document for. The node set is live, so
+    #: the list read when the probes start is not necessarily the one the documents were
+    #: written from, and a probe is only started for a node in both. A class attribute for
+    #: the reason below: every construction path has it, and one that wrote no documents
+    #: starts no probes.
+    _probe_nodes_written: "tuple[str, ...]" = ()
 
     #: The process-wide admission queue, or ``None`` for "create every job at once".
     #: A class attribute so that every construction path has it -- ``for_batch`` sets it, and
@@ -1129,7 +1137,8 @@ class BatchJobRunner:
 
         return job_manifest
 
-    def create_job_manifest(self, job, total_jobs: int, node_figures=None) -> dict:
+    def create_job_manifest(self, job, total_jobs: int, node_figures=None,
+                            also_reads=()) -> dict:
         """Create a manifest for one job (1..K configs).
 
         One K8s Job runs all the job's configs via a multi-document param file
@@ -1141,8 +1150,14 @@ class BatchJobRunner:
         own copy would otherwise be, so ``/config`` is the view belonging to the cell
         that is running. The job's multi-document param file ships in ``_transient/``
         and so lands at ``/config/<job-tag>.params.yaml``.
+
+        The inputs request names the job's tag, so the pod is sent its own documents and
+        no other job's (see :func:`~robovast.execution.campaign_archive.iter_inputs_tar`).
+        *also_reads* names further tags whose documents this pod reads -- a calibration
+        probe derived from this manifest reads its own parameter document.
         """
         job_tag = self._job_tag(job.index)
+        params_name, sim_name = job_documents(job_tag)
         sim_overlay = self._sim_overlay(job)
         # The simulator's overrides document ships per job (``<job-tag>.sim.yaml``, unique
         # like the parameter file) but is READ at a fixed path, because a backend builds
@@ -1151,7 +1166,7 @@ class BatchJobRunner:
         # whole ``_transient/`` tree lands in ``/config``, so the reconciliation is this
         # one copy.
         sim_rename = (
-            f"(cp /config/{job_tag}.sim.yaml {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
+            f"(cp /config/{sim_name} {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
             if sim_overlay["document"] else "")
         # Each configuration's own files, staged where the campaign's copy would have been.
         # Copied per declared path rather than mirroring `<config>/_config/` wholesale,
@@ -1172,12 +1187,13 @@ class BatchJobRunner:
                 if entry not in staged:
                     staged.append(entry)
         query = "&".join(
-            "config_file=" + quote(f"{cn}:{rel}", safe="") for cn, rel in staged)
+            ["job=" + quote(tag, safe="") for tag in (job_tag, *also_reads)]
+            + ["config_file=" + quote(f"{cn}:{rel}", safe="") for cn, rel in staged])
         init_cmd = (
             pod_access.fetch_command(f"/campaigns/{self.campaign}/inputs", "/config", query)
             + " && " + (sim_rename.rstrip("; ") or "true"))
         extra_env = (
-            ('SCENARIO_PARAMETER_FILE', f"/config/{job_tag}.params.yaml"),
+            ('SCENARIO_PARAMETER_FILE', f"/config/{params_name}"),
             ('OUTPUT_RESULT_PER_SCENARIO', 'true'),
             # Job artifacts land in the nested _jobs/<batch>/job-<idx> layout
             # (matching local), while the K8s job name / param file stay flat
@@ -1261,14 +1277,14 @@ class BatchJobRunner:
         jobs = self._build_jobs()
         for job in jobs:
             docs = build_job_parameter_documents(job, scenario_name)
-            with open(os.path.join(transient_dir, f"{self._job_tag(job.index)}.params.yaml"), "w") as f:
+            params_name, sim_name = job_documents(self._job_tag(job.index))
+            with open(os.path.join(transient_dir, params_name), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
             # The simulation channel's per-job document. Single-document, because the
             # packer groups by `sim_key` and a job's items therefore agree on it.
             document = self._sim_overlay(job)["document"]
             if document:
-                with open(os.path.join(transient_dir,
-                                       f"{self._job_tag(job.index)}.sim.yaml"), "w") as f:
+                with open(os.path.join(transient_dir, sim_name), "w") as f:
                     yaml.dump(document, f, default_flow_style=False, sort_keys=False)
         # Canonical link manifest, consumed by the controller's upload-to-share
         # compression to materialise <config>/<run>/job symlinks into the tar.gz, and
@@ -1353,6 +1369,19 @@ class BatchJobRunner:
         node_ids = self._probe_node_ids(total_jobs)
         if not node_ids or not jobs:
             return calibration
+        # Narrowed to the nodes whose parameter document this batch wrote. A node that joined
+        # the cluster since then has none, and one manifest serves every probe -- so a tag the
+        # inputs route cannot answer for would lose the whole batch's probes rather than leave
+        # the one node unmeasured. That node is measured by the next batch, which writes its
+        # document before it asks for it.
+        unwritten = [n for n in node_ids if n not in self._probe_nodes_written]
+        if unwritten:
+            logger.info("Batch %s: %d node(s) appeared after this batch's inputs were "
+                        "written and are measured by the next batch", self._batch_tag,
+                        len(unwritten))
+        node_ids = [n for n in node_ids if n in self._probe_nodes_written]
+        if not node_ids:
+            return calibration
         sizing = self._job_sizing(jobs[0], total_jobs)
         # **A probe no node could ever hold is a configuration fault, not a wait.** Under
         # calibrated sizing a probe runs at the bootstrap -- a deployment-wide default rather
@@ -1372,7 +1401,8 @@ class BatchJobRunner:
                 "than anything the campaign declared. Lower the bootstrap for a role, or "
                 "declare execution.containers.<name>.resources so the probe is sized from the "
                 f"campaign instead. ({exc})") from exc
-        base = self.create_job_manifest(jobs[0], total_jobs)
+        base = self.create_job_manifest(
+            jobs[0], total_jobs, also_reads=[probe_tag(node_id) for node_id in node_ids])
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
             key = _short_job_name(self.campaign, probe_tag(node_id), index)
@@ -1439,7 +1469,7 @@ class BatchJobRunner:
         node = node_id or self._probes.get(key)
         manifest = probe_manifest(
             base, job_name=key,
-            params_file=f"/config/{probe_tag(node)}.params.yaml",
+            params_file=f"/config/{job_documents(probe_tag(node))[0]}",
             output_dir=f"/out/{output_dir}",
             display_name=f"calibration probe · {node}")
         self._pin(manifest, node_id)
@@ -2056,9 +2086,12 @@ class BatchJobRunner:
         base_docs = build_job_parameter_documents(jobs[0], scenario_name)
         for node_id in node_ids:
             docs = probe_parameter_documents(base_docs, node_id)
-            with open(os.path.join(transient_dir, f"{probe_tag(node_id)}.params.yaml"),
+            with open(os.path.join(transient_dir, job_documents(probe_tag(node_id))[0]),
                       "w", encoding="utf-8") as handle:
                 handle.write(dump_multi_document_yaml(docs))
+        # What :meth:`_start_probes` may name in a manifest: a probe asks the inputs route
+        # for its own tag, and the route answers 404 for a tag it has no document for.
+        self._probe_nodes_written = tuple(node_ids)
         return node_ids
 
     def _probe_node_ids(self, total_jobs: int) -> list:
