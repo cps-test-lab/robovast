@@ -1,0 +1,84 @@
+import osc.helpers
+import osc.ros
+
+# The trial: take off from the pad, fly a square course at 1.2 m, come back and land.
+#
+# There is no `sut` container and no ros_launch. A drone's stabilising controller is not optional
+# software layered on top of the simulator -- a quadrotor MJCF has no stabiliser at all, so
+# `quadrotor_controller` runs *inside* the simulation, spawned by the model's own manifest. The
+# scenario's whole job is therefore to command waypoints and record what happened, which is why this
+# file is short compared with the nav2 examples.
+#
+# Timings are stated as constants rather than as "wait until arrived" checks, on purpose: a run that
+# cannot hold its altitude must still fly the same schedule as one that can, or the cells of the
+# campaign would not be comparable. A drone that never reaches a waypoint is a *result*, not a
+# reason to wait longer.
+
+scenario test_scenario:
+    # Bound the whole trial. Anything unfinished by here is a failed run, which is a legitimate
+    # outcome in a campaign that deliberately flies past the edge of the envelope.
+    timeout(90s)
+
+    do serial:
+        # Gate on the simulator actually running before commanding anything: a PoseStamped published
+        # into a simulator that has not started is dropped, and the drone would then sit on the pad
+        # for the whole trial and be scored as a failure to hover. Bounded, so a simulator that never
+        # comes up fails the trial instead of hanging it.
+        serial:
+            timeout(60s)
+            wait_for_topics(topics: ['/clock'])
+            wait_for_data(topic_name: '/drone/odom', topic_type: 'nav_msgs.msg.Odometry')
+
+        # use_sim_time so every derived table is stamped with the simulator's clock: cells run at
+        # different real-time factors, and comparing them in wall seconds would be comparing the
+        # host's load. /clock is recorded so anything wall-stamped can be mapped back.
+        bag_record(['/clock', '/drone/odom'], use_sim_time: true)
+
+        # -- the course ---------------------------------------------------------------------------
+        # A 2.4 m square at 1.2 m, flown corner to corner, then home. Each leg is a step command, not
+        # a trajectory: a step is what exposes the controller's limits (max_tilt / max_accel) and the
+        # thrust margin, which is what this campaign varies.
+        serial:
+            log(msg: 'take off and settle on the pad')
+            wait elapsed(6s)
+
+            log(msg: 'leg 1 -> (1.2, 1.2)')
+            topic_publish(
+                topic_name: '/drone/cmd_pos',
+                topic_type: 'geometry_msgs.msg.PoseStamped',
+                value: '{\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": 1.2, \"y\": 1.2, \"z\": 1.2}, \"orientation\": {\"w\": 1.0}}}')
+            wait elapsed(8s)
+
+            log(msg: 'leg 2 -> (-1.2, 1.2)')
+            topic_publish(
+                topic_name: '/drone/cmd_pos',
+                topic_type: 'geometry_msgs.msg.PoseStamped',
+                value: '{\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": -1.2, \"y\": 1.2, \"z\": 1.2}, \"orientation\": {\"w\": 1.0}}}')
+            wait elapsed(8s)
+
+            log(msg: 'leg 3 -> (-1.2, -1.2)')
+            topic_publish(
+                topic_name: '/drone/cmd_pos',
+                topic_type: 'geometry_msgs.msg.PoseStamped',
+                value: '{\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": -1.2, \"y\": -1.2, \"z\": 1.2}, \"orientation\": {\"w\": 1.0}}}')
+            wait elapsed(8s)
+
+            log(msg: 'return over the pad')
+            topic_publish(
+                topic_name: '/drone/cmd_pos',
+                topic_type: 'geometry_msgs.msg.PoseStamped',
+                value: '{\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 1.2}, \"orientation\": {\"w\": 1.0}}}')
+            wait elapsed(8s)
+
+            # Land by commanding the pad itself. The controller has no landing mode -- descending
+            # onto a target IS the landing -- so touchdown speed is a property of the gains and the
+            # thrust margin rather than of a scripted descent profile, which is what makes it worth
+            # measuring.
+            log(msg: 'land on the pad')
+            topic_publish(
+                topic_name: '/drone/cmd_pos',
+                topic_type: 'geometry_msgs.msg.PoseStamped',
+                value: '{\"header\": {\"frame_id\": \"map\"}, \"pose\": {\"position\": {\"x\": 0.0, \"y\": 0.0, \"z\": 0.0}, \"orientation\": {\"w\": 1.0}}}')
+            wait elapsed(8s)
+
+            log(msg: 'trial complete')
