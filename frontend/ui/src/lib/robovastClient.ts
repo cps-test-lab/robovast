@@ -182,6 +182,8 @@ export type RetriggerReport = Schemas['RetriggerReport']
 export type RetriggerAxis = Schemas['RetriggerAxis']
 
 export type ActionResult = Schemas['ActionResult']
+export type DeleteCampaignsResponse = Schemas['DeleteCampaignsResponse']
+export type CampaignDeletion = Schemas['CampaignDeletion']
 
 // Whether a run's 3D geometry is ready, and what the wait is on if not: say why you are about to
 // wait, before you wait.
@@ -627,6 +629,12 @@ export const robovast = {
   // running; `ok: false` names a path that could not be removed.
   deleteCampaign: (campaignId: string) =>
     request<ActionResult>('DELETE', `/campaigns/${encodeURIComponent(campaignId)}`),
+
+  // Several campaigns in one call, each deleted or refused on its own: the answer is one
+  // CampaignDeletion per id (deleted / not_found / partial / running / invalid), not a single
+  // verdict, so a running campaign among them does not stop the rest.
+  deleteCampaigns: (campaignIds: string[]) =>
+    request<DeleteCampaignsResponse>('POST', '/campaigns/delete', { campaign_ids: campaignIds }),
 
   // -- workspaces & files ---------------------------------------------------
 

@@ -14,6 +14,8 @@ import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Chip from '@mui/material/Chip'
+import Checkbox from '@mui/material/Checkbox'
+import ChecklistRoundedIcon from '@mui/icons-material/ChecklistRounded'
 import StopRoundedIcon from '@mui/icons-material/StopRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
@@ -81,6 +83,8 @@ import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
 import { useCampaignImport } from './ImportCampaignButton'
 import { LaunchBar } from './LaunchBar'
+import { BulkDeleteBar } from './BulkDelete'
+import { isSelectable, pruneSelection } from '@/lib/campaignSelection'
 // Deferred, not statically imported: this dialog embeds a Monaco editor, and Monaco is
 // ~3.9 MB. Monitor is the view the app opens on, so importing it here put the whole editor
 // on the critical path of the campaign list — for a dialog reached by a menu item most
@@ -223,8 +227,10 @@ export function runningTimeCell(status: Status | undefined, eta: number | null):
   return ''
 }
 
-function CampaignCard({ summary, newest, openedByLink }: {
+function CampaignCard({ summary, newest, openedByLink, select }: {
   summary: CampaignSummary; newest: boolean; openedByLink?: boolean
+  /** Present in the list's selection mode: this row's checkbox. */
+  select?: { checked: boolean; disabled: boolean; onToggle: () => void }
 }) {
   const qc = useQueryClient()
   const id = summary.campaign_id
@@ -929,6 +935,19 @@ function CampaignCard({ summary, newest, openedByLink }: {
           alignItems="center"
           sx={{ minWidth: 0, flexGrow: 1 }}
         >
+          {select ? (
+            // Claims its click like every control in this row, or picking a campaign folds it.
+            <Checkbox
+              size="small"
+              checked={select.checked}
+              disabled={select.disabled}
+              title={select.disabled ? 'A running campaign cannot be deleted' : undefined}
+              inputProps={{ 'aria-label': `select ${id}` }}
+              onClick={(e) => e.stopPropagation()}
+              onChange={select.onToggle}
+              sx={{ p: 0.25 }}
+            />
+          ) : null}
           <PhaseDot phase={phase} issue={stepIssue} />
           {phaseAge ? (
             <Typography variant="caption" color="text.secondary">
@@ -1371,6 +1390,15 @@ export function Monitor({
   const shown = useMemo(() => matchCampaigns(campaigns ?? [], applied), [campaigns, applied])
   const filtered = !campaignFilterIsEmpty(applied)
 
+  // Selection mode for the multi-campaign delete: null when off. Pruned as the list moves, so a
+  // campaign that disappears or becomes busy again stops counting towards what would be sent.
+  const [selected, setSelected] = useState<ReadonlySet<string> | null>(null)
+  useEffect(() => {
+    if (!selected || !campaigns) return
+    const kept = pruneSelection(selected, campaigns)
+    if (kept !== selected) setSelected(kept)
+  }, [selected, campaigns])
+
   // Held stable across renders because the dialog memoises its rows on it: a fresh Set every
   // render would recompute them on every campaign the stream pushes, which is a memo that
   // never hits and reads as though it does.
@@ -1421,6 +1449,17 @@ export function Monitor({
         <Box flexGrow={1} />
         {/* Beside the import, at the end of the row: both act on the list as a whole rather
             than on any one campaign. */}
+        <Tooltip title={selected ? 'Leave selection mode' : 'Select campaigns to delete'}>
+          <IconButton
+            size="small"
+            aria-label="select campaigns"
+            aria-pressed={Boolean(selected)}
+            onClick={() => setSelected((sel) => (sel ? null : new Set()))}
+            sx={{ color: 'common.white' }}
+          >
+            <ChecklistRoundedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
         <Tooltip title={filter ? 'Hide the search' : 'Search campaigns'}>
           <IconButton
             size="small"
@@ -1537,6 +1576,16 @@ export function Monitor({
 
       {importer.panel}
 
+      {selected ? (
+        <BulkDeleteBar
+          selected={selected}
+          shown={shown}
+          all={campaigns ?? []}
+          onChange={setSelected}
+          onDone={() => setSelected(null)}
+        />
+      ) : null}
+
       {error ? (
         <Alert severity="error">
           Could not reach the service.
@@ -1563,6 +1612,16 @@ export function Monitor({
             summary={c}
             newest={c.campaign_id === data.campaigns[0].campaign_id}
             openedByLink={c.campaign_id === openCampaign}
+            select={selected ? {
+              checked: selected.has(c.campaign_id),
+              disabled: !isSelectable(c),
+              onToggle: () => setSelected((sel) => {
+                const next = new Set(sel)
+                if (next.has(c.campaign_id)) next.delete(c.campaign_id)
+                else next.add(c.campaign_id)
+                return next
+              }),
+            } : undefined}
           />
         ))
       )}

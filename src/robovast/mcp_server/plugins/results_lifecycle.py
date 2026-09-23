@@ -126,30 +126,31 @@ def run_share(campaign_id: str) -> dict:
         return {"error": str(e)}
 
 
-def delete_campaign(campaign_id: str) -> dict:
-    """Irreversibly remove a campaign: its directory, the local archives beside it, its
-    index rows, and on a cluster its leftover Jobs.
+def delete_campaign(campaign_id: str | list[str]) -> dict:
+    """Irreversibly remove campaigns: each one's directory, the local archives beside it,
+    its index rows, and on a cluster its leftover Jobs.
 
-    Runs through the robovast-service — no kubeconfig or namespace here. A running campaign
-    is refused; stop it first. ``ok=false`` names a path that could not be removed (often
-    run output owned by another container user); deleting again retries only what is
-    left. The copy on an external share provider is never touched.
+    Each id is deleted or refused on its own: a running one is refused (stop it first);
+    ``partial`` says what it had to leave behind, and deleting again retries it.
+    The copy on an external share is never touched.
 
     Args:
-        campaign_id: The campaign to remove.
+        campaign_id: One campaign id, or a list of them.
 
     Returns:
-        ``{ok, message}`` or ``{error}``.
+        ``{results: [{campaign_id, outcome, ok, message}]}`` or ``{error}``.
     """
+    from robovast.service.interface import DeleteCampaignsRequest
     client = service_access.service_client()
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
-    if not campaign_id:
+    ids = [campaign_id] if isinstance(campaign_id, str) else list(campaign_id)
+    if not ids or not all(ids):
         return {"error": "campaign_id is required to delete a campaign."}
     try:
-        res = client.delete_campaign(campaign_id)
-        return {"ok": res.ok, "message": res.message}
+        res = client.delete_campaigns(DeleteCampaignsRequest(campaign_ids=ids))
+        return res.model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 

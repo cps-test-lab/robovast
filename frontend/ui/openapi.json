@@ -405,6 +405,42 @@
         "title": "CacheSize",
         "type": "object"
       },
+      "CampaignDeletion": {
+        "description": "One campaign's outcome within a multi-campaign delete.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "outcome": {
+            "enum": [
+              "deleted",
+              "not_found",
+              "partial",
+              "running",
+              "invalid"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "message",
+          "ok",
+          "outcome"
+        ],
+        "title": "CampaignDeletion",
+        "type": "object"
+      },
       "CampaignOrigin": {
         "description": "Where a campaign's configuration came from. **A record, never a link.**\n\nCampaigns stay workspace-independent: nothing in the execution path reads this back, a\nre-run still relaunches from the frozen ``_config/`` (see\n:mod:`robovast.service.retrigger`), and the workspace named here may have been edited,\nrenamed or deleted since -- or, for an ingested campaign, may never have existed on this\ndeployment at all. It answers \"where did this come from?\", which is a fact about the past,\nand not \"where do I relaunch it from?\", which is always the campaign's own snapshot.\n\n**The workspace fields name where the configuration ORIGINATES, not what the launch read.**\nFor a re-run they are copied from the parent's own origin at launch, so a chain of re-runs\nkeeps naming the workspace at its root. Denormalised rather than resolved by walking\n``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not\nhold the parent at all; a parent is routinely deleted, and provenance that evaporates with it\nis provenance nobody can rely on; and a chain then costs no recursion.\n\n:attr:`kind` is the single authority on which shape this is. It is *currently* derivable\n(a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would\nhave to be revisited the first time an origin appears that is neither -- so switch on\n``kind`` and never on whether ``from_campaign`` is empty.\n\n**A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is\nmigrated on the way into the re-run's staging copy, so two runs of \"the same campaign\" can\nread different config versions -- which makes them different experiments, and a reader\ncomparing their results has to be able to see it. :attr:`config_version_from` is recorded\non every re-run, so \"read a current config\" is a fact rather than a silence:\n:attr:`config_migration_steps` is empty when nothing had to be carried forward, and\n:attr:`config_version_from` is ``None`` only when nothing was recorded at all.",
         "properties": {
@@ -998,6 +1034,41 @@
           "table"
         ],
         "title": "DataTable",
+        "type": "object"
+      },
+      "DeleteCampaignsRequest": {
+        "description": "The campaigns to delete in one call. Each is deleted, or refused, on its own.",
+        "properties": {
+          "campaign_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Campaign Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaign_ids"
+        ],
+        "title": "DeleteCampaignsRequest",
+        "type": "object"
+      },
+      "DeleteCampaignsResponse": {
+        "description": "One :class:`CampaignDeletion` per requested id, in request order, duplicates\ndropped. The call succeeds as a whole even when some ids fail: read each entry.",
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignDeletion"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "DeleteCampaignsResponse",
         "type": "object"
       },
       "DiskSpace": {
@@ -5241,6 +5312,48 @@
         "summary": "Put Campaign Archive",
         "tags": [
           "results"
+        ]
+      }
+    },
+    "/campaigns/delete": {
+      "post": {
+        "description": "Delete several campaigns, each as the single delete would. Not all-or-nothing: a running campaign or an id that is not a campaign id is that id's outcome, not a refusal of the call, so the answer is 200 with one result per id -- read each one.",
+        "operationId": "delete_campaigns_campaigns_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteCampaignsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteCampaignsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Campaigns",
+        "tags": [
+          "campaigns"
         ]
       }
     },

@@ -628,6 +628,14 @@ carries three version surfaces of its own and each can independently be older, n
 absent or corrupt; a *degraded* import is usable-but-incomplete rather than a failure,
 so read it before discarding a campaign you just recovered.
 
+``delete_campaign`` takes one campaign id or a list of them, and answers the same way for
+both: one ``{campaign_id, outcome, ok, message}`` per id, where ``outcome`` is ``deleted``,
+``not_found``, ``partial``, ``running`` or ``invalid``. It is one tool rather than a second one
+for several, because every tool's description is sent on every request and deleting one campaign
+is deleting a list of one. Each id stands alone: a running campaign among them is refused and the
+rest are deleted, so read every entry rather than stopping at the first. ``ok`` means nothing of
+that campaign is left on the service, which is also true of one that was already gone.
+
 There is no MCP tool for listing or downloading from the share. That is deliberate and
 it is the same rule as the wait tools: a share listing is a CLI call
 (``vast share list``), and a transfer that can outlive a turn is a shell command

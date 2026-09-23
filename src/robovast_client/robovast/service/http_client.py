@@ -35,7 +35,8 @@ from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
 from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
-                                        CreateWorkspaceRequest, EditFileRequest,
+                                        CreateWorkspaceRequest, DeleteCampaignsRequest,
+                                        DeleteCampaignsResponse, EditFileRequest,
                                         ERROR_CODE_HEADER, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
@@ -55,6 +56,9 @@ logger = logging.getLogger(__name__)
 #: How long a cache report or clear may take. Both walk every file in the caches, and a
 #: campaign fetched whole can hold a hundred thousand of them.
 _CACHE_TIMEOUT_S = 600.0
+
+#: How long a multi-campaign delete may take -- the same walk, over several campaigns.
+_DELETE_CAMPAIGNS_TIMEOUT_S = 600.0
 
 
 class HTTPTransport(RobovastInterface):
@@ -346,6 +350,14 @@ class HTTPTransport(RobovastInterface):
 
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._delete(Routes.campaign(campaign_id)))
+
+    def delete_campaigns(self, request: DeleteCampaignsRequest) -> DeleteCampaignsResponse:
+        # Each id is a whole-campaign removal, done one after another before the service
+        # answers, so the read timeout is the long one: a client that gave up at the
+        # default would report a failure for deletes that went on to succeed.
+        return DeleteCampaignsResponse.model_validate(
+            self._post(Routes.CAMPAIGNS_DELETE, json=request.model_dump(),
+                       timeout=_DELETE_CAMPAIGNS_TIMEOUT_S))
 
     def create_archive_upload(self) -> UploadGrant:
         grant = UploadGrant.model_validate(self._post(Routes.CAMPAIGN_ARCHIVES))
