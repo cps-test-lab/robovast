@@ -537,11 +537,25 @@ class CampaignSummary(BaseModel):
     results_bytes: Optional[int] = None
 
 
+#: The keys the campaign listing can be ordered by. ``recent`` is when a campaign ended (a
+#: live one: when it started), ``size`` is :attr:`CampaignSummary.results_bytes`.
+CampaignSortKey = Literal["recent", "size"]
+#: The direction of that order. ``desc`` puts the newest or largest first.
+SortOrder = Literal["desc", "asc"]
+
+
 class ListCampaignsRequest(BaseModel):
-    """Paginated global campaign listing (campaigns are not workspace-scoped)."""
+    """Paginated global campaign listing (campaigns are not workspace-scoped).
+
+    ``sort`` and ``order`` choose the order *before* ``limit``/``offset`` cut the page, so
+    a page is always a window onto the whole ordered list. Either value outside its
+    vocabulary is refused rather than read as the default.
+    """
 
     limit: int = 20
     offset: int = 0
+    sort: CampaignSortKey = "recent"
+    order: SortOrder = "desc"
 
 
 class ListCampaignsResponse(BaseModel):
@@ -3125,20 +3139,27 @@ class RobovastInterface(ABC):
     def list_campaigns(
         self, request: Optional[ListCampaignsRequest] = None
     ) -> ListCampaignsResponse:
-        """List campaigns known to this service (global, live first then newest first).
+        """List campaigns known to this service (global, live first, then by ``sort``).
 
-        Campaigns still being worked on lead, and within each group the order is by
-        recorded start time (``started_at``), newest first. A campaign runs for hours to
-        days, so recency alone buries the one the caller is asking about under everything
-        launched since. A campaign that becomes active again — a re-triggered
-        postprocessing, an upload-to-share, an import — leads for as long as that lasts,
-        without its ``started_at`` changing.
+        Campaigns still being worked on lead under every ordering, and ``sort``/``order``
+        order each group. A campaign runs for hours to days, so any other first key buries
+        the one the caller is asking about under everything launched since. A campaign that
+        becomes active again — a re-triggered postprocessing, an upload-to-share, an import
+        — leads for as long as that lasts, without its ``started_at`` changing.
+
+        ``sort="recent"`` (the default) orders a live campaign by its recorded start time
+        and a finished one by when it ended, falling back to its start; ``order="desc"``
+        (the default) puts the newest first. ``sort="size"`` orders by
+        :attr:`CampaignSummary.results_bytes`, largest first under ``desc``; campaigns of
+        equal size, and campaigns with no recorded size, keep the default recency order
+        among themselves.
 
         Ordered *before* ``limit``/``offset`` are applied, so a page is the N most
         pertinent and never an arbitrary window; in particular a live campaign is on the
         first page however old it is. Callers render this order as given; a start time is
         never derived from the campaign id, whose ``<name>-`` prefix is user-supplied. A
-        campaign with no recorded start time comes last within its group.
+        campaign with no value for the sort key — no recorded start time, no recorded size
+        — comes last within its group in both directions: an unknown is not the smallest.
         """
 
     @abstractmethod

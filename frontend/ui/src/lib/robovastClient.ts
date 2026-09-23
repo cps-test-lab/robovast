@@ -13,6 +13,7 @@
 // Override with VITE_ROBOVAST_URL to point at an arbitrary service.
 
 import type { components } from './api.generated'
+import { campaignSortQuery, DEFAULT_CAMPAIGN_SORT, type CampaignListSort } from './campaignSort'
 
 type Schemas = components['schemas']
 
@@ -48,13 +49,19 @@ export type CampaignOrigin = Schemas['CampaignOrigin']
 
 export type ListCampaignsResponse = Schemas['ListCampaignsResponse']
 
-// Campaign lists arrive live-first, then newest-first by recorded start time within each
-// group; the service sorts before it applies limit/offset, so the order and the page
-// contents agree and a live campaign is on the first page however old it is (see
-// LocalTransport.list_campaigns). Rendering it as given is the whole contract: there is
-// deliberately no client-side re-sort — a second key that had to agree with the backend's
-// was itself the ordering bug, `campaign_id` is not a usable key here because its
-// `<name>-` prefix is user-supplied, and liveness is a fact only the service holds (a
+export {
+  DEFAULT_CAMPAIGN_SORT,
+  isDefaultCampaignSort,
+  type CampaignListSort,
+} from './campaignSort'
+
+// Campaign lists arrive live-first, then in the requested order within each group (by
+// default newest first; see `CampaignListSort`); the service sorts before it applies
+// limit/offset, so the order and the page contents agree and a live campaign is on the
+// first page however old it is (see LocalTransport.list_campaigns). Rendering it as given
+// is the whole contract: there is deliberately no client-side re-sort, because a second key
+// here would have to agree with the backend's and cannot. `campaign_id` is not a usable key
+// — its `<name>-` prefix is user-supplied — and liveness is a fact only the service holds (a
 // campaign is live while something drives it, which its phase alone does not tell you at
 // the moment a re-triggered postprocessing starts).
 
@@ -515,8 +522,11 @@ export const robovast = {
 
   listWorkspaces: () => request<ListWorkspacesResponse>('GET', '/workspaces'),
 
-  listCampaigns: (limit = 20, offset = 0) =>
-    request<ListCampaignsResponse>('GET', `/campaigns?limit=${limit}&offset=${offset}`),
+  listCampaigns: (limit = 20, offset = 0, sort: CampaignListSort = DEFAULT_CAMPAIGN_SORT) => {
+    const q = campaignSortQuery(sort)
+    return request<ListCampaignsResponse>(
+      'GET', `/campaigns?limit=${limit}&offset=${offset}${q ? `&${q}` : ''}`)
+  },
 
   getStatus: (campaignId: string) =>
     request<Status>('GET', `/campaigns/${encodeURIComponent(campaignId)}/status`),
@@ -566,9 +576,13 @@ export const robovast = {
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream`,
 
   // SSE stream of the campaign list itself: the server pushes the full list on
-  // connect and on every change (a server-side loop over listCampaigns). The
-  // Monitor page consumes this instead of polling; EventSource reconnects natively.
-  campaignsStreamUrl: () => `${BASE}/campaigns/events`,
+  // connect and on every change (a server-side loop over listCampaigns), in the order
+  // asked for. The Monitor page consumes this instead of polling; EventSource reconnects
+  // natively.
+  campaignsStreamUrl: (sort: CampaignListSort = DEFAULT_CAMPAIGN_SORT) => {
+    const q = campaignSortQuery(sort)
+    return `${BASE}/campaigns/events${q ? `?${q}` : ''}`
+  },
 
   // This service's own log — the same SSE tail as the campaign logs above, over the ring
   // the serving process keeps. No id: there is one service, and it is the one answering.

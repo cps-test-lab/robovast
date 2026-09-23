@@ -5172,6 +5172,7 @@
     },
     "/campaigns": {
       "get": {
+        "description": "The campaign listing: live campaigns first, then ordered by ``sort``/``order``.\n\n``sort`` is ``recent`` (when a campaign ended, or started while it is live) or\n``size`` (its recorded results size); ``order`` is ``desc`` or ``asc``. Any other\nvalue is refused with 422.",
         "operationId": "list_campaigns_campaigns_get",
         "parameters": [
           {
@@ -5192,6 +5193,34 @@
               "default": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "recent",
+              "enum": [
+                "recent",
+                "size"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "title": "Order",
+              "type": "string"
             }
           }
         ],
@@ -5371,8 +5400,38 @@
     },
     "/campaigns/events": {
       "get": {
-        "description": "Server-sent events: the campaign list, pushed on every change.",
+        "description": "Server-sent events: the campaign list, pushed on every change.\n\nOrdered as ``GET /campaigns`` is, by the same ``sort``/``order``.",
         "operationId": "stream_campaigns_campaigns_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "recent",
+              "enum": [
+                "recent",
+                "size"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "title": "Order",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5381,6 +5440,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Stream Campaigns",

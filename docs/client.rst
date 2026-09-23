@@ -189,6 +189,14 @@ same thing spelled out.
 **Set** ``--description``. It is one line saying what the run is *for*, and it is what tells
 two same-day ``<name>-<timestamp>`` campaigns apart in ``vast campaign list`` and the web UI.
 
+``vast campaign list`` shows the campaigns still being worked on first, then the rest newest
+first. ``--sort size`` orders by the results size instead, largest first, and ``--asc`` turns
+either order round; the live campaigns lead under every order. The size column is what a
+campaign's results occupy, measured once when it ended, and reads ``-`` where none is recorded
+— a campaign still running, or one never measured — which also comes last under
+``--sort size`` in both directions. The order is the service's, applied before ``--limit``
+cuts the list, so it is the same order the web UI and the MCP ``list_campaigns`` tool show.
+
 Nothing here needs a project file or a current directory. There is no ambient project at
 all: every command names its own input, so nothing in a parent directory of your CWD decides
 which ``.vast`` runs.

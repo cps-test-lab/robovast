@@ -60,7 +60,8 @@ from robovast.client.safe_path import safe_join
 from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
-from robovast.common.campaign_data import campaign_has_runs, read_campaign_finished_at
+from robovast.common.campaign_data import (campaign_has_runs, read_campaign_finished_at,
+                                           read_campaign_results_bytes)
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (STOP_RUNS,
@@ -667,6 +668,10 @@ class ServiceBase(RobovastInterface):
         #: export ends the campaign again and moves its finish time, so
         #: `_dispatch_background` drops the entry when it registers such an operation.
         self._finished_at_cache: dict[str, str] = {}
+        #: campaign_id -> recorded results size, or None for a campaign that ended unmeasured
+        #: (see _results_bytes_for). Holds only answers read from a terminal record, and is
+        #: invalidated with ``_finished_at_cache`` for the same reason.
+        self._results_bytes_cache: dict[str, Optional[int]] = {}
         # campaign_id -> recorded description (see _description_for). Same contract as
         # the start-time cache: write-once values only, so no invalidation is needed.
         self._description_cache: dict[str, str] = {}
@@ -3798,12 +3803,30 @@ class ServiceBase(RobovastInterface):
         # terminal outcome never gets one, so those keep ordering exactly as they did.
         started = {cid: self._started_at_for(cid) for cid in disk | mem}
         finished = {cid: self._finished_at_for(cid) for cid in started}
-        def _key(c: str):
-            live = is_live(c)
-            when = started[c] if live else (finished[c] or started[c])
-            return (live, when is not None, when or "", c)
+        live = {cid: is_live(cid) for cid in started}
+        recent = {cid: started[cid] if live[cid] else (finished[cid] or started[cid])
+                  for cid in started}
 
+        def _key(c: str):
+            return (live[c], recent[c] is not None, recent[c] or "", c)
+
+        # The default order, and the tie-break under every other one: sorting stably on the
+        # requested key alone keeps campaigns that tie on it -- and the ones that have no
+        # value for it -- in this order among themselves.
         all_ids = sorted(started, key=_key, reverse=True)
+        if request.sort == "size":
+            # From the same record the row's figure comes from (see _results_bytes_for), and
+            # asked only under this sort, so the default listing reads nothing extra.
+            value = {cid: self._results_bytes_for(cid) for cid in all_ids}
+        else:
+            value = recent
+        if request.sort != "recent" or request.order != "desc":
+            # Two stable passes: the value inside each group, then the group. A campaign with
+            # no value goes last in its group whichever way the order runs -- an unknown size
+            # is not the smallest one, and an unknown start is not the oldest.
+            all_ids.sort(key=lambda c: (value[c] is not None, value[c]),
+                         reverse=request.order == "desc")
+            all_ids.sort(key=lambda c: (live[c], value[c] is not None), reverse=True)
         total = len(all_ids)
         window = all_ids[request.offset:request.offset + request.limit]
         summaries = [self._summary_for(cid) for cid in window]
@@ -3961,9 +3984,9 @@ class ServiceBase(RobovastInterface):
         with self._lock:
             self._campaigns.pop(campaign_id, None)
             for cache in (self._started_at_cache, self._finished_at_cache,
-                          self._description_cache, self._created_by_cache,
-                          self._origin_cache, self._summary_cache, self._disk_status_cache,
-                          self._scene_identity_cache):
+                          self._results_bytes_cache, self._description_cache,
+                          self._created_by_cache, self._origin_cache, self._summary_cache,
+                          self._disk_status_cache, self._scene_identity_cache):
                 cache.pop(campaign_id, None)
 
         if failed:
@@ -4118,7 +4141,11 @@ class ServiceBase(RobovastInterface):
                          postprocessing_error=carried_error,
                          share_error=prior.share_error,
                          error=prior.error,
-                         mode=prior.mode)
+                         mode=prior.mode,
+                         # Measured once when the campaign ended, and not by this
+                         # operation: without it the entry lists the campaign as unmeasured
+                         # for as long as it answers for it.
+                         results_bytes=prior.results_bytes)
             state.set_phase(phase)
             entry = _TrackedCampaign(campaign_id, str(self._campaigns_root()), state)
             # A lane whose operation works against a fetched root, not the tracked one,
@@ -4135,6 +4162,7 @@ class ServiceBase(RobovastInterface):
             # the next listing re-read it; `_started_at_cache` needs no such thing because
             # a start time is written once and never edited.
             self._finished_at_cache.pop(campaign_id, None)
+            self._results_bytes_cache.pop(campaign_id, None)
             # Likewise the description: a tracked entry answers for the campaign while
             # it is live, so leaving this empty would blank the description out of every
             # listing for the duration of a re-triggered postprocess/share.
@@ -5350,6 +5378,31 @@ class ServiceBase(RobovastInterface):
 
         return self._campaign_fact(
             cid, from_entry, read_campaign_finished_at, self._finished_at_cache)
+
+    def _results_bytes_for(self, cid: str) -> Optional[int]:
+        """The results size of *cid* in bytes, or None when none is recorded.
+
+        What ``list_campaigns`` orders by under ``sort="size"``, read by the same precedence
+        :meth:`_summary_for` reads the row's figure by -- the live snapshot of a tracked
+        campaign, otherwise its durable record -- so the size a row shows and the size it was
+        sorted by cannot disagree. Asked of every campaign before the page is cut, which is
+        why it does not build a summary: it is one memoised read per campaign.
+
+        Unlike :meth:`_campaign_fact` this caches ``None`` too, once a terminal record says
+        it: a campaign that ended unmeasured stays unmeasured, and re-reading its record
+        every second to learn that again is the per-tick I/O the listing must not do.
+        """
+        with self._lock:
+            entry = self._campaigns.get(cid)
+            if entry is None and cid in self._results_bytes_cache:
+                return self._results_bytes_cache[cid]
+        if entry is not None:
+            return entry.state.snapshot().results_bytes
+        settled, value = read_campaign_results_bytes(self.campaign_dir(cid))
+        if settled:
+            with self._lock:
+                self._results_bytes_cache[cid] = value
+        return value
 
     def _description_for(self, cid: str) -> Optional[str]:
         """The campaign's description, or None when it was launched without one.

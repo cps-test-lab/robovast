@@ -487,6 +487,8 @@ _PARAMETER_VOCABULARY = {
     # how to match
     "query", "grep", "search", "pattern", "config_filter", "min_severity",
     "campaign_regex", "t0", "t1", "at", "time",
+    # in which order
+    "sort", "order",
     # how to behave
     "force", "recursive", "summarize", "group_by_run", "hide_shutdown", "keep_alive",
     "show_gui", "check_world", "check_scenario", "fresh", "priority", "executable",

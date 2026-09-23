@@ -18,6 +18,7 @@ import {
   selectionOf,
 } from './resultsTree'
 import { CAMPAIGN_SEL, hashFor, navFromHash, type Nav } from './hashNav'
+import { DEFAULT_CAMPAIGN_SORT } from './campaignSort'
 
 const TOPICS = [
   { id: 'config' },
@@ -34,6 +35,7 @@ const FALLBACK: Nav = {
   configCampaignId: '',
   shareImport: '',
   openCampaign: '',
+  listSort: DEFAULT_CAMPAIGN_SORT,
 }
 
 const CID = 'tb4-office-nav-local-2026-08-21-10395724'

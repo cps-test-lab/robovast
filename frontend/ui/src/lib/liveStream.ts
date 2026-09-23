@@ -82,7 +82,7 @@ export interface LiveStreamOptions {
  * must be dropped first. The two are indistinguishable from `onopen` alone; a bumped
  * `generation` is what separates them.
  */
-export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
+export function useLiveStream(url: string | null, opts: LiveStreamOptions = {}) {
   const { resetKey = '' } = opts
   // Handlers are re-read at dispatch time so a re-render's fresh closures are the ones that
   // run, without the subscription itself churning on every render.
@@ -109,6 +109,15 @@ export function useLiveStream(url: string, opts: LiveStreamOptions = {}) {
   }, [])
 
   useEffect(() => {
+    // No URL is no subscription: nothing is opened, and the watchdog below leaves it alone.
+    // For a reader that needs a stream only some of the time, since a hook cannot be called
+    // conditionally.
+    if (url === null) {
+      finished.current = true
+      setState('closed')
+      setReceived(false)
+      return
+    }
     finished.current = false
     setState('connecting')
     setReceived(false)

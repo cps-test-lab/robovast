@@ -15,7 +15,7 @@ It provides four views:
 * **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
   **live log** panel. **Every** campaign is listed **folded**: one row carrying its phase,
-  id, description, a time, and a **compact run meter**, with the jobs list, the Details
+  id, description, its results size, a time, and a **compact run meter**, with the jobs list, the Details
   panel and the log not rendered at all — so a page of campaigns is a page of rows rather
   than metres of scroll. Clicking the row (or its chevron) unfolds the full card. Nothing
   opens itself, including the newest campaign and one that ended badly: the row says which
@@ -472,6 +472,13 @@ notebook render. That data cannot change, because the campaign that produced it 
 re-reading it is the most expensive thing this UI does; making every visit pay for it would
 buy nothing. Re-running postprocessing is what invalidates those, and it already does.
 
+One **stream** takes the gate as well. In its default order the campaign list reads the
+app-wide stream, which stays open wherever you are: the start and end notices it feeds are
+owed to a reader who is on another page. Choosing a different order opens a second stream for
+that order alone, and that one is closed while the campaign page is not the one on screen --
+nothing reads it there, and the service orders every campaign it knows about on every tick it
+sends.
+
 The gate is also what stops a hidden page from spending on the service's behalf: before it,
 the Admin page cost a container-registry round trip every minute for as long as the tab was
 open, whichever page you were actually looking at, and each running campaign cost a
@@ -620,6 +627,20 @@ deleted rather than sending you back to retry every one.
 The phase is deliberately not matched. It is one value out of a known set, which is a control
 of its own rather than something to spell out in a free-text box — and matching it there would
 make a typed ``failed`` quietly mean two different things once that control exists.
+
+**The list can be ordered.** The selector beside the magnifier offers *Newest first* (the
+default), *Oldest first*, *Largest first* and *Smallest first*. Campaigns still being worked on
+lead under every order, and the order applies within that group and within the rest. *Newest*
+is when a campaign finished, falling back to when it started, as the time column shows; *largest*
+is the results size on the folded row, which is what the results occupy, measured once when
+the campaign ended. A campaign with no size — one still running, or one that was never measured
+— shows none and comes last in both size orders, since an unknown size is not the smallest.
+
+The service applies the order, before it cuts the list at a hundred campaigns, so on a large
+deployment *Largest first* shows the hundred largest rather than the hundred newest re-sorted.
+The choice is kept in the address (``#/execution?sort=size&order=desc``), so a reload or a
+shared link comes back to the same order, and it outlasts a visit to another view. The start
+and end notices are unaffected by it: they always follow the newest campaigns.
 
 .. _web-ui-import:
 

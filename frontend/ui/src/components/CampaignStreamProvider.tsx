@@ -1,7 +1,14 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { hasResults, robovast, type ListCampaignsResponse } from '@/lib/robovastClient'
+import {
+  hasResults,
+  isDefaultCampaignSort,
+  robovast,
+  type CampaignListSort,
+  type ListCampaignsResponse,
+} from '@/lib/robovastClient'
 import { useLiveStream } from '@/lib/liveStream'
+import { useActiveView } from '@/lib/activeView'
 import { describeCampaignEvent, seedPhases, trackCampaignPhases, type CampaignSpell } from '@/lib/campaignEvents'
 import { openCampaignCard, openResultsView } from '@/lib/nav'
 import * as browserNotify from '@/lib/browserNotify'
@@ -125,4 +132,48 @@ export function useCampaignStream(): CampaignStream {
   const ctx = useContext(CampaignStreamContext)
   if (!ctx) throw new Error('useCampaignStream must be used within a <CampaignStreamProvider>')
   return ctx
+}
+
+/**
+ * The campaign list in the order *sort* asks for.
+ *
+ * The default order is the app-wide stream above, so the common case still opens one
+ * EventSource. Any other order is a second stream, opened here for as long as it is asked for,
+ * and the app-wide one is left as it is: it feeds the start/end notices, which read the newest
+ * campaigns, and a page of the largest ones would drop a campaign that has just ended out of the
+ * list before its ending could be announced. The order itself is the service's to apply -- it
+ * sorts before it cuts the page -- so it is a parameter of the stream, never a re-sort here.
+ */
+export function useCampaignList(sort: CampaignListSort): CampaignStream {
+  const shared = useCampaignStream()
+  const active = useActiveView()
+  const own = !isDefaultCampaignSort(sort)
+  const [data, setData] = useState<ListCampaignsResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const url = own ? robovast.campaignsStreamUrl(sort) : null
+
+  // A new order is a new list: what the previous one held must not be shown under the new label
+  // while its first frame is on the way. Keyed on the order alone, so leaving the page and
+  // coming back shows the list as it was left and refreshes it underneath.
+  useEffect(() => {
+    setData(null)
+    setError(null)
+  }, [url])
+
+  // Open only while the campaign view is the one on screen. `KeepAlive` keeps the page mounted
+  // when it is not, and a subscription the service holds open -- and re-sorts every campaign for
+  // on every tick -- is data, which does not survive being hidden (lib/activeView.tsx). The
+  // app-wide stream is the deliberate exception: its start/end notices are owed to a reader who
+  // is somewhere else in the app.
+  const { state, reconnect } = useLiveStream(active ? url : null, {
+    onMessage: (e) => {
+      setData(JSON.parse(e.data) as ListCampaignsResponse)
+      setError(null)
+    },
+    events: {
+      streamerror: (e) => setError(JSON.parse(e.data)),
+    },
+  })
+
+  return own ? { data, error, live: state === 'open', reconnect } : shared
 }
