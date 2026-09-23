@@ -13,12 +13,11 @@ writes two files beside it:
     *visible*: the ground-track and timeseries panels read it directly.
 
 ``metrics.csv``
-    One row of scalars: the run's summary, read by the notebooks, the data browser, and the search
-    extractor.
+    One row of scalars: the run's summary, read by the notebooks and the data browser.
 
-Used as a local-file postprocessing plugin (``search/metrics.py:EnvelopeMetrics``) under
-``results_processing.postprocessing`` (batch) or ``search.postprocessing`` (search). Run discovery
-globs, so it works pointed at a campaign root or a single run.
+Used as a local-file postprocessing plugin (``files/metrics.py:EnvelopeMetrics``) under
+``results_processing.postprocessing``. Run discovery globs, so it works pointed at a campaign root
+or a single run.
 """
 
 from __future__ import annotations
