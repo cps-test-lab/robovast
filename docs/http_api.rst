@@ -163,13 +163,16 @@ FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 Streaming
 =========
 
-Four routes stream instead of returning a body. The two ``.../stream`` log routes and
+Five routes stream instead of returning a body. The two ``.../stream`` log routes and
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
 than replaying the whole log. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
 campaign, tarred from the campaign directory as it is read. Both lanes answer it: refusing
 on a local service with a ``409`` ("the results are already on this host's filesystem")
 asserts something true of a caller on that host and false of everyone else.
+``GET /workspaces/{id}/archive`` is the same for a workspace's project files, under a
+single top-level directory. It is a control-plane route rather than a data one, because a
+workspace is not on the results volume the data routes serve.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is

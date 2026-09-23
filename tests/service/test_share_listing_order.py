@@ -8,7 +8,7 @@ place -- the campaign-id timestamp parser is Python's, and a second copy of it i
 TypeScript would be a second thing to keep right.
 
 The sort cannot key on a modification time because no provider reports one: every
-``list_campaign_archives_with_size`` yields ``(name, size)``. What it keys on instead is
+``list_archives_with_size`` yields ``(name, size)``. What it keys on instead is
 the timestamp inside the campaign id, which is when the campaign *ran* -- the fact a
 reader of this listing is actually after.
 """
@@ -45,7 +45,7 @@ class _StubProvider:
     def __init__(self, objects):
         self._objects = list(objects)
 
-    def list_campaign_archives_with_size(self):
+    def list_archives_with_size(self):
         return [(name, 1) for name in self._objects]
 
     @staticmethod

@@ -63,7 +63,9 @@ from robovast.common import make_transfer_progress_callback
 from robovast.execution.share_providers import (load_share_provider_plugins,
                                                 unavailable_share_type_message)
 from robovast.execution.share_providers.naming import (SHARE_VARIANTS, archive_name,
-                                                       parse_archive_name)
+                                                       parse_archive_name,
+                                                       parse_workspace_archive_name,
+                                                       workspace_archive_name)
 
 
 @click.group()
@@ -122,7 +124,7 @@ def _archives(provider):
     answers and only one of them means it is safe to re-upload.
     """
     try:
-        listing = provider.list_campaign_archives_with_size()
+        listing = provider.list_archives_with_size()
     except NotImplementedError as exc:
         raise click.UsageError(str(exc)) from exc
 
@@ -135,6 +137,43 @@ def _archives(provider):
         found.append((object_name, campaign_id, variant, size))
     found.sort(key=lambda rec: rec[1])
     return found
+
+
+def _workspace_archives(provider):
+    """``[(object_name, slug, size)]`` for the workspace archives on the share.
+
+    The workspace half of :func:`_archives`, kept apart for the reason the listing keeps
+    them apart: the two are asked for by different verbs and named by different grammars,
+    and a caller that had to filter a mixed list would be one edit away from removing a
+    campaign for a workspace's name.
+    """
+    try:
+        listing = provider.list_archives_with_size()
+    except NotImplementedError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    found = []
+    for object_name, size in listing:
+        slug = parse_workspace_archive_name(os.path.basename(object_name))
+        if slug is None:
+            continue
+        found.append((object_name, slug, size))
+    found.sort(key=lambda rec: rec[1])
+    return found
+
+
+def _select_workspaces(archives, patterns, *, what="download"):
+    """Filter workspace records by slug patterns (globs allowed); raise if none match."""
+    if not patterns:
+        return archives
+    selected = [rec for rec in archives
+                if any(fnmatch.fnmatch(rec[1], pat) for pat in patterns)]
+    if not selected:
+        raise click.UsageError(
+            f"None of the requested workspaces are on the share, so there is nothing to "
+            f"{what}.\nRequested: {', '.join(sorted(patterns))}\n"
+            "Run 'vast share list' to see what is there.")
+    return selected
 
 
 #: The web UI's campaign view, and the query it carries a share-import request in. Written
@@ -192,19 +231,50 @@ def _select(archives, patterns, *, what="download"):
 # ---------------------------------------------------------------------------
 
 @share.command(name='list')
-@click.argument('campaigns', nargs=-1)
-def list_cmd(campaigns):
-    """List the campaign archives on the share, with their variant and size.
+@click.argument('names', nargs=-1)
+@click.option('--workspace', '-w', 'workspaces_only', is_flag=True,
+              help='List the workspace archives instead of the campaigns.')
+def list_cmd(names, workspaces_only):
+    """List the archives on the share, with their variant or slug and their size.
 
-    Pass one or more CAMPAIGNS (globs allowed) to narrow the listing.
+    Campaigns by default; ``--workspace`` lists the workspaces instead. Pass one or more
+    NAMES (globs allowed) to narrow the listing -- campaign ids, or workspace slugs with
+    ``--workspace``.
 
-    Each line also says whether that campaign is present in the reachable service.
-    ``importable`` means it is not -- an archive whose campaign was cleaned up here, or
-    that was produced somewhere else entirely, and the reason ``vast share import``
-    exists. The share is not a subset of what the service has, so neither listing is
-    authoritative for the other.
+    Each campaign line also says whether that campaign is present in the reachable
+    service. ``importable`` means it is not -- an archive whose campaign was cleaned up
+    here, or that was produced somewhere else entirely, and the reason ``vast share
+    import`` exists. The share is not a subset of what the service has, so neither
+    listing is authoritative for the other. A workspace line says nothing of the kind:
+    importing one always creates a new workspace, so there is no "already here" to report.
     """
     share_type, provider = _provider()
+    campaigns = names
+    if workspaces_only:
+        click.echo(f"Listing workspaces on {share_type}...")
+        try:
+            found = _select_workspaces(_workspace_archives(provider), names, what="list")
+        except click.UsageError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - rendered as a CLI error
+            handle_cli_exception(exc)
+            return
+        if not found:
+            click.echo("No workspace archives found on the share.")
+            return
+        total = 0
+        for _obj, slug, size in found:
+            size_str = _fmt_size(size) if size >= 0 else "unknown size"
+            click.echo(f"  {slug}  {size_str}")
+            if size >= 0:
+                total += size
+        click.echo()
+        if any(size >= 0 for *_rest, size in found):
+            click.echo(f"  {len(found)} workspace(s)  total {_fmt_size(total)}")
+        else:
+            click.echo(f"  {len(found)} workspace(s)")
+        return
+
     click.echo(f"Listing campaigns on {share_type}...")
     try:
         archives = _select(_archives(provider), campaigns, what="list")
@@ -259,24 +329,38 @@ def _campaign_ids_in_service():
 
 
 @share.command(name='download')
-@click.argument('campaigns', nargs=-1)
+@click.argument('names', nargs=-1)
+@click.option('--workspace', '-w', 'workspaces_only', is_flag=True,
+              help='Download workspace archives instead of campaigns; NAMES are slugs.')
 @click.option('--output', '-o', 'output', default=None, type=click.Path(file_okay=False),
               help='Directory to write the archives into [default: the current directory]')
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite an archive of the same name that is already here')
-def download_cmd(campaigns, output, force):
-    """Download campaign archives from the share to this machine.
+def download_cmd(names, workspaces_only, output, force):
+    """Download archives from the share to this machine.
 
-    Writes ``<campaign-id>.<variant>.tar.gz`` and stops there -- the archive is yours,
-    to keep, copy, or hand to ``vast campaign import``. Nothing is extracted and no
-    results directory is touched.
+    Writes ``<campaign-id>.<variant>.tar.gz``, or ``<slug>.workspace.tar.gz`` with
+    ``--workspace``, and stops there -- the archive is yours, to keep, copy, or hand to
+    ``vast campaign import``. Nothing is extracted and no results directory is touched.
 
     An interrupted transfer leaves a ``.part`` file and the next run resumes from it;
     share transfers are the ones that get interrupted, so this is where resume lives.
     """
     share_type, provider = _provider()
+    campaigns = names
     out_dir = Path(output) if output else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if workspaces_only:
+        click.echo(f"Listing workspaces on {share_type}...")
+        found = _select_workspaces(_workspace_archives(provider), names)
+        if not found:
+            click.echo("No workspace archives found on the share.")
+            return
+        _download_each(provider, out_dir, force,
+                       [(obj, slug, workspace_archive_name(slug)) for obj, slug, _s in found],
+                       kind="workspace")
+        return
 
     click.echo(f"Listing campaigns on {share_type}...")
     archives = _select(_archives(provider), campaigns)
@@ -284,9 +368,20 @@ def download_cmd(campaigns, output, force):
         click.echo("No campaign archives found on the share.")
         return
 
+    _download_each(provider, out_dir, force,
+                   [(obj, cid, archive_name(cid, variant))
+                    for obj, cid, variant, _size in archives],
+                   kind="campaign")
+
+
+def _download_each(provider, out_dir, force, wanted, *, kind):
+    """Fetch each ``(object_name, label, base_name)`` in *wanted* into *out_dir*.
+
+    One implementation for both kinds: resume, progress and the atomic rename are
+    properties of a share transfer, not of what is being transferred.
+    """
     downloaded = skipped = 0
-    for object_name, campaign_id, variant, _size in archives:
-        base = archive_name(campaign_id, variant)
+    for object_name, label, base in wanted:
         dest = out_dir / base
         if dest.exists() and not force:
             click.echo(f"  {base}  already here, skipping (use --force to re-download)")
@@ -296,15 +391,15 @@ def download_cmd(campaigns, output, force):
         tmp_path = out_dir / f".{base}.part"
         resume_offset = tmp_path.stat().st_size if tmp_path.exists() else 0
         if resume_offset:
-            click.echo(f"  {campaign_id}  resuming from {_fmt_size(resume_offset)}...")
+            click.echo(f"  {label}  resuming from {_fmt_size(resume_offset)}...")
         else:
-            click.echo(f"  {campaign_id}  downloading [{variant}]...")
+            click.echo(f"  {label}  downloading...")
 
         start = time.monotonic()
         try:
             provider.download_archive(
                 object_name, str(tmp_path),
-                make_transfer_progress_callback(campaign_id, start),
+                make_transfer_progress_callback(label, start),
                 resume_offset=resume_offset)
         except NotImplementedError as exc:
             raise click.UsageError(str(exc)) from exc
@@ -322,12 +417,12 @@ def download_cmd(campaigns, output, force):
             sys.stdout.flush()
 
         os.replace(tmp_path, dest)
-        click.echo(f"  {campaign_id}  ✓  {_fmt_size(dest.stat().st_size)} "
+        click.echo(f"  {label}  ✓  {_fmt_size(dest.stat().st_size)} "
                    f"in {time.monotonic() - start:.0f}s  ->  {dest}")
         downloaded += 1
 
     click.echo()
-    parts = [f"✓ Downloaded {downloaded} archive(s)"]
+    parts = [f"✓ Downloaded {downloaded} {kind} archive(s)"]
     if skipped:
         parts.append(f"{skipped} skipped")
     click.echo("  ".join(parts))
@@ -336,10 +431,15 @@ def download_cmd(campaigns, output, force):
 @share.command(name='upload')
 @click.argument('archives', nargs=-1, required=True, type=click.Path(exists=True,
                                                                     dir_okay=False))
+@click.option('--workspace', '-w', 'as_workspace', is_flag=True,
+              help='The files are workspace archives, not campaigns.')
+@click.option('--name', 'new_name', default='',
+              help='Publish the workspace under this name (one file at a time). '
+                   'Default: the slug in the file name.')
 @click.option('--force', '-f', is_flag=True,
               help='Replace an archive of the same name that is already on the share')
-def upload_cmd(archives, force):
-    """Upload campaign archive files from this machine to the share.
+def upload_cmd(archives, as_workspace, new_name, force):
+    """Upload archive files from this machine to the share.
 
     ARCHIVES are ``.tar.gz`` files as ``vast campaign download`` or ``vast share
     download`` produce them. The campaign id is read from the archive's single
@@ -347,12 +447,23 @@ def upload_cmd(archives, force):
     it, so the object is named the way everything else on the share is named -- whatever
     the file happens to be called on your disk.
 
+    ``--workspace`` uploads workspace archives instead. A workspace archive carries no
+    name inside it -- its top-level directory is the id of the workspace it came from,
+    which means nothing here -- so the slug comes from ``--name``, or from a file already
+    called ``<slug>.workspace.tar.gz``.
+
     This is a write, so it needs share credentials that may write. A read-only
     credential is refused by the share, which is what read-only means.
     """
     import tarfile  # pylint: disable=import-outside-toplevel
 
     share_type, provider = _provider()
+    if as_workspace:
+        _upload_workspaces(provider, share_type, archives, new_name, force)
+        return
+    if new_name:
+        raise click.UsageError("--name applies to a workspace upload; pass --workspace.")
+
     existing = {name for _o, name, _v, _s in _archives(provider)} if not force else set()
 
     uploaded = 0
@@ -390,6 +501,51 @@ def upload_cmd(archives, force):
 
     click.echo()
     click.echo(f"✓ Uploaded {uploaded} archive(s) to {share_type}.")
+
+
+def _upload_workspaces(provider, share_type, archives, new_name, force):
+    """Put each workspace archive in *archives* on the share under its slug."""
+    from robovast.execution.share_providers.naming import \
+        workspace_slug  # pylint: disable=import-outside-toplevel
+
+    if new_name and len(archives) != 1:
+        raise click.UsageError("--name names one archive, so pass one file with it.")
+    existing = {slug for _o, slug, _s in _workspace_archives(provider)} if not force else set()
+
+    uploaded = 0
+    for path in archives:
+        base = os.path.basename(path)
+        slug = workspace_slug(new_name, "") if new_name else parse_workspace_archive_name(base)
+        if not slug:
+            raise click.UsageError(
+                f"'{path}' is not named '<slug>.workspace.tar.gz', so there is no name to "
+                f"publish it under. Pass --name to choose one.")
+        object_name = workspace_archive_name(slug)
+        if slug in existing:
+            click.echo(f"  {slug}  already on the share, skipping (use --force to replace)")
+            continue
+        click.echo(f"  {slug}  uploading as {object_name}...")
+        start = time.monotonic()
+        try:
+            provider.upload_archive(
+                path, object_name,
+                progress_callback=make_transfer_progress_callback(slug, start))
+        except NotImplementedError as exc:
+            raise click.UsageError(str(exc)) from exc
+        except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
+            raise
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write("\n")
+            handle_cli_exception(exc)
+            continue
+        finally:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        click.echo(f"  {slug}  ✓ uploaded to {share_type}")
+        uploaded += 1
+
+    click.echo()
+    click.echo(f"✓ Uploaded {uploaded} workspace archive(s) to {share_type}.")
 
 
 def _read_archive_identity(tarfile_mod, path):
@@ -450,15 +606,17 @@ def _read_archive_identity(tarfile_mod, path):
 
 
 @share.command(name='remove')
-@click.option('--campaign', '-i', 'campaigns', multiple=True, required=True,
+@click.option('--campaign', '-i', 'campaigns', multiple=True,
               help='Campaign to remove (globs such as "nav-2026-03-09-*" are allowed). '
                    'Repeatable.')
+@click.option('--workspace', '-w', 'workspaces', multiple=True,
+              help='Workspace slug to remove (globs allowed). Repeatable.')
 @click.option('--variant', type=click.Choice(list(SHARE_VARIANTS)), default=None,
               help='Remove only this variant. Without it, every variant of the named '
                    'campaign goes.')
 @click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt')
-def remove_cmd(campaigns, variant, yes):
-    """Permanently delete campaign archives from the share.
+def remove_cmd(campaigns, workspaces, variant, yes):
+    """Permanently delete archives from the share.
 
     A campaign can have both variants on the share at once -- that is what naming them
     apart is for -- and by default this removes all of them, because "delete this
@@ -467,11 +625,49 @@ def remove_cmd(campaigns, variant, yes):
     was computed from. The raw one is the irreplaceable half: postprocessing can be run
     again, a recording cannot.
 
+    ``--workspace`` removes workspace archives by slug instead. One kind per run: a glob
+    that reached across both would delete a campaign because a workspace was named like it.
+
     A write, performed with your credentials -- not the service's. Borrowing the
     service's would let anyone who can reach RoboVAST delete share content the share
     itself would refuse them, so a read-only credential is refused here on purpose.
     """
+    if bool(campaigns) == bool(workspaces):
+        raise click.UsageError(
+            "Name what to remove: --campaign or --workspace (not both in one run, so a "
+            "glob cannot reach across the two).")
+
     share_type, provider = _provider()
+    if workspaces:
+        click.echo(f"Listing workspaces on {share_type}...")
+        matched = _select_workspaces(_workspace_archives(provider), workspaces,
+                                     what="remove")
+        if not yes:
+            click.echo()
+            for _obj, slug, size in matched:
+                size_str = f"  ({_fmt_size(size)})" if size >= 0 else ""
+                click.echo(f"  {slug}{size_str}")
+            click.echo()
+            click.confirm(f"Remove {len(matched)} workspace archive(s) from {share_type}?",
+                          abort=True)
+        removed = 0
+        for object_name, slug, _size in matched:
+            click.echo(f"  {slug}  removing...")
+            try:
+                provider.remove_archive(object_name)
+            except NotImplementedError as exc:
+                raise click.UsageError(str(exc)) from exc
+            except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
+                raise
+            except Exception as exc:  # noqa: BLE001
+                handle_cli_exception(exc)
+                continue
+            click.echo(f"  {slug}  ✓ removed")
+            removed += 1
+        click.echo()
+        click.echo(f"✓ Removed {removed} workspace archive(s) from {share_type}.")
+        return
+
     click.echo(f"Listing campaigns on {share_type}...")
     all_archives = _archives(provider)
 
@@ -533,24 +729,45 @@ def remove_cmd(campaigns, variant, yes):
 # ---------------------------------------------------------------------------
 
 @share.command(name='export')
-@click.option('--campaign', '-i', 'campaign_id', required=True,
+@click.option('--campaign', '-i', 'campaign_id', default=None,
               help='Campaign in the service to publish to the share')
-def export_cmd(campaign_id):
-    """Publish a campaign from the service to the share.
+@click.option('--workspace', '-w', 'workspace_id', default=None,
+              help='Workspace in the service to publish to the share (id or name)')
+def export_cmd(campaign_id, workspace_id):
+    """Publish a campaign or a workspace from the service to the share.
 
     The service does the transfer with its own credentials, so nothing passes through
-    this machine and your share credentials are not involved. The variant is read off
-    the campaign: one that has been postprocessed goes up as ``postprocessed``, one
-    that has not as ``raw`` -- the same rule the campaign-end ``--upload-to-share``
-    follows, which is why the two can never disagree.
+    this machine and your share credentials are not involved.
 
-    Long-running: it returns as soon as the upload is under way. Watch it with
-    ``vast campaign wait <campaign-id>``, or in the campaign view.
+    A campaign's variant is read off the campaign: one that has been postprocessed goes
+    up as ``postprocessed``, one that has not as ``raw`` -- the same rule the campaign-end
+    ``--upload-to-share`` follows, which is why the two can never disagree. Long-running:
+    it returns as soon as the upload is under way. Watch it with ``vast campaign wait
+    <campaign-id>``, or in the campaign view.
+
+    A workspace goes up as ``<slug>.workspace.tar.gz``, where the slug is its name reduced
+    to what an object name may hold, and this waits for it: a project tree is small enough
+    that the answer is the object that landed.
+
+    \b
+      vast share export --campaign nav-2026-03-09-101500
+      vast share export --workspace growth-sim
     """
     from robovast.client.service_target import \
         service_client  # pylint: disable=import-outside-toplevel
     from robovast.service.interface import \
         RunShareRequest  # pylint: disable=import-outside-toplevel
+
+    if bool(campaign_id) == bool(workspace_id):
+        raise click.UsageError(
+            "Name exactly one thing to export: --campaign or --workspace.")
+
+    if workspace_id:
+        with service_client() as (client, label):
+            click.echo(f"Exporting workspace {workspace_id} to the share via {label} ...")
+            archive = client.export_workspace(workspace_id)
+        click.echo(f"✓ {archive.object_name}" + (f"  {archive.url}" if archive.url else ""))
+        return
 
     with service_client() as (client, label):
         click.echo(f"Exporting {campaign_id} to the share via {label} ...")
@@ -562,13 +779,17 @@ def export_cmd(campaign_id):
 
 @share.command(name='import')
 @click.argument('campaigns', nargs=-1, required=True)
+@click.option('--workspace', '-w', 'as_workspace', is_flag=True,
+              help='Take workspaces instead of campaigns; the arguments are slugs.')
+@click.option('--name', 'new_name', default='',
+              help='Name the imported workspace (one at a time). Default: its slug.')
 @click.option('--force', '-f', is_flag=True,
               help='Replace a campaign of the same id that the service already has')
 @click.option('--rebuild-store', is_flag=True,
               help="Reconstruct campaign.db from the results tree (a corrupt store's "
                    "recovery)")
-def import_cmd(campaigns, force, rebuild_store):
-    """Take campaigns from the share into the service.
+def import_cmd(campaigns, as_workspace, new_name, force, rebuild_store):
+    """Take campaigns -- or, with ``--workspace``, workspaces -- from the share.
 
     Each CAMPAIGN is a campaign id, a full archive name (``<id>.raw.tar.gz``, which is
     how you ask for one *variant* of a campaign the share holds twice), or an **import
@@ -584,11 +805,49 @@ def import_cmd(campaigns, force, rebuild_store):
     Long-running: it returns as soon as the import is under way, and the campaign
     appears immediately in the campaign view at phase ``importing``. Watch it with
     ``vast campaign wait <campaign-id>``.
+
+    ``--workspace`` takes workspace archives instead, named by slug. Each one creates a
+    **new** workspace -- an archive carries project files and no identity, so nothing is
+    replaced and ``--force`` does not apply. The new workspace is named after the slug
+    unless ``--name`` says otherwise, and the service suffixes that name (``foo-2``) when
+    it is already taken.
+
+    \b
+      vast share import nav-2026-03-09-101500
+      vast share import --workspace growth-sim --name growth-sim-local
     """
     from robovast.client.service_target import \
         service_client  # pylint: disable=import-outside-toplevel
-    from robovast.service.interface import \
-        ImportCampaignRequest  # pylint: disable=import-outside-toplevel
+    from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+        CreateWorkspaceRequest, ImportCampaignRequest)
+
+    if as_workspace:
+        if new_name and len(campaigns) != 1:
+            raise click.UsageError(
+                "--name names one workspace, so pass one slug with it.")
+        if force or rebuild_store:
+            raise click.UsageError(
+                "--force and --rebuild-store are campaign options. Importing a workspace "
+                "always creates a new one, so there is nothing to replace or rebuild.")
+        failed = False
+        with service_client() as (client, label):
+            click.echo(f"Importing {len(campaigns)} workspace(s) from the share via "
+                       f"{label} ...")
+            for slug in campaigns:
+                try:
+                    info = client.create_workspace(CreateWorkspaceRequest(
+                        name=new_name, from_share=slug))
+                except Exception as exc:  # noqa: BLE001 - one bad name must not skip the rest
+                    click.echo(f"  ✗ {slug}: {exc}", err=True)
+                    failed = True
+                    continue
+                click.echo(f"  ✓ {info.workspace_id}  ({info.name})")
+        if failed:
+            raise SystemExit(1)
+        return
+
+    if new_name:
+        raise click.UsageError("--name applies to a workspace import; pass --workspace.")
 
     # Resolved before the service is contacted, and reported under the header below, so a
     # link that was NOT recognised (a truncated paste, a link to another view) shows up as

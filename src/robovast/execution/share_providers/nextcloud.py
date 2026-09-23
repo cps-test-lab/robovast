@@ -27,7 +27,7 @@ from typing import Callable
 
 import requests
 
-from .naming import parse_archive_name
+from .naming import is_share_archive_name
 
 from .base import BaseShareProvider, ShareError, UploadProgressReader
 
@@ -201,7 +201,7 @@ class NextcloudShareProvider(BaseShareProvider):
     # Download interface (``results download``)
     # ------------------------------------------------------------------
 
-    def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
+    def list_archives_with_size(self) -> list[tuple[str, int]]:
         """Return ``(filename, size_in_bytes)`` for each campaign ``*.tar.gz`` on the share.
 
         Uses WebDAV ``PROPFIND Depth: 1`` against the Nextcloud
@@ -238,7 +238,7 @@ class NextcloudShareProvider(BaseShareProvider):
             name = urllib.parse.unquote(href.rstrip("/").rsplit("/", 1)[-1])
             if not name.endswith(".tar.gz"):
                 continue
-            if parse_archive_name(name) is None:
+            if not is_share_archive_name(name):
                 continue
             size = -1
             for propstat in response.findall("D:propstat", ns):
@@ -254,9 +254,9 @@ class NextcloudShareProvider(BaseShareProvider):
         results.sort(key=lambda t: t[0])
         return results
 
-    def list_campaign_archives(self) -> list[str]:
+    def list_archives(self) -> list[str]:
         """Return a list of campaign ``*.tar.gz`` filenames on the share."""
-        return [name for name, _ in self.list_campaign_archives_with_size()]
+        return [name for name, _ in self.list_archives_with_size()]
 
     def archive_url(self, object_name: str) -> str:
         """Return the public download link for *object_name* on the share.
@@ -314,7 +314,7 @@ class NextcloudShareProvider(BaseShareProvider):
 
         Args:
             object_name: Filename of the archive on the share (as returned by
-                :meth:`list_campaign_archives`).
+                :meth:`list_archives`).
         """
         webdav_url, _ = self._parse_share_url()
         file_url = webdav_url + urllib.parse.quote(object_name, safe="")

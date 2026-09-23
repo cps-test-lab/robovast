@@ -9,8 +9,15 @@
 // Scope is deliberately narrow -- see the testing convention in docs/developer_guide.rst.
 
 import { describe, expect, it } from 'vitest'
-import { archiveName, matchRows, preferredArchive, shareRows } from './shareArchives'
-import type { ShareArchive } from './robovastClient'
+import {
+  archiveName,
+  matchRows,
+  matchWorkspaceRows,
+  preferredArchive,
+  shareRows,
+  workspaceRows,
+} from './shareArchives'
+import type { ShareArchive, ShareWorkspaceArchive } from './robovastClient'
 
 const archive = (
   campaign_id: string,
@@ -115,5 +122,53 @@ describe('matchRows', () => {
 
   it('returns nothing when nothing matches', () => {
     expect(matchRows(rows, 'no-such-campaign')).toEqual([])
+  })
+})
+
+
+const workspace = (
+  slug: string,
+  extra: Partial<ShareWorkspaceArchive> = {},
+): ShareWorkspaceArchive => ({
+  slug,
+  object_name: `${slug}.workspace.tar.gz`,
+  size: 2048,
+  url: null,
+  ...extra,
+})
+
+describe('workspaceRows', () => {
+  it('carries the object BASENAME, so a prefixed key still names an importable archive', () => {
+    // GCS returns full keys. The import resolves a basename, and the archive-name parser
+    // refuses anything with a separator, so a row holding the key would import nothing.
+    const rows = workspaceRows([
+      workspace('growth-sim', { object_name: 'robovast/growth-sim.workspace.tar.gz' }),
+    ])
+    expect(rows).toEqual([
+      { slug: 'growth-sim', size: 2048, archive: 'growth-sim.workspace.tar.gz' },
+    ])
+  })
+
+  it('keeps every archive as its own row', () => {
+    // Unlike a campaign's, which collapses two variants: a workspace has one archive, so
+    // two rows here are genuinely two different projects.
+    expect(workspaceRows([workspace('a'), workspace('b')]).map((r) => r.slug)).toEqual(['a', 'b'])
+  })
+})
+
+describe('matchWorkspaceRows', () => {
+  const rows = workspaceRows([workspace('growth-sim'), workspace('nav-tuning')])
+
+  it('matches a substring of the slug, either case', () => {
+    expect(matchWorkspaceRows(rows, 'NAV').map((r) => r.slug)).toEqual(['nav-tuning'])
+  })
+
+  it('treats an empty or blank query as no filter', () => {
+    expect(matchWorkspaceRows(rows, '')).toEqual(rows)
+    expect(matchWorkspaceRows(rows, '   ')).toEqual(rows)
+  })
+
+  it('returns nothing when nothing matches', () => {
+    expect(matchWorkspaceRows(rows, 'no-such-workspace')).toEqual([])
   })
 })

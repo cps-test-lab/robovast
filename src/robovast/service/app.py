@@ -58,6 +58,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
                                         CampaignSortKey, SortOrder,
+                                        ShareWorkspaceArchive,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
                                         ListWorkspacesResponse, LogChunk,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
@@ -1292,6 +1293,35 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.delete(Routes.workspace("{workspace_id}"), response_model=ActionResult, tags=["workspaces"])
     def delete_workspace(workspace_id: str) -> ActionResult:
         return _guard(lambda: impl.delete_workspace(workspace_id))
+
+    @app.get(Routes.workspace_archive("{workspace_id}"), tags=["workspaces"])
+    def download_workspace_archive(workspace_id: str):
+        """Stream the workspace's project files as a ``tar.gz``.
+
+        Backs the config editor's download button and ``vast workspace download``, which
+        is how a project leaves this service to be worked on somewhere else. One
+        top-level directory holding the tree, so what lands extracts on its own and can
+        be handed back to any service as a workspace archive.
+
+        Not on the data routes: those serve the results volume, and a workspace is
+        neither on it nor reachable from the cluster's data container.
+        """
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
+
+        # The id before the stream: a caller may name a workspace, and the name is the one
+        # thing that must not reach a Content-Disposition -- what a browser saves is
+        # whatever this says.
+        info = _guard(lambda: impl.get_workspace(workspace_id))
+        return StreamingResponse(
+            _guard(lambda: impl.workspace_tar_stream(info.workspace_id)),
+            media_type="application/gzip",
+            headers={"Content-Disposition":
+                     f'attachment; filename="{info.workspace_id}.tar.gz"'})
+
+    @app.post(Routes.workspace_share("{workspace_id}"), response_model=ShareWorkspaceArchive,
+              tags=["workspaces"])
+    def export_workspace(workspace_id: str) -> ShareWorkspaceArchive:
+        return _guard(lambda: impl.export_workspace(workspace_id))
 
     # -- validation / preview (config editor) -------------------------------
 

@@ -1,19 +1,27 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""How a campaign archive is named on a share, and how that name is read back.
+"""How an archive is named on a share, and how that name is read back.
 
 The variant is in the name because nothing else records it: there is no manifest beside
 the object, so a name that did not say it would leave "raw or postprocessed?" answerable
 only by downloading and looking. An archive written before the variant was part of the
 name has no token and is read as raw -- which is what it is, since the only thing that
 ever wrote one was the campaign-end upload, and that runs before postprocessing.
+
+A share holds workspaces too, under their own grammar. The two must be mutually exclusive
+in both directions -- a listing classifies by name alone, and one kind read as the other
+would be offered to an import that cannot read it.
 """
 
 import pytest
 
 from robovast.execution.share_providers.naming import (POSTPROCESSED, POSTPROCESSING_RECORD,
                                                        RAW, archive_name, campaign_variant,
-                                                       parse_archive_name)
+                                                       is_share_archive_name,
+                                                       parse_archive_name,
+                                                       parse_workspace_archive_name,
+                                                       workspace_archive_name,
+                                                       workspace_slug)
 
 CAMPAIGN = "nav-2026-08-18-194018"
 
@@ -167,3 +175,73 @@ def test_a_push_refuses_an_archive_whose_record_is_broken(tmp_path):
                   {"_config/nav.vast": "x", POSTPROCESSING_RECORD: "[unclosed\n"})
     with pytest.raises(click.ClickException, match="not readable as YAML"):
         _read_archive_identity(tarfile, str(broken))
+
+
+# -- workspaces -------------------------------------------------------------
+
+
+def test_a_workspace_name_round_trips_through_its_slug():
+    assert workspace_slug("growth sim") == "growth-sim"
+    assert parse_workspace_archive_name(
+        workspace_archive_name(workspace_slug("growth sim"))) == "growth-sim"
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("My Nav Study", "My-Nav-Study"),
+    # A path separator, a quote and a space all reduce: the slug travels through provider
+    # keys, URLs and a Content-Disposition, none of which agree about them.
+    ("a/b", "a-b"),
+    ('he said "hi"', "he-said-hi"),
+    ("--trimmed--", "trimmed"),
+])
+def test_a_slug_keeps_only_what_an_object_name_may_hold(name, expected):
+    assert workspace_slug(name) == expected
+
+
+def test_a_name_with_nothing_usable_falls_back_to_the_id():
+    # An empty object name is not a name, so the id -- which is always safe -- stands in.
+    assert workspace_slug("///", "ws-abc123") == "ws-abc123"
+
+
+def test_an_unsafe_slug_cannot_be_written():
+    """The writer takes a slug, not a name: passing a raw name would put whatever it holds
+    into a provider key."""
+    with pytest.raises(ValueError, match="share-safe"):
+        workspace_archive_name("my project")
+
+
+@pytest.mark.parametrize("name", [
+    f"{CAMPAIGN}.raw.tar.gz",
+    f"{CAMPAIGN}.tar.gz",
+    "notes.txt",
+    # The token is the whole name, so there is no slug left to import under.
+    ".workspace.tar.gz",
+    # A key, not a base name: what comes back is used as a name.
+    "prefix/growth-sim.workspace.tar.gz",
+])
+def test_names_that_are_not_workspace_archives_are_refused(name):
+    assert parse_workspace_archive_name(name) is None
+
+
+def test_a_workspace_named_like_a_campaign_is_still_a_workspace():
+    """The grammars cannot collide. A campaign id must survive `is_campaign_dir` once its
+    token is taken off, and the workspace token never leaves one behind."""
+    name = workspace_archive_name(CAMPAIGN)
+    assert parse_archive_name(name) is None
+    assert parse_workspace_archive_name(name) == CAMPAIGN
+
+
+def test_a_campaign_archive_is_never_read_as_a_workspace():
+    assert parse_workspace_archive_name(archive_name(CAMPAIGN, POSTPROCESSED)) is None
+
+
+@pytest.mark.parametrize("name,kept", [
+    (f"{CAMPAIGN}.raw.tar.gz", True),
+    ("growth-sim.workspace.tar.gz", True),
+    ("somebody-elses-backup.tar.gz", False),
+    ("notes.txt", False),
+])
+def test_a_listing_keeps_both_kinds_and_nothing_else(name, kept):
+    """What a provider reports. A share is somebody's storage: an object that is neither is
+    not ours to offer."""
+    assert is_share_archive_name(name) is kept

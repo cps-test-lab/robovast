@@ -15,7 +15,7 @@
 // (see docs/developer_guide.rst): a rule with two archives, two orderings and a preference
 // in it is exactly the kind that has to be testable.
 
-import type { ShareArchive } from './robovastClient'
+import type { ShareArchive, ShareWorkspaceArchive } from './robovastClient'
 
 /** The complete archive, so a campaign that has one arrives ready to query. */
 const POSTPROCESSED = 'postprocessed'
@@ -79,4 +79,37 @@ export function matchRows(rows: ShareCampaignRow[], query: string): ShareCampaig
   const needle = query.trim().toLowerCase()
   if (!needle) return rows
   return rows.filter((r) => r.campaignId.toLowerCase().includes(needle))
+}
+
+
+/** One row per workspace archive on the share.
+ *
+ *  Far simpler than a campaign's: a workspace has one archive, no variants to choose between,
+ *  and no "already here" to report — importing one always creates a NEW workspace, because an
+ *  archive carries project files and not an identity. So the row is the listing's entry with
+ *  the object's basename resolved, which is what an import names. */
+export interface ShareWorkspaceRow {
+  slug: string
+  size: number
+  /** The object's basename — what an import names (a provider may prefix its keys). */
+  archive: string
+}
+
+export function workspaceRows(archives: ShareWorkspaceArchive[]): ShareWorkspaceRow[] {
+  return archives.map((a) => ({
+    slug: a.slug,
+    size: a.size,
+    archive: a.object_name.split('/').pop() ?? a.object_name,
+  }))
+}
+
+/** Those of *rows* whose slug contains *query*, case-insensitively. The workspace half of
+ *  `matchRows`, and separate for the same reason: the dialog counts both sets. */
+export function matchWorkspaceRows(
+  rows: ShareWorkspaceRow[],
+  query: string,
+): ShareWorkspaceRow[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return rows
+  return rows.filter((r) => r.slug.toLowerCase().includes(needle))
 }
