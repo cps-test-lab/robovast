@@ -81,3 +81,67 @@ def test_pause_sets_only_the_hold(calls):
 def test_resume_sets_only_the_hold(calls):
     assert _run('resume', 'camp-1').exit_code == 0
     assert calls == [("camp-1", None, False)]
+
+
+@pytest.fixture
+def listed(monkeypatch):
+    """Point ``vast campaign list`` at a fake service holding the given summaries."""
+    from robovast.service.interface import ListCampaignsResponse
+    rows = []
+
+    class _Client:
+        def list_campaigns(self, _request):
+            return ListCampaignsResponse(campaigns=rows, total=len(rows))
+
+    @contextlib.contextmanager
+    def _client(*_a, **_k):
+        yield _Client(), "fake service"
+
+    monkeypatch.setattr(campaign_cli, "service_client", _client)
+    return rows
+
+
+def _row(output, campaign_id):
+    return next(line for line in output.splitlines() if campaign_id in line)
+
+
+def test_list_shows_a_rank_and_a_hold_that_are_not_the_default(listed):
+    """A parked campaign making no progress must not read as a wedged one."""
+    from robovast.service.interface import CampaignSummary
+    listed += [
+        CampaignSummary(campaign_id="up", phase="running", priority=2, description="pilot"),
+        CampaignSummary(campaign_id="down", phase="running", priority=-1, paused=True),
+        CampaignSummary(campaign_id="held", phase="running", paused=True),
+    ]
+    result = _run('list')
+    assert result.exit_code == 0, result.output
+    assert "[prio +2]" in _row(result.output, "up")
+    assert "pilot" in _row(result.output, "up")
+    assert "[prio -1, paused]" in _row(result.output, "down")
+    assert "[paused]" in _row(result.output, "held")
+    assert "prio" not in _row(result.output, "held")
+
+
+def test_the_standing_is_a_column_of_its_own(listed):
+    """A marker on some rows only would step each of their descriptions along by its own
+    length, and a listing is read down its columns."""
+    from robovast.service.interface import CampaignSummary
+    listed += [
+        CampaignSummary(campaign_id="ranked", phase="running", priority=2,
+                        description="pilot"),
+        CampaignSummary(campaign_id="plain", phase="running", description="sweep"),
+    ]
+    result = _run('list')
+    assert result.exit_code == 0, result.output
+    assert (_row(result.output, "ranked").index("pilot")
+            == _row(result.output, "plain").index("sweep"))
+
+
+def test_list_says_nothing_about_the_queue_at_the_default(listed):
+    """``prio 0`` on every row would cost a glance and say nothing."""
+    from robovast.service.interface import CampaignSummary
+    listed.append(CampaignSummary(campaign_id="plain", phase="finished", description="d"))
+    result = _run('list')
+    assert result.exit_code == 0, result.output
+    row = _row(result.output, "plain")
+    assert "[" not in row and "prio" not in row and "paused" not in row

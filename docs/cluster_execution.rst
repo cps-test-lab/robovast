@@ -1390,6 +1390,11 @@ value it cannot act on.
 A campaign that is admitting nothing says which of the two reasons it is: a queued campaign
 reports what capacity it is waiting for, and a paused one reports that it is paused.
 
+``vast campaign list`` carries a live campaign's standing after its phase when it is not
+the default -- ``[prio -1]``, ``[paused]``, ``[prio +2, paused]`` -- as do the web UI's
+campaign card and the MCP ``list_campaigns``. A finished campaign has no standing with the
+queue and carries neither.
+
 Two properties are worth stating, because they are what make this safe to leave on:
 
 * **It never stops work that is already running.** Order — by age, by priority, or a

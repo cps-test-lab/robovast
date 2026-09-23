@@ -61,6 +61,7 @@ import { useToasts } from '@/components/ToastProvider'
 import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
+import { priorityInputError, priorityLabel } from '@/lib/queueStanding'
 import {
   NO_CAMPAIGN_FILTER,
   campaignFilterIsEmpty,
@@ -310,7 +311,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // A refusal the service returns rather than raises (the busy guard, mostly). Kept a
       // warning, as it was on the card: it is an expected answer, not a fault.
-      if (res && !res.ok) {
+      if (!res.ok) {
         notify({ severity: 'warning', key: `stop:${id}`, message: 'Stop had no effect.',
                  note: res.message || undefined })
       }
@@ -334,7 +335,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['jobs', id] })
       qc.invalidateQueries({ queryKey: ['status', id] })
-      if (res && !res.ok) {
+      if (!res.ok) {
         notify({ severity: 'warning', key: `stopjob:${id}`,
                  message: 'Stopping the job had no effect.', note: res.message || undefined })
       }
@@ -356,10 +357,15 @@ function CampaignCard({ summary, newest, openedByLink }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       qc.invalidateQueries({ queryKey: ['status', id] })
-      if (res && !res.ok) {
+      if (!res.ok) {
         notify({ severity: 'warning', key: `sched:${id}`,
                  message: 'The queue order was not changed.', note: res.message || undefined })
+        return
       }
+      // The service's sentence is the confirmation: it states the standing the campaign now
+      // has, read back from the queue, and that the runs already started are left alone.
+      notify({ severity: 'success', key: `sched:${id}`,
+               message: 'Queue order changed', note: res.message || undefined })
     },
   })
 
@@ -411,12 +417,13 @@ function CampaignCard({ summary, newest, openedByLink }: {
     stopJob.mutate({ jobName: job.job_name, reason: reason.trim() || undefined })
   }
 
-  // A number, asked for as text because that is the prompt this app has. A value that is not
-  // a whole number is rejected rather than coerced: Number('') is 0, which would silently
-  // reset the campaign to normal when somebody meant to cancel.
+  // A number, asked for as text because that is the prompt this app has; the dialog refuses
+  // anything that is not a whole number (`priorityInputError`). The field starts at the current
+  // rank, so what is being changed is in front of whoever changes it.
   const onSetPriority = async () => {
     closeMenu()
     const typed = await prompt({
+      defaultValue: String(summary.priority),
       title: 'Queue priority',
       message:
         'Which campaign the cluster admits first when several are waiting. Higher goes ' +
@@ -425,15 +432,10 @@ function CampaignCard({ summary, newest, openedByLink }: {
       label: 'Priority',
       placeholder: 'e.g. -1 to let other campaigns past',
       confirmLabel: 'Set priority',
+      validate: priorityInputError,
     })
     if (typed === null) return
-    const value = Number(typed.trim())
-    if (!typed.trim() || !Number.isInteger(value)) {
-      notify({ severity: 'warning', key: `sched:${id}`,
-               message: 'Priority must be a whole number.' })
-      return
-    }
-    setScheduling.mutate({ priority: value })
+    setScheduling.mutate({ priority: Number(typed.trim()) })
   }
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
@@ -457,7 +459,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // A partial delete is answered, not raised: an error, because what is left still takes
       // the space, and the message names the path that could not be removed.
-      if (res && !res.ok) {
+      if (!res.ok) {
         notify({ severity: 'error', key: `delete:${id}`, message: `${id} was not fully deleted.`,
                  note: res.message || undefined })
         return
@@ -543,7 +545,7 @@ function CampaignCard({ summary, newest, openedByLink }: {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // Accepting the export says nothing this page does not already show — the phase chip is
       // live — so only a refusal is worth saying.
-      if (res && !res.ok) {
+      if (!res.ok) {
         notify({ severity: 'warning', key: `share:${id}`,
                  message: 'Upload-to-share had no effect.', note: res.message || undefined })
       }
@@ -1015,20 +1017,21 @@ function CampaignCard({ summary, newest, openedByLink }: {
           </Box>
           <LaunchedBy name={summary.created_by} />
           {/* Beside the name, not on a line of its own: this is a label on the campaign, and a
-              full-width row for one short value pushed everything below it down. Only on an open
-              card and only when it is not the default — a chip reading "prio 0" on every campaign
-              costs every row a glance and says nothing. Paused shows whatever the rank, because a
-              campaign admitting nothing looks idle and this is the only thing that says why. */}
-          {!collapsed && running && summary.priority !== 0 ? (
+              full-width row for one short value pushed everything below it down. On a folded card too,
+              since that is how cards start, but only when it is not the default — a chip reading
+              "prio 0" on every campaign costs every row a glance and says nothing. Paused shows
+              whatever the rank, because a campaign admitting nothing looks idle and this is the
+              only thing that says why. */}
+          {running && priorityLabel(summary.priority) ? (
             <Chip
               size="small"
               variant="outlined"
-              label={`prio ${summary.priority > 0 ? `+${summary.priority}` : summary.priority}`}
+              label={priorityLabel(summary.priority)}
               title="Which campaign the cluster queue admits first. Higher goes first."
               sx={{ flexShrink: 0 }}
             />
           ) : null}
-          {!collapsed && running && summary.paused ? (
+          {running && summary.paused ? (
             <Chip
               size="small"
               variant="outlined"
