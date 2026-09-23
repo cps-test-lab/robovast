@@ -33,7 +33,7 @@ jobs:
           pip install --quiet poetry==1.8.2
           make check-lock
 
-      # `make venv`, not `poetry install`: this repo ships six distributions that all
+      # `make venv`, not `poetry install`: this repo ships seven distributions that all
       # populate the `robovast` namespace, and only three of them are path dependencies of
       # the root. `poetry install` therefore yields an environment without robovast-cluster
       # -- `vast cluster setup` does not exist and the CLI test fails on it -- and installs

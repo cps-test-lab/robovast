@@ -22,6 +22,10 @@ import os
 
 import yaml
 
+#: PyYAML's C parser where it is built: the job-link manifest is read on every query, and the
+#: pure-Python parser spends most of a query's own time on a campaign of hundreds of runs.
+_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
 #: The campaign's store, written by the controller.
 STORE = "campaign.db"
 
@@ -32,6 +36,11 @@ JOB_LINKS = os.path.join("_transient", "job_links.yaml")
 #: The campaign's intervention ledger.
 INTERVENTIONS = os.path.join("_execution", "interventions.json")
 
+#: How the campaign's recordings become tables where it refines the defaults, in the decoder's
+#: configuration shape (``{"groups": [{"bag_dir": ..., "plugins": [...]}]}``): written by the
+#: controller from the campaign's ``.vast``, so a copy of the campaign carries it.
+DECODER_CONFIG = os.path.join("_execution", "tables.yaml")
+
 
 def job_links(campaign_dir: str) -> dict:
     """The job-link manifest; ``{}`` for a campaign that has none."""
@@ -39,7 +48,19 @@ def job_links(campaign_dir: str) -> dict:
     if not os.path.isfile(path):
         return {}
     with open(path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+        return yaml.load(fh, Loader=_LOADER) or {}
+
+
+def decoder_config(campaign_dir: str) -> dict:
+    """The campaign's decoder configuration; ``{}`` when it refines no default."""
+    path = os.path.join(campaign_dir, DECODER_CONFIG)
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        config = yaml.load(fh, Loader=_LOADER) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"{path}: expected a mapping with 'groups', got {type(config).__name__}")
+    return config
 
 
 def run_dirs(campaign_dir: str):
@@ -55,4 +76,5 @@ def run_dirs(campaign_dir: str):
     return out
 
 
-__all__ = ["INTERVENTIONS", "JOB_LINKS", "STORE", "job_links", "run_dirs"]
+__all__ = ["DECODER_CONFIG", "INTERVENTIONS", "JOB_LINKS", "STORE", "decoder_config", "job_links",
+           "run_dirs"]

@@ -47,6 +47,9 @@ import math
 from typing import Any, Optional
 
 from robovast.common.config import DEFAULT_SHM_SIZE
+# The fractions of a container's CPU periods throttled, and of a trial window stalled, above
+# which a run is reported: defined, with how each was set, beside the view that applies them.
+from robovast_data.views import STALL_WARN_RATIO, THROTTLE_WARN_RATIO
 from robovast_decode.quantity import to_bytes, to_cores
 
 #: Headroom over sustained CPU use. Absorbs the p95->peak gap.
@@ -69,54 +72,6 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 #: a p95 over seven points is the maximum wearing a percentile's name.
 MIN_TICKS = 30
 
-#: Fraction of a container's CPU enforcement periods that may be throttled before it is worth
-#: reporting. Not zero: a handful of throttled periods during bring-up is normal, and saying so
-#: every time would train a reader to ignore the finding.
-#:
-#: **Calibrated, not guessed** -- an earlier 1% was chosen by intuition and would have stayed
-#: silent on a configuration that lost 6 runs of 50. A CFS period is 100 ms and a nav2 control
-#: loop runs at 20 Hz, so ONE throttled period is two missed deadlines: the scale that matters
-#: is far below a percent. Measured across a five-point sweep of the same campaign, varying
-#: only the SUT's limit:
-#:
-#: ===============  ======  ========  =======
-#: throttled         misses  failures  verdict
-#: ===============  ======  ========  =======
-#: 0.018%                1         0  fine
-#: 0.385%                0         1  fine
-#: 0.580%                5         2  marginal
-#: 0.629%                2         0  marginal
-#: 0.790%               58         6  broken
-#: ===============  ======  ========  =======
-#:
-#: Note it is **not monotone**: throttling varies 1.4x across that range while the stack's own
-#: miss count varies 12x, and 0.580% did more damage than 0.629%. This counter is a blunt
-#: screen, not a predictor -- which is exactly why the finding it raises says "inconclusive,
-#: go and look at the stack's own health". 0.5% sits below the cliff and above the two
-#: configurations that were demonstrably fine.
-#:
-#: Calibrated for a 20 Hz control loop. A stack with a slower loop tolerates proportionally
-#: more, so this is a default rather than a law.
-THROTTLE_WARN_RATIO = 0.005
-
-#: Fraction of a trial window in which EVERY task in a container was runnable and none was
-#: running -- PSI ``cpu.pressure`` ``full`` -- before it is worth reporting as contention.
-#:
-#: **Not calibrated, unlike :data:`THROTTLE_WARN_RATIO`, and the difference is deliberate.**
-#: That one comes from a five-point sweep in which the stack's own miss count was counted at
-#: each level; nothing equivalent has been run for this counter, because it did not exist to
-#: measure. What is written here is a floor derived from the control loop rather than from
-#: observed damage: a 20 Hz loop has a 50 ms budget, so 1% of a 150 s run is 1.5 s of total
-#: blackout, which is 30 missed deadlines if it arrives in one burst and none if it is spread
-#: a microsecond at a time. That range is exactly why this is a SCREEN and its finding says
-#: "go and look at the stack's own health" rather than asserting harm.
-#:
-#: To calibrate it the way the throttle threshold was: run one configuration at a fixed
-#: allocation against varying co-tenancy, and count control-loop misses per stall level. Until
-#: that exists, treat a crossing as a question rather than an answer, and treat the number as
-#: provisional -- it is placed to be crossed rarely on a healthy node, not to mark a cliff
-#: anybody has seen.
-STALL_WARN_RATIO = 0.01
 
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.

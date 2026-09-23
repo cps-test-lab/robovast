@@ -233,14 +233,14 @@ not importable. Anything the client needs must live in the client: a wire consta
 Releasing to PyPI
 -----------------
 
-The six distributions are released as **one set at one version**, because ``robovast``
-requires ``robovast-client``, ``robovast-decode`` and ``robovast-sim-roqsim`` at *exactly*
-the version being released, and ``robovast-nav`` and ``robovast-cluster`` require
-``robovast``. A version that exists for some of them and not the others is a set nobody can
-install, so ``.github/workflows/publish.yml`` stamps the tag's version into every manifest
-before it builds a wheel. The tree carries the version being released too, set in every
-``pyproject.toml`` in the release commit, because the images are built from the tree and
-report the version it names.
+The seven distributions are released as **one set at one version**, because ``robovast``
+requires ``robovast-client``, ``robovast-decode``, ``robovast-data`` and
+``robovast-sim-roqsim`` at *exactly* the version being released, and ``robovast-nav`` and
+``robovast-cluster`` require ``robovast``. A version that exists for some of them and not
+the others is a set nobody can install, so ``.github/workflows/publish.yml`` stamps the
+tag's version into every manifest before it builds a wheel. The tree carries the version
+being released too, set in every ``pyproject.toml`` in the release commit, because the
+images are built from the tree and report the version it names.
 
 **The version's section of ``CHANGELOG.md`` comes first**, written with the ``changelog``
 skill (``skills/changelog/SKILL.md``) from the merges since the previous tag and reviewed
@@ -295,7 +295,7 @@ on an index is created by its first upload through a *pending* publisher, regist
 same way.
 
 **Rehearsing without CI.** ``make publish-test`` uploads the set to TestPyPI from your
-checkout, stamped with a post-release of the tree's version that is free on all six
+checkout, stamped with a post-release of the tree's version that is free on all seven
 histories at once (``tools/next_testpypi_version.py``), and ``make publish-test-venv``
 installs it into a fresh venv and checks the bundles, the entry points and the CLI. Every
 manifest is restored afterwards, including on failure. ``DRY_RUN=1`` builds without

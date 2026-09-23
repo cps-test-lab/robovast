@@ -26,6 +26,7 @@ IN_STEP = (
     "src/robovast_cluster/pyproject.toml",
     "src/robovast_sim_roqsim/pyproject.toml",
     "src/robovast_decode/pyproject.toml",
+    "src/robovast_data/pyproject.toml",
 )
 
 #: Versioned on its own. Empty, and listed rather than dropped, so a new distribution has
@@ -64,7 +65,7 @@ def test_a_sibling_constraint_admits_the_version_it_ships_with():
     root_major = _version("pyproject.toml").split(".")[0]
     for rel in IN_STEP:
         text = (REPO / rel).read_text()
-        for constraint in re.findall(r'^robovast = "\^([0-9.]+)"', text, re.M):
+        for constraint in re.findall(r'^robovast(?:-decode)? = "\^([0-9.]+)"', text, re.M):
             assert constraint.split(".")[0] == root_major, (
                 f"{rel} requires robovast ^{constraint}, but robovast is "
                 f"{_version('pyproject.toml')}")

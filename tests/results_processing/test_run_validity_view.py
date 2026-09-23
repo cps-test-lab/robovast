@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from robovast.results_processing.advice import THROTTLE_WARN_RATIO
+from robovast_data.views import THROTTLE_WARN_RATIO
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
 pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")

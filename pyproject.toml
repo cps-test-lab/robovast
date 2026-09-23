@@ -106,6 +106,10 @@ robovast-client = {path = "src/robovast_client"}
 # laptop build them with, and the reading of recorded values (resource quantities) it
 # shares with the service. Not optional, and it depends on nothing of ours.
 robovast-decode = {path = "src/robovast_decode"}
+# The query engine: SQL over a campaign directory's tables, and the views over them. The
+# service answers every query through it, so a notebook using the same package reads the
+# same rows. Not optional; it depends on robovast-decode and nothing else of ours.
+robovast-data = {path = "src/robovast_data"}
 # The central index driver. Not optional: every campaign's data lives in Postgres now, so
 # a robovast without it can neither ingest nor read -- and pretending otherwise would
 # surface as an ImportError from somewhere deep instead of the one sentence
@@ -247,7 +251,8 @@ prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
 # merges first-party imports into the third-party block and deletes the blank line
 # between them, "fixing" 147 files by making every one of them worse. That is why the
 # repo has never had a clean isort run: the failures were the tool's, not the code's.
-known_first_party = ["robovast", "robovast_decode", "robovast_nav", "robovast_sim_roqsim"]
+known_first_party = ["robovast", "robovast_data", "robovast_decode", "robovast_nav",
+                     "robovast_sim_roqsim"]
 src_paths = ["src", "tests"]
 # GRID (0) -- aligned to the opening paren, several names per line. Chosen by measuring
 # every mode against the tree: the imports here have no one consistent style, so all six

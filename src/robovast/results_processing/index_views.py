@@ -267,8 +267,8 @@ def metric_view_sql(conn) -> dict:
     because throttling is a screen, not a verdict: it says a resource explanation is
     *available* for a failure, not that the stack misbehaved.
     """
-    from .advice import (STALL_WARN_RATIO,  # pylint: disable=import-outside-toplevel
-                         THROTTLE_WARN_RATIO)
+    from robovast_data.views import (  # pylint: disable=import-outside-toplevel
+        STALL_WARN_RATIO, THROTTLE_WARN_RATIO)
 
     views = {}
     tables = _tables_in(conn, "")

@@ -640,7 +640,7 @@ def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
 #:
 #: Zero is the wrong threshold: a container is briefly throttled during bring-up on any
 #: machine, and refusing every probe for that would leave a cluster permanently uncalibrated.
-#: This matches ``advice.THROTTLE_WARN_RATIO``, which was calibrated against a sweep in which
+#: This matches ``robovast_data.views.THROTTLE_WARN_RATIO``, calibrated against a sweep in which
 #: the stack's own miss count was counted at each level, and carries the same caveat -- it is
 #: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
 PROBE_THROTTLE_REFUSE_RATIO = 0.005

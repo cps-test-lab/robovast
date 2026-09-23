@@ -216,12 +216,13 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
 
 
 def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict,
-                      complete: bool, reason: Optional[str] = None) -> None:
+                      complete: bool, reason: Optional[str] = None, known: bool = False) -> None:
     """Enter that a run has no rows for *table*: it recorded nothing for it, or *reason*.
 
     Recorded, not left out, so that asking again for a finished run's table costs a lookup
     rather than another look at its recordings; *reason* is why a build failed, which a
-    reader reports beside its answer.
+    reader reports beside its answer. *known* says the run's records can give the table and
+    it came out empty, as against a table this run never had.
     """
     entry = manifest["tables"].setdefault(table, {"runs": {}})
     entry["runs"][run_key] = {
@@ -232,6 +233,7 @@ def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict
         "complete": complete,
         "decoder": __version__,
         "reason": reason,
+        "known": known or reason is not None,
     }
 
 
