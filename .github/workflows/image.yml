@@ -609,9 +609,8 @@ jobs:
       # than through an action, so what runs here is what a developer downloads.
       - name: Install kind
         run: |
-          curl -fsSLo /usr/local/bin/kind \
-            https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          curl -fsSLo /tmp/kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
           kind version
 
       # The deployment's data root is a directory on the node; mounting a runner directory
