@@ -1,8 +1,9 @@
 // PlaybackPanel: the transport bar for the run-view, spanning the bottom. It is the sole writer of the
 // shared PlaybackClock -- a click on the progress bar seeks, play/pause toggles playback, and the
-// fast-forward button steps through the speeds. Every other panel just reads the clock, so scrubbing
-// here moves them all. The timeline range is set on the clock by the RunView (from the run's rosbag
-// timestamps); this panel is pure UI over the clock and holds no data of its own.
+// fast-forward button steps through the speeds, starting playback when it is paused. Every other
+// panel just reads the clock, so scrubbing here moves them all. The timeline range is set on the
+// clock by the RunView (from the run's rosbag timestamps); this panel is pure UI over the clock and
+// holds no data of its own.
 
 import { useRef } from 'react'
 import Box from '@mui/material/Box'
@@ -15,16 +16,7 @@ import { ERROR, WARNING } from '@/colors'
 import { registerPanel } from '@/lib/panels/registry'
 import { useRunLog } from '@/components/runLog/useRunLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
-
-// The rates the fast-forward button cycles through, in order; it wraps back to 1× from the last one,
-// so a single button reaches every speed and always has a way back to real time.
-const SPEEDS = [1, 2, 4, 8]
-
-function nextSpeed(speed: number): number {
-  const i = SPEEDS.indexOf(speed)
-  // A speed set from outside this list still steps somewhere useful rather than sticking.
-  return i < 0 ? 2 : SPEEDS[(i + 1) % SPEEDS.length]
-}
+import { fastForward, nextSpeed } from './fastForward'
 
 // seconds -> m:ss.s
 function fmt(s: number): string {
@@ -87,10 +79,19 @@ function PlaybackPanel({ clock, data }: PanelProps) {
       <IconButton
         size="small"
         color={speed > 1 ? 'primary' : 'default'}
-        onClick={() => clock.setSpeed(nextSpeed(speed))}
+        onClick={() => fastForward(clock)}
         disabled={empty}
-        aria-label={`playback speed ${speed}x`}
-        title={`Playback speed: ${speed}× (click for ${nextSpeed(speed)}×)`}
+        // Both say what the press will do, and while paused that is two things. A label
+        // reading only the speed in hand would leave a reader who cannot see the tooltip
+        // pressing a speed control and getting playback.
+        aria-label={playing
+          ? `playback speed ${speed}x, click for ${nextSpeed(speed)}x`
+          : `play at ${nextSpeed(speed)}x`}
+        title={
+          playing
+            ? `Playback speed: ${speed}× (click for ${nextSpeed(speed)}×)`
+            : `Play at ${nextSpeed(speed)}×`
+        }
       >
         <FastForwardRoundedIcon />
       </IconButton>

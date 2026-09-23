@@ -1742,9 +1742,11 @@ view does not re-flow the panels around it. To change the layout for good, edit 
 The built-in panels:
 
 **Playback** (``playback``) — a transport bar spanning the bottom: a click-to-seek
-progress bar, an icon play/pause, a **2×** fast-forward toggle, and a ``current / total``
-time label. It owns the clock; every other panel follows it, which is why it is contributed
-to every campaign rather than declared — see above. The timeline range comes from the run
+progress bar, an icon play/pause, a fast-forward button, and a ``current / total``
+time label. Fast-forward steps the playback speed through 1×, 2×, 4× and 8× and back to 1×,
+with the active speed shown beside it; pressed while paused, it also starts playback, so the
+button never pauses. The bar owns the clock; every other panel follows it, which is why it is
+contributed to every campaign rather than declared — see above. The timeline range comes from the run
 capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
 before any postprocessing), else from an explicit ``visualization.results.run_view.timeline``, else from the union of the
 postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.
