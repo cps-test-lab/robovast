@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("matplotlib")
 PIL = pytest.importorskip("PIL.Image")
 
-from robovast_nav.panels import Map2DPanelType  # noqa: E402
+from robovast_nav.panels import Map2DPanelType  # noqa: E402  # pylint: disable=wrong-import-position
 
 
 def _files(image="room.pgm"):
