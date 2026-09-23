@@ -584,10 +584,14 @@ jobs:
         run: |
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # The cluster lane is its own distribution, installed by its own step and never as an
+      # extra (docs/architecture.rst, "Execution lanes are resolved, not imported"): without
+      # it `vast cluster setup` does not exist, and this test deploys the service with it.
       - name: Install dependencies with Poetry
         run: |
           poetry install --no-root
           poetry install
+          poetry run pip install -e src/robovast_cluster
 
       # A TAG, deliberately, where roqsim above takes a digest.
       #
