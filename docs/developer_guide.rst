@@ -270,6 +270,11 @@ that exists for some of them and not the others is a set nobody can install, so 
 version is never edited by hand: ``.github/workflows/publish.yml`` stamps it into every
 manifest from the git tag.
 
+**The version's section of ``CHANGELOG.md`` comes first**, written with the ``changelog``
+skill (``skills/changelog/SKILL.md``) from the merges since the previous tag and reviewed
+before it is committed; ``skills/changelog/changelog.py check`` refuses a section that leaves
+a merge uncited. That section is the release's notes.
+
 **Every release goes to TestPyPI first, and is tested by hand there.** An upload cannot be
 taken back — a version can be yanked, never replaced, and ``pip`` still installs a yanked
 wheel when pinned exactly — so the only cheap place to find a packaging mistake is an index
