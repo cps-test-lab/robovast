@@ -25,7 +25,8 @@ from importlib.metadata import version as pkg_version
 from types import SimpleNamespace
 
 from robovast.common.execution import GIT_REVISION_ENV
-from robovast.service.local_transport import LocalTransport, _package_version
+from robovast.service.local_transport import LocalTransport
+from robovast.service.service_base import ServiceBase, _package_version
 
 BAKED = "abc1234"
 
@@ -43,6 +44,8 @@ def _reported(monkeypatch, revision: str = BAKED):
         store=SimpleNamespace(registry=SimpleNamespace(root="/srv/sources")),
         _declared_web_base=lambda: "",
     )
+    fake_self._version_info = lambda **lane: ServiceBase._version_info(  # pylint: disable=no-member
+        fake_self, **lane)
     return LocalTransport.version(fake_self)
 
 
@@ -70,7 +73,7 @@ def test_no_metadata_reports_nothing_rather_than_a_revision(monkeypatch):
     def _absent(_name):
         raise PackageNotFoundError("robovast")
 
-    monkeypatch.setattr("robovast.service.local_transport._pkg_version", _absent)
+    monkeypatch.setattr("robovast.service.service_base._pkg_version", _absent)
     assert _package_version() == ""
     assert _reported(monkeypatch).package_version == ""
 

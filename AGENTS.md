@@ -4,13 +4,21 @@ Project **invariants** for any agent or contributor changing this repository: wh
 must hold, not how the system works. How it works is in `docs/`, linked from here and never
 restated — a copy of a documented fact is a second source that will disagree.
 
-## 1. A change must work across every surface and backend
+## 1. A change must work across every surface and lane
 
-One operation contract behind four clients and two execution lanes, so an operation is done
-only when every client and both lanes have it.
+One operation contract behind four clients and two execution lanes: every operation is on the
+interface and reachable from every client, and each lane implements it or refuses it by name —
+never answers with the other lane's default, and never accepts what it will not do.
 
 - Thread it end to end and never implement it inside one client — `docs/developer_guide.rst`,
   "Add an interface operation".
+- A lane may offer less than the other. What it does not offer it refuses with
+  `UnsupportedOnLane`, in its own class, naming the operation and the lane, so CLI, MCP, web
+  UI and HTTP show one sentence — `docs/architecture.rst`, "The two lanes do not offer the
+  same operations".
+- What the lanes share lives in `ServiceBase` and is correct for any lane; what differs is an
+  abstract hook there, answered in each lane's own class. Never a body on the base that one
+  lane would have to un-say — `docs/architecture.rst`, "Two lanes, one base".
 - CLI, MCP and web UI stay behaviourally consistent: same inputs, same results, whichever
   client and lane the caller uses.
 - Every request is authenticated and identity comes from the resolved `Principal` —

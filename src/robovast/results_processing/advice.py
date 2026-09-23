@@ -140,8 +140,8 @@ SHM_HEADROOM = 1.25
 #: is right (a peak of nearly nothing is a real answer about the experiment), but advising it
 #: about a size is not.
 #:
-#: The threshold is the LOCAL lane's own default rather than a number chosen here: a peak that
-#: fits in what the smallest lane hands out for free needs no declaration to survive anywhere,
+#: The threshold is Docker's own default rather than a number chosen here: a peak that
+#: fits in it -- the smallest pool any lane has applied -- needs no declaration,
 #: and reducing a declaration below it would buy nothing. One condition, and it covers every
 #: shape above without naming any of them.
 SHM_ADVICE_FLOOR_BYTES = 64 * 1024 * 1024

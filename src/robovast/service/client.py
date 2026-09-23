@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 from robovast.service.http_client import HTTPTransport, RobovastClient
 
 _LAZY = {"LocalTransport": "robovast.service.local_transport",
-         "_LocalCampaign": "robovast.service.local_transport"}
+         "_TrackedCampaign": "robovast.service.service_base"}
 
 __all__ = ["LocalTransport", "HTTPTransport", "RobovastClient"]
 
@@ -56,4 +56,5 @@ def __dir__():
 
 
 if TYPE_CHECKING:  # for type checkers and IDEs only
-    from robovast.service.local_transport import LocalTransport, _LocalCampaign  # noqa: F401
+    from robovast.service.local_transport import LocalTransport  # noqa: F401
+    from robovast.service.service_base import _TrackedCampaign  # noqa: F401

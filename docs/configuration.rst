@@ -1108,7 +1108,7 @@ whichever default its lane applied.
    **Shared memory is not always used, and then there is nothing to tune.** A
    single-container run, a middleware that is not DDS, and nodes co-located in one process all
    touch almost none of it — and Fast DDS falls back to UDP where shared memory is unavailable.
-   A peak that fits inside the 64 MiB the local lane hands out for free is left alone, so no
+   A peak that fits inside Docker's own 64 MiB default is left alone, so no
    advice is offered for it. The measurement is still recorded: a peak of nearly nothing
    is a real answer about the experiment.
 

@@ -66,11 +66,11 @@ def _campaign(svc, *, with_derived_data: bool):
 
 def _track(svc, *, postprocessed: bool):
     """Register a live entry whose state reports *postprocessed*, as the worker leaves it."""
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
     state = ControllerState(campaign_id=CID)
     state.set_phase(Phase.FINISHED)
     state.update(postprocessed=postprocessed)
-    entry = _LocalCampaign(CID, str(svc._campaigns_root()), state)   # noqa: SLF001
+    entry = _TrackedCampaign(CID, str(svc._campaigns_root()), state)   # noqa: SLF001
     with svc._lock:                                                  # noqa: SLF001
         svc._campaigns[CID] = entry                                  # noqa: SLF001
     return entry

@@ -21,7 +21,8 @@ import pytest
 from robovast.common.campaign_data import read_launch_record, write_launch_record
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.client import LocalTransport
-from robovast.service.interface import PRIORITY_LIMIT, CreateCampaignRequest
+from robovast.service.interface import (PRIORITY_LIMIT, CreateCampaignRequest,
+                                        UnsupportedOnLane)
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 
@@ -63,12 +64,14 @@ def cluster(_store):
 def test_the_local_lane_refuses_a_rank_at_launch(local):
     """Accepting it is the silent failure: the campaign would run at the ordinary time and
     nothing would ever say the rank did nothing."""
-    with pytest.raises(ValueError, match="one campaign at a time"):
+    with pytest.raises(UnsupportedOnLane,
+                       match="priority is not supported on the local lane"):
         local.create_campaign(CreateCampaignRequest(workspace_id="ws-x", priority=-1))
 
 
 def test_the_local_lane_refuses_a_hold_at_launch(local):
-    with pytest.raises(ValueError, match="no queue"):
+    with pytest.raises(UnsupportedOnLane,
+                       match="paused is not supported on the local lane.*no queue"):
         local.create_campaign(CreateCampaignRequest(workspace_id="ws-x", paused=True))
 
 
@@ -80,7 +83,8 @@ def test_the_local_lane_admits_a_launch_that_asks_for_nothing(local):
 def test_the_local_lane_refuses_the_operation_even_at_the_default(local):
     """Unlike a launch: a launch that never mentions scheduling is an ordinary launch, but
     *asking* for a rank here asks for something this lane cannot do, whatever the value."""
-    with pytest.raises(ValueError, match="no queue"):
+    with pytest.raises(UnsupportedOnLane,
+                       match="set_campaign_scheduling is not supported on the local lane"):
         local.set_campaign_scheduling("camp-1", priority=0)
 
 
@@ -115,8 +119,8 @@ def test_an_unknown_campaign_is_reported_not_raised(cluster):
 def _live(cluster, campaign_id, results_dir):
     """Register a campaign the way a launch does, without running one."""
     from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
-    entry = _LocalCampaign(campaign_id, str(results_dir), ControllerState(campaign_id=campaign_id))
+    from robovast.service.service_base import _TrackedCampaign
+    entry = _TrackedCampaign(campaign_id, str(results_dir), ControllerState(campaign_id=campaign_id))
     with cluster._lock:
         cluster._campaigns[campaign_id] = entry
     return entry

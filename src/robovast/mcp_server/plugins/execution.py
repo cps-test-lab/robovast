@@ -451,7 +451,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     ``false``: inside the declared budget. ``null``: **no verdict is possible** — not
     "healthy"; ``stall_verdict`` says why (no declared timeout, a phase that executes no
     runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself. The local
-    lane does not enforce it, so a stalled local run stays alive to inspect.
+    lane never kills an undeclared one, so a stalled local run stays alive to inspect.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
     itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.

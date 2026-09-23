@@ -258,7 +258,7 @@ def test_no_advice_when_the_pool_was_never_measured():
 def test_a_campaign_that_does_not_use_shared_memory_is_told_nothing(peak):
     """Shared memory is not always used: a single-container run, a non-DDS middleware, or
     nodes co-located in one process all touch almost none of it. A peak that fits in what the
-    smallest lane hands out for free needs no declaration and no reduction -- so there is
+    Docker default -- the smallest pool any lane applies -- needs no declaration or reduction, so there is
     nothing to say, including nothing about a declaration that is larger than it needs."""
     assert A.shm_advice(_measured(peak, 64 * _MIB), []) == []
     assert A.shm_advice(_measured(peak, _GIB), _shm("1Gi")) == []
@@ -266,7 +266,7 @@ def test_a_campaign_that_does_not_use_shared_memory_is_told_nothing(peak):
 
 def test_a_campaign_that_uses_the_pool_and_declares_nothing_is_warned():
     """It survives on the cluster, where an undeclared pool is sized from the pod's limits or
-    the node, and dies on the local lane's 64Mi -- of SIGBUS, which is not an OOM kill."""
+    the node, and dies on the local lane's Docker default of 64Mi -- of SIGBUS, not an OOM kill."""
     item = _by_kind(A.shm_advice(_measured(700 * _MIB, 8 * _GIB), []))["shm_not_declared"]
     assert item["severity"] == "warning"
     # 700Mi x 1.25 = 875Mi, rounded up to the next 128Mi.

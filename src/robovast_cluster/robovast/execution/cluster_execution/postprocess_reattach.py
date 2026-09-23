@@ -17,7 +17,7 @@
 """Finding the postprocessing Jobs a service restart left running, so someone records them.
 
 A campaign's postprocessing is a Kubernetes Job that deliberately outlives the service
-process (``ClusterService._adopts_on_restart``). Only the waiting process writes the
+process (``ClusterService._shutdown_running_campaigns``). Only the waiting process writes the
 campaign's postprocessing verdict, so a restart mid-postprocess leaves a Job that runs to
 completion and a campaign whose record still carries whatever the *previous* attempt said —
 a conversion of every rosbag in the campaign, finished, against a campaign marked as

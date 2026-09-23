@@ -266,7 +266,7 @@ def test_a_pointer_naming_a_missing_file_says_so(tmp_path):
 # -- which .vast in a workspace is the campaign ------------------------------------
 
 def test_a_base_does_not_make_a_workspace_ambiguous(tmp_path):
-    from robovast.service.local_transport import _extended_bases
+    from robovast.service.service_base import _extended_bases
     proj = tmp_path / "proj"
     base = _write(proj, "base.vast", CAMPAIGN)
     child = _write(proj, "campaign.vast", "version: 4\nextends: base.vast\n")
@@ -275,7 +275,7 @@ def test_a_base_does_not_make_a_workspace_ambiguous(tmp_path):
 
 def test_a_vast_nothing_extends_is_still_a_candidate(tmp_path):
     """An orphan is indistinguishable from a second campaign, and saying so is right."""
-    from robovast.service.local_transport import _extended_bases
+    from robovast.service.service_base import _extended_bases
     proj = tmp_path / "proj"
     assert _extended_bases([_write(proj, "one.vast", CAMPAIGN),
                             _write(proj, "two.vast", CAMPAIGN)], proj) == set()
@@ -284,7 +284,7 @@ def test_a_vast_nothing_extends_is_still_a_candidate(tmp_path):
 def test_a_half_written_campaign_is_not_mistaken_for_a_base(tmp_path):
     """It is missing ``execution:``, but nothing extends it, so it still resolves and the
     author gets a validation error naming the section rather than 'no .vast file'."""
-    from robovast.service.local_transport import _extended_bases
+    from robovast.service.service_base import _extended_bases
     proj = tmp_path / "proj"
     draft = _write(proj, "draft.vast", "version: 4\nconfiguration:\n- name: a\n")
     assert _extended_bases([draft], proj) == set()

@@ -17,12 +17,13 @@
 """``ClusterService`` — the in-cluster service core (the cluster mode).
 
 Runs inside the ``robovast-service`` Deployment and drives every cluster campaign
-**in this process**, exactly as :class:`~robovast.service.client.LocalTransport`
+**in this process**, exactly as :class:`~robovast.service.local_transport.LocalTransport`
 already does for Docker: one worker thread per campaign runs the unified
 ``CampaignController`` against a :class:`KubernetesBackend`, which creates the
 scenario Jobs. Cluster and local therefore share the whole driver-hosting shape —
 only the backend differs — and everything below is expressed as overrides of
-``LocalTransport``'s launch hooks.
+the hooks of :class:`~robovast.service.service_base.ServiceBase`, which both lanes
+subclass as siblings: nothing here is inherited from the local lane.
 
 There is **no per-campaign controller pod**: the service hosts the driver, and live
 status is a read of the in-process ``ControllerState``.
@@ -59,11 +60,11 @@ from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
                                                STOP_SCOPE_MESSAGES, Phase,
                                                stop_scope_for_phase)
 from robovast.common.campaign_data import update_launch_scheduling
-from robovast.service.client import LocalTransport
-from robovast.service.local_transport import require_scheduling_change
+from robovast.service.service_base import ServiceBase, require_scheduling_change
 from robovast.service.interface import (ActionResult, CampaignDeletion, JobCounts, JobKind,
                                         JobSummary, JobUsage, ListJobsResponse, LogChunk,
-                                        ResourceUsage, DiskSpace, UpgradeInfo, VersionInfo)
+                                        ResourceUsage, DiskSpace, UnsupportedOnLane,
+                                        UpgradeInfo, VersionInfo)
 
 from .manifests import CALIBRATION_JOB_KIND, JOB_KIND_LABEL
 
@@ -180,13 +181,10 @@ def _metrics_failure_reason(exc, resource: str) -> "str | None":
     return None
 
 
-class ClusterService(LocalTransport):
+class ClusterService(ServiceBase):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
-    #: A staged entrypoint must carry the *cluster* init and post-run blocks here, since
-    #: that is where the exec actually runs. Copying a campaign's rendered entrypoint
-    #: across lanes is what this flag exists to prevent.
-    _EXEC_CLUSTER_LANE = True
+    LANE = "cluster"
 
     #: No screen to draw on: the work runs in pods, and the X socket a window would need
     #: belongs to whatever machine the service happens to sit on — never the caller's.
@@ -293,13 +291,11 @@ class ClusterService(LocalTransport):
     # -- version ------------------------------------------------------------
 
     def version(self) -> VersionInfo:
-        v = super().version()
-        v.backend = "kubernetes"
-        v.kube_context = self.kube_context
-        v.kube_context_source = self._kube_context_source
-        v.namespace = self.namespace
-        v.in_pod = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
-        v.api_server = self._api_server_url()
+        v = self._version_info(
+            backend="kubernetes", kube_context=self.kube_context,
+            kube_context_source=self._kube_context_source, namespace=self.namespace,
+            in_pod=bool(os.environ.get("KUBERNETES_SERVICE_HOST")),
+            api_server=self._api_server_url())
         # No filesystem roots on this lane: the campaigns and the workspaces are on this
         # service's volumes, and that disk is the cluster's, not the caller's.
         v.results_root = None
@@ -325,12 +321,12 @@ class ClusterService(LocalTransport):
     def upgrade_info(self) -> UpgradeInfo:
         """What is running here, what is published, and whether this pod can roll itself.
 
-        Builds on the local answer -- which supplies the live campaign list and a refusal --
-        and replaces the refusal only once every precondition actually holds. Written that
-        way round so a lane that cannot roll always carries a *reason*, and never an empty
-        ``supported=False`` a reader has to interpret.
+        Starts from a refusal and replaces it only once every precondition actually holds,
+        so a lane that cannot roll always carries a *reason*, and never an empty
+        ``supported=False`` a reader has to interpret. The live campaign list is the
+        lane-neutral part, from :meth:`_active_campaigns`.
         """
-        info = super().upgrade_info()
+        info = UpgradeInfo(supported=False, active_campaigns=self._active_campaigns())
         if not os.environ.get("KUBERNETES_SERVICE_HOST"):
             # A service driving the cluster from outside it: there is a Deployment, but it
             # is not this process, and rolling it would not update the thing the caller is
@@ -439,7 +435,7 @@ class ClusterService(LocalTransport):
         sizes against); ``cpu_reserved`` is the sum of resource *requests* of the pods
         **bound to those same nodes** — what the scheduler has actually committed,
         the number ``kubectl describe node`` calls "Allocated resources". Both are
-        read behind :meth:`LocalTransport.resource_usage`'s TTL cache, and the pod
+        read behind :meth:`ServiceBase.resource_usage`'s TTL cache, and the pod
         list is filtered server-side to skip finished pods — so a poll costs at most
         one ``list_node`` + one filtered ``list_pod`` + one metrics-server ``nodes`` list
         per cache window.
@@ -548,7 +544,7 @@ class ClusterService(LocalTransport):
         a gap in the chart is the truth for that window.
 
         Failures are memoised for ``_METRICS_ABSENT_TTL``; successes are not. Called with
-        ``_usage_lock`` held (see :meth:`LocalTransport.resource_usage`), so both the memo
+        ``_usage_lock`` held (see :meth:`ServiceBase.resource_usage`), so both the memo
         and the read need no lock of their own.
 
         Requires ``metrics.k8s.io/nodes`` get+list in the service's usage ClusterRole (see
@@ -624,7 +620,7 @@ class ClusterService(LocalTransport):
         used on a node that is nearly full, a wrong answer that looks right.
 
         Memoised on its own longer TTL; called with ``_usage_lock`` held (see
-        :meth:`LocalTransport.resource_usage`), so the memo needs no lock of its own.
+        :meth:`ServiceBase.resource_usage`), so the memo needs no lock of its own.
         """
         now = time.monotonic()
         cached = self._disk_cache
@@ -812,7 +808,23 @@ class ClusterService(LocalTransport):
         self._load_kube()
         return client.CustomObjectsApi()
 
-    # -- launch hooks (see LocalTransport.create_campaign) -------------------
+    # -- launch hooks (see ServiceBase.create_campaign) ----------------------
+
+    def _admit_show_gui(self, request) -> None:
+        """Refuse ``show_gui``: no screen to draw on. The work runs in pods, and the X
+        socket a window would need belongs to whatever machine the service happens to sit
+        on -- never the caller's. An explicit refusal rather than a silent windowless run.
+        """
+        if getattr(request, "show_gui", False):
+            raise UnsupportedOnLane(
+                "show_gui", self.LANE,
+                hint="only a local `vast serve` has a display to open a window on -- re-run "
+                     "without it, or run the campaign on a local service")
+
+    def _admit_scheduling(self, request) -> None:
+        """Admit a rank or a hold: campaigns here run against each other for the cluster,
+        so there is a queue to order and a rank means something."""
+        del request
 
     def _guard_new_campaign(self) -> None:
         """Cluster campaigns run in parallel.
@@ -936,7 +948,7 @@ class ClusterService(LocalTransport):
         what deciding in advance was for.
 
         The two spans differ only in who owns the container's death — see
-        :meth:`LocalTransport._aux_runner_context`. A campaign's pods are deleted here;
+        the local lane's ``_aux_runner_context``. A campaign's pods are deleted here;
         a held one is released to the exec manager's reaper.
 
         *should_stop* ends the pod's ready wait for a campaign that was stopped while it
@@ -2359,7 +2371,7 @@ class ClusterService(LocalTransport):
         failure from the step that was only trying to be more precise.
         """
         del campaign_id
-        from robovast.service.local_transport import _JOB_STATE_LIMIT_S
+        from robovast.service.service_base import _JOB_STATE_LIMIT_S
         command = self._LIVE_RUN_FIND.format(root=shlex.quote(run_dir))
         _code, stdout, _stderr, timed_out = self._exec_lane().exec_in(
             target, ["/bin/bash", "-c", command], _JOB_STATE_LIMIT_S)
@@ -2557,28 +2569,28 @@ class ClusterService(LocalTransport):
         cleanup_cluster_campaign(namespace=self.namespace, campaign=campaign_id,
                                  context=self.kube_context, aux=False)
 
-    def _adopts_on_restart(self) -> bool:
-        """True: this lane's campaigns outlive the process, and the next one adopts them.
+    def _shutdown_running_campaigns(self, running) -> None:
+        """Leave *running* alone: this lane's campaigns outlive the process, and the next
+        one adopts them.
 
         A cluster campaign's compute is its scenario Jobs. They are not children of this
         process, they deliver their own results to the campaign, and
         :mod:`~robovast.execution.cluster_execution.campaign_resume` re-attaches to them at
         startup -- so exiting is not a reason to destroy them, and a pod replacement
         (``vast service upgrade``, an eviction, a drain, an OOM) stops being a data-loss
-        event.
-
-        This is why there is no ``_terminate_running_campaigns`` override here any more.
-        Stopping a campaign is :meth:`stop`, which tears its Jobs down through
-        :meth:`_teardown_campaign_jobs` and records the stop; exiting the service is not,
-        and never was a good way to say it -- the cooperative stop persists a terminal
-        ``outcome.json``, and a campaign that has recorded an ending is one no successor
-        will pick up again.
+        event. Stopping here would do worse than discard the work: a cooperative stop
+        persists a terminal ``outcome.json``, and a campaign that has recorded an ending is
+        one no successor will pick up again. Stopping a campaign is :meth:`stop`, which
+        tears its Jobs down through :meth:`_teardown_campaign_jobs` and records the stop;
+        exiting the service is not, and never was a good way to say it.
 
         Unconditional, and deliberately not a ``KUBERNETES_SERVICE_HOST`` test: an
         off-cluster service driving a cluster adopts on its next start exactly like an
         in-pod one, so keying on where the process runs would answer a different question.
         """
-        return True
+        logger.info(
+            "Shutting down — leaving %d running campaign(s) for the successor: %s",
+            len(running), ", ".join(e.campaign_id for e in running))
 
     # -- container exec -----------------------------------------------------
 
@@ -2605,21 +2617,6 @@ class ClusterService(LocalTransport):
                             stage_dir=self.staged_dir,
                             discard_staged=self.discard_staged,
                             token_for=self.scoped_token)
-
-    def _reap_stray_exec_container(self) -> None:
-        """Delete every exec pod and staged tree left by a previous service process.
-
-        A sweep rather than ``stop_held()`` on the one fixed name: a query pod's name
-        carries a hash of the identity it was started for, and nothing persists those
-        across a restart, so the label is the only handle left on it.
-        """
-        try:
-            deleted = self._exec_lane().sweep_held()
-            if deleted:
-                logger.info("removed %d stray exec pod(s) from a previous run: %s",
-                            len(deleted), ", ".join(deleted))
-        except Exception as e:  # noqa: BLE001 - a missing cluster must not break startup
-            logger.debug("could not check for stray exec pods: %s", e)
 
     # -- orphan reaping -----------------------------------------------------
 

@@ -183,7 +183,7 @@ def test_shutdown_marks_the_service_before_it_tears_anything_down(tmp_path, monk
     starts the very work the flag exists to prevent."""
     lt = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
     seen = []
-    monkeypatch.setattr(type(lt), "_adopts_on_restart", lambda self: True)
+    monkeypatch.setattr(type(lt), "_shutdown_running_campaigns", lambda self, running: None)
     monkeypatch.setattr(type(lt), "_is_done",
                         lambda self, e: seen.append(lt._shutting_down))
 

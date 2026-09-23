@@ -2260,6 +2260,47 @@ ERROR_CODE_HEADER = "x-robovast-error"
 #: and the detail already say.
 EXEC_PATH_UNAVAILABLE = "exec_path_unavailable"
 
+#: The operation exists on the interface but the lane answering does not offer it --
+#: :class:`UnsupportedOnLane` crossing HTTP. A client acts on it by not retrying and not
+#: blaming its input: the same call on the other lane is the only thing that changes it.
+UNSUPPORTED_ON_LANE = "unsupported_on_lane"
+
+
+class UnsupportedOnLane(ServiceError):
+    """An operation this lane does not offer, refused by name.
+
+    One sentence, ``<operation> is not supported on the <lane> lane``, followed by a hint
+    when there is somewhere else to go. The same class on both sides of HTTP: a service
+    raises it, the app maps it to ``501`` with the sentence as ``detail`` and
+    :data:`UNSUPPORTED_ON_LANE` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands
+    a caller a :class:`ServiceError` carrying that status, code and sentence -- so the CLI,
+    the MCP tools, the web UI and a raw HTTP client all print the same line. In process it
+    is the very same exception, so an MCP mounted inside the service reports it the way a
+    remote one does.
+
+    What it is for is the difference between a lane that *cannot* and a lane that *did not*:
+    a refusal that names the lane cannot be mistaken for bad input (``400``), a conflict to
+    retry after (``409``) or a bug (``500``), and it cannot be mistaken for success -- the
+    failure this exists to prevent is an operation that a lane accepts and quietly does
+    nothing with.
+
+    A lane raises it for itself, in its own class, never as an inherited default: the
+    refusal is a fact about *that* lane, and ``grep UnsupportedOnLane`` should list every
+    asymmetry between the lanes in full.
+    """
+
+    STATUS = 501
+
+    def __init__(self, operation: str, lane: str, hint: str = ""):
+        self.operation = operation
+        self.lane = lane
+        self.hint = hint
+        where = f"on the {lane} lane" if lane else "by this service"
+        sentence = f"{operation} is not supported {where}"
+        super().__init__(self.STATUS, f"{sentence}. {hint}" if hint else sentence,
+                         code=UNSUPPORTED_ON_LANE)
+
+
 API_VERSION = "0"
 
 #: The port a robovast-service listens on unless told otherwise, and the one every
@@ -2641,6 +2682,12 @@ class RobovastInterface(ABC):
     the identical contract so callers are transport-agnostic.
     """
 
+    #: Which side is answering: ``"local"`` and ``"cluster"`` for the two execution lanes a
+    #: service runs, ``"http"`` for the transport that only forwards to one. Named in every
+    #: :class:`UnsupportedOnLane` an implementation raises, so a refusal says *which* lane
+    #: declined rather than "this service". Empty only on the interface itself.
+    LANE: str = ""
+
     # -- version / health ---------------------------------------------------
 
     @abstractmethod
@@ -2769,16 +2816,19 @@ class RobovastInterface(ABC):
 
         Concrete-with-a-refusal rather than ``@abstractmethod`` because an implementation
         that only *calls* a service (:class:`HTTPTransport`) has no local file to offer and
-        should not be forced to write a stub claiming otherwise. It says so here instead of
-        failing as a missing attribute in a route.
+        should not be forced to write a stub claiming otherwise. It says so here, as
+        :class:`UnsupportedOnLane` naming the lane, instead of failing as a missing
+        attribute in a route.
 
         Every implementation that is actually served from — ``LocalTransport`` and its
         subclasses — overrides this. Callers must therefore **not** probe for it with
         ``getattr``: such a check can only succeed, and the code that believed otherwise sent
         cluster campaigns down the local resolver for years.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} serves no local files; it cannot stream {address!r}")
+        raise UnsupportedOnLane(
+            "local_file", self.LANE,
+            hint=f"only a served transport has a file to stream, and {address!r} is not "
+                 "one here")
 
     @abstractmethod
     def write_file(self, request: WriteFileRequest) -> FileMeta:
@@ -2948,10 +2998,11 @@ class RobovastInterface(ABC):
           in a live job would be a different thing and would have to be recorded as one.
 
         Not abstract: a transport that cannot do this inherits a refusal rather than being
-        forced to implement one, which is the same courtesy :meth:`share` gets.
+        forced to implement one, which is the same courtesy :meth:`share` gets. The refusal
+        is :class:`UnsupportedOnLane`, so it names the lane that declined.
         """
         del campaign_id, job_name
-        raise NotImplementedError("this service cannot read a running job's state")
+        raise UnsupportedOnLane("get_job_state", self.LANE)
 
     def exec_in_job(self, campaign_id: str, job_name: str, command: str,
                     container: str = "scenario", source: str = "api") -> "ExecResult":
@@ -2989,7 +3040,7 @@ class RobovastInterface(ABC):
         inherits a refusal rather than being made to write one.
         """
         del campaign_id, job_name, command, container, source
-        raise NotImplementedError("this service cannot exec into a running job")
+        raise UnsupportedOnLane("exec_in_job", self.LANE)
 
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
@@ -3017,14 +3068,16 @@ class RobovastInterface(ABC):
 
         Raises ``ValueError`` when neither argument is given -- a call that asked for nothing
         is a caller's mistake, and answering it "done" would report a change that never
-        happened. Raises on a lane with no queue to order (the local Docker lane runs one
-        campaign at a time), and on a campaign that is already over.
+        happened. Raises :class:`UnsupportedOnLane` on a lane with no queue to order (the
+        local Docker lane runs one campaign at a time), and ``ValueError`` on a campaign that
+        is already over.
 
         Not abstract, for the reason :meth:`exec_in_job` is not: a transport that cannot do
         this inherits a refusal rather than being made to write one.
         """
         del campaign_id, priority, paused
-        raise NotImplementedError("this service does not queue campaigns against each other")
+        raise UnsupportedOnLane("set_campaign_scheduling", self.LANE,
+                                hint="this lane does not queue campaigns against each other")
 
     @abstractmethod
     def stop_job(self, campaign_id: str, job_name: str,

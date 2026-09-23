@@ -126,10 +126,10 @@ def test_live_campaign_reports_its_description_before_the_store_exists(transport
     """A just-accepted campaign is described from the in-memory entry: its store row is
     written by the controller, which for an image-building campaign is minutes away."""
     from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
 
     cid = "campaign-2026-07-16-181920"
-    entry = _LocalCampaign(cid, str(transport._campaigns_root()), ControllerState(),
+    entry = _TrackedCampaign(cid, str(transport._campaigns_root()), ControllerState(),
                            description="full sweep after the pilot")
     with transport._lock:
         transport._campaigns[cid] = entry
@@ -184,11 +184,11 @@ def _mark_live(transport, cid: str, phase: str = "running") -> None:
     """
     from robovast.common.store import read_campaign_created_at
     from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
 
     state = ControllerState()
     state.set_phase(phase)
-    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    entry = _TrackedCampaign(cid, str(transport._campaigns_root()), state)
     # The recorded start time, not now — mirroring what `_dispatch_background` does when it
     # re-tracks a finished campaign. A tracked entry's `created_at` is what `_started_at_for`
     # answers with, so leaving the constructor's default here would restamp the campaign to
@@ -298,12 +298,12 @@ def test_in_memory_campaign_listed_before_directory_exists(transport):
     """A just-launched campaign (registered in-memory, no directory yet) is listed
     with its live phase — the fix for the launch→list lag."""
     from robovast.execution.control_server import ControllerState, Phase
-    from robovast.service.client import _LocalCampaign
+    from robovast.service.client import _TrackedCampaign
 
     cid = "campaign-2026-07-20-090000"
     state = ControllerState()
     state.set_phase(Phase.BUILDING)
-    entry = _LocalCampaign(cid, str(transport._campaigns_root()), state)
+    entry = _TrackedCampaign(cid, str(transport._campaigns_root()), state)
     transport._campaigns[cid] = entry
 
     assert not (transport._campaigns_root() / cid).exists()  # no dir yet
@@ -320,14 +320,14 @@ def test_tracked_campaign_phase_wins_over_disk(transport):
     """A campaign both tracked and on disk is reported once, with its live phase
     (the same precedence get_status uses), not the disk-reconstructed 'finished'."""
     from robovast.execution.control_server import ControllerState, Phase
-    from robovast.service.client import _LocalCampaign
+    from robovast.service.client import _TrackedCampaign
 
     root = transport._campaigns_root()
     cid = "campaign-2026-07-20-091500"
     (root / cid).mkdir(parents=True)              # on disk → would reconstruct "finished"
     state = ControllerState()
     state.set_phase(Phase.RUNNING)
-    transport._campaigns[cid] = _LocalCampaign(cid, str(root), state)
+    transport._campaigns[cid] = _TrackedCampaign(cid, str(root), state)
 
     summaries = transport.list_campaigns().campaigns
     ids = [c.campaign_id for c in summaries]

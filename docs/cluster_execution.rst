@@ -1487,7 +1487,7 @@ part that does not survive it; the campaigns do.
   are visible to it exactly like any other tenant's -- which is also what lets it adopt
   them without any bookkeeping of its own.
 
-This is what ``ClusterService._adopts_on_restart`` says, and why this lane has no
+This is what ``ClusterService._shutdown_running_campaigns`` says, and why this lane has no
 shutdown-time job teardown: stopping a campaign is ``vast campaign stop``, and exiting the
 service is not. The distinction matters more than it looks, because a cooperative stop
 persists a terminal ``outcome.json`` -- and a campaign that has recorded an ending is one

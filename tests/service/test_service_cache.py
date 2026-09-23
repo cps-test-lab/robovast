@@ -18,7 +18,8 @@ from robovast.common.errors import InsufficientStorageError
 from robovast.service import scene_cache
 from robovast.service.app import build_app
 from robovast.service.interface import DiskSpace, Routes
-from robovast.service.local_transport import SCENE_CACHE, LocalTransport
+from robovast.service.local_transport import LocalTransport
+from robovast.service.service_base import SCENE_CACHE
 from robovast.common.disk_reserve import RESERVE_ENV
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 

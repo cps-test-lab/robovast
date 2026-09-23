@@ -1412,7 +1412,7 @@ def project_build_spec(target) -> "Optional[BuildSpec]":
     """Load + validate a config and return its :class:`BuildSpec` map.
 
     ``target`` is anything carrying a ``config_path`` — a
-    :class:`~robovast.service.local_transport.WorkspaceTarget` from the service, or the
+    :class:`~robovast.service.service_base.WorkspaceTarget` from the service, or the
     CLI's ``ProjectConfig``. Empty when no container adds packages.
     """
     from robovast.common.common import load_config

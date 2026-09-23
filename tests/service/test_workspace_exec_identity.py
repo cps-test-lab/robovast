@@ -23,7 +23,7 @@ from robovast.service.client import LocalTransport
 from robovast.service.container_exec import ExecSpec
 from robovast.service.image_store import ImageRef
 from robovast.service.interface import ExecRequest
-from robovast.service.local_transport import _workspace_sha
+from robovast.service.service_base import _workspace_sha
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 

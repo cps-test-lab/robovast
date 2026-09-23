@@ -16,7 +16,7 @@ from unittest import mock
 
 from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS,
                                                STOP_SHARE)
-from robovast.service.client import LocalTransport, _LocalCampaign
+from robovast.service.client import LocalTransport, _TrackedCampaign
 
 
 class _State:
@@ -55,10 +55,10 @@ def _transport() -> LocalTransport:
     return lt
 
 
-def _add_running(lt: LocalTransport, cid: str) -> _LocalCampaign:
+def _add_running(lt: LocalTransport, cid: str) -> _TrackedCampaign:
     """Register a campaign whose worker loops until its state is stopped."""
     state = _State()
-    entry = _LocalCampaign(cid, "/tmp", state)
+    entry = _TrackedCampaign(cid, "/tmp", state)
 
     def _work():
         state.stopped.wait(timeout=5)
@@ -87,7 +87,7 @@ def test_shutdown_skips_finished_campaigns():
     lt = _transport()
     # A finished campaign reads terminal (its worker recorded a terminal phase);
     # _is_done -> True regardless of the thread handle, so shutdown skips it.
-    done = _LocalCampaign("campaign-done", "/tmp", _State(phase="finished"))
+    done = _TrackedCampaign("campaign-done", "/tmp", _State(phase="finished"))
     done.thread = None
     lt._campaigns["campaign-done"] = done
 

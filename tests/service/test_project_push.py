@@ -83,13 +83,13 @@ def _live_campaign(campaign_id, workspace_id, done=False, released=False):
     """A campaign entry as the service holds one while it drives the run."""
     from robovast.client.status import Phase
     from robovast.execution.control_server import ControllerState
-    from robovast.service.local_transport import _LocalCampaign
+    from robovast.service.service_base import _TrackedCampaign
 
     state = ControllerState(campaign_id=campaign_id)
     state.set_phase(Phase.FINISHED if done else Phase.RUNNING)
     if released:
         state.release_project()
-    return _LocalCampaign(campaign_id, "results", state, workspace_id=workspace_id)
+    return _TrackedCampaign(campaign_id, "results", state, workspace_id=workspace_id)
 
 
 # -- sync: refused while a campaign is reading the workspace ----------------
