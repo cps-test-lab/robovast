@@ -54,8 +54,9 @@ execution:
     simulation:
       backend: roqsim
       config: world/drone_envelope.yaml
-      # Needs a simulator image carrying `roqsim_aerial` (the Crazyflie, `quadrotor_controller`,
-      # `payload` and `wind_field`). It is part of the standard robovast-roqsim image; an image
+      # Needs a simulator image carrying `roqsim_aerial` (the Crazyflie, `quadrotor_controller`
+      # and `wind_field`; `payload` is core roqsim). It is part of the standard robovast-roqsim
+      # image; an image
       # built before that package existed fails at world load with "model 'crazyflie_2' not found",
       # which names the cause precisely enough to act on.
       resources: {cpu: 0.5, cpu_limit: 4, memory: 1536Mi}
