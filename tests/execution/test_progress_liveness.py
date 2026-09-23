@@ -13,6 +13,7 @@ from pathlib import Path
 from robovast.common.config import (DEFAULT_RUN_DEADLINE_SECONDS, declared_job_seconds,
                                     declared_per_run_seconds, job_deadline_seconds)
 from robovast.execution.backends import DockerBackend, ExecutionBackend
+from robovast.execution.cluster_execution.kubernetes_backend import KubernetesBackend
 from robovast.execution.control_server import ControllerState
 
 
@@ -23,13 +24,12 @@ def _finish_run(campaign_root: Path, config: str, run: str) -> None:
     (run_dir / "test.xml").write_text("<testsuite/>")
 
 
-# -- the local lane publishes run progress -----------------------------------
+# -- both lanes publish run progress -----------------------------------------
 
 
 def test_the_local_backend_counts_finished_runs(tmp_path):
-    """Returning ``None`` ("results are already on disk") switches the controller's
-    progress poller off entirely — so a live local campaign reports ``0/0`` and a
-    progress that can never move."""
+    """Returning ``None`` switches the controller's progress poller off entirely — so a
+    live campaign reports ``0/0`` and a progress that can never move."""
     backend = DockerBackend()
     assert backend.count_run_artifacts("camp", str(tmp_path)) == 0
     _finish_run(tmp_path, "cfg-a", "0")
@@ -55,11 +55,32 @@ def test_a_missing_campaign_dir_counts_zero_rather_than_raising(tmp_path):
     assert DockerBackend().count_run_artifacts("camp", str(missing)) == 0
 
 
-def test_the_base_backend_still_allows_a_backend_that_cannot_count():
-    """``None`` stays a legal answer for a third-party backend — the controller logs
-    the consequence rather than the contract forbidding it."""
-    assert ExecutionBackend.count_run_artifacts(
-        object(), "camp", "/tmp/whatever") is None
+def test_the_cluster_backend_counts_the_same_files(tmp_path):
+    """A cluster job's uploader delivers its results under the campaign root before the
+    Job is complete, so the cluster lane counts exactly what the local lane counts. It
+    inherits the count rather than restating it: the lane that answered ``None`` here
+    ran every campaign with no batch total and a progress that never moved."""
+    backend = KubernetesBackend.__new__(KubernetesBackend)
+    assert backend.count_run_artifacts("camp", str(tmp_path)) == 0
+    _finish_run(tmp_path, "cfg-a", "0")
+    _finish_run(tmp_path, "cfg-b", "0")
+    assert backend.count_run_artifacts("camp", str(tmp_path)) == 2
+    assert KubernetesBackend.count_run_artifacts is ExecutionBackend.count_run_artifacts
+
+
+def test_a_backend_that_cannot_count_may_still_say_so():
+    """``None`` stays a legal answer for a third-party backend whose runs leave results
+    where the root cannot see them — the controller logs the consequence rather than the
+    contract forbidding it."""
+
+    class _Elsewhere(ExecutionBackend):
+        def run_batch(self, *args, **kwargs):
+            raise NotImplementedError
+
+        def count_run_artifacts(self, campaign_id, campaign_root):
+            return None
+
+    assert _Elsewhere().count_run_artifacts("camp", "/tmp/whatever") is None
 
 
 # -- the progress clock ------------------------------------------------------

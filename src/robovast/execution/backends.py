@@ -290,9 +290,10 @@ class ExecutionBackend(ABC):
                 "including this one, so it is refused here rather than at the far end of "
                 "a transfer.")
 
-    #: The per-run JUnit report a finished run publishes. Counting these is what
-    #: "a run completed" means to the progress poller, on either lane — the object
-    #: store counts keys ending in it, the filesystem counts files named it.
+    #: The per-run JUnit report a finished run publishes. Counting these under the
+    #: campaign root is what "a run completed" means to the progress poller, on either
+    #: lane: the root is the campaign's durable home, and a run's results are under it
+    #: the moment the run has delivered them.
     RUN_SENTINEL = "test.xml"
 
     def node_facts(self, label: str) -> dict | None:
@@ -316,18 +317,33 @@ class ExecutionBackend(ABC):
                             campaign_root: str) -> int | None:
         """Completed per-run artifacts published so far (controller progress poll).
 
-        Returns the cumulative number of finished runs visible to the backend, or
-        ``None`` when the backend genuinely cannot introspect. Both shipped backends
-        count: ``None`` disables run-level progress entirely, so a campaign on such a
-        backend reports a ``progress`` that can never advance — indistinguishable from
-        a hang — and the controller says so in the log rather than degrading quietly.
+        Returns the cumulative number of finished runs under *campaign_root*, counted as
+        the ``test.xml`` files finished runs have written there. That is the answer on
+        both shipped lanes, which is why it is the base's: ``campaign_root`` is the
+        campaign's durable home on either, and a run's results are under it as soon as
+        the run delivers them -- written there by the local lane, delivered there by a
+        cluster job's uploader before the Job counts as complete. A backend whose runs
+        leave results somewhere the root cannot see overrides this; one that genuinely
+        cannot introspect answers ``None``, which disables run-level progress entirely,
+        so a campaign on it reports a ``progress`` that can never advance --
+        indistinguishable from a hang -- and the controller says so in the log rather
+        than degrading quietly.
 
         The poller calls this **concurrently** with :meth:`run_batch`, so it must be
         cheap and read-only. ``campaign_root`` is passed rather than derived because a
         backend may hold no handle on it, and the poller probes this before the first
         batch has run.
         """
-        return None
+        del campaign_id  # the root already identifies the campaign
+        try:
+            # ``<config_name>/<run_number>/test.xml``. The run number must be numeric,
+            # the same convention ``list_run_dirs`` uses, so nothing under a reserved
+            # ``_config``/``_jobs``/``_transient`` dir can inflate the count.
+            return sum(1 for p in Path(campaign_root).glob(f"*/*/{self.RUN_SENTINEL}")
+                       if p.parent.name.isdigit())
+        except OSError:
+            # The campaign dir may not exist yet when the poller first probes.
+            return 0
 
 
 def _sanitize(tag: str) -> str:
@@ -426,31 +442,6 @@ class DockerBackend(ExecutionBackend):
             logger.warning(
                 "Batch %s run script exited with code %d (some runs failed); "
                 "continuing to evaluate produced results.", batch_tag, returncode)
-
-    def count_run_artifacts(self, campaign_id: str,
-                            campaign_root: str) -> int | None:
-        """Count the ``test.xml`` files finished runs have written under the campaign.
-
-        The local lane writes results straight into ``campaign_root`` as each run
-        finishes, so the count is a plain glob — the filesystem counterpart of the
-        cluster backend counting object keys with the same sentinel.
-
-        Returning ``None`` ("results are already on disk") switches the controller's
-        progress poller off entirely: a live local campaign reports ``batch_runs_total:
-        0`` and a ``progress`` that never moves, so a wedged pilot and a working one are
-        indistinguishable — and that ``0/0`` reaches the durable ``outcome.json`` of
-        campaigns that passed.
-        """
-        del campaign_id  # the root already identifies the campaign on this lane
-        try:
-            # ``<config_name>/<run_number>/test.xml``. The run number must be numeric,
-            # the same convention ``list_run_dirs`` uses, so nothing under a reserved
-            # ``_config``/``_jobs``/``_transient`` dir can inflate the count.
-            return sum(1 for p in Path(campaign_root).glob(f"*/*/{self.RUN_SENTINEL}")
-                       if p.parent.name.isdigit())
-        except OSError:
-            # The campaign dir may not exist yet when the poller first probes.
-            return 0
 
     def _run_watching_stop(self, cmd) -> int:
         """Run *cmd* to completion, terminating it if ``stop_requested`` is set.
