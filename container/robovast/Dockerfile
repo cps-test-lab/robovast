@@ -265,6 +265,7 @@ RUN \
         python3-defusedxml \
         ffmpeg \
         ros-${ROS_DISTRO}-nav2-minimal-tb4-description \
+        ros-${ROS_DISTRO}-irobot-create-msgs \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
         ros-${ROS_DISTRO}-rmw-zenoh-cpp \
         libgl1 \
