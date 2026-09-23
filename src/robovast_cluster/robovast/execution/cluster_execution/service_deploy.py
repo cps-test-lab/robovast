@@ -771,7 +771,7 @@ def _rollout_pod_state(core, namespace):
     newest = max(pods, key=lambda p: p.metadata.creation_timestamp)
     unhealthy = pod_block_reason(newest) or pod_restarted_containers(newest)
     if unhealthy is None and pod_awaiting_setup(newest, grace=0.0):
-        unhealthy = pod_volume_reason(newest, mount_failure_events(core, namespace))
+        unhealthy = pod_volume_reason(newest, mount_failure_events(core, namespace), core)
     return newest, unhealthy
 
 

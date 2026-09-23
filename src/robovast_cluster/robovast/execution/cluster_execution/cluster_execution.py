@@ -127,6 +127,12 @@ POD_PULL_REASONS = frozenset({"ImagePullBackOff", "ErrImagePull"})
 #: whole diagnosis.
 POD_VOLUME_REASONS = frozenset({"FailedMount", "FailedAttachVolume"})
 
+#: Kubelet Events that come only after every volume of a pod is set up: the kubelet waits
+#: for the pod's attach and mount before it pulls an image or creates a container. One of
+#: them at or after a pod's last mount failure means that failure was transient -- a Secret
+#: synced a moment late -- and the pod, still pulling, is starting rather than stuck.
+POD_PAST_MOUNT_REASONS = frozenset({"Pulling", "Pulled", "Created", "Started"})
+
 
 #: Why the scheduler refused to place a pod. Unlike :data:`POD_BLOCKED_REASONS` this is a
 #: pod *condition*, and it is the shape every capacity or quota mistake takes: the
@@ -277,19 +283,58 @@ def pod_awaiting_setup(pod, grace: float = BLOCKED_GRACE_SECONDS) -> bool:
     return (datetime.now(timezone.utc) - started).total_seconds() > grace
 
 
-def pod_volume_reason(pod, events) -> "tuple[str, str] | None":
+def pod_volume_reason(pod, events, k8s_core) -> "tuple[str, str] | None":
     """``(reason, message)`` from *events* if the kubelet cannot mount a volume of *pod*.
 
     *events* is this namespace's mount-failure Events indexed by pod name (see
-    :func:`_pod_signals`, which reads them only once a pod looks like a candidate). The
+    :func:`mount_failure_events`, which is read only once a pod looks like a candidate). The
     event is the evidence, and there is no substitute for it: nothing in a pod's status
     distinguishes a volume that will never mount from one that mounted a moment ago.
+
+    An Event outlives its cause, so a failure is current only while nothing in
+    :data:`POD_PAST_MOUNT_REASONS` followed it. That takes one read of the pod's own Events,
+    made only for a pod that has a mount failure. A read that fails keeps the failure: it is
+    still the only evidence there is.
     """
-    for event in events.get(getattr(getattr(pod, "metadata", None), "name", ""), []):
-        reason = getattr(event, "reason", None)
-        if reason in POD_VOLUME_REASONS:
-            return reason, (getattr(event, "message", None) or "").strip()
-    return None
+    meta = getattr(pod, "metadata", None)
+    name = getattr(meta, "name", "")
+    failures = [e for e in events.get(name, [])
+                if getattr(e, "reason", None) in POD_VOLUME_REASONS]
+    if not failures:
+        return None
+    last = max(failures, key=_event_when)
+    try:
+        own = k8s_core.list_namespaced_event(
+            getattr(meta, "namespace", None),
+            field_selector=f"involvedObject.kind=Pod,involvedObject.name={name}").items
+    except Exception as exc:  # noqa: BLE001 - the failure Event stands on its own
+        logger.warning("Could not list the events of pod %s: %s", name, exc)
+        own = []
+    failed_at = _event_when(last)
+    if failed_at is not None and any(
+            getattr(e, "reason", None) in POD_PAST_MOUNT_REASONS
+            and _event_when(e) is not None and _event_when(e) >= failed_at for e in own):
+        return None
+    return last.reason, (getattr(last, "message", None) or "").strip()
+
+
+def _event_when(event):
+    """When *event* last happened, from whichever field the API server filled in.
+
+    Always UTC-aware. The four fields are two API types filled in by different writers, and
+    comparing one that carries an offset with one that does not raises rather than answering
+    -- inside the ``>=`` below that would take down the wait that called it.
+    """
+    from datetime import timezone  # noqa: PLC0415
+
+    series = getattr(event, "series", None)
+    when = (getattr(series, "last_observed_time", None)
+            or getattr(event, "last_timestamp", None)
+            or getattr(event, "event_time", None)
+            or getattr(event, "first_timestamp", None))
+    if when is not None and when.tzinfo is None:
+        return when.replace(tzinfo=timezone.utc)
+    return when
 
 
 def mount_failure_events(k8s_core, namespace) -> dict:
@@ -914,7 +959,7 @@ def _pod_signals(k8s_core, namespace,
             # are read here, once, and only because a pod in this shape was seen.
             if mount_events is None:
                 mount_events = mount_failure_events(k8s_core, namespace)
-            reason = pod_volume_reason(pod, mount_events)
+            reason = pod_volume_reason(pod, mount_events, k8s_core)
         if reason:
             r, msg = reason
             blocked[name] = f"{r}: {msg}" if msg else r

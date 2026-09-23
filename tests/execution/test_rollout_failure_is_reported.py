@@ -241,8 +241,8 @@ def test_a_volume_that_cannot_mount_fails_the_rollout(monkeypatch):
     """A Secret the pod mounts and nobody created is recorded only in an Event.
 
     Nothing on the pod says so -- every container is ``ContainerCreating``, exactly as while
-    a large image pulls -- so without the Event read this waited out the whole timeout in
-    silence.
+    a large image pulls -- so the Event is read, and the rollout fails with the kubelet's
+    message within the grace rather than at the timeout.
     """
     _, core = _cluster(monkeypatch, _seq(_deployment(available=0)),
                        _seq(_pods(_placed_but_not_started(1))))
@@ -270,6 +270,26 @@ def test_a_pod_still_creating_with_no_mount_failure_is_waited_for(monkeypatch):
                             _deployment()),
                        _seq(_pods(_placed_but_not_started(1))))
     core.list_namespaced_event.return_value = SimpleNamespace(items=[])
+
+    service_deploy.wait_for_rollout(timeout_s=30, unhealthy_grace_s=0.0)
+
+
+def test_a_mount_failure_the_pod_got_past_is_waited_for(monkeypatch):
+    """A transient mount failure followed by a long pull is a slow start, not a failure."""
+    import datetime
+
+    at = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    failed = _mount_failure("robovast-service-abc", 'secret "creds" not found')
+    failed.last_timestamp = at
+    pulling = SimpleNamespace(reason="Pulling", message="", last_timestamp=at, series=None,
+                              involved_object=SimpleNamespace(name="robovast-service-abc"))
+    _, core = _cluster(monkeypatch,
+                       _seq(_deployment(available=0), _deployment(available=0),
+                            _deployment()),
+                       _seq(_pods(_placed_but_not_started(1))))
+    core.list_namespaced_event.side_effect = lambda namespace, field_selector: \
+        SimpleNamespace(items=[failed] if field_selector == "reason=FailedMount"
+                        else [pulling] if "involvedObject.name=" in field_selector else [])
 
     service_deploy.wait_for_rollout(timeout_s=30, unhealthy_grace_s=0.0)
 

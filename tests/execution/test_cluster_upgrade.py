@@ -810,8 +810,8 @@ def _replaced_deployment(apps):
 def test_a_live_deployment_is_replaced_not_merged(monkeypatch):
     """A strategic merge keys `volumes` by name and never drops one.
 
-    So the mount of a credential Secret that this deploy deleted outlived it, and the new pod
-    waited forever on a volume that could not be set up.
+    A replace renders the Deployment whole, so a credential Secret this deploy deleted is
+    not mounted by the pod that replaces it.
     """
     apps = _deploy_over_a_live_service(monkeypatch)
 
