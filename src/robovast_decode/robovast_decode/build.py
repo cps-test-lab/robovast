@@ -248,6 +248,9 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
                 write_manifest(campaign_dir, fresh)
         if not report_current and sources:
             _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
+            report.built.setdefault(RECORDING_TABLE, []).append(run.key)
+        elif sources:
+            report.skipped.setdefault(RECORDING_TABLE, []).append(run.key)
         _build_files(campaign_dir, campaign_id, run, wanted_tables, force, report, known_tables,
                      reserved=run_bag_tables | DERIVED_TABLES)
         if wanted_tables is not None:

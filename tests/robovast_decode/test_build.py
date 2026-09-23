@@ -40,10 +40,11 @@ def test_the_recording_report_says_what_was_not_tabulated_and_why(campaign):
 
 def test_only_the_named_table_is_built_and_a_second_build_does_nothing(campaign):
     first = build(str(campaign), tables=["poses"])
-    assert first.built == {"poses": ["cfg/0"]}
+    assert first.built == {"poses": ["cfg/0"], "_recording": ["cfg/0"]}
     assert set(_manifest(campaign)["tables"]) == {"poses", "_recording"}
     second = build(str(campaign), tables=["poses"])
-    assert second.built == {} and second.skipped == {"poses": ["cfg/0"]}
+    assert second.built == {}
+    assert second.skipped == {"poses": ["cfg/0"], "_recording": ["cfg/0"]}
 
 
 def test_a_grown_recording_is_built_again(campaign):
@@ -51,7 +52,7 @@ def test_a_grown_recording_is_built_again(campaign):
     with open(campaign / "cfg" / "0" / "rosbag2" / "rosbag2_0.mcap", "ab") as fh:
         fh.write(b"\x00")                                 # the bytes changed: stale
     assert build(str(campaign), tables=["rosbag2_collision"]).built == {
-        "rosbag2_collision": ["cfg/0"]}
+        "rosbag2_collision": ["cfg/0"], "_recording": ["cfg/0"]}
 
 
 def test_a_required_frame_that_never_resolves_fails_its_table_only(campaign):
@@ -187,3 +188,10 @@ def test_a_data_files_columns_are_read_from_its_header_alone(campaign):
     jsonl = campaign / "cfg" / "0" / "behaviors.jsonl"
     jsonl.write_text('{"format": "behavior_tree_log"}\n')
     assert header(str(jsonl)) is None
+
+
+def test_naming_the_recording_report_builds_it_and_nothing_else(campaign):
+    report = build(str(campaign), tables=["_recording"])
+    assert report.built == {"_recording": ["cfg/0"]}
+    entry = _manifest(campaign)["tables"]["_recording"]["runs"]["cfg/0"]
+    assert entry["files"] and entry["rows"] > 0
