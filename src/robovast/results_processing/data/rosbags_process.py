@@ -123,7 +123,12 @@ class RosbagHandler(ABC):
 
     @abstractmethod
     def topics(self) -> List[str]:
-        """Return list of topic names this handler wants to receive."""
+        """Return every topic this handler reads.
+
+        The bag reader is filtered to the union of these lists, so a topic missing here never
+        reaches :meth:`on_message` -- a handler that consults a second topic (``/tf_static``
+        beside ``/tf``) lists both.
+        """
 
     def on_begin(self, bag_path: str, topic_type_map: Dict[str, str]) -> None:
         """Called once before reading begins.
@@ -1265,22 +1270,34 @@ def process_rosbag_worker(args: tuple) -> BagResult:
             )
             return BagResult(bag_path, FAILED, output=captured.getvalue())
 
-        # Main read loop — deserialize each message at most once
-        while reader.has_next():
-            topic, data, timestamp = reader.read_next()
-            if topic not in topic_to_handlers:
-                continue
-            msg_cls = msg_type_cache[topic]
-            try:
-                msg = deserialize_message(data, msg_cls)
-            except Exception as e:
-                print(f"  ✗ Deserialization error on {topic}: {e}")
-                continue
-            for h in topic_to_handlers[topic]:
+        # Read only what some handler subscribed to. The storage plugin skips every other
+        # topic's records instead of handing them to Python -- a bag's bulk is usually camera,
+        # scan and odometry streams that no handler asked for.
+        #
+        # One decision, because an empty subscription is not an empty filter: rosbag2 reads
+        # EVERY topic when the filter is empty, so a bag holding nothing any handler asked for
+        # is not opened for reading at all rather than read in full and discarded.
+        if topic_to_handlers:
+            reader.set_filter(rosbag2_py.StorageFilter(topics=list(topic_to_handlers)))
+
+            # Main read loop — deserialize each message at most once. The dispatch still tests
+            # the topic: the filter is the storage plugin's promise, and a plugin that did not
+            # keep it must skip a record here rather than fail on a type nothing cached.
+            while reader.has_next():
+                topic, data, timestamp = reader.read_next()
+                if topic not in topic_to_handlers:
+                    continue
+                msg_cls = msg_type_cache[topic]
                 try:
-                    h.on_message(topic, msg, timestamp)
+                    msg = deserialize_message(data, msg_cls)
                 except Exception as e:
-                    print(f"  ✗ Handler {type(h).__name__} on_message error: {e}")
+                    print(f"  ✗ Deserialization error on {topic}: {e}")
+                    continue
+                for h in topic_to_handlers[topic]:
+                    try:
+                        h.on_message(topic, msg, timestamp)
+                    except Exception as e:
+                        print(f"  ✗ Handler {type(h).__name__} on_message error: {e}")
 
         # Collect results
         handler_results: List[Tuple[int, List[str]]] = []

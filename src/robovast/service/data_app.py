@@ -157,13 +157,13 @@ class DataPlane:
             snapshot=snapshot, include=include,
             compress=not (selection is not None and selection.uncompressed))
 
-    def campaign_inputs_tar_stream(self, campaign_id: str,
+    def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
         campaign_dir = self.campaign_dir(campaign_id)
         for _config_name, rel in config_files or ():
             check_relative(rel)
-        return campaign_archive.iter_inputs_tar(str(campaign_dir), config_files)
+        return campaign_archive.iter_inputs_tar(str(campaign_dir), job_tags, config_files)
 
     def ingest_campaign_outputs(self, campaign_id: str, stream) -> OutputsIngested:
         """Extract *stream* into the campaign. A campaign that is over still takes it.
@@ -322,11 +322,14 @@ def data_router(source):
 
     @router.get(Routes.campaign_inputs("{campaign_id}"))
     def download_campaign_inputs(campaign_id: str,
+                                 job: list[str] = Query(),
                                  config_file: list[str] = Query(default=[])):
         """Stream the tar a job pod extracts into its ``/config``.
 
-        ``config_file`` names a cell's own input as ``<config_name>:<rel>``, repeated
-        once per file; each lands at ``<rel>`` on top of the campaign's copy.
+        ``job`` names the tag whose documents the pod reads, repeated once per tag; every
+        other job's are left out. ``config_file`` names a cell's own input as
+        ``<config_name>:<rel>``, repeated once per file; each lands at ``<rel>`` on top of
+        the campaign's copy.
         """
         pairs = []
         for item in config_file:
@@ -336,7 +339,7 @@ def data_router(source):
                                     detail=f"config_file must be <config_name>:<rel>, got {item!r}")
             pairs.append((config_name, rel))
         return StreamingResponse(
-            _guard(lambda: source.campaign_inputs_tar_stream(campaign_id, pairs)),
+            _guard(lambda: source.campaign_inputs_tar_stream(campaign_id, job, pairs)),
             media_type=TAR_MEDIA_TYPE)
 
     @router.put(Routes.campaign_outputs("{campaign_id}"), response_model=OutputsIngested)

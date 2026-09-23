@@ -560,8 +560,8 @@ class HTTPTransport(RobovastInterface):
             params = {k: v for k, v in selection.model_dump().items() if v}
         return self._stream(Routes.campaign_archive(campaign_id), **params)
 
-    def campaign_inputs_tar_stream(self, campaign_id: str, config_files=None):
-        return self._stream(Routes.campaign_inputs(campaign_id),
+    def campaign_inputs_tar_stream(self, campaign_id: str, job_tags, config_files=None):
+        return self._stream(Routes.campaign_inputs(campaign_id), job=list(job_tags),
                             config_file=[f"{cn}:{rel}" for cn, rel in (config_files or ())])
 
     def ingest_campaign_outputs(self, campaign_id: str, stream):

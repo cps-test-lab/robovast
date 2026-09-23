@@ -45,18 +45,18 @@ def match_var_marker(value: Any) -> Optional[str]:
     return m.group(1) or m.group(2)
 
 
-def _collect_var_refs(node: Any, refs: set) -> None:
-    """Walk plain data (dicts/lists/scalars) collecting every ``$name`` marker."""
+def collect_var_refs(node: Any) -> set:
+    """Every ``$name`` marker in plain data (dicts/lists/scalars), as bare names.
+
+    A walk over plain data and nothing else: it must not instantiate the models that data
+    describes, which reject the very marker strings it is looking for.
+    """
     if isinstance(node, dict):
-        for v in node.values():
-            _collect_var_refs(v, refs)
-    elif isinstance(node, (list, tuple)):
-        for v in node:
-            _collect_var_refs(v, refs)
-    else:
-        name = match_var_marker(node)
-        if name is not None:
-            refs.add(name)
+        return set().union(*(collect_var_refs(v) for v in node.values()))
+    if isinstance(node, (list, tuple)):
+        return set().union(*(collect_var_refs(v) for v in node))
+    name = match_var_marker(node)
+    return {name} if name is not None else set()
 
 
 class GeneralConfig(BaseModel):
@@ -2499,7 +2499,7 @@ class SearchConfig(BaseModel):
         refs: set[str] = set()
         for tmpl in (self.variations, self.parameters):
             if tmpl is not None:
-                _collect_var_refs(tmpl, refs)
+                refs |= collect_var_refs(tmpl)
         unknown = sorted(refs - declared)
         if unknown:
             raise ValueError(

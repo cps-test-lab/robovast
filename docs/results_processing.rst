@@ -243,6 +243,11 @@ the same on both lanes, so a downloaded campaign carries them whether it ran loc
 a cluster. Each is named, with what it was derived from, in
 ``_transient/postprocessing.yaml``.
 
+The conversion reads each bag once, and reads from it only the topics some configured handler
+converts: the bag reader is filtered to those topics, so a recorded topic no step asks for
+(a camera or laser-scan stream, say) is skipped by the storage plugin rather than handed to
+the converter and deserialized.
+
 A common example of test-specific output is a scenario-recorded ``rosbag2/``
 directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
 recorded topics and message counts). It is present only when the scenario
@@ -1311,6 +1316,12 @@ exactly as after a launch:
 
 Postprocessing is **cached** by a hash of the results directory; when nothing changed the
 step is skipped automatically, which is what ``--force`` bypasses.
+
+Its last step loads the derived files into the central index. The index holds nothing that
+is not rebuilt from the campaign's files, so the load commits without waiting for each write
+to reach the database's disk, and it ends by refreshing the query planner's statistics on
+the tables it wrote. A crash of the index's database server during or just after a load can
+therefore lose the last rows written; postprocessing the campaign again loads them again.
 
 .. note::
 

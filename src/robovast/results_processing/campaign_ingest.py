@@ -48,6 +48,7 @@ simulator, or a third-party plugin contributes data, and it is the documented
 middleware-neutral seam; nothing about it changes here.
 """
 
+import contextlib
 import csv
 import json
 import logging
@@ -988,7 +989,60 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
     counter -- so with nothing here, "still working" and "wedged" are the same observation for
     however long it takes. Defaults to the log, which is where the ``vast campaign import``
     path reads it; postprocessing passes a callback that also publishes the live stage marker.
+
+    The ingest runs with ``synchronous_commit`` off on *conn* (see :func:`_ingest_session`)
+    and ends by analysing every table it cleared or wrote.
     """
+    with _ingest_session(conn):
+        return _ingest_campaign(conn, campaign_dir, campaign_id, provenance_entries, output)
+
+
+@contextlib.contextmanager
+def _ingest_session(conn):
+    """Turn ``synchronous_commit`` off on *conn* for the rows an ingest writes.
+
+    Every statement an ingest sends commits on its own (the index connection is autocommit),
+    so with the default each one waits for its WAL to be flushed to disk. Off, a commit
+    returns before that flush: a server crash can lose the last few commits, but never
+    corrupts the database or leaves a commit half-applied. That loss is acceptable here and
+    nowhere else, because the index is derived data: every row it holds is rebuilt from the
+    campaign's files by ingesting them again (a re-postprocess, or ``vast campaign import``).
+    It covers the derived rows and the DDL around them -- the tables, the views and the
+    scope's grants and policies, all of which the next ingest writes again. The registry
+    row that ends the ingest is the exception and commits durably (see
+    :func:`_ingest_campaign`), because it is what everything downstream reads as "this
+    campaign is in the index".
+    """
+    with _synchronous_commit(conn, "off"):
+        yield
+
+
+@contextlib.contextmanager
+def _synchronous_commit(conn, value: str):
+    """Set ``synchronous_commit`` to *value* on *conn*, and put back what it was.
+
+    The connection's own value is restored rather than a default, so the setting never
+    outlives the block on a connection the caller goes on using.
+    """
+    if value not in ("on", "off"):
+        raise ValueError(f"synchronous_commit is on or off, not {value!r}")
+    before = conn.execute("SHOW synchronous_commit").fetchone()[0]
+    conn.execute(f"SET synchronous_commit = {value}")
+    try:
+        yield
+    finally:
+        try:
+            conn.execute("SELECT set_config('synchronous_commit', %s, false)", (before,))
+        except Exception:  # noqa: BLE001 - see below
+            # A connection that cannot run this has lost its session, and the setting with
+            # it. Raising here would replace whatever the ingest failed with.
+            logger.warning("index: could not restore synchronous_commit on this "
+                           "connection", exc_info=True)
+
+
+def _ingest_campaign(conn, campaign_dir: str, campaign_id: str,
+                     provenance_entries, output) -> dict:
+    """:func:`ingest_campaign`'s work, run inside :func:`_ingest_session`."""
     root = Path(campaign_dir)
     output = output or logger.info
     totals = {}
@@ -1102,7 +1156,31 @@ def ingest_campaign(conn, campaign_dir: str, campaign_id: str,
 
     # Recorded even when the campaign produced no rows at all: "ingested and empty" is a
     # different answer from "never ingested", and only the registry can tell them apart.
-    index_schema.record_campaign(conn, campaign_id)
+    #
+    # The one durable commit of the ingest, and the last write: a synchronous commit flushes
+    # the WAL up to its own point, so every row written above is on disk once this returns.
+    # The registry row is what says the campaign is ingested, and the marker postprocessing
+    # writes after this call rests on it -- a campaign that reports derived data the index
+    # does not hold is the one loss re-ingesting does not announce.
+    with _synchronous_commit(conn, "on"):
+        index_schema.record_campaign(conn, campaign_id)
+
+    # After every write, and before a refused file is raised below: the tables that did
+    # ingest are queried as soon as this returns either way.
+    #
+    # Reported rather than raised. Everything this ingest owes is committed and flushed by
+    # the line above, so a campaign whose statistics could not be gathered is fully indexed:
+    # failing it here would report a complete ingest as a failed one and send the caller
+    # round again, to redo the work and meet the same table. What is lost is a planning
+    # cost until autovacuum reaches the table, which the log names.
+    try:
+        analysed = index_schema.analyze_tables(
+            conn, set(totals) | set(cleared) | ({TABLE_NAME_MAP} if name_map else set()))
+        logger.debug("index: analysed %s tables for %s", len(analysed), campaign_id)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("index: could not analyse the tables %s wrote; the planner reads "
+                       "them on older statistics until autovacuum samples them",
+                       campaign_id, exc_info=True)
 
     logger.info("index: ingested %s (%s)", campaign_id,
                 ", ".join(f"{t}={n}" for t, n in sorted(totals.items())) or "nothing")

@@ -2519,7 +2519,8 @@ class Routes:
 
     @staticmethod
     def campaign_inputs(campaign_id: str) -> str:
-        # What a job pod is given: the campaign's `_config/` and `_transient/`, flattened.
+        # What a job pod is given: the campaign's `_config/` and `_transient/`, flattened,
+        # with only the named jobs' own documents from the latter.
         return f"{Routes.DATA}/campaigns/{campaign_id}/inputs"
 
     @staticmethod
@@ -3212,12 +3213,13 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def campaign_inputs_tar_stream(self, campaign_id: str,
+    def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
         """Yield the tar a job pod extracts into its ``/config``.
 
         The campaign's ``_config/`` and ``_transient/`` with those two segments stripped,
-        so the members land where the containers expect them; plus, for each
+        so the members land where the containers expect them -- of the per-job documents in
+        ``_transient/``, only those of *job_tags*, the jobs this pod runs; plus, for each
         ``(config_name, rel)`` in *config_files*, the cell's ``<config>/_config/<rel>``
         as ``<rel>`` -- what a configuration declared as its own input, staged under the
         campaign-wide name the containers read. Executable bits and symlinks are members

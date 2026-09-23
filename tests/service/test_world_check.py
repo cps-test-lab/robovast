@@ -467,6 +467,62 @@ def test_the_default_world_is_not_checked_when_every_configuration_replaces_it(t
     assert [name for name, _ in _distinct_blocks(_parameters(), str(tmp_path))] == [None]
 
 
+def test_a_search_template_is_the_world_its_draws_run(tmp_path):
+    """A search composes every configuration from ``search.parameters``, so a mesh named there
+    is in every world it runs, and the default without it is a world no draw opens."""
+    from robovast.service.world_query import _distinct_blocks
+
+    parameters = _parameters()
+    parameters["search"] = {"parameters": {
+        "sim": {"components.floorplan.mesh": "/config/a.stl"}}}
+    assert [name for name, _ in _distinct_blocks(parameters, str(tmp_path))] == ["search"]
+
+    parameters["search"] = {"parameters": {"scenario": {"map_file": "a.yaml"}}}
+    assert [name for name, _ in _distinct_blocks(parameters, str(tmp_path))] == [None]
+
+
+def test_a_world_taken_from_the_search_space_is_unchecked_not_described(tmp_path, monkeypatch):
+    """Its value exists per draw; describing the template would ask about a world named by a
+    literal ``$name``, and the simulator's refusal of that would read as the campaign's error."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    def _never(*a, **k):
+        raise AssertionError("a world named by a search variable was described")
+
+    monkeypatch.setattr(config_generation, "describe_world_payload", _never)
+    parameters = _parameters()
+    parameters["search"] = {"parameters": {"sim": {"components.floorplan.mesh": "$mesh"}}}
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1",
+                              config_path="a.vast", vast_dir=str(tmp_path),
+                              parameters=parameters)
+    assert [(p["config"], p["severity"]) for p in problems] == [("search", "unchecked")]
+    assert "$mesh" in problems[0]["message"]
+
+
+def test_a_dollar_sign_outside_a_search_is_a_value_the_world_is_asked_about(tmp_path,
+                                                                             monkeypatch):
+    """``$name`` means a search variable, and only a search has any. In an authored block the
+    same string is a literal the simulator is meant to receive, so the world is described and
+    a wrong value comes back as the simulator's own answer."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    asked = []
+    monkeypatch.setattr(config_generation, "describe_world_payload",
+                        lambda *a, **k: asked.append(a) or ({"plugins": {}}, "img"))
+    parameters = _parameters()
+    parameters["configuration"] = [
+        {"name": "cell-a", "parameters": {"sim": {"components.floorplan.mesh": "$HOME"}}}]
+
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1",
+                              config_path="a.vast", vast_dir=str(tmp_path),
+                              parameters=parameters)
+
+    assert asked, "the world was not described"
+    assert [p for p in problems if p["severity"] == "unchecked"] == []
+
+
 def test_two_worlds_failing_differently_stay_two_problems(tmp_path, monkeypatch):
     """The collapse must never hide a difference between configurations — which is the
     whole reason the blocks are described one by one."""

@@ -1344,11 +1344,14 @@ postprocessed (the same gate the Results tab itself applies), and **Open in Run
 view** only if the campaign also recorded runs to replay. The Run view's entry appears
 **while the campaign is still running** too, reading **Open in Run View (preview)** — it leads to a
 replay of the runs that have already finished (see :ref:`run-view-preview`), and it is the only
-route to one, since the jobs list above drops a run as soon as it completes. They are named lines in a menu rather
-than a row of icon buttons: a list whose rows are meant to be scanned cannot also carry five
-same-sized glyphs per row that have to be learnt before they can be used. Changing the selection inside a view updates the URL without adding a browser-history
-step, so **Back** always returns to where you came from in one press; a jump *between* views is a
-real step, so Back returns to the view you left.
+route to one, since the jobs list above drops a run as soon as it completes. The Run view is
+also a play-icon button on the card itself, first among its controls, shown under the same condition as
+its menu entry, folded or open: replaying a run is what a reader most often opens a campaign
+for. Everything else stays a named line in the menu rather than a row of icon buttons: a list
+whose rows are meant to be scanned cannot also carry five same-sized glyphs per row that have to
+be learnt before they can be used. Changing the selection inside a view updates the URL without
+adding a browser-history step, so **Back** always returns to where you came from in one press; a
+jump *between* views is a real step, so Back returns to the view you left.
 
 .. _web-ui-campaign-config:
 
@@ -1742,9 +1745,11 @@ view does not re-flow the panels around it. To change the layout for good, edit 
 The built-in panels:
 
 **Playback** (``playback``) — a transport bar spanning the bottom: a click-to-seek
-progress bar, an icon play/pause, a **2×** fast-forward toggle, and a ``current / total``
-time label. It owns the clock; every other panel follows it, which is why it is contributed
-to every campaign rather than declared — see above. The timeline range comes from the run
+progress bar, an icon play/pause, a fast-forward button, and a ``current / total``
+time label. Fast-forward steps the playback speed through 1×, 2×, 4× and 8× and back to 1×,
+with the active speed shown beside it; pressed while paused, it also starts playback, so the
+button never pauses. The bar owns the clock; every other panel follows it, which is why it is
+contributed to every campaign rather than declared — see above. The timeline range comes from the run
 capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
 before any postprocessing), else from an explicit ``visualization.results.run_view.timeline``, else from the union of the
 postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.

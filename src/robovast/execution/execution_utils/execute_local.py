@@ -32,6 +32,7 @@ from robovast.common.execution import (_apply_local_parameter_overrides,
                                        sidecar_backend_env, write_job_links_manifest)
 from robovast.common.quantity import to_bytes, to_cores
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, sim_job_overlay
+from robovast.execution.campaign_archive import job_documents
 from robovast.execution.packer import build_jobs
 
 logger = logging.getLogger(__name__)
@@ -969,7 +970,8 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
                 _apply_local_parameter_overrides(
                     doc[scenario_name], local_param_overrides, valid_param_names,
                     scenario_name, scenario_path)
-        param_rel = f"_transient/job-{job.index}.params.yaml"
+        params_name, sim_name = job_documents(f"job-{job.index}")
+        param_rel = f"_transient/{params_name}"
         with open(os.path.join(config_path_result, param_rel), 'w') as f:
             f.write(dump_multi_document_yaml(documents))
 
@@ -984,7 +986,7 @@ def generate_compose_run_script(runs, campaign_data, config_path_result, pre_com
             os.path.dirname(campaign_data.get("vast") or ""))
         sim_rel = None
         if sim_overlay["document"]:
-            sim_rel = f"_transient/job-{job.index}.sim.yaml"
+            sim_rel = f"_transient/{sim_name}"
             with open(os.path.join(config_path_result, sim_rel), 'w') as f:
                 yaml.dump(sim_overlay["document"], f, default_flow_style=False,
                           sort_keys=False)

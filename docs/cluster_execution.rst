@@ -1244,7 +1244,9 @@ twice on the pod and nothing is buffered on the service.
 
 * A **scenario Job** runs a ``fetch-inputs`` init container that fetches the campaign's
   inputs into ``/config`` — the campaign's ``_config/`` and ``_transient/``, with this
-  cell's own files on top — and an ``uploader`` container that delivers the pod's whole
+  cell's own files on top. Of the per-job documents in ``_transient/`` the pod asks for
+  its own by tag, so what it downloads stays the same size however many jobs the campaign
+  has — and an ``uploader`` container that delivers the pod's whole
   ``/out`` as one tar ``PUT`` once every workload container has written its done marker on
   the shared ``/ipc`` volume. The uploader is a regular container, and that is the point:
   **a Job is complete only when its results are in the campaign**, and a delivery that

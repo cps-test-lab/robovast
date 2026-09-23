@@ -12,6 +12,8 @@ runnable on a host with no database.
 """
 
 import os
+import threading
+import time
 
 import pytest
 
@@ -198,3 +200,120 @@ def test_a_quote_in_a_column_name_cannot_break_out_of_the_ddl(conn):
     index_schema.ensure_table(conn, "odd", {'we"ird': TEXT})
 
     assert 'we"ird' in _column_types(conn, "odd")
+
+
+# -- concurrent writers ------------------------------------------------------------------
+#
+# Two ingests share one index, so two writers can decide DDL for the same table at once.
+# Each test below makes the interleaving deterministic rather than hoping a race fires: a
+# second session holds the DDL lock, the writer under test is started and must queue on
+# it, and the holder changes the table before letting go. The writer then has to act on
+# the table as it is once it holds the lock, not as it read it before.
+
+
+def _second_session():
+    psycopg = pytest.importorskip("psycopg")
+    other = psycopg.connect(DSN, autocommit=True)
+    other.execute("SET search_path TO idx_test")
+    return other
+
+
+def _in_thread(fn):
+    """Run *fn* in a thread; return ``(thread, outcome)``, *outcome* filled when it ends."""
+    outcome = {}
+
+    def run():
+        try:
+            outcome["result"] = fn()
+        except Exception as exc:  # noqa: BLE001 - the thread's failure is the assertion
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, outcome
+
+
+def _wait_until_queued_on_the_ddl_lock(conn, thread):
+    """Block until some session is waiting for an advisory lock, or fail."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        waiting = conn.execute(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+        ).fetchone()[0]
+        if waiting:
+            return
+        assert thread.is_alive(), "the writer finished without waiting for the DDL lock"
+        time.sleep(0.02)
+    raise AssertionError("the writer never queued on the DDL lock")
+
+
+def test_a_widening_waits_for_the_ddl_lock_and_does_not_undo_a_wider_one(conn):
+    """A writer that read ``INTEGER`` and wants ``REAL`` must not retype a column to ``REAL``
+    that another writer widened to ``TEXT`` while it waited -- that would narrow it."""
+    index_schema.ensure_table(conn, "metrics", {"value": INTEGER})
+    conn.execute("INSERT INTO metrics (campaign_id, config_name, run_id, value) "
+                 "VALUES ('c1', 'goal-1', 0, 7)")
+    with _second_session() as holder:
+        with index_schema.ddl_lock(holder):
+            thread, outcome = _in_thread(
+                lambda: index_schema.ensure_table(conn, "metrics", {"value": REAL}))
+            _wait_until_queued_on_the_ddl_lock(holder, thread)
+            index_schema.ensure_table(holder, "metrics", {"value": TEXT})
+        thread.join(timeout=30)
+
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["result"] == [], "the column was already wider than REAL"
+    assert index_schema.read_verdicts(conn, "metrics")["value"] == TEXT
+    assert _column_types(conn, "metrics")["value"] == "text"
+    assert conn.execute("SELECT value FROM metrics").fetchone()[0] == "7"
+
+
+def test_a_new_column_waits_for_the_ddl_lock(conn):
+    """Adding a column is DDL on a table every campaign shares, so it queues like the rest."""
+    index_schema.ensure_table(conn, "metrics", {"value": INTEGER})
+    with _second_session() as holder:
+        with index_schema.ddl_lock(holder):
+            thread, outcome = _in_thread(lambda: index_schema.ensure_table(
+                conn, "metrics", {"value": INTEGER, "extra": REAL}))
+            _wait_until_queued_on_the_ddl_lock(holder, thread)
+            index_schema.ensure_table(holder, "metrics", {"value": INTEGER, "extra": TEXT})
+        thread.join(timeout=30)
+
+    assert "error" not in outcome, outcome.get("error")
+    assert index_schema.read_verdicts(conn, "metrics")["extra"] == TEXT
+    assert _column_types(conn, "metrics")["extra"] == "text"
+
+
+def test_a_writer_that_found_no_table_joins_the_one_created_while_it_waited(conn):
+    """Both writers saw no table. The second must widen into the first's, not record its
+    own narrower verdicts over it and leave out the columns the first did not have."""
+    # So the writer's first wait is the table's, not the bookkeeping tables' creation.
+    index_schema.ensure_metadata_tables(conn)
+    with _second_session() as holder:
+        with index_schema.ddl_lock(holder):
+            thread, outcome = _in_thread(lambda: index_schema.ensure_table(
+                conn, "metrics", {"value": INTEGER, "mine": REAL}))
+            _wait_until_queued_on_the_ddl_lock(holder, thread)
+            index_schema.ensure_table(holder, "metrics", {"value": REAL})
+        thread.join(timeout=30)
+
+    assert "error" not in outcome, outcome.get("error")
+    verdicts = index_schema.read_verdicts(conn, "metrics")
+    assert verdicts["value"] == REAL
+    assert verdicts["mine"] == REAL
+    types = _column_types(conn, "metrics")
+    assert types["value"] == "double precision"
+    assert types["mine"] == "double precision"
+
+
+def test_a_table_that_already_fits_takes_no_lock(conn):
+    """The common path -- a run that agrees with the table -- never queues behind DDL."""
+    index_schema.ensure_table(conn, "metrics", {"value": REAL})
+    with _second_session() as holder:
+        with index_schema.ddl_lock(holder):
+            thread, outcome = _in_thread(
+                lambda: index_schema.ensure_table(conn, "metrics", {"value": INTEGER}))
+            thread.join(timeout=10)
+            assert not thread.is_alive(), "a no-op ensure_table waited for the DDL lock"
+
+    assert outcome == {"result": []}

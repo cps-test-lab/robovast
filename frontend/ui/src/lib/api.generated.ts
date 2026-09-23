@@ -1139,8 +1139,10 @@ export interface paths {
          * Download Campaign Inputs
          * @description Stream the tar a job pod extracts into its ``/config``.
          *
-         *     ``config_file`` names a cell's own input as ``<config_name>:<rel>``, repeated
-         *     once per file; each lands at ``<rel>`` on top of the campaign's copy.
+         *     ``job`` names the tag whose documents the pod reads, repeated once per tag; every
+         *     other job's are left out. ``config_file`` names a cell's own input as
+         *     ``<config_name>:<rel>``, repeated once per file; each lands at ``<rel>`` on top of
+         *     the campaign's copy.
          */
         get: operations["download_campaign_inputs_data_campaigns__campaign_id__inputs_get"];
         put?: never;
@@ -6515,7 +6517,8 @@ export interface operations {
     };
     download_campaign_inputs_data_campaigns__campaign_id__inputs_get: {
         parameters: {
-            query?: {
+            query: {
+                job: string[];
                 config_file?: string[];
             };
             header?: never;
