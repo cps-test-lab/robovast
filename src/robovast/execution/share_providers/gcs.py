@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Callable
 
-from .naming import parse_archive_name
+from .naming import is_share_archive_name
 
 from .base import BaseShareProvider, ShareError, UploadProgressReader
 
@@ -393,7 +393,7 @@ class GcsShareProvider(BaseShareProvider):
     # Download interface (public bucket, no auth required)
     # ------------------------------------------------------------------
 
-    def list_campaign_archives_with_size(self) -> list[str]:
+    def list_archives_with_size(self) -> list[str]:
         """List all campaign ``*.tar.gz`` objects in the configured GCS bucket.
 
         Recognizes archives whose base name (without ``.tar.gz``) matches the
@@ -435,7 +435,7 @@ class GcsShareProvider(BaseShareProvider):
                 size_el = content.find("s3:Size", ns)
                 if key_el is not None and key_el.text and key_el.text.endswith(".tar.gz"):
                     base = key_el.text.rstrip("/").rsplit("/", 1)[-1]
-                    if parse_archive_name(base) is not None:
+                    if is_share_archive_name(base):
                         size = int(size_el.text) if size_el is not None and size_el.text else -1
                         found.append((key_el.text, size))
 
@@ -452,7 +452,7 @@ class GcsShareProvider(BaseShareProvider):
         """Return the public ``storage.googleapis.com`` URL for *object_name*.
 
         *object_name* is the full object key (including any prefix) as returned
-        by :meth:`list_campaign_archives`. The URL downloads directly for a
+        by :meth:`list_archives`. The URL downloads directly for a
         publicly-readable bucket — the same URL :meth:`download_archive` fetches.
         """
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
@@ -475,7 +475,7 @@ class GcsShareProvider(BaseShareProvider):
         are written incrementally without loading the file into memory.
 
         Args:
-            object_name: GCS object key (as returned by :meth:`list_campaign_archives`).
+            object_name: GCS object key (as returned by :meth:`list_archives`).
             dest_path: Local file path to write the downloaded content to.
             progress_callback: Optional ``(bytes_received, total_bytes)`` callable
                 called after each chunk.  *total_bytes* is 0 if unknown.
@@ -570,7 +570,7 @@ class GcsShareProvider(BaseShareProvider):
 
         Args:
             object_name: GCS object key (as returned by
-                :meth:`list_campaign_archives`).
+                :meth:`list_archives`).
         """
         bucket = os.environ["ROBOVAST_GCS_BUCKET"]
         key_file = os.environ.get("ROBOVAST_GCS_KEY_FILE", "")

@@ -442,13 +442,30 @@ export type ShareArchive = {
   url: string | null
 }
 
+export type ShareWorkspaceArchive = {
+  /** The workspace's name reduced to what an object name may hold; what an import asks for. */
+  slug: string
+  object_name: string
+  /** -1 where the provider cannot say. */
+  size: number
+  /** A link a person can open, where the provider has one (never for sftp). */
+  url: string | null
+}
+
 export type ShareListing = {
   configured: boolean
   share_type: string
   archives: ShareArchive[]
+  /** The workspaces on the same share. Imported as a new workspace, never in place. */
+  workspaces: ShareWorkspaceArchive[]
 }
 
 // -- the interface (Phase-0 subset the M1 UI needs) -------------------------
+
+//: Ceiling for the CSV export's `limit`, matching the record's own row cap
+//: (`mcp_server/tool_stats.MAX_ROWS`): an export bounded below what the record holds is
+//: read as the whole record. Asking for more than exists is harmless.
+const MCP_CALLS_EXPORT_MAX = 200_000
 
 export const robovast = {
   version: () => request<VersionInfo>('GET', '/version'),
@@ -474,17 +491,21 @@ export const robovast = {
 
   // The calls themselves, newest first. Arguments and answers arrive already truncated
   // (see mcp_server/tool_stats.py) -- the client never receives a whole file body.
-  mcpCalls: (limit = 200, tool = '', failedOnly = false) => {
+  mcpCalls: (limit = 200, tool = '', failedOnly = false, offset = 0) => {
     const params = new URLSearchParams({ limit: String(limit) })
     if (tool) params.set('tool', tool)
     if (failedOnly) params.set('failed_only', 'true')
+    if (offset) params.set('offset', String(offset))
     return request<McpCalls>('GET', `/admin/mcp-calls?${params.toString()}`)
   },
 
   // Direct URL of the log as CSV (a GET the browser downloads), same shape as
   // archiveUrl above. It carries the retained window only, not all history.
   mcpCallsCsvUrl: (tool = '', failedOnly = false) => {
-    const params = new URLSearchParams({ limit: '2000' })
+    // The whole retained record, not a page of it: the route streams, and an export
+    // silently cut at a page boundary is read as the record ending there. What the
+    // service could not fit still says so, in the downloaded file's name.
+    const params = new URLSearchParams({ limit: String(MCP_CALLS_EXPORT_MAX) })
     if (tool) params.set('tool', tool)
     if (failedOnly) params.set('failed_only', 'true')
     return `${BASE}/admin/mcp-calls.csv?${params.toString()}`
@@ -510,6 +531,11 @@ export const robovast = {
   // the service tars its results directory into the response, on either lane.
   archiveUrl: (campaignId: string) =>
     `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
+
+  // The same for a workspace's project files — a control-plane route, not the data plane:
+  // a workspace is not on the results volume.
+  workspaceArchiveUrl: (workspaceId: string) =>
+    `${BASE}/workspaces/${encodeURIComponent(workspaceId)}/archive`,
 
   // What the configured share holds, read by the service with its own credentials --
   // a browser has none. `configured: false` means this service has no share at all,
@@ -655,8 +681,21 @@ export const robovast = {
   // `fromCampaign` seeds the new workspace from that campaign's frozen `_config/` — the way out of
   // the read-only campaign-config view. The service reconstructs the tree rather than copying it
   // (the scenario goes where the .vast declares it) and refuses an incomplete snapshot.
-  createWorkspace: (name = '', fromCampaign = '') =>
-    request<WorkspaceInfo>('POST', '/workspaces', { name, from_campaign: fromCampaign }),
+  //
+  // `fromShare` seeds it from a workspace archive on the share instead, by slug; the service
+  // fetches it with its own credentials. Always a new workspace — an archive carries project
+  // files and no identity — and its name defaults to the slug. At most one of the two.
+  createWorkspace: (name = '', fromCampaign = '', fromShare = '') =>
+    request<WorkspaceInfo>('POST', '/workspaces', {
+      name,
+      from_campaign: fromCampaign,
+      from_share: fromShare,
+    }),
+
+  // Publish a workspace to the share, for another deployment to import. Synchronous: a project
+  // tree is small enough that the answer is the object that landed.
+  exportWorkspace: (id: string) =>
+    request<ShareWorkspaceArchive>('POST', `/workspaces/${encodeURIComponent(id)}/share`),
 
   deleteWorkspace: (id: string) =>
     request<ActionResult>('DELETE', `/workspaces/${encodeURIComponent(id)}`),

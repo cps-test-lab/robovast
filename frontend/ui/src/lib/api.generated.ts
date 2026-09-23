@@ -145,7 +145,8 @@ export interface paths {
          * @description The MCP call log, newest first -- what each call was given and what it answered.
          *
          *     Arguments and answers are truncated where they are recorded, not here; the cap is
-         *     ``robovast.mcp_server.tool_stats``.
+         *     ``robovast.mcp_server.tool_stats``. The page says how many rows matched and whether
+         *     more remain, because a page that reported neither read as the whole record.
          */
         get: operations["get_mcp_calls_admin_mcp_calls_get"];
         put?: never;
@@ -168,7 +169,13 @@ export interface paths {
          * @description The same log as a CSV download -- the repo's one export format.
          *
          *     It carries what the panel carries, truncation included, and only the retained
-         *     window: this is an export of the record, not of all history.
+         *     window: this is an export of the record, not of all history. A download has no
+         *     field to report a bound in, so an export that did not reach the end of the record
+         *     says so in its filename -- the one part of a saved file a reader still has.
+         *
+         *     Bounded only by what is retained, unlike the panel's page: this streams, so asking
+         *     for the whole record costs the reader a longer download rather than the service a
+         *     larger response to hold.
          */
         get: operations["export_mcp_calls_admin_mcp_calls_csv_get"];
         put?: never;
@@ -1631,6 +1638,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspaces/{workspace_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Workspace Archive
+         * @description Stream the workspace's project files as a ``tar.gz``.
+         *
+         *     Backs the config editor's download button and ``vast workspace download``, which
+         *     is how a project leaves this service to be worked on somewhere else. One
+         *     top-level directory holding the tree, so what lands extracts on its own and can
+         *     be handed back to any service as a workspace archive.
+         *
+         *     Not on the data routes: those serve the results volume, and a workspace is
+         *     neither on it nor reachable from the cluster's data container.
+         */
+        get: operations["download_workspace_archive_workspaces__workspace_id__archive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspaces/{workspace_id}/preview": {
         parameters: {
             query?: never;
@@ -1705,6 +1740,23 @@ export interface paths {
         get: operations["workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workspaces/{workspace_id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Workspace */
+        post: operations["export_workspace_workspaces__workspace_id__share_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2316,6 +2368,11 @@ export interface components {
              * @default
              */
             from_campaign: string;
+            /**
+             * From Share
+             * @default
+             */
+            from_share: string;
             /**
              * Name
              * @default
@@ -3085,12 +3142,22 @@ export interface components {
             duration_ms: number;
             /** Ok */
             ok: boolean;
+            /**
+             * Session
+             * @default
+             */
+            session: string;
             /** Tool */
             tool: string;
         };
         /**
          * McpCalls
          * @description A page of the call log, newest first.
+         *
+         *     The page reports its own bounds, for the reason :class:`McpToolStats` reports the
+         *     retained window: a reader given rows and no total cannot tell a record that ended
+         *     from a page that did, and will read a busy afternoon as the whole month the ranking
+         *     beside it summarises. :attr:`offset` walks the rest.
          */
         McpCalls: {
             /** Calls */
@@ -3101,10 +3168,30 @@ export interface components {
              */
             detail: string;
             /**
+             * Limit
+             * @default 0
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
              * Status
              * @default ok
              */
             status: string;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /**
          * McpToolStat
@@ -3960,6 +4047,31 @@ export interface components {
              * @default
              */
             share_type: string;
+            /** Workspaces */
+            workspaces: components["schemas"]["ShareWorkspaceArchive"][];
+        };
+        /**
+         * ShareWorkspaceArchive
+         * @description One workspace archive on the configured share.
+         */
+        ShareWorkspaceArchive: {
+            /**
+             * Object Name
+             * @default
+             */
+            object_name: string;
+            /**
+             * Size
+             * @default -1
+             */
+            size: number;
+            /**
+             * Slug
+             * @default
+             */
+            slug: string;
+            /** Url */
+            url: string | null;
         };
         /**
          * StagedArchive
@@ -4814,6 +4926,7 @@ export interface operations {
                 limit?: number;
                 tool?: string;
                 failed_only?: boolean;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -4847,6 +4960,7 @@ export interface operations {
                 limit?: number;
                 tool?: string;
                 failed_only?: boolean;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -7457,6 +7571,37 @@ export interface operations {
             };
         };
     };
+    download_workspace_archive_workspaces__workspace_id__archive_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     preview_configurations_workspaces__workspace_id__preview_post: {
         parameters: {
             query?: never;
@@ -7577,6 +7722,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_workspace_workspaces__workspace_id__share_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareWorkspaceArchive"];
                 };
             };
             /** @description Validation Error */

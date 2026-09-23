@@ -163,13 +163,16 @@ FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 Streaming
 =========
 
-Four routes stream instead of returning a body. The two ``.../stream`` log routes and
+Five routes stream instead of returning a body. The two ``.../stream`` log routes and
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
 than replaying the whole log. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
 campaign, tarred from the campaign directory as it is read. Both lanes answer it: refusing
 on a local service with a ``409`` ("the results are already on this host's filesystem")
 asserts something true of a caller on that host and false of everyone else.
+``GET /workspaces/{id}/archive`` is the same for a workspace's project files, under a
+single top-level directory. It is a control-plane route rather than a data one, because a
+workspace is not on the results volume the data routes serve.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is
@@ -255,6 +258,20 @@ event log's whole point is that it is small and durable. Both bounds are reporte
 because a reader told "a month" during a burst that emptied it in a day would be told a wrong
 thing. An unreachable index is reported as ``status`` rather than as an empty list, for the same
 reason: "nothing was called" and "the record cannot be read" are different answers.
+
+A page of ``/admin/mcp-calls`` reports the same way. It carries ``total``, ``truncated`` and the
+``limit``/``offset`` it was actually read with, because a page that reported none of them read as
+the whole record — and beside a ranking summarising a month, a page holding an afternoon is a
+disagreement nothing announced. ``offset`` walks the rest. The CSV export is bounded only by what
+is retained, since it streams rather than being held in one response; a download has no field to
+report a bound in, so an export that did not reach the end of the record says so in the filename
+it arrives under, which is the part of a saved file a reader still has later.
+
+Each row names its caller twice, because the two answer different questions. ``actor`` is the
+resolved principal: the name it gave and the source it authenticated by. ``session`` is
+``"<client>/<session>"`` as the transport reports them, which is what separates two agents
+sharing one token. Either is empty where the transport resolves none, which is absent rather
+than anonymous.
 
 The **origin** row is the cheapest tier and the one most often missed. A value that is a pure
 function of wall-clock plus one stored origin is transported as the *origin*, never as the value:

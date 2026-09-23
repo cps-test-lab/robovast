@@ -170,3 +170,109 @@ def test_pending_rows_are_written_at_exit(log, monkeypatch):
     tool_stats.LOG.flush()
 
     assert [c.tool for c in log.read_calls()] == ["list_campaigns"]
+
+
+def test_the_middleware_records_which_session_called(log, monkeypatch):
+    """A record that cannot separate one caller's calls from another's cannot answer the
+    question it is kept for: a thousand calls are a thousand agents once or one agent in a
+    loop, and those are opposite findings.
+
+    Driven through a real client rather than by calling ``record`` directly: what this pins
+    is the wiring between the two, which only a call arriving over a transport exercises.
+    """
+    import asyncio
+
+    from fastmcp import Client, FastMCP
+
+    from robovast.mcp_server.server import _install_tool_stats
+
+    monkeypatch.setattr(tool_stats, "LOG", log)
+    mcp = FastMCP("test")
+
+    @mcp.tool
+    def ping() -> dict:
+        return {"ok": True}
+
+    _install_tool_stats(mcp)
+
+    async def _call():
+        async with Client(mcp) as client:
+            await client.call_tool("ping", {})
+
+    asyncio.run(_call())
+    log.flush()
+
+    recorded = log.read_calls()
+    assert [c.tool for c in recorded] == ["ping"]
+    session = recorded[0].session
+    assert session, "the middleware recorded a call with no session"
+    client_name, _, session_id = session.partition("/")
+    assert client_name and session_id, f"session is not <client>/<session>: {session!r}"
+
+
+def test_the_actor_is_the_principal_the_service_resolved(log, monkeypatch):
+    """Who authenticated is the service's answer, not the caller's claim about itself: a
+    client names itself in its own handshake, while the principal is what the request was
+    authenticated as."""
+    from types import SimpleNamespace
+
+    from robovast.mcp_server.server import _caller
+    from robovast.service.auth import Principal
+
+    principal = Principal(authenticated=True, name="ada", source="token")
+    request = SimpleNamespace(request=SimpleNamespace(state=SimpleNamespace(
+        principal=principal)), session=None)
+    context = SimpleNamespace(fastmcp_context=SimpleNamespace(
+        request_context=request, session_id="s-1"))
+
+    actor, session = _caller(context)
+
+    assert actor == "ada (token)"
+    assert session == "s-1"
+
+
+def test_an_unnamed_principal_is_recorded_by_the_source_it_authenticated_by(log):
+    """A missing name stays missing: "nobody said" and "someone called themselves X" are
+    different facts, so the source is what is left to record."""
+    from types import SimpleNamespace
+
+    from robovast.mcp_server.server import _caller
+    from robovast.service.auth import Principal
+
+    request = SimpleNamespace(request=SimpleNamespace(state=SimpleNamespace(
+        principal=Principal(authenticated=True, name=None, source="token"))), session=None)
+    actor, _ = _caller(SimpleNamespace(fastmcp_context=SimpleNamespace(
+        request_context=request, session_id="")))
+
+    assert actor == "token"
+
+
+def test_a_caller_the_transport_cannot_name_is_recorded_as_absent():
+    """Accounting must never be able to break the call it accounts for.
+
+    ``_caller`` reaches through several optional layers of a request context, and outside a
+    request there is neither principal nor session. Every lookup is guarded, because a raise
+    here would turn a bookkeeping detail into a failed tool call -- and an unnameable caller
+    is empty, which reads as "not recorded", not as a caller called "unknown".
+    """
+    from robovast.mcp_server.server import _caller
+
+    class _NoContext:
+        fastmcp_context = None
+
+    class _HostileContext:
+        @property
+        def fastmcp_context(self):
+            class _Ctx:
+                @property
+                def request_context(self):
+                    raise RuntimeError("no request context here")
+
+                @property
+                def session_id(self):
+                    raise RuntimeError("nor a session")
+            return _Ctx()
+
+    assert _caller(_NoContext()) == ("", "")
+    assert _caller(_HostileContext()) == ("", "")
+    assert _caller(object()) == ("", "")

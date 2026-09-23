@@ -269,25 +269,28 @@ class BaseShareProvider(ABC):
     # Optional download interface (used by ``results download``)
     # ------------------------------------------------------------------
 
-    def list_campaign_archives(self) -> list[str]:
-        """Return a list of campaign ``*.tar.gz`` object names on the share.
+    def list_archives(self) -> list[str]:
+        """Return the object names of every archive this system wrote to the share.
 
-        Archives whose base name (without ``.tar.gz``) matches the campaign
-        naming convention (``<campaign-name>-YYYY-MM-DD-HHMMSS``) are returned.
+        Both kinds: a campaign's results and a workspace's project files. An
+        implementation keeps the names :func:`~robovast.execution.share_providers.naming.is_share_archive_name`
+        accepts and drops everything else -- a share is somebody's storage and holds
+        other things, and classifying a name is the caller's job, not the provider's.
 
         Raise :class:`NotImplementedError` if the provider does not support
         downloading (default).  Implementations should return bare object names
         (keys), not full URLs.
 
         The default implementation delegates to
-        :meth:`list_campaign_archives_with_size` and discards the size.
-        Override :meth:`list_campaign_archives_with_size` to provide sizes.
+        :meth:`list_archives_with_size` and discards the size.
+        Override :meth:`list_archives_with_size` to provide sizes.
         """
-        return [name for name, _ in self.list_campaign_archives_with_size()]
+        return [name for name, _ in self.list_archives_with_size()]
 
-    def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
-        """Return a list of ``(object_name, size_in_bytes)`` for each
-        ``campaign-*.tar.gz`` object on the share.
+    def list_archives_with_size(self) -> list[tuple[str, int]]:
+        """Return ``(object_name, size_in_bytes)`` for each archive on the share.
+
+        The listing :meth:`list_archives` is built on; same membership rule.
 
         *size_in_bytes* is ``-1`` when the provider cannot determine the file
         size.  Raise :class:`NotImplementedError` if the provider does not
@@ -303,7 +306,7 @@ class BaseShareProvider(ABC):
     def archive_url(self, object_name: str) -> "str | None":  # pylint: disable=useless-return
         """Return a full, human-shareable link to *object_name* on the share.
 
-        *object_name* is a value as returned by :meth:`list_campaign_archives`
+        *object_name* is a value as returned by :meth:`list_archives`
         (a bare object key). The link is for display — so users can copy it or
         hand it to a browser / ``curl``. It need not be pre-authenticated: for
         private shares it identifies the object's location, not a signed download.
@@ -325,7 +328,7 @@ class BaseShareProvider(ABC):
 
         Args:
             object_name: The object/file name on the share (as returned by
-                :meth:`list_campaign_archives`).
+                :meth:`list_archives`).
             dest_path: Absolute local path to write the downloaded file to.
             progress_callback: Optional callable ``(bytes_received, total_bytes)``
                 called periodically during the download.
@@ -356,7 +359,7 @@ class BaseShareProvider(ABC):
 
         Args:
             object_name: The object/file name on the share (as returned by
-                :meth:`list_campaign_archives`).
+                :meth:`list_archives`).
 
         Raise :class:`NotImplementedError` if the provider does not support
         removal (default).

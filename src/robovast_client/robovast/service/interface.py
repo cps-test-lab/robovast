@@ -1464,7 +1464,13 @@ class McpCall(BaseModel):
     ok: bool
     args: str = ""
     answer: str = ""
+    #: Who authenticated: the resolved principal's name and the source it authenticated
+    #: by. Empty where the transport resolves no principal.
     actor: str = ""
+    #: ``"<client>/<session>"`` -- which client, and which of its connections. What tells
+    #: two agents sharing one token apart, which :attr:`actor` cannot. Empty where the
+    #: transport names neither.
+    session: str = ""
 
 
 class McpToolStats(BaseModel):
@@ -1484,11 +1490,24 @@ class McpToolStats(BaseModel):
 
 
 class McpCalls(BaseModel):
-    """A page of the call log, newest first."""
+    """A page of the call log, newest first.
+
+    The page reports its own bounds, for the reason :class:`McpToolStats` reports the
+    retained window: a reader given rows and no total cannot tell a record that ended
+    from a page that did, and will read a busy afternoon as the whole month the ranking
+    beside it summarises. :attr:`offset` walks the rest.
+    """
 
     calls: list[McpCall] = Field(default_factory=list)
     status: str = "ok"
     detail: str = ""
+    #: How many rows matched, ignoring the page bound.
+    total: int = 0
+    #: True when rows matched beyond this page -- ask again with a larger :attr:`offset`.
+    truncated: bool = False
+    #: The bounds this page was read with, as applied rather than as asked for.
+    limit: int = 0
+    offset: int = 0
 
 
 # -- workspaces (editable project inputs; independent of campaigns) ---------
@@ -1503,6 +1522,15 @@ class CreateWorkspaceRequest(BaseModel):
     #: so the tree has to be reconstructed the way a retrigger reconstructs it
     #: (:func:`robovast.service.retrigger.stage_project`). Empty for an empty workspace.
     from_campaign: str = ""
+    #: Seed the new workspace from a workspace archive on the share — its slug, or the
+    #: object's full name when the share holds several that slug the same. At most one of
+    #: this and :attr:`from_campaign`; both set is refused rather than resolved by
+    #: precedence, since either answer would silently discard a source the caller asked for.
+    #:
+    #: A **new** workspace, always: an archive carries project files and no identity, and
+    #: what arrives is a project to work on rather than a record to restore. The name
+    #: defaults to the slug, and the registry suffixes it (``foo-2``) when that is taken.
+    from_share: str = ""
 
 
 class WorkspaceInfo(BaseModel):
@@ -1751,6 +1779,23 @@ class ShareArchive(BaseModel):
     url: Optional[str] = None
 
 
+class ShareWorkspaceArchive(BaseModel):
+    """One workspace archive on the configured share."""
+
+    #: The share-safe reduction of the workspace's name it was published under, and the
+    #: name an import offers the new workspace. Not a workspace id: the workspace this
+    #: came from may be gone, may never have existed on the importing service, and is in
+    #: any case not the one an import creates.
+    slug: str = ""
+    #: The object's own name on the share, which is what an import names.
+    object_name: str = ""
+    #: ``-1`` where the provider cannot say.
+    size: int = -1
+    #: A link a person can open, where the provider has one. Absent for sftp, and for a
+    #: webdav share whose URL needs credentials.
+    url: Optional[str] = None
+
+
 class ShareListing(BaseModel):
     """What the share holds, and which provider answered.
 
@@ -1766,6 +1811,12 @@ class ShareListing(BaseModel):
     #: archives are two entries sharing an id, ordered by object name between themselves so
     #: that two calls cannot disagree.
     archives: list[ShareArchive] = Field(default_factory=list)
+    #: The workspaces on the same share, by slug. A separate list rather than a ``kind``
+    #: on one: the two carry different fields and a caller acts on them differently --
+    #: importing a campaign restores it under its own id, importing a workspace creates a
+    #: new one -- so a client that had to filter before it could render either would be
+    #: one refactor away from offering the wrong verb.
+    workspaces: list[ShareWorkspaceArchive] = Field(default_factory=list)
 
 
 # -- validation / preview / authoring help (config editor) ------------------
@@ -2424,6 +2475,18 @@ class Routes:
         return address if address.startswith("/") else f"/{address}"
 
     @staticmethod
+    def workspace_archive(workspace_id: str) -> str:
+        # The workspace's project files as one tar.gz. Named here like every other path so
+        # the web UI's download link and the route serving it are one string.
+        return f"/workspaces/{workspace_id}/archive"
+
+    @staticmethod
+    def workspace_share(workspace_id: str) -> str:
+        # Publish that archive to the configured share. A verb on the workspace rather than
+        # on the share, because the service uploads it with its own credentials.
+        return f"/workspaces/{workspace_id}/share"
+
+    @staticmethod
     def workspace_validate(workspace_id: str) -> str:
         return f"/workspaces/{workspace_id}/validate"
 
@@ -2770,10 +2833,14 @@ class RobovastInterface(ABC):
     def create_workspace(self, request: CreateWorkspaceRequest) -> WorkspaceInfo:
         """Create a workspace to author a project in.
 
-        Empty, or -- with ``from_campaign`` -- seeded from that campaign's frozen ``_config/``,
-        reconstructed rather than copied (the scenario is placed where the ``.vast`` declares
-        it). Refuses, leaving no workspace behind, when the snapshot cannot produce a project
-        that would run the same configuration.
+        Empty, or seeded from one of two sources. ``from_campaign`` takes that campaign's
+        frozen ``_config/``, reconstructed rather than copied (the scenario is placed where
+        the ``.vast`` declares it); ``from_share`` takes a workspace archive off the share,
+        which the service fetches with its own credentials. Both set is a ``ValueError``.
+
+        Refuses, leaving no workspace behind, when the source cannot produce a project: a
+        campaign snapshot that would not run the same configuration, an archive that is not
+        a workspace archive, or one whose members do not sit under a single directory.
         """
 
     @abstractmethod
@@ -3214,6 +3281,36 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
+    def workspace_tar_stream(self, workspace_id: str):
+        """Yield the workspace as a ``tar.gz``, in chunks, for ``GET .../archive``.
+
+        The project files under a single ``<workspace-id>/`` member, which is what makes
+        the archive extractable on its own and what an import reads back. A pinned
+        workspace is a live project tree, so what its *listing* hides -- hidden files,
+        campaign outputs -- is not in the archive either: the two answers to "what is in
+        this workspace" may not disagree.
+
+        Streamed, never buffered, like the campaign archive: the same route shape, and a
+        workspace that has grown a large input is not a reason to hold it in memory.
+        """
+
+    @abstractmethod
+    def export_workspace(self, workspace_id: str) -> ShareWorkspaceArchive:
+        """Upload the workspace's archive to the configured share; return what landed.
+
+        The service transfers it with its own credentials, so a browser -- which has none
+        -- can publish one, exactly as it can trigger a campaign's upload.
+
+        Synchronous, unlike :meth:`run_share`: a campaign is gigabytes and its upload is
+        tracked as a phase of the campaign, while a workspace is a source tree with no row
+        to report progress on. What comes back is the object as named on the share, which
+        is what an import asks for.
+
+        Raises:
+            RuntimeError: no share is configured on this service.
+            KeyError: no such workspace.
+        """
+
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
         """Yield the tar a job pod extracts into its ``/config``.

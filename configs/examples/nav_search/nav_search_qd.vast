@@ -31,6 +31,12 @@ search:
   search_space:
     gap_width:    {type: float, low: 0.4, high: 1.6}
     walker_dwell: {type: float, low: 0.0, high: 8.0}
+  # The endpoints scenario_roqsim.osc declares: the scenario says what it needs, a campaign
+  # says what it is run with. What these two numbers have to agree with is stated there.
+  parameters:
+    scenario:
+      start_pose: {position: {x: -2.5, y: 0.0}}
+      goal_pose: {position: {x: 2.5, y: 0.0}}
   variations:
   - variations/doorway.py:DoorwayVariation:
       sim: {instances: components.barrier.instances}
@@ -92,6 +98,17 @@ search:
   seed: 1
 
 visualization:
+  config:
+    panels:
+    - parameters: {title: Scenario parameters, height: "35%"}
+    # The endpoints are constants of the scenario, not factors, so no variation contributes
+    # them: bound by name, the config view and a video's costmap overlay read the same value.
+    - map2d:
+        title: Map
+        map: files/empty_room.yaml
+        markers:
+        - {kind: pose, param: start_pose, label: start, color: "#60a5fa"}
+        - {kind: pose, param: goal_pose, label: goal, color: "#4ade80"}
   results:
     explorer:
       notebooks:

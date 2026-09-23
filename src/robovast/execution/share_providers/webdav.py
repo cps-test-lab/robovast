@@ -24,7 +24,7 @@ import urllib.parse
 
 import requests
 
-from .naming import parse_archive_name
+from .naming import is_share_archive_name
 
 from .base import BaseShareProvider, ShareError, UploadProgressReader
 
@@ -289,7 +289,7 @@ class WebDavShareProvider(BaseShareProvider):
     # Optional download interface
     # ------------------------------------------------------------------
 
-    def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
+    def list_archives_with_size(self) -> list[tuple[str, int]]:
         """List all campaign ``*.tar.gz`` files on the share.
 
         Recognizes archives whose base name (without ``.tar.gz``) matches the
@@ -347,7 +347,7 @@ class WebDavShareProvider(BaseShareProvider):
             name = urllib.parse.unquote(href.rstrip("/").rsplit("/", 1)[-1])
             if not name.endswith(".tar.gz"):
                 continue
-            if parse_archive_name(name) is None:
+            if not is_share_archive_name(name):
                 continue
             size_text = response.findtext(
                 "D:propstat/D:prop/D:getcontentlength",
@@ -364,11 +364,11 @@ class WebDavShareProvider(BaseShareProvider):
         return results
 
     def _list_via_html_index(self) -> list[tuple[str, int]]:
-        """List campaign archives by parsing the HTML directory index.
+        """List the share's archives by parsing the HTML directory index.
 
         Falls back to this when the server does not support ``PROPFIND``
         (e.g. Hetzner Storage Box).  Matches any ``*.tar.gz`` href whose base
-        name is read by :func:`~.naming.parse_archive_name`, and returns
+        name is read by :func:`~.naming.is_share_archive_name`, and returns
         ``(name, -1)`` tuples (sizes not available from HTML listings).
         """
         try:
@@ -386,12 +386,12 @@ class WebDavShareProvider(BaseShareProvider):
                 f"{resp.status_code}: {resp.text[:200]}"
             )
 
-        # Match any href pointing to a *.tar.gz file, then filter by campaign naming
+        # Match any href pointing to a *.tar.gz file, then filter by the archive naming
         pattern = re.compile(r'href=["\']([^"\']+\.tar\.gz)["\']', re.IGNORECASE)
         results = []
         for href_val in pattern.findall(resp.text):
             base = urllib.parse.unquote(href_val.rstrip("/").rsplit("/", 1)[-1])
-            if parse_archive_name(base) is not None:
+            if is_share_archive_name(base):
                 results.append((base, -1))
         results.sort(key=lambda t: t[0])
         return results

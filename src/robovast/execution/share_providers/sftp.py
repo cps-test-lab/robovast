@@ -20,7 +20,7 @@
 import os
 import urllib.parse
 
-from .naming import parse_archive_name
+from .naming import is_share_archive_name
 
 from .base import BaseShareProvider, ShareError
 
@@ -270,7 +270,7 @@ class SftpShareProvider(BaseShareProvider):
     # Optional download interface
     # ------------------------------------------------------------------
 
-    def list_campaign_archives_with_size(self) -> list[tuple[str, int]]:
+    def list_archives_with_size(self) -> list[tuple[str, int]]:
         """List all ``campaign-*.tar.gz`` files in the remote directory.
 
         Returns:
@@ -283,7 +283,7 @@ class SftpShareProvider(BaseShareProvider):
             result = [
                 (attr.filename, attr.st_size if attr.st_size is not None else -1)
                 for attr in entries
-                if parse_archive_name(attr.filename) is not None
+                if is_share_archive_name(attr.filename)
             ]
             result.sort(key=lambda t: t[0])
             return result

@@ -198,11 +198,16 @@ class HTTPTransport(RobovastInterface):
         """
         return McpToolStats.model_validate(self._get(Routes.ADMIN_MCP_TOOLS))
 
-    def mcp_calls(self, limit: int = 200, tool: str = "",
-                  failed_only: bool = False) -> McpCalls:
-        """The MCP call log, newest first (see ``Routes.ADMIN_MCP_CALLS``)."""
+    def mcp_calls(self, limit: int = 200, tool: str = "", failed_only: bool = False,
+                  offset: int = 0) -> McpCalls:
+        """One page of the MCP call log, newest first (see ``Routes.ADMIN_MCP_CALLS``).
+
+        The reply carries ``total`` and ``truncated``: a page is not the record, and
+        ``offset`` is how the rest of it is reached.
+        """
         return McpCalls.model_validate(self._get(
-            Routes.ADMIN_MCP_CALLS, limit=limit, tool=tool, failed_only=failed_only))
+            Routes.ADMIN_MCP_CALLS, limit=limit, tool=tool, failed_only=failed_only,
+            offset=offset))
 
     def check_compatibility(self) -> dict:
         """Compare this client's robovast version with the service's (handshake).
@@ -559,6 +564,21 @@ class HTTPTransport(RobovastInterface):
         if selection is not None:
             params = {k: v for k, v in selection.model_dump().items() if v}
         return self._stream(Routes.campaign_archive(campaign_id), **params)
+
+    def workspace_tar_stream(self, workspace_id: str):
+        """Stream the workspace archive through, chunk by chunk.
+
+        The same shape as :meth:`campaign_tar_stream` and for the same reason -- neither
+        end decides how large a project tree somebody put an input into.
+        """
+        return self._stream(Routes.workspace_archive(workspace_id))
+
+    def export_workspace(self, workspace_id: str) -> "ShareWorkspaceArchive":
+        # The data timeout, not the control one: the call holds while the service tars the
+        # project and pushes it to the share, which is a transfer to somewhere else.
+        from robovast.service.interface import ShareWorkspaceArchive
+        return ShareWorkspaceArchive.model_validate(
+            self._post(Routes.workspace_share(workspace_id), timeout=self.DATA_TIMEOUT))
 
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags, config_files=None):
         return self._stream(Routes.campaign_inputs(campaign_id), job=list(job_tags),

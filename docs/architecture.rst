@@ -358,6 +358,12 @@ Two independent identifiers:
 never affects an existing campaign, and there is no campaign→workspace link.
 Results/query operations key on ``campaign_id`` only.
 
+**Both travel as an archive.** A workspace leaves the service as a ``tar.gz`` of its
+project files under one directory, and goes to the same share a campaign's results do
+(:ref:`sharing-results`). Importing one always creates a *new* workspace: the archive
+carries project files and no identity, so there is no id to restore and nothing to
+replace — the opposite of a campaign import, which restores a campaign under its own id.
+
 **A batch campaign reads the workspace only while it prepares.** It composes there,
 resolves what each configuration references, and stages those files; from then on it
 reads nothing but its own campaign directory, so the workspace can change underneath it

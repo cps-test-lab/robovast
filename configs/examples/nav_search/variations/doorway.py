@@ -83,7 +83,8 @@ class DoorwayVariation(Variation):
                 # actually describe.
                 continue
             instances.append({
-                "pos": [0.0, round(start + length / 2.0, 4)],
+                # The box plugin's pose shape; z omitted sits the segment on the floor.
+                "pose": {"position": {"x": 0.0, "y": round(start + length / 2.0, 4)}},
                 "size": [p.thickness, round(length, 4), p.height],
             })
 

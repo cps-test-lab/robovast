@@ -2329,6 +2329,8 @@ developer's own.  Intended for development and local integration tests.
 
 .. _cluster-sharing:
 
+.. _sharing-results:
+
 Sharing Results
 ---------------
 
@@ -2341,6 +2343,9 @@ snapshot of it.
 
 ``vast share`` — the six verbs, and who performs them
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Each verb carries a campaign's results, or a **workspace**'s project files with
+``--workspace``:
 
 =======================  ======================  ============
 verb                     moves                   performed by
@@ -2376,10 +2381,43 @@ metric tables rather than a directory to remember to reprocess.
 while its archive stays up there — ``vast share list`` marks such an archive
 ``importable``, and that case is the main reason import exists.
 
+Workspaces on the share
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The same six verbs carry a **workspace** — the project files a campaign is launched from
+— with ``--workspace``/``-w``. That is how a project reaches another deployment or a
+colleague:
+
+.. code-block:: bash
+
+   vast share export --workspace growth-sim          # service → share
+   vast share list --workspace                       # what is up there
+   vast share import --workspace growth-sim          # share → service, as a NEW workspace
+   vast share download --workspace growth-sim -o .   # share → your machine
+
+An import always **creates** a workspace. The archive holds project files and no identity
+— the directory inside it names the workspace it was exported from, which means nothing on
+the importing service — so nothing is replaced, ``--force`` does not apply, and the new
+workspace is named after the archive unless ``--name`` says otherwise. A name already taken
+is suffixed (``growth-sim-2``), so re-importing is how you get a second copy to edit.
+
+Export and import are **synchronous**, unlike a campaign's: a campaign's upload is tracked
+as a phase of the campaign and returns as soon as it is under way, while a project tree is
+small enough that the answer is the object that landed.
+
+The same archive is what ``vast workspace download`` fetches and what the config editor's
+**Download** button saves, so a project taken off a service and one taken off the share are
+the same tree.
+
 Archive names
 ^^^^^^^^^^^^^
 
-``<campaign-id>.raw.tar.gz`` or ``<campaign-id>.postprocessed.tar.gz``. Nobody is
+A workspace is ``<slug>.workspace.tar.gz``, where the slug is the workspace's name reduced
+to ``[A-Za-z0-9._-]``. Exporting the same workspace again replaces that object; two
+workspaces whose names reduce to the same slug publish to the same one, and which workspace
+is *here* is the service's answer rather than the share's.
+
+A campaign is ``<campaign-id>.raw.tar.gz`` or ``<campaign-id>.postprocessed.tar.gz``. Nobody is
 asked which: it is read off the campaign (``_transient/postprocessing.yaml`` is
 postprocessing's own provenance record, written last and by nothing else), so the
 campaign-end upload and a later

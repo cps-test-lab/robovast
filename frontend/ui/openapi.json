@@ -891,6 +891,11 @@
             "title": "From Campaign",
             "type": "string"
           },
+          "from_share": {
+            "default": "",
+            "title": "From Share",
+            "type": "string"
+          },
           "name": {
             "default": "",
             "title": "Name",
@@ -2057,6 +2062,11 @@
             "title": "Ok",
             "type": "boolean"
           },
+          "session": {
+            "default": "",
+            "title": "Session",
+            "type": "string"
+          },
           "tool": {
             "title": "Tool",
             "type": "string"
@@ -2069,13 +2079,14 @@
           "at",
           "duration_ms",
           "ok",
+          "session",
           "tool"
         ],
         "title": "McpCall",
         "type": "object"
       },
       "McpCalls": {
-        "description": "A page of the call log, newest first.",
+        "description": "A page of the call log, newest first.\n\nThe page reports its own bounds, for the reason :class:`McpToolStats` reports the\nretained window: a reader given rows and no total cannot tell a record that ended\nfrom a page that did, and will read a busy afternoon as the whole month the ranking\nbeside it summarises. :attr:`offset` walks the rest.",
         "properties": {
           "calls": {
             "items": {
@@ -2089,16 +2100,40 @@
             "title": "Detail",
             "type": "string"
           },
+          "limit": {
+            "default": 0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
           "status": {
             "default": "ok",
             "title": "Status",
             "type": "string"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [
           "calls",
           "detail",
-          "status"
+          "limit",
+          "offset",
+          "status",
+          "total",
+          "truncated"
         ],
         "title": "McpCalls",
         "type": "object"
@@ -3360,14 +3395,61 @@
             "default": "",
             "title": "Share Type",
             "type": "string"
+          },
+          "workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/ShareWorkspaceArchive"
+            },
+            "title": "Workspaces",
+            "type": "array"
           }
         },
         "required": [
           "archives",
           "configured",
-          "share_type"
+          "share_type",
+          "workspaces"
         ],
         "title": "ShareListing",
+        "type": "object"
+      },
+      "ShareWorkspaceArchive": {
+        "description": "One workspace archive on the configured share.",
+        "properties": {
+          "object_name": {
+            "default": "",
+            "title": "Object Name",
+            "type": "string"
+          },
+          "size": {
+            "default": -1,
+            "title": "Size",
+            "type": "integer"
+          },
+          "slug": {
+            "default": "",
+            "title": "Slug",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "object_name",
+          "size",
+          "slug",
+          "url"
+        ],
+        "title": "ShareWorkspaceArchive",
         "type": "object"
       },
       "StagedArchive": {
@@ -4960,7 +5042,7 @@
     },
     "/admin/mcp-calls": {
       "get": {
-        "description": "The MCP call log, newest first -- what each call was given and what it answered.\n\nArguments and answers are truncated where they are recorded, not here; the cap is\n``robovast.mcp_server.tool_stats``.",
+        "description": "The MCP call log, newest first -- what each call was given and what it answered.\n\nArguments and answers are truncated where they are recorded, not here; the cap is\n``robovast.mcp_server.tool_stats``. The page says how many rows matched and whether\nmore remain, because a page that reported neither read as the whole record.",
         "operationId": "get_mcp_calls_admin_mcp_calls_get",
         "parameters": [
           {
@@ -4991,6 +5073,16 @@
               "default": false,
               "title": "Failed Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -5024,7 +5116,7 @@
     },
     "/admin/mcp-calls.csv": {
       "get": {
-        "description": "The same log as a CSV download -- the repo's one export format.\n\nIt carries what the panel carries, truncation included, and only the retained\nwindow: this is an export of the record, not of all history.",
+        "description": "The same log as a CSV download -- the repo's one export format.\n\nIt carries what the panel carries, truncation included, and only the retained\nwindow: this is an export of the record, not of all history. A download has no\nfield to report a bound in, so an export that did not reach the end of the record\nsays so in its filename -- the one part of a saved file a reader still has.\n\nBounded only by what is retained, unlike the panel's page: this streams, so asking\nfor the whole record costs the reader a longer download rather than the service a\nlarger response to hold.",
         "operationId": "export_mcp_calls_admin_mcp_calls_csv_get",
         "parameters": [
           {
@@ -5055,6 +5147,16 @@
               "default": false,
               "title": "Failed Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -9230,6 +9332,47 @@
         ]
       }
     },
+    "/workspaces/{workspace_id}/archive": {
+      "get": {
+        "description": "Stream the workspace's project files as a ``tar.gz``.\n\nBacks the config editor's download button and ``vast workspace download``, which\nis how a project leaves this service to be worked on somewhere else. One\ntop-level directory holding the tree, so what lands extracts on its own and can\nbe handed back to any service as a workspace archive.\n\nNot on the data routes: those serve the results volume, and a workspace is\nneither on it nor reachable from the cluster's data container.",
+        "operationId": "download_workspace_archive_workspaces__workspace_id__archive_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Workspace Archive",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
     "/workspaces/{workspace_id}/preview": {
       "post": {
         "operationId": "preview_configurations_workspaces__workspace_id__preview_post",
@@ -9434,6 +9577,48 @@
         "summary": "Workspace Scene Asset",
         "tags": [
           "authoring"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/share": {
+      "post": {
+        "operationId": "export_workspace_workspaces__workspace_id__share_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareWorkspaceArchive"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Workspace",
+        "tags": [
+          "workspaces"
         ]
       }
     },
