@@ -324,43 +324,39 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     return sources
 
 
-#: Where the image build leaves the upstream repositories' documentation. One directory per
-#: corpus, named after it; a ``.ref`` beside the pages records the commit it was
-#: taken at.
-#:
-#: The build is what knows this, not the runtime: robovast pins the simulator's commit in
-#: ``container/robovast/Dockerfile.roqsim`` and clones it there, so the same pin puts the pages
-#: in the service image. Nothing is imported and no sibling repository is named by path at
-#: runtime -- which a component that must stay publishable on its own may not do.
-UPSTREAM_DOCS_DIR = "/opt/robovast/upstream-docs"
-UPSTREAM_DOCS_ENV = "ROBOVAST_UPSTREAM_DOCS"
+#: The label an image's own pages are served under, prefixing every one of them so both
+#: repositories keep an ``architecture`` page and neither shadows the other.
+UPSTREAM_LABEL = "roqsim"
 
-#: Additional corpora for a checkout with no image behind it, as ``label=/path`` pairs separated
-#: by the platform path separator. A bare path takes its label from the directory's parent.
+#: Extra corpora from the filesystem, as ``label=/path`` pairs separated by the platform path
+#: separator. For a checkout with no image behind it.
 DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
 
 
-def _upstream_doc_roots() -> list[tuple[str, Path, str]]:
-    """``(label, docs_dir, ref)`` for each corpus the image build left behind."""
-    root = Path(os.environ.get(UPSTREAM_DOCS_ENV) or UPSTREAM_DOCS_DIR)
-    if not root.is_dir():
-        return []
-    roots: list[tuple[str, Path, str]] = []
-    for child in sorted(root.iterdir()):
-        if not child.is_dir():
-            continue
-        ref = ""
-        marker = child / ".ref"
-        if marker.is_file():
-            ref = marker.read_text(encoding="utf-8", errors="replace").strip()
-        roots.append((child.name, child, ref))
-    return roots
+def _upstream_pages(address: str) -> tuple[dict, str]:
+    """``({name: (title, text)}, error)`` for the simulator image *address* resolves to.
+
+    Read from the image rather than baked in beside this code: the pages that answer a question
+    about a world's format have to be the ones belonging to the simulator that campaign runs,
+    and only the image knows which that is. One exec per image, cached with the catalogs.
+    """
+    from robovast.mcp_server.plugins.image_catalog import _fetch_catalog
+
+    fetched = _fetch_catalog("docs", address)
+    if "error" in fetched:
+        return {}, fetched["error"]
+    pages = {}
+    for item in fetched.get("items", []):
+        name, text = item.get("name"), item.get("text")
+        if name and text:
+            pages[f"{UPSTREAM_LABEL}-{name}"] = (_extract_title(text) or name, text)
+    return pages, ""
 
 
-def _env_doc_roots() -> list[tuple[str, Path, str]]:
-    """``(label, docs_dir, ref)`` for each entry of :data:`DOCS_EXTRA_ENV`; the ref is unknown."""
+def _env_doc_roots() -> list[tuple[str, Path]]:
+    """``(label, docs_dir)`` for each entry of :data:`DOCS_EXTRA_ENV`."""
     raw = os.environ.get(DOCS_EXTRA_ENV, "")
-    roots: list[tuple[str, Path, str]] = []
+    roots: list[tuple[str, Path]] = []
     for chunk in raw.split(os.pathsep):
         chunk = chunk.strip()
         if not chunk:
@@ -375,7 +371,7 @@ def _env_doc_roots() -> list[tuple[str, Path, str]]:
             logger.warning("%s names %s, which is not a directory; skipping it",
                            DOCS_EXTRA_ENV, path)
             continue
-        roots.append((label or path.parent.name, path, ""))
+        roots.append((label or path.parent.name, path))
     return roots
 
 
@@ -403,17 +399,12 @@ _doc_content: dict[str, str] = {}
 _doc_source: dict[str, str] = {}
 
 _sources: dict[str, tuple[Path, str, str]] = {}
-#: corpus label -> the commit its pages were taken at, where the build recorded one.
-_corpus_ref: dict[str, str] = {}
 if _docs_dir is not None:
     _sources.update(_load_corpus(_docs_dir))
-for _label, _root, _ref in _upstream_doc_roots() + _env_doc_roots():
-    # setdefault: robovast's own pages keep their unprefixed names, and the first corpus under
-    # a label wins, so one registered twice cannot half-replace itself.
+for _label, _root in _env_doc_roots():
+    # setdefault: robovast's own pages keep their unprefixed names.
     for _key, _value in _load_corpus(_root, prefix=_label).items():
         _sources.setdefault(_key, _value)
-    if _ref:
-        _corpus_ref.setdefault(_label, _ref)
 
 for _name, (_path, _kind, _from) in _sources.items():
     _text = _path.read_text(encoding="utf-8", errors="replace")
@@ -421,9 +412,7 @@ for _name, (_path, _kind, _from) in _sources.items():
     _doc_source[_name] = _from
     if _kind == "roqsim":
         _doc_meta[_name] = _extract_title(_text) or _name
-        # Only robovast's own pages carry directives this resolver knows how to expand; another
-        # repository's Sphinx extensions are its own, and are left as written rather than
-        # half-rendered.
+        # Only robovast's own pages carry directives this resolver knows how to expand.
         _doc_content[_name] = (
             _resolve_directives(_text, _path.parent) if _from == "robovast" else _text)
     else:
@@ -431,19 +420,10 @@ for _name, (_path, _kind, _from) in _sources.items():
         _doc_content[_name] = _text
 
 
-def _listing_row(name: str) -> dict:
-    """One page as a listing shows it: its name, title, corpus, and that corpus's commit.
-
-    The ref is what keeps an upstream page honest: these pages describe the simulator this
-    image was built against, and a campaign pinning another image can be told so rather than
-    reading them as universal.
-    """
-    source = _doc_source.get(name, "robovast")
-    row = {"name": name, "title": _doc_meta[name], "source": source}
-    ref = _corpus_ref.get(source)
-    if ref:
-        row["ref"] = ref
-    return row
+def _listing_row(name: str, source: str = "") -> dict:
+    """One page as a listing shows it."""
+    return {"name": name, "title": _doc_meta[name] if not source else name,
+            "source": source or _doc_source.get(name, "robovast")}
 
 
 # -- Tool functions ----------------------------------------------------------
@@ -504,8 +484,9 @@ def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict]
              for start, end, count, first in kept], len(windows))
 
 
-def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS) -> dict:
-    """Documentation, ours and upstream's: list, search, or read one page.
+def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
+                address: str = "") -> dict:
+    """RoboVAST's documentation, and the simulator's when an *address* names an image.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of
@@ -513,6 +494,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
         page: Read this page in full (a ``name`` from the listing).
         limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
             is megabytes). Narrow the term or read the page instead of raising this.
+        address: ``/sources/<workspace_id>/<path>`` -- also search the simulator pages of the
+            image that ``.vast`` runs, served under a ``roqsim-`` prefix. The world format
+            and the plugin reference are documented there, not here.
 
     Returns:
         Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
@@ -526,22 +510,31 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
     if not _doc_files:
         return _no_docs()
 
+    # The image's own pages, when one is named. Fetched per call and cached per image beside
+    # the catalogs, so a second question about the same image costs nothing.
+    upstream, upstream_error = _upstream_pages(address) if address else ({}, "")
+    if upstream_error:
+        return {"error": upstream_error}
+    titles = {**{n: _doc_meta[n] for n in _doc_files}, **{n: t for n, (t, _x) in upstream.items()}}
+    texts = {**_doc_content, **{n: x for n, (_t, x) in upstream.items()}}
+
     if page:
-        if page not in _doc_files:
+        if page not in texts:
             return {"error": f"unknown documentation page {page!r}; available: "
-                             f"{', '.join(sorted(_doc_files))}"}
-        return {"page": page, "title": _doc_meta[page], "content": _doc_content[page]}
+                             f"{', '.join(sorted(texts))}"}
+        return {"page": page, "title": titles[page], "content": texts[page]}
 
     if not query:
-        pages = [_listing_row(name) for name in sorted(_doc_files)]
+        pages = [_listing_row(name, UPSTREAM_LABEL if name in upstream else "")
+                 for name in sorted(texts)]
         return {"pages": pages, "total": len(pages)}
 
     results = []
     matching_lines_total = 0
     truncated = False
     query_lower = query.lower()
-    for name in sorted(_doc_files):
-        lines = _doc_content[name].splitlines()
+    for name in sorted(texts):
+        lines = texts[name].splitlines()
         hits = [i for i, line in enumerate(lines) if query_lower in line.lower()]
         if not hits:
             continue
@@ -549,11 +542,17 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
         matching_lines_total += len(hits)
         cut = len(matches) < excerpts_total
         truncated = truncated or cut
-        results.append({"page": name, "title": _doc_meta[name], "matches": matches,
+        results.append({"page": name, "title": titles[name], "matches": matches,
                         "matching_lines": len(hits), "excerpts_total": excerpts_total,
                         "truncated": cut})
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if not results and not address:
+        # Zero reads as "no such thing". These are RoboVAST's pages only, and the world
+        # format and plugin reference live with the simulator.
+        out["note"] = ("no match in RoboVAST's own pages. The simulator's -- the world "
+                       "format, its plugins, the scene catalog -- are served with "
+                       "address=/sources/<workspace_id>/<path>.")
     if matching_lines_total > _COMMON_TERM_LINES:
         # A term this common is not answered by more excerpts of it. Say so, since the
         # reply otherwise reads as "here is what the docs say about X" when it is a

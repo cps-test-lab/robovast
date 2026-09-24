@@ -468,4 +468,6 @@ def test_each_catalog_is_asked_of_the_container_that_has_it():
 
     assert CATALOG_CONTAINERS["models"] == "simulation"
     assert CATALOG_CONTAINERS["worlds"] == "simulation"
-    assert set(CATALOG_CONTAINERS) == set(image_catalog.CATALOGS)
+    # `docs` is read by search_docs, not offered as a catalog to list, so it has a container
+    # without being in the tool's vocabulary.
+    assert set(CATALOG_CONTAINERS) - set(image_catalog.CATALOGS) == {"docs"}

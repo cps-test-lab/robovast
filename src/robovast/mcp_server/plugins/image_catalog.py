@@ -180,6 +180,11 @@ _SUMMARY_FIELDS = {
 _DEFAULT_SUMMARY_FIELDS = ("name", "kind", "doc")
 
 
+def _fetch_catalog(group: str, address: str) -> dict:
+    """:func:`_fetch` for a reader outside this module -- the docs corpus is one."""
+    return _fetch(group, address)
+
+
 def _list(group: str, address: str, query: str) -> dict:
     fetched = _fetch(group, address)
     if "error" in fetched:

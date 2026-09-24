@@ -296,29 +296,24 @@ weigh it rather than reading the hint as an instruction.
 What the documentation corpus covers
 ------------------------------------
 
-``search_docs`` serves RoboVAST's own pages and those of the repositories it is built on. A campaign is authored
-against more than RoboVAST -- the simulator's world format, its plugin reference, the
-scenario DSL -- and all of that is documented in the repository that owns it. Serving only
-this one meant a search for a world's ``components:`` list returned nothing, which reads as
-"no such thing" rather than "not indexed here".
+``search_docs`` serves RoboVAST's own pages, and with an ``address`` the simulator's too. A
+campaign is authored against more than RoboVAST -- the world format, the plugin reference,
+the scene catalog -- and that is documented in the repository that owns it. Searching only
+this one returns zero for a world's ``components:`` list, which reads as "no such thing"
+rather than "not indexed here", so a miss without an address says where the rest is.
 
-**The build puts them there, not the runtime.** This repository already pins the simulator's
-commit for the simulator image (``container/robovast/Dockerfile.roqsim``) and clones it at
-that commit; the service image clones the same commit's ``docs/`` into
-``/opt/robovast/upstream-docs``, one directory per corpus. Nothing is imported and no
-sibling repository is named by path at run time -- the service image carries no roqsim, by
-design, so an entry point could not have answered this.
+**The image answers for its own pages.** The simulator image already carries roqsim's source
+tree at ``/opt/roqsim``, so ``search_docs(address=...)`` reads ``docs/`` out of the image that
+``.vast`` runs -- the same held-container path and per-image cache the catalogs use. Nothing
+is added to an image and no commit is pinned twice, and the pages that answer a question
+about a world are the ones belonging to the simulator that campaign runs, not whichever
+version sits beside the service.
 
-Each directory's **name** is the prefix its pages are served under, so the upstream repositories'
-``architecture`` page is ``roqsim-architecture`` and cannot shadow RoboVAST's own. Every row
-of the page listing carries a ``source`` saying which corpus it came from, and a ``ref`` --
-the commit the pages were taken at, written beside them by the build. A release that builds
-the simulator from a moving branch can ship an image newer than the pages, and the ``ref`` is
-what makes that visible rather than silent.
+They are served under a ``roqsim-`` prefix, so both repositories keep an ``architecture``
+page and neither shadows the other, and every listing row carries a ``source``.
 
 ``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path separator, for a
-checkout with no image behind it. ``ROBOVAST_UPSTREAM_DOCS`` overrides where the corpora are
-read from.
+checkout with no image behind it.
 
 Only RoboVAST's own pages have their Sphinx directives expanded. Another repository's
 extensions are its own, so its pages are served as written rather than half-rendered.
