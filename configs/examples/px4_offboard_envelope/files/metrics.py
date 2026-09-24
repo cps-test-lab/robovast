@@ -2,46 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Flight-envelope metrics for a PX4-flown trial, from two position sources rather than one.
+"""Per-run flight metrics for a PX4-flown trial: trajectory.csv (what the panels bind to) and
+metrics.csv (one row of scalars).
 
-Adapted from ``../../drone_flight_envelope/files/metrics.py``. The structure is the same -- per
-run, read what ``rosbags_to_csv`` extracted and write ``trajectory.csv`` (what the run-view panels
-bind to) and ``metrics.csv`` (one row of scalars) beside it -- and one thing about it is different
-in a way worth understanding before copying either file.
-
-**Two position sources, and the primary one is the estimate.**
-
-``/fmu/out/vehicle_local_position_v1``
-    Where PX4's EKF2 *believed* the aircraft was, in NED. This is the position PX4 actually flew
-    on, so it is what the flight-tracking metrics are computed against. That is not a compromise
-    forced by the setup -- it is what a real flight test measures. A flight test has no ground
-    truth; it has an autopilot log, and the number that matters operationally is how well the
-    vehicle held the course *it thought it was holding*. Measuring against simulator ground truth
-    would answer a question no field test can ask.
-
-``sim_poses.csv``
-    Ground truth, from the simulator's own pose table, in ENU. roqsim writes it for every named
-    body of every run, which is why the truth comes from here and not from a ROS topic: in roqsim
-    odometry is what a controller or a drive publishes, and this airframe deliberately has neither
-    -- its stabiliser is PX4. Kept because the simulator can answer the question the field cannot,
-    and the difference between the two is itself an observable: ``mean_estimator_error`` is how
-    far EKF2's belief drifted from reality. In the Crazyflie example there was no such quantity to
-    have -- the controller read ground truth directly, so belief and truth were the same object.
-
-    Both sources are on the SIMULATED clock -- the pose table by construction, the bag because the
-    scenario records with ``use_sim_time`` -- so they pair without rebasing either.
-
-**NED vs ENU is reconciled exactly once, here.** PX4 is [north, east, DOWN]; roqsim is [east,
-north, up]. The conversion is
-    x_enu = y_ned      y_enu = x_ned      z_enu = -z_ned
-and it is applied to the PX4 samples on the way in, so every column downstream -- ``trajectory.csv``,
-every panel, every metric -- is ENU with altitude positive up. Doing it in one place is the point:
-the scenario states its course in NED and the world states its markers in ENU, and this is the
-only file that has to hold both conventions in mind at once.
-
-Used as a local-file postprocessing plugin (``files/metrics.py:EnvelopeMetrics``) under
-``results_processing.postprocessing``. Run discovery globs, so it works pointed at a campaign root
-or a single run.
+Two position sources. The tracking metrics are computed against PX4's estimate
+(/fmu/out/vehicle_local_position_v1, NED), because that is what the stack flew on and what a
+field test records. Ground truth is the simulator's own sim_poses.csv (ENU), which every roqsim
+run writes; this airframe has no controller and so no odometry topic. The difference between the
+two is the estimator error. NED -> ENU is converted once, in _read_px4. Both sources are on the
+simulated clock (the bag is recorded with use_sim_time), so neither is rebased.
 """
 
 from __future__ import annotations
@@ -54,73 +23,38 @@ from typing import Optional, Tuple
 from robovast.results_processing.postprocessing_plugins import \
     BasePostprocessingPlugin
 
-#: Commanded cruise altitude and course, in ENU metres -- the scenario's NED legs with the sign
-#: convention undone. Restated here rather than parsed out of the .osc because a metric needs to
-#: know what "on target" meant; if the scenario's course changes, this changes with it.
+# ENU. Must match scenario.osc.
 CRUISE_Z = 3.0
 COURSE = [(5.0, 5.0), (-5.0, 5.0), (-5.0, -5.0), (0.0, 0.0)]
 
-#: The cruise window, in simulated seconds from the start of the run: after the climb has settled
-#: and **before** the landing is commanded. Both ends matter. Without the lower bound the climb
-#: counts as failure to hold altitude; without the upper bound the commanded landing does, and
-#: since every run lands, the hold fraction then reads the same in every cell no matter what was
-#: varied -- a metric that looks like a measurement and discriminates nothing.
-#:
-#: The window is later and longer than the Crazyflie example's because PX4 has to converge EKF2 and
-#: arm before anything flies: the run starts at bringup, not at takeoff. How long EKF2 takes to
-#: converge is not fixed, so the window is a coarse cut, not a phase boundary.
+# Climb settled .. landing commanded, in simulated seconds from the run start. Without both
+# bounds the climb and the landing count as failure to hold altitude in every cell alike. EKF2
+# convergence time varies, so this is a coarse cut, not a phase boundary.
 CRUISE_START_S = 20.0
 CRUISE_END_S = 80.0
 
-#: Altitude below which the aircraft is on the ground rather than flying. Larger than the Crazyflie
-#: example's 0.15 m because the airframe is 0.5 m across and its origin sits well above the floor.
 GROUNDED_Z = 0.5
-#: Fraction of the commanded cruise altitude that still counts as holding it, for the
-#: `cruise_hold_fraction` diagnostic.
 HOLD_FRACTION = 0.75
-#: Mean altitude error, in metres, up to which the aircraft counts as having held station. 0.5 m at
-#: a 3 m cruise is the same relative band the Crazyflie example used at 1.2 m -- generous, but one
-#: you can see it leave.
 HOLD_TOLERANCE_M = 0.5
-#: Mean |truth - estimate|, in metres, above which the flight is called out as an estimator
-#: problem rather than a control one. Chosen as the point where the divergence is larger than the
-#: hold tolerance itself: past there, PX4 could be flying a perfect course against a wrong belief
-#: and the two failure modes are no longer separable by the tracking metrics.
+# Above this the tracking metrics no longer separate a control failure from an estimation one.
 ESTIMATOR_DIVERGED_M = 1.0
 
-#: A timestamp above this is a Unix epoch, not a simulated second: no trial here runs for a year.
+# Above this a timestamp is a Unix epoch, not a simulated second.
 WALL_CLOCK_SUSPECT_S = 3.0e7
 
-#: The MuJoCo body whose rows in ``sim_poses.csv`` are the flown airframe: the model's root body
-#: under the ``spawn_robot`` prefix the world declares (``x500_`` + ``x500``).
+# The airframe's MuJoCo body name in sim_poses.csv: spawn_robot prefix + model root body.
 TRUTH_FRAME = "x500_x500"
 
 
 def _quat_tilt_deg(x: float, y: float, z: float, w: float) -> float:
-    """Angle between the body z axis and vertical, in degrees.
-
-    From the quaternion rather than from roll/pitch: Euler angles are lossy the moment a body
-    leaves the plane, and a quadrotor rejecting a gust is exactly that case. The body z axis in
-    world coordinates is the third column of the rotation matrix, so the tilt is its angle to
-    (0, 0, 1).
-    """
+    """Angle between the body z axis and vertical: the third column of the rotation matrix."""
     body_z = 1.0 - 2.0 * (x * x + y * y)
     return math.degrees(math.acos(max(-1.0, min(1.0, body_z))))
 
 
 def _read_px4(path: Path) -> list[dict]:
-    """VehicleLocalPosition as ENU samples: PX4's belief, converted once and here only.
-
-    ``xy_valid`` / ``z_valid`` are honoured rather than ignored. Before EKF2 has a position
-    solution the message is still published with zeros in the position fields, and taking those at
-    face value puts the aircraft at the origin for the first seconds of every run -- which reads as
-    a drone that sat on the pad, i.e. exactly the failure this campaign is trying to detect.
-
-    ``t`` is the bag's receive time on the SIMULATED clock (the scenario records with
-    ``use_sim_time``), in seconds, so it is directly comparable with the simulator's pose table. A
-    bag recorded on wall time would put every estimate decades away from every truth sample and
-    silently pair nothing, so that is refused by name rather than scored as "no estimate".
-    """
+    """PX4's estimate as ENU samples on the simulated clock. Rows before EKF2 has a solution carry
+    zeros with xy_valid/z_valid false and are dropped; a bag on wall time is refused."""
     rows = []
     with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
@@ -133,7 +67,6 @@ def _read_px4(path: Path) -> list[dict]:
                 rows.append(
                     {
                         "t": float(row["timestamp"]) * 1e-9,
-                        # NED -> ENU. The only place in this example where this happens.
                         "x": east,
                         "y": north,
                         "z": -down,
@@ -143,8 +76,6 @@ def _read_px4(path: Path) -> list[dict]:
                     }
                 )
             except (KeyError, ValueError, TypeError):
-                # A malformed row is skipped rather than failing the run: one bad sample must not
-                # discard an otherwise complete flight.
                 continue
     if rows and rows[0]["t"] > WALL_CLOCK_SUSPECT_S:
         raise ValueError(
@@ -156,11 +87,7 @@ def _read_px4(path: Path) -> list[dict]:
 
 
 def _read_sim_poses(path: Path, frame: str) -> list[dict]:
-    """Ground truth from the simulator's own pose table, already ENU and on the simulated clock.
-
-    One body's rows are the trajectory. ``frame`` is the MuJoCo body name, which carries the
-    ``spawn_robot`` prefix. Returns [] when the table has no rows for it, which the caller counts.
-    """
+    """One body's rows of sim_poses.csv; [] when it has none."""
     rows = []
     with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
@@ -188,14 +115,8 @@ def _read_sim_poses(path: Path, frame: str) -> list[dict]:
 
 
 def _pair(truth: list[dict], est: list[dict]) -> list[Optional[dict]]:
-    """For each ground-truth sample, the nearest PX4 estimate (or None when there is none).
-
-    A cursor walk rather than a search per sample -- both series are monotonic in t, so this is
-    linear where the obvious nested scan is quadratic over a full flight. Nearest-neighbour rather
-    than interpolating, deliberately: the two streams run at different rates, and interpolating a
-    position smooths it, which would show up as *reduced* estimator error -- i.e. it would flatter
-    the very quantity being measured.
-    """
+    """Nearest estimate per truth sample, by a cursor walk over both monotonic series. Not
+    interpolated: interpolating smooths the estimate and flatters the error."""
     out: list[Optional[dict]] = []
     if not est:
         return [None] * len(truth)
@@ -208,11 +129,6 @@ def _pair(truth: list[dict], est: list[dict]) -> list[Optional[dict]]:
 
 
 def _trajectory(truth: list[dict], est: list[dict]) -> list[dict]:
-    """One row per ground-truth sample, carrying both positions and their difference.
-
-    Keyed on ground truth because that is the series the 3D scene and the ground track are drawn
-    from; the estimate rides alongside it so the run view can show belief and reality on one axis.
-    """
     out = []
     for row, e in zip(truth, _pair(truth, est)):
         est_error = (
@@ -237,27 +153,8 @@ def _trajectory(truth: list[dict], est: list[dict]) -> list[dict]:
 
 
 def _outcome(traj: list[dict], mean_altitude_error: float, mean_estimator_error: float) -> str:
-    """One label for the whole flight, in the vocabulary the envelope is drawn in.
-
-    Four outcomes rather than pass/fail, because the interesting part of this campaign is *how* a
-    configuration fails -- and with a real flight stack in the loop there is one more way to fail
-    than there was with a PD loop reading ground truth:
-
-    ``never_armed``
-        No flight at all. Either PX4 refused to arm (EKF2 never got a position solution, a preflight
-        check failed) or the aircraft could not lift itself -- T/W at or below 1. Both are "the
-        stack declined to fly", and the run log separates them; the metrics cannot.
-    ``estimator_diverged``
-        Airborne, but EKF2's belief drifted away from reality. Checked FIRST, because a diverged
-        estimate makes every tracking number below it meaningless: PX4 may have flown its
-        commanded course perfectly against a position that was wrong. This outcome does not exist
-        in the Crazyflie example and cannot -- there was no estimator to diverge.
-    ``sagged``
-        Airborne and correctly estimated, but below the altitude it was told to hold. Out of
-        thrust margin: PX4's position controller is commanding more than the rotors can deliver.
-    ``held``
-        Flew the course within tolerance of the commanded altitude.
-    """
+    """never_armed: PX4 refused to arm or T/W <= 1 (the run log separates them). estimator_diverged
+    is checked before sagged: a diverged estimate makes the tracking numbers meaningless."""
     if not traj or max(r["z"] for r in traj) < GROUNDED_Z:
         return "never_armed"
     if mean_estimator_error > ESTIMATOR_DIVERGED_M:
@@ -270,8 +167,6 @@ def _outcome(traj: list[dict], mean_altitude_error: float, mean_estimator_error:
 def _metrics(traj: list[dict]) -> dict:
     duration = traj[-1]["t"] if traj else 0.0
 
-    # Cruise phase: the commanded course, with bringup, the climb and the landing excluded, so that
-    # an aircraft which never climbs is measured over the same window as one that does.
     cruising = [r for r in traj if CRUISE_START_S <= r["t"] < CRUISE_END_S]
     if not cruising:
         cruising = traj
@@ -279,9 +174,7 @@ def _metrics(traj: list[dict]) -> dict:
     held = [r for r in cruising if r["z"] >= HOLD_FRACTION * CRUISE_Z]
     cruise_hold = len(held) / len(cruising) if cruising else 0.0
 
-    # The flight-tracking metrics are computed against PX4's ESTIMATE where there is one -- what the
-    # stack believed and acted on, which is what a real flight test records -- and fall back to
-    # ground truth only for samples the estimator never covered. See the module docstring.
+    # Against the estimate where there is one; ground truth where the estimator never covered.
     def _flown_z(row):
         return row["est_z"] if row["est_z"] != "" else row["z"]
 
@@ -293,13 +186,10 @@ def _metrics(traj: list[dict]) -> dict:
     altitude_error = [abs(_flown_z(r) - CRUISE_Z) for r in cruising]
     mean_altitude_error = sum(altitude_error) / len(altitude_error) if altitude_error else 0.0
 
-    # Distance from the nearest commanded corner, as a crude tracking error that does not need the
-    # leg schedule: the course is a square, so the nearest corner is the one being flown to or from.
+    # Distance to the nearest corner: a tracking error that needs no leg schedule.
     tracking = [min(math.dist(_flown_xy(r), corner) for corner in COURSE) for r in cruising]
     tracking_rmse = math.sqrt(sum(e * e for e in tracking) / len(tracking)) if tracking else 0.0
 
-    # The new one. Over the cruise window only: before arming EKF2 has no solution worth scoring,
-    # and after touchdown the aircraft is not moving, so both ends would dilute it towards zero.
     est_errors = [r["est_error"] for r in cruising if r["est_error"] != ""]
     mean_estimator_error = sum(est_errors) / len(est_errors) if est_errors else 0.0
     max_estimator_error = max(est_errors) if est_errors else 0.0
@@ -314,9 +204,7 @@ def _metrics(traj: list[dict]) -> dict:
         "max_estimator_error": round(max_estimator_error, 4),
         "max_tilt_deg": round(max(r["tilt_deg"] for r in traj), 3),
         "max_speed": round(max(r["speed"] for r in traj), 4),
-        # Landing accuracy from GROUND TRUTH and not from the estimate, deliberately: where the
-        # aircraft physically came to rest is a fact about the flight, and scoring it against a
-        # belief that may have drifted would credit a good landing to a bad estimate.
+        # From ground truth: where the aircraft physically came to rest.
         "landing_error": round(math.dist((landed["x"], landed["y"]), (0.0, 0.0)), 4),
         "final_z": round(landed["z"], 4),
         "duration_s": round(duration, 3),
@@ -342,26 +230,18 @@ class EnvelopeMetrics(BasePostprocessingPlugin):
         for poses in sorted(Path(results_dir).rglob(truth_glob)):
             run_dir = poses.parent
             out = run_dir / file
-            # Incremental: a re-run over the whole campaign only touches new runs. `force` redoes all.
             if not force and out.exists() and out.stat().st_mtime >= poses.stat().st_mtime:
                 skipped += 1
                 continue
             truth = _read_sim_poses(poses, truth_frame)
             if not truth:
-                # A run with no rows for the airframe in its pose table is reported, not silently
-                # skipped: the simulator never came up, or the world spawned the body under another
-                # name (`truth_frame`), which is a different problem from a drone that flew badly.
                 empty += 1
                 continue
 
             px4_files = sorted(run_dir.glob(px4_glob))
             est = _read_px4(px4_files[0]) if px4_files else []
             if not est:
-                # Counted and reported rather than passed over. No PX4 position means the flight
-                # stack was never in the loop -- the uXRCE-DDS bridge did not come up, or the topic
-                # is named differently in this PX4 release (see scenario.osc). The run is still
-                # scored from ground truth so the trajectory is not lost, but a campaign where this
-                # count is non-zero is not a campaign about PX4.
+                # Still scored from ground truth; a non-zero count means PX4 was never in the loop.
                 no_estimate += 1
 
             traj = _trajectory(truth, est)

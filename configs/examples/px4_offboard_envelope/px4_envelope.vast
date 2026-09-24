@@ -17,58 +17,25 @@ metadata:
     grid walks payload, air density and wind until that margin is gone.
   keywords: [robotics, aerial, drone, quadrotor, PX4, px4_msgs, offboard, uXRCE-DDS, MAVLink, mujoco, roqsim]
 
-# --------------------------------------------------------------------------------------------
-# Factors. A full 3 x 2 x 2 grid = 12 configurations, the same shape as drone_flight_envelope.
-#
-# Every destination here is a `sim:` path into the roqsim world, resolved against the addresses
-# `world/px4_envelope.yaml` publishes:
-#   sim.<key>                           -> a pre-compile global (density is one)
-#   components.<entity>.<plugin>.<key>  -> a plugin nested under an entity (the drone's payload)
-#   components.<plugin>.<key>           -> a top-level plugin (the wind field)
-#
-# Note what is NOT varied: anything inside PX4. The flight stack is the thing under test, so a
-# campaign that retuned MPC_* gains between cells would be measuring our tuning rather than the
-# stack's envelope. Every factor below is a property of the aircraft or of the air around it.
-# --------------------------------------------------------------------------------------------
+# 3 x 2 x 2 grid. `sim:` paths are addresses into world/px4_envelope.yaml. Nothing inside PX4 is
+# varied: the flight stack is the thing under test.
 configuration:
 - name: envelope
   variations:
 
-  # The headline factor, and the reason this example exists. Total rotor thrust is fixed at 32.7 N
-  # by the airframe (files/10020_none_x500: MPC_THR_HOVER 0.6 against a 2.0 kg aircraft, i.e.
-  # 19.613 / 0.6), so payload is what moves the margin:
-  #
-  #   payload   total mass   weight     T/W = 32.7 N / weight
-  #   0.0 kg    2.0 kg       19.613 N   1.667
-  #   0.6 kg    2.6 kg       25.497 N   1.283
-  #   1.2 kg    3.2 kg       31.381 N   1.042
-  #
-  # The top level sits just above T/W = 1 (the aircraft can barely lift itself; total mass at
-  # exactly 1.0 is 3.334 kg) rather than comfortably inside the envelope, so the grid brackets the
-  # boundary between two cells instead of straddling it. A factor whose every level passes has not
-  # been varied over a range where it does anything.
-  #
-  # Worth stating plainly because it surprises people: 1.67 is far below the 3+ that a bench figure
-  # for X500-class motors would suggest. It is PX4's own hover throttle that sets the scale here --
-  # the airframe file says the aircraft hovers at 60% command, so full command is 1/0.6 of a hover,
-  # and that is the margin the flight stack believes it has.
+  # Total thrust is 32.7 N (files/10020_none_x500: MPC_THR_HOVER 0.6 on 2.0 kg), so payload sets
+  # T/W: 1.67 / 1.28 / 1.04. T/W = 1 at 3.334 kg.
   - ParameterVariationList:
       sim: components.drone.payload.mass
       values: [0.0, 0.6, 1.2]
 
-  # Density altitude. 1.225 is sea level, 0.905 is roughly 3000 m. Worth knowing what this factor
-  # does and does not do here: MuJoCo's density drives the drag terms, so it scales the force the
-  # wind applies and shows up mostly as an *interaction* with the wind factor. It does not change
-  # thrust, which a real density altitude would -- the rotors' force limit is fixed -- so payload
-  # is the thrust-margin factor and this is not.
+  # Sea level and ~3000 m. Density only scales drag (and so the wind's force); thrust is fixed by
+  # the model's ctrlrange, so this is an interaction with wind, not a second thrust-margin factor.
   - ParameterVariationList:
       sim: sim.density
       values: [1.225, 0.905]
 
-  # Calm against a 4 m/s cross-wind from the east. Higher than the Crazyflie example's 2.5 m/s and
-  # for a reason: a 2 kg airframe with PX4's position controller shrugs that off, so it would be a
-  # factor with no effect. Written as a whole vector because a list destination is replaced
-  # wholesale -- there is no index addressing in the override path.
+  # A list destination is replaced wholesale; there is no index addressing.
   - ParameterVariationList:
       sim: components.wind_field.steady
       values:
@@ -77,174 +44,84 @@ configuration:
 
 execution:
   containers:
-    # -- the physics ---------------------------------------------------------------------------
-    # roqsim, from its own image, supplied by the backend. It serves the Simulator MAVLink API on
-    # TCP 4560 (world/px4_envelope.yaml, the `px4_sitl` component) and PX4 dials in.
     simulation:
       backend: roqsim
       config: world/px4_envelope.yaml
-      # Needs a simulator image carrying `roqsim_aerial` with the `x500` model and the
-      # `multirotor_motors`, `px4_sitl` and `gnss` plugins (`payload` is core roqsim). An older
-      # image fails at world load with "model 'x500' not found", listing the model providers it
-      # searched -- which names the cause precisely enough to act on.
-      #
-      # No `image:` here on purpose: the backend supplies the family member and the deployment
-      # supplies the project (ROBOVAST_PROJECT). A ref in this file would pin a public example to
-      # one site's registry.
-      #
-      # pymavlink is declared HERE rather than carried by the simulator image, for the same reason
-      # px4_msgs is not in the framework image: it is needed only by a campaign that attaches a
-      # flight stack. roqsim_aerial makes it an optional extra (`roqsim_aerial[px4]`) precisely so a
-      # world flying the in-process `quadrotor_controller` -- the majority -- does not pull a
-      # MAVLink stack in, and an image installing it unconditionally would undo that one layer up.
-      # `px4_sitl` imports it lazily and fails by name, so an image without it says what is missing.
+      # An optional extra of roqsim_aerial (`roqsim_aerial[px4]`), so the simulator image does not
+      # carry a MAVLink stack for the worlds that fly the in-process controller.
       python_packages: [pymavlink]
       resources: {cpu: 1, cpu_limit: 4, memory: 2048Mi}
 
-    # -- the flight stack ----------------------------------------------------------------------
-    # PX4 SITL, in a container of its own. This is the whole point of the example: the stabilising
-    # controller is no longer a plugin inside the simulator, it is the autopilot firmware.
-    #
-    # The image is the PX4 project's own published prebuilt SITL image, which is exactly the right
-    # thing to name in a public example -- anyone who clones this can pull it. Pinned to a concrete
-    # tag rather than `latest`, because PX4 renames its own ROS 2 topics between releases (see the
-    # long note in scenario.osc) and a floating tag would silently change the topic the metrics
-    # read. Note honestly that the prebuilt SITL images are pre-release tags only: there is no
-    # stable-release prebuilt SITL image at the time of writing.
     px4:
+      # The PX4 project's own prebuilt SITL image. Only pre-release tags exist. Pinned because PX4's
+      # ROS 2 topic names change between releases (see scenario.osc).
       image: px4io/px4-sitl:v1.18.0-beta2
       provenance:
         source: https://github.com/PX4/PX4-Autopilot
         revision: v1.18.0-beta2
         build_recipe: published by the PX4 project; see https://hub.docker.com/r/px4io/px4-sitl
-      # A script, not an argv, and not by taste: a sidecar's command is handed to
-      # secondary_entrypoint.sh as one string and word-split unquoted, so no single argument may
-      # contain a space. files/px4_start.sh installs the airframe PX4 does not ship (see below),
-      # points PX4 at the MAVLink HIL path and execs it.
+      # A sidecar's command is word-split unquoted by secondary_entrypoint.sh, so anything with a
+      # space needs a script.
       command: [/bin/bash, /config/files/px4_start.sh]
-      # MEASURED, not precautionary: this image ships `stdbuf` and `tee` but NOT `python3`, and
-      # RoboVAST's secondary_entrypoint.sh hard-exits without all three. Declaring it here triggers
-      # a derived image build on top of the pinned tag, which is the framework's own mechanism for
-      # exactly this -- the alternative would be pinning a different PX4 image for a reason that has
-      # nothing to do with PX4.
+      # The image ships no python3, which secondary_entrypoint.sh requires.
       system_packages: [python3]
-      # PX4 SITL under lockstep is a hard real-time-ish loop and gets a core to itself; it is
-      # small in memory. UNVERIFIED as a measurement -- these are estimates, and
-      # `get_campaign_summary` reports what the container actually used after the first campaign.
       resources: {cpu: 1, cpu_limit: 2, memory: 512Mi}
 
-    # -- the ROS 2 side ------------------------------------------------------------------------
-    # The scenario container also runs the uXRCE-DDS agent (started by the scenario with
-    # run_process) and carries the px4_msgs interfaces, because that is where the ROS 2 graph is.
-    #
-    # Both are declared HERE rather than baked into the framework's base image. Neither is
-    # installable: checked against ros/rosdistro jazzy/distribution.yaml on 2026-08-31, px4_msgs
-    # has a `source:` entry and no `release:` block, and microxrcedds_agent is absent from the
-    # distribution entirely -- so `system_packages` (apt) and `python_packages` (pip) cannot
-    # express either, and neither is on PyPI. `ros_packages` is the key for exactly that case: it
-    # colcon-builds pinned git sources into an overlay in this campaign's derived image. A drone
-    # stack in the shared base image would be paid for by every campaign that never flies.
     scenario:
+      # Neither has a Debian on any ROS 2 distribution or a PyPI release, so both are colcon-built
+      # from pinned sources into this campaign's derived image.
       ros_packages:
-      # PX4's ROS 2 message definitions. Pinned to a sha on release/1.18 and deliberately not to
-      # `main`: px4_msgs definitions are versioned per PX4 release, and the uXRCE-DDS client
-      # derives each topic's `_vN` suffix from the message's own MESSAGE_VERSION -- so interfaces
-      # from the wrong branch produce topic names that silently do not match the running
-      # autopilot. This tracks the PX4 release the `px4` container above pins. There is no
-      # v1.18.0 tag to use instead; PX4 1.18 is still pre-release, which is also why the only
-      # prebuilt PX4 SITL images are betas.
+      # Must match the PX4 release above: the uXRCE-DDS client derives each topic's `_vN` suffix
+      # from the message's MESSAGE_VERSION, so interfaces from another branch produce topic names
+      # that do not match the running autopilot.
       - git: https://github.com/PX4/px4_msgs.git
         ref: 598c7aad7b2386f9406ebd2a2f841619fddc3c78   # release/1.18 HEAD
-
-      # The Micro XRCE-DDS Agent: the bridge PX4's uXRCE-DDS client dials into (UDP 8888 by
-      # default), and what puts `/fmu/in/*` and `/fmu/out/*` on the ROS 2 graph.
-      #
-      # It is NOT a ROS package -- it ships no package.xml -- and it belongs under `ros_packages`
-      # anyway: colcon identifies a plain CMake project by its CMakeLists.txt, and this repo
-      # carries a `colcon.pkg` giving colcon its name, its `cmake` type, and its cmake arguments.
-      # Those arguments are why this is one line rather than a build recipe: they set
-      # UAGENT_USE_SYSTEM_FASTDDS / UAGENT_USE_SYSTEM_FASTCDR, so the agent links the Fast DDS the
-      # ROS distribution already ships instead of running its superbuild to fetch and compile a
-      # second copy of the middleware.
-      #
-      # The pin is the 2.x line and must stay there until the base ROS distribution moves: agent
-      # 3.x requires Fast DDS 3.x, and this distribution ships 2.14, which exports `fastrtps`. A
-      # 3.x pin fails at configure with `Could not find a package configuration file provided by
-      # "fastdds"` -- loud, but only after someone has spent the build.
+      # A plain CMake project; its colcon.pkg supplies the name, type and the cmake args that link
+      # the ROS distribution's Fast DDS. Stays on 2.x: 3.x needs Fast DDS 3, jazzy ships 2.14.
       - git: https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
         ref: 73622810d984349b80bbac0ef55fc0b694d62222   # v2.4.3
       resources: {cpu: 1, cpu_limit: 2, memory: 1024Mi}
 
-  # The simulator runs standalone and publishes /clock; PX4 and the scenario are separate
-  # containers sharing its network namespace, which is what lets PX4 reach TCP 4560 and the
-  # uXRCE-DDS client reach UDP 8888 on plain localhost -- no hostname anywhere in this campaign.
+  # All containers of a run share one network namespace: PX4 reaches TCP 4560 and the DDS agent
+  # UDP 8888 on localhost.
   mode: ros2
-  # Three per cell. The turbulence in a run is a function of the run's seed, so repetitions sample
-  # the weather rather than repeat it -- which is what makes averaging over them mean anything.
-  # EKF2 also converges slightly differently per run, so a repetition now samples the estimator
-  # too, which it did not in the Crazyflie example.
+  # Turbulence and EKF2 convergence both vary with the run, so repetitions sample rather than repeat.
   runs: 3
-  # The trial schedule is ~95 s of sim time, and PX4 bringup (EKF2 convergence to a GPS fix before
-  # it will arm) is another ~30 s that the Crazyflie example simply did not have. 420 is a backstop
-  # for a run that wedges, not a bound on the flight: without it a hung run is indistinguishable
-  # from a slow one and `get_campaign_status` can return no stall verdict at all.
+  # ~95 s of schedule plus ~30 s of PX4 bringup; a backstop, not a bound on the flight.
   timeout: 420
   scenario_file: scenario.osc
   run_files:
-  # Per-extension rather than "world/*": a bare glob crosses '/' and would sweep __pycache__ into
-  # the config identity hash. These are mounted at /config/<path> in EVERY container, which is how
-  # a vanilla PX4 image is handed both its start script and an airframe file it does not ship.
+  # Per extension: a bare "world/*" would sweep __pycache__ into the config identity hash. Mounted
+  # at /config/<path> in every container, which is how the PX4 image gets its start script.
   - "world/*.yaml"
   - "world/*.xml"
   - "files/*.py"
   - "files/*.sh"
-  # Named literally: PX4 airframe files carry no extension, so no glob above matches it.
-  - "files/10020_none_x500"
+  - "files/10020_none_x500"   # airframe files carry no extension
   env:
   - PYTHONUNBUFFERED: "1"
 
 results_processing:
   postprocessing:
-  # The bag -> CSV step must come first: EnvelopeMetrics reads what it writes. PX4's belief comes
-  # from the bag; the ground truth it is compared against is the simulator's own sim_poses.csv,
-  # which every roqsim run already writes, so the estimator error needs no second topic.
+  # Ground truth comes from sim_poses.csv, which every roqsim run writes; the bag carries only
+  # what EKF2 believed.
   - rosbags_to_csv: {topics: [/fmu/out/vehicle_local_position_v1]}
   - files/metrics.py:EnvelopeMetrics
 
-# --------------------------------------------------------------------------------------------
-# Visualisation. Carried over from drone_flight_envelope and adapted to the new topics. The roqsim
-# `scene3d` panel is added automatically for a roqsim backend and is the centrepiece -- the
-# aircraft flying the course, tracked by the world's own camera. Everything below exists so that
-# the *numbers driving that picture* are on screen beside it: without them a windy run and a heavy
-# one look equally like "the drone wobbled".
-#
-# One panel is new, and it is the one that only exists because a real flight stack is in the loop:
-# the estimator-error trace. In the Crazyflie example there was nothing to compare -- the
-# controller read ground truth. Here PX4 flies on what EKF2 believes, and the gap between belief
-# and truth is a first-class observable.
-# --------------------------------------------------------------------------------------------
 visualization:
   config:
     panels:
-    # Before any run: which cell of the grid this is.
     - parameters: {title: Flight envelope, height: "40%"}
     - scene3d: {title: Flight room}
 
   results:
     run_view:
       panels:
-      # The 3D scene is the picture; everything else floats over it. Declared rather than left to
-      # the backend's automatic one so it can claim `fill` -- without it the scene takes only what
-      # the docks leave.
+      # Declared so it can claim `fill`; the automatic one takes only what the docks leave.
       - scene3d: {title: Flight room, fill: true}
 
-      # trajectory is written at the simulator's rate, so an undecimated 100 s flight runs to tens
-      # of thousands of rows against a 5000-row reply cap that truncates at the HEAD -- every panel
-      # would then show the first ten seconds and nothing after. 50 Hz keeps the tilt and speed
-      # transients and lands well under the cap.
-      #
-      # ENU, not NED: this plots the ground truth from sim_poses.csv, which is the simulator's frame.
-      # The NED numbers live in the scenario and in PX4; they are converted once, in metrics.py.
+      # trajectory is at the simulator rate against a 5000-row reply cap that truncates at the
+      # head; undecimated, every panel showed the first ten seconds only. ENU (from sim_poses.csv).
       - scene:
           title: Ground track
           position: {anchor: top-left, width: 360, height: 360}
@@ -254,8 +131,7 @@ visualization:
           y: y
           trail: true
 
-      # `fields` are objects, not bare column names: the panel reads `column` off each entry, so a
-      # plain string renders as a dash -- a row with no name and no value.
+      # `fields` entries must be objects; a bare column name renders as a dash.
       - state:
           title: Flight state
           position: {anchor: top-right, width: 320, height: 220}
@@ -279,10 +155,6 @@ visualization:
           - {column: tilt_deg, label: "tilt [deg]"}
           - {column: speed, label: "speed [m/s]"}
 
-      # New in this example. Ground-truth altitude against what EKF2 believed the altitude was,
-      # on one axis. A run where the two diverge is a run whose tracking error is an ESTIMATION
-      # problem, not a control or thrust one -- and telling those apart is exactly what a campaign
-      # against a real flight stack can do and a campaign against our own PD loop cannot.
       - timeseries:
           title: Truth vs PX4 estimate (altitude)
           position: {anchor: bottom-left, width: 400, height: 240}
@@ -292,9 +164,8 @@ visualization:
           - {column: z, label: "truth [m]"}
           - {column: est_z, label: "EKF2 [m]"}
 
-      # Every container's output merged with /rosout on the playback clock -- and with three
-      # containers this is where PX4's own startup and arming refusals appear, which is usually the
-      # first place to look when a cell flew nothing.
+      # The explicit width is what keeps `bottom-center` floating above the playback bar. PX4's
+      # own arming refusals appear here.
       - log:
           title: Run log
           position: {anchor: bottom-center, width: "calc(100% - 900px)", height: 200}
@@ -304,8 +175,6 @@ visualization:
       timeline: {table: trajectory, time_column: t}
 
     data_browser:
-      # The only built-in cross-run visual, and the one that shows the envelope as a surface rather
-      # than as twelve separate flights. `runs` carries every scenario parameter as `param_*`.
       plots:
       - title: Altitude held vs payload and wind
         query: >
@@ -324,9 +193,6 @@ visualization:
             y: {field: max_tilt, type: quantitative, title: "max tilt [deg]"}
             color: {field: outcome, type: nominal}
             shape: {field: outcome, type: nominal}
-      # The estimator, made visible across the grid. If this rises with payload the flight stack is
-      # not merely running out of thrust -- its state estimate is degrading with the vibration and
-      # attitude excursions that running out of thrust produces.
       - title: Estimator error vs thrust margin
         query: >
           SELECT r.config_name AS config,
