@@ -72,6 +72,15 @@ nav_search/search/nav_extract.py
 nav_search/search/nav_metrics.py
 nav_search/variations/doorway.py
 nav_search/world/empty_room.yaml
+px4_offboard_envelope/README.md
+px4_offboard_envelope/files/10020_none_x500
+px4_offboard_envelope/files/metrics.py
+px4_offboard_envelope/files/offboard_stream.py
+px4_offboard_envelope/files/px4_start.sh
+px4_offboard_envelope/px4_envelope.vast
+px4_offboard_envelope/scenario.osc
+px4_offboard_envelope/world/flight_room.xml
+px4_offboard_envelope/world/px4_envelope.yaml
 quadrotor_landing/README.md
 quadrotor_landing/analysis/analysis_batch.ipynb
 quadrotor_landing/analysis/analysis_campaign.ipynb
