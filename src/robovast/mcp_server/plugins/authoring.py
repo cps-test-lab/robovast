@@ -227,7 +227,7 @@ def validate_project(address: str, check_world: bool = True,
     Covers YAML, schema, the scenario file and its parameter references, and every plugin
     reference (variation types and their parameters, postprocessing commands, the search
     strategy) — entry points and local ``./path.py:Class`` refs alike — each tagged with its
-    config block and field, so the file is fixed in as few iterations as it can be.
+    config block and field.
 
     ``valid: true`` means every check this reports on ran **and** passed. A check that could
     not run makes it ``false`` and arrives as a problem with ``severity: "unchecked"``, so
@@ -237,8 +237,8 @@ def validate_project(address: str, check_world: bool = True,
     will build; if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
-    **Two checks run a container**, each catching a failure that is otherwise per-trial —
-    met after the pull, once per run. Both held: a repeat is ~1.5–2.5 s, a cold one ~2–3 s
+    **Two checks run a container**, each catching a failure otherwise met per trial, after
+    the pull. Both held: a repeat is ~1.5–2.5 s, a cold one ~2–3 s
     local / 7–15 s cluster.
 
     - ``check_world``: does the world load and its model compile? ``world`` problems carry

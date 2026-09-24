@@ -102,6 +102,15 @@ def _py_wall_ts(stamp: str) -> "float | None":
 #: A launch-style ``[node-3] `` tag — the other way a line names its producer.
 _LAUNCH_TAG_RE = re.compile(r"^\[(?P<node>[\w.-]+?)-\d+\]\s+")
 
+#: A campaign log row as ``vast campaign log`` renders it:
+#: ``[RUN] 2026-01-01 12:00:00 INFO robovast.execution.controller: message``. The level
+#: and the logger are the row's own; the date is the writer's local time and is not a
+#: wall stamp, so it names no ``wall_ts``. A ``NOTE`` row carries no level and is left to
+#: the keyword scan, as the unstamped line it is.
+_CAMPAIGN_ROW_RE = re.compile(
+    rf"^\[[A-Z][A-Z ]*\]\s+(?:\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}\s+)?"
+    rf"(?P<level>{_LEVELS})\s+(?P<node>\S+):\s?")
+
 #: An ANSI colour escape at the very start of a line. Producers do this: gz writes
 #: ``ESC[1;33mWarning [Utils.cc:132]ESC[0m``. The ESC byte is written as an escape rather
 #: than a literal so it stays visible to the next reader of this file.
@@ -159,6 +168,10 @@ def peel_prefixes(line: str) -> LogLine:
     rest = collapse_relay(line).lstrip()
     node = level = ""
     wall_ts = None
+    m = _CAMPAIGN_ROW_RE.match(rest)
+    if m:
+        node, level = m.group("node"), m.group("level")
+        rest = rest[m.end():]
     while True:
         m = _SGR_RE.match(rest)
         if m and _MARKER_RE.match(rest, m.end()):

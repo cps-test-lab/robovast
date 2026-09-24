@@ -171,8 +171,8 @@ def get_service_info() -> dict:
     at startup**, so after an edit a reachable service may still be running the old code.
     Compare ``code_revision`` with your tree (``git rev-parse --short HEAD``) and restart
     it if they differ. **Absent, the check is unavailable** — probe for the behaviour you
-    expect instead. ``package_version`` is no substitute: it is the release, unchanged
-    across every edit, so reading it as a revision defeats what this check exists for.
+    expect instead. ``package_version`` is the release, unchanged across edits, and no
+    substitute.
 
     **Check ``can_build_images`` before authoring a container that adds packages**, or the
     refusal arrives at ``start_campaign``, after the push and the workspace;

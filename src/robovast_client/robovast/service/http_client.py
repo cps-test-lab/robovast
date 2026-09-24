@@ -25,6 +25,7 @@ no service to reach without one.
 ``robovast.service.client`` re-exports both so existing imports keep working.
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -32,7 +33,8 @@ from robovast.client import file_address
 from robovast.client.app_version import running_version
 from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
-from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
+from robovast.service.interface import (ActionResult, BuildImageRequest,
+                                        CampaignLogChunk, CampaignLogRow, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DeleteCampaignsRequest,
                                         DeleteCampaignsResponse, EditFileRequest,
@@ -45,7 +47,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, UnsupportedOperation,
+                                        ServiceCache, ServiceError, TAP_MAX_S,
+                                        UnsupportedOperation,
                                         UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
@@ -304,9 +307,39 @@ class HTTPTransport(RobovastInterface):
         return SearchHistory.model_validate(
             self._get(Routes.campaign_search_history(campaign_id)))
 
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        return LogChunk.model_validate(
-            self._get(Routes.campaign_logs(campaign_id), offset=offset))
+    def get_campaign_logs(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None) -> CampaignLogChunk:
+        return CampaignLogChunk.model_validate(
+            self._get(Routes.campaign_logs(campaign_id), cursor=cursor, phase=phase,
+                      min_level=min_level, grep=grep))
+
+    def iter_campaign_log(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None):
+        """Follow the campaign log's SSE stream, as :class:`CampaignLogChunk` per frame.
+
+        The same read as :meth:`get_campaign_logs`, pushed as the phase files change: each
+        ``message`` frame is a chunk of rows whose ``cursor`` is the frame's id where it
+        carries one (the last frame of a read) and the last one seen otherwise; the
+        ``eof`` event is the final, empty chunk. A ``streamerror`` is raised as a
+        :class:`ServiceError` carrying the service's sentence. *cursor* resumes through
+        ``Last-Event-ID``. A streamed chunk's ``phases`` is empty: the stream carries rows.
+        """
+        params = {k: v for k, v in (("phase", phase), ("min_level", min_level),
+                                    ("grep", grep)) if v}
+        route = Routes.campaign_logs_stream(campaign_id)
+        for event, data, event_id in self._sse(route, last_event_id=cursor, **params):
+            if event == "message":
+                cursor = event_id or cursor
+                yield CampaignLogChunk(
+                    rows=[CampaignLogRow.model_validate(r) for r in json.loads(data)],
+                    cursor=cursor)
+            elif event == "eof":
+                yield CampaignLogChunk(cursor=cursor, eof=True)
+                return
+            elif event == "streamerror":
+                raise ServiceError(400, str(json.loads(data)), f"{self.base_url}{route}")
 
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
         return ListJobsResponse.model_validate(
@@ -328,6 +361,69 @@ class HTTPTransport(RobovastInterface):
         return ExecResult.model_validate(
             self._post(Routes.job_exec(campaign_id), job_name=job_name, command=command,
                        container=container, source=source))
+
+    def tap_job(self, campaign_id: str, job_name: str, selection=None, *,
+                max_seconds: int = TAP_MAX_S, source: str = "api"):
+        """The tap's SSE stream, read as the interface's iterator: one :class:`TapRow` per
+        ``line`` event, the ``eof`` event's :class:`TapEnd` last, and a ``streamerror`` raised
+        as a :class:`ServiceError` carrying the service's sentence. Closing the generator
+        closes the response, which is how the service learns the reader has gone.
+        """
+        del source  # the service records the surface from the route; nothing to pass
+        from robovast.service.interface import TapEnd, TapRow
+        params = {"job_name": job_name, "max_seconds": int(max_seconds),
+                  "selection": ",".join(str(name) for name in (selection or []))}
+        for event, data, _id in self._sse(Routes.job_tap(campaign_id), **params):
+            if event == "line":
+                yield TapRow.model_validate_json(data)
+            elif event == "eof":
+                yield TapEnd.model_validate_json(data or "{}")
+                return
+            elif event == "streamerror":
+                # A refusal on an open stream carries no status of its own; the sentence is
+                # what a caller acts on, and 409 is the pull form's answer to a live job that
+                # cannot be entered as asked.
+                raise ServiceError(409, str(json.loads(data)),
+                                   f"{self.base_url}{Routes.job_tap(campaign_id)}")
+
+    def _sse(self, route: str, *, last_event_id: str = "", **params):
+        """``(event, data, id)`` per server-sent event on *route*, ``"message"`` for an
+        unnamed one and ``""`` for a frame that carries no id.
+
+        One reader for every SSE route a client follows, so the framing -- ``event:``,
+        ``data:`` and ``id:`` lines, a blank line ending the event, comments ignored -- is
+        parsed in one place. Heartbeats are events like any other and reach the caller, which
+        is what lets it tell a quiet stream from a dead one; the read timeout is the data
+        plane's, since a stream may legitimately carry nothing for a while. *last_event_id*
+        is sent as ``Last-Event-ID``, which is how a resumable stream continues.
+        """
+        headers = {"Accept": "text/event-stream"}
+        if last_event_id:
+            headers["Last-Event-ID"] = last_event_id
+        resp = self.session.get(f"{self.base_url}{route}", params=params or None,
+                                timeout=self.DATA_TIMEOUT, stream=True, headers=headers)
+        self.raise_for_status(resp)
+        event, data, event_id = "message", [], ""
+        try:
+            for raw in resp.iter_lines(decode_unicode=True):
+                line = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+                if not line:
+                    if data:
+                        yield event, "\n".join(data), event_id
+                    event, data, event_id = "message", [], ""
+                    continue
+                if line.startswith(":"):
+                    continue
+                field, _, value = line.partition(":")
+                value = value[1:] if value.startswith(" ") else value
+                if field == "event":
+                    event = value
+                elif field == "data":
+                    data.append(value)
+                elif field == "id":
+                    event_id = value
+        finally:
+            resp.close()
 
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))

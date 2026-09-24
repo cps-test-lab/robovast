@@ -78,6 +78,8 @@ The structure inside is domain-specific, but typically includes:
    │   └── analysis_campaign.ipynb
    └── <run-files defined within vast-config> # e.g. launch files, models, scripts, parameters
 
+.. _results-execution-dir:
+
 ``_execution/`` — Execution Metadata
 """""""""""""""""""""""""""""""""""""
 
@@ -97,11 +99,21 @@ The structure inside is domain-specific, but typically includes:
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
    └── import.json                           # per-stage import report (only on an imported campaign)
 
-Each pre-/post-run **phase** writes its own log file here; the service concatenates
-them in phase order into the single live campaign log the web UI streams. The
-``plugin install`` phase (present only when the ``.vast`` declares ``plugins:``) runs
-first and captures the ``pip install`` output live, exactly like ``building``,
-``variation`` and ``postprocessing``.
+Each pre-/post-run **phase** writes its own log file here, and the files are the record. The
+service reads them in phase order as one campaign log of **rows** -- ``vast campaign log``, the
+``get_campaign_log`` MCP tool and the web UI's Log tab all read the same rows, live while the
+campaign runs and complete afterwards. A row is one record: a stamped line
+(``<date> <level> <logger>: <message>`` as the campaign's log handler writes it, or the
+``[<level>] [<t>] [<node>]:`` line a run's containers relay into ``controller.log`` locally)
+with the unstamped lines under it -- a traceback -- joined into its message; an unstamped line
+with no record above it, which is what build and ``pip`` output are, is its own row at level
+``NOTE``. Every row names its phase (``IMPORT``, ``BUILD``, ``PLUGIN INSTALL``, ``VARIATION``,
+``RUN``, ``POSTPROCESSING``, ``SHARE``, ``TABLES``), its stamp, level and logger, and a reader
+narrows what it is shown by phase, by a minimum level and by a regex over the message and the
+logger -- the service applies the filters as it reads, and a reader continues from where it
+was with an opaque cursor whether or not it filtered. The ``plugin install`` phase (present
+only when the ``.vast`` declares ``plugins:``) captures the ``pip install`` output live,
+exactly like ``building``, ``variation`` and ``postprocessing``.
 
 **Postprocessing, the upload to the share and a table build can each run again**, any number of
 times and in any order, so each has its own section: the campaign log's ``POSTPROCESSING``,

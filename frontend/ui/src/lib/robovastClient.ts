@@ -216,9 +216,36 @@ export function readUploadProgress(status: Status | undefined): UploadProgress |
 export type SearchHistory = Schemas['SearchHistory']
 export type BatchObjective = Schemas['BatchObjective']
 
-// An incremental slice of a campaign's controller.log. Poll from `next_offset`
+// An incremental slice of a byte-addressed log (the service's own). Poll from `next_offset`
 // and append `text`; stop once `eof` is set (mirrors service/interface.py:LogChunk).
 export type LogChunk = Schemas['LogChunk']
+
+// A campaign's infrastructure log as rows read from its phase files. Pass `cursor` back to
+// continue after these rows; stop once `eof` is set (mirrors service/interface.py:CampaignLogChunk).
+export type CampaignLogRow = Schemas['CampaignLogRow']
+export type CampaignLogChunk = Schemas['CampaignLogChunk']
+
+/** What a campaign log read is narrowed to; the service applies it as it reads. */
+export interface CampaignLogQuery {
+  /** One phase's name (`run`, `build`, …); absent for every phase. */
+  phase?: string
+  /** `DEBUG` … `CRITICAL`: rows at least this severe. */
+  minLevel?: string
+  /** A case-insensitive regex over the message and the logger. */
+  grep?: string
+}
+
+/** The query string of a campaign log read, `cursor` included when one is given. Empty
+ *  values are left out, so an unfiltered read has no query at all. */
+export function campaignLogQuery(cursor = '', q: CampaignLogQuery = {}): string {
+  const params = new URLSearchParams()
+  if (cursor) params.set('cursor', cursor)
+  if (q.phase) params.set('phase', q.phase)
+  if (q.minLevel) params.set('min_level', q.minLevel)
+  if (q.grep) params.set('grep', q.grep)
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
 
 // A job's log as rows parsed from the log files its containers wrote. Pass `cursor` back to
 // continue after these rows; stop once `eof` is set (mirrors service/interface.py:JobLogChunk).
@@ -554,10 +581,10 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/search/history`,
     ),
 
-  getCampaignLogs: (campaignId: string, offset = 0) =>
-    request<LogChunk>(
+  getCampaignLogs: (campaignId: string, cursor = '', q: CampaignLogQuery = {}) =>
+    request<CampaignLogChunk>(
       'GET',
-      `/campaigns/${encodeURIComponent(campaignId)}/logs?offset=${offset}`,
+      `/campaigns/${encodeURIComponent(campaignId)}/logs${campaignLogQuery(cursor, q)}`,
     ),
 
   createCampaign: (req: Partial<CreateCampaignRequest> & { workspace_id: string }) =>
@@ -583,12 +610,13 @@ export const robovast = {
       )}&cursor=${encodeURIComponent(cursor)}`,
     ),
 
-  // SSE stream URLs for live logs. `new EventSource(url)` streams deltas, auto-reconnects,
-  // and resumes from the last event id via Last-Event-ID: a byte offset for the campaign log
-  // (see LogPanel), a row cursor for a job log (see useJobLogStream). The pull methods above
-  // stay for MCP/CLI parity; the browser prefers these.
-  campaignLogStreamUrl: (campaignId: string) =>
-    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream`,
+  // SSE stream URLs for live logs. `new EventSource(url)` streams frames, auto-reconnects,
+  // and resumes from the last event id via Last-Event-ID: a row cursor for the campaign log
+  // (see useCampaignLogStream) and for a job log (see useJobLogStream), a byte offset for the
+  // service log (see LogPanel). The pull methods above stay for MCP parity; the browser
+  // prefers these. The campaign stream takes the same filters as its pull.
+  campaignLogStreamUrl: (campaignId: string, q: CampaignLogQuery = {}) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream${campaignLogQuery('', q)}`,
 
   // SSE stream of the campaign list itself: the server pushes the full list on
   // connect and on every change (a server-side loop over listCampaigns), in the order
@@ -608,6 +636,14 @@ export const robovast = {
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-log/stream?job_name=${encodeURIComponent(
       jobName,
     )}`,
+
+  // A tap on a running job: `line` events carry `{t_wall, line}` as the job's simulator prints
+  // them, `eof` carries `{exit_code, timed_out}`. Not resumable -- a relay of the moment, not a
+  // record -- and recorded against the run as a probe, so it is opened only on a reader's word.
+  jobTapStreamUrl: (campaignId: string, jobName: string, selection: string[], maxSeconds: number) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-tap?job_name=${encodeURIComponent(
+      jobName,
+    )}&selection=${encodeURIComponent(selection.join(','))}&max_seconds=${maxSeconds}`,
 
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),

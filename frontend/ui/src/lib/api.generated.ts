@@ -542,7 +542,7 @@ export interface paths {
         /**
          * Stream Job Log
          * @description Server-sent events: one job's log rows as they are written (``Last-Event-ID``
-         *     resumes). A finished job is served too; see ``_sse_job_log_stream``.
+         *     resumes). A finished job is served too; see ``_sse_rows_stream``.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -587,6 +587,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/job-tap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tap Job
+         * @description Server-sent events: a tap on a **running** job, relaying what its simulator
+         *     publishes now for at most ``max_seconds`` (capped at the service's bound). ``line``
+         *     events carry the lines, ``eof`` the exit code; ``selection`` is comma-separated and
+         *     means topics in the ROS shape, empty for the topic list. Recorded as a probe of the
+         *     run; see ``_sse_tap_stream``.
+         */
+        get: operations["tap_job_campaigns__campaign_id__job_tap_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/jobs": {
         parameters: {
             query?: never;
@@ -611,7 +635,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Campaign Logs */
+        /**
+         * Get Campaign Logs
+         * @description A campaign's infrastructure log rows after *cursor*, running or finished.
+         */
         get: operations["get_campaign_logs_campaigns__campaign_id__logs_get"];
         put?: never;
         post?: never;
@@ -630,8 +657,9 @@ export interface paths {
         };
         /**
          * Stream Campaign Logs
-         * @description Server-sent events: a campaign's controller log, tailed live. Resumable —
-         *     send ``Last-Event-ID`` to continue from the last line received.
+         * @description Server-sent events: a campaign's infrastructure log rows as they are written
+         *     (``Last-Event-ID`` resumes; the same filters as the pull). A finished campaign is
+         *     served too; see ``_sse_rows_stream``.
          */
         get: operations["stream_campaign_logs_campaigns__campaign_id__logs_stream_get"];
         put?: never;
@@ -2226,6 +2254,70 @@ export interface components {
             outcome: "deleted" | "not_found" | "partial" | "running" | "invalid";
         };
         /**
+         * CampaignLogChunk
+         * @description The rows of a campaign's infrastructure log that arrived after *cursor*.
+         *
+         *     Read from the phase files under the campaign's ``_execution/`` (the archived runs of a
+         *     repeatable phase under ``sections/`` included), which grow while the campaign runs,
+         *     so a running campaign and a finished one answer alike. The filters a
+         *     read was given are applied while reading, so ``rows`` is what they kept and the
+         *     cursor still advances over what they skipped.
+         */
+        CampaignLogChunk: {
+            /**
+             * Cursor
+             * @default
+             */
+            cursor: string;
+            /**
+             * Eof
+             * @default false
+             */
+            eof: boolean;
+            /** Phases */
+            phases: string[];
+            /** Rows */
+            rows: components["schemas"]["CampaignLogRow"][];
+        };
+        /**
+         * CampaignLogRow
+         * @description One record of a campaign's infrastructure log.
+         *
+         *     A stamped line of a phase file (``<date> <level> <logger>: <message>``, or the
+         *     ``[<level>] [<t>] [<node>]:`` form a run's containers relay into ``controller.log``)
+         *     with the unstamped lines under it joined into ``message``; an unstamped line with no
+         *     record above it is its own row at level ``NOTE`` -- build and pip output, mostly.
+         */
+        CampaignLogRow: {
+            /**
+             * Level
+             * @default NOTE
+             */
+            level: string;
+            /**
+             * Logger
+             * @default
+             */
+            logger: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Phase
+             * @default
+             */
+            phase: string;
+            /**
+             * Seq
+             * @default 0
+             */
+            seq: number;
+            /** Wall Ts */
+            wall_ts: number | null;
+        };
+        /**
          * CampaignOrigin
          * @description Where a campaign's configuration came from. **A record, never a link.**
          *
@@ -3435,12 +3527,10 @@ export interface components {
         };
         /**
          * LogChunk
-         * @description An incremental slice of a campaign's ``controller.log``.
+         * @description An incremental slice of a byte-addressed log: the service's own, an image build's.
          *
-         *     The controller runs in the driving process, so its log is a local file there
-         *     (the service). Clients poll from a byte
-         *     *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
-         *     the campaign has reached a terminal phase and no more will be written.
+         *     Clients poll from a byte *offset* and append — ``next_offset`` is where to resume;
+         *     ``eof`` is True once nothing more will be written.
          */
         LogChunk: {
             /**
@@ -5972,6 +6062,41 @@ export interface operations {
             };
         };
     };
+    tap_job_campaigns__campaign_id__job_tap_get: {
+        parameters: {
+            query: {
+                job_name: string;
+                selection?: string;
+                max_seconds?: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_jobs_campaigns__campaign_id__jobs_get: {
         parameters: {
             query?: never;
@@ -6006,7 +6131,10 @@ export interface operations {
     get_campaign_logs_campaigns__campaign_id__logs_get: {
         parameters: {
             query?: {
-                offset?: number;
+                cursor?: string;
+                phase?: string;
+                min_level?: string;
+                grep?: string;
             };
             header?: never;
             path: {
@@ -6022,7 +6150,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LogChunk"];
+                    "application/json": components["schemas"]["CampaignLogChunk"];
                 };
             };
             /** @description Validation Error */
@@ -6038,7 +6166,12 @@ export interface operations {
     };
     stream_campaign_logs_campaigns__campaign_id__logs_stream_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: string;
+                phase?: string;
+                min_level?: string;
+                grep?: string;
+            };
             header?: never;
             path: {
                 campaign_id: string;

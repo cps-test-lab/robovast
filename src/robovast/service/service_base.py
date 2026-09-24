@@ -75,7 +75,8 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         FileListing, FileMeta, FileText,
                                         ImportCampaignRequest, JobKind,
                                         ListCampaignsRequest, ListCampaignsResponse,
-                                        JobLogChunk, ListWorkspacesResponse, LogChunk,
+                                        CampaignLogChunk, JobLogChunk,
+                                        ListWorkspacesResponse, TAP_MAX_S,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
                                         CacheSize, KeptCacheEntry, ServiceCache,
                                         MigrationMarker, RetriggerAxis, RetriggerReport,
@@ -504,6 +505,10 @@ _HEALTH_TTL_S = 10.0
 #: command that needs longer wants ``exec_in_container``, where nothing is waiting on it.
 _PROBE_LIMIT_S = 60
 
+#: Seconds the tap's in-container bound is given past the relay's own, before ``timeout``
+#: escalates its ``INT`` to a ``KILL``: a ``ros2`` process shuts down cleanly on the first.
+_TAP_KILL_GRACE_S = 5
+
 #: How long an uploaded-but-never-imported archive is kept before it is swept. Long enough that
 #: it cannot collide with an upload still in flight or a user deciding whether to force a
 #: replace, short enough that abandoned multi-gigabyte archives do not accumulate.
@@ -616,6 +621,10 @@ class ServiceBase(RobovastInterface):
         # so a wedged container cannot hold a status read even for the exec's own timeout.
         self._health: dict[str, dict] = {}
         self._health_guard = threading.Lock()
+        # The jobs with a tap open right now, one relay per job: a second reader shares the
+        # first's stream or waits, since two following commands in one container is two probes.
+        self._taps: set = set()
+        self._taps_guard = threading.Lock()
         # campaign_id -> recorded start time (see _started_at_for). Only known values
         # are held, and a recorded one never changes while the campaign exists, so the only
         # invalidation is delete_campaign's, which drops every per-campaign cache here.
@@ -3388,22 +3397,30 @@ class ServiceBase(RobovastInterface):
             pass          # a status read must not fail over an unreachable record dir
         return snap
 
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        """Serve the campaign's unified infrastructure log from the campaigns root.
+    def get_campaign_logs(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None) -> CampaignLogChunk:
+        """The campaign's infrastructure log rows after *cursor*, from its phase files.
 
-        Assembles the per-phase files (variation → run → postprocessing) under the
-        campaign's ``_execution/`` into one divider-separated stream (see
-        :func:`robovast.common.campaign_logs.assemble_log`). Local runs write those
-        files in place and they grow there, so the same read serves a live and a
-        finished campaign; ``eof`` is set once the campaign is no longer driven here.
+        The files under the campaign's ``_execution/`` grow in place while the campaign
+        runs, so a running campaign and a finished one are read alike
+        (:mod:`robovast.service.campaign_log`). ``eof`` once the campaign is over -- not
+        driven here, or driven to its end -- and nothing was held back.
         """
-        from robovast.common.campaign_logs import assemble_log_from_dir
-        campaign_dir = self._campaigns_root() / campaign_id
-        with self._lock:
-            entry = self._campaigns.get(campaign_id)
-        eof = entry is None or self._is_done(entry)
-        text, next_offset, eof = assemble_log_from_dir(campaign_dir, offset, eof)
-        return LogChunk(text=text, next_offset=next_offset, eof=eof)
+        from robovast.service import campaign_log  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        final = not self.campaign_is_live(campaign_id)
+        read = campaign_log.read_rows(campaign_dir, cursor, final=final, phase=phase,
+                                      min_level=min_level, grep=grep)
+        return CampaignLogChunk(rows=read.rows, cursor=read.cursor,
+                                eof=final and not read.pending, phases=read.phases)
+
+    def campaign_log_watch(self, campaign_id: str):
+        """A :class:`~robovast.service.campaign_log.CampaignLogWatch` over the campaign's
+        phase files, for a stream that pushes rows as they are written. The caller closes
+        it."""
+        from robovast.service import campaign_log  # pylint: disable=import-outside-toplevel
+        return campaign_log.CampaignLogWatch(self.campaign_dir(campaign_id))
 
     #: Directories under a campaign that are not per-configuration results.
     _RESERVED_DIRS = frozenset({"_config", "_execution", "_transient"})
@@ -3544,6 +3561,87 @@ class ServiceBase(RobovastInterface):
             state.unavailable.append(reason)
         state.simulator = document
         return state
+
+    def tap_job(self, campaign_id: str, job_name: str, selection: Optional[list] = None, *,
+                max_seconds: int = TAP_MAX_S, source: str = "api"):
+        """Start the backend's following command in the job's simulation container and
+        relay its lines (:class:`~robovast.service.tap.TapStream`).
+
+        Every decision is made **before** anything runs, in this order: the job is running
+        (:meth:`_require_running_job`), the campaign's simulator has a tap for this
+        selection (:func:`~robovast.common.simulators.tap_command`; ``None`` is refused naming
+        the backend, since a tap that printed nothing would otherwise be indistinguishable
+        from a simulator that cannot be tapped), no tap is open on this job, and only then
+        the probe is recorded and the exec started. A refusal therefore records nothing.
+
+        The command is bounded twice. The runner's ``stream_in`` ends the *relay* at the bound
+        or when the reader closes; the process in the container outlives both
+        (see :meth:`~robovast.service.container_exec.ExecRunner.stream_in`), so the command
+        itself runs under ``timeout``, which ends it in the container at the same bound
+        whatever became of the reader. Run through :func:`~robovast.common.execution.in_run_env`
+        as every live-job exec is, so ``ros2`` resolves.
+
+        Like :meth:`get_job_state`, what is asked is decided here; the implementation says the
+        target (:meth:`_job_state_target`) and where the probe is recorded (:meth:`_job_probe_dir`).
+        """
+        from robovast.common.campaign_data import KIND_PROBED, record_intervention
+        from robovast.common.execution import in_run_env
+        from robovast.common.simulators import backend_name, tap_command
+        from robovast.service.tap import TapStream
+
+        selection = [str(name) for name in (selection or [])]
+        limit_s = max(1, min(int(max_seconds), TAP_MAX_S))
+        self._require_running_job(campaign_id, job_name)
+        try:
+            execution = self._campaign_execution(campaign_id)
+        except Exception as err:  # noqa: BLE001 - the reason a tap cannot be chosen
+            raise ValueError(f"could not read this campaign's configuration: {err}") from err
+        target, run_dir = self._job_state_target(campaign_id, job_name, SIMULATION_CONTAINER)
+        argv = tap_command(execution, run_dir=run_dir, selection=selection)
+        if not argv:
+            backend = backend_name(execution) or f"a '{execution.get('mode')}' campaign " \
+                                                 f"without a simulator backend"
+            raise ValueError(
+                f"no tap for {backend}: this campaign's simulator names no following command, "
+                f"so there is nothing to relay from a live run")
+        with self._taps_guard:
+            if (campaign_id, job_name) in self._taps:
+                raise RuntimeError(
+                    f"a tap is already open on job {job_name!r} of {campaign_id!r}; one relay "
+                    f"per job at a time -- read that one, or wait for it to end")
+            self._taps.add((campaign_id, job_name))
+
+        def release():
+            with self._taps_guard:
+                self._taps.discard((campaign_id, job_name))
+
+        try:
+            job_dir, runs = self._job_probe_dir(campaign_id, job_name)
+            # Before the command, as exec_in_job records: a process the service started is
+            # about to run in the simulator's container, and a crash in between must not
+            # leave a perturbed run with nothing saying why.
+            record_intervention(self.campaign_dir(campaign_id), kind=KIND_PROBED,
+                                job_dir=job_dir, job_name=job_name, source=source,
+                                detail=f"tap {shlex.join(selection) or '(topic list)'} "
+                                       f"for {limit_s}s", runs=runs)
+            bounded = (f"exec timeout --signal=INT --kill-after={_TAP_KILL_GRACE_S} "
+                       f"{limit_s} {shlex.join(argv)}")
+            runner = self._exec_runner()
+        except BaseException:
+            release()
+            raise
+        return TapStream(
+            lambda on_line, should_stop: runner.stream_in(
+                target, in_run_env(bounded), limit_s=limit_s, on_line=on_line,
+                should_stop=should_stop),
+            on_close=release)
+
+    @abstractmethod
+    def _job_probe_dir(self, campaign_id: str, job_name: str) -> tuple:
+        """``(job_dir, runs)`` a probe of *job_name* is recorded against: the job's
+        campaign-relative artifact dir, and the run keys the implementation already knows it carries
+        (see :func:`~robovast.common.campaign_data.record_intervention`).
+        """
 
     @abstractmethod
     def _job_output_dir(self, campaign_id: str, job_name: str, run_dir: str) -> str:
@@ -4349,13 +4447,13 @@ class ServiceBase(RobovastInterface):
 
         A repeatable phase (postprocess, share) writes the same filename every time it
         runs. Left in place, the next run either replaces those bytes or appends to them,
-        and either way the assembled campaign log stops being append-only: a reader
-        streams it by byte offset, so a section that changes behind an offset already
-        consumed is a section nobody is ever shown -- and a shorter one makes the stream
-        shrink under a reader that is watching it. Archived under
-        ``_execution/sections/<seq>-<phase>.log`` it is finished and immutable, the new
-        run's file is the only one still growing, and
-        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last.
+        and either way the campaign log stops being append-only: a reader holds a cursor
+        into each file, so a file that changes behind the position already read is rows
+        nobody is ever shown -- and a shorter one makes the reader start it over. Archived
+        under ``_execution/sections/<seq>-<phase>.log`` it is finished and immutable, the
+        new run's file is the only one still growing,
+        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last, and the
+        reader carries its cursor entry over to the archived name.
 
         **All** of them, not only the phase about to run, so at most one live base file
         exists and "the live one is last" has exactly one answer.

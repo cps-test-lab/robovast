@@ -1102,12 +1102,16 @@ a campaign whose ``run_log`` is not built yet builds it first — hence
 Each run also reports its ``clock_map_source``; ``none`` means that run's lines have no
 ``sim_time`` at all — readable, but not on the timeline (see :ref:`clock-map`).
 
-``get_campaign_log`` takes one more, because its stream is several phases concatenated
-under ``===== PHASE =====`` dividers (build → plugin install → variation → run, then
-postprocessing, share and ``TABLES`` — a table build asked for ahead — in the order they ran,
-each as often as it ran): ``phase`` reads
-one of them — or ``"all"``. Every read reports ``phases`` as
-``[{name, lines, included}, …]``, so what a read left out is stated rather than absent.
+``get_campaign_log`` takes one more, because its log is several phases read as rows
+(import → build → plugin install → variation → run, then postprocessing, share and
+``TABLES`` — a table build asked for ahead — in the order they ran, each as often as it
+ran): ``phase`` reads one of them — or ``"all"``. Every read reports ``phases`` as
+``[{name, included, rows}, …]``, so what a read left out is stated rather than absent. On
+this tool ``phase``, ``grep`` and ``min_severity`` are applied by the service **as it
+reads** the phase files (:ref:`_execution/ <results-execution-dir>`), so a read of one
+phase never transfers the others; each row it returns is rendered the way
+``vast campaign log`` prints it, ``[PHASE] <time> <LEVEL> <logger>: <message>`` with a
+continuation indented, and ``tail``, ``summarize`` and the page window apply to those lines.
 
 ``summarize=True`` is the one to reach for on a stalled run, because **filtering
 cannot diagnose a flood — the flood is the signal.** A campaign whose TF was being
@@ -1347,8 +1351,9 @@ job's container or pod, and the argument for that has not changed: a campaign in
 provenance-recorded, reproducible compute, and attaching to it perturbs the thing it exists
 to produce.
 
-What changed is that the perturbation is now *recordable* rather than forbidden. Two tools
-reach a live job, and the difference between them is who chooses the command:
+What changed is that the perturbation is now *recordable* rather than forbidden. Three tools
+reach a live job, and the difference between them is who chooses the command and for how
+long it runs:
 
 * ``get_job_state`` runs only **fixed** commands the service chose — the simulator's own health
   read and a tail of the run's own resource samples, each in the container that runs it — and
@@ -1358,6 +1363,13 @@ reach a live job, and the difference between them is who chooses the command:
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
   campaign instead: every run the job covers is recorded as probed in the campaign's
   ``_execution/interventions.json``, which is the ``runs.probed`` column a query reads.
+* ``tap_job`` runs the simulator's own **following** command
+  (:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`) -- ``ros2 topic echo``
+  of the selected topics in the ROS shape, the topic list for none -- and collects what it
+  prints for a few seconds. The command is the service's, but a process it started runs in
+  the simulator's container for as long as the tap lasts, so it is recorded exactly as
+  ``exec_in_job`` is. A simulator whose recording is already the live view (roqsim) has no
+  tap and says so by name; read its run's tables instead.
 
 That makes this tool the right *first* move rather than the only one, because it answers the
 same question against a copy at no cost to the campaign. A fault that does not reproduce here

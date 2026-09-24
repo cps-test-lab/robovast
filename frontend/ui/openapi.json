@@ -456,6 +456,94 @@
         "title": "CampaignDeletion",
         "type": "object"
       },
+      "CampaignLogChunk": {
+        "description": "The rows of a campaign's infrastructure log that arrived after *cursor*.\n\nRead from the phase files under the campaign's ``_execution/`` (the archived runs of a\nrepeatable phase under ``sections/`` included), which grow while the campaign runs,\nso a running campaign and a finished one answer alike. The filters a\nread was given are applied while reading, so ``rows`` is what they kept and the\ncursor still advances over what they skipped.",
+        "properties": {
+          "cursor": {
+            "default": "",
+            "title": "Cursor",
+            "type": "string"
+          },
+          "eof": {
+            "default": false,
+            "title": "Eof",
+            "type": "boolean"
+          },
+          "phases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Phases",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignLogRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "eof",
+          "phases",
+          "rows"
+        ],
+        "title": "CampaignLogChunk",
+        "type": "object"
+      },
+      "CampaignLogRow": {
+        "description": "One record of a campaign's infrastructure log.\n\nA stamped line of a phase file (``<date> <level> <logger>: <message>``, or the\n``[<level>] [<t>] [<node>]:`` form a run's containers relay into ``controller.log``)\nwith the unstamped lines under it joined into ``message``; an unstamped line with no\nrecord above it is its own row at level ``NOTE`` -- build and pip output, mostly.",
+        "properties": {
+          "level": {
+            "default": "NOTE",
+            "title": "Level",
+            "type": "string"
+          },
+          "logger": {
+            "default": "",
+            "title": "Logger",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "phase": {
+            "default": "",
+            "title": "Phase",
+            "type": "string"
+          },
+          "seq": {
+            "default": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "wall_ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Ts"
+          }
+        },
+        "required": [
+          "level",
+          "logger",
+          "message",
+          "phase",
+          "seq",
+          "wall_ts"
+        ],
+        "title": "CampaignLogRow",
+        "type": "object"
+      },
       "CampaignOrigin": {
         "description": "Where a campaign's configuration came from. **A record, never a link.**\n\nCampaigns stay workspace-independent: nothing in the execution path reads this back, a\nre-run still relaunches from the frozen ``_config/`` (see\n:mod:`robovast.service.retrigger`), and the workspace named here may have been edited,\nrenamed or deleted since -- or, for an ingested campaign, may never have existed on this\ndeployment at all. It answers \"where did this come from?\", which is a fact about the past,\nand not \"where do I relaunch it from?\", which is always the campaign's own snapshot.\n\n**The workspace fields name where the configuration ORIGINATES, not what the launch read.**\nFor a re-run they are copied from the parent's own origin at launch, so a chain of re-runs\nkeeps naming the workspace at its root. Denormalised rather than resolved by walking\n``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not\nhold the parent at all; a parent is routinely deleted, and provenance that evaporates with it\nis provenance nobody can rely on; and a chain then costs no recursion.\n\n:attr:`kind` is the single authority on which shape this is. It is *currently* derivable\n(a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would\nhave to be revisited the first time an origin appears that is neither -- so switch on\n``kind`` and never on whether ``from_campaign`` is empty.\n\n**A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is\nmigrated on the way into the re-run's staging copy, so two runs of \"the same campaign\" can\nread different config versions -- which makes them different experiments, and a reader\ncomparing their results has to be able to see it. :attr:`config_version_from` is recorded\non every re-run, so \"read a current config\" is a fact rather than a silence:\n:attr:`config_migration_steps` is empty when nothing had to be carried forward, and\n:attr:`config_version_from` is ``None`` only when nothing was recorded at all.",
         "properties": {
@@ -2304,7 +2392,7 @@
         "type": "object"
       },
       "LogChunk": {
-        "description": "An incremental slice of a campaign's ``controller.log``.\n\nThe controller runs in the driving process, so its log is a local file there\n(the service). Clients poll from a byte\n*offset* and append \u2014 ``next_offset`` is where to resume; ``eof`` is True once\nthe campaign has reached a terminal phase and no more will be written.",
+        "description": "An incremental slice of a byte-addressed log: the service's own, an image build's.\n\nClients poll from a byte *offset* and append \u2014 ``next_offset`` is where to resume;\n``eof`` is True once nothing more will be written.",
         "properties": {
           "eof": {
             "default": false,
@@ -6290,7 +6378,7 @@
     },
     "/campaigns/{campaign_id}/job-log/stream": {
       "get": {
-        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). A finished job is served too; see ``_sse_job_log_stream``.",
+        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). A finished job is served too; see ``_sse_rows_stream``.",
         "operationId": "stream_job_log_campaigns__campaign_id__job_log_stream_get",
         "parameters": [
           {
@@ -6466,6 +6554,76 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/job-tap": {
+      "get": {
+        "description": "Server-sent events: a tap on a **running** job, relaying what its simulator\npublishes now for at most ``max_seconds`` (capped at the service's bound). ``line``\nevents carry the lines, ``eof`` the exit code; ``selection`` is comma-separated and\nmeans topics in the ROS shape, empty for the topic list. Recorded as a probe of the\nrun; see ``_sse_tap_stream``.",
+        "operationId": "tap_job_campaigns__campaign_id__job_tap_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job_name",
+            "required": true,
+            "schema": {
+              "title": "Job Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "selection",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Selection",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_seconds",
+            "required": false,
+            "schema": {
+              "default": 120,
+              "title": "Max Seconds",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tap Job",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/jobs": {
       "get": {
         "operationId": "list_jobs_campaigns__campaign_id__jobs_get",
@@ -6510,6 +6668,7 @@
     },
     "/campaigns/{campaign_id}/logs": {
       "get": {
+        "description": "A campaign's infrastructure log rows after *cursor*, running or finished.",
         "operationId": "get_campaign_logs_campaigns__campaign_id__logs_get",
         "parameters": [
           {
@@ -6523,12 +6682,42 @@
           },
           {
             "in": "query",
-            "name": "offset",
+            "name": "cursor",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Offset",
-              "type": "integer"
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phase",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Phase",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_level",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Min Level",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grep",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Grep",
+              "type": "string"
             }
           }
         ],
@@ -6537,7 +6726,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LogChunk"
+                  "$ref": "#/components/schemas/CampaignLogChunk"
                 }
               }
             },
@@ -6562,7 +6751,7 @@
     },
     "/campaigns/{campaign_id}/logs/stream": {
       "get": {
-        "description": "Server-sent events: a campaign's controller log, tailed live. Resumable \u2014\nsend ``Last-Event-ID`` to continue from the last line received.",
+        "description": "Server-sent events: a campaign's infrastructure log rows as they are written\n(``Last-Event-ID`` resumes; the same filters as the pull). A finished campaign is\nserved too; see ``_sse_rows_stream``.",
         "operationId": "stream_campaign_logs_campaigns__campaign_id__logs_stream_get",
         "parameters": [
           {
@@ -6571,6 +6760,46 @@
             "required": true,
             "schema": {
               "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phase",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Phase",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_level",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Min Level",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grep",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Grep",
               "type": "string"
             }
           }

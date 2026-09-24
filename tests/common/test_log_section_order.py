@@ -1,23 +1,20 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The assembled campaign log may only ever grow at its end.
+"""The campaign log may only ever grow at its end.
 
-A reader streams it by byte offset, so bytes inserted ahead of a section it has already
-consumed are bytes it can never be shown. A fixed phase order breaks that as soon as a
-phase runs twice: postprocessing sits before share in such a list, so a postprocess
-retriggered on a campaign that had already been shared inserted its whole section in the
-middle of the stream. It was recorded correctly and published live, and the view stayed
-frozen on the last line of the share that preceded it.
+A reader holds a cursor into each phase file and continues from it, so rows inserted ahead of a
+file it has already read are rows it can never be shown. A fixed phase order breaks that as
+soon as a phase runs twice: postprocessing sits before share in such a list, so a postprocess
+retriggered on a campaign that had already been shared would land in the middle of the log.
 
 The order therefore cannot be a list of phases. It is the order the work happened in: the
 head phases (which run once), then each finished run of a repeatable phase by the sequence
 it was given, then the one still running -- always last, because it is the only one whose
-bytes are still arriving.
+rows are still arriving.
 """
 
-from robovast.common.campaign_logs import (assemble_log, disk_section_names,
-                                           next_section_seq, ordered_sections,
-                                           section_name)
+from robovast.common.campaign_logs import (disk_section_names, next_section_seq,
+                                           ordered_sections, section_name)
 
 
 def test_a_repeated_phase_lands_after_the_one_that_followed_it_the_first_time():
@@ -32,38 +29,29 @@ def test_a_repeated_phase_lands_after_the_one_that_followed_it_the_first_time():
 
     assert [banner for banner, _name in order] == [
         "BUILD", "VARIATION", "RUN", "POSTPROCESSING", "SHARE", "POSTPROCESSING"]
-    # And the live one is last, which is what makes the stream append-only.
+    # And the live one is last, which is what makes the log append-only.
     assert order[-1] == ("POSTPROCESSING", "postprocessing.log")
 
 
-def test_the_stream_grows_only_at_its_end_across_a_rerun():
-    """The property, checked as bytes: what a reader consumed before a rerun must still be
-    a prefix of what it reads after one. This is the assertion the old order fails."""
-    files = {"build.log": b"built\n", "controller.log": b"ran\n",
-             section_name(1, "postprocessing.log"): b"first postprocess\n",
-             section_name(2, "share.log"): b"shared\n"}
-    before, offset, _ = assemble_log(files.get, 0,
-                                     sections=ordered_sections(list(files)))
-
-    # A postprocess is retriggered and starts writing.
-    files["postprocessing.log"] = b"staging...\n"
-    after, _, _ = assemble_log(files.get, 0, sections=ordered_sections(list(files)))
-
-    assert after.startswith(before), "the stream must remain an extension of itself"
-    # And polling from where the reader stopped yields exactly the new lines.
-    tail, _, _ = assemble_log(files.get, offset,
-                              sections=ordered_sections(list(files)))
-    assert "staging..." in tail
+def test_a_rerun_lands_after_everything_already_ordered():
+    """What a reader had before a rerun is a prefix of what it has after one."""
+    names = ["build.log", "controller.log", section_name(1, "postprocessing.log"),
+             section_name(2, "share.log")]
+    before = ordered_sections(names)
+    after = ordered_sections(names + ["postprocessing.log"])
+    assert after[:len(before)] == before
+    assert after[-1] == ("POSTPROCESSING", "postprocessing.log")
 
 
 def test_a_campaign_recorded_before_archiving_reads_as_it_always_did():
     """No archived sections: the head, then the repeatable phases in their fixed order.
     Every campaign already on disk is this shape and must keep working."""
-    order = ordered_sections(["build.log", "plugin_install.log", "variation.log",
-                              "controller.log", "postprocessing.log", "share.log"])
+    order = ordered_sections(["import.log", "build.log", "plugin_install.log",
+                              "variation.log", "controller.log", "postprocessing.log",
+                              "share.log"])
 
     assert [banner for banner, _name in order] == [
-        "BUILD", "PLUGIN INSTALL", "VARIATION", "RUN", "POSTPROCESSING", "SHARE"]
+        "IMPORT", "BUILD", "PLUGIN INSTALL", "VARIATION", "RUN", "POSTPROCESSING", "SHARE"]
 
 
 def test_a_phase_that_never_ran_contributes_no_section():
@@ -81,8 +69,9 @@ def test_sections_are_ordered_by_sequence_not_by_name():
 
 
 def test_an_unrecognised_file_is_ignored():
-    """This decides what a byte offset means. A stray file that shifted it would corrupt
-    every reader's position, so anything unknown is left out rather than appended."""
+    """This decides where every reader's row sequence continues. A stray file that shifted
+    it would move every reader's position, so anything unknown is left out rather than
+    appended."""
     order = ordered_sections(["build.log", "sections/0001-postprocessing.log",
                               "sections/nonsense.log", "notes.txt",
                               "sections/0002-unknown_phase.log"])
@@ -104,7 +93,7 @@ def test_the_next_sequence_follows_the_highest_used():
 def test_overlapping_listings_may_simply_be_concatenated():
     """A reader unions several listings of one campaign (two local roots, or a local root
     and the store). A name repeated there must not repeat its section: a section counted
-    twice is bytes inserted mid-stream on the next poll."""
+    twice is rows inserted mid-stream on the next read."""
     names = ["build.log", section_name(1, "postprocessing.log"), "share.log"]
     order = ordered_sections(names + names)
 

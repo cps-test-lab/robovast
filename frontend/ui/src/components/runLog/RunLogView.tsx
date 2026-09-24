@@ -25,7 +25,7 @@ import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded'
 import { lastAtOrBefore } from '@robovast/panel-kit'
 import { containerColorer } from '../containerColor'
 import { parseAnsi, stripAnsi } from './ansi'
-import { LogFilterBar } from './LogFilterBar'
+import { LogFilterBar, type FacetTitles } from './LogFilterBar'
 import {
   compileFilter,
   EMPTY_FILTER,
@@ -183,6 +183,8 @@ export interface RunLogViewProps {
   /** The rows are a live log that grows at the end: follow the newest row while the reader is at
    *  the bottom. Ignored when a `cursor` is passed, which the view follows instead. */
   tail?: boolean
+  /** What the facet columns hold, where it is not a container and a ROS node. */
+  facetTitles?: FacetTitles
 }
 
 export function RunLogView({
@@ -198,6 +200,7 @@ export function RunLogView({
   hideShutdown: hideShutdownProp,
   note,
   tail,
+  facetTitles,
 }: RunLogViewProps) {
   const [ownFilter, setOwnFilter] = useState<LogFilter>(EMPTY_FILTER)
   const filter = filterProp ?? ownFilter
@@ -513,6 +516,7 @@ export function RunLogView({
             : ''
         }
         notes={notes}
+        facetTitles={facetTitles}
       />
 
       {/* minWidth/minHeight 0 are load-bearing: without them a flex child refuses to shrink

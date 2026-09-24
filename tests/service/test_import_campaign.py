@@ -408,8 +408,8 @@ def test_an_archive_exported_from_an_object_store_imports(service, tmp_path):
     link = landed / "config-a" / "0" / "job"
     assert link.is_symlink() and (link / "controller.log").read_text() == "ran\n"
     assert (landed / "_config" / "files" / "prepare.sh").stat().st_mode & 0o111
-    log = service.get_campaign_logs(ref.campaign_id, 0).text
-    assert log.index("first postprocess") < log.index("second postprocess")
+    messages = [row.message for row in service.get_campaign_logs(ref.campaign_id).rows]
+    assert messages.index("first postprocess") < messages.index("second postprocess")
 
 
 # -- what an archive carries, and what is built from it ------------------------------------

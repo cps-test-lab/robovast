@@ -166,8 +166,10 @@ comes before the one that taints:
    same image, env and `/config` with no campaign data at stake. Most wedges are config,
    launch or param faults and reproduce here. **If it does not reproduce, that is itself the
    finding** — the fault is environmental, timing-dependent or draw-specific.
-4. Only then `exec_in_job(campaign_id, job_name, command)`, which enters the live run and is
-   **recorded against it**: every run that job covers is marked `probed`. Confirming a
+4. Only then the live run itself: `tap_job(campaign_id, job_name, selection)` for a few
+   seconds of what its simulator publishes now (an empty selection lists the topics), and
+   `exec_in_job(campaign_id, job_name, command)` for a command of your own. Both enter the
+   live run and are **recorded against it**: every run that job covers is marked `probed`. Confirming a
    hypothesis there is the point; making a wedged run go green is not — the fix belongs in
    the `.vast` and the number belongs to a clean relaunch.
 

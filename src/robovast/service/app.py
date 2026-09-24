@@ -62,7 +62,9 @@ from robovast.service.interface import (ActionResult, BuildCampaignTablesRequest
                                         CampaignSortKey, SortOrder,
                                         ShareWorkspaceArchive,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
-                                        JobLogChunk, ListWorkspacesResponse, LogChunk,
+                                        CampaignLogChunk, JobLogChunk,
+                                        ListWorkspacesResponse, LogChunk,
+                                        TapEnd, TAP_MAX_S,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
                                         PanelsSource, ServiceCache,
                                         UpgradeInfo, UsageHistory, UsageSample,
@@ -643,10 +645,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return PlainTextResponse("Internal Server Error", status_code=500)
 
     # -- SSE log streaming --------------------------------------------------
-    # The browser streams logs over Server-Sent Events; MCP/CLI keep the pull
-    # endpoints (``.../logs``, ``.../job-log``). Both share the one assembly seam:
-    # an SSE stream is just a server-side loop over the same ``LogChunk`` pull, so
-    # there is no second implementation of assembly/offset to drift.
+    # The browser and a following CLI stream logs over Server-Sent Events; MCP keeps the
+    # pull endpoints (``.../logs``, ``.../job-log``). Each stream is a server-side loop
+    # over the same pull its endpoint serves -- a byte-offset ``LogChunk`` for the
+    # service log, rows after a cursor for a campaign's and a job's -- so there is no
+    # second implementation of a read to drift.
     import json as _json  # pylint: disable=import-outside-toplevel
 
     from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
@@ -681,17 +684,17 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #: let the client reconnect when we stop.
     _sse_heartbeat = "event: heartbeat\ndata: {}\n\n"
 
-    #: Most characters one stream frame carries. A log panel is a *tail*: a fixed-height
-    #: pane whose reader wants the end. A campaign's assembled infrastructure log reaches
-    #: tens of megabytes, and sending all of it costs the transfer, a JSON parse and a DOM
-    #: node per line before the first character is visible — for output nobody scrolls back
-    #: to. So an over-long frame is served from its end, with a note in place of the head.
+    #: Most characters one byte-offset stream frame carries. A log panel is a *tail*: a
+    #: fixed-height pane whose reader wants the end, and sending a whole ring costs the
+    #: transfer, a JSON parse and a DOM node per line before the first character is
+    #: visible — for output nobody scrolls back to. So an over-long frame is served from
+    #: its end, with a note in place of the head.
     #:
     #: Dropping the head is free of the offset protocol: ``next_offset`` is where the *log*
     #: continues, not how much was sent, so the tail that follows is still exact and a
     #: resumed connection still resumes at the right byte. It also bounds a catch-up delta,
     #: not just the first frame — a tab left in the background for hours faces the same
-    #: megabytes at once.
+    #: bytes at once.
     _sse_log_frame_cap = 256 * 1024
 
     def _log_frame(text: str) -> str:
@@ -703,7 +706,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         # line rather than mid-word.
         tail = text[-_sse_log_frame_cap:].split("\n", 1)[-1]
         return (f"[… {skipped / 1e6:.1f} MB of earlier output not shown — "
-                f"read the whole log with `vast campaign log` …]\n{tail}")
+                f"read the whole log with `vast service log` …]\n{tail}")
 
     async def _pull_or_exit(pull):
         """Run the blocking ``pull()`` off the event loop, abandoning it on shutdown.
@@ -830,28 +833,31 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 return
             await anyio.sleep(_sse_poll_s)
 
-    #: Most rows one job-log frame carries; a larger read is sent as several frames.
-    _sse_job_log_frame_rows = 2000
+    #: Most rows one row-stream frame carries; a larger read is sent as several frames.
+    _sse_rows_frame_rows = 2000
 
-    #: Longest a job-log stream waits for its files to change before it reads again and
-    #: sends a heartbeat: just past the settle time, so a record held back because its file
-    #: was still being written goes out without waiting for another write.
-    _sse_job_log_wait_s = 2.5
+    #: Longest a row stream waits for its files to change before it reads again and sends
+    #: a heartbeat: just past the settle time, so a record held back because its file was
+    #: still being written goes out without waiting for another write.
+    _sse_rows_wait_s = 2.5
 
-    async def _sse_job_log_stream(request: Request, campaign_id: str, job_name: str,
-                                  cursor: str):
-        """SSE generator over a job's log rows (:meth:`ServiceBase.get_job_log`).
+    async def _sse_rows_stream(request: Request, fetch, make_watch, cursor: str):
+        """SSE generator over a log read as rows after a cursor: a campaign's
+        (:meth:`ServiceBase.get_campaign_logs`) and a job's (:meth:`ServiceBase.get_job_log`).
 
-        Each read's rows go out as ``message`` events carrying a JSON array of rows, the
-        last of them with ``id`` set to the cursor to resume from -- the browser echoes it as
-        ``Last-Event-ID`` on an automatic reconnect. Between reads the stream waits on the
-        job's log files (:class:`~robovast.service.job_log.LogWatch`), so rows go out as they
-        are written, and a wait that saw nothing sends a heartbeat. ``eof`` ends a finished
-        job's stream; an error (no such job, a cursor this service did not issue) is a
-        ``streamerror`` event followed by ``eof``.
+        ``fetch(cursor)`` is the pull, returning rows, the cursor to continue from and
+        ``eof``; ``make_watch()`` returns something with ``wait(timeout)`` and ``close()``
+        over the files the pull reads. Each read's rows go out as ``message`` events
+        carrying a JSON array of rows, the last of them with ``id`` set to the cursor to
+        resume from -- a browser echoes it as ``Last-Event-ID`` on an automatic reconnect,
+        and the CLI sends it the same way. Between reads the stream waits on the watch, so
+        rows go out as they are written, and a wait that saw nothing sends a heartbeat.
+        ``eof`` ends a finished log's stream; an error (no such campaign or job, a cursor
+        this service did not issue, a filter it does not know) is a ``streamerror`` event
+        followed by ``eof``.
         """
         yield ": open\n\n"
-        watch = await _pull_or_exit(lambda: impl.job_log_watch(campaign_id, job_name))
+        watch = await _pull_or_exit(make_watch)
         if watch is None:
             return
         if isinstance(watch, Exception):
@@ -862,8 +868,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             while not app.state.should_exit():
                 if await request.is_disconnected():
                     return
-                chunk = await _pull_or_exit(
-                    lambda: impl.get_job_log(campaign_id, job_name, cursor))
+                chunk = await _pull_or_exit(lambda: fetch(cursor))
                 if chunk is None:
                     return
                 if isinstance(chunk, Exception):
@@ -871,9 +876,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                     yield "event: eof\ndata: {}\n\n"
                     return
                 rows = [row.model_dump() for row in chunk.rows]
-                for start in range(0, len(rows), _sse_job_log_frame_rows):
-                    frame = rows[start:start + _sse_job_log_frame_rows]
-                    last = start + _sse_job_log_frame_rows >= len(rows)
+                for start in range(0, len(rows), _sse_rows_frame_rows):
+                    frame = rows[start:start + _sse_rows_frame_rows]
+                    last = start + _sse_rows_frame_rows >= len(rows)
                     head = f"id: {chunk.cursor}\n" if last else ""
                     yield f"{head}data: {_json.dumps(frame)}\n\n"
                 cursor = chunk.cursor
@@ -882,12 +887,57 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                     return
                 if not rows:
                     yield _sse_heartbeat
-                    await _pull_or_exit(lambda: watch.wait(_sse_job_log_wait_s))
+                    await _pull_or_exit(lambda: watch.wait(_sse_rows_wait_s))
                 else:
                     # Held-back rows settle without a write of their own; look again soon.
                     await anyio.sleep(_sse_poll_s)
         finally:
             watch.close()
+
+    #: Longest one tap tick waits for a line before it sends a heartbeat instead.
+    _sse_tap_wait_s = 1.0
+
+    async def _sse_tap_stream(request: Request, campaign_id: str, job_name: str,
+                              selection: list, max_seconds: int):
+        """SSE generator over a tap on a live job (:meth:`ServiceBase.tap_job`).
+
+        Each relayed line is a ``line`` event carrying a :class:`TapRow`; the tap's end is an
+        ``eof`` event carrying a :class:`TapEnd` (the command's exit code, and whether the
+        bound cut it); a refusal -- the job is not running, the backend has no tap, a tap is
+        already open on the job -- is a ``streamerror`` followed by ``eof``. A tick with no
+        line sends a heartbeat. The reader going away closes the tap, which is what ends the
+        relay: nothing here waits for the bound on a stream nobody is reading. Not resumable,
+        and no ``id``: a tap is a relay of the moment, not a record.
+        """
+        yield ": open\n\n"
+        tap = await _pull_or_exit(lambda: impl.tap_job(campaign_id, job_name, selection,
+                                                       max_seconds=max_seconds, source="api"))
+        if tap is None:
+            return
+        if isinstance(tap, Exception):
+            yield f"event: streamerror\ndata: {_json.dumps(str(tap))}\n\n"
+            yield "event: eof\ndata: {}\n\n"
+            return
+        try:
+            while not app.state.should_exit():
+                if await request.is_disconnected():
+                    return
+                item = await _pull_or_exit(lambda: tap.poll(_sse_tap_wait_s))
+                if item is None and tap.ended:
+                    return
+                if item is None:
+                    yield _sse_heartbeat
+                    continue
+                if isinstance(item, Exception):
+                    yield f"event: streamerror\ndata: {_json.dumps(str(item))}\n\n"
+                    yield "event: eof\ndata: {}\n\n"
+                    return
+                if isinstance(item, TapEnd):
+                    yield f"event: eof\ndata: {_json.dumps(item.model_dump())}\n\n"
+                    return
+                yield f"event: line\ndata: {_json.dumps(item.model_dump())}\n\n"
+        finally:
+            tap.close()
 
     #: Poll cadence of the campaign-list stream's server-side loop.
     _sse_list_poll_s = 1.0
@@ -1649,9 +1699,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def get_search_history(campaign_id: str) -> SearchHistory:
         return _guard(lambda: impl.get_search_history(campaign_id))
 
-    @app.get(Routes.campaign_logs("{campaign_id}"), response_model=LogChunk, tags=["campaigns"])
-    def get_campaign_logs(campaign_id: str, offset: int = 0) -> LogChunk:
-        return _guard(lambda: impl.get_campaign_logs(campaign_id, offset))
+    @app.get(Routes.campaign_logs("{campaign_id}"), response_model=CampaignLogChunk,
+             tags=["campaigns"])
+    def get_campaign_logs(campaign_id: str, cursor: str = "", phase: str = "",
+                          min_level: str = "", grep: str = "") -> CampaignLogChunk:
+        """A campaign's infrastructure log rows after *cursor*, running or finished."""
+        return _guard(lambda: impl.get_campaign_logs(
+            campaign_id, cursor, phase=phase or None, min_level=min_level or None,
+            grep=grep or None))
 
     @app.get(Routes.campaign_jobs("{campaign_id}"), response_model=ListJobsResponse,
              tags=["campaigns"])
@@ -1664,14 +1719,19 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return _guard(lambda: impl.get_job_log(campaign_id, job_name, cursor))
 
     @app.get(Routes.campaign_logs_stream("{campaign_id}"), tags=["campaigns"])
-    async def stream_campaign_logs(campaign_id: str, request: Request):
-        """Server-sent events: a campaign's controller log, tailed live. Resumable —
-        send ``Last-Event-ID`` to continue from the last line received."""
+    async def stream_campaign_logs(campaign_id: str, request: Request, cursor: str = "",
+                                   phase: str = "", min_level: str = "", grep: str = ""):
+        """Server-sent events: a campaign's infrastructure log rows as they are written
+        (``Last-Event-ID`` resumes; the same filters as the pull). A finished campaign is
+        served too; see ``_sse_rows_stream``."""
         return StreamingResponse(
-            _sse_log_stream(
+            _sse_rows_stream(
                 request,
-                lambda off: impl.get_campaign_logs(campaign_id, off),
-                _last_event_offset(request)),
+                lambda cur: impl.get_campaign_logs(
+                    campaign_id, cur, phase=phase or None, min_level=min_level or None,
+                    grep=grep or None),
+                lambda: impl.campaign_log_watch(campaign_id),
+                request.headers.get("last-event-id") or cursor),
             media_type="text/event-stream", headers=_sse_headers)
 
     @app.get(Routes.job_state("{campaign_id}"), response_model=JobState, tags=["campaigns"])
@@ -1686,10 +1746,26 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
         """Server-sent events: one job's log rows as they are written (``Last-Event-ID``
-        resumes). A finished job is served too; see ``_sse_job_log_stream``."""
+        resumes). A finished job is served too; see ``_sse_rows_stream``."""
         return StreamingResponse(
-            _sse_job_log_stream(request, campaign_id, job_name,
-                                request.headers.get("last-event-id") or ""),
+            _sse_rows_stream(
+                request,
+                lambda cur: impl.get_job_log(campaign_id, job_name, cur),
+                lambda: impl.job_log_watch(campaign_id, job_name),
+                request.headers.get("last-event-id") or ""),
+            media_type="text/event-stream", headers=_sse_headers)
+
+    @app.get(Routes.job_tap("{campaign_id}"), tags=["campaigns"])
+    async def tap_job(campaign_id: str, request: Request, job_name: str,
+                      selection: str = "", max_seconds: int = TAP_MAX_S):
+        """Server-sent events: a tap on a **running** job, relaying what its simulator
+        publishes now for at most ``max_seconds`` (capped at the service's bound). ``line``
+        events carry the lines, ``eof`` the exit code; ``selection`` is comma-separated and
+        means topics in the ROS shape, empty for the topic list. Recorded as a probe of the
+        run; see ``_sse_tap_stream``."""
+        names = [name for name in selection.split(",") if name.strip()]
+        return StreamingResponse(
+            _sse_tap_stream(request, campaign_id, job_name, names, max_seconds),
             media_type="text/event-stream", headers=_sse_headers)
 
     @app.post(Routes.campaign_stop("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])

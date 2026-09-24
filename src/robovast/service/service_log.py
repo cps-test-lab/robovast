@@ -23,8 +23,8 @@ annotated with exactly that dead end (a scene cache retrying forever, a build wh
 This is the source those comments were missing.
 
 It is a bounded ring the ``robovast`` logger fills as records are emitted, sliced by byte
-offset so it serves the same :class:`~robovast.service.interface.LogChunk` protocol every
-other live log here already speaks -- which is what lets ``app.py``'s ``_sse_log_stream``
+offset so it serves the :class:`~robovast.service.interface.LogChunk` protocol the image
+build log speaks too -- which is what lets ``app.py``'s ``_sse_log_stream``
 and the browser's ``Last-Event-ID`` resume work on it unchanged.
 
 **Bounded and volatile, deliberately.** It holds the last :data:`_MAX_BYTES` and nothing

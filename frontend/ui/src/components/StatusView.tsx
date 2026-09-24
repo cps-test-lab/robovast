@@ -43,7 +43,7 @@ import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
 import { FactRows, HoverFacts } from './HoverFacts'
-import { LogPanel } from './LogPanel'
+import { LiveCampaignLog } from './runLog/LiveCampaignLog'
 import { LiveJobLog } from './runLog/LiveJobLog'
 import { MeterBar } from './MeterBar'
 
@@ -1173,15 +1173,20 @@ function JobRow({
   )
 }
 
-// Live unified infrastructure log for one campaign (variation + run + postprocessing
-// phases, divider-separated), streamed over SSE.
+// The infrastructure log of one campaign -- every phase, as rows -- streamed over SSE into the
+// row viewer, faceted by phase and coloured by level.
 //
 // No frame and no open state of its own: it is a tab's content, and the tab is both. The stream
 // therefore opens when the tab is selected and closes when it is not, because the tab panel
 // unmounts -- which is why the panels are rendered as a ternary rather than hidden with CSS. A
 // hidden-but-mounted Log would hold an EventSource open for a panel nobody can see.
 export function CampaignLog({ campaignId }: { campaignId: string }) {
-  return <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
+  return (
+    // A fixed height: the log view fills its parent and windows its rows against it.
+    <Box sx={{ height: 480, display: 'flex', flexDirection: 'column' }}>
+      <LiveCampaignLog campaignId={campaignId} />
+    </Box>
+  )
 }
 
 // One backend error string, shown verbatim. These are multi-line — an exception message plus a

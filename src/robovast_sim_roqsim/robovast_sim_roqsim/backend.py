@@ -394,6 +394,20 @@ class RoqsimBackend(SimulatorBackend):
         del cfg, execution
         return f"roqsim health --json {shlex.quote(run_dir)}"
 
+    def tap_command(self, cfg, execution: dict, *, run_dir: str, selection: list) -> None:
+        """No tap: roqsim's recording is already the live view.
+
+        roqsim's CLI has no following command -- ``roqsim state`` reads a moment or a range of
+        a recording, and returns -- so there is nothing here whose stdout would be a stream.
+        There is also no need for one: the run's recording is chunk-flushed every wall second,
+        and the service follows it as it grows (the run view's live stream, ``pose_track_view``,
+        ``get_job_state``), so what a reader sees is already within a second of the simulator.
+        ``None`` in both shapes for that reason, the ROS shape included: what the base class
+        would answer there, ``ros2 topic echo``, shows the same records a second later than the
+        recording does.
+        """
+        del cfg, execution, run_dir, selection
+
     def simulation_screenshot(self, cfg, execution: dict, *, state: str,
                               at=None, view=None, focus=None, camera=None,
                               size: str = "960x720") -> str:

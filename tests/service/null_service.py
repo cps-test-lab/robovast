@@ -149,6 +149,10 @@ class NullService(ServiceBase):
         del campaign_id, job_name, target, run_dir
         self._refuse("get_job_state")
 
+    def _job_probe_dir(self, campaign_id: str, job_name: str) -> tuple:
+        del campaign_id, job_name
+        self._refuse("tap_job")
+
     def _job_output_dir(self, campaign_id: str, job_name: str, run_dir: str) -> str:
         del campaign_id, job_name, run_dir
         self._refuse("get_job_state")
