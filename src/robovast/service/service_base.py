@@ -2819,8 +2819,11 @@ class ServiceBase(RobovastInterface):
         """The ``.vast`` this request runs, from whichever source it named.
 
         A campaign's ``_config/`` *is* a project, so the two sources differ only here.
+        Empty for the image-family source, which names no project at all.
         """
         from robovast.service.container_exec import vast_in_dir
+        if getattr(request, "image_family", ""):
+            return ""       # an image, not a project: nothing to resolve a .vast from
         if request.campaign_id:
             config_dir = self.campaign_dir(request.campaign_id) / "_config"
             if not config_dir.is_dir():
@@ -2848,8 +2851,10 @@ class ServiceBase(RobovastInterface):
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
         try:
-            found = self._resolve_exec_image(vast_file, request.container or None,
-                                             campaign_id=request.campaign_id or "")
+            found = self._resolve_exec_image(
+                vast_file, request.container or None,
+                campaign_id=request.campaign_id or "",
+                image_family=getattr(request, "image_family", ""))
             spec.image = found.ref
             # What the caller is told the container is. Never `found.ref`: on the cluster
             # lane that is registry-qualified, and this value is reported back.
@@ -2880,6 +2885,7 @@ class ServiceBase(RobovastInterface):
         # from, and an edited workspace is answered for by the bytes it no longer holds --
         # a validate that keeps reporting the problem its own fix already removed.
         identity = (request.workspace_id, request.campaign_id,
+                    getattr(request, "image_family", ""),
                     request.config_path, request.config_name, spec.image,
                     bool(request.show_gui), _workspace_sha(spec))
         started = time.monotonic()
@@ -2911,7 +2917,8 @@ class ServiceBase(RobovastInterface):
         return self._resolve_exec_image(vast_file, container, campaign_id).ref
 
     def _resolve_exec_image(self, vast_file: str, container: "str | None" = None,
-                            campaign_id: str = "") -> "ImageRef":  # noqa: F821
+                            campaign_id: str = "",
+                            image_family: str = "") -> "ImageRef":  # noqa: F821
         """The exec image as an :class:`~robovast.service.image_store.ImageRef`.
 
         Split from :meth:`_exec_image` because two callers want different halves of one
@@ -2929,13 +2936,21 @@ class ServiceBase(RobovastInterface):
           the hash differs from the one the build produced.
         * a *workspace* project is asked of the image store, which is the lane's own
           answer to "what is this called here, and is it here".
+        * an *image family* member skips all of it: the ref names the image directly.
         """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
         from robovast.common.containers import plan_containers
-        from robovast.common.execution import resolve_robovast_image
+        from robovast.common.execution import resolve_family_image, resolve_robovast_image
         from robovast.common.simulators import apply_backend
         from robovast.service.image_store import ImageRef
+
+        if image_family:
+            # No project, so no container plan and no build: the family ref IS the answer.
+            # A resolved family image carries no build of ours and no registry the caller
+            # would have to know about, so it is its own identity, as a declared one is.
+            resolved = resolve_family_image(image_family, role="image-family exec")
+            return ImageRef(ref=resolved, identity=resolved, build_id="")
 
         # Validate rather than reading the raw mapping: the build specs come off the
         # *model*, so handing this path a plain dict yields "no build section" for every
@@ -3035,8 +3050,10 @@ class ServiceBase(RobovastInterface):
         """
         from robovast.service.interface import ImageResolution
         vast_file = self._exec_vast_file(request)
-        found = self._resolve_exec_image(vast_file, request.container or None,
-                                         campaign_id=request.campaign_id or "")
+        found = self._resolve_exec_image(
+            vast_file, request.container or None,
+            campaign_id=request.campaign_id or "",
+            image_family=getattr(request, "image_family", ""))
         return ImageResolution(image=found.identity)
 
     def _postprocess(self, campaign_id, results_dir, state, entry,

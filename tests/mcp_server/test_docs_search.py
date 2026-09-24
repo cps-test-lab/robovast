@@ -29,6 +29,7 @@ def corpus(monkeypatch):
     monkeypatch.setattr(docs, "_doc_files", {name: name for name in pages})
     monkeypatch.setattr(docs, "_doc_content", pages)
     monkeypatch.setattr(docs, "_doc_meta", {name: name.title() for name in pages})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
     return pages
 
 
@@ -87,6 +88,20 @@ def test_reading_one_page_is_unbounded(corpus):
 
 def test_an_unknown_page_names_the_ones_there_are(corpus):
     assert "clustered" in docs.search_docs(page="nope")["error"]
+
+
+def test_a_corpus_missing_its_upstream_half_says_so_rather_than_answering_short(monkeypatch):
+    """A reachable service is where the world format and the plugin reference come from.
+    Without it a search still answers, and a bare "no match" would read as "no such thing"."""
+    monkeypatch.setattr(docs, "_doc_files", {"a": "a"})
+    monkeypatch.setattr(docs, "_doc_content", {"a": "robovast only"})
+    monkeypatch.setattr(docs, "_doc_meta", {"a": "A"})
+    monkeypatch.setattr(docs, "_upstream_pages",
+                        lambda address="": ({}, "", "no service reachable"))
+
+    assert "no service" in docs.search_docs(query="zzz-nothing")["incomplete"]
+    assert "no service" in docs.search_docs()["incomplete"]
+    assert "no service" in docs.search_docs(page="roqsim-interfaces")["error"]
 
 
 # -- Where the documentation is found -----------------------------------------
@@ -149,6 +164,7 @@ class _FakeCatalogClient:
         self._pages = pages
         self._exit_code = exit_code
         self.commands = []
+        self.items = None       # set to answer with explicit, labelled items
 
     image = "ghcr.io/example/robovast-roqsim:2.1.0"
 
@@ -157,8 +173,8 @@ class _FakeCatalogClient:
 
     def exec_in_container(self, request):
         self.commands.append((request.container, request.command))
-        payload = json.dumps({"items": [{"name": n, "text": t}
-                                        for n, t in self._pages.items()]})
+        payload = json.dumps({"items": self.items if self.items is not None else
+                              [{"name": n, "text": t} for n, t in self._pages.items()]})
         return types.SimpleNamespace(exit_code=self._exit_code, stdout=payload, stderr="")
 
 
@@ -169,6 +185,10 @@ def _with_image(monkeypatch, client):
     monkeypatch.setattr(image_catalog.service_access, "service_client", lambda: client)
     with service_catalog.CACHE_LOCK:
         service_catalog.LIST_CACHE.clear()
+    # The search index too: one fake image name stands for a different corpus in each test,
+    # which is a thing only a test does -- an image identity names one corpus in production.
+    with docs._index_lock:
+        docs._indexes.clear()
 
 
 def test_the_image_answers_for_its_own_pages(tmp_path, monkeypatch):
@@ -202,18 +222,17 @@ def test_the_ranking_follows_the_image_an_address_now_resolves_to(monkeypatch):
     assert docs.search_docs(query="zebra", address="/sources/ws-1/w.vast")["total"] == 0
 
 
-def test_a_search_without_an_address_stays_cheap_and_says_where_else_to_look(monkeypatch):
-    """Zero results reads as "no such thing". These are RoboVAST's pages only, so a miss
-    names the argument that reaches the simulator's rather than leaving the caller to guess."""
-    def _never(*_a, **_k):
-        raise AssertionError("an address-less search reached for an image")
+def test_the_upstream_pages_answer_with_no_address(monkeypatch):
+    """The question they answer -- what may a world hold, which plugins exist -- is asked
+    before there is a project to name, so needing one to reach them answers nobody."""
+    client = _FakeCatalogClient(
+        {"interfaces": "World YAML\n==========\n\nquaggacomponents\n"})
+    _with_image(monkeypatch, client)
 
-    monkeypatch.setattr(docs, "_upstream_pages", _never)
+    out = docs.search_docs(query="quaggacomponents")
 
-    out = docs.search_docs(query="zzz-no-such-term-zzz")
-
-    assert out["total"] == 0
-    assert "address=" in out["note"]
+    assert [r["page"] for r in out["results"]] == ["roqsim-interfaces"]
+    assert "incomplete" not in out
 
 
 def test_a_page_from_the_image_is_read_by_its_prefixed_name(monkeypatch):
@@ -226,13 +245,18 @@ def test_a_page_from_the_image_is_read_by_its_prefixed_name(monkeypatch):
     assert "keys" in out["content"]
 
 
-def test_a_page_from_the_image_read_without_the_address_says_so():
-    """The name came from a listing made with an address. Answering "no such page" would be
-    the same wrong answer this exists to remove."""
-    out = docs.search_docs(page="roqsim-interfaces")
+def test_each_corpus_keeps_the_label_the_image_gave_it(monkeypatch):
+    """Both upstream repositories carry an ``architecture`` page, so the image says which
+    corpus each came from; deriving it from the path here would be a second answer to that."""
+    client = _FakeCatalogClient({})
+    client.items = [{"name": "architecture", "source": "roqsim", "text": "R\n=\n\nr\n"},
+                    {"name": "architecture", "source": "osc", "text": "O\n=\n\no\n"}]
+    _with_image(monkeypatch, client)
 
-    assert "address=" in out["error"]
-    assert "unknown documentation page" not in out["error"]
+    pages, _image, error = docs._upstream_pages()
+
+    assert not error
+    assert set(pages) == {"roqsim-architecture", "osc-architecture"}
 
 
 def test_an_image_that_cannot_answer_is_reported_not_guessed_at(monkeypatch):

@@ -1153,7 +1153,7 @@
         "type": "object"
       },
       "ExecRequest": {
-        "description": "Run one command in the experiment image \u2014 a diagnostic, never a campaign.\n\nNames exactly one source of the image (and, with ``config_name``, of a staged\nconfiguration): a workspace project, or an existing campaign whose ``_config/`` is\nitself a project. A running campaign's container is deliberately not addressable;\nsee :meth:`RobovastInterface.exec_in_container`.\n\nCarries **no timeout field**, so no client can set one: the limit is derived from\nwhat is being run (``execution.timeout`` for a scenario, a fixed cap for a command)\nand reported back in :class:`ExecResult`.",
+        "description": "Run one command in the experiment image \u2014 a diagnostic, never a campaign.\n\nNames exactly one source of the image (and, with ``config_name``, of a staged\nconfiguration): a workspace project, an existing campaign whose ``_config/`` is\nitself a project, or -- for a question about the software rather than about any\nproject -- an image family member. A running campaign's container is deliberately\nnot addressable; see :meth:`RobovastInterface.exec_in_container`.\n\nCarries **no timeout field**, so no client can set one: the limit is derived from\nwhat is being run (``execution.timeout`` for a scenario, a fixed cap for a command)\nand reported back in :class:`ExecResult`.",
         "properties": {
           "campaign_id": {
             "default": "",
@@ -1184,6 +1184,11 @@
             "default": false,
             "title": "Fresh",
             "type": "boolean"
+          },
+          "image_family": {
+            "default": "",
+            "title": "Image Family",
+            "type": "string"
           },
           "keep_alive": {
             "default": false,

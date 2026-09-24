@@ -41,17 +41,27 @@ import time
 
 #: The whole-catalog command per group.
 #:
-#: The upstream repository's own pages, read out of the image that carries them. The simulator
-#: image copies roqsim's source tree to /opt/roqsim, so its ``docs/`` is already there -- nothing
-#: is added to an image and no second pin of the same commit is kept in step. The pages that come
-#: back are the ones belonging to the simulator THIS campaign runs, which is the only version an
-#: answer about its world format may be given from.
+#: Where each upstream corpus already sits in the simulator image. Both are whole source trees
+#: the image copies in -- roqsim's to /opt/roqsim, scenario-execution's into the ROS workspace --
+#: so their ``docs/`` are there to be read. Nothing is added to an image to serve them, and no
+#: second pin of the same commit has to be kept in step with the one that built it.
+DOCS_ROOTS = {"roqsim": "/opt/roqsim/docs", "osc": "/ws/src/scenario-execution/docs"}
+
+#: Every page from both, each labelled with the corpus it belongs to. The label is carried rather
+#: than derived from the path, because the two collide on names (``architecture``, ``index``) and
+#: a reader that flattened them would serve one repository's page under the other's question.
+#:
+#: A missing root yields no pages rather than an error: which corpora an image carries is a fact
+#: about that image, and an answer from the ones it has beats no answer at all.
 DOCS_COMMAND = (
     "python3 -c 'import json, pathlib; "
-    "d = pathlib.Path(\"/opt/roqsim/docs\"); "
+    # json.dumps and not repr: the whole command is single-quoted for the shell, and repr
+    # would close that quoting on the first dict key.
+    f"roots = {json.dumps(DOCS_ROOTS)}; "
     "print(json.dumps({\"items\": ["
-    "{\"name\": p.stem, \"text\": p.read_text(errors=\"replace\")} "
-    "for p in sorted(d.glob(\"*.rst\"))]}))'")
+    "{\"name\": p.stem, \"source\": s, \"text\": p.read_text(errors=\"replace\")} "
+    "for s, d in roots.items() if pathlib.Path(d).is_dir() "
+    "for p in sorted(pathlib.Path(d).glob(\"*.rst\"))]}))'")
 
 #: ``python3`` and not ``python``: the only interpreter a DECLARED base image is guaranteed to
 #: have. Debian/Ubuntu ship no ``python`` at all (PEP 394 -- the name meant Python 2, and it exists
