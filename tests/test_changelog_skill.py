@@ -92,7 +92,7 @@ def test_check_passes_when_every_merge_is_cited(repo, capsys):
     code, out = _run(tool, capsys, "--root", str(root), "check", "--version", "0.2.0",
                      "--head", "HEAD")
     assert code == 0 and out.startswith("ok"), out
-    assert "3 merges since v0.1.0" in out
+    assert "3 merges since v0.1.0, each cited once" in out
 
 
 def test_check_names_what_is_missing_and_what_is_foreign(repo, capsys):
@@ -105,6 +105,20 @@ def test_check_names_what_is_missing_and_what_is_foreign(repo, capsys):
     assert code == 1
     assert "not cited: #13 (Retire the plugin)" in out
     assert "cited but not merged" in out and "#99" in out
+
+
+def test_check_refuses_a_merge_cited_twice(repo, capsys):
+    """Minimal means one entry per change: a merge cited in two entries is one change told
+    twice, or two changes that belong in one line."""
+    tool = _load()
+    root, sha = repo
+    _changelog(root, f"- The thing is served (#12)\n- The plugin is gone (#13)\n"
+                     f"- The thing again (#12)\n- {sha[:8]}")
+    code, out = _run(tool, capsys, "--root", str(root), "check", "--version", "0.2.0",
+                     "--head", "HEAD")
+    assert code == 1
+    assert "cited more than once" in out and "#12" in out
+    assert "#13" not in out.split("cited more than once", 1)[1]
 
 
 def test_check_refuses_a_missing_file_or_section(repo, capsys):

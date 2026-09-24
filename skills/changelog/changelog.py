@@ -10,7 +10,7 @@ changelog is written from; nothing here needs a forge or a token.
     collect   one block per merge since the last ``v*`` tag: number, title, first paragraph
               of the description, and the areas of the tree the diff touched
     check     ``CHANGELOG.md`` has a section for the version, every merge in the range is
-              cited in it, and nothing outside the range is
+              cited in it exactly once, and nothing outside the range is
     section   the section's body, for the release notes
 
 A merge without a pull request number is keyed by its short sha instead, and is cited as
@@ -108,8 +108,9 @@ def read_section(text: str, version: str) -> str | None:
     return "\n".join(lines[start + 1:end]).strip("\n")
 
 
-def cited(section: str) -> set[str]:
-    return {f"#{n}" if n else sha for n, sha in CITATION.findall(section)}
+def cited(section: str) -> list[str]:
+    """Every citation in the section, in order and with repeats."""
+    return [f"#{n}" if n else sha for n, sha in CITATION.findall(section)]
 
 
 # -- the commands -----------------------------------------------------------------------
@@ -134,7 +135,8 @@ def command_check(root: Path, version: str, since: str, head: str) -> int:
     if section is None:
         return fail(f"{CHANGELOG} has no '## {version}' section")
     expected = {m.key: m for m in merges(root, since, head)}
-    present = cited(section)
+    citations = cited(section)
+    present = set(citations)
     problems = []
     missing = [k for k in expected if k not in present]
     if missing:
@@ -144,11 +146,15 @@ def command_check(root: Path, version: str, since: str, head: str) -> int:
     if foreign:
         problems.append("cited but not merged in the range (an issue number, or a typo): "
                         + ", ".join(foreign))
+    twice = sorted({k for k in citations if citations.count(k) > 1})
+    if twice:
+        problems.append("cited more than once (one entry per change, citing every merge that "
+                        "made it): " + ", ".join(twice))
     if problems:
         for problem in problems:
             print(f"FAIL  {problem}")
         return 1
-    print(f"ok    {version}: {len(expected)} merges since {since}, all cited")
+    print(f"ok    {version}: {len(expected)} merges since {since}, each cited once")
     return 0
 
 
