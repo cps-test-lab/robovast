@@ -60,7 +60,7 @@ components:
   # sharing the default empty prefix collide on that name and MuJoCo refuses the model.
   - box:
       prefix: "pad_"
-      pos: [0.0, 0.0, 0.005]
+      pose: {position: {x: 0.0, y: 0.0, z: 0.005}}
       size: [2.0, 2.0, 0.01]
       color: [0.16, 0.42, 0.72, 1.0]
       collide: false
@@ -70,11 +70,11 @@ components:
   # scenario. Same reason as the pad: visual only. These are the ENU positions of the course the
   # scenario flies -- the scenario states them in NED, and these are the same three corners with
   # the sign convention undone. If the two ever disagree, the markers are the lie.
-  - box: {prefix: "wp1_", pos: [5.0, 5.0, 0.005], size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+  - box: {prefix: "wp1_", pose: {position: {x: 5.0, y: 5.0, z: 0.005}}, size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp1
-  - box: {prefix: "wp2_", pos: [-5.0, 5.0, 0.005], size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+  - box: {prefix: "wp2_", pose: {position: {x: -5.0, y: 5.0, z: 0.005}}, size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp2
-  - box: {prefix: "wp3_", pos: [-5.0, -5.0, 0.005], size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+  - box: {prefix: "wp3_", pose: {position: {x: -5.0, y: -5.0, z: 0.005}}, size: [1.0, 1.0, 0.01], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp3
 
   # Furniture: a fixed scale reference to judge drift against, and something real to hit when the
@@ -83,11 +83,11 @@ components:
   # an example that anyone can clone must not depend on assets they cannot get. The whole room is
   # therefore readable in this file. Placed clear of the 10 x 10 m course so they are a reference
   # in normal flight and an obstacle only once the aircraft is off course.
-  - box: {prefix: "pillar_e_", pos: [8.0, 0.0, 2.0], size: [0.8, 3.0, 4.0], color: [0.62, 0.64, 0.67, 1.0]}
+  - box: {prefix: "pillar_e_", pose: {position: {x: 8.0, y: 0.0, z: 2.0}}, size: [0.8, 3.0, 4.0], color: [0.62, 0.64, 0.67, 1.0]}
     name: pillar_east
-  - box: {prefix: "container_w_", pos: [-8.0, 2.0, 1.2], size: [1.2, 3.0, 2.4], color: [0.55, 0.42, 0.30, 1.0]}
+  - box: {prefix: "container_w_", pose: {position: {x: -8.0, y: 2.0, z: 1.2}}, size: [1.2, 3.0, 2.4], color: [0.55, 0.42, 0.30, 1.0]}
     name: container_west
-  - box: {prefix: "crate_", pos: [3.0, -8.0, 0.6], size: [1.0, 0.8, 1.2], color: [0.72, 0.60, 0.44, 1.0]}
+  - box: {prefix: "crate_", pose: {position: {x: 3.0, y: -8.0, z: 0.6}}, size: [1.0, 0.8, 1.2], color: [0.72, 0.60, 0.44, 1.0]}
     name: crate
 
   # -- the aircraft -----------------------------------------------------------------------------
@@ -99,7 +99,8 @@ components:
   - spawn_robot:
       model: x500
       prefix: "x500_"
-      pos: [0.0, 0.0]           # on the pad; the drone takes off from the floor
+      pose:
+        position: {x: 0.0, y: 0.0}   # on the pad; the drone takes off from the floor
       # Endpoint-producing plugins under this entity inherit the namespace, so the odometry and the
       # GNSS fix land on /drone/... rather than bare /odom. Note what does NOT come from here: the
       # /fmu/in and /fmu/out topics are published by the uXRCE-DDS agent against PX4, not by this
@@ -147,3 +148,12 @@ components:
       # involved anywhere, which is also why nothing site-specific can leak into this file.
       - px4_sitl:
           port: 4560
+
+  # -- the weather ------------------------------------------------------------------------------
+  # Owns opt.wind outright, so this world must NOT also set `sim.wind` (it is refused). Calm by
+  # default: the campaign varies `steady` (see px4_envelope.vast), and a sweep over a component
+  # the world does not declare is refused at validation, so the plugin has to be here even for
+  # the calm cells.
+  - wind_field:
+      steady: [0.0, 0.0, 0.0]
+      turbulence: {intensity: 0.0, length_scale: 4.0}
