@@ -315,15 +315,8 @@ image by digest could never be re-run again — even with those exact bytes stil
 the registry.  Bumping the maximum is harmless; **dropping** support is a separate,
 deliberate act of raising the minimum.
 
-A label, and read the standard way: ``docker inspect`` gets it without starting a
-container, and for an image this machine does not have, the registry serves it out
-of the config blob without pulling a layer.  That second reading is the one that
-matters — the question is usually asked *about* an image the asker does not have,
-by a pre-flight on a year-old campaign.
-
-There used to be a second marker, the file ``/etc/robovast_compat_version``, read
-by starting a container to ``cat`` one integer.  It could not be read remotely at
-all, and reading it cost a container start.  It is gone.
+A label, read from the registry's config blob without pulling a layer or starting a
+container, so it answers for an image that exists only in the registry.
 
 - **Cluster execution**: the **submitter** checks, host-side, immediately after the
   campaign's refs are pinned to digests and before any manifest is written — so the
@@ -331,6 +324,8 @@ all, and reading it cost a container start.  It is gone.
   It is deliberately not asked of the image itself: a workload inspecting its own image
   is not how admission is decided anywhere else, and could only report a mismatch by
   failing one init container per job in the batch.
+- **Retrigger pre-flight**: the service reads the label of each recorded image from
+  its registry; an image the registry will not answer for is reported as unknown.
 - **Postprocessing**: ``docker_exec.sh`` checks before ``docker run``.
 
 The cluster check **fails closed**: if the registry will not say what protocol the

@@ -448,7 +448,6 @@ class CampaignController:
         revisions = execution.get("image_revisions") or {}
         try:
             from robovast.common.campaign_data import write_build_manifests
-            from robovast.service.image_build import read_image_build_manifest
 
             manifests = {}
             for role in roles:
@@ -456,17 +455,9 @@ class CampaignController:
                 if not image:
                     continue
                 # Per role, so one role's failure cannot discard the locks already read for
-                # the others. Both readers reach outside the process -- a container runtime,
-                # a registry -- and either can fail for one image and work for the next.
+                # the others.
                 try:
-                    # Local first: it needs no network, and it answers for an image built
-                    # here that may never have been pushed anywhere.
-                    lock = read_image_build_manifest(image)
-                    if not lock:
-                        # getattr, so a backend from outside this tree that predates the hook
-                        # degrades to "cannot read one here" instead of losing every lock.
-                        reader = getattr(self.backend, "read_build_lock", None)
-                        lock = reader(image) if callable(reader) else {}
+                    lock = self.backend.read_build_lock(image)
                 except Exception:  # pylint: disable=broad-except
                     logger.debug("Could not read the build lock of %s.", image,
                                  exc_info=True)
@@ -1289,19 +1280,10 @@ class CampaignController:
         metadata and the provenance record are the account of a *finished* campaign, and
         this runs per batch on one that is still growing.
 
-        On a local backend there is no Job to submit and the in-process path is already
-        correct, so the conversion falls through to it and the caller derives. A failure is reported and does not
-        raise: the extractor decides whether a batch is scorable and refuses loudly when its
-        inputs are missing, which says more than an exception about a Job.
+        A failure is reported and does not raise: the extractor decides whether a batch is
+        scorable and refuses loudly when its inputs are missing, which says more than an
+        exception about a Job.
         """
-        cluster_config = getattr(self.backend, "cluster_config", None)
-        if cluster_config is None:
-            from robovast.results_processing.postprocessing import run_postprocessing_commands
-            run_postprocessing_commands(
-                image_cmds, results_dir=self.campaign_root,
-                config_dir=self.vast_dir, output=logger.info,
-                should_stop=stop_checker(self.state, scope=STOP_RUNS))
-            return False
         # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
         # opened, ever, and must not fail the conversion for every job that finished. A
         # search feels that harder than the campaign-level path it is copied from: one
@@ -1313,7 +1295,7 @@ class CampaignController:
         try:
             run_job, image_for, complete_message, job_role = _conversion_job_runner()
             ok, message = run_job(
-                cluster_config, self.campaign_id, self.campaign_root,
+                self.backend.cluster_config, self.campaign_id, self.campaign_root,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
                 image_for(self.campaign_root),
                 image_cmds,
@@ -1454,9 +1436,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     options = options or RunOptions()
     if not options.postprocess:
         return
-    cluster_config = getattr(backend, "cluster_config", None)
-    if cluster_config is None:  # local backend — the in-process chain handles it
-        return
+    cluster_config = backend.cluster_config
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
     try:

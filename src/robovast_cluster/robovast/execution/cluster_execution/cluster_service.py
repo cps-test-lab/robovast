@@ -732,6 +732,37 @@ class ClusterService(ServiceBase):
                                      used_bytes=int(used))
         return None
 
+    def _registry_read_args(self) -> dict:
+        """The credential, TLS setting and CA a registry read of this deployment needs."""
+        from .kubernetes_backend import registry_ca_file, registry_dockerconfig  # noqa: PLC0415
+
+        registry = self._cluster_config().get_registry_config()
+        core = self._k8s()
+        return {"dockerconfigjson": registry_dockerconfig(core, self.namespace, registry),
+                "insecure": getattr(registry, "insecure", False),
+                "ca_path": registry_ca_file(core, self.namespace, registry)}
+
+    def _image_labels(self, ref: str) -> "dict | None":
+        from .registry_client import manifest_labels  # noqa: PLC0415
+
+        try:
+            return manifest_labels(ref, **self._registry_read_args())
+        except Exception:  # noqa: BLE001 - unread is an answer; the caller reports it
+            logger.warning("could not read the labels of %s", ref, exc_info=True)
+            return None
+
+    def _image_build_lock(self, ref: str) -> dict:
+        from robovast.service.image_build import parse_build_manifest_files  # noqa: PLC0415
+
+        from .registry_client import manifest_build_lock  # noqa: PLC0415
+
+        try:
+            return parse_build_manifest_files(
+                manifest_build_lock(ref, **self._registry_read_args()))
+        except Exception:  # noqa: BLE001 - unread is reported as no lock
+            logger.warning("could not read the build lock of %s", ref, exc_info=True)
+            return {}
+
     def _scenario_job_tally(self) -> "tuple[int, int]":
         """``(running, pending)`` over every scenario-run Job in this namespace.
 
@@ -2708,14 +2739,8 @@ class ClusterService(ServiceBase):
     # -- data / results -----------------------------------------------------
 
     def _resolve_image_digest(self, ref: str):  # pylint: disable=useless-return
-        """No tag→digest resolution on this lane. Refusing beats answering with the wrong bytes.
-
-        Inherited, this would be ``docker inspect`` **on the service host**, which is either absent
-        (in-pod) or -- worse, running off-cluster with ``-x`` -- present and answering with a bare
-        local image id. No cluster node can pull such an id (``pullable_digest`` rejects it), so the
-        aux pod would fail to start on an identity we had just declared trustworthy. A campaign here
-        that recorded no per-role digest is therefore refused with the resolver's message.
-        """
+        """No tag→digest resolution here: a campaign that recorded no per-role digest is refused
+        with the resolver's message rather than run on bytes nobody pinned."""
         del ref
         # Explicit, not incidental: None *is* the answer on this lane, and the
         # docstring above is about that. Falling off the end would read as an

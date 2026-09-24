@@ -277,11 +277,6 @@ def _ros_entry(entry) -> dict:
 # python_packages classification (shared vocabulary with top-level ``plugins:``)
 # ---------------------------------------------------------------------------
 
-# BUILD_MANIFEST_DIR and BUILD_MANIFEST_FILES are imported from robovast.common.execution,
-# which both readers of the lock can reach -- this module writes it from a local image, and the
-# cluster's registry client reads it out of a layer blob. A second literal in either would be a
-# path that drifts silently, and the reader would simply find nothing.
-_MANIFEST_FILES = BUILD_MANIFEST_FILES
 
 
 #: Splits ``<name> @ <git+url>`` at the requirement separator. Anchored on the ``git+`` scheme
@@ -831,42 +826,10 @@ def _ros_workspace_lines(spec: BuildSpec) -> list:
     return lines
 
 
-def read_image_build_manifest(image: str) -> dict:
-    """``{apt: {...}, pip: {...}, vcs: {...}}`` recorded inside *image*, or ``{}``.
-
-    This is the lock a rebuild installs from. The author's ``.vast`` says ``tree`` and
-    ``numpy<=1.13``; the manifest says ``tree=2.2.1-1`` and ``numpy==1.12.1``. Re-resolving the
-    loose spec a year later gives a different answer, which is precisely the silent substitution
-    a re-run must not make.
-
-    Read by starting a container, and only for an image already on this host's daemon: `docker run` on
-    an absent image *pulls* it, and a caller asking "what is in this image" must not be the thing
-    that fetches gigabytes. ``{}`` means "cannot tell" -- an image built before manifests existed
-    has none, and that is a different answer from "installed nothing".
-    """
-    from robovast.common.execution import \
-        _image_present_locally  # pylint: disable=import-outside-toplevel
-
-    if not image or not _image_present_locally(image):
-        return {}
-    out = {}
-    for name in _MANIFEST_FILES:
-        text = _read_image_file(image, f"{BUILD_MANIFEST_DIR}/{name}")
-        if text is None:
-            continue
-        key = name.removesuffix(".txt")
-        out[key] = _parse_manifest(key, text)
-    return out
-
-
 def parse_build_manifest_files(texts: dict) -> dict:
     """``{apt: {...}, pip: {...}, vcs: {...}}`` from the raw ``{filename: text}`` of a lock.
 
-    The reading half split out from :func:`read_image_build_manifest`, which can only ask an
-    image on this host's daemon. A caller that obtained the same files some other way -- the
-    cluster's registry client reads them out of a layer blob, because the controller pod has no
-    container runtime -- parses them through here rather than through a second parser that
-    would have to agree with this one forever.
+    The files are read out of the image's layer by the registry client.
     """
     out = {}
     for name, text in (texts or {}).items():
@@ -960,18 +923,6 @@ def _canonical_pip(name: str, pip: dict) -> str:
         if re.sub(r"[-_.]+", "-", key).lower() == wanted:
             return key
     return name
-
-
-def _read_image_file(image: str, path: str) -> "str | None":
-    """One file's contents from inside *image*, or ``None`` if it is not there."""
-    try:
-        result = subprocess.run(
-            ["docker", "run", "--rm", "--pull=never", "--user", "root",
-             "--entrypoint", "cat", image, path],
-            capture_output=True, text=True, check=False, timeout=60)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout if result.returncode == 0 else None
 
 
 def _parse_manifest(kind: str, text: str) -> dict:

@@ -207,7 +207,7 @@ def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_p
     assert _settle(client, fixture.name) == "finished"
 
     imported = transport._campaigns_root() / fixture.name
-    report = retrigger.check(imported, fixture.name)
+    report = retrigger.check(imported, fixture.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
     assert report["runnable"] is True, report["blocking"]
 
     plan = retrigger.prepare(imported, fixture.name,

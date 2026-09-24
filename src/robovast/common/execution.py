@@ -590,152 +590,14 @@ def build_date() -> str:
 MAX_RECORDED_CHANGED_PATHS = 20
 
 
-def image_compat_version(image: str) -> "tuple[int | None, str]":
-    """``(version, source)`` for *image*'s protocol version. ``(None, reason)`` when unknown.
-
-    The label, read the standard way: ``docker inspect`` for an image this machine has, and
-    the registry's config blob for one it does not. One marker, both ways of reading it.
-
-    A label rather than a file inside the image: a file cannot be read without starting a
-    container, and cannot be read at all for an image this machine does not have -- which is
-    the case that matters, since a year-old campaign's image is rarely local.
-
-    ``source`` is returned so a caller can say what answered.
-    """
-    labelled = _docker_label(image, COMPAT_VERSION_LABEL)
-    if labelled and labelled.strip().isdigit():
-        return int(labelled.strip()), "label"
-    return None, f"not reported by the image (no {COMPAT_VERSION_LABEL} label)"
-
-
-#: Seconds any docker probe here may take. These run inside a pre-flight that is supposed to
-#: answer instantly, so a wedged daemon has to become "cannot tell" rather than a hang.
-_DOCKER_PROBE_TIMEOUT = 20
-
-
-def _docker(args) -> "subprocess.CompletedProcess | None":
-    """Run a docker command for a *probe*. ``None`` when it could not be asked at all."""
-    try:
-        return subprocess.run(args, capture_output=True, text=True, check=False,
-                              timeout=_DOCKER_PROBE_TIMEOUT)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # No docker CLI, or a daemon that did not answer. Neither is a verdict about the image.
-        return None
-
-
-def _image_present_locally(image: str) -> bool:
-    """Whether *image* is already in the local daemon."""
-    result = _docker(['docker', 'image', 'inspect', image])
-    return bool(result and result.returncode == 0)
-
-
-def local_image_id(image: str) -> str:
-    """The local daemon's content ID for *image*, or ``""`` when it cannot be read.
-
-    A tag is not an identity. ``ghcr.io/cps-test-lab/robovast:latest`` names different bytes
-    before and after the base image is rebuilt, so anything that must notice a rebuild -- an
-    image cache key above all -- has to hash this instead of the ref it was asked for.
-
-    Local only, never pulled, and ``""`` rather than an exception when the daemon cannot answer:
-    callers use this on paths that must stay cheap and must not fail because docker is absent.
-    """
-    if not image:
-        return ""
-    result = _docker(['docker', 'image', 'inspect', '--format', '{{.Id}}', image])
-    if not result or result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
-def _docker_label(image: str, label: str) -> str:
-    """One label off *image*, local first and then the registry, or ``""``.
-
-    Never raises -- absence is the answer, here as everywhere else in this module's probes.
-
-    The remote half is what makes this usable for the question it is mostly asked: *can this
-    host still drive the image a year-old campaign recorded?* That image is generally not on
-    the machine asking, and the point of a label over a file was always that a remote read is
-    possible -- ``buildx imagetools inspect`` reads the config blob without pulling a layer.
-    Until now only the local daemon was consulted, so a pre-flight on an archived campaign
-    answered "cannot tell" in exactly the case the label exists for.
-    """
-    if not image:
-        return ""
-    result = _docker(['docker', 'inspect', '--format',
-                      '{{index .Config.Labels "%s"}}' % label, image])
-    if result and result.returncode == 0:
-        value = result.stdout.strip()
-        # `docker inspect` prints the Go zero value for a missing key, not an empty string.
-        if value not in ("", "<no value>"):
-            return value
-        # Present locally and genuinely unlabelled: the registry cannot say otherwise about
-        # the same bytes, so do not pay for a round trip to be told the same thing.
-        return ""
-    return _remote_labels(image).get(label, "")
-
-
-def _remote_labels(image: str) -> dict:
-    """Every label on *image* as the registry reports it, or ``{}``.
-
-    All of them in one call, memoised per ref, because the callers ask for several: reading
-    four build refs off an absent image would otherwise be four network round trips to fetch
-    one config blob four times.
-
-    Memoised **for the life of the process**, which is the honest scope: a moving tag could
-    resolve to different bytes between two calls, but every caller here is a probe inside a
-    single short-lived answer (a pre-flight, one campaign's launch), and a probe that reports
-    two different things about one ref within one answer would be worse than a stale one.
-    """
-    if image in _REMOTE_LABEL_CACHE:
-        return _REMOTE_LABEL_CACHE[image]
-    labels: dict = {}
-    result = _docker(['docker', 'buildx', 'imagetools', 'inspect', '--format',
-                      '{{json .Image}}', image])
-    if result and result.returncode == 0:
-        try:
-            payload = json.loads(result.stdout.strip() or "{}")
-        except ValueError:
-            payload = {}
-        # Two shapes: a single image config, or one config per platform for a multi-arch
-        # index. Any entry answers -- they are pushed together, the same reasoning the
-        # registry client's index handling already uses.
-        candidates = [payload] if "config" in payload else [
-            v for v in payload.values() if isinstance(v, dict)]
-        for candidate in candidates:
-            found = ((candidate.get("config") or {}).get("Labels") or {})
-            if found:
-                labels = {str(k): str(v) for k, v in found.items()}
-                break
-    _REMOTE_LABEL_CACHE[image] = labels
-    return labels
-
-
-#: Per-process memo behind :func:`_remote_labels`. Not an LRU: the number of distinct refs one
-#: process asks about is the number of containers in one campaign.
-_REMOTE_LABEL_CACHE: dict = {}
-
-
 def check_image_compat(image: str, *, version: "int | None" = None,
                        source: str = "", unreadable: bool = False) -> "str | None":
     """``None`` when this host can drive *image*, else a message saying what to do.
 
-    One function for a decision three call sites each spelled out for themselves, with three
-    slightly different messages -- and the one they shared told the reader to "pull the latest
-    image", which is the *opposite* of what a re-run wants: it needs the recorded bytes, not
-    today's. So the message names the window, what the image reports, and the two real ways
-    out.
-
-    *version* / *source* let a caller that already inspected the image avoid a second probe.
-
-    *unreadable* separates the two ways *version* can be ``None``, which the message must not
-    conflate. An image that was READ and carries no label is a fact about the image, and
-    rebuilding it is the fix. An image that could not be read establishes nothing about the
-    image at all -- and telling that caller to rebuild sends them to do work that cannot
-    possibly help, twice, while the actual fault (a registry credential) goes unmentioned.
+    *version* is what the image reports, ``None`` when it reports nothing; *source* says
+    what answered. *unreadable* marks a ``None`` that means the image could not be read at
+    all, which is a fault in reaching it rather than a fact about the image.
     """
-    if version is None and not source:
-        version, source = image_compat_version(image)
-
     if version is None and unreadable:
         return (f"cannot determine the container protocol version of {image!r}: {source}.\n"
                 f"The image itself was never read, so this says NOTHING about the image and "
@@ -842,8 +704,7 @@ _BUILD_REF_LABELS = {
 }
 
 
-def image_build_refs(containers: dict, role_images: dict,
-                     labels_by_role: "dict | None" = None) -> dict:
+def image_build_refs(containers: dict, labels_by_role: "dict | None" = None) -> dict:
     """``{role: {...}}`` naming what each container's image was built from.
 
     Answers the question a re-run asks once the image itself is gone: *rebuild it from what?*
@@ -859,29 +720,16 @@ def image_build_refs(containers: dict, role_images: dict,
     * **the container's declared ``provenance:``** -- for a user-supplied image, where robovast
       cannot know and the author is the only source.
 
-    Absent entries mean "not knowable here", never "nothing to record": recording a guess would
-    be worse than recording nothing, since a rebuild would follow it. What *is* knowable widened
-    with *labels_by_role* -- a caller holding labels it read some other way (the cluster backend
-    reads them from the registry, which is the only way that works inside the controller pod)
-    passes them in, and this stops being a local-docker-only answer.
+    Absent entries mean "not knowable here", never "nothing to record": a rebuild would follow
+    a guess. *labels_by_role* are the labels the caller read from the registry.
     """
     out: dict = {}
     for role, block in sorted((containers or {}).items()):
         block = block or {}
         entry = {}
-
-        image = (role_images or {}).get(role) or block.get("image")
-        # A caller that has already read this image's labels hands them over; nobody else can
-        # get them. The cluster lane writes this file from inside the controller pod, which
-        # ships no docker CLI at all -- so every probe below returned "" there and the block
-        # was silently empty for every campaign that ran on a cluster. Its own docstring said
-        # absent means "not knowable here", which was true and useless.
-        supplied = (labels_by_role or {}).get(role)
+        supplied = (labels_by_role or {}).get(role) or {}
         for key, label in _BUILD_REF_LABELS.items():
-            if supplied is not None:
-                value = supplied.get(label, "")
-            else:
-                value = _docker_label(image, label) if image else ""
+            value = supplied.get(label, "")
             if value:
                 entry[key] = value
 
@@ -2299,23 +2147,6 @@ def create_job_links(campaign_dir) -> int:
     return created
 
 
-def _get_image_revision(image: str) -> str:
-    """Return the docker daemon's image ID for *image*, or ``'unknown'`` on failure."""
-    if not image:
-        return 'unknown'
-    try:
-        result = subprocess.run(
-            ['docker', 'inspect', '--format={{.Id}}', image],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode == 0:
-            rev = result.stdout.strip()
-            return rev if rev else 'unknown'
-    except FileNotFoundError:
-        pass
-    return 'unknown'
-
-
 #: Fields of ``execution.yaml`` that describe the CAMPAIGN's images rather than one execution
 #: of it, and are therefore carried forward when a rewrite has nothing to put in them.
 #:
@@ -2331,9 +2162,8 @@ _CARRIED_PROVENANCE_FIELDS = ('image', 'images', 'image_revision', 'image_revisi
 def _records_nothing(value) -> bool:
     """Whether a provenance field holds no actual fact.
 
-    ``'unknown'`` counts as nothing, and has to: :func:`_get_image_revision` returns that
-    literal string when it cannot read an image, so a resume writes a *truthy* placeholder over
-    a perfectly good digest. Treating it as a value is exactly the erasure this guards against.
+    ``'unknown'`` is the placeholder written when no digest was known, so it counts as nothing
+    and never overwrites a recorded digest.
     """
     return not value or value == 'unknown'
 
@@ -2419,7 +2249,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         'execution_type': 'cluster',
         'image': image,
         'images': images,
-        'image_revision': image_digest or _get_image_revision(image),
+        'image_revision': image_digest or 'unknown',
     }
     # One digest per container, because "the campaign's image" stopped being a single
     # fact. `image_revision` is the scenario container's; anything asking which bytes
@@ -2438,7 +2268,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
 
     # What each image was built FROM, as opposed to which bytes it is. A digest is reproducible
     # only for as long as the registry keeps it; this is what a rebuild would start from.
-    build_refs = image_build_refs(containers, images, labels_by_role=image_labels)
+    build_refs = image_build_refs(containers, labels_by_role=image_labels)
     if build_refs:
         execution_data['image_build_refs'] = build_refs
 

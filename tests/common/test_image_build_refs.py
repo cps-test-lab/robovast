@@ -33,7 +33,7 @@ def _labels(**over):
 
 def test_supplied_labels_are_used_where_no_docker_exists():
     """The cluster lane's whole problem: the answer exists, the probe cannot reach it."""
-    refs = image_build_refs({"sut": {"image": BASE}}, {"sut": BASE},
+    refs = image_build_refs({"sut": {"image": BASE}},
                             labels_by_role={"sut": _labels()})
     assert refs["sut"]["base_image"] == BASE
     assert refs["sut"]["ubuntu_snapshot"] == "20260819T003043Z"
@@ -43,7 +43,7 @@ def test_supplied_labels_are_used_where_no_docker_exists():
 
 def test_a_role_with_no_supplied_labels_records_nothing_rather_than_guessing():
     """Absent must stay "not knowable", never "nothing was used" -- a rebuild would follow it."""
-    refs = image_build_refs({"sut": {"image": BASE}}, {"sut": BASE},
+    refs = image_build_refs({"sut": {"image": BASE}},
                             labels_by_role={"sut": {}})
     assert "sut" not in refs
 
@@ -56,7 +56,7 @@ def test_the_recipe_covers_every_pin_the_dockerfile_makes():
     """
     for key in ("base_image", "ubuntu_snapshot", "ros_snapshot"):
         assert key in _BUILD_REF_LABELS, f"{key} is not collected"
-    refs = image_build_refs({"sut": {}}, {"sut": BASE}, labels_by_role={"sut": _labels()})
+    refs = image_build_refs({"sut": {}}, labels_by_role={"sut": _labels()})
     assert {"base_image", "ubuntu_snapshot", "ros_snapshot"} <= set(refs["sut"])
 
 
@@ -66,7 +66,7 @@ def test_a_declared_provenance_still_wins_over_the_image():
     refs = image_build_refs(
         {"sut": {"image": BASE, "provenance": {"source": "https://example.com/theirs",
                                                "revision": "theirs"}}},
-        {"sut": BASE}, labels_by_role={"sut": _labels()})
+        labels_by_role={"sut": _labels()})
     assert refs["sut"]["source"] == "https://example.com/theirs"
     assert refs["sut"]["revision"] == "theirs"
     assert refs["sut"]["declared"] is True

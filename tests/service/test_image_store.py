@@ -16,7 +16,6 @@ client.
 import pytest
 
 from robovast.common.errors import ImageStoreUnavailable
-from robovast.service import image_store
 from robovast.service.image_build import BuildSpec
 from robovast.service.image_store import ImageBuildStore, ImageRef
 
@@ -33,7 +32,7 @@ def _stores(tmp_path):
     """Every :class:`ImageBuildStore` implementation, for the contract tests below.
 
     The registry store needs no cluster to answer ``ref_for``: it is given a config and a
-    client, both stubbed. A new lane belongs in this list -- that is the point of it.
+    client, both stubbed.
     """
     stores = []
     try:
@@ -178,15 +177,10 @@ def test_every_store_folds_the_base_it_would_build_on_into_its_hash(tmp_path, mo
     that is the silent substitution :func:`build_hash` exists to prevent, and it looks exactly
     like a run that did use the new base.
     """
-    ris = pytest.importorskip(
-        "robovast.execution.cluster_execution.registry_image_store")
+    pytest.importorskip("robovast.execution.cluster_execution.registry_image_store")
 
     def _hash_when_the_base_is(store, identity):
-        if isinstance(store, ris.RegistryImageStore):
-            monkeypatch.setattr(type(store), "published_digest",
-                                lambda _self, _ref: identity)
-        else:
-            monkeypatch.setattr(image_store, "local_image_id", lambda _ref: identity)
+        monkeypatch.setattr(type(store), "published_digest", lambda _self, _ref: identity)
         return store.ref_for(SPEC, tmp_path).image_hash
 
     for store in _stores(tmp_path):

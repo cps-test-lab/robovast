@@ -2103,6 +2103,15 @@ class ServiceBase(RobovastInterface):
             reached=reached, capability=capability,
             markers=[MigrationMarker(path=where, reason=reason) for where, reason in markers])
 
+    @abstractmethod
+    def _image_labels(self, ref: str) -> "dict | None":
+        """Every label *ref* carries per its registry, or ``None`` when it could not be read."""
+
+    @abstractmethod
+    def _image_build_lock(self, ref: str) -> dict:
+        """The build lock inside *ref* per its registry, ``{}`` when it has none or cannot be
+        read."""
+
     def check_retrigger(self, campaign_id: str) -> RetriggerReport:
         """See the interface. A thin adapter over :func:`robovast.service.retrigger.check`.
 
@@ -2111,7 +2120,9 @@ class ServiceBase(RobovastInterface):
         """
         from robovast.service import retrigger
 
-        report = retrigger.check(str(self.campaign_dir(campaign_id)), campaign_id)
+        report = retrigger.check(str(self.campaign_dir(campaign_id)), campaign_id,
+                                 image_labels=self._image_labels,
+                                 build_lock=self._image_build_lock)
         return RetriggerReport(
             campaign_id=report["campaign_id"],
             runnable=report["runnable"],
@@ -2168,7 +2179,10 @@ class ServiceBase(RobovastInterface):
         from robovast.service import retrigger
         from robovast.service.interface import DESCRIPTION_MAX_LEN
         source_dir = str(self.campaign_dir(campaign_id))
-        self._admit_retrigger(retrigger.check(source_dir, campaign_id), force)
+        self._admit_retrigger(retrigger.check(source_dir, campaign_id,
+                                              image_labels=self._image_labels,
+                                              build_lock=self._image_build_lock),
+                              force)
         # Before `prepare`, which stages the source's tree: a refusal leaves nothing behind.
         self._admit_storage(f"re-run {campaign_id}")
         plan = retrigger.prepare(
@@ -4863,8 +4877,8 @@ class ServiceBase(RobovastInterface):
 
         Asked on every run switch in the run view, and not cheap: it parses the run's capture and
         the campaign's frozen ``.vast``, hashes every byte of each ``_config/`` tree a
-        campaign-file world reads, and for a campaign that recorded only an image tag asks Docker
-        what the tag names. None of that can change for a campaign nothing is driving, so the
+        campaign-file world reads, and for a campaign that recorded only an image tag resolves
+        the digest the tag names. None of that can change for a campaign nothing is driving, so the
         answer is kept against :meth:`_rest_key` plus the stat of the run's own capture --
         the one input the campaign's record files do not cover. A refusal is not memoised: it
         is cheap to repeat, and its cause (a missing capture, an unpulled image) may be fixed.

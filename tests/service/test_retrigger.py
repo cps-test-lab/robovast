@@ -196,7 +196,8 @@ def test_a_build_free_campaign_is_not_blocked_by_the_preflight(svc, tmp_path):
         launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
     report = retrigger.check(
         str(svc.campaign_dir("pilot-2026-08-08-120000")),   # noqa: SLF001
-        "pilot-2026-08-08-120000")
+        "pilot-2026-08-08-120000", image_labels=svc._image_labels,  # noqa: SLF001
+        build_lock=svc._image_build_lock)  # noqa: SLF001
     assert "images" not in report["blocking"]
     assert report["axes"]["images"]["reresolved"] == ["simulation", "sut"]
 
@@ -322,8 +323,10 @@ def image_outside_the_window(monkeypatch):
     on the operation has to catch.
     """
     from robovast.common import execution
+    from robovast.common.execution import COMPAT_VERSION_LABEL
 
-    monkeypatch.setattr(execution, "image_compat_version", lambda image: (1, "label"))
+    monkeypatch.setattr(NullLane, "_image_labels",
+                        lambda self, ref: {COMPAT_VERSION_LABEL: "1"})
     monkeypatch.setattr(
         execution, "check_image_compat",
         lambda image, version=None, source="", unreadable=False:

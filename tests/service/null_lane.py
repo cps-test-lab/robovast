@@ -189,6 +189,12 @@ class NullLane(ServiceBase):
     def _scenario_job_tally(self) -> "tuple[int, int]":
         return 0, 0
 
+    def _image_labels(self, ref: str) -> "dict | None":
+        return None
+
+    def _image_build_lock(self, ref: str) -> dict:
+        return {}
+
     # -- the handshake and the roll ------------------------------------------------------
 
     def version(self) -> VersionInfo:
