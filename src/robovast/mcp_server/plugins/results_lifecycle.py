@@ -23,7 +23,9 @@ because these act on a campaign that has already finished, and separate from
 
 Download and import are the two directions of the same move, so they sit together: one
 answers where to fetch a campaign from, the other takes one in. Neither carries bytes --
-an archive is routinely gigabytes, so both deal in paths and links.
+an archive is routinely gigabytes, so both deal in paths and links. An export is the third
+way out: the campaign's tables as files, built on request, for an analysis away from the
+service.
 
 Removal is one verb: a campaign has one home, and deleting it is deleting that.
 """
@@ -101,11 +103,10 @@ def run_postprocessing(campaign_id: str, force: bool = False,
 def build_campaign_tables(campaign_id: str, tables: list | None = None) -> dict:
     """Build a finished campaign's tables for every run now, in the background.
 
-    **Not needed for any answer**: every table is built the first time a query names it,
-    for the runs the query asks about. Use this only before a long analysis of a whole
-    large campaign, to pay that cost up front; pass *tables* to build only those. Progress
-    is in the campaign log's TABLES section (``get_campaign_log``), and
-    ``describe_campaign_data`` reports each table as built for M of M runs when it is done.
+    **Not needed for any answer**: every table is built the first time a query names it.
+    Use it only before a long analysis of a whole large campaign. Progress is in the
+    campaign log's TABLES section; ``describe_campaign_data`` reports each table as built
+    for M of M runs when done.
 
     Args:
         campaign_id: The finished campaign.
@@ -135,16 +136,13 @@ def clear_campaign_tables(campaign_id: str) -> dict:
 def run_share(campaign_id: str) -> dict:
     """(Re)trigger the upload-to-share of one finished campaign.
 
-    **Dispatched in the background** — returns as soon as the upload is started; the
-    campaign enters the ``sharing`` phase, so background ``vast campaign wait <campaign_id>``
-    until it is over, then read the outcome (``share_error`` on failure). Works from disk
-    with no live campaign (usable after a `vast serve` restart). ``ok=false`` means an
-    operation is already running for it — an upload, postprocessing and the campaign
-    itself cannot overlap. **The variant is read off the campaign, not chosen**:
-    ``<id>.raw.tar.gz`` before postprocessing (metrics still to compute),
-    ``<id>.postprocessed.tar.gz`` after. The target provider comes from the service
-    environment (``ROBOVAST_SHARE_TYPE`` + credentials): adjust it and re-trigger to
-    upload to a different provider. Fails loudly if no share provider is configured.
+    **Dispatched in the background**: the campaign enters the ``sharing`` phase, so
+    background ``vast campaign wait <campaign_id>`` until it is over, then read
+    ``share_error`` on failure. Works from disk after a restart. ``ok=false`` means another
+    operation is already running for it. **The variant is read off the campaign, not
+    chosen**: ``<id>.raw.tar.gz`` before postprocessing, ``<id>.postprocessed.tar.gz``
+    after. The provider comes from the service environment (``ROBOVAST_SHARE_TYPE`` +
+    credentials); fails loudly when none is configured.
 
     Args:
         campaign_id: The finished campaign to (re)upload.
@@ -226,21 +224,18 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
 
 
 def get_campaign_download(campaign_id: str) -> dict:
-    """Where to download a campaign — a link for a human to open, not a file fetched here.
+    """Where to download a campaign as the service holds it -- a link, never a file fetched here.
 
-    Never writes to the MCP-server host, which may not be a machine you can reach.
-
-    A campaign that is **still running** downloads too, as a snapshot: the service serves
-    it under ``<campaign-id>.incomplete.tar.gz`` and the archive carries a marker an import
-    reports as degraded. Runs that had not finished are absent from it, so it answers "what
-    does this campaign have so far", never "what did this campaign produce".
+    A campaign **still running** downloads too, as a snapshot named
+    ``<campaign-id>.incomplete.tar.gz`` that an import reports as degraded: runs that had
+    not finished are absent. For the tables as files, ``export_campaign``.
 
     Args:
         campaign_id: The campaign to download.
 
     Returns:
-        ``{campaign_id, path, next_step}`` — the campaign as a ``tar.gz`` — plus ``url``
-        when this service declares an origin to reach it on. Or ``{error}``.
+        ``{campaign_id, path, next_step}`` plus ``url`` when this service declares an
+        origin. Or ``{error}``.
     """
     from robovast.service.interface import Routes
     client = service_access.service_client()
@@ -270,6 +265,70 @@ def get_campaign_download(campaign_id: str) -> dict:
     }
 
 
+def export_campaign(campaign_id: str, tables: list | None = None, format: str = "parquet",  # pylint: disable=redefined-builtin
+                    bags: str = "none", records: bool = True) -> dict:
+    """Export a finished campaign as one tar.gz, for a laptop analysis or a hand-off.
+
+    Its tables as one file each (parquet is the tables as they are, for pandas or DuckDB;
+    csv the same rows as text), its records (what ``robovast-data`` opens) and, if asked,
+    its recordings. Built in the background: poll ``get_export_status``, then fetch
+    ``url`` or run ``next_step`` on your own machine.
+
+    Args:
+        campaign_id: The finished campaign.
+        tables: Table names to write (``describe_campaign_data`` lists them); every table
+            the records can give when omitted. ``runs`` is always written.
+        format: ``parquet`` or ``csv``.
+        bags: ``none``; ``mcap`` copies the recordings as they are; ``sqlite3`` rewrites
+            each rosbag2 bag in sqlite3 storage, for a ROS 2 without the mcap plugin.
+        records: Whether the campaign's records ship too.
+
+    Returns:
+        ``{campaign_id, export_id, status, path, next_step}`` plus ``url`` when this
+        service declares an origin; or ``{error}``.
+    """
+    from robovast.service.interface import ExportRequest
+    client = service_access.service_client()
+    if client is None:
+        return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
+                          "on this host."}
+    try:
+        request = ExportRequest(tables=list(tables) if tables is not None else None,
+                                format=format, bags=bags, records=records)
+        ref = client.create_export(campaign_id, request)
+        status = client.get_export_status(campaign_id, ref.export_id)
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+    url = service_access.web_url(client, ref.url)
+    options = [f"--format {format}", f"--bags {bags}"]
+    if tables is not None:
+        options.insert(0, f"--tables {','.join(tables)}")
+    if not records:
+        options.append("--no-records")
+    return {
+        "campaign_id": campaign_id,
+        "export_id": ref.export_id,
+        "status": status.model_dump(),
+        **({"url": url} if url else {}),
+        "path": ref.url,
+        "next_step": f"vast campaign export {campaign_id} {' '.join(options)}",
+    }
+
+
+def get_export_status(campaign_id: str, export_id: str) -> dict:
+    """Where an export started by :func:`export_campaign` has got to.
+
+    ``done`` with an empty ``error`` means its file is ready at the ``url`` that call gave;
+    ``tables`` fills with row counts as they are written; ``bytes``, ``started_at`` and
+    ``finished_at`` say the rest.
+    """
+    try:
+        return service_access.require_service() \
+            .get_export_status(campaign_id, export_id).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 # -- Plugin class ------------------------------------------------------------
 
 _TOOLS = [
@@ -281,6 +340,8 @@ _TOOLS = [
     run_share,
     delete_campaign,
     get_campaign_download,
+    export_campaign,
+    get_export_status,
     import_campaign,
 ]
 

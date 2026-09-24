@@ -211,7 +211,11 @@ It provides four views:
   destroy something — and every entry is conditional, so a campaign with nothing to act on
   yet is offered no menu at all. Its middle group is **Download**, which streams the
   campaign's ``tar.gz`` straight from the service's ``/data/campaigns/{id}/archive`` route,
-  tarred off its results tree as it is read and never buffered — and, when
+  tarred off its results tree as it is read and never buffered; **Export…**, below it on a
+  campaign that is not running, which opens a dialog -- the campaign's tables as a checklist,
+  all checked, the format (parquet or CSV), which recordings ship and whether the records do --
+  and, once **Start** is pressed, follows the export as the service builds it and offers the
+  file when it is done (:ref:`results-export`); and, when
   that campaign also has a copy on the share, **Copy share link** (omitted for a share
   provider that has no link a browser could open — SFTP has none). Below those,
   **Retrigger campaign** starts a **new** campaign from

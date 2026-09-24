@@ -85,6 +85,21 @@ ALWAYS_BUILT = tuple(DERIVED)
 HEALTH_TABLE = "run_health"
 STEPS_TABLE = "postprocessing_steps"
 
+#: Where a campaign's exports live, under its ``.cache/`` beside the tables
+#: (:mod:`robovast.service.exports`): built on request, counted and cleared with them.
+EXPORTS_DIR = "exports"
+
+
+def exports_root(campaign_dir) -> Path:
+    return Path(campaign_dir) / CACHE_DIR / EXPORTS_DIR
+
+
+def exports_bytes(campaign_dir) -> int:
+    """How many bytes the campaign's exports take."""
+    root = exports_root(campaign_dir)
+    return sum(os.path.getsize(os.path.join(d, f))
+               for d, _dirs, files in os.walk(root) for f in files)
+
 
 def _name_and_params(command) -> Tuple[str, dict]:
     if isinstance(command, str):
@@ -226,25 +241,28 @@ def replay_tables(campaign_dir: str, *,
 
 
 def clear_tables(campaign_dir: str) -> int:
-    """Remove the campaign's built tables; the bytes freed. Every one is built again on use."""
+    """Remove the campaign's built tables and its exports; the bytes freed.
+
+    Every table is built again on use, and an export is built again on request: both are
+    derived from the records, and both live under ``.cache/``.
+    """
     root = cache_root(campaign_dir)
     if not os.path.isdir(root):
         return 0
     with manifest_lock(campaign_dir):
-        tables = os.path.join(root, TABLES_DIR)
-        freed = sum(os.path.getsize(os.path.join(d, f))
-                    for d, _dirs, files in os.walk(tables) for f in files)
-        shutil.rmtree(tables, ignore_errors=True)
+        freed = table_cache_bytes(campaign_dir)
+        shutil.rmtree(os.path.join(root, TABLES_DIR), ignore_errors=True)
+        shutil.rmtree(exports_root(campaign_dir), ignore_errors=True)
         write_manifest(campaign_dir, {"version": read_manifest(campaign_dir)["version"],
                                       "tables": {}})
     return freed
 
 
 def table_cache_bytes(campaign_dir: str) -> int:
-    """How many bytes the campaign's built tables take."""
+    """How many bytes the campaign's built tables and its exports take."""
     tables = os.path.join(campaign_dir, CACHE_DIR, TABLES_DIR)
     return sum(os.path.getsize(os.path.join(d, f))
-               for d, _dirs, files in os.walk(tables) for f in files)
+               for d, _dirs, files in os.walk(tables) for f in files) + exports_bytes(campaign_dir)
 
 
 def _write_campaign_table(campaign_dir: str, table: str, rows: pa.Table, sources: dict) -> None:
@@ -306,7 +324,8 @@ def write_postprocessing_steps(campaign_dir: str, entries: List[dict]) -> int:
     return table.num_rows
 
 
-__all__ = ["ALWAYS_BUILT", "DECODER_COMMANDS", "DECODER_GROUPS_COMMAND",
+__all__ = ["ALWAYS_BUILT", "DECODER_COMMANDS", "DECODER_GROUPS_COMMAND", "EXPORTS_DIR",
            "VIDEO_PRODUCER_COMMANDS", "build_tables", "clear_tables", "declared_tables",
-           "decoder_groups", "is_decoder_command", "replay_tables", "table_cache_bytes",
-           "write_decoder_config", "write_postprocessing_steps", "write_run_health"]
+           "decoder_groups", "exports_bytes", "exports_root", "is_decoder_command",
+           "replay_tables", "table_cache_bytes", "write_decoder_config",
+           "write_postprocessing_steps", "write_run_health"]

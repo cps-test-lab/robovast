@@ -455,6 +455,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Export
+         * @description Start an export of the campaign: its tables as files, its records, its bags.
+         */
+        post: operations["create_export_campaigns__campaign_id__exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/exports/{export_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Export Status
+         * @description Where an export has got to; its file is on the data plane once it is done.
+         */
+        get: operations["get_export_status_campaigns__campaign_id__exports__export_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/job-exec": {
         parameters: {
             query?: never;
@@ -1162,6 +1202,31 @@ export interface paths {
          *     as it is read. Decisive for campaigns that run to terabytes.
          */
         get: operations["download_campaign_archive_data_campaigns__campaign_id__archive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/exports/{export_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Campaign Export
+         * @description Stream a finished export as a ``tar.gz``.
+         *
+         *     Backs ``vast campaign export`` and the web UI's Export dialog. A 404 until the
+         *     export is done (the status route on the control plane says how far it is), a 409
+         *     carrying the reason once it failed. Answered from the export's files alone, so the
+         *     standalone data container serves what the control plane built.
+         */
+        get: operations["download_campaign_export_data_campaigns__campaign_id__exports__export_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2789,6 +2854,78 @@ export interface components {
             stopped: boolean;
             /** Target */
             target: string | null;
+        };
+        /**
+         * ExportRef
+         * @description A started export: its id, and where its file will be once it is done.
+         */
+        ExportRef: {
+            /** Export Id */
+            export_id: string;
+            /** Url */
+            url: string;
+        };
+        /**
+         * ExportRequest
+         * @description What an export of a campaign carries: its tables as files, its bags, its records.
+         *
+         *     An export is what a laptop analysis or a hand-off wants: the campaign's logical tables
+         *     written one file per table, in a format pandas or DuckDB opens directly, with the
+         *     records that produced them and, if asked, the recordings. The archive
+         *     (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it and
+         *     ships no table; an export is built for the request and disposable.
+         */
+        ExportRequest: {
+            /**
+             * Bags
+             * @default none
+             * @enum {string}
+             */
+            bags: "none" | "mcap" | "sqlite3";
+            /**
+             * Format
+             * @default parquet
+             * @enum {string}
+             */
+            format: "parquet" | "csv";
+            /**
+             * Records
+             * @default true
+             */
+            records: boolean;
+            /** Tables */
+            tables?: string[] | null;
+        };
+        /**
+         * ExportStatus
+         * @description Where one export has got to (poll like an image build's :class:`ImageBuildStatus`).
+         */
+        ExportStatus: {
+            /**
+             * Bytes
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Done
+             * @default false
+             */
+            done: boolean;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Export Id */
+            export_id: string;
+            /** Finished At */
+            finished_at: string | null;
+            /** Started At */
+            started_at: string | null;
+            /** Tables */
+            tables: {
+                [key: string]: number;
+            };
         };
         /**
          * FileMeta
@@ -5597,6 +5734,73 @@ export interface operations {
             };
         };
     };
+    create_export_campaigns__campaign_id__exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportRef"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_export_status_campaigns__campaign_id__exports__export_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     exec_in_job_campaigns__campaign_id__job_exec_post: {
         parameters: {
             query: {
@@ -6860,6 +7064,38 @@ export interface operations {
             header?: never;
             path: {
                 campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_campaign_export_data_campaigns__campaign_id__exports__export_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                export_id: string;
             };
             cookie?: never;
         };

@@ -66,6 +66,10 @@ Every group is named after what it acts on, so the group tells you what you are 
        line. Exits non-zero if any was not fully deleted; a running one is refused.
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
+   * - ``vast campaign export <id>``
+     - Have the service build an export -- the tables as parquet or CSV files, the records,
+       the bags if asked (``--tables``, ``--format``, ``--bags``, ``--no-records``) -- wait
+       for it, and pull it down as one ``.tar.gz`` (:ref:`results-export`).
    * - ``vast service info|resources``
      - Which service is answering, which code it runs and whether it has a queue to order;
        whether the cluster has room.

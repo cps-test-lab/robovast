@@ -456,6 +456,20 @@ class HTTPTransport(RobovastInterface):
         return CampaignTablesCleared.model_validate(
             self._delete(Routes.campaign_tables(campaign_id)))
 
+    def create_export(self, campaign_id: str, request):
+        from robovast.service.interface import ExportRef
+        return ExportRef.model_validate(self._post(
+            Routes.campaign_exports(campaign_id), json=request.model_dump()))
+
+    def get_export_status(self, campaign_id: str, export_id: str):
+        from robovast.service.interface import ExportStatus
+        return ExportStatus.model_validate(
+            self._get(Routes.campaign_export(campaign_id, export_id)))
+
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """Stream a finished export through, chunk by chunk, like the archive."""
+        return self._stream(Routes.campaign_export_download(campaign_id, export_id))
+
     def run_share(self, request) -> ActionResult:
         return ActionResult.model_validate(self._post(
             Routes.campaign_share_run(request.campaign_id),

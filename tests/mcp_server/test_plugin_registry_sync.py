@@ -480,8 +480,11 @@ _PARAMETER_VOCABULARY = {
     # Which recorded table a track comes from, and which marker of a configuration to
     # measure against: pose_track_view and the contribution spell them the same way.
     "source", "marker_label",
-    # Which of a campaign's tables to build: the names describe_campaign_data lists.
+    # Which of a campaign's tables to build or export: the names describe_campaign_data lists.
     "tables",
+    # An export's handle, and what it carries: the file format of its tables, which
+    # recordings ship, and whether the records do -- the request body spells them the same way.
+    "export_id", "format", "bags", "records",
     "old_string", "new_string", "sql", "command", "description", "reason",
     "archive_path", "occupancy",
     # how much, and from where
@@ -783,6 +786,11 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #:
 #: Still far below where it was: this sits on top of the merge above, which took the surface from
 #: ~15_490 to 15_125. The pair together is a net reduction of ~350.
+#:
+#: ``export_campaign`` and ``get_export_status`` were paid for by compression and nothing
+#: else, under the figure above: ``get_campaign_download``, ``run_share`` and
+#: ``build_campaign_tables`` each said the same thing twice and now say it once, and the
+#: export tool names what it is for rather than restating its parameters.
 _SURFACE_TOKEN_BUDGET = 15_141
 
 
