@@ -25,9 +25,9 @@ another plugin.
 
 Yes, if you are the person with the kubeconfig — the one who sets the service up for a team.
 The people using it need only [`robovast-client`](https://pypi.org/project/robovast-client/);
-they launch campaigns and fetch results without knowing which lane runs them. If you only run
-campaigns on your own Docker host, [`robovast`](https://pypi.org/project/robovast/) alone does
-that, and says so if you ask it for a cluster.
+they launch campaigns and fetch results without a kubeconfig. This is also the package for
+a service on your own machine: `vast cluster setup minikube` deploys it into a one-node
+cluster there.
 
 Documentation: [cps-test-lab.github.io/robovast](https://cps-test-lab.github.io/robovast/),
 "Cluster execution" and "Deployment".

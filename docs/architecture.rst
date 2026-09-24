@@ -50,7 +50,7 @@ that matters — can decline what it does not.
      - ``pydantic``, ``click``, ``requests``
    * - ``robovast``
      - service core, config and variation, results, the MCP server, the campaign
-       controller, the local Docker lane
+       controller
      - no Kubernetes client
    * - ``robovast-cluster``
      - the Kubernetes execution lane, its cluster-config plugins, the deploy and operator
@@ -80,12 +80,9 @@ Where the driver runs
 ----------------------
 
 A campaign is driven by one :class:`robovast.execution.controller.CampaignController`
-(batch or search) that runs **in the driving process**, against the backend for
-that deployment:
-
-* **local** — the ``vast`` CLI process *is* the driver, over ``DockerBackend``;
-* **cluster** — the ``robovast-service`` runs the driver in a worker thread (one
-  per campaign) over ``KubernetesBackend``, which creates the scenario Jobs.
+(batch or search) that runs **in the driving process**: the ``robovast-service`` runs
+the driver in a worker thread (one per campaign) over ``KubernetesBackend``, which
+creates the scenario Jobs.
 
 There is **no separate per-campaign controller pod**. The service is already a
 long-lived, in-cluster process with the cluster config, the Kubernetes API, the
@@ -150,11 +147,9 @@ Which work a stop lands on, and what it leaves:
        therefore shared, so a sibling campaign may be waiting on it
    * - ``running``
      - runs
-     - the lane's teardown (the scenario container, or this campaign's Jobs), which the
-       batch loop then sees
+     - the lane's teardown (this campaign's Jobs), which the batch loop then sees
      - ``stopped``, plus the analysis the batches that finished are owed — none when no
-       run existed yet — except on a local batch-mode campaign, where the loop's own
-       account is that the batch ended, and the campaign reads ``finished``
+       run existed yet
    * - ``finishing``, ``importing``, ``postprocessing``
      - postprocessing
      - the pipeline between steps; the conversion's process group, or its Jobs
@@ -169,19 +164,16 @@ Which work a stop lands on, and what it leaves:
      - the stop is refused rather than answered with a flag nothing will read
 
 **Service shutdown** is deliberately *not* the same thing. What exiting does to a
-running campaign is a property of the lane, and each lane answers it in its own
-``_shutdown_running_campaigns``: the local lane kills its scenario container, because
-nothing comes back for it; the cluster lane leaves its Jobs running, because they outlive
-any one service process and the next one adopts them (:doc:`cluster_execution`). Neither
-answer is a default the other could inherit — the ``docker rm`` is written in the local
-class alone. Stopping a campaign is ``stop``; exiting the service
+running campaign is a property of the lane, answered in its own
+``_shutdown_running_campaigns``: the cluster lane leaves its Jobs running, because they
+outlive any one service process and the next one adopts them
+(:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
 is not, and it never was a good way to say it — the cooperative stop persists a
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
-A stopped campaign is reported as a **clean terminal**, not a failure. On both lanes the
-batch wait loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag,
-the
+A stopped campaign is reported as a **clean terminal**, not a failure. The batch wait
+loop raises ``CampaignStopped`` the moment it sees the cooperative-stop flag, the
 controller sets phase ``"stopped"``, and the builders' finish tail
 (``_finish_campaign``) is skipped — the per-run results the pods already delivered are
 left as the campaign's output. The ``"stopped"`` outcome is persisted like a failure
@@ -191,13 +183,11 @@ the phase survives a service restart instead of reconstructing as an ambiguous
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
 
 A stop that arrives once the runs are **over** — during postprocessing — ends differently,
-and both halves of the difference matter. It is not reached by either lane's teardown (the
-local one removes the scenario container; the cluster one is label-scoped to
-``jobgroup=scenario-runs`` so that it cannot cancel a shared image build, and the
-postprocessing Job is ``jobgroup=postprocessing``), so the wait polls the flag itself:
-``await_job`` deletes the Job — which makes a Job this process only *re-attached* to
-stoppable as well — and the local lane signals the conversion's process group, whose
-container tears itself down. And the campaign is **not** ``"stopped"`` — its runs all
+and both halves of the difference matter. It is not reached by the lane's teardown (which
+is label-scoped to ``jobgroup=scenario-runs`` so that it cannot cancel a shared image
+build, and the postprocessing Job is ``jobgroup=postprocessing``), so the wait polls the
+flag itself: ``await_job`` deletes the Job — which makes a Job this process only
+*re-attached* to stoppable as well. And the campaign is **not** ``"stopped"`` — its runs all
 finished and their results are complete, so it ends ``"finished"`` with the reason on
 ``postprocessing_error`` and no derived data, exactly as a postprocessing *failure* does,
 because in both cases what is missing is only the derived data and only a re-run supplies
@@ -205,15 +195,13 @@ it. ``stop`` says which of the two stops it performed in its reply, and the reas
 recorded as a cancellation rather than through the failure account: no failure log is
 authored, because a stop is not a fault.
 
-What a cancelled postprocess leaves is bounded by design rather than by luck, though the
-two lanes bound it differently. The rosbag conversion — the long step, and the one a stop
-is usually aimed at — is written to survive being killed on both: a bag records itself as
-converted only once its handlers have finished, and every output is rewritten rather than
-appended, so an interrupted bag is simply redone. Locally the steps after it (the index
-ingest, the metadata, the provenance record) run in this process and are cancelled only
-*between* steps, so they are never entered part-way. In the cluster's Job they run in the
-pod, so a stop landing during the ingest interrupts it — and that is survivable for the
-reason the ingest is written with ``autocommit``: :func:`campaign_ingest.ingest_campaign`
+What a cancelled postprocess leaves is bounded by design rather than by luck. The rosbag
+conversion — the long step, and the one a stop is usually aimed at — is written to
+survive being killed: a bag records itself as converted only once its handlers have
+finished, and every output is rewritten rather than appended, so an interrupted bag is
+simply redone. The steps after it (the index ingest, the metadata, the provenance record)
+run in the postprocessing pod, so a stop landing during the ingest interrupts it — and
+that is survivable for the reason the ingest is written with ``autocommit``: :func:`campaign_ingest.ingest_campaign`
 clears a campaign's rows before writing them, so a re-run replaces a partial load rather
 than doubling it. An ingest handed a directory that holds no campaign at all — neither
 ``campaign.db`` nor a single run directory — is refused *before* that clear, so a wrong
@@ -221,7 +209,7 @@ path cannot empty a campaign's rows and then record the emptiness as its answer:
 registry's entry is what separates "ingested and measured nothing" from "never ingested",
 and a query trusts it to make that distinction.
 
-What neither lane leaves is a campaign that *claims* derived data it does not have. The
+What is never left is a campaign that *claims* derived data it does not have. The
 provenance record is written last, after the ingest, precisely so that its presence means
 every step succeeded — so a cancelled campaign has none, reads as not postprocessed, and
 asks for the re-run that settles it.
@@ -240,22 +228,20 @@ application" traceback with the server already gone.
            MCP tools ─┐
       vast CLI cmds ──┤→  RobovastClient (one interface)
          web UI ──────┘        │
-          ┌────────────────────┼──────────────────────────────┐
-     LocalTransport      HTTPTransport → single-host service   HTTPTransport → cluster service
-     (in-process,        (`vast serve`, localhost or VM,       (in-cluster Deployment,
-      DockerBackend,      DockerBackend, local FS)              KubernetesBackend,
-      local FS)                                                 results volume)
+                         HTTPTransport → robovast-service
+                                         (in-cluster Deployment, KubernetesBackend,
+                                          results volume)
 
-The service core is **backend-agnostic**: it dispatches execution to
-``DockerBackend`` (local) or ``KubernetesBackend`` (cluster). See
-:ref:`deployment` for the three deployment modes and how a client reaches each.
+The service core is **backend-agnostic**: it dispatches execution to an
+``ExecutionBackend``, which the cluster lane answers with ``KubernetesBackend``. See
+:ref:`deployment` for how a client reaches the service.
 
 One container plan, built once
 ------------------------------
 
 A campaign declares its containers by name (:ref:`execution.containers <config-containers>`)
 and :func:`robovast.common.containers.plan_containers` turns that into the containers a run
-actually starts. **Both lanes, the image builds, ``exec_in_container`` and the docs read that
+actually starts. **The lane, the image builds, ``exec_in_container`` and the docs read that
 one map.** A second lookup anywhere would be free to disagree with what the pod started, and
 the disagreement would be silent -- a diagnostic entering one container while the campaign
 ran another.
@@ -319,8 +305,8 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
-* **The lane is not implied.** The query runs a container, so a service offering both lanes
-  routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
+* **The lane is not implied.** The query runs a container, so a service offering several
+  lanes routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
   a composition, which creates the aux pod it asks for, so the cluster lane refuses this query with
   that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
   one-shot queries is the follow-up that would lift it.
@@ -387,7 +373,8 @@ than the caller named.
 **Pinned workspaces.** ``vast serve --workspace-dir DIR`` registers a directory as a
 workspace used *in place* rather than copied into the store: no upload, present at
 start-up, and stable across restarts (the id is derived from the resolved path). These
-entries live only in memory, never in ``registry.json``.
+entries live only in memory, never in ``registry.json``. Only a service run by hand on
+the host that holds the directory can take it; a pod refuses the option.
 
 The directory stays **writable**, and that is the point: an edit in the Config tab lands
 on the real file, so a git-tracked project is editable from the browser without copying
@@ -403,25 +390,11 @@ like — selected per campaign by ``config_path`` — so several pins would add 
 expressiveness while leaving the service with no single sources root to report.
 Pin the collection (a repo root), not each project.
 
-Pinning needs the service to run on the host holding the directory, which decides
-availability by deployment rather than by backend:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 20 50
-
-   * - Deployment
-     - Pinning
-     - How to bind a project
-   * - ``--backend local``
-     - yes
-     - ``--workspace-dir``; edits on disk are live
-   * - ``--backend cluster`` (off-cluster driver)
-     - yes
-     - ``--workspace-dir``; the driver reads inputs from this filesystem
-   * - the deployed service (in-pod), reached over its Ingress
-     - **no**
-     - upload with ``vast workspace init``; edits need a re-push
+Pinning needs the service to run on the host holding the directory, and a deployed
+service runs in a pod, which has no such directory: a project is uploaded with ``vast
+workspace init``, and edits need a re-push. The option exists for a ``vast serve`` run by
+hand on the host that holds the directory (``mirrord exec``, :doc:`deployment`), and is
+refused in a pod.
 
 Execution lanes are resolved, not imported
 ------------------------------------------
@@ -429,79 +402,76 @@ Execution lanes are resolved, not imported
 ``vast serve`` runs one lane, fixed when it starts, and finds it through the
 ``robovast.execution_backends`` entry-point group — the same mechanism as simulators,
 variation types and panel types, through the same resolver
-(``robovast.common.plugin_ref.load_ref``). ``local`` and ``cluster`` each register a
-class with a ``build()``; the core never names ``ClusterService``.
+(``robovast.common.plugin_ref.load_ref``). The core registers none; ``robovast-cluster``
+registers ``cluster``, a class with a ``build()``, and the core never names
+``ClusterService``. With exactly one lane installed the service runs it; with none it
+refuses to start, naming the distribution that ships one.
 
-Two properties this exists for. Listing the lanes must not import them, so a caller can
-report "the cluster lane is not installed" rather than raising ``ModuleNotFoundError``
-from a module nobody asked for. And choosing one must not load the other: an in-pod
-service has no Docker and should not import the local lane to discover that. Both are
-pinned by ``tests/service/test_serve_backends.py``.
+Listing the lanes must not import them, so that refusal can be a sentence rather than a
+``ModuleNotFoundError`` from a module nobody asked for; and importing the base loads no
+lane. Both are pinned by ``tests/service/test_serve_backends.py``.
 
 As with simulators, **a lane must import without the thing it drives** — it is imported
-in a process that may have neither a kubeconfig nor a Docker socket. Reaching for either
-belongs inside ``build()``.
+in a process that may have no kubeconfig. Reaching for one belongs inside ``build()``.
 
 That indirection is what lets the Kubernetes lane ship as its own distribution,
 ``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
 install without it carries no ``kubernetes``, ``boto3`` or ``google-cloud-storage`` at
-all, and still serves, validates, stores workspaces and runs local Docker campaigns.
-Declining a lane is a supported configuration, not a degraded one — and where an agent is
-involved, it is the strongest available guard: a lane that is not installed cannot be
-silently substituted for the one you asked for.
+all, and still validates, composes, stores workspaces and processes results. Declining
+the lane is a supported configuration for everything but running a service — and where
+an agent is involved, it is the strongest available guard: a lane that is not installed
+cannot be silently substituted for a service you asked for.
 
 .. _lanes-refuse-by-name:
 
-The two lanes do not offer the same operations, and are not required to
---------------------------------------------------------------------------
+A lane refuses by name
+----------------------
 
-The local Docker lane runs one campaign at a time, so it has no queue for a rank or a hold
-to act on and no Deployment to roll; the cluster lane runs in pods, so it has no screen to
-open a window on. Each lane is allowed to offer less than the other. What neither may do is
-answer such a request with anything but a refusal that says so: an operation a lane accepts
-and quietly does nothing with looks, to every client, exactly like one that worked.
+A lane is allowed to offer less than the interface describes: the interface carries every
+operation any lane answers, and a lane with no queue has no rank or hold to act on. What
+a lane may not do is answer such a request with anything but a refusal that says so: an
+operation a lane accepts and quietly does nothing with looks, to every client, exactly
+like one that worked.
 
 So there is one exception for it, ``UnsupportedOnLane``, and one sentence:
 ``<operation> is not supported on the <lane> lane``, with a hint where there is somewhere
-else to go. Every ``RobovastInterface`` implementation declares its ``LANE`` (``local``,
-``cluster``, ``http``), and a lane raises the refusal **in its own class**, never as a
-default the other lane could inherit. The exception is a ``ServiceError``: the app maps it
-to ``501`` with the sentence as ``detail`` and ``unsupported_on_lane`` in the error header,
-the HTTP transport hands the caller the same status, code and sentence, and in process it
-is the very same object, so the CLI, the MCP tools, the web UI and a raw HTTP client all
-show one line (:doc:`http_api`, "Status codes";
+else to go. Every ``RobovastInterface`` implementation declares its ``LANE``
+(``cluster``, ``http``, and the test suite's ``null``), and a lane raises the refusal **in
+its own class**, never as a default on the base. The exception is a ``ServiceError``: the
+app maps it to ``501`` with the sentence as ``detail`` and ``unsupported_on_lane`` in the
+error header, the HTTP transport hands the caller the same status, code and sentence, and
+in process it is the very same object, so the CLI, the MCP tools, the web UI and a raw
+HTTP client all show one line (:doc:`http_api`, "Status codes";
 ``tests/service/test_unsupported_on_lane.py``).
 
 That is also the line between "not supported" and the refusals that keep their own status:
-a second campaign on the single-flight local lane is a ``409``, because it is refused for
-*now*; a missing display on a local service is a ``400``, because it is the environment,
-not the lane. A bare ``NotImplementedError`` reaching a route is still a ``500``, because
-it still means a bug.
+a launch refused for *now* is a ``409``, and a request the environment cannot honour is a
+``400``. A bare ``NotImplementedError`` reaching a route is still a ``500``, because it
+still means a bug.
 
 .. _two-lanes-one-base:
 
-Two lanes, one base
--------------------
+One base, the lane's hooks
+--------------------------
 
-``LocalTransport`` (``robovast.service.local_transport``) and ``ClusterService``
-(``robovast-cluster``) are **siblings** over ``ServiceBase``
-(``robovast.service.service_base``), and neither subclasses the other. The base is the
-in-process half of the interface that is correct for any lane: hosting a campaign's driver
-on a worker thread, the registry of what is being driven, the workspace store, the caches
-and the event log, every reader that resolves a campaign under the results root both lanes
-share, and every operation whose body reaches the lane only through a hook. What differs is
-an ``@abstractmethod`` on the base — which backend runs a job, which exec lane a diagnostic
-runs on, what a job's log and state are read from, what exiting does to a running campaign —
-and a body in each lane's own class. A lane missing one cannot be constructed, and the
-error names it.
+``ClusterService`` (``robovast-cluster``) subclasses ``ServiceBase``
+(``robovast.service.service_base``). The base is the in-process half of the interface
+that is correct for any lane: hosting a campaign's driver on a worker thread, the registry
+of what is being driven, the workspace store, the caches and the event log, every reader
+that resolves a campaign under the results root, and every operation whose body reaches
+the lane only through a hook. What depends on where the runs happen is an
+``@abstractmethod`` on the base — which backend runs a job, which exec lane a diagnostic
+runs on, what a job's log and state are read from, what exiting does to a running
+campaign — and a body in the lane's own class. A lane missing one cannot be constructed,
+and the error names it.
 
-Two things follow. The base imports neither Docker nor Kubernetes and names no driver in a
-body (``tests/service/test_lane_ledger.py`` pins that, and
-``tests/service/test_serve_backends.py`` pins that importing it loads neither lane). And a
-local answer cannot stand in for the cluster: what the cluster does not define, the base
-defines for any lane, and what only the local lane can do — the ``docker rm -f`` of its
-single-flight container, the host's own resource sampling, the container a role maps to —
-exists only in the local class.
+The split is kept for the sake of the second implementer: ``tests/service/null_lane.py``
+is a ``ServiceBase`` that runs nothing and refuses every driver-needing operation by
+name, so the base's own code — workspaces, files, records, listings, the routes over
+them — is tested without a Kubernetes-shaped fake. Two things follow. The base imports
+no Kubernetes and names no driver in a body (``tests/service/test_lane_ledger.py`` pins
+that, and ``tests/service/test_serve_backends.py`` pins that importing it loads no lane).
+And a body on the base is one that is correct for any lane, or it is a hook.
 
 The lane ships into the **same import namespace** as the core rather than under a name of
 its own, so no import path changes: ``robovast/`` and ``robovast/execution/`` carry no
@@ -541,11 +511,10 @@ campaign's ``_config/`` is one. From there the staging is identical:
 the image resolves from that project's ``.vast`` exactly as a run resolves it.
 
 **The entrypoint is rendered, never inherited.** ``prepare_campaign_configs`` substitutes
-lane-specific init and post-run blocks into ``entrypoint.sh`` (``fixuid`` locally; in a
-pod, the hand-off that tells the pod's uploader this container has finished writing), so
-a script rendered for one lane is wrong on the other. Reusing a cluster campaign's staged
-entrypoint for a local exec would run cluster post-run logic on a developer's machine. ``render_entrypoint`` exists so the bare-image
-case can have that script without expanding a config tree it does not need.
+the init and post-run blocks a pod needs into ``entrypoint.sh`` (the hand-off that tells
+the pod's uploader this container has finished writing), so a campaign's staged
+entrypoint carries what its lane asked for. ``render_entrypoint`` exists so the
+bare-image case can have that script without expanding a config tree it does not need.
 
 **Why reuse the entrypoint at all**, rather than building an environment: the environment a
 run sees is the ROS overlay, ``/ws/install``, the init block, ``execution.env`` and
@@ -561,8 +530,7 @@ its log; that was an admission the operation was wrong rather than a fix. To ins
 stack, the caller starts that stack in its own exec container.
 
 **One container, so there is no state to manage.** At most one exists at a time, under a
-fixed name (``robovast-exec`` — deliberately not the campaign container's single-flight
-``robovast``, which ``LocalTransport`` force-removes to unblock a stop). That removes
+fixed name (``robovast-exec``). That removes
 session ids, a listing operation, and the leak class: a stray container is found and reaped
 by name at service start. Its cost is reported instead of hidden — ``ResourceUsage`` carries
 ``exec_container``, so a lane with no room can be attributed to the caller's own container.
@@ -574,8 +542,8 @@ declaring ``timeout: 900`` is not truncated at the idle cap. Limits are derived 
 passed — ``ExecRequest`` has no timeout field — and the result reports which rule applied,
 so a ``timed_out`` result names its own remedy.
 
-The lane-specific half is a small protocol (``ExecLane``): ``DockerExecLane`` runs
-``docker run``/``docker exec``, ``KubeExecLane`` an aux pod plus ``pods/exec``. Everything
+The lane-specific half is a small protocol (``ExecLane``): ``KubeExecLane`` runs an aux
+pod plus ``pods/exec``. Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
 ``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
@@ -672,7 +640,7 @@ resource fetching siblings by relative URL resolves within its own directory);
 ``?as=text`` returns a paginated, binary-refusing text view. Paging happens **server
 side** — reading 100 lines of a cluster log transfers 100 lines.
 
-Both lanes serve ``/results`` from that directory, with ``FileResponse``: ``Range`` and
+The service serves ``/results`` from that directory, with ``FileResponse``: ``Range`` and
 ``ETag`` come free, a byte range is a seek rather than a transfer, and a listing is a
 ``scandir``. That is what the cluster lane's campaigns being *on the service's own volume*
 buys, and it is why there is no "which part of the campaign do you need?" seam anywhere in
@@ -731,8 +699,8 @@ than polling for them.
 nothing else — no transport, no campaign registry, liveness read from the campaign's own
 terminal record. In the cluster Deployment it runs as its own container with its own
 limits, behind an nginx front that owns the pod's single port and routes ``/data/`` to it
-unbuffered; a ``vast serve`` mounts the same routes into its one process, because there
-the isolation buys nothing and a second port would cost every client. The point of the
+unbuffered; a ``vast serve`` started by hand mounts the same routes into its one process,
+because there the isolation buys nothing and a second port would cost every client. The point of the
 split is that a dozen pods delivering gigabytes at once slow each other down and nothing
 else: bulk bytes never share an event loop with the run view or the admission queue.
 
@@ -758,7 +726,7 @@ twice — once to generate, once per later turn), the file API is split:
 Data flow and result access
 ---------------------------
 
-A campaign's durable home is the service's results volume, on either lane:
+A campaign's durable home is the service's results volume:
 ``<results_root>/<campaign_id>/``, one directory, written by the campaign and read by
 everything else. ``GET /data/campaigns/{id}/archive`` tars it **on the fly** into the
 response (no scratch, nothing buffered in memory), which is what ``vast campaign
@@ -1075,11 +1043,10 @@ clock like every other, which is why it shows no controls of its own — two thi
 
 That path is also why the route asks the transport for a path outright rather than probing for
 the method. ``FileResponse`` is what carries ``Range``, and every transport has ``local_file``
-— the interface defines a refusal and both lanes subclass ``ServiceBase`` — so a presence check
+— the interface defines a refusal and the lane subclasses ``ServiceBase`` — so a presence check
 can only ever succeed, and treating it as meaningful is how a caller ends up believing a lane
 cannot serve a path when it can. It answers or it refuses by name; there is nothing to probe.
-Both lanes answer, because a campaign's results are under the service's own results root on
-either of them.
+The lane answers, because a campaign's results are under the service's own results root.
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
 descriptor per *world*, so one build serves every run that used it — worth a background thread,
@@ -1149,16 +1116,14 @@ lives in the ``run_data`` MCP plugin):
   the single implementation behind two callers — the
   ``vast workspace init`` / ``vast workspace update`` CLI commands and the web UI's
   drag-a-folder upload — so both
-  stay transport-agnostic (in-process ``LocalTransport`` or HTTP client) and can
-  never drift.
+  stay transport-agnostic and can never drift.
 * **Campaigns** — ``create_campaign`` (backend implicit in the deployment;
   ``upload_to_share`` is a per-campaign launch flag on the request, not a separate
   operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``
   / ``stop`` / the ``/archive`` stream. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
-  (the current batch's execution units and a single running job's log); each transport
-  implements them over its own source — the local job dirs + their ``logs/system*.log``
-  (``LocalTransport``), or the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``
-  (``ClusterService``). Both merge **every** container the job runs into one append-only
+  (the current batch's execution units and a single running job's log); the lane
+  implements them over the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``
+  (``ClusterService``), merging **every** container the job runs into one append-only
   stream through the shared ``common.log_tail.MergedLogBuffer``, since a job is not one
   container: the ROS shape gives the simulator and the system under test their own, and
   on the cluster those are *native sidecars*, which live in ``spec.initContainers`` and
@@ -1178,7 +1143,7 @@ lives in the ``run_data`` MCP plugin):
   registry reports its live ``ControllerState``; an untracked one is reconstructed
   from its recorded facts (``reconstruct_status_from_disk`` over ``campaign_dir``) — the
   same precedence ``get_status`` uses. Which campaigns *exist* is the union of
-  the results directory and the registries of what is being driven, on either lane.
+  the results directory and the registries of what is being driven.
 * **Postprocessing** — ``get_postprocessing`` / ``update_postprocessing`` /
   ``run_postprocessing``. The structured ``*_postprocessing`` pair is the programmatic
   API (MCP, CLI); ``get_postprocessing_source`` / ``update_postprocessing_source`` are
@@ -1191,9 +1156,9 @@ lives in the ``run_data`` MCP plugin):
 
 **New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
 ``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
-``run_postprocessing`` each call ``LocalTransport._admit_storage`` first, on both lanes (the
-cluster lane's own ``build_image`` and ``run_postprocessing`` call it too). It reads
-``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once for both lanes from the
+``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (the cluster lane's
+own ``build_image`` and ``run_postprocessing`` call it too). It reads
+``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
 refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
 reading that fails is logged and not judged, as an unmeasured meter is not a full disk, so a
@@ -1215,7 +1180,7 @@ room their results land in -- and admission resumes by itself once space is free
 delete are never guarded: they are what free space.
 
 **The caches a clear may empty are copies of durable data, and nothing else.**
-``service_cache`` / ``clear_service_cache`` sweep the scene cache, on both lanes; the
+``service_cache`` / ``clear_service_cache`` sweep the scene cache; the
 results directory is the durable home and is never offered. That the clear has nothing else to offer is the point: a campaign's bytes exist
 in exactly one place, so no copy of them can go stale, be swept mid-read, or need a lock
 that a reader of them would have to respect.
@@ -1265,7 +1230,7 @@ read from the composed campaign data — it is re-derived from the raw config, b
 exist *before* composition (the images are what the campaign then runs in). So
 ``extract_build_specs`` calls ``apply_backend`` itself, and therefore has to resolve what that
 contributes itself: ``image_project`` rides ``CreateCampaignRequest`` → ``RunOptions`` →
-``_start_build_images`` / ``_resolve_built_images`` → ``extract_build_specs`` on both lanes.
+``_start_build_images`` / ``_resolve_built_images`` → ``extract_build_specs``.
 Missing this was asymmetric, which is what hid it: a container taking the default member was
 resolved on the composition path, so ``sut`` and ``scenario`` built correctly while the one
 container declaring a ``backend:`` carried ``family:robovast-roqsim`` into its Dockerfile's
@@ -1280,20 +1245,12 @@ choose the image it deserializes rosbags in, so a symbolic ref surviving there w
 ``family:`` string handed to Kubernetes as an image name.
 
 **Where an image lives is a lane's answer, not a caller's.** Everything above is about the
-*recipe* — which containers build and what their inputs hash to, one derivation shared by
-both lanes. Where the resulting image ends up is the other half, and it is the half that had
-no name: :class:`~robovast.service.image_store.ImageBuildStore`, with the local docker daemon
-and the deployment's registry as its two implementations. A lane overrides exactly one
-factory (``_images``); every question asked of a store — what is this image called here, is
-it actually here — is then written once.
-
-That seam is the fix for a class of bug rather than one bug. Before it, the local store was a
-class and the cluster's identical responsibilities were nineteen methods of
-``ClusterService``, so ``self._image_builds`` existed on **both** lanes and quietly answered
-wrongly on one. Every cross-lane concern needed an override someone had to remember, and one
-was forgotten: ``exec_in_container`` ran ``docker image inspect`` inside a service pod that
-has no docker, and reported every built image in the registry as unbuilt. Two rules the ABC
-now carries, because both were learned the expensive way:
+*recipe* — which containers build and what their inputs hash to, one derivation for any
+lane. Where the resulting image ends up is the other half:
+:class:`~robovast.service.image_store.ImageBuildStore`, which the cluster lane answers
+with the deployment's registry. A lane overrides exactly one factory (``_images``); every
+question asked of a store — what is this image called here, is it actually here — is then
+written once, and asked of the store rather than assumed. Two rules the ABC carries:
 
 * ``present()`` **raises when it cannot tell.** "I could not check" and "it is not there"
   are different answers; collapsing them is what turned a missing *dependency* into a
@@ -1324,12 +1281,9 @@ from the campaign's frozen ``_config/`` cannot work anyway — that snapshot hol
 and the run files, not the build inputs — and the recording is the better answer regardless,
 because a diagnostic about a run should run what the run ran.
 
-**A registry is not a node, and only one lane needed telling.** The store answers where an
-image *lives*; whether a pod can *start* it quickly is a different question, and the two lanes
-answer it differently for a reason worth writing down. Locally they are the same question:
-``buildx --load`` on the pinned ``docker`` builder writes into the daemon store the runner
-reads, so a built image is runnable the instant the build returns. On the cluster the build
-pushes to a registry and stops there — the image exists and is on **no node** — so whoever
+**A registry is not a node.** The store answers where an image *lives*; whether a pod can
+*start* it quickly is a different question. The build pushes to a registry and stops
+there — the image exists and is on **no node** — so whoever
 runs it first pays the whole multi-GB pull. That is usually ``exec_in_container``, whose entire
 justification is answering "is the package installed?" in seconds; the web UI's 3D panel even
 names the wait out loud (*Fetching the simulation image onto the node*).

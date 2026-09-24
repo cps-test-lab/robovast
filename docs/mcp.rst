@@ -14,7 +14,7 @@ server that exposes RoboVAST to AI assistants (Claude, Open WebUI, etc.). The
 server spans two concerns:
 
 * **Run** — author a project (``.vast``), check it, then start, monitor and stop
-  campaigns on the local Docker backend or on a Kubernetes cluster.
+  campaigns on the Kubernetes cluster the service is deployed into.
 * **Analyze** — inspect campaigns, configurations, runs, logs, and tabular run
   data (read-only).
 
@@ -191,8 +191,8 @@ things**, and neither is "how carefully it looks".
 
 Note what the table does *not* say. ``validate_project`` composes too (it has to, to report
 ``total_trials``), so "composes" is not the axis. And the container context is the *execution
-backend's*: on the cluster lane that is the campaign's aux pod, on the local lane ``docker``
-on the service host — which is why ``start_campaign`` is the boundary rather than "the cluster".
+backend's* — the campaign's aux pod — which is why ``start_campaign`` is the boundary rather
+than "the cluster".
 
 The world column is where ``validate_project`` runs a container, and it is a
 **different** container from the backend context in the last column: a held, read-only query
@@ -267,17 +267,16 @@ remember and map onto their situation:
 * A variation declaring an auxiliary container is exercised by **both**, because both
   compose: composing is what asks a variation to produce what it varies, and a variation may
   need a helper image to do it. Each arranges a runner for one first — see
-  ``LocalTransport.validate_project`` and ``preview_configurations``, which enter the same
+  ``ServiceBase.validate_project`` and ``preview_configurations``, which enter the same
   held aux-runner span. What separates them is what they *report*: preview names the cells
   the sweep resolves to and the images it ran in ``aux_containers``, where validation reports
   only the counts. The composition is cached either way, so a following ``start_campaign``
   reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
-  span by ``LocalTransport._aux_runner_context``: a campaign gets one for its run, a preview
+  span by ``ServiceBase._aux_runner_context``: a campaign gets one for its run, a preview
   gets one held by the container-exec manager, idle only once every holder has released it
-  and reaped after that, and a local service
-  needs none because ``docker`` on the host is the fallback. When none of those applies —
-  composing in a process with no backend and no ``docker`` — the refusal is
+  and reaped after that. When neither applies — composing in a process with no backend —
+  the refusal is
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
   container, rather than a ``docker run`` that dies with a bare ``FileNotFoundError``. It says
   where it ran, since that and not the ``.vast`` is what was missing.
@@ -560,14 +559,13 @@ Campaign control
 ----------------
 
 The ``execution`` plugin lets an assistant drive campaigns. It is a
-**strict client of a running** ``robovast-service`` — a ``vast serve`` locally,
-or the deployed one recorded by ``vast login``. The service is
-the single execution authority and owns run-state tracking; there is **no local
-subprocess path**. When no service is reachable the control tools fail loudly
-(``{"error": "no robovast-service reachable — start a 'vast serve' …"}``) rather
-than silently running a divergent local lane. There is no serviceless run at all: a
-local service on its Docker lane is the same path as a remote one, differing only in
-which service answers.
+**strict client of a running** ``robovast-service`` — the deployment recorded by ``vast
+login``, or the one answering on the conventional port. The service is the single
+execution authority and owns run-state tracking; there is **no local subprocess path**.
+When no service is reachable every tool fails loudly (``{"error": "no robovast-service
+reachable — …"}``) rather than silently running or reading something else. There is no
+serviceless run at all: which service answers is the only thing that differs between a
+deployment on this machine and one across the room.
 
 ``start_campaign`` validates and launches through the service and returns
 immediately — the campaign has barely started. Wait for it with
@@ -607,7 +605,7 @@ next. It is deliberately not on every reply, since a field that always appears i
 one that stops being read.
 
 Results live
-wherever the service keeps them — its results root on either lane (retrieve via the web UI or
+wherever the service keeps them — its results root (retrieve via the web UI or
 ``get_campaign_download``, which hands back the route, the ``vast campaign download``
 command with the id filled in, and a URL when this deployment declares an origin to build
 one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
@@ -658,16 +656,14 @@ results and is shown by ``list_campaigns`` and on the campaign card in the web
 UI — where it is the only thing telling two same-day ``campaign-<timestamp>``
 ids apart. The launcher in the web UI has the same field.
 
-**A service runs one lane.** Which one is fixed when it starts
-(``vast serve --backend local|cluster``, ``auto`` picking cluster in a pod), so no
-tool takes a lane argument: the service resolves it, and every tool scoped to an
-existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ran on.
+**A service runs one lane.** Which one is fixed when it starts, so no tool takes a lane
+argument: the service resolves it, and every tool scoped to an existing ``campaign_id``
+or ``build_id`` gets the lane that campaign actually ran on.
 
 .. note::
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
-   teardown (terminating a local Docker container, or the cluster's in-flight
-   scenario Jobs). It lands on whatever is *running*, and the reply says which: the
+   teardown (the in-flight scenario Jobs). It lands on whatever is *running*, and the reply says which: the
    **runs** (the batches that finished are still postprocessed and indexed, so the
    campaign stays queryable), **postprocessing** (results kept, derived data not
    computed — re-run it), or the **share upload** (cancelled, partial archive removed).
@@ -690,12 +686,11 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same
    **per-job** view the web UI Monitor shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
-   log of a single job. A **finished** job is served as readily as a running one:
-   locally the containers write their files in place, and on the cluster a pod that
-   has gone is read from the campaign's objects instead.
+   log of a single job. A **finished** job is served as readily as a running one: a pod
+   that has gone is read from the campaign's own files instead.
 
-   Each job also carries ``node`` — where its pod was placed, ``None`` on the local lane and
-   on a job the scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
+   Each job also carries ``node`` — where its pod was placed, ``None`` on a job the
+   scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
    has not begun executing has one too) and, while it runs on a cluster, ``usage``: what it
    is consuming against **both** figures it was given. Measured against the request says
    whether the reservation was the right size; against the limit, whether the job is near
@@ -712,7 +707,7 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
 
    ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current
    usage — plus, where the lane can report them, its ``disk`` and ``results``
-   filesystems — and a ``parallel_runs`` flag. The fields mean the same thing on either
+   filesystems — and a ``parallel_runs`` flag. The fields mean the same thing on any
    lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
    against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
    for memory), a run's concurrency is ``1`` when ``parallel_runs`` is false,
@@ -725,11 +720,10 @@ existing ``campaign_id`` or ``build_id`` gets the lane that campaign actually ra
    committed — the number that decides whether the next run fits — while ``cpu_measured``
    / ``memory_measured_bytes`` are what is actually being consumed, which answers whether
    the last campaign needed what it asked for. ``cpu_used`` aliases whichever the lane
-   leads with (the request sum on a cluster, host utilization locally), so it stays the
-   right field when the distinction does not matter. Either pair is ``null`` where the lane
-   has no such reading — nothing reserves on the local Docker lane, and a cluster without
-   metrics-server cannot measure, saying which in ``metrics_unavailable`` — and ``null``
-   never means zero.
+   leads with (the request sum on a cluster), so it stays the right field when the
+   distinction does not matter. Either pair is ``null`` where the lane has no such reading
+   — a cluster without metrics-server cannot measure, saying which in
+   ``metrics_unavailable`` — and ``null`` never means zero.
 
    ``storage_refusal`` is non-null while ``disk`` or ``results`` has less free space than the
    reserve the service keeps (``ROBOVAST_DISK_RESERVE_GB``, see :ref:`deployment`). While
@@ -802,11 +796,9 @@ owns, with no log reading at all:
    ``vast campaign wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
    ``get_campaign_log`` for what the phase is doing.
 
-That backstop is not wasted — it is simply a different job. Both lanes now *enforce* a
-per-job limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds`` on the cluster,
-a ``timeout``-wrapped compose step locally), but only the cluster falls back to an hour per
-packed run when none is declared — locally an undeclared timeout stays unbounded. Killing
-late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
+That backstop is not wasted — it is simply a different job. The lane *enforces* a per-job
+limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds``), and falls back to an
+hour per packed run when none is declared. Killing late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
 figures are deliberately separate (``job_deadline_seconds``, which falls back, versus
 ``declared_job_seconds``, which does not). A wedged local run with no declared timeout
 therefore stays alive to be inspected — end it with ``stop_campaign``.
@@ -1193,8 +1185,8 @@ Testing a container and its setup
 ``exec_in_container`` runs one command in an experiment image, and **which** image depends
 on the config source it is given — the two answer different questions. A ``workspace_id``
 runs what that project would build *now*: a container declaring ``system_packages`` /
-``python_packages`` must already have its image on this lane's own image store (the local
-docker daemon, or the deployment's registry), because this never builds implicitly — a
+``python_packages`` must already have its image on the lane's own image store (the
+deployment's registry), because this never builds implicitly — a
 seconds-long check must not silently become a multi-minute build. A ``campaign_id`` runs the
 image that campaign *recorded*, so it is what you exec against to ask "what did that run
 actually see?", and it stays correct after the workspace has moved on.
@@ -1233,10 +1225,8 @@ rather than a historical digest. A ``build:<tag>`` must already exist: this neve
 implicitly, because a quick check silently becoming a full image build is the cost it was
 added to remove.
 
-**The two lanes answer the same way.** On a service offering both, ``backend`` picks one
-(``"local"`` for Docker on the serve host, ``"cluster"`` for Kubernetes); omitting it uses
-the service's default lane, the same rule ``start_campaign`` follows. Ask the lane you
-will *run* on: an image checked on one says nothing about the other. Both stage the
+``backend`` names a lane on a service offering several; omitting it uses the service's
+lane, the same rule ``start_campaign`` follows. The service stages the
 project's ``/config`` and, when ``workspace_id`` is given, mount that workspace read-only
 at ``/sources/<workspace_id>`` — the same address, so a path returned by ``write_file`` is
 usable verbatim in the command either way. In-cluster the staging is a tar stream from the

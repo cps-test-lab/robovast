@@ -777,7 +777,7 @@ its campaign id so concurrent campaigns sharing a topic stay distinguishable.
 For an **in-cluster** service the ntfy config is read from your ``.env`` at
 ``setup`` time and injected into the service pod (as a Kubernetes Secret, exactly
 like the share credentials), so changing the topic means re-running ``setup
---force`` to redeploy. A local ``vast serve`` reads the ``.env`` live.
+--force`` to redeploy. A ``vast serve`` started by hand reads the ``.env`` live.
 
 
 Experiment image builds (registry)
@@ -915,9 +915,9 @@ created, rather than leaving a revoked credential deployed and still attached as
 The pull Secret that ``setup`` creates from those values is **found by the service
 itself** — it looks for the fixed name it would have created (``robovast-registry-push``)
 and uses it when present, so nothing has to tell it it exists. This matters for a
-**local** ``vast serve``: ``setup`` stores its env in the *service pod*, which an
-off-cluster service never reads, so without the lookup it would conclude there were no
-credentials at all. Set ``ROBOVAST_REGISTRY_PULL_SECRET`` only to point at a
+``vast serve`` started by hand (``mirrord exec``): ``setup`` stores its env in the *service
+pod*, which that process never reads, so without the lookup it would conclude there were
+no credentials at all. Set ``ROBOVAST_REGISTRY_PULL_SECRET`` only to point at a
 **differently named** object; it is an override, not a requirement.
 
 .. _cluster-registry-dns:
@@ -980,8 +980,7 @@ What is *not* copied
 
 The context skips ``BUILD_CONTEXT_IGNORE`` (``robovast.common.build_context``) —
 ``.git``, ``results/``, ``__pycache__``, ``build/``, ``.venv`` and the rest — by exact
-name, on both lanes: the cluster prunes while it stages, the local lane writes the
-equivalent ``.dockerignore``.
+name, pruned while the context is staged.
 
 It also skips **campaign output directories**, and those are recognised by *structure*
 rather than by name: a directory holding an ``_execution/`` child. There is no name to
@@ -1227,9 +1226,8 @@ is this pod's Service.
 Where a campaign lives, and how pods reach it
 ---------------------------------------------
 
-A cluster campaign is a directory on the service's results volume,
-``<results_root>/<campaign_id>/`` — exactly what a local campaign is, in exactly the same
-layout, and the only copy: ``campaign.db``, ``_execution/`` and every run's output are
+A campaign is a directory on the service's results volume,
+``<results_root>/<campaign_id>/``, and the only copy: ``campaign.db``, ``_execution/`` and every run's output are
 written into that one tree, and downloads, re-postprocessing, the
 index and ``vast share`` all read it there.
 
@@ -1385,9 +1383,9 @@ stopping — the cluster is free for something else within one run's length, and
 to be re-run when you resume. It keeps the priority it will resume at. To end a campaign
 instead, that is ``vast campaign stop``.
 
-Both need a lane that queues campaigns against each other. A service on the local Docker lane
-runs one campaign at a time, so it has no queue to order and refuses rather than accepting a
-value it cannot act on. The service says which it is before anyone asks: ``can_schedule`` in
+Both need a lane that queues campaigns against each other; a lane with no queue refuses
+rather than accepting a value it cannot act on. The service says which it is before
+anyone asks: ``can_schedule`` in
 its version answer, printed by ``vast service info`` as its ``queue`` line and reported by the
 MCP ``get_service_info``; the web UI offers the entries only where it is true.
 

@@ -31,7 +31,7 @@ The four images
        image carrying roqsim *and* the RoboVAST contract, so the ROS shape runs its own
        simulator container from this image too.
    * - ``robovast-controller``
-     - The service: ``vast serve``, the REST API and the web UI. ``python:3.12-slim``, with
+     - The service (``vast serve``): the REST API and the web UI. ``python:3.12-slim``, with
        no ROS and no GL — deliberately, so the long-lived Deployment stays small.
    * - ``robovast-sidecar``
      - An alpine helper carrying ``curl`` and GNU ``tar`` — the two halves of every

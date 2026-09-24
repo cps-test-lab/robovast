@@ -4,23 +4,23 @@ Project **invariants** for any agent or contributor changing this repository: wh
 must hold, not how the system works. How it works is in `docs/`, linked from here and never
 restated — a copy of a documented fact is a second source that will disagree.
 
-## 1. A change must work across every surface and lane
+## 1. A change must work across every surface, and the lane answers by name
 
-One operation contract behind four clients and two execution lanes: every operation is on the
-interface and reachable from every client, and each lane implements it or refuses it by name —
-never answers with the other lane's default, and never accepts what it will not do.
+One operation contract behind four clients and the execution lane: every operation is on the
+interface and reachable from every client, and the lane implements it or refuses it by name —
+never accepts what it will not do.
 
 - Thread it end to end and never implement it inside one client — `docs/developer_guide.rst`,
   "Add an interface operation".
-- A lane may offer less than the other. What it does not offer it refuses with
-  `UnsupportedOnLane`, in its own class, naming the operation and the lane, so CLI, MCP, web
-  UI and HTTP show one sentence — `docs/architecture.rst`, "The two lanes do not offer the
-  same operations".
-- What the lanes share lives in `ServiceBase` and is correct for any lane; what differs is an
-  abstract hook there, answered in each lane's own class. Never a body on the base that one
-  lane would have to un-say — `docs/architecture.rst`, "Two lanes, one base".
+- What the lane does not offer it refuses with `UnsupportedOnLane`, in its own class, naming
+  the operation and the lane, so CLI, MCP, web UI and HTTP show one sentence —
+  `docs/architecture.rst`, "A lane refuses by name".
+- What is correct for any lane lives in `ServiceBase`; what depends on where the runs happen
+  is an abstract hook there, answered in the lane's own class, and in the test suite's null
+  lane. Never a body on the base that a lane would have to un-say — `docs/architecture.rst`,
+  "One base, the lane's hooks".
 - CLI, MCP and web UI stay behaviourally consistent: same inputs, same results, whichever
-  client and lane the caller uses.
+  client the caller uses.
 - Every request is authenticated and identity comes from the resolved `Principal` —
   `docs/http_api.rst`, "Who may call it".
 
@@ -71,7 +71,7 @@ A change must hold four things:
 - **A plugin imports without the thing it drives** — resolving entry points to list what is
   available must not need a Docker socket or a kubeconfig.
 - **Missing means missing, not broken**: `vast` starts, each group lists only what is
-  installed, and an absent lane names the lanes that exist.
+  installed, and a core with no lane names the distribution that ships one.
 - **A client install stays a working install** — including deferred imports of the core, which
   only fail at call time.
 

@@ -13,8 +13,9 @@ using the ``vast results`` command group.
 Output Structure
 ----------------
 
-The results directory is named with ``--results-dir``: on the serve command for where
-campaigns land, and on each ``vast results`` verb for which tree to read.
+The results directory is named with ``--results-dir``: on the serve command the
+deployment runs for where campaigns land, and on each ``vast results`` verb for which
+tree to read.
 
 Top-Level Layout
 ^^^^^^^^^^^^^^^^
@@ -123,7 +124,7 @@ inspectable part of it.
 
 ``launch.yaml`` records the **request**, where ``execution.yaml`` records what happened:
 ``config_filter``, ``campaign_name``, ``runs`` (as *requested*), ``postprocess``,
-``upload_to_share``, ``show_gui`` and ``backend``. It exists because the request was otherwise
+``upload_to_share`` and ``backend``. It exists because the request was otherwise
 unrecoverable — ``config_filter`` in particular was consumed during config expansion and kept
 nowhere — so "was this the full sweep or a one-config pilot?" could not be answered about a finished
 campaign, by a person or by a retrigger.
@@ -239,8 +240,7 @@ the ingest that turns data files into tables globs run directories.
 Every file a ``rosbags_*`` step derives from this run's bag lands here too, for the same
 reason — ``poses.csv``, one ``action_<name>_feedback.csv`` and ``action_<name>_status.csv``
 per converted action, ``nav2_behavior_tree.csv``, the costmap and per-topic CSVs. They are
-the same on both lanes, so a downloaded campaign carries them whether it ran locally or on
-a cluster. Each is named, with what it was derived from, in
+the same for every campaign, so a downloaded campaign carries them. Each is named, with what it was derived from, in
 ``_transient/postprocessing.yaml``.
 
 The conversion reads each bag once, and reads from it only the topics some configured handler
