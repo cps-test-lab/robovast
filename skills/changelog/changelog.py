@@ -9,8 +9,9 @@ changelog is written from; nothing here needs a forge or a token.
 
     collect   one block per merge since the last ``v*`` tag: number, title, first paragraph
               of the description, and the areas of the tree the diff touched
-    check     ``CHANGELOG.md`` has a section for the version, every merge in the range is
-              cited in it exactly once, and nothing outside the range is
+    check     ``CHANGELOG.md`` has a section for the version: a flat list of at most
+              fifteen short entries, each a bold topic and a line on it, citing no merge
+              outside the range
     section   the section's body, for the release notes
 
 A merge without a pull request number is keyed by its short sha instead, and is cited as
@@ -29,6 +30,12 @@ from pathlib import Path
 CHANGELOG = "CHANGELOG.md"
 #: A description's first paragraph says what a merge is for; past this, it is saying how.
 SUMMARY_CHARS = 400
+#: The changes a user of the previous version needs to hear about; the rest is in git.
+MAX_ENTRIES = 15
+#: An entry's text, citations aside: a topic and one line on it.
+MAX_ENTRY_CHARS = 160
+ENTRY = re.compile(r"^- \*\*[^*]+\*\* — \S")
+CITATIONS = re.compile(r"\s*\((?:#\d+|[0-9a-f]{8})(?:, (?:#\d+|[0-9a-f]{8}))*\)\s*$")
 NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 CITATION = re.compile(r"#(\d+)\b|\b([0-9a-f]{8})\b")
 HEADING = re.compile(r"^## (\S+)\s*$")
@@ -113,6 +120,25 @@ def cited(section: str) -> list[str]:
     return [f"#{n}" if n else sha for n, sha in CITATION.findall(section)]
 
 
+def entries(section: str) -> tuple[list[str], list[str]]:
+    """The section's entries, each joined onto one line, and any line that is not part of one.
+
+    An entry is a ``- `` item at the margin; an indented line continues the entry above it.
+    """
+    found: list[str] = []
+    stray: list[str] = []
+    for line in section.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("- "):
+            found.append(line.strip())
+        elif line.startswith(" ") and found:
+            found[-1] += " " + line.strip()
+        else:
+            stray.append(line.strip())
+    return found, stray
+
+
 # -- the commands -----------------------------------------------------------------------
 
 def command_collect(root: Path, since: str, head: str) -> int:
@@ -134,27 +160,32 @@ def command_check(root: Path, version: str, since: str, head: str) -> int:
     section = read_section(path.read_text(encoding="utf-8"), version)
     if section is None:
         return fail(f"{CHANGELOG} has no '## {version}' section")
-    expected = {m.key: m for m in merges(root, since, head)}
-    citations = cited(section)
-    present = set(citations)
+    expected = {m.key for m in merges(root, since, head)}
+    found, stray = entries(section)
     problems = []
-    missing = [k for k in expected if k not in present]
-    if missing:
-        problems.append("merged in the range but not cited: "
-                        + ", ".join(f"{k} ({expected[k].subject})" for k in missing))
-    foreign = sorted(k for k in present if k not in expected)
+    if not found:
+        problems.append("the section has no entries")
+    if len(found) > MAX_ENTRIES:
+        problems.append(f"{len(found)} entries; at most {MAX_ENTRIES} -- keep the changes a "
+                        "user must know about, the rest is in git")
+    if stray:
+        problems.append("not an entry (the section is one flat list, no headings or prose): "
+                        + "; ".join(stray))
+    for entry in found:
+        if not ENTRY.match(entry):
+            problems.append(f"not '- **Topic** — what changed': {entry}")
+        text = CITATIONS.sub("", entry)
+        if len(text) > MAX_ENTRY_CHARS:
+            problems.append(f"{len(text)} characters; at most {MAX_ENTRY_CHARS}: {entry}")
+    foreign = sorted(k for k in set(cited(section)) if k not in expected)
     if foreign:
         problems.append("cited but not merged in the range (an issue number, or a typo): "
                         + ", ".join(foreign))
-    twice = sorted({k for k in citations if citations.count(k) > 1})
-    if twice:
-        problems.append("cited more than once (one entry per change, citing every merge that "
-                        "made it): " + ", ".join(twice))
     if problems:
         for problem in problems:
             print(f"FAIL  {problem}")
         return 1
-    print(f"ok    {version}: {len(expected)} merges since {since}, each cited once")
+    print(f"ok    {version}: {len(found)} entries, {len(expected)} merges since {since}")
     return 0
 
 
