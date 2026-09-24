@@ -2765,7 +2765,7 @@ class ServiceBase(RobovastInterface):
             # entrypoint is never copied across.
             vast_file, request.config_name,
             cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
-            command=request.command)
+            command=request.command, archived=bool(request.campaign_id))
         # Ownership of spec's staging tree passes to the manager: a held container mounts
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
@@ -2869,7 +2869,12 @@ class ServiceBase(RobovastInterface):
         # Validate rather than reading the raw mapping: the build specs come off the
         # *model*, so handing this path a plain dict yields "no build section" for every
         # project that has one.
-        campaign_config = validate_config(load_config(vast_file))
+        # Strict for a workspace, lenient for a campaign: the split
+        # :func:`validate_config` documents. A workspace is editable, so an undeclared key
+        # there is a misspelling worth refusing; an archived campaign cannot be edited, so
+        # refusing it only makes a finished run unreadable.
+        campaign_config = (validate_config(load_config(vast_file, upgrade=True), strict=False)
+                           if campaign_id else validate_config(load_config(vast_file)))
         # Apply the simulator backend BEFORE planning, exactly as image_build,
         # campaign_data and config_generation do. Without it the `simulation` block holds
         # only the backend's own keys -- no image, no command -- so plan_containers reads

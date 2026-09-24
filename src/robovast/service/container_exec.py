@@ -387,7 +387,8 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> d
 
 
 def stage(vast_file: str, config_name: str, *,
-          cluster: bool, command: str) -> tuple[ExecSpec, dict, int, str]:
+          cluster: bool, command: str,
+          archived: bool = False) -> tuple[ExecSpec, dict, int, str]:
     """Turn a resolved ``.vast`` into a runnable :class:`ExecSpec`.
 
     A campaign's ``_config/`` is itself a project, so both sources reach this with just
@@ -415,8 +416,12 @@ def stage(vast_file: str, config_name: str, *,
             # depend on.
             # An image-family exec has no project, so there is nothing to read a
             # timeout or an env override out of -- the bare image and its command.
-            execution = ((load_config(vast_file) or {}).get("execution") or {}
-                         if vast_file else {})
+            # *archived* reads a campaign's own ``_config/``, which already ran and cannot
+            # be edited. A key the schema no longer declares changed nothing when it ran, so
+            # refusing it now makes a finished campaign unreadable rather than catching
+            # anything -- the split :func:`validate_config` documents.
+            execution = ((load_config(vast_file, upgrade=archived) or {}).get("execution")
+                         or {} if vast_file else {})
             campaign_data = {"configs": [], "execution": execution}
             os.makedirs(os.path.join(generated, "_transient"), exist_ok=True)
             with open(os.path.join(generated, "_transient", "entrypoint.sh"),
