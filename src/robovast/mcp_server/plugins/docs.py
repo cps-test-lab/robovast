@@ -367,7 +367,13 @@ def _upstream_pages(address: str = "") -> tuple[dict, str, str]:
         if name and text:
             label = item.get("source") or UPSTREAM_LABEL
             pages[f"{label}-{name}"] = (_extract_title(text) or name, text)
-    return pages, fetched.get("image", ""), ""
+    image = fetched.get("image", "")
+    if not pages:
+        # A reply that merely lacks the upstream half looks like a smaller corpus, and a
+        # question it would have answered comes back "no match". An image carrying no pages
+        # at all is a fact worth reporting, whichever way it happened.
+        return {}, image, f"{image or 'the simulator image'} reported no documentation pages"
+    return pages, image, ""
 
 
 def _env_doc_roots() -> list[tuple[str, Path]]:

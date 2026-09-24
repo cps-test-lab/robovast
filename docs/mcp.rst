@@ -322,9 +322,10 @@ The corpus is fetched once per resolved image, and warmed when the server starts
 question does not pay for it. The resolution runs on every search -- it costs no container --
 so a redeployed image is picked up by the next one.
 
-**When the service is unreachable**, RoboVAST's own pages still answer and the reply carries
-an ``incomplete`` field naming what could not be read. A search that quietly dropped the
-world format would answer "no match" to a question the missing half documents.
+**When the upstream half is missing** -- the service unreachable, or an image that carries no
+pages -- RoboVAST's own pages still answer and the reply carries an ``incomplete`` field
+saying so. A search that quietly dropped the world format would answer "no match" to a
+question the missing half documents, and a smaller corpus looks like no corpus at all.
 
 ``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path separator, for a
 checkout with no image behind it.
