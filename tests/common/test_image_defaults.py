@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from robovast.common.execution import (FAMILY_MEMBERS, FLOATING_IMAGE_TAG, MEMBER_ROBOVAST,
-                                       MEMBER_ROQSIM, default_image_tag, resolve_family_image)
+from robovast.common.execution import (DEFAULT_BRANCH_IMAGE_TAG, FAMILY_MEMBERS,
+                                       FLOATING_IMAGE_TAG, MEMBER_ROBOVAST, MEMBER_ROQSIM,
+                                       default_image_tag, is_floating_image_tag,
+                                       resolve_family_image)
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "image.yml"
 
@@ -48,6 +50,26 @@ def test_the_default_tag_is_one_ci_publishes_on_every_merge(monkeypatch):
     assert default_image_tag() == FLOATING_IMAGE_TAG
     workflow = WORKFLOW.read_text()
     assert "type=raw,value=latest,enable={{is_default_branch}}" in workflow
+
+
+def test_the_branch_tag_is_the_one_branch_ci_publishes_on_push():
+    """``type=ref,event=branch`` tags a push with its branch's name, and the workflow builds
+    pushes to one branch: that name is the tag which floats beside ``latest``."""
+    workflow = WORKFLOW.read_text()
+    push = re.search(r"\n  push:\n    branches:\n((?:      - .+\n)+)", workflow)
+    assert push, "image.yml no longer lists the branches whose pushes it builds"
+    branches = re.findall(r"- (\S+)", push.group(1))
+    assert branches == [DEFAULT_BRANCH_IMAGE_TAG]
+    assert "type=ref,event=branch" in workflow and "type=ref,event=pr" in workflow
+
+
+@pytest.mark.parametrize("reference, floats", [
+    ("latest", True), ("main", True), ("pr-691", True),
+    ("2.2.0", False), ("2.2", False), ("2026-08-17", False), ("sha256:aaa", False),
+    ("pr-", False), ("main-2", False),
+])
+def test_a_tag_floats_only_where_ci_moves_it(reference, floats):
+    assert is_floating_image_tag(reference) is floats
 
 
 def test_a_pinned_tag_wins_over_the_default(monkeypatch):

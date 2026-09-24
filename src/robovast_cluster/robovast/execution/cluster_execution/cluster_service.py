@@ -334,6 +334,21 @@ class ClusterService(ServiceBase):
             return info
         info.image_ref = ref
         info.running_digest = running_image_digest(self.namespace, self.kube_context)
+        if ref:
+            from robovast.common.execution import is_floating_image_tag
+            from .registry_client import split_image_ref
+            reference = split_image_ref(ref)[2]
+            if not is_floating_image_tag(reference):
+                # A version was chosen for this deployment. A roll re-pulls that same
+                # reference, so it lands on the bytes already running -- or, on a tag that
+                # was re-pushed, on bytes the pin was chosen to keep out. Moving to another
+                # version is a change of tag, and the tag lives in the operator's
+                # environment, where `vast service upgrade` reads it.
+                info.unsupported_reason = (
+                    f"this deployment runs the fixed version {reference!r}, which an "
+                    f"upgrade from here would not change. To move to another version, set "
+                    f"ROBOVAST_PROJECT_TAG to it and run 'vast service upgrade'.")
+                return info
         try:
             info.registry_digest = self._images.published_digest(ref) if ref else ""
         except Exception as e:  # noqa: BLE001 - a registry that will not answer is a fact
