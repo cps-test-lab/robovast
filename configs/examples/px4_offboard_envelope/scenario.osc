@@ -112,14 +112,14 @@ scenario test_scenario:
         # different real-time factors, and comparing them in wall seconds would be comparing the
         # host's load. /clock is recorded so anything wall-stamped can be mapped back.
         #
-        # BOTH position sources are recorded, and that is a deliberate measurement choice rather
-        # than belt and braces: /fmu/out/... is what PX4's EKF2 BELIEVED, /drone/odom is where the
-        # aircraft actually was. The difference between them is estimator error, and it is a real
-        # observable of this campaign -- see files/metrics.py.
+        # Only PX4's belief is recorded here: /fmu/out/... is what EKF2 BELIEVED. Where the
+        # aircraft actually was comes from the simulator's own pose table (sim_poses.csv, written
+        # for every run), not from a topic -- this airframe has no controller and therefore no
+        # odometry publisher. The difference between the two is estimator error, a real observable
+        # of this campaign -- see files/metrics.py.
         bag_record([
                 '/clock',
-                '/fmu/out/vehicle_local_position_v1',
-                '/drone/odom'
+                '/fmu/out/vehicle_local_position_v1'
             ],
             use_sim_time: true)
 
@@ -128,17 +128,26 @@ scenario test_scenario:
         # not in, and arming into a mode that is then rejected leaves a live aircraft under no
         # command. The short settles are the trial's, not the protocol's -- PX4 acknowledges
         # asynchronously, and firing both in one tick races the acknowledgement.
+        #
+        # Every publish to /course/... offers transient-local durability, because offboard_stream
+        # subscribes with it (so a phase or a leg published a moment before its subscription
+        # matched is still delivered). Durability is request/offer: a subscriber asking for
+        # transient-local never matches a volatile publisher, and the default preset is volatile.
+        # Without this line nothing here reaches the node, the aircraft never arms, and the run
+        # reads as a thrust-margin failure.
         serial:
             log(msg: 'switch to offboard')
             topic_publish(topic_name: '/course/phase',
                           topic_type: 'std_msgs.msg.String',
-                          value: '{\"data\": \"offboard\"}')
+                          value: '{\"data\": \"offboard\"}',
+                          qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(2s)
 
             log(msg: 'arm')
             topic_publish(topic_name: '/course/phase',
                           topic_type: 'std_msgs.msg.String',
-                          value: '{\"data\": \"arm\"}')
+                          value: '{\"data\": \"arm\"}',
+                          qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(3s)
 
         # -- the course ---------------------------------------------------------------------
@@ -165,35 +174,40 @@ scenario test_scenario:
             topic_publish(
                 topic_name: '/course/ned_setpoint',
                 topic_type: 'geometry_msgs.msg.PointStamped',
-                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 0.0, \"y\": 0.0, \"z\": -3.0}}')
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 0.0, \"y\": 0.0, \"z\": -3.0}}',
+                qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(12s)
 
             log(msg: 'leg 1 -> N=5 E=5 D=-3')
             topic_publish(
                 topic_name: '/course/ned_setpoint',
                 topic_type: 'geometry_msgs.msg.PointStamped',
-                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 5.0, \"y\": 5.0, \"z\": -3.0}}')
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 5.0, \"y\": 5.0, \"z\": -3.0}}',
+                qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(12s)
 
             log(msg: 'leg 2 -> N=5 E=-5 D=-3')
             topic_publish(
                 topic_name: '/course/ned_setpoint',
                 topic_type: 'geometry_msgs.msg.PointStamped',
-                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 5.0, \"y\": -5.0, \"z\": -3.0}}')
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 5.0, \"y\": -5.0, \"z\": -3.0}}',
+                qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(12s)
 
             log(msg: 'leg 3 -> N=-5 E=-5 D=-3')
             topic_publish(
                 topic_name: '/course/ned_setpoint',
                 topic_type: 'geometry_msgs.msg.PointStamped',
-                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": -5.0, \"y\": -5.0, \"z\": -3.0}}')
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": -5.0, \"y\": -5.0, \"z\": -3.0}}',
+                qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(12s)
 
             log(msg: 'return over the pad')
             topic_publish(
                 topic_name: '/course/ned_setpoint',
                 topic_type: 'geometry_msgs.msg.PointStamped',
-                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 0.0, \"y\": 0.0, \"z\": -3.0}}')
+                value: '{\"header\": {\"frame_id\": \"ned\"}, \"point\": {\"x\": 0.0, \"y\": 0.0, \"z\": -3.0}}',
+                qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(12s)
 
         # -- land and disarm ----------------------------------------------------------------
@@ -206,13 +220,15 @@ scenario test_scenario:
             log(msg: 'land')
             topic_publish(topic_name: '/course/phase',
                           topic_type: 'std_msgs.msg.String',
-                          value: '{\"data\": \"land\"}')
+                          value: '{\"data\": \"land\"}',
+                          qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(25s)
 
             log(msg: 'disarm')
             topic_publish(topic_name: '/course/phase',
                           topic_type: 'std_msgs.msg.String',
-                          value: '{\"data\": \"disarm\"}')
+                          value: '{\"data\": \"disarm\"}',
+                          qos_profile: qos_preset_profiles!system_default_transient_local)
             wait elapsed(3s)
 
             log(msg: 'trial complete')

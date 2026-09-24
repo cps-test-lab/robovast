@@ -117,7 +117,9 @@ class OffboardStream(Node):
         # Reliable + transient-local for both scenario-facing topics, so that a phase or a leg
         # published a moment before this node's subscription matched is still delivered. Without
         # durability the FIRST message of the flight is the one most likely to be lost, and losing
-        # it looks like an aircraft that ignored its first command.
+        # it looks like an aircraft that ignored its first command. The publisher has to OFFER the
+        # same durability or the two never match at all: every `topic_publish` in scenario.osc
+        # passes the transient-local preset for that reason.
         latched = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
