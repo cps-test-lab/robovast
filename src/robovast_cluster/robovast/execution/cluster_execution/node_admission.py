@@ -186,23 +186,17 @@ class NodeBudget:
     ``Unschedulable``: the free cores are spread across nodes and no single node
     holding the 4.75 a pod needed.
 
-    *node_id* is which node this is -- the same hash ``runs.node_label`` records, and the
-    value ``robovast.io/node-id`` carries where the node has been labelled. **It is this
-    object's identity**, and every dict in the controller is keyed on it, so a provider must
-    give a distinct one to every node it reports. Two nodes sharing an id are one node to the
-    accounting: their free capacity collides in a single slot and whatever the other node had
-    is simply not offered to anybody. That is what ``None`` for every unlabelled node did --
-    a cluster whose nodes predate the label ran on one node's worth of capacity, quietly, and
-    the bigger the cluster the more of it disappeared.
+    *node_id* is this object's identity -- the same hash ``runs.node_label`` records, and the
+    value ``robovast.io/node-id`` carries where the node is labelled. Every dict in the
+    controller is keyed on it, so two nodes sharing one are a single node to the accounting
+    and the other's capacity is offered to nobody. Never absent: a node with no label is
+    still a node, and "no node at all" is a different question.
 
-    *pinnable* is the separate question: whether that identity is on the node as a label, and
-    so whether a ``nodeSelector`` can name it. A node that joined since the last ``setup``
-    still has an identity and still holds work -- it simply cannot be *selected*, so a job
-    placed there is created unpinned and kube-scheduler settles it. Splitting the two is the
-    whole point: "which node is this" and "can I name it" are different facts, and one field
-    answering both is what let `None` mean a node and no node at once.
+    *pinnable* is that other question: whether the identity is on the node as a label, so a
+    ``nodeSelector`` can name it. An unpinnable node still holds work -- the job is created
+    unpinned and kube-scheduler settles it.
     """
-    node_id: "str | None"
+    node_id: str
     free_cpu: float
     free_memory: int
     free_gpu: int = 0
@@ -841,7 +835,7 @@ class AdmissionController:
         """
         with self._lock:
             nodes, _ = self._effective_free_locked()
-            return sorted(n.node_id for n in nodes if n.node_id and n.pinnable)
+            return sorted(n.node_id for n in nodes if n.pinnable)
 
     def growable(self) -> bool:
         """Whether the cluster can add nodes. See :attr:`Budget.growable`."""
