@@ -312,9 +312,8 @@ def default_image_project() -> str:
     """The project (registry/namespace) the image family is pulled from.
 
     ``ROBOVAST_PROJECT`` is the *one* image knob: it moves the whole set at once, which
-    is why there are no per-image variables. Five of those existed and three were never
-    propagated into the in-cluster service, so an operator could set them all and still
-    run the published images -- a knob per image is a knob per place to forget.
+    is why there are no per-image variables: every variable has to reach the in-cluster
+    service as well as this host, and a knob per image is a knob per place to forget.
     """
     return os.environ.get("ROBOVAST_PROJECT", "").strip() or DEFAULT_IMAGE_PROJECT
 
@@ -325,12 +324,11 @@ def default_image_tag() -> str:
     :data:`FLOATING_IMAGE_TAG` unless ``ROBOVAST_PROJECT_TAG`` pins one, and resolving to
     it warns (see :func:`resolve_family_image`).
 
-    Deriving it from the installed version instead -- so a client and its images would be
-    in step with nobody pinning either -- was tried and is wrong: it assumes every version
-    has a published tag. This project is at 2.0.0 with no ``v2`` tag ever pushed, and CI
-    publishes semver tags only for ``v*`` pushes, so the derived default named an image
-    that does not exist. A default has to be a tag CI produces on every merge to the
-    default branch, and ``latest`` is the only one that is.
+    Not derived from the installed version: CI publishes semver tags only for a ``v*`` push,
+    so an unreleased version or an editable install would name an image that does not
+    exist. A default has to be a tag CI produces on every merge to the default branch, and
+    ``latest`` is the only one that is. A release is pinned by naming its version in
+    ``ROBOVAST_PROJECT_TAG``.
     """
     return os.environ.get("ROBOVAST_PROJECT_TAG", "").strip() or FLOATING_IMAGE_TAG
 
@@ -350,10 +348,10 @@ def resolve_family_image(image: str, *, project: str | None = None,
     member = family_member(image)
     resolved = f"{project or default_image_project()}/{member}:{tag or default_image_tag()}"
     if warn and resolved.endswith(f":{FLOATING_IMAGE_TAG}"):
-        # The spirit of the pinning rule this replaced: a run whose image is a floating
-        # tag is not reproducible, and the person who has to know that is the one
-        # starting it. Not an error -- a floating tag is the right answer for a dev loop
-        # and for an editable install, which has no release tag to match.
+        # A run whose image is a floating tag is not reproducible, and the person who has
+        # to know that is the one starting it. Not an error -- a floating tag is the right
+        # answer for a dev loop and for an editable install, which has no release tag to
+        # match.
         #
         # *warn* exists because that reasoning is about starting a run. The cluster
         # lifecycle commands start none, and floating is the mode they are built for:
