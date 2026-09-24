@@ -181,7 +181,7 @@ def _metrics_failure_reason(exc, resource: str) -> "str | None":
 class ClusterService(ServiceBase):
     """Interface implementation that drives campaigns in-process over Kubernetes."""
 
-    LANE = "cluster"
+    IMPLEMENTATION = "cluster"
 
     #: How long a kubelet Summary reading is reused -- deliberately longer than
     #: ``_USAGE_CACHE_TTL``. One Summary payload carries every pod's stats on that node
@@ -1002,7 +1002,7 @@ class ClusterService(ServiceBase):
         from robovast.service.container_exec import ExecSpec, container_name
 
         from .container_runner import AUX_HOLD_LIMIT_S, ClusterContainerRunner
-        from .kube_exec_lane import HELD_CONTAINER
+        from .kube_exec_runner import HELD_CONTAINER
         slots = {}
         # For the reason ``AuxPodSession`` takes one: nothing in the contract says two
         # runners cannot be asked for at once, and two holds of one identity is a second
@@ -2372,7 +2372,7 @@ class ClusterService(ServiceBase):
         del campaign_id
         from robovast.service.service_base import _JOB_STATE_LIMIT_S
         command = self._LIVE_RUN_FIND.format(root=shlex.quote(run_dir))
-        _code, stdout, _stderr, timed_out = self._exec_lane().exec_in(
+        _code, stdout, _stderr, timed_out = self._exec_runner().exec_in(
             target, ["/bin/bash", "-c", command], _JOB_STATE_LIMIT_S)
         if timed_out:
             return run_dir, None
@@ -2474,7 +2474,7 @@ class ClusterService(ServiceBase):
         # lost exactly when the results are assembled.
         from robovast.service.service_base import _PROBE_LIMIT_S
         pod, pod_container = self._job_pod_target(campaign_id, job_name, container)
-        exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+        exit_code, stdout, stderr, timed_out = self._exec_runner().exec_in(
             (pod, pod_container), in_run_env(command), _PROBE_LIMIT_S)
         return ExecResult(exit_code=exit_code, stdout=stdout, stderr=stderr,
                           timed_out=timed_out, limit_s=_PROBE_LIMIT_S, limit_source="command")
@@ -2593,7 +2593,7 @@ class ClusterService(ServiceBase):
 
     # -- container exec -----------------------------------------------------
 
-    def _exec_lane(self):
+    def _exec_runner(self):
         """The in-cluster exec lane: one aux pod, driven through ``pods/exec``.
 
         Staging goes through the data plane, exactly as an image build's context does
@@ -2601,13 +2601,13 @@ class ClusterService(ServiceBase):
         it with a token scoped to its slot, and the slot is dropped with the pod.
         """
         from .container_runner import service_pod_owner_reference
-        from .kube_exec_lane import KubeExecLane
+        from .kube_exec_runner import KubeExecRunner
         owner = None
         try:
             owner = service_pod_owner_reference(self._k8s(), self.namespace)
         except Exception as e:  # noqa: BLE001 - off-cluster there is no service pod
             logger.debug("no service-pod owner reference for the exec pod: %s", e)
-        return KubeExecLane(self.namespace, owner_ref=owner,
+        return KubeExecRunner(self.namespace, owner_ref=owner,
                             kube_context=self.kube_context,
                             # The exec pod runs the experiment image, which on this lane is
                             # in our own registry and may be private. Without this the pull

@@ -27,7 +27,7 @@ from robovast.common.errors import ImageNotBuilt, ImageStoreUnavailable
 from robovast.service.image_store import ImageRef
 from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 BUILT = ImageRef(ref="registry.local:5000/robovast/sut:abc123",
                  identity="build:sut@abc123", build_id="imgbuild-sut-abc123",
@@ -47,7 +47,7 @@ def _vast(tmp_path, packages=("shapely>=2.0",)):
 
 
 def _transport(tmp_path, store):
-    t = NullLane(store=WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path))))
+    t = NullService(store=WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path))))
     t._image_store = store
     return t
 
@@ -226,7 +226,7 @@ def test_the_simulation_container_resolves_to_the_simulators_own_image(tmp_path)
     worked on a project whose roqsim comes from the image family — and the world check would
     have inherited exactly the same silence.
     """
-    transport = object.__new__(NullLane)
+    transport = object.__new__(NullService)
     scenario = transport._resolve_exec_image(_roqsim_vast(tmp_path), "scenario")
     simulation = transport._resolve_exec_image(_roqsim_vast(tmp_path), "simulation")
     assert scenario.identity == "base:1"
@@ -247,7 +247,7 @@ def test_a_stepped_campaign_keeps_the_simulator_in_the_scenario_container(tmp_pa
                       "containers": {
                           "scenario": {},
                           "simulation": {"backend": "roqsim", "config": "world.yaml"}}}}))
-    transport = object.__new__(NullLane)
+    transport = object.__new__(NullService)
     scenario = transport._resolve_exec_image(str(vast), "scenario")
     simulation = transport._resolve_exec_image(str(vast), "simulation")
     assert simulation.identity == scenario.identity
@@ -262,7 +262,7 @@ def test_an_image_family_source_resolves_without_a_project(monkeypatch):
     """
     monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example/team")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2.1.0")
-    transport = object.__new__(NullLane)
+    transport = object.__new__(NullService)
 
     found = transport._resolve_exec_image("", None, image_family="family:robovast-roqsim")
 
@@ -275,7 +275,7 @@ def test_an_unknown_family_member_is_refused_by_name(monkeypatch):
     """A typo resolves to a registry ref that pulls nothing, and the failure would arrive as
     a pull error naming an image nobody wrote down."""
     from robovast.common.errors import CampaignConfigError
-    transport = object.__new__(NullLane)
+    transport = object.__new__(NullService)
 
     with pytest.raises(CampaignConfigError, match="robovast-roqsym"):
         transport._resolve_exec_image("", None, image_family="family:robovast-roqsym")

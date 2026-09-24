@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from robovast.service.app import build_app
 from robovast.service.endpoint_plugin import (RESERVED_CAMPAIGN_ENDPOINTS, RunDataContext,
                                               load_service_endpoints)
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 # -- loader ----------------------------------------------------------------
 
@@ -171,8 +171,8 @@ def test_context_open_db_hands_a_handler_a_read_only_index_connection(tmp_path):
 
 # -- e2e over the FastAPI app ----------------------------------------------
 
-def _null_lane(results_root) -> NullLane:
-    lt = object.__new__(NullLane)
+def _null_service(results_root) -> NullService:
+    lt = object.__new__(NullService)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None
@@ -182,7 +182,7 @@ def _null_lane(results_root) -> NullLane:
 
 def _client(tmp_path):
     (tmp_path / THIS).mkdir(parents=True, exist_ok=True)
-    return TestClient(build_app(_null_lane(tmp_path)))
+    return TestClient(build_app(_null_service(tmp_path)))
 
 
 def _get(client, t, topic="/map", campaign=THIS):
@@ -343,7 +343,7 @@ def test_startup_secures_the_index_so_an_upgrade_leaves_nothing_unreadable(
     monkeypatch.setattr("robovast.common.index_db.connect",
                         lambda *a, **k: _NullConn())
 
-    with TestClient(build_app(_null_lane(tmp_path), mount_mcp=False)):
+    with TestClient(build_app(_null_service(tmp_path), mount_mcp=False)):
         pass
 
     assert secured, "startup must repair the index's scoping"
@@ -363,7 +363,7 @@ def test_an_unreachable_index_does_not_stop_the_service_booting(tmp_path, monkey
 
     monkeypatch.setattr("robovast.common.index_db.connect", _refuse)
 
-    with TestClient(build_app(_null_lane(tmp_path), mount_mcp=False)) as client:
+    with TestClient(build_app(_null_service(tmp_path), mount_mcp=False)) as client:
         assert client.get("/campaigns").status_code == 200, (
             "a service whose index is down must still serve everything else")
 

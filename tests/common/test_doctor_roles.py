@@ -30,7 +30,7 @@ def operator_checks(monkeypatch):
     whether the operator half applies, so leaving it to the real import would make these
     tests pass or fail on whether `robovast-cluster` happens to be in the environment.
     """
-    monkeypatch.setattr(doc, "cluster_lane_installed", lambda: True)
+    monkeypatch.setattr(doc, "cluster_installed", lambda: True)
     monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
     monkeypatch.setattr(doc, "check_tools", lambda flavor="": [
         doc.Check("kubectl", False, "not on PATH", "Install kubectl")])
@@ -83,13 +83,13 @@ def test_a_client_failure_is_always_fatal(monkeypatch, operator_checks):
 
 
 @pytest.fixture
-def no_cluster_lane(monkeypatch):
+def no_cluster(monkeypatch):
     """A client-only install: nothing to import, and `check_cluster` reporting that.
 
     `check_tools` is pinned to *failing* binaries so the tests below are about whether it
     is consulted at all, not about what happens to be on this machine's PATH.
     """
-    monkeypatch.setattr(doc, "cluster_lane_installed", lambda: False)
+    monkeypatch.setattr(doc, "cluster_installed", lambda: False)
     monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
     monkeypatch.setattr(doc, "check_cluster", lambda context=None: [
         doc.Check("cluster support", False, "not installed",
@@ -101,7 +101,7 @@ def no_cluster_lane(monkeypatch):
 
 
 def test_no_lane_and_no_login_does_not_demand_cluster_binaries(
-        monkeypatch, no_cluster_lane):
+        monkeypatch, no_cluster):
     """The defect: the demotion gate asked the wrong question.
 
     It asked whether the client half worked, so a client-only user who had simply not run
@@ -120,14 +120,14 @@ def test_no_lane_and_no_login_does_not_demand_cluster_binaries(
         "only the client half may be fatal here -- that is the user's real problem")
 
 
-def test_the_missing_lane_is_still_reported(monkeypatch, no_cluster_lane):
+def test_the_missing_lane_is_still_reported(monkeypatch, no_cluster):
     """Dropping the binaries must not drop the verdict that explains why they are gone."""
     _client(monkeypatch, False)
     lane = next(c for c in doc.run_checks() if c.name == "cluster support")
     assert lane.status == "warn" and lane.fix, "advisory is not silent, and names a remedy"
 
 
-def test_python_is_still_checked_without_a_lane(monkeypatch, no_cluster_lane):
+def test_python_is_still_checked_without_a_lane(monkeypatch, no_cluster):
     """Needing 3.12 is not the cluster's business, so it survives the lane being absent."""
     _client(monkeypatch, True)
     assert "python" in {c.name for c in doc.run_checks()}

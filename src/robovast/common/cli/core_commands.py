@@ -108,10 +108,6 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               help='Listen on this Unix socket instead of --host/--port. The in-cluster '
                    'layout: a front owns the port and routes here, and the data routes '
                    'to their own process (vast serve-data).')
-@click.option('--backend', default=None, metavar='LANE',
-              help='Which installed execution lane to run. Needed only when more than one '
-                   'is installed; with exactly one it is that one, and with none the '
-                   'service cannot start.')
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if frontend/ui/dist looks up to date '
                    '(source checkout only).')
@@ -121,10 +117,8 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'tools together. Pass --no-mcp to serve the API without them.')
 @click.option('--results-dir', 'results_dir', default=None, metavar='DIR',
               type=click.Path(file_okay=False),
-              help='Where campaigns this service runs land, on the serve host, whichever '
-                   'lane runs them. Omitted, a service-owned directory beside the '
-                   'workspaces store is used, which is stable but not where you were '
-                   'looking; name one to choose.')
+              help='Where campaigns this service runs land, on the serve host. Omitted, a '
+                   'service-owned directory beside the workspaces store is used.')
 @click.option('--workspace-dir', 'workspace_dir', multiple=True,
               callback=_one_workspace_dir,
               type=click.Path(exists=True, file_okay=False),
@@ -136,12 +130,11 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'pin the collection (e.g. a repo root) rather than each project. '
                    'Requires the service to run on this host, so it is refused '
                    'in-pod.')
-def serve(host, port, uds, backend, rebuild_ui,
+def serve(host, port, uds, rebuild_ui,
           results_dir, workspace_dir, mount_mcp):
     """Run the robovast-service process: what the in-cluster Deployment starts.
 
-    The service runs the execution lane this install registers. The cluster lane --
-    the one ``robovast-cluster`` ships -- runs the app in-process, driving each
+    The service is the implementation ``robovast-cluster`` ships: it drives each
     campaign against Kubernetes Jobs, and is what the ``robovast-service`` Deployment
     runs. It reads which cluster from its own pod, and is refused outside one: the
     campaigns' pods deliver their results back to this process, which they cannot do
@@ -183,15 +176,15 @@ def serve(host, port, uds, backend, rebuild_ui,
 
     from robovast.service.serve_backends import resolve as resolve_backend
     try:
-        backend, lane = resolve_backend(backend)
+        backend, provider = resolve_backend()
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     from robovast.service.workspaces import WorkspaceStore
     store = WorkspaceStore(workspace_dir=workspace_dir)
-    impl = lane.build(in_pod=in_pod,
+    impl = provider.build(in_pod=in_pod,
                       store=store, workspace_dir=workspace_dir,
                       results_dir=os.path.abspath(results_dir) if results_dir else None)
-    storage = lane.storage
+    storage = provider.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
     click.echo(f"Starting robovast-service on {uds or f'http://{host}:{port}'} "

@@ -332,7 +332,7 @@ class CampaignImageRecord:
     apart, and two callers then disagree about one file, on one disk.
     """
 
-    lane: str
+    execution_type: str
     roles: dict
     #: ``execution.yaml``'s singular ``image_revision``. The SCENARIO container's, and nothing
     #: else's -- handing it to a container that owns one is the substitution several of the
@@ -389,7 +389,7 @@ def campaign_image_record(campaign_dir) -> CampaignImageRecord:
             has_lock=bool(locks.get(name)),
         )
     return CampaignImageRecord(
-        lane=str(meta.get("execution_type") or ""),
+        execution_type=str(meta.get("execution_type") or ""),
         roles=roles,
         campaign_digest=str(meta.get("image_revision") or ""),
         campaign_image=str(meta.get("image") or ""),
@@ -460,7 +460,7 @@ def campaign_images(campaign_dir) -> CampaignImages:
         # "can a new run start from them?" was answered when they ran.
         return CampaignImages(pins=launched, unpinnable={}, built=True)
 
-    is_local = record.lane == "local"
+    is_local = record.execution_type == "local"
     pins: dict[str, str] = {}
     unpinnable: dict[str, str] = {}
     # The containers that ran, post-fold, as the campaign itself recorded them. Derived from the
@@ -485,7 +485,7 @@ def campaign_images(campaign_dir) -> CampaignImages:
             f"{name!r} (execution.yaml image_revisions[{name!r}]={role.recorded or None!r}, "
             f"image_revision={record.campaign_digest or None!r}, "
             f"images[{name!r}]={role.declared or None!r}, "
-            f"execution_type={record.lane or None!r})")
+            f"execution_type={record.execution_type or None!r})")
 
     return CampaignImages(pins=pins, unpinnable=unpinnable, built=record.built)
 

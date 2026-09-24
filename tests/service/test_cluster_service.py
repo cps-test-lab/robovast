@@ -1861,11 +1861,11 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
     core = _Core()
     monkeypatch.setattr(cs, "_k8s", lambda: core)
 
-    class _Lane:
+    class _Service:
         calls: list = []
 
         def exec_in(self, target, argv, limit_s, env=None):
-            _Lane.calls.append((target, argv))
+            _Service.calls.append((target, argv))
             # Matched on the joined argv: every read runs through a shell that sources the run's
             # ROS overlay first, so the command is inside one element rather than being them.
             joined = " ".join(argv)
@@ -1875,9 +1875,9 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
                 return (0, "", "", False)
             return exec_result
 
-    _Lane.calls = []
-    monkeypatch.setattr(cs, "_exec_lane", lambda: _Lane())
-    return core, _Lane
+    _Service.calls = []
+    monkeypatch.setattr(cs, "_exec_runner", lambda: _Service())
+    return core, _Service
 
 
 def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
@@ -2028,7 +2028,7 @@ def test_an_unpacked_job_is_located_too(cs, monkeypatch):
     a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looks past it and then
     blames ``--bt-log``."""
     _core, lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "cfga/0\n", "", False)))
 
     assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfga/0", "cfga/0")
@@ -2042,7 +2042,7 @@ def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     _core, _lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
                                     execution=execution)
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "cfgb/2\n", "", False)))
 
     assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfgb/2", "cfgb/2")
@@ -2055,7 +2055,7 @@ def test_the_live_run_search_looks_for_run_dirs_and_not_for_the_newest_file(cs, 
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     seen = {}
     _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (
             seen.setdefault("argv", " ".join(argv)), "", "", False) and (0, "", "", False)))
 
@@ -2105,7 +2105,7 @@ def test_a_packed_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatc
     is a better answer than a failure from the step that was only trying to be more precise."""
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "", "", False)))
 
     assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out", None)

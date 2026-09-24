@@ -23,12 +23,12 @@ background thread, serving live status from its
 campaign registry, the service's caches and event log, and every reader that resolves a
 campaign under the results root. What depends on where the runs happen is an abstract
 hook here and a body in the lane: the cluster lane's service is the one production
-implementer, and the test suite's null lane (``tests/service/null_lane.py``) the other,
+implementer, and the test suite's null lane (``tests/service/null_service.py``) the other,
 so the code here is exercised without a cluster.
 
 Two rules follow. A body here is correct for *any* lane, or it is a hook. And a lane that
 does not offer an operation refuses it in its own class with
-:class:`~robovast.service.interface.UnsupportedOnLane`, never through a default left here.
+:class:`~robovast.service.interface.UnsupportedOperation`, never through a default left here.
 
 This module imports no Kubernetes: a lane reaches its driver inside the hook that needs it
 (``tests/service/test_serve_backends.py`` pins that importing the base loads no lane).
@@ -561,7 +561,7 @@ def _throttled_transfer_log(log, every: float = 0.10):
     return _cb
 
 
-#: Why a rank or a hold is refused -- the hint an :class:`UnsupportedOnLane` carries. One
+#: Why a rank or a hold is refused -- the hint an :class:`UnsupportedOperation` carries. One
 #: string, because the launch path and the set-scheduling operation refuse the same thing
 #: and must not describe it differently.
 NO_CAMPAIGN_QUEUE = (
@@ -1773,7 +1773,7 @@ class ServiceBase(RobovastInterface):
 
     # -- interface ----------------------------------------------------------
 
-    def _version_info(self, **lane_fields) -> VersionInfo:
+    def _version_info(self, **implementation_fields) -> VersionInfo:
         """The handshake's lane-neutral half: what code this is, and where it says it is.
 
         Each lane composes its :meth:`version` from this and the fields only it knows,
@@ -1786,7 +1786,7 @@ class ServiceBase(RobovastInterface):
                            package_version=_package_version(),
                            built_at=_build_date(),
                            web_base=self._declared_web_base(),
-                           **lane_fields)
+                           **implementation_fields)
 
     def _active_campaigns(self) -> list:
         """The campaigns not yet over -- what an upgrade would interrupt, on any lane."""
@@ -2017,7 +2017,7 @@ class ServiceBase(RobovastInterface):
 
         The default asks for nothing and is admitted everywhere, which is what keeps
         a launch that never mentions scheduling working on any lane. A lane with no
-        queue raises :class:`UnsupportedOnLane` for anything else, before a campaign
+        queue raises :class:`UnsupportedOperation` for anything else, before a campaign
         directory exists.
         """
 
@@ -2749,13 +2749,13 @@ class ServiceBase(RobovastInterface):
         # that the reap is about to remove — but it is deliberately not the campaign lock.
         with self._exec_lock:
             if self._exec_mgr is None:
-                self._exec_mgr = ContainerExecManager(self._exec_lane())
+                self._exec_mgr = ContainerExecManager(self._exec_runner())
                 self._reap_stray_exec_container()
             return self._exec_mgr
 
     @abstractmethod
-    def _exec_lane(self):
-        """The :class:`~robovast.service.container_exec.ExecLane` a diagnostic exec runs on:
+    def _exec_runner(self):
+        """The :class:`~robovast.service.container_exec.ExecRunner` a diagnostic exec runs on:
         a container beside this process, or a pod.
         """
 
@@ -2766,11 +2766,11 @@ class ServiceBase(RobovastInterface):
         has a fixed name, but a query workload's carries a hash of the identity it was
         started for, and nothing persists those across a restart. Removing only the fixed
         one left those holding memory with nothing able to name them. The sweep is the
-        lane's (:meth:`_exec_lane`); what it removes is a container beside this process or
+        lane's (:meth:`_exec_runner`); what it removes is a container beside this process or
         a pod, and this does not need to know which.
         """
         try:
-            removed = self._exec_lane().sweep_held()
+            removed = self._exec_runner().sweep_held()
             if removed:
                 logger.info("removed %d stray exec workload(s) from a previous run: %s",
                             len(removed), ", ".join(removed))
@@ -2805,7 +2805,7 @@ class ServiceBase(RobovastInterface):
             # The staged entrypoint carries the init and post-run blocks of the lane the
             # exec actually runs on; a campaign's rendered entrypoint is never copied across.
             vast_file, request.config_name,
-            cluster=self.LANE == "cluster",  # pylint: disable=no-member
+            cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
             command=request.command)
         # Ownership of spec's staging tree passes to the manager: a held container mounts
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
@@ -3420,7 +3420,7 @@ class ServiceBase(RobovastInterface):
                     None,
                     "this campaign's simulator does not report its own state, so there is nothing "
                     "to read from a live run"))
-            exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+            exit_code, stdout, stderr, timed_out = self._exec_runner().exec_in(
                 target, in_run_env(command), _JOB_STATE_LIMIT_S)
             document, reason = self._health_from_output(
                 command, exit_code, stdout, stderr, timed_out)
@@ -3659,7 +3659,7 @@ class ServiceBase(RobovastInterface):
         from robovast.common.execution import in_run_env
         # The exit code is not consulted: the reader states its own outcome in the JSON (``found``
         # plus its reason), and a nonzero exit with a usable reply is its business, not ours.
-        _code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+        _code, stdout, stderr, timed_out = self._exec_runner().exec_in(
             target, in_run_env(f"{self._TREE_STATE_COMMAND} {shlex.quote(run_dir)}"),
             _JOB_STATE_LIMIT_S)
         if timed_out:
@@ -3723,7 +3723,7 @@ class ServiceBase(RobovastInterface):
                   f'-name "resource_usage_*.csv" -type f | while read -r f; do '
                   f'echo "@@ $(basename "$f")"; head -1 "$f"; '
                   f'tail -n {self._RESOURCE_TAIL_LINES} "$f"; done')
-        _exit_code, stdout, stderr, timed_out = self._exec_lane().exec_in(
+        _exit_code, stdout, stderr, timed_out = self._exec_runner().exec_in(
             target, ["/bin/bash", "-c", script], _JOB_STATE_LIMIT_S)
         if timed_out:
             state.unavailable.append(

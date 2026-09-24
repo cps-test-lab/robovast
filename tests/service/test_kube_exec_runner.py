@@ -24,7 +24,7 @@ import shutil
 
 import pytest
 
-from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane, exec_slot
+from robovast.execution.cluster_execution.kube_exec_runner import KubeExecRunner, exec_slot
 from robovast.execution.cluster_execution.pod_access import DATA_URL_ENV, TOKEN_ENV
 from robovast.service import container_exec as ce
 
@@ -76,13 +76,13 @@ def _staged_fixture(tmp_path):
 
 
 def _lane(staged, namespace="ns", **kwargs):
-    return KubeExecLane(namespace, stage_dir=staged.stage_dir, discard_staged=staged.discard,
+    return KubeExecRunner(namespace, stage_dir=staged.stage_dir, discard_staged=staged.discard,
                         token_for=staged.token_for, **kwargs)
 
 
 def _manifest(spec, deadline=300, namespace="ns", owner=None, token="tok",
               pull_secret=""):
-    from robovast.execution.cluster_execution.kube_exec_lane import _pod_manifest
+    from robovast.execution.cluster_execution.kube_exec_runner import _pod_manifest
     return _pod_manifest(spec, deadline, namespace, owner, token,
                          pull_secret=pull_secret)
 
@@ -112,7 +112,7 @@ def test_the_cluster_service_passes_its_own_context():
     import inspect
 
     from robovast.execution.cluster_execution.cluster_service import ClusterService
-    source = inspect.getsource(ClusterService._exec_lane)
+    source = inspect.getsource(ClusterService._exec_runner)
     assert "kube_context=self.kube_context" in source
 
 
@@ -123,7 +123,7 @@ def test_stopping_waits_for_the_pod_to_actually_be_gone():
     or the single-container rule breaks: the next start collides with the corpse.
     """
     import inspect
-    source = inspect.getsource(KubeExecLane.stop_held)
+    source = inspect.getsource(KubeExecRunner.stop_held)
     assert "wait_pod_gone" in source
     wait = inspect.getsource(__import__(
         "robovast.execution.cluster_execution.kube_client", fromlist=["x"]).wait_pod_gone)
@@ -138,7 +138,7 @@ def test_the_process_probe_spawns_nothing_of_its_own():
     so ``held_workload_running`` was permanently true and nothing was ever idle-reaped.
     Shell builtins only, and PID 1 / ``$$`` / ``$PPID`` excluded, so idle reads 0.
     """
-    probe = KubeExecLane._PROCESS_COUNT_SH
+    probe = KubeExecRunner._PROCESS_COUNT_SH
     for spawned in ("ls ", "wc", "ps ", "pgrep", "awk", "grep"):
         assert spawned not in probe, f"the probe spawns {spawned!r} and would count it"
     assert '[ "$pid" = 1 ]' in probe
@@ -148,7 +148,7 @@ def test_the_process_probe_spawns_nothing_of_its_own():
 
 def test_the_probe_threshold_treats_zero_as_idle():
     import inspect
-    assert "count > 0" in inspect.getsource(KubeExecLane.held_workload_running)
+    assert "count > 0" in inspect.getsource(KubeExecRunner.held_workload_running)
 
 
 # -- staging through the data plane ------------------------------------------
@@ -183,7 +183,7 @@ def test_a_lane_without_the_data_plane_wiring_is_refused_at_construction():
     """No silent fallback: an unstaged /config answers a different question and looks OK,
     so a lane that cannot stage is not built at all."""
     with pytest.raises(TypeError, match="stage_dir"):
-        KubeExecLane("ns")  # pylint: disable=missing-kwoa
+        KubeExecRunner("ns")  # pylint: disable=missing-kwoa
 
 
 def test_the_workspace_is_staged_under_its_own_subtree(tmp_path, staged):
@@ -218,7 +218,7 @@ def test_stopping_discards_the_staged_tree(tmp_path, staged):
 def test_the_sweep_discards_every_slot_of_the_namespace(staged, monkeypatch):
     """After a restart the query slots' keys are gone, so the sweep drops the namespace's
     whole exec tree rather than the slots it can still name."""
-    from robovast.execution.cluster_execution import kube_exec_lane as kel
+    from robovast.execution.cluster_execution import kube_exec_runner as kel
     monkeypatch.setattr(kel, "_sweep_held_pods", lambda lane: [])
     lane = _lane(staged)
     lane.sweep_held()
@@ -351,7 +351,7 @@ def test_no_secret_means_no_pull_secrets_key(tmp_path):
 
 def test_the_lane_passes_the_secret_it_was_built_with(tmp_path, monkeypatch, staged):
     """The manifest is only right if the lane actually hands it over."""
-    from robovast.execution.cluster_execution import kube_exec_lane as kel
+    from robovast.execution.cluster_execution import kube_exec_runner as kel
     seen = {}
     monkeypatch.setattr(kel, "_pod_manifest",
                         lambda *a, **kw: seen.update(kw) or {"metadata": {"name": "p"}})
@@ -382,7 +382,7 @@ def test_the_cluster_service_gives_its_exec_lane_the_pull_secret():
     import inspect
 
     from robovast.execution.cluster_execution.cluster_service import ClusterService
-    source = inspect.getsource(ClusterService._exec_lane)
+    source = inspect.getsource(ClusterService._exec_runner)
     assert "pull_secret=self._registry_pull_secret()" in source
 
 
@@ -425,7 +425,7 @@ def test_a_held_aux_pod_is_addressed_and_swept_like_every_other_held_one(tmp_pat
     which kind of pod they were looking at.
     """
     from robovast.execution.cluster_execution.container_runner import TRANSFER_CONTAINER
-    from robovast.execution.cluster_execution.kube_exec_lane import HELD_CONTAINER, _pod_name
+    from robovast.execution.cluster_execution.kube_exec_runner import HELD_CONTAINER, _pod_name
     lane = _lane(staged)
     manifest = lane._held_manifest(_aux_held_spec(tmp_path), 300, "qabc")
 
@@ -465,7 +465,7 @@ def test_a_held_exec_addresses_the_slots_pod_and_its_container(tmp_path, monkeyp
     built once per call and only a *live* exec would have raised. It is the address every
     other operation on a held container agrees on, so it is worth one cheap assertion.
     """
-    from robovast.execution.cluster_execution.kube_exec_lane import HELD_CONTAINER, _pod_name
+    from robovast.execution.cluster_execution.kube_exec_runner import HELD_CONTAINER, _pod_name
     lane = _lane(staged)
     seen = {}
     monkeypatch.setattr(lane, "exec_in",

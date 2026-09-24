@@ -21,7 +21,7 @@ from robovast.service.interface import DiskSpace, Routes
 from robovast.service.service_base import SCENE_CACHE
 from robovast.common.disk_reserve import RESERVE_ENV
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 def _entry(root, name, size):
@@ -46,7 +46,7 @@ def _scenes(tmp_path, monkeypatch):
 @pytest.fixture(name="transport")
 def _transport(tmp_path, scenes):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = NullLane(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 

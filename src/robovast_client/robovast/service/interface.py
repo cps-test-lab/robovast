@@ -2315,46 +2315,44 @@ ERROR_CODE_HEADER = "x-robovast-error"
 #: and the detail already say.
 EXEC_PATH_UNAVAILABLE = "exec_path_unavailable"
 
-#: The operation exists on the interface but the lane answering does not offer it --
-#: :class:`UnsupportedOnLane` crossing HTTP. A client acts on it by not retrying and not
-#: blaming its input: the same call on the other lane is the only thing that changes it.
-UNSUPPORTED_ON_LANE = "unsupported_on_lane"
+#: The operation exists on the interface but the implementation answering does not offer it --
+#: :class:`UnsupportedOperation` crossing HTTP. A client acts on it by not retrying and not
+#: blaming its input.
+UNSUPPORTED_OPERATION = "unsupported_operation"
 
 
-class UnsupportedOnLane(ServiceError):
-    """An operation this lane does not offer, refused by name.
+class UnsupportedOperation(ServiceError):
+    """An operation this implementation does not offer, refused by name.
 
-    One sentence, ``<operation> is not supported on the <lane> lane``, followed by a hint
-    when there is somewhere else to go. One sentence on both sides of HTTP: a service raises
+    One sentence, ``<operation> is not supported by the <implementation> implementation``,
+    followed by a hint when there is somewhere else to go. One sentence on both sides of HTTP: a service raises
     it, the app maps it to ``501`` with the sentence as ``detail`` and
-    :data:`UNSUPPORTED_ON_LANE` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands a
+    :data:`UNSUPPORTED_OPERATION` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands a
     caller a :class:`ServiceError` carrying that status, code and sentence -- so the CLI, the
     MCP tools, the web UI and a raw HTTP client all print the same line. Across the wire the
     class is that :class:`ServiceError` and the code is what identifies it; in process it is
     this exception itself, so an MCP mounted inside the service reports what a remote one
     does without matching on the words.
 
-    What it is for is the difference between a lane that *cannot* and a lane that *did not*:
-    a refusal that names the lane cannot be mistaken for bad input (``400``), a conflict to
-    retry after (``409``) or a bug (``500``), and it cannot be mistaken for success -- the
-    failure this exists to prevent is an operation that a lane accepts and quietly does
-    nothing with.
+    A refusal that names the implementation cannot be mistaken for bad input (``400``), a
+    conflict to retry after (``409``), a bug (``500``) or success -- an operation accepted and
+    quietly not done.
 
-    A lane raises it for itself, in its own class, never as an inherited default: the
-    refusal is a fact about *that* lane, and ``grep UnsupportedOnLane`` should list every
-    asymmetry between the lanes in full.
+    An implementation raises it for itself, in its own class, never as an inherited default,
+    so ``grep UnsupportedOperation`` lists every operation an implementation does not offer.
     """
 
     STATUS = 501
 
-    def __init__(self, operation: str, lane: str, hint: str = ""):
+    def __init__(self, operation: str, implementation: str, hint: str = ""):
         self.operation = operation
-        self.lane = lane
+        self.implementation = implementation
         self.hint = hint
-        where = f"on the {lane} lane" if lane else "by this service"
+        where = (f"by the {implementation} implementation" if implementation
+                 else "by this service")
         sentence = f"{operation} is not supported {where}"
         super().__init__(self.STATUS, f"{sentence}. {hint}" if hint else sentence,
-                         code=UNSUPPORTED_ON_LANE)
+                         code=UNSUPPORTED_OPERATION)
 
 
 API_VERSION = "0"
@@ -2753,9 +2751,9 @@ class RobovastInterface(ABC):
 
     #: Which side is answering: ``"cluster"`` for the execution lane a service runs,
     #: ``"http"`` for the transport that only forwards to one. Named in every
-    #: :class:`UnsupportedOnLane` an implementation raises, so a refusal says *which* lane
+    #: :class:`UnsupportedOperation` an implementation raises, so a refusal says *which* lane
     #: declined rather than "this service". Empty only on the interface itself.
-    LANE: str = ""
+    IMPLEMENTATION: str = ""
 
     # -- version / health ---------------------------------------------------
 
@@ -2890,7 +2888,7 @@ class RobovastInterface(ABC):
         Concrete-with-a-refusal rather than ``@abstractmethod`` because an implementation
         that only *calls* a service (:class:`HTTPTransport`) has no local file to offer and
         should not be forced to write a stub claiming otherwise. It says so here, as
-        :class:`UnsupportedOnLane` naming the lane, instead of failing as a missing
+        :class:`UnsupportedOperation` naming the lane, instead of failing as a missing
         attribute in a route.
 
         Every implementation that is actually served from — ``ServiceBase`` and its
@@ -2898,8 +2896,8 @@ class RobovastInterface(ABC):
         ``getattr``: such a check can only succeed, and the code that believed otherwise sent
         cluster campaigns down the local resolver for years.
         """
-        raise UnsupportedOnLane(
-            "local_file", self.LANE,
+        raise UnsupportedOperation(
+            "local_file", self.IMPLEMENTATION,
             hint=f"only a served transport has a file to stream, and {address!r} is not "
                  "one here")
 
@@ -3071,10 +3069,10 @@ class RobovastInterface(ABC):
 
         Not abstract: a transport that cannot do this inherits a refusal rather than being
         forced to implement one, which is the same courtesy :meth:`share` gets. The refusal
-        is :class:`UnsupportedOnLane`, so it names the lane that declined.
+        is :class:`UnsupportedOperation`, so it names the lane that declined.
         """
         del campaign_id, job_name
-        raise UnsupportedOnLane("get_job_state", self.LANE)
+        raise UnsupportedOperation("get_job_state", self.IMPLEMENTATION)
 
     def exec_in_job(self, campaign_id: str, job_name: str, command: str,
                     container: str = "scenario", source: str = "api") -> "ExecResult":
@@ -3112,7 +3110,7 @@ class RobovastInterface(ABC):
         inherits a refusal rather than being made to write one.
         """
         del campaign_id, job_name, command, container, source
-        raise UnsupportedOnLane("exec_in_job", self.LANE)
+        raise UnsupportedOperation("exec_in_job", self.IMPLEMENTATION)
 
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
@@ -3140,14 +3138,14 @@ class RobovastInterface(ABC):
 
         Raises ``ValueError`` when neither argument is given -- a call that asked for nothing
         is a caller's mistake, and answering it "done" would report a change that never
-        happened. Raises :class:`UnsupportedOnLane` on a lane with no queue to order, and
+        happened. Raises :class:`UnsupportedOperation` on a lane with no queue to order, and
         ``ValueError`` on a campaign that is already over.
 
         Not abstract, for the reason :meth:`exec_in_job` is not: a transport that cannot do
         this inherits a refusal rather than being made to write one.
         """
         del campaign_id, priority, paused
-        raise UnsupportedOnLane("set_campaign_scheduling", self.LANE,
+        raise UnsupportedOperation("set_campaign_scheduling", self.IMPLEMENTATION,
                                 hint="this lane does not queue campaigns against each other")
 
     @abstractmethod

@@ -433,12 +433,12 @@ a lane may not do is answer such a request with anything but a refusal that says
 operation a lane accepts and quietly does nothing with looks, to every client, exactly
 like one that worked.
 
-So there is one exception for it, ``UnsupportedOnLane``, and one sentence:
+So there is one exception for it, ``UnsupportedOperation``, and one sentence:
 ``<operation> is not supported on the <lane> lane``, with a hint where there is somewhere
 else to go. Every ``RobovastInterface`` implementation declares its ``LANE``
 (``cluster``, ``http``, and the test suite's ``null``), and a lane raises the refusal **in
 its own class**, never as a default on the base. The exception is a ``ServiceError``: the
-app maps it to ``501`` with the sentence as ``detail`` and ``unsupported_on_lane`` in the
+app maps it to ``501`` with the sentence as ``detail`` and ``unsupported_operation`` in the
 error header, the HTTP transport hands the caller the same status, code and sentence, and
 in process it is the very same object, so the CLI, the MCP tools, the web UI and a raw
 HTTP client all show one line (:doc:`http_api`, "Status codes";
@@ -465,7 +465,7 @@ runs on, what a job's log and state are read from, what exiting does to a runnin
 campaign — and a body in the lane's own class. A lane missing one cannot be constructed,
 and the error names it.
 
-The split is kept for the sake of the second implementer: ``tests/service/null_lane.py``
+The split is kept for the sake of the second implementer: ``tests/service/null_service.py``
 is a ``ServiceBase`` that runs nothing and refuses every driver-needing operation by
 name, so the base's own code — workspaces, files, records, listings, the routes over
 them — is tested without a Kubernetes-shaped fake. Two things follow. The base imports
@@ -542,7 +542,7 @@ declaring ``timeout: 900`` is not truncated at the idle cap. Limits are derived 
 passed — ``ExecRequest`` has no timeout field — and the result reports which rule applied,
 so a ``timed_out`` result names its own remedy.
 
-The lane-specific half is a small protocol (``ExecLane``): ``KubeExecLane`` runs an aux
+The lane-specific half is a small protocol (``ExecRunner``): ``KubeExecRunner`` runs an aux
 pod plus ``pods/exec``. Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,

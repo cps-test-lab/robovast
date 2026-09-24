@@ -12,7 +12,7 @@ never accepts what it will not do.
 
 - Thread it end to end and never implement it inside one client — `docs/developer_guide.rst`,
   "Add an interface operation".
-- What the lane does not offer it refuses with `UnsupportedOnLane`, in its own class, naming
+- What the lane does not offer it refuses with `UnsupportedOperation`, in its own class, naming
   the operation and the lane, so CLI, MCP, web UI and HTTP show one sentence —
   `docs/architecture.rst`, "A lane refuses by name".
 - What is correct for any lane lives in `ServiceBase`; what depends on where the runs happen

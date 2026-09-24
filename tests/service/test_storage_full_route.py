@@ -20,7 +20,7 @@ from robovast.mcp_server.service_access import error_result
 from robovast.service.app import build_app
 from robovast.service.interface import Routes, ServiceError
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 def _probe_route(app, path, endpoint) -> None:
@@ -133,7 +133,7 @@ class _FullFile:
 @pytest.fixture(name="archive_client")
 def _archive_client(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: tmp_path / "results"
     with TestClient(build_app(transport, mount_mcp=False)) as client:
         yield client, tmp_path / "results"

@@ -85,9 +85,9 @@ def _address_to_request_kwargs(address: str) -> dict:
     resolve for a path the service cannot see, and a container-backed catalog is
     meaningless without one.
     """
-    from robovast.mcp_server.plugins.authoring import _address_lane
+    from robovast.mcp_server.plugins.authoring import _address_route
     from robovast.service.project_push import _resolve_workspace_id
-    target = _address_lane(address)
+    target = _address_route(address)
     if target is None:
         raise ValueError(
             "this needs a workspace address (/sources/<workspace_id>/<path>): the "

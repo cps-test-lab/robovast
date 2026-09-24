@@ -171,13 +171,13 @@ def test_a_store_from_before_the_columns_migrates_forward(tmp_path):
 
 
 def _transport(root):
-    """A store-only ``NullLane``, as in ``test_project_push``."""
+    """A store-only ``NullService``, as in ``test_project_push``."""
     import threading
 
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
-    lt = object.__new__(NullLane)
+    lt = object.__new__(NullService)
     lt.store = WorkspaceStore(registry=WorkspaceRegistry(root=root))
     lt._campaigns = {}
     lt._lock = threading.Lock()

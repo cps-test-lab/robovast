@@ -7,7 +7,7 @@
 the runs happen is an abstract hook there, answered in the lane's own class. The cluster
 lane is the one production implementer; the suite's null lane is the other, which is what
 lets the base's own code be tested without a cluster. A lane that does not offer an
-operation refuses it in its own class with ``UnsupportedOnLane``. These tests pin that
+operation refuses it in its own class with ``UnsupportedOperation``. These tests pin that
 shape.
 """
 
@@ -15,13 +15,13 @@ import inspect
 
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.service_base import ServiceBase
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 def test_every_hook_is_answered_in_each_lane():
     """The base's guarantee, made visible: a lane missing a hook cannot be constructed,
     and the name of what it lacks is in the error rather than at the first call site."""
-    for lane in (ClusterService, NullLane):
+    for lane in (ClusterService, NullService):
         assert not ServiceBase.__abstractmethods__ - set(vars(lane)), (
             f"{lane.__name__} leaves unanswered: "
             f"{sorted(ServiceBase.__abstractmethods__ - set(vars(lane)))}")
@@ -38,7 +38,7 @@ def test_the_base_has_no_body_that_names_a_driver():
 
 
 def test_a_refusal_is_written_in_the_lane_that_refuses():
-    """``grep UnsupportedOnLane`` lists what a lane declines in full: the base refuses
+    """``grep UnsupportedOperation`` lists what a lane declines in full: the base refuses
     nothing, because a refusal is a fact about one lane."""
-    assert "UnsupportedOnLane(" not in inspect.getsource(ServiceBase)
-    assert "UnsupportedOnLane(" in inspect.getsource(NullLane)
+    assert "UnsupportedOperation(" not in inspect.getsource(ServiceBase)
+    assert "UnsupportedOperation(" in inspect.getsource(NullService)

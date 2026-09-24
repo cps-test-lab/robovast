@@ -349,7 +349,7 @@ def test_deleting_a_campaign_reaches_the_index(tmp_path, monkeypatch):
     one helper for exactly this reason: the cluster deletes more places than the local
     transport, but it is the same index.
     """
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     forgotten = []
@@ -363,7 +363,7 @@ def test_deleting_a_campaign_reaches_the_index(tmp_path, monkeypatch):
     cid = "gone-2026-09-01-101500"
     (results / cid / "_execution").mkdir(parents=True)
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: results        # noqa: SLF001
 
     result = transport.delete_campaign(cid)
@@ -380,7 +380,7 @@ def test_an_unreachable_index_does_not_fail_a_delete(tmp_path, monkeypatch):
     the orphaned rows are re-cleared by the next ingest of that id anyway.
     """
     from robovast.common.errors import IndexUnreachableError
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     def _down(*_a, **_k):
@@ -391,7 +391,7 @@ def test_an_unreachable_index_does_not_fail_a_delete(tmp_path, monkeypatch):
     cid = "gone-2026-09-01-101501"
     (results / cid / "_execution").mkdir(parents=True)
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: results        # noqa: SLF001
 
     assert transport.delete_campaign(cid).ok
@@ -414,7 +414,7 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
     including archives that arrived complete, whose rows the import had just ingested. On a
     cluster it also dispatched the rosbag steps into the service pod, which has no Docker.
     """
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     results = tmp_path / "results"
@@ -427,7 +427,7 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
                       encoding="utf-8")
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: results             # noqa: SLF001
     ran = []
     monkeypatch.setattr(transport, "_postprocess_campaign",
@@ -440,7 +440,7 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
 
 def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
     """The other half: without the record there is nothing derived, so compute it."""
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     results = tmp_path / "results"
@@ -449,7 +449,7 @@ def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
     (target / "_execution").mkdir(parents=True)
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: results             # noqa: SLF001
     ran = []
     monkeypatch.setattr(transport, "_postprocess_campaign",

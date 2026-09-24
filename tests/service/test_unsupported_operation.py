@@ -1,16 +1,10 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""An operation a lane does not offer is refused by name, the same way on every surface.
-
-The two execution lanes do not offer the same operations: the local Docker lane runs one
-campaign at a time and has no queue to rank, the cluster lane has no screen to open a
-window on. That asymmetry is allowed. What is not allowed is a refusal that reads as
-something else -- bad input, a conflict, a bug -- or an acceptance that quietly does
-nothing. So there is one exception for it, it names the operation and the lane, and it
-survives the trip to every client: a 501 with the sentence as ``detail`` and its class in
-the error header, a ``ServiceError`` with the same status and code on the other side, one
-line on the CLI, an ``error`` field in an MCP tool's answer.
+"""An operation an implementation does not offer is refused by name, the same way on every
+surface: a 501 with the sentence as ``detail`` and its class in the error header, a
+``ServiceError`` with the same status and code on the other side, one line on the CLI, an
+``error`` field in an MCP tool's answer.
 """
 
 import contextlib
@@ -25,62 +19,62 @@ from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import execution as execution_tools
 from robovast.service.app import build_app
 from robovast.service.http_client import HTTPTransport
-from robovast.service.interface import (ERROR_CODE_HEADER, UNSUPPORTED_ON_LANE,
+from robovast.service.interface import (ERROR_CODE_HEADER, UNSUPPORTED_OPERATION,
                                         RobovastInterface, Routes,
-                                        ServiceError, UnsupportedOnLane)
-from tests.service.null_lane import NullLane
+                                        ServiceError, UnsupportedOperation)
+from tests.service.null_service import NullService
 
-_SENTENCE = "set_campaign_scheduling is not supported on the local lane"
+_SENTENCE = "set_campaign_scheduling is not supported by the null implementation"
 
 
 # -- the sentence ------------------------------------------------------------------------
 
-def test_the_refusal_names_the_operation_and_the_lane():
-    e = UnsupportedOnLane("set_campaign_scheduling", "local")
+def test_the_refusal_names_the_operation_and_the_implementation():
+    e = UnsupportedOperation("set_campaign_scheduling", "null")
     assert str(e) == _SENTENCE
-    assert (e.operation, e.lane, e.hint) == ("set_campaign_scheduling", "local", "")
+    assert (e.operation, e.implementation, e.hint) == ("set_campaign_scheduling", "null", "")
 
 
 def test_a_hint_follows_the_sentence_as_its_own_sentence():
-    e = UnsupportedOnLane("show_gui", "cluster", hint="re-run without it")
-    assert str(e) == "show_gui is not supported on the cluster lane. re-run without it"
+    e = UnsupportedOperation("priority", "cluster", hint="re-run without it")
+    assert str(e) == "priority is not supported by the cluster implementation. re-run without it"
 
 
 def test_it_is_a_service_error_with_the_status_and_code_a_client_reads():
     """In process it must hit the same ``except`` arms a refusal over HTTP does, and carry
     what that refusal would carry, or the MCP mounted inside the service reports it
     differently from a remote one."""
-    e = UnsupportedOnLane("x", "local")
+    e = UnsupportedOperation("x", "null")
     assert isinstance(e, ServiceError)
-    assert (e.status, e.code) == (501, UNSUPPORTED_ON_LANE)
+    assert (e.status, e.code) == (501, UNSUPPORTED_OPERATION)
     assert e.include_traceback is False, "a refusal is the whole report; frames name nothing"
 
 
-def test_the_interface_itself_has_no_lane_to_name():
-    """A default on the interface is raised by whichever implementation inherited it, and
-    says so when that implementation declares no lane -- never an empty name in a sentence."""
-    assert RobovastInterface.LANE == ""  # pylint: disable=no-member
-    assert str(UnsupportedOnLane("x", "")) == "x is not supported by this service"
+def test_the_interface_itself_has_no_implementation_to_name():
+    """A default on the interface names no implementation -- never an empty name in a
+    sentence."""
+    assert RobovastInterface.IMPLEMENTATION == ""  # pylint: disable=no-member
+    assert str(UnsupportedOperation("x", "")) == "x is not supported by this service"
 
 
-# -- which lane is answering -------------------------------------------------------------
+# -- which implementation is answering ---------------------------------------------------
 
-@pytest.mark.parametrize("impl, lane", [(NullLane, "null"), (ClusterService, "cluster"),
+@pytest.mark.parametrize("impl, name", [(NullService, "null"), (ClusterService, "cluster"),
                                         (HTTPTransport, "http")])
-def test_every_transport_declares_its_lane(impl, lane):
+def test_every_implementation_declares_its_name(impl, name):
     """The name in the sentence comes from the class, so a refusal inherited from the
     interface still says which side declined."""
-    assert impl.LANE == lane
+    assert impl.IMPLEMENTATION == name
 
 
 # -- over HTTP ---------------------------------------------------------------------------
 
 class _NoQueue:
-    """A lane whose scheduling operation is the local lane's."""
+    """An implementation with no scheduling queue."""
 
     def set_campaign_scheduling(self, campaign_id, priority=None, paused=None):
         del campaign_id, priority, paused
-        raise UnsupportedOnLane("set_campaign_scheduling", "local")
+        raise UnsupportedOperation("set_campaign_scheduling", "null")
 
     def shutdown(self):
         pass
@@ -98,14 +92,14 @@ def _refuse(client):
 
 def test_over_http_it_is_a_501_carrying_the_sentence(client):
     """501, not the 500 a bare ``NotImplementedError`` becomes: that one still means a bug,
-    and this one means the operation exists and this lane does not offer it."""
+    and this one means the operation exists and this implementation does not offer it."""
     resp = _refuse(client)
     assert resp.status_code == 501
     assert resp.json()["detail"] == _SENTENCE
 
 
 def test_over_http_it_names_its_class_so_a_client_need_not_read_the_sentence(client):
-    assert _refuse(client).headers[ERROR_CODE_HEADER] == UNSUPPORTED_ON_LANE
+    assert _refuse(client).headers[ERROR_CODE_HEADER] == UNSUPPORTED_OPERATION
 
 
 class _Response:
@@ -116,7 +110,7 @@ class _Response:
     reason = "Not Implemented"
     url = "https://robovast.example.com/campaigns/camp-1/scheduling"
     text = ""
-    headers = {ERROR_CODE_HEADER: UNSUPPORTED_ON_LANE}
+    headers = {ERROR_CODE_HEADER: UNSUPPORTED_OPERATION}
 
     @staticmethod
     def json():
@@ -126,7 +120,7 @@ class _Response:
 def test_the_client_hands_the_caller_the_same_status_code_and_sentence():
     with pytest.raises(ServiceError) as raised:
         HTTPTransport.raise_for_status(_Response())
-    assert (raised.value.status, raised.value.code) == (501, UNSUPPORTED_ON_LANE)
+    assert (raised.value.status, raised.value.code) == (501, UNSUPPORTED_OPERATION)
     assert str(raised.value) == _SENTENCE
 
 
@@ -150,18 +144,19 @@ def test_the_cli_prints_the_sentence_and_nothing_else(monkeypatch):
 def test_an_mcp_tool_answers_with_the_sentence_as_its_error(monkeypatch):
     """Wherever the MCP runs: mounted in the service it is handed the exception, over HTTP
     the coded ``ServiceError`` -- and both are the same sentence to the caller."""
-    class _NoQueueLane:
+    class _NoQueueService:
         def create_campaign(self, request):
             del request
-            raise UnsupportedOnLane("priority", "null", hint="re-run without it")
+            raise UnsupportedOperation("priority", "null", hint="re-run without it")
 
-    monkeypatch.setattr(service_access, "service_client", lambda: _NoQueueLane())
+    monkeypatch.setattr(service_access, "service_client", lambda: _NoQueueService())
     out = execution_tools.start_campaign(workspace_id="ws-1", config_path="demo.vast",
                                          description="d", priority=1)
-    assert out == {"error": "priority is not supported on the null lane. re-run without it"}
+    assert out == {"error": "priority is not supported by the null implementation. "
+                           "re-run without it"}
 
 
 def test_the_mcp_does_not_dress_it_as_some_other_refusal():
     """The exec-path consequence is composed for one code; this one is printed as it is."""
-    e = UnsupportedOnLane("exec_in_job", "local")
+    e = UnsupportedOperation("exec_in_job", "null")
     assert service_access.error_result(e) == {"error": str(e)}

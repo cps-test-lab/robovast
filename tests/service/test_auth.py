@@ -21,7 +21,7 @@ from starlette.testclient import TestClient
 from robovast.service import auth
 from robovast.service.app import build_app
 from robovast.service.interface import Routes
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 TOKEN = "correct-horse-battery-staple"
 
@@ -30,7 +30,7 @@ TOKEN = "correct-horse-battery-staple"
 def _client():
     # Explicit empty headers: the suite's conftest would otherwise authenticate every
     # request, which is exactly what these tests must be able to *not* do.
-    with TestClient(build_app(NullLane(), mount_mcp=False, auth_token=TOKEN),
+    with TestClient(build_app(NullService(), mount_mcp=False, auth_token=TOKEN),
                     headers={}) as client:
         yield client
 
@@ -105,7 +105,7 @@ def test_there_is_no_unauthenticated_mode(monkeypatch):
     monkeypatch.delenv(auth.TOKEN_ENV_VAR, raising=False)
     token, ephemeral = auth.resolve_token(None)
     assert token and ephemeral
-    with TestClient(build_app(NullLane(), mount_mcp=False), headers={}) as client:
+    with TestClient(build_app(NullService(), mount_mcp=False), headers={}) as client:
         assert client.get(Routes.VERSION).status_code == 401
 
 

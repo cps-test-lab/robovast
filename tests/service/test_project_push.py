@@ -12,7 +12,7 @@ path, driven by ``vast workspace run`` and covered in
 ``tests/execution/test_cli_workspace_run_launch.py``.
 
 Everything runs against a real ``WorkspaceStore`` behind an in-process
-``NullLane`` — the same client path the CLI and MCP tool take locally, so
+``NullService`` — the same client path the CLI and MCP tool take locally, so
 ``grant.url`` is ``None`` and uploads go through ``store.write_upload``.
 """
 
@@ -26,11 +26,11 @@ from robovast.service.interface import CreateWorkspaceRequest
 from robovast.service.project_push import (_resolve_workspace_id,
                                            sync_directory_to_workspace)
 from robovast.service.workspaces import WorkspaceError, WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 def _transport(root):
-    lt = object.__new__(NullLane)
+    lt = object.__new__(NullService)
     lt.store = WorkspaceStore(registry=WorkspaceRegistry(root=root))
     # ``list_workspaces`` reports which workspaces live campaigns are reading from, so
     # the campaign registry has to exist even for a store-only transport.
@@ -371,7 +371,7 @@ def test_sync_refuses_a_pinned_workspace(tmp_path, project):
     with a plain alternative (edit it on disk).
     """
     registry = WorkspaceRegistry(root=tmp_path / "w", static_dir=str(project))
-    lt = object.__new__(NullLane)
+    lt = object.__new__(NullService)
     lt.store = WorkspaceStore(registry=registry)
     wid = registry.list()[0]["workspace_id"]
     with pytest.raises(WorkspaceError, match="pinned in place"):

@@ -116,7 +116,7 @@ def check_tools(flavor: str = "") -> list[Check]:
     return checks
 
 
-def cluster_lane_installed() -> bool:
+def cluster_installed() -> bool:
     """Whether this install owns a cluster lane at all.
 
     A predicate rather than a string match on :func:`check_cluster`'s verdict, because two
@@ -148,11 +148,11 @@ def check_cluster(context: str | None = None) -> list[Check]:
     """Reachability, identity, and the permissions setup actually needs.
 
     Reports rather than raises, in every direction -- including "this install has no
-    cluster support at all", which :func:`cluster_lane_installed` answers before anything
+    cluster support at all", which :func:`cluster_installed` answers before anything
     is imported for real. A diagnostic command that dies while diagnosing is the one
     failure it cannot have.
     """
-    if not cluster_lane_installed():
+    if not cluster_installed():
         # Not "to deploy or drive a cluster" any more: driving one is `vast cluster
         # run`, which this distribution ships. What needs the lane is OWNING a cluster --
         # deploying the service into it and operating it. Saying otherwise sent exactly
@@ -770,7 +770,7 @@ def run_checks(flavor: str = "", context: str | None = None,
     # need -- the exact confusion the client/operator split exists to prevent.
     usable = all(c.ok for c in client if not c.optional)
     cluster = check_cluster(context)
-    lane = cluster_lane_installed()
+    lane = cluster_installed()
     # With no lane, the binaries it shells out to are moot rather than merely advisory:
     # `kubectl` and `helm` are what `vast cluster setup` runs, and there is no `setup`
     # in this install to run them -- so "Install helm: setup uses it" answers

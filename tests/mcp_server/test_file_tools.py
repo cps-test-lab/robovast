@@ -14,7 +14,7 @@ import pytest
 
 from robovast.mcp_server.plugins import files
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 @pytest.fixture(name="ws")
@@ -27,7 +27,7 @@ def _ws(tmp_path, monkeypatch):
     exec_dir.mkdir(parents=True)
     (exec_dir / "outcome.json").write_text('{"status": "passed"}')
 
-    transport = object.__new__(NullLane)
+    transport = object.__new__(NullService)
     transport._campaigns = {}
     transport._lock = threading.Lock()
     transport.store = WorkspaceStore(

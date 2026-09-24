@@ -215,7 +215,7 @@ def test_list_campaign_plots(campaign, monkeypatch, tmp_path):
     # Author-declared plots live in the snapshot .vast under
     # visualization.results.data_browser.plots, which the service reads.
     from robovast.mcp_server import service_access
-    from tests.service.null_lane import serving
+    from tests.service.null_service import serving
     lane = serving(tmp_path, tmp_path / "workspaces")
     monkeypatch.setattr(service_access, "service_client", lambda: lane)
     config_dir = Path(campaign) / "_config"

@@ -129,7 +129,7 @@ the meaning of a status is uniform across every route:
    * - ``422``
      - A notebook or visualization failed to render.
    * - ``501``
-     - ``UnsupportedOnLane`` — the operation exists and the lane answering does not offer
+     - ``UnsupportedOperation`` — the operation exists and the lane answering does not offer
        it: a rank or a hold on a lane with no queue. The ``detail`` is one sentence
        naming the operation and the lane, so it cannot be mistaken for bad input, a
        conflict, or a bug, and the same call on the other lane is the only thing that
@@ -153,7 +153,7 @@ above: ``400`` for an id that is not a campaign id, ``409`` for a running campai
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class: ``exec_path_unavailable``, for a deployment
-where no command can be run in a container at all, and ``unsupported_on_lane``, for an
+where no command can be run in a container at all, and ``unsupported_operation``, for an
 operation this lane does not offer (a client neither retries it nor blames its input). The
 exception type is what an
 HTTP boundary drops, and a client that has to *behave* differently (report the deployment

@@ -9,7 +9,7 @@ it dies with it. A caller cannot accidentally mistake its output for a result.
 What lives here: request validation, limit derivation, the staging that turns a project
 into a mountable ``/config``, the environment the command runs under, and the
 single-container state machine plus its reaper. What lives in a transport: actually
-starting a container and exec'ing in it, via :class:`ExecLane`.
+starting a container and exec'ing in it, via :class:`ExecRunner`.
 
 Two invariants worth stating, because both were deliberate choices:
 
@@ -123,10 +123,10 @@ LIMIT_SOURCE_CONFIG = "execution.timeout"
 LIMIT_SOURCE_DEFAULT = "default"
 
 
-class ExecLane(Protocol):
+class ExecRunner(Protocol):
     """The lane-specific half: a *named* held container, started and exec'd into.
 
-    Implemented by the cluster lane's ``KubeExecLane`` (an aux pod).
+    Implemented by the cluster lane's ``KubeExecRunner`` (an aux pod).
 
     Every held operation takes a *slot*, and the container it addresses is
     :func:`container_name` of it. The slot was a constant until the read-only
@@ -535,7 +535,7 @@ def vast_in_dir(project_dir: str, config_path: str = "") -> str:
 
 
 class ContainerExecManager:
-    """Owns each slot's container lifetime; delegates container work to an :class:`ExecLane`.
+    """Owns each slot's container lifetime; delegates container work to an :class:`ExecRunner`.
 
     Two kinds of slot, with deliberately different lifetimes:
 
@@ -555,8 +555,8 @@ class ContainerExecManager:
     takes the same lock, so a reap cannot race a call that is about to reuse a container.
     """
 
-    def __init__(self, lane: ExecLane, *, poll_s: float = 5.0):
-        self._lane = lane
+    def __init__(self, runner: ExecRunner, *, poll_s: float = 5.0):
+        self._runner = runner
         self._poll_s = poll_s
         self._lock = threading.RLock()
         #: slot -> record. Insertion order is the LRU order for query eviction, kept by
@@ -628,7 +628,7 @@ class ContainerExecManager:
             with self._lock:
                 if slot in self._held:
                     self._held[slot]["reused"] = reused
-            result = self._lane.exec_in_held(spec, limit_s, detach=False, slot=slot)
+            result = self._runner.exec_in_held(spec, limit_s, detach=False, slot=slot)
             self._touch(slot)
             return result
 
@@ -640,7 +640,7 @@ class ContainerExecManager:
             # purpose is to survive calls like this one.
             self.stop()
             try:
-                return self._lane.run_once(spec, limit_s)
+                return self._runner.run_once(spec, limit_s)
             finally:
                 spec.close()
 
@@ -652,7 +652,7 @@ class ContainerExecManager:
                 self._held[SLOT_USER]["reused"] = reused
         # A scenario is detached so this call can return and the next one inspect it;
         # a command runs in the foreground and its output is the answer.
-        result = self._lane.exec_in_held(spec, limit_s, detach=spec.runs_scenario,
+        result = self._runner.exec_in_held(spec, limit_s, detach=spec.runs_scenario,
                                          slot=SLOT_USER)
         self._touch(SLOT_USER)
         return result
@@ -713,7 +713,7 @@ class ContainerExecManager:
             had_record = slot in self._held
         # Container first, then its /config: unmounting by removing the host directory
         # under a live container would be the wrong order.
-        stopped = bool(self._lane.stop_held(slot)) or had_record
+        stopped = bool(self._runner.stop_held(slot)) or had_record
         self._release_held_spec(slot)
         with self._lock:
             self._held.pop(slot, None)
@@ -792,9 +792,9 @@ class ContainerExecManager:
                         "discard it")
         # Replace an idle container: nothing to lose.
         self._release_held_spec(slot)
-        self._lane.stop_held(slot)
+        self._runner.stop_held(slot)
         deadline = deadline_for(limit_s)
-        self._lane.start_held(spec, deadline, slot)
+        self._runner.start_held(spec, deadline, slot)
         with self._lock:
             now = time.monotonic()
             self._held.pop(slot, None)      # re-insert, so order stays LRU
@@ -831,7 +831,7 @@ class ContainerExecManager:
 
     def _workload_running_locked(self, slot: str = SLOT_USER) -> bool:
         try:
-            return self._lane.held_workload_running(slot)
+            return self._runner.held_workload_running(slot)
         except Exception as exc:            # a probe failure must not reap a live run
             logger.debug("could not probe %s workload: %s", container_name(slot), exc)
             return True
@@ -846,7 +846,7 @@ class ContainerExecManager:
         failure to a caller who asked only for a container to run in.
         """
         try:
-            return self._lane.held_container_alive(slot)
+            return self._runner.held_container_alive(slot)
         except Exception as exc:  # noqa: BLE001 - unanswerable means replace, never reuse
             logger.debug("could not confirm %s is still up; replacing it: %s",
                          container_name(slot), exc)
@@ -860,7 +860,7 @@ class ContainerExecManager:
         cannot answer is not evidence that there is nothing there.
         """
         try:
-            return self._lane.held_container_alive(slot)
+            return self._runner.held_container_alive(slot)
         except Exception as exc:  # noqa: BLE001 - a probe failure must not reap a live one
             logger.debug("could not probe whether %s is still up: %s",
                          container_name(slot), exc)
@@ -924,7 +924,7 @@ __all__ = [
     "SLOT_USER", "SLOT_QUERY_PREFIX", "QUERY_IDLE_REAP_S", "QUERY_IDLE_WAIT_CAP_S",
     "QUERY_POOL_MAX", "container_name", "query_slot",
     "LIMIT_SOURCE_COMMAND", "LIMIT_SOURCE_CONFIG", "LIMIT_SOURCE_DEFAULT",
-    "ExecLane", "ExecSpec", "ContainerExecManager",
+    "ExecRunner", "ExecSpec", "ContainerExecManager",
     "validate", "derive_limit", "deadline_for", "build_env", "stage", "result_from",
     "vast_in_dir",
 ]

@@ -52,8 +52,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
-                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_ON_LANE,
-                                        UnsupportedOnLane,
+                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
+                                        UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
@@ -500,14 +500,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             logger.warning("%s", e)
             raise HTTPException(status_code=503, detail=str(e),
                                 headers={ERROR_CODE_HEADER: EXEC_PATH_UNAVAILABLE}) from e
-        except UnsupportedOnLane as e:
+        except UnsupportedOperation as e:
             # 501: the operation is on the interface and this lane does not offer it. Not a
             # 400 (the input was fine), not a 409 (nothing to retry after) and not the 500
             # a bare NotImplementedError would become -- that one still means a bug. The
             # code lets a client tell "this lane cannot" from every other refusal without
             # matching on the sentence.
             raise HTTPException(status_code=e.status, detail=str(e),
-                                headers={ERROR_CODE_HEADER: UNSUPPORTED_ON_LANE}) from e
+                                headers={ERROR_CODE_HEADER: UNSUPPORTED_OPERATION}) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 

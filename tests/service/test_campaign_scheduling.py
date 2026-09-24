@@ -22,7 +22,7 @@ from robovast.common.campaign_data import read_launch_record, write_launch_recor
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.service.interface import PRIORITY_LIMIT, CreateCampaignRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 @pytest.fixture
@@ -147,7 +147,7 @@ def test_a_finished_campaign_reports_no_standing(cluster, tmp_path):
 # ``paused=False`` must reach the service as a value rather than being dropped with the
 # Nones -- otherwise resuming a campaign would do nothing at all.
 
-class _RecordingImpl(NullLane):
+class _RecordingImpl(NullService):
     """Records the call instead of touching a queue."""
 
     def __init__(self, **kw):

@@ -25,7 +25,7 @@ class _NullIndexConn:
 
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch):
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     monkeypatch.setattr("robovast.results_processing.index_schema.forget_campaign",
@@ -36,7 +36,7 @@ def _env(tmp_path, monkeypatch):
     (results / CID / "cfg" / "0").mkdir(parents=True)
     (results / CID / "cfg" / "0" / "out.bag").write_bytes(b"x" * 16)
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: results        # noqa: SLF001
     return transport, results
 

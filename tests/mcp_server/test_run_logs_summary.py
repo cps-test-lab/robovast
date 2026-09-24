@@ -83,7 +83,7 @@ def campaigns(tmp_path, monkeypatch):
     for name in _CAMPAIGNS:
         _write_campaign(tmp_path / "results" / name, _ROWS_PER_CAMPAIGN)
         _ingest(tmp_path / "results" / name)
-    from tests.service.null_lane import serving
+    from tests.service.null_service import serving
     lane = serving(tmp_path / "results", tmp_path / "workspaces")
     monkeypatch.setattr(service_access, "service_client", lambda: lane)
     monkeypatch.setattr(run_logs, "_SUMMARY_SCAN", _SCAN_CAP)

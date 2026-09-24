@@ -92,7 +92,7 @@ def authoring_service(monkeypatch):
 def test_validate_routes_a_sources_address_to_the_service(authoring_service):
     """With a cluster service the workspace is on no local disk — only it can answer."""
     report = authoring.validate_project("/sources/ws-ab12/demo.vast")
-    assert report["valid"] is True and report["lane"] == "workspace"
+    assert report["valid"] is True and report["source"] == "workspace"
     assert ("validate_project", "ws-ab12", "demo.vast") in authoring_service.calls
 
 
@@ -107,7 +107,7 @@ def test_validate_resolves_a_workspace_name(authoring_service):
 def test_validate_reads_a_filesystem_path_locally(authoring_service):
     """A bare path is authoring before a workspace exists; it must not reach the service."""
     report = authoring.validate_project(str(_GROWTH_SIM))
-    assert report["lane"] == "local file"
+    assert report["source"] == "local file"
     assert not authoring_service.calls
 
 
@@ -122,7 +122,7 @@ def test_validate_refuses_a_results_address(authoring_service):
 def test_preview_strips_web_previews_and_reports_the_lane(authoring_service):
     """``previews`` is Module-Federation asset data for the web UI, not for a caller."""
     result = authoring.preview_configurations("/sources/ws-ab12/demo.vast", limit=5)
-    assert result["lane"] == "workspace"
+    assert result["source"] == "workspace"
     assert result["configurations"] == [{"name": "cell-0",
                                          "parameters": {"growth_rate": 0.1}}]
     assert ("preview_configurations", "ws-ab12", 5, "demo.vast") \
@@ -899,7 +899,7 @@ def test_the_local_file_lane_does_not_call_an_unchecked_world_a_pass(
                                         "severity": "unchecked",
                                         "message": "was NOT checked: no service here"}])
     report = authoring.validate_project(str(tmp_path / "x.vast"))
-    assert report["lane"] == "local file"
+    assert report["source"] == "local file"
     assert report["valid"] is False
     assert report["world_checked"] is False
     assert not authoring_service.calls

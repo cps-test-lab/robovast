@@ -57,7 +57,7 @@ def _transport(monkeypatch, tmp_path):
     pytest.importorskip("robovast_nav")
     from robovast.common import index_db
     from robovast.results_processing import campaign_ingest, index_query, index_views
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     with psycopg.connect(DSN, autocommit=True) as setup:
         for statement in (f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE",
                           "DROP SCHEMA IF EXISTS campaign CASCADE",
@@ -70,7 +70,7 @@ def _transport(monkeypatch, tmp_path):
     with index_query.open_index(readonly=False) as conn:
         campaign_ingest.ingest_campaign(conn, str(root), CAMPAIGN)
         index_views.create_views(conn)
-    yield NullLane()
+    yield NullService()
 
     with psycopg.connect(DSN, autocommit=True) as teardown:
         teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")

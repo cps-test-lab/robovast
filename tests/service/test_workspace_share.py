@@ -18,7 +18,7 @@ import pytest
 
 from robovast.service.interface import CreateWorkspaceRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 _CAMPAIGN_OBJECT = "nav-2026-08-18-194018.postprocessed.tar.gz"
 
@@ -57,7 +57,7 @@ class _StubShare:
 def _env(monkeypatch, tmp_path):
     """A transport whose share is a directory, and a workspace with a project in it."""
     monkeypatch.setenv("ROBOVAST_SHARE_TYPE", "stub")
-    transport = NullLane(
+    transport = NullService(
         store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces")))
     transport._campaigns_root = lambda: tmp_path / "results"
     (tmp_path / "results").mkdir()
@@ -220,7 +220,7 @@ def test_a_member_that_would_escape_the_workspace_is_refused(env, tmp_path):
 def test_exporting_without_a_share_is_a_refusal_not_a_silence(monkeypatch, tmp_path):
     """A service with no share cannot publish, and saying so is the only useful answer."""
     monkeypatch.delenv("ROBOVAST_SHARE_TYPE", raising=False)
-    transport = NullLane(
+    transport = NullService(
         store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces")))
     ws = transport.store.registry.create(name="lonely")["workspace_id"]
     with pytest.raises(RuntimeError, match="no share configured"):

@@ -22,7 +22,7 @@ import pathlib
 import pytest
 
 from robovast.common.errors import ExecPathUnavailable, ExecTargetGone
-from robovast.execution.cluster_execution import kube_client, kube_exec_lane
+from robovast.execution.cluster_execution import kube_client, kube_exec_runner
 from robovast.execution.cluster_execution.kube_client import api_error_reason, exec_stream
 
 pytest.importorskip("kubernetes")
@@ -185,7 +185,7 @@ def _lane_refusing_to_create(monkeypatch, reason):
 
     from robovast.service.container_exec import ExecSpec
 
-    lane = kube_exec_lane.KubeExecLane("ns", stage_dir=lambda slot: pathlib.Path("/nonexistent") / slot,
+    lane = kube_exec_runner.KubeExecRunner("ns", stage_dir=lambda slot: pathlib.Path("/nonexistent") / slot,
                                        discard_staged=lambda slot: False,
                                        token_for=lambda scope: "tok")
 
@@ -244,7 +244,7 @@ def _raises_rendering_an_api_error(module):
                     for c in ast.walk(node))]
 
 
-@pytest.mark.parametrize("module", [kube_client, kube_exec_lane])
+@pytest.mark.parametrize("module", [kube_client, kube_exec_runner])
 def test_no_call_site_renders_an_api_error_into_its_own_raise(module):
     """The rule, rather than one more instance of it. ``api_error_reason`` renders a reason
     and does not classify it, so a ``raise`` that calls it directly is a failure the

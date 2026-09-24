@@ -18,9 +18,9 @@ from robovast.service.interface import VersionInfo
 
 
 def _lane():
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
 
-    lane = object.__new__(NullLane)
+    lane = object.__new__(NullService)
     lane.store = types.SimpleNamespace(registry=types.SimpleNamespace(root="/tmp/w"))
     return lane
 
@@ -30,9 +30,9 @@ def test_a_service_that_did_not_say_has_no_verdict():
 
 
 def test_a_lane_without_a_queue_says_it_has_none():
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
 
-    with patch.object(NullLane, "_campaigns_root", return_value="/tmp/c"):
+    with patch.object(NullService, "_campaigns_root", return_value="/tmp/c"):
         assert _lane().version().can_schedule is False
 
 
@@ -43,10 +43,10 @@ def test_the_answer_is_the_predicate_the_service_refuses_on():
     never offered an entry the service would refuse, nor denied one it would accept.
     """
     from robovast.service.interface import CreateCampaignRequest
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
 
-    with patch.object(NullLane, "_campaigns_root", return_value="/tmp/c"), \
-            patch.object(NullLane, "_queues_campaigns", return_value=True):
+    with patch.object(NullService, "_campaigns_root", return_value="/tmp/c"), \
+            patch.object(NullService, "_queues_campaigns", return_value=True):
         lane = _lane()
         assert lane.version().can_schedule is True
         # and the refusal is gone with it, rather than left saying the opposite
@@ -54,13 +54,13 @@ def test_the_answer_is_the_predicate_the_service_refuses_on():
 
 
 def test_a_lane_without_a_queue_says_so_and_refuses_in_the_same_breath():
-    from robovast.service.interface import CreateCampaignRequest, UnsupportedOnLane
-    from tests.service.null_lane import NullLane
+    from robovast.service.interface import CreateCampaignRequest, UnsupportedOperation
+    from tests.service.null_service import NullService
 
-    with patch.object(NullLane, "_campaigns_root", return_value="/tmp/c"):
+    with patch.object(NullService, "_campaigns_root", return_value="/tmp/c"):
         lane = _lane()
         assert lane.version().can_schedule is False
-        with pytest.raises(UnsupportedOnLane):
+        with pytest.raises(UnsupportedOperation):
             lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
 
 

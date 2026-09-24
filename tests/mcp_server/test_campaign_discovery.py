@@ -22,7 +22,7 @@ from robovast.mcp_server import results_resolver, service_access
 def no_project(monkeypatch, tmp_path):
     """No ``.robovast_project`` anywhere; workspaces store rooted under tmp_path, and a
     service answering from ``tmp_path/results``."""
-    from tests.service.null_lane import serving
+    from tests.service.null_service import serving
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
     lane = serving(tmp_path / "results", tmp_path / "workspaces")
     monkeypatch.setattr(service_access, "service_client", lambda: lane)

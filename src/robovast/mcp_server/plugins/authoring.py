@@ -153,15 +153,15 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: indented by four leaves the docstring with no common indent, so ``Args:``/``Returns:``
 #: stop being recognised as sections and are served as prose in the tool description --
 #: on every request, duplicating what the parameter schema already carries.
-_ADDRESS_LANE = """
+_ADDRESS_ROUTE = """
     A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so
     this is the file the campaign will actually run. Anything else is read as a path on
     the MCP-server host — for authoring before a workspace exists, and the only lane with
-    no service running. ``lane`` says which answered.
+    no service running. ``source`` says which answered.
 """
 
 
-def _address_lane(address: str):
+def _address_route(address: str):
     """``(workspace_id, rel_path)`` for a ``/sources`` address, or ``None`` for a path.
 
     Returning ``None`` rather than guessing is the point: an absolute filesystem path
@@ -268,7 +268,7 @@ def validate_project(address: str, check_world: bool = True,
     from robovast.service.interface import ValidationReport
     from robovast.service.project_push import _resolve_workspace_id
     try:
-        target = _address_lane(address)
+        target = _address_route(address)
         if target is None:
             # No service, so no lane that can run a simulator: say the world went
             # unchecked rather than letting a clean reply read as a checked one.
@@ -289,13 +289,13 @@ def validate_project(address: str, check_world: bool = True,
                           "valid": bool(report.get("valid")) and not advisory,
                           "problems": list(report.get("problems") or []) + advisory}
             return {**ValidationReport.model_validate(report).model_dump(),
-                    "lane": "local file"}
+                    "source": "local file"}
         client = service_access.require_service()
         workspace_id, rel_path = target
         report = client.validate_project(
             _resolve_workspace_id(client, workspace_id), rel_path, check_world,
             check_scenario)
-        return {**report.model_dump(), "lane": "workspace"}
+        return {**report.model_dump(), "source": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"valid": False, "world_checked": None, "scenario_checked": None,
                 "configs": 0,
@@ -330,7 +330,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
     from robovast.common.config_generation import generate_scenario_variations
     from robovast.service.project_push import _resolve_workspace_id
     try:
-        target = _address_lane(address)
+        target = _address_route(address)
         if target is None:
             # A search .vast expands per sampled ParamSet, not from a `configuration:`
             # block; composing a sample is the only preview that reflects what it runs.
@@ -356,7 +356,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                 "configurations": items[:limit] if truncated else items,
                 "truncated": truncated,
                 "aux_containers": aux,
-                "lane": "local file",
+                "source": "local file",
             }
         client = service_access.require_service()
         workspace_id, rel_path = target
@@ -372,7 +372,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                                for c in resp.configurations],
             "truncated": resp.truncated,
             "aux_containers": list(resp.aux_containers),
-            "lane": "workspace",
+            "source": "workspace",
         }
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         # error_result rather than {"error": str(e)}: composing here can refuse with an
@@ -408,7 +408,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
     """
     from robovast.service.project_push import _resolve_workspace_id
     try:
-        target = _address_lane(address)
+        target = _address_route(address)
         if target is None:
             raise ValueError(
                 "describe_world needs a workspace address (/sources/<workspace_id>/<path>): "
@@ -432,7 +432,7 @@ def _resolved_request(address: str):
     """
     from robovast.service.interface import ExecRequest
     from robovast.service.project_push import _resolve_workspace_id
-    target = _address_lane(address)
+    target = _address_route(address)
     if target is None:
         raise ValueError(
             "this needs a workspace address (/sources/<workspace_id>/<path>): the answer "
@@ -532,7 +532,7 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
 
 for _fn in (validate_project, preview_configurations, describe_world):
     _fn.__doc__ = _fn.__doc__.replace(
-        "    Args:\n", f"{_ADDRESS_LANE}\n    Args:\n", 1)
+        "    Args:\n", f"{_ADDRESS_ROUTE}\n    Args:\n", 1)
 
 
 # -- Plugin class ------------------------------------------------------------

@@ -18,7 +18,7 @@ from starlette.testclient import TestClient
 from robovast.service import event_log
 from robovast.service.app import build_app
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 from tests.service.conftest import AUTH_HEADERS
 
 
@@ -46,7 +46,7 @@ def _record_sites(monkeypatch):
 
 def _app(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    return build_app(NullLane(store=store), mount_mcp=False, auth_token="")
+    return build_app(NullService(store=store), mount_mcp=False, auth_token="")
 
 
 def test_a_refusal_is_recorded_off_the_event_loop(tmp_path, record_sites):
@@ -73,7 +73,7 @@ def test_an_upload_is_written_off_the_event_loop(tmp_path, monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
     ws = store.registry.create("demo")["workspace_id"]
     store.registry.project_dir(ws).mkdir(parents=True, exist_ok=True)
-    client = TestClient(build_app(NullLane(store=store), mount_mcp=False, auth_token=""),
+    client = TestClient(build_app(NullService(store=store), mount_mcp=False, auth_token=""),
                         headers=AUTH_HEADERS)
     grant = client.post("/uploads", json={"address": f"/sources/{ws}/a.bin"}).json()
 

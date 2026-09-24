@@ -9,7 +9,7 @@ a concrete class to construct, not a lane. This is that class. Every hook the ba
 to a lane is answered here in the way that commits to nothing: a launch is admitted and
 reaches the controller, which the tests that launch patch out; nothing is built, nothing
 runs, no job exists, no resources are measured, and every operation that would need a
-driver is refused by name with :class:`UnsupportedOnLane`, exactly as a lane that lacks it
+driver is refused by name with :class:`UnsupportedOperation`, exactly as a lane that lacks it
 would refuse it. A test that needs one answer replaces that one hook.
 
 Not a fake cluster and not a mock: it is a real ``ServiceBase``, so what it exercises is
@@ -20,7 +20,7 @@ import contextlib
 import pathlib
 
 from robovast.execution.backends import ExecutionBackend, RunOptions
-from robovast.service.interface import (ActionResult, ResourceUsage, UnsupportedOnLane,
+from robovast.service.interface import (ActionResult, ResourceUsage, UnsupportedOperation,
                                         UpgradeInfo, VersionInfo)
 from robovast.service.service_base import ServiceBase
 
@@ -38,17 +38,17 @@ class NullBackend(ExecutionBackend):
 
     def run_batch(self, *args, **kwargs):
         del args, kwargs
-        raise UnsupportedOnLane("run_batch", NullLane.LANE, hint="the null lane runs nothing")
+        raise UnsupportedOperation("run_batch", NullService.IMPLEMENTATION, hint="the null lane runs nothing")
 
 
 
-class NullLane(ServiceBase):
+class NullService(ServiceBase):
     """See the module docstring."""
 
-    LANE = "null"
+    IMPLEMENTATION = "null"
 
     def _refuse(self, operation: str):
-        raise UnsupportedOnLane(operation, self.LANE, hint="the null lane runs nothing")
+        raise UnsupportedOperation(operation, self.IMPLEMENTATION, hint="the null lane runs nothing")
 
     # -- admission: everything the default asks for, nothing more ------------------------
 
@@ -132,7 +132,7 @@ class NullLane(ServiceBase):
 
     # -- jobs and exec: there are none ---------------------------------------------------
 
-    def _exec_lane(self):
+    def _exec_runner(self):
         self._refuse("exec_in_container")
 
     def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:
@@ -182,7 +182,7 @@ class NullLane(ServiceBase):
 
     def _compute_resource_usage(self) -> ResourceUsage:
         disk, unavailable = self._disk_space()
-        return ResourceUsage(backend=self.LANE, cpu_capacity=0.0, cpu_used=0.0,
+        return ResourceUsage(backend=self.IMPLEMENTATION, cpu_capacity=0.0, cpu_used=0.0,
                              memory_capacity_bytes=0, memory_used_bytes=0,
                              parallel_runs=False, disk=disk, disk_unavailable=unavailable)
 
@@ -198,7 +198,7 @@ class NullLane(ServiceBase):
     # -- the handshake and the roll ------------------------------------------------------
 
     def version(self) -> VersionInfo:
-        return self._version_info(backend=self.LANE, can_build_images=False,
+        return self._version_info(backend=self.IMPLEMENTATION, can_build_images=False,
                                   can_schedule=self._queues_campaigns(),
                                   results_root=str(self._campaigns_root()),
                                   sources_root=str(self.store.registry.root))
@@ -213,7 +213,7 @@ class NullLane(ServiceBase):
         self._refuse("upgrade_service")
 
 
-def serving(results_root, workspaces_root) -> NullLane:
+def serving(results_root, workspaces_root) -> NullService:
     """A null lane over *results_root*, for a test that needs a service to answer from it.
 
     What the MCP tools read -- listings, plots, logs, a configuration's contribution -- is
@@ -221,6 +221,6 @@ def serving(results_root, workspaces_root) -> NullLane:
     service (``service_access.service_client``) rather than a disk of its own.
     """
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-    lane = NullLane(store=WorkspaceStore(registry=WorkspaceRegistry(root=workspaces_root)))
+    lane = NullService(store=WorkspaceStore(registry=WorkspaceRegistry(root=workspaces_root)))
     lane._campaigns_root = lambda: pathlib.Path(results_root)  # noqa: SLF001
     return lane

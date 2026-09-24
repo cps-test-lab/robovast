@@ -13,7 +13,7 @@ import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 from robovast.service.interface import (CampaignSummary, ListCampaignsRequest,
                                         ListCampaignsResponse, Routes)
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
@@ -22,7 +22,7 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 @pytest.fixture
 def transport(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return NullLane(store=store)
+    return NullService(store=store)
 
 
 def _campaign(transport, cid: str, created_at: float, *, size=None, ended=True) -> None:

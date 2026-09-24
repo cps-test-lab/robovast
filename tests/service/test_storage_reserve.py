@@ -24,7 +24,7 @@ from robovast.common.disk_reserve import (DEFAULT_RESERVE_FRACTION, RESERVE_ENV,
                                           configured_reserve_gb)
 from robovast.service.storage_reserve import storage_refusal
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 _GB = 1000 ** 3
 
@@ -113,7 +113,7 @@ def test_a_meter_that_could_not_be_read_is_not_a_full_disk(monkeypatch):
 @pytest.fixture(name="transport")
 def _transport(tmp_path, monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = NullLane(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     monkeypatch.setenv(RESERVE_ENV, "150")
     # A refusal measures the service cache for its hint; keep that off the developer's own.

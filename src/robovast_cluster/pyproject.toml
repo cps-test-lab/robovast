@@ -26,8 +26,8 @@ kubernetes = "^34.1"
 # rejects anything weaker, so this is the hash or no auth at all -- see registry_deploy.
 bcrypt = "^4.0"
 
-# `vast serve --backend cluster`. Resolved by name, so the core never imports this package
-# to start a service -- see robovast/service/serve_backends.py.
+# What `vast serve` runs. Resolved through the entry point, so the core never imports this
+# package to start a service -- see robovast/service/serve_backends.py.
 [tool.poetry.plugins."robovast.execution_backends"]
 cluster = "robovast.execution.cluster_execution.serve_backend:ClusterServeBackend"
 

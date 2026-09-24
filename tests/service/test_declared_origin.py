@@ -9,9 +9,9 @@ instead. The service reports the origin itself, from the one input that knows it
 the Ingress it was published on, or the address it bound.
 """
 
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 def _impl(tmp_path):
-    return NullLane(workspace_dir=str(tmp_path))
+    return NullService(workspace_dir=str(tmp_path))
 
 
 def test_a_service_nobody_told_declares_nothing(tmp_path, monkeypatch):
@@ -72,7 +72,7 @@ def test_the_cluster_lane_needs_no_override_of_its_own():
     case, which is exactly the bug that shape invites -- so it inherits instead.
     """
     from robovast.execution.cluster_execution.cluster_service import ClusterService
-    assert ClusterService._declared_web_base is NullLane._declared_web_base
+    assert ClusterService._declared_web_base is NullService._declared_web_base
 
 
 def test_a_named_bind_is_an_origin_and_a_wildcard_is_not():

@@ -554,7 +554,7 @@ class _Store:
 
 
 class _Transport:
-    """Enough of ``NullLane`` for ``_with_world_check``, which is what is under test."""
+    """Enough of ``NullService`` for ``_with_world_check``, which is what is under test."""
 
     store = _Store()
 
@@ -572,7 +572,7 @@ def _checked(monkeypatch, tmp_path, problems=None, crash=None):
     this builds from an answer, not how the answer or the file was obtained.
     """
     from robovast.common import common
-    from tests.service.null_lane import NullLane
+    from tests.service.null_service import NullService
     def _answer(*a, **k):
         if crash is not None:
             raise crash
@@ -584,7 +584,7 @@ def _checked(monkeypatch, tmp_path, problems=None, crash=None):
     class _Project:
         config_path = str(tmp_path / "a.vast")
 
-    return NullLane._with_world_check(  # noqa: SLF001 - the unit under test
+    return NullService._with_world_check(  # noqa: SLF001 - the unit under test
         _Transport(), "ws-1", "", _Project(), {"valid": True, "problems": []})
 
 

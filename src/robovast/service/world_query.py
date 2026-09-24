@@ -31,7 +31,7 @@ working, and a second simulator backend is served by the same path.
 Two lane facts it reconciles, and both are the whole substance of the class:
 
 * **The project is already in the container, at a different address.** The exec lane
-  mounts the workspace read-only at ``/sources/<workspace_id>`` (``kube_exec_lane``
+  mounts the workspace read-only at ``/sources/<workspace_id>`` (``kube_exec_runner``
   mirrors it in via an init container), while a backend's
   command names the campaign directory at ``CONFIG_MOUNT``. ``expose`` of a *directory*
   is therefore honoured as a path rewrite rather than a mount: the tree is there, it is
@@ -238,7 +238,7 @@ def _problem(message: str, config=None, field: str = "",
             "message": message, "severity": severity}
 
 
-def _collapse_lane_wide(problems: list, blocks: int) -> list:
+def _collapse_identical(problems: list, blocks: int) -> list:
     """One problem for a failure that was not about any one configuration.
 
     A lane that cannot start a container fails every block for the same reason, and the
@@ -453,7 +453,7 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
             config=config_name)
     # Advice is kept out of the collapse: that folds one lane failure repeated per world, and an
     # advisory about a checked world is neither.
-    return _collapse_lane_wide(problems, len(blocks)) + _merge_repeated(advice)
+    return _collapse_identical(problems, len(blocks)) + _merge_repeated(advice)
 
 
 def _merge_repeated(advice: list) -> list:

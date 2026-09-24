@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``NullLane.query_campaign_data_sql`` spanning campaigns, through one index.
+"""``NullService.query_campaign_data_sql`` spanning campaigns, through one index.
 
 The feature is unchanged and now cheaper: an A/B question -- "how did the nine campaigns
 of this search arm compare?" -- must be answerable in one query through the service
@@ -35,7 +35,7 @@ import os
 
 import pytest
 
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
@@ -77,7 +77,7 @@ def _make_campaign(root, name, objectives):
 @pytest.fixture(name="transport")
 def _transport(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return NullLane(store=store)
+    return NullService(store=store)
 
 
 @pytest.fixture(name="campaigns")

@@ -19,7 +19,7 @@ from pathlib import Path
 from robovast.common.campaign_data import KIND_SIZING, read_interventions, record_intervention
 from robovast.execution.cluster_execution import kubernetes_backend as kb
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 def _entry(container="sut", node="n1", limit="128Mi", reason="OOMKilled"):
@@ -128,7 +128,7 @@ def test_nothing_measured_means_no_pod_is_listed_for_it(tmp_path):
 
 def _transport(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: tmp_path / "results"
     return transport
 

@@ -1,6 +1,6 @@
 """The Kubernetes half of container exec: one aux pod, exec'd into.
 
-The :class:`~robovast.service.container_exec.ExecLane` of the cluster lane, built on the
+The :class:`~robovast.service.container_exec.ExecRunner` of the cluster lane, built on the
 same two primitives the aux-pod container runner already uses — a kept-alive pod and
 ``pods/exec``, which its docstring calls "the in-cluster equivalent of ``docker exec``".
 
@@ -27,7 +27,7 @@ correct:
 
 - the kube **context** must come from the service, or this execs into whichever cluster
   the kubeconfig currently points at while looking perfectly valid;
-- :meth:`KubeExecLane.stop_held` **waits** for deletion, because a Kubernetes delete
+- :meth:`KubeExecRunner.stop_held` **waits** for deletion, because a Kubernetes delete
   returns while the pod is still ``Terminating`` and the next start then collides with
   the corpse;
 - the "is anything running?" probe uses **shell builtins only**, since a probe that
@@ -82,7 +82,7 @@ def exec_slot(namespace: str, slot: str = SLOT_USER) -> str:
     return f"{EXEC_PREFIX}/{namespace}/{slot}"
 
 
-class KubeExecLane:
+class KubeExecRunner:
     """Runs exec commands in a single aux pod, staged through the service's data plane.
 
     *stage_dir*, *discard_staged* and *token_for* are the service's own
@@ -116,7 +116,7 @@ class KubeExecLane:
             self._core = core_v1_client(self._kube_context)
         return self._core
 
-    # -- ExecLane ---------------------------------------------------------
+    # -- ExecRunner ---------------------------------------------------------
 
     def run_once(self, spec: ExecSpec, limit_s: int) -> tuple[int, str, str, bool]:
         """No throwaway-pod path: create, exec, delete — the pod *is* the container.
@@ -131,7 +131,7 @@ class KubeExecLane:
         finally:
             self.stop_held()
 
-    # -- ExecLane, continued ----------------------------------------------
+    # -- ExecRunner, continued ----------------------------------------------
 
     def start_held(self, spec: ExecSpec, deadline_s: int,
                    slot: str = SLOT_USER) -> None:

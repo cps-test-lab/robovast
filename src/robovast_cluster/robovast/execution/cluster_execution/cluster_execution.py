@@ -202,7 +202,7 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
     to determine one yields ``""`` rather than an error.
 
     The run, exec and warm paths each carry this logic inline (``kubernetes_backend``,
-    ``kube_exec_lane``, ``image_warm``). They predate this helper and can move onto it; nothing
+    ``kube_exec_runner``, ``image_warm``). They predate this helper and can move onto it; nothing
     is gained by leaving a fifth copy for the next pod spec that needs one.
     """
     from .service_deploy import REGISTRY_PUSH_SECRET_NAME  # noqa: PLC0415

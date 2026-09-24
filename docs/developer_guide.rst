@@ -464,8 +464,8 @@ Every remote operation is a method on
 #. **The lane and the HTTP transport** — in
    ``robovast.service.service_base.ServiceBase`` when the body is correct for any lane,
    otherwise an abstract hook there and a body in ``ClusterService`` and in the suite's
-   ``NullLane`` (:ref:`two-lanes-one-base`); and ``HTTPTransport`` over the route. A lane
-   may decline an operation, and then it raises ``UnsupportedOnLane`` naming the operation
+   ``NullService`` (:ref:`two-lanes-one-base`); and ``HTTPTransport`` over the route. A lane
+   may decline an operation, and then it raises ``UnsupportedOperation`` naming the operation
    and itself, in its own class; never a default on the base, and never a ``ValueError``
    that reads as bad input. The refusal crosses HTTP as a ``501`` and reaches every client
    as the one sentence (:doc:`http_api`, "Status codes").

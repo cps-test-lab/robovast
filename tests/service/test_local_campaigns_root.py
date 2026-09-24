@@ -4,7 +4,7 @@
 
 Campaigns created from a workspace must NOT land under ``<workspace>/results``
 (where the service's readers never look and ``delete_workspace`` would take them
-along). They belong in the shared :meth:`NullLane._campaigns_root`, which
+along). They belong in the shared :meth:`NullService._campaigns_root`, which
 every read path — list / status / data query — resolves.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 from robovast.service.interface import ListCampaignsRequest
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -22,7 +22,7 @@ def transport(monkeypatch, tmp_path):
     # No CWD project → _campaigns_root falls back to the dir beside the workspaces
     # (here <tmp_path>/results, kept unique per test by rooting under tmp_path).
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return NullLane(store=store)
+    return NullService(store=store)
 
 
 def _make_workspace(transport) -> str:

@@ -24,13 +24,13 @@ from robovast.execution.control_server import STOP_RUNS, Phase
 from robovast.service.interface import (CreateCampaignRequest, CreateWorkspaceRequest,
                                         WriteFileRequest)
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 @pytest.fixture(name="svc")
 def _svc(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullLane(store=store)
+    transport = NullService(store=store)
     results = tmp_path / "results"
     results.mkdir()
     transport._campaigns_root = lambda: results
@@ -93,12 +93,12 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
                 entry.state.request_stop(STOP_RUNS)
         return {}, None
 
-    monkeypatch.setattr(NullLane, "_build_specs_for", _specs)
-    monkeypatch.setattr(NullLane, "_build_backend", lambda self, state: None)
+    monkeypatch.setattr(NullService, "_build_specs_for", _specs)
+    monkeypatch.setattr(NullService, "_build_backend", lambda self, state: None)
 
     done = []
     monkeypatch.setattr(
-        NullLane, "_postprocess",
+        NullService, "_postprocess",
         lambda self, cid, rd, state, entry, ends_at=Phase.FINISHED: done.append(ends_at))
 
     ref = svc.create_campaign(CreateCampaignRequest(
@@ -141,7 +141,7 @@ def test_a_shutting_down_service_does_not_start_it(svc, monkeypatch):
     """On Ctrl+C the storage tunnel dies with the process group -- the line
     ``_record_campaign_stopped`` already draws -- and work this process cannot finish is
     not worth starting."""
-    monkeypatch.setattr(NullLane, "_record_campaign_stopped",
+    monkeypatch.setattr(NullService, "_record_campaign_stopped",
                         lambda self, *a, **k: setattr(self, "_shutting_down", True))
     done, _ = _launch(svc, monkeypatch)
     assert done == []
@@ -173,7 +173,7 @@ def test_the_worker_does_not_double_postprocess_an_ordinary_campaign(svc, monkey
 def test_shutdown_marks_the_service_before_it_tears_anything_down(tmp_path, monkeypatch):
     """The flag has to be set first, or a worker reaching its tail during the teardown
     starts the very work the flag exists to prevent."""
-    lt = NullLane(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
+    lt = NullService(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
     seen = []
     monkeypatch.setattr(type(lt), "_shutdown_running_campaigns", lambda self, running: None)
     monkeypatch.setattr(type(lt), "_is_done",

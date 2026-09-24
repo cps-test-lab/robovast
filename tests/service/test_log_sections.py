@@ -13,13 +13,13 @@ import pytest
 
 from robovast.common.campaign_logs import assemble_log_from_dir
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 
 
 @pytest.fixture
 def transport(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return NullLane(store=store, results_dir=str(tmp_path / "results"))
+    return NullService(store=store, results_dir=str(tmp_path / "results"))
 
 
 def _exec_dir(transport, campaign_id="camp-1"):

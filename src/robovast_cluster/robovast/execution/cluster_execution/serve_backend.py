@@ -1,11 +1,11 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Kubernetes lane, as a registered ``vast serve`` backend.
+"""The service implementation ``vast serve`` runs, registered as an entry point.
 
-Everything Kubernetes-shaped that ``vast serve`` needs lives behind this one class, so
-the core never imports the cluster package to start a service -- it resolves this by
-name through the ``robovast.execution_backends`` entry point this distribution registers.
+Everything Kubernetes-shaped that ``vast serve`` needs lives behind this one class, so the
+core never imports the cluster package to start a service -- it resolves this through the
+``robovast.execution_backends`` entry point this distribution registers.
 """
 
 from __future__ import annotations
@@ -26,8 +26,7 @@ class ClusterServeBackend:
         local debugger against a real cluster is to run this same process *inside* the
         cluster's network with its Service's traffic steered to it::
 
-            mirrord exec --target deployment/robovast-service --steal -- \\
-                vast serve --backend cluster
+            mirrord exec --target deployment/robovast-service --steal -- vast serve
 
         which needs no cluster-side install and resolves the pods' address to this process.
         """
@@ -36,10 +35,9 @@ class ClusterServeBackend:
         from .cluster_service import ClusterService  # pylint: disable=import-outside-toplevel
         if not in_pod:
             raise click.ClickException(
-                "the cluster backend runs inside the cluster: a campaign's pods deliver "
+                "the service runs inside the cluster: a campaign's pods deliver "
                 "their outputs to this service over the cluster network, which cannot reach "
                 "a process on this host. To debug the driver against a real cluster, run it "
                 "in the cluster's network with the Service's traffic steered to it: "
-                "'mirrord exec --target deployment/robovast-service --steal -- vast serve "
-                "--backend cluster'.")
+                "'mirrord exec --target deployment/robovast-service --steal -- vast serve'.")
         return ClusterService(store=store, results_dir=results_dir)

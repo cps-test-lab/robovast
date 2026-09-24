@@ -55,8 +55,8 @@ def test_a_mounted_mcp_gets_the_implementation_itself(monkeypatch):
 
 def test_building_the_app_with_mcp_binds_the_implementation():
     from robovast.service.app import build_app
-    from tests.service.null_lane import NullLane
-    impl = NullLane()
+    from tests.service.null_service import NullService
+    impl = NullService()
     build_app(impl, mount_mcp=True, auth_token="tok")
     assert service_access.service_client() is impl
 

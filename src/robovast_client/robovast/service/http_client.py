@@ -44,7 +44,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, UnsupportedOnLane,
+                                        ServiceCache, ServiceError, UnsupportedOperation,
                                         UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
@@ -79,7 +79,7 @@ class HTTPTransport(RobovastInterface):
     #: What this transport declines, it declines as the caller's side of the wire: the
     #: service it forwards to has its own lane, and a refusal from there arrives with that
     #: lane's name in it.
-    LANE = "http"
+    IMPLEMENTATION = "http"
 
     def __init__(self, base_url: str, timeout: float = 30.0,
                  token: str = "", user: str = ""):
@@ -659,8 +659,8 @@ class HTTPTransport(RobovastInterface):
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
         # Same as its campaign sibling: a path on the service's disk means nothing here.
         del workspace_id, path
-        raise UnsupportedOnLane(
-            "resolve_workspace_scene_asset", self.LANE,
+        raise UnsupportedOperation(
+            "resolve_workspace_scene_asset", self.IMPLEMENTATION,
             hint="a scene asset is fetched over HTTP from SceneStatus.url, not resolved to "
                  "a local path")
 
@@ -668,8 +668,8 @@ class HTTPTransport(RobovastInterface):
         # A *path on the service's disk* has no meaning across HTTP; a remote caller fetches the bytes
         # from the address the status reports. Refusing beats returning a path that is not there.
         del campaign_id, path
-        raise UnsupportedOnLane(
-            "resolve_campaign_scene_asset", self.LANE,
+        raise UnsupportedOperation(
+            "resolve_campaign_scene_asset", self.IMPLEMENTATION,
             hint="a scene asset is fetched over HTTP from SceneStatus.url, not resolved to "
                  "a local path")
 

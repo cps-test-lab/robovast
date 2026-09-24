@@ -30,7 +30,7 @@ import pytest
 from robovast.client.status import Phase
 from robovast.service.interface import ImportCampaignRequest
 from robovast.execution.status_recovery import reconstruct_status_from_disk
-from tests.service.null_lane import NullLane
+from tests.service.null_service import NullService
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 _SOURCE = _FIXTURES / "v1-campaign-2025-03-04-101500"
 
@@ -75,7 +75,7 @@ def _archive(tmp_path, *, postprocessed=False, name="camp.tar.gz",
 @pytest.fixture(name="service")
 def _service(tmp_path, monkeypatch):
     monkeypatch.setenv("ROBOVAST_RESULTS_DIR", str(tmp_path / "results"))
-    transport = NullLane()
+    transport = NullService()
     monkeypatch.setattr(type(transport), "_campaigns_root",
                         lambda self: tmp_path / "results")
 

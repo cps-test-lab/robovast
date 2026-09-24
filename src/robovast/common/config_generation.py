@@ -637,7 +637,7 @@ _IMAGE_STEP = ("the simulator in {image} answered the query itself, so that imag
 #: What settles a world query that nothing ran. Kept apart from _IMAGE_STEP because the two
 #: send a caller to opposite places, and the reply is the only thing that can tell them
 #: apart -- a lane that cannot start a container says nothing about the .vast.
-_LANE_STEP = ("nothing ran the query, so this says nothing about the .vast: check that the "
+_CONTAINER_STEP = ("nothing ran the query, so this says nothing about the .vast: check that the "
               "execution lane can start a container (get_resource_usage, or `vast service "
               "resources`) and validate again.")
 
@@ -749,7 +749,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         spoke = _command_failure(lines)
         raise WorldQueryUnavailable(
             f"{name} could not describe this world in {image}: {spoke or exc}",
-            next_step=(_IMAGE_STEP.format(image=image) if spoke else _LANE_STEP)) from None
+            next_step=(_IMAGE_STEP.format(image=image) if spoke else _CONTAINER_STEP)) from None
     finally:
         runner.close()
     payload = _last_json_line(lines)
