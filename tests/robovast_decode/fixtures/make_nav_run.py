@@ -100,7 +100,7 @@ def scenario_bag():
                yaw_q(0.001 * k))])))
         for j in range(4):
             stamp = base + j * 25_000_000
-            q = yaw_q(0.05 * k + 0.01 * j, flip=(k % 3 == 0))      # negative w on some
+            q = yaw_q(0.05 * k + 0.01 * j, flip=k % 3 == 0)        # negative w on some
             events.append((stamp + 1_000_000, "/tf", TFMessage(transforms=[
                 tf("odom", "base_link", stamp, (0.02 * k, 0.01 * j, 0.0), q)])))
         # ground truth straight from map, with a repeated stamp every so often
@@ -110,7 +110,7 @@ def scenario_bag():
         if k % 5 == 0:                       # the same stamp again: tf2 replaces it
             events.append((base + 61_000_000, "/tf", TFMessage(transforms=[
                 tf("map", "robot_gt", gt_stamp, (9.0, 9.0, 0.0), yaw_q(1.0))])))
-        events.append((base + 70_000_000, "/collision", Bool(data=(k % 7 == 0))))
+        events.append((base + 70_000_000, "/collision", Bool(data=k % 7 == 0)))
         scan = LaserScan()
         scan.header.frame_id, scan.header.stamp = "laser", t(base)
         scan.angle_min, scan.angle_max, scan.range_max = -1.0, 1.0, 10.0
