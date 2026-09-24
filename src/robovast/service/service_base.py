@@ -86,6 +86,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
 from robovast.common.disk_reserve import reserve_disabled
+from robovast.common.query_limits import query_limits
 from robovast.service.storage_reserve import storage_refusal
 
 logger = logging.getLogger(__name__)
@@ -2048,7 +2049,8 @@ class ServiceBase(RobovastInterface):
         if self.campaign_is_live(campaign_id):
             raise RuntimeError(f"not exporting {campaign_id} now: it is still running, and "
                                "its records and tables are changing as it goes")
-        tables = plan_tables(Engine([Scope(str(campaign_dir))]).catalog(), request.tables)
+        tables = plan_tables(Engine([Scope(str(campaign_dir))], **query_limits()).catalog(),
+                             request.tables)
         self._admit_storage(f"export {campaign_id}")
         logger.info("Exporting %s: %d table(s) as %s, bags %s, records %s", campaign_id,
                     len(tables), request.format, request.bags, request.records)

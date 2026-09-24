@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional
 
+from robovast.common.query_limits import query_limits
 from robovast.results_processing.campaign_tables import exports_root
 from robovast.service.interface import ExportRef, ExportRequest, ExportStatus, Routes
 
@@ -474,7 +475,7 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
         written[name] = {"rows": rows, "file": f"{TABLES_MEMBER}/{file}"}
         on_table(name, rows, file)
 
-    write_tables(Engine([Scope(str(campaign_dir))]), tables, request.format,
+    write_tables(Engine([Scope(str(campaign_dir))], **query_limits()), tables, request.format,
                  scratch / TABLES_MEMBER, table_written)
     bags = campaign_bags(campaign_dir) if request.bags != "none" else []
     if request.bags == "sqlite3":

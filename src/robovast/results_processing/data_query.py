@@ -37,6 +37,7 @@ import logging
 from contextlib import ExitStack
 from pathlib import Path
 
+from robovast.common.query_limits import query_limits
 from robovast_data import Engine, QueryError, Scope, scope_of
 from robovast_data.notes import notes_for
 
@@ -162,7 +163,7 @@ def _scopes(campaign_dir, campaign_id=None, campaigns=None) -> list:
 
 
 def _engine(campaign_dir, campaign_id=None, campaigns=None) -> Engine:
-    return Engine(_scopes(campaign_dir, campaign_id, campaigns))
+    return Engine(_scopes(campaign_dir, campaign_id, campaigns), **query_limits())
 
 
 def open_data_db(campaign_dir, campaign_id: str | None = None) -> CampaignConnection:

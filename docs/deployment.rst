@@ -398,6 +398,27 @@ until free space is back above the sum. With ``nodefs.available<5%`` and a minim
 ``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` says otherwise (see :ref:`the build daemon's settings
 <buildkit-settings>`).
 
+.. _bounding-a-query:
+
+Bounding a query
+----------------
+
+A query over a campaign's tables runs in the service's own process, on DuckDB, with a timer.
+What one query may use is bounded by two variables, read from the same ``.env`` as the reserve
+and carried into the service Deployment the same way:
+
+.. code-block:: bash
+
+   ROBOVAST_QUERY_MEMORY=4GB    # a DuckDB memory limit: 4GB, 512MiB, ...
+   ROBOVAST_QUERY_THREADS=2     # threads one query may use
+
+Unset, DuckDB's own memory ceiling (most of the RAM it can see) and a few threads apply. Set
+them on a service that shares its node with running campaigns, or that answers many queries at
+once: the bound is per query, so several at a time add up. An invalid value is an error naming
+the variable, not a fallback. Every engine the service builds honours them -- a query, a table
+build, an export, a track deviation -- and so does a notebook rendered in the Results Explorer;
+a notebook on a laptop passes the same options to ``Campaign(..., threads=, memory_limit=)``.
+
 Checking a deployment
 ---------------------
 

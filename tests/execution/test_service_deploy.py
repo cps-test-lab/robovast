@@ -638,3 +638,27 @@ def test_startup_probe_gives_a_resume_room_before_liveness_kills_it():
     # service take minutes to be noticed.
     assert liveness["periodSeconds"] == 20
     assert container["readinessProbe"]["periodSeconds"] == 10
+
+
+def test_query_limits_are_carried_even_when_unset(monkeypatch):
+    monkeypatch.delenv("ROBOVAST_QUERY_MEMORY", raising=False)
+    monkeypatch.delenv("ROBOVAST_QUERY_THREADS", raising=False)
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["ROBOVAST_QUERY_MEMORY"] == ""
+    assert env["ROBOVAST_QUERY_THREADS"] == ""
+
+
+def test_query_limits_carry_what_the_environment_says(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_QUERY_MEMORY", "4GB")
+    monkeypatch.setenv("ROBOVAST_QUERY_THREADS", "2")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["ROBOVAST_QUERY_MEMORY"] == "4GB"
+    assert env["ROBOVAST_QUERY_THREADS"] == "2"
+
+
+def test_a_malformed_query_limit_fails_on_the_operators_machine(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_QUERY_THREADS", "two")
+    with pytest.raises(ValueError, match="ROBOVAST_QUERY_THREADS"):
+        sd.service_manifests(namespace="default", image="x")

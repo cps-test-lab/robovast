@@ -2087,6 +2087,16 @@ def service_manifests(namespace="default", image=None, env=None,
         configured_reserve_gb()
         env = [*env, {"name": RESERVE_ENV, "value": os.environ.get(RESERVE_ENV, "").strip()}]
 
+    # The query bounds, carried and parsed the same way: an operator's .env states them
+    # once, and the pod answers queries under them.
+    from robovast.common.query_limits import (  # pylint: disable=import-outside-toplevel
+        MEMORY_ENV, THREADS_ENV, query_limits)
+
+    query_limits()
+    for var in (MEMORY_ENV, THREADS_ENV):
+        if not any(e["name"] == var for e in env):
+            env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
+
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means.
     if not any(e["name"] == "TZ" for e in env):

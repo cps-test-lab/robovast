@@ -112,8 +112,9 @@ Reading results
 A notebook reads a campaign through the ``robovast-data`` package: ``pip install
 robovast-data`` from PyPI alone, on any machine with Python -- it needs no ROS installation,
 no service and no container image, because the decoder it builds tables with reads a
-recording's message definitions from the recording itself. ``open_data(DATA_DIR)``
-walks up from the path to the campaign (the directory holding ``campaign.db``) and **scopes
+recording's message definitions from the recording itself. A table is built in a process
+pool, so a plain script (not a notebook) does its work under ``if __name__ == "__main__":``.
+``open_data(DATA_DIR)`` walks up from the path to the campaign (the directory holding ``campaign.db``) and **scopes
 everything to the node the path names** — a run directory gives that run's rows, a
 configuration directory that configuration's, the campaign root everything. The same cell
 therefore serves all three notebook scopes, and no notebook names a file.
