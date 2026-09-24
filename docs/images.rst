@@ -276,10 +276,15 @@ each member currently resolves to, and fails if any member is missing.
 Pinning a deployment
 ````````````````````
 
-``latest`` floats: what it points at changes under you. To pin, publish an immutable tag
-and name it in ``ROBOVAST_PROJECT_TAG``. A *tag* rather than digests, because one tag
-covers the whole family and so cannot be four different digests — and a family that could
-be pinned member by member is the five-variable configuration this replaced.
+``latest`` floats: what it points at changes under you. To pin, name an immutable tag in
+``ROBOVAST_PROJECT_TAG``. A *tag* rather than digests, because one tag covers the whole
+family and so cannot be four different digests.
+
+Each release publishes the whole family under its version without the ``v``: release
+``v2.1.0`` is ``ROBOVAST_PROJECT_TAG=2.1.0``. The ``2.1`` tag it also publishes moves with
+every later ``2.1.x``, so pin the full version. The tag is never taken from the installed
+``vast``, so installing a release does not move the images: set the tag to match it.
+For a set of your own, ``make release-images TAG=<tag>`` publishes one.
 
 Resolving to a floating tag logs a warning naming the image, so an unpinned deployment
 says so rather than looking identical to a pinned one.

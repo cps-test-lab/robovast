@@ -862,3 +862,22 @@ def test_two_configurations_cannot_share_one_mount(tmp_path):
         ce._assemble_config_mount(
             str(tmp_path / "staging"), generated,
             {"configs": [{"name": "cfg-a"}, {"name": "cfg-b"}]})
+
+
+def test_the_catalog_is_what_the_command_printed_not_what_it_spelled():
+    """An image's entrypoint echoes the command before running it, so a JSON object written
+    in a command's own text is on the stream ahead of that command's output. Reading from the
+    front picks the echo, whose shape is plausible enough to flatten to nothing -- an empty
+    catalog reported as a successful one."""
+    from robovast.service.image_catalog import DOCS_COMMAND, catalog_json
+    banner = f"[INFO] [1.0] [entrypoint]: Executing custom command: bash -c {DOCS_COMMAND}\n"
+    printed = '{"items": [{"name": "interfaces", "source": "roqsim", "text": "a {brace}"}]}\n'
+
+    assert catalog_json(banner + printed)["items"][0]["name"] == "interfaces"
+
+
+def test_an_image_that_logs_after_its_catalog_is_still_read():
+    """Ending the output is the strong signal, not a requirement: an image with a trailing
+    line would otherwise go from answering to refusing."""
+    from robovast.service.image_catalog import catalog_json
+    assert catalog_json('{"items": [1]}\nbye\n') == {"items": [1]}

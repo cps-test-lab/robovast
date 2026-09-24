@@ -45,7 +45,7 @@ import time
 #: the image copies in -- roqsim's to /opt/roqsim, scenario-execution's into the ROS workspace --
 #: so their ``docs/`` are there to be read. Nothing is added to an image to serve them, and no
 #: second pin of the same commit has to be kept in step with the one that built it.
-DOCS_ROOTS = {"roqsim": "/opt/roqsim/docs", "osc": "/ws/src/scenario-execution/docs"}
+DOCS_ROOTS = (("roqsim", "/opt/roqsim/docs"), ("osc", "/ws/src/scenario-execution/docs"))
 
 #: Every page from both, each labelled with the corpus it belongs to. The label is carried rather
 #: than derived from the path, because the two collide on names (``architecture``, ``index``) and
@@ -55,12 +55,16 @@ DOCS_ROOTS = {"roqsim": "/opt/roqsim/docs", "osc": "/ws/src/scenario-execution/d
 #: about that image, and an answer from the ones it has beats no answer at all.
 DOCS_COMMAND = (
     "python3 -c 'import json, pathlib; "
+    # Pairs, spelled as a Python list of lists rather than a mapping: an image's entrypoint
+    # echoes the command before running it, so anything in this text that is VALID JSON is on
+    # the stream ahead of the command's own output, and is what a reader looking for a JSON
+    # object finds. A list is not an object, so it cannot be mistaken for the catalog.
     # json.dumps and not repr: the whole command is single-quoted for the shell, and repr
-    # would close that quoting on the first dict key.
-    f"roots = {json.dumps(DOCS_ROOTS)}; "
+    # would close that quoting on the first key.
+    f"roots = {json.dumps([list(pair) for pair in DOCS_ROOTS])}; "
     "print(json.dumps({\"items\": ["
     "{\"name\": p.stem, \"source\": s, \"text\": p.read_text(errors=\"replace\")} "
-    "for s, d in roots.items() if pathlib.Path(d).is_dir() "
+    "for s, d in roots if pathlib.Path(d).is_dir() "
     "for p in sorted(pathlib.Path(d).glob(\"*.rst\"))]}))'")
 
 #: ``python3`` and not ``python``: the only interpreter a DECLARED base image is guaranteed to
@@ -148,22 +152,39 @@ def catalog_json(stdout: str) -> dict:
     opens with ``[``, which is a well-formed array start, so the failure arrives as a JSON
     error about the second character rather than as anything naming the banner.
 
-    So the document is located rather than assumed: the first offset a complete JSON
-    *object* decodes from. An object and not any value, because every catalog returns one --
-    accepting a bare array would let a bracketed log line win over the real document.
+    So the document is located rather than assumed: the JSON *object* the output ENDS with.
+    Ends with and not merely contains, because one of the lines an entrypoint announces
+    itself with is the command it is about to run -- so a JSON object spelled in a command's
+    own text is on the stream ahead of anything that command prints, and is what a search
+    from the front finds. It is also the one shape that cannot be confused with a nested
+    object inside the real document, which ends where the document does but starts later.
+
+    An image that prints something after its catalog falls back to the first object, which
+    is the older rule and still right when nothing is echoed ahead of it.
+
+    An object and not any value, because every catalog returns one -- accepting a bare array
+    would let a bracketed log line win over the real document.
 
     Raises :class:`ValueError` when the output carries no JSON object at all.
     """
     decoder = json.JSONDecoder()
-    for index, char in enumerate(stdout or ""):
+    text = stdout or ""
+    first = None
+    for index, char in enumerate(text):
         if char != "{":
             continue
         try:
-            payload, _ = decoder.raw_decode(stdout, index)
+            payload, end = decoder.raw_decode(text, index)
         except ValueError:
             continue
-        if isinstance(payload, dict):
+        if not isinstance(payload, dict):
+            continue
+        if not text[end:].strip():
             return payload
+        if first is None:
+            first = payload
+    if first is not None:
+        return first
     raise ValueError("no JSON object in the output")
 
 

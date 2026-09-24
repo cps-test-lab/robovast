@@ -367,7 +367,13 @@ def _upstream_pages(address: str = "") -> tuple[dict, str, str]:
         if name and text:
             label = item.get("source") or UPSTREAM_LABEL
             pages[f"{label}-{name}"] = (_extract_title(text) or name, text)
-    return pages, fetched.get("image", ""), ""
+    image = fetched.get("image", "")
+    if not pages:
+        # A reply that merely lacks the upstream half looks like a smaller corpus, and a
+        # question it would have answered comes back "no match". An image carrying no pages
+        # at all is a fact worth reporting, whichever way it happened.
+        return {}, image, f"{image or 'the simulator image'} reported no documentation pages"
+    return pages, image, ""
 
 
 def _env_doc_roots() -> list[tuple[str, Path]]:
@@ -506,9 +512,14 @@ def _warm() -> None:
         logger.debug("could not warm the upstream documentation: %s", e)
 
 
-def _listing_row(name: str, source: str = "") -> dict:
-    """One page as a listing shows it."""
-    return {"name": name, "title": _doc_meta[name] if not source else name,
+def _listing_row(name: str, title: str, source: str = "") -> dict:
+    """One page as a listing shows it.
+
+    The title is passed in rather than looked up here: ``_doc_meta`` holds only the pages this
+    process loaded at import, and half a corpus now comes from an image. A listing is what a
+    page is chosen from, so a row whose title restates its name spends a column saying nothing.
+    """
+    return {"name": name, "title": title,
             "source": source or _doc_source.get(name, "robovast")}
 
 
@@ -620,7 +631,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         return {"page": page, "title": titles[page], "content": texts[page]}
 
     if not query:
-        pages = [_listing_row(name, _upstream_label(name) if name in upstream else "")
+        pages = [_listing_row(name, titles[name],
+                              _upstream_label(name) if name in upstream else "")
                  for name in sorted(texts)]
         out = {"pages": pages, "total": len(pages)}
         if upstream_error:
