@@ -471,3 +471,57 @@ def test_each_catalog_is_asked_of_the_container_that_has_it():
     # `docs` is read by search_docs, not offered as a catalog to list, so it has a container
     # without being in the tool's vocabulary.
     assert set(CATALOG_CONTAINERS) - set(image_catalog.CATALOGS) == {"docs"}
+
+
+def test_one_image_is_fetched_once_however_many_callers_arrive_at_once(monkeypatch):
+    """A server's warm-up and its first question want the same catalog at the same moment,
+    and a fetch is seconds of container. Each caller starting its own costs a second
+    container for an answer already on its way."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class _SlowClient(_FakeClient):
+        def exec_in_container(self, request):
+            started.set()
+            release.wait(timeout=5)
+            return super().exec_in_container(request)
+
+    fake = _SlowClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+    address = "/sources/ws-1/p.vast"
+    replies: list = []
+
+    def _ask():
+        replies.append(image_catalog._fetch("scenario_actions", address))
+
+    first = threading.Thread(target=_ask)
+    first.start()
+    assert started.wait(timeout=5), "the first caller never reached the container"
+    second = threading.Thread(target=_ask)
+    second.start()
+    release.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert len(fake.exec_calls) == 1, "the second caller started its own container"
+    assert len(replies) == 2 and all("error" not in r for r in replies)
+    assert {r["cache"]["hit"] for r in replies} == {True, False}, (
+        "the one that waited was served from the cache the other filled")
+
+
+def test_a_failed_fetch_leaves_the_next_caller_free_to_try(monkeypatch):
+    """The lock is held for the duration of a fetch, so a fetch that raises has to release
+    it -- otherwise one unreachable image wedges every later question about it."""
+    class _AngryClient(_FakeClient):
+        def exec_in_container(self, request):
+            self.exec_calls.append(request)
+            raise RuntimeError("no lane here")
+
+    fake = _AngryClient()
+    monkeypatch.setattr(service_access, "service_client", lambda: fake)
+
+    assert "error" in image_catalog._fetch("scenario_actions", "/sources/ws-1/p.vast")
+    assert "error" in image_catalog._fetch("scenario_actions", "/sources/ws-1/p.vast")
+    assert len(fake.exec_calls) == 2

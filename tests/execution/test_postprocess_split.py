@@ -235,6 +235,46 @@ def test_the_parts_logs_are_read_in_order_with_a_header_each(tmp_path):
     assert log.endswith("one\n")
 
 
+def test_a_part_that_delivered_no_log_is_named_rather_than_left_out(tmp_path):
+    """The converter runs before the container that writes a part's log, so a part whose
+    conversion failed delivers nothing. Dropping its block leaves the campaign's section
+    reading as though that part never existed -- and it is the part being looked for."""
+    parts = [ps.Part(name="part-1", runs=["a/0"]), ps.Part(name="part-2", runs=["a/1"])]
+    os.makedirs(tmp_path / PARTS_DIR)
+    (tmp_path / part_file("part-1", "postprocessing.log")).write_text("zero\n")
+
+    log = ps.delivered_map_log(str(tmp_path), parts)
+
+    assert "part-2" in log
+    assert "delivered no log" in log
+
+
+def test_a_failed_part_keeps_the_pod_s_own_log(tmp_path, monkeypatch):
+    """The pods are still there when the verdict is taken and gone by the time the campaign's
+    section is rebuilt from what was delivered, so this is the last moment the output of the
+    container that actually failed can be read at all."""
+    parts = [ps.Part(name="part-1", runs=["a/0"]), ps.Part(name="part-2", runs=["a/1"])]
+    os.makedirs(tmp_path / PARTS_DIR)
+    (tmp_path / part_file("part-1", "postprocessing.log")).write_text("part one is fine\n")
+    monkeypatch.setattr(pj, "read_job_log", lambda *a, **k: "convert: no such handler\n")
+    monkeypatch.setattr(pj, "pod_failure_reason", lambda *a, **k: "container convert exited 1")
+
+    phase = ps._MapPhase.__new__(ps._MapPhase)
+    phase.campaign_root = str(tmp_path)
+    phase.parts, phase.names = parts, ["job-1", "job-2"]
+    phase.core, phase.namespace, phase.admission = None, "ns", None
+    phase.ever_created = {"job-1", "job-2"}
+    phase.outcome = {"job-1": "succeeded", "job-2": "failed"}
+
+    ok, message = phase.verdict()
+
+    assert ok is False and "exited 1" in message
+    kept = (tmp_path / part_file("part-2", "postprocessing.log")).read_text()
+    assert kept == "convert: no such handler\n"
+    assert (tmp_path / part_file("part-1", "postprocessing.log")).read_text() == (
+        "part one is fine\n"), "a part's own account of itself is not overwritten"
+
+
 # -- where the campaign is decided -------------------------------------------
 
 
