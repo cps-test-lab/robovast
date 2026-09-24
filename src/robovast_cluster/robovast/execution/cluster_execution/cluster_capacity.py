@@ -68,7 +68,7 @@ def recorded_maximum() -> "Tuple[Optional[float], Optional[int]]":
 
     Unparseable raises rather than reading as "unset": a typo would leave an elastic cluster
     silently pinned to its current size, and the symptom -- a campaign that never grows the
-    cluster -- points nowhere near the cause. Same policy as :func:`_headroom`, for the same
+    cluster -- points nowhere near the cause. Same policy as :func:`headroom`, for the same
     reason.
     """
     raw_cpu = (os.environ.get(MAX_CPU_ENV) or "").strip()
@@ -89,22 +89,33 @@ def _requests(container) -> dict:
     return (container.resources.requests if container.resources else None) or {}
 
 
-def _headroom() -> "Tuple[float, int]":
+def headroom() -> "Tuple[float, int]":
     """The cluster-wide reserve, from the service's environment.
 
     Unparseable raises rather than falling back: a typo that silently became "no headroom"
     would over-admit on every node, and the symptom -- occasional unschedulable pods under
-    load -- points nowhere near the cause.
+    load -- points nowhere near the cause. Empty is the default, not zero: setup writes the
+    variable into the Deployment on every deploy, stated even when the operator named
+    nothing, and an unnamed reserve must stay the reserve rather than vanish.
+
+    ``0`` is a value, and a legitimate one: on a single node whose control plane already sits
+    in the requests admission subtracts, the tenants the reserve protects are counted once
+    already.
     """
-    raw_cpu = os.environ.get(HEADROOM_CPU_ENV, DEFAULT_HEADROOM_CPU)
-    raw_mem = os.environ.get(HEADROOM_MEMORY_ENV, DEFAULT_HEADROOM_MEMORY)
-    cpu = parse_resource(raw_cpu)
-    mem = int(parse_resource(raw_mem))
-    if (raw_cpu and not cpu) or (raw_mem and not mem):
+    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+
+    raw_cpu = (os.environ.get(HEADROOM_CPU_ENV) or "").strip() or DEFAULT_HEADROOM_CPU
+    raw_mem = (os.environ.get(HEADROOM_MEMORY_ENV) or "").strip() or DEFAULT_HEADROOM_MEMORY
+    # The strict parsers, which answer ``None`` for what is not a quantity, where
+    # ``parse_resource`` would answer ``0`` -- and ``0`` is the one value this must never
+    # invent.
+    cpu = to_cores(raw_cpu)
+    mem = to_bytes(raw_mem)
+    if cpu is None or mem is None:
         raise ValueError(
             f"{HEADROOM_CPU_ENV}={raw_cpu!r} {HEADROOM_MEMORY_ENV}={raw_mem!r}: not resource "
             "quantities. Use e.g. '1' and '2Gi'.")
-    return cpu, mem
+    return float(cpu), int(mem)
 
 
 class ClusterBudgetProvider:
@@ -137,7 +148,7 @@ class ClusterBudgetProvider:
         Never below zero: a node smaller than the reserve reports as holding nothing, which is
         the truth, rather than a negative that would read as room.
         """
-        head_cpu, head_mem = _headroom()
+        head_cpu, head_mem = headroom()
         ids = self._node_identities()
         # Carrying the node id, so a PINNED item can be asked whether the one node it may use
         # could ever hold it. Without it the only answerable question is the cluster-wide one,
@@ -203,7 +214,7 @@ class ClusterBudgetProvider:
         alloc = self._allocatables(schedulable_only=True)
         ids = self._node_identities()
         per_node, seen = self._committed(set(alloc))
-        head_cpu, head_mem = _headroom()
+        head_cpu, head_mem = headroom()
         nodes = []
         for name, a in alloc.items():
             used = per_node.get(name, (0.0, 0, 0, 0))

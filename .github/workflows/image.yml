@@ -638,8 +638,20 @@ jobs:
 
       # The kubelet inside kind has no registry login; setup turns these into the pull
       # Secret every pod uses, the service's own included.
+      #
+      # The one node has four cores for the control plane, the deployment's own pods, the
+      # campaign's run pods and its postprocessing pod, which reserves two of them with
+      # request equal to limit. Two things make that fit. The build daemon is the one
+      # infrastructure pod sized for work this job never gives it, so its ceiling is
+      # trimmed -- setup lowers the reservation to the ceiling. And admission's per-node
+      # headroom, a core kept free for the tenants no campaign owns, is set to nothing: on
+      # this node those tenants are the control plane, and they already sit in the
+      # requests admission subtracts, so the default would reserve the same core twice
+      # and hold a pod the node can place in the queue for good.
       - name: Run Example tests
         env:
+          ROBOVAST_BUILDKIT_CPU: 250m
+          ROBOVAST_NODE_HEADROOM_CPU: "0"
           ROBOVAST_REGISTRY_SERVER: ${{ env.REGISTRY }}
           ROBOVAST_REGISTRY_USERNAME: ${{ github.actor }}
           ROBOVAST_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

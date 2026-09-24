@@ -1478,21 +1478,27 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     return ""
 
 
-def _blocked_reason(core, namespace: str, job_name: str) -> str:
-    """``"<reason>: <message>"`` when this Job's pod cannot start, else ``""``.
+def _blocked_reason(core, namespace: str, job_name: str) -> "tuple[str, bool]":
+    """``("<reason>: <message>", contended)`` when this Job's pod cannot start right now,
+    else ``("", False)``.
 
     Reuses the signal the run loop and the image build already act on rather than reading pod
-    status again here, so all three agree about what "blocked" means. Advisory: a pod list that
-    cannot be read must not turn a running conversion into a reported failure, so an error here
-    yields ``""`` and the wait continues to its own deadline.
+    status again here, so all three agree about what "blocked" means. *contended* is that
+    signal's second half: the pod is merely waiting its turn -- for a node that could hold it
+    but is busy, or for a throttled pull -- and starts by itself, which decides how long
+    :func:`await_job` tolerates it. Advisory: a pod list that cannot be read must not turn a
+    running conversion into a reported failure, so an error here yields ``("", False)`` and
+    the wait continues to its own deadline.
     """
-    from .cluster_execution import blocked_job_reasons  # noqa: PLC0415
+    from .cluster_execution import blocked_and_contended_reasons  # noqa: PLC0415
 
     try:
-        return blocked_job_reasons(core, namespace, f"job-name={job_name}").get(job_name, "")
+        blocked, contended = blocked_and_contended_reasons(
+            core, namespace, f"job-name={job_name}")
     except Exception as e:  # noqa: BLE001 - advisory only
         logger.debug("Could not check whether %s is blocked: %s", job_name, e)
-        return ""
+        return "", False
+    return blocked.get(job_name, ""), job_name in contended
 
 
 def _index_env(namespace: str) -> list:
@@ -1882,12 +1888,16 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
     """
     from kubernetes.client.rest import ApiException  # noqa: PLC0415
 
+    from .cluster_execution import (BLOCKED_GRACE_SECONDS,  # noqa: PLC0415
+                                    CONTENDED_GRACE_SECONDS)
+
     deadline = time.time() + timeout
     # Published from here because this is the only place that knows the Job is still
     # running. Nothing the pod writes leaves it until it exits, so without this the
     # POSTPROCESSING section stays empty for the whole of a conversion measured in
     # minutes -- and the only way to watch one is a pod name nobody off-cluster has.
     next_live_log = 0.0
+    blocked_since = None  # when the pod was first seen unable to start, while it still is
     while time.time() < deadline:
         if should_stop is not None and should_stop():
             return False, cancel_job(batch, namespace, name)
@@ -1927,16 +1937,31 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
         # A pod that CANNOT start leaves the Job `active` forever, so the polling above
         # never sees a verdict and this returns "timed out" -- naming a duration where the
         # cause was an unpullable image or an unschedulable pod. The same signal the run
-        # loop and the image build already act on.
-        blocked = _blocked_reason(core, namespace, name)
-        if blocked:
-            return False, (
-                f"postprocessing job {name} cannot start: {blocked}. This is about the "
-                f"pod -- pulling the sidecar or controller image or the campaign's own "
-                f"execution image, finding a node for it, or mounting what it needs -- "
-                f"not about postprocessing, which has not run. Nothing about the "
-                f"campaign's results is wrong; re-run postprocessing once the pod can "
-                f"start.")
+        # loop and the image build already act on, with the same two tolerances: a pod
+        # waiting its turn for a busy node or a throttled pull starts by itself, so it gets
+        # the long one; anything else looks the same in ten minutes as in one.
+        #
+        # Never on first sight. The queue reserved this pod's room before creating it, but
+        # Kubernetes charges a deleted pod's requests to its node until the pod is gone, and
+        # the campaign's last run pods are still terminating when this one is created. On a
+        # node with room for one or the other, the scheduler's first pass finds it full and
+        # marks the pod Unschedulable; its next pass places it. Read as a verdict, that
+        # first pass is a campaign whose postprocessing "failed" without ever running.
+        blocked, contended = _blocked_reason(core, namespace, name)
+        if not blocked:
+            blocked_since = None
+        else:
+            if blocked_since is None:
+                blocked_since = time.time()
+            grace = CONTENDED_GRACE_SECONDS if contended else BLOCKED_GRACE_SECONDS
+            if time.time() - blocked_since >= grace:
+                return False, (
+                    f"postprocessing job {name} cannot start, and has not for {grace:g}s: "
+                    f"{blocked}. This is about the pod -- pulling the sidecar or "
+                    f"controller image or the campaign's own execution image, finding a "
+                    f"node for it, or mounting what it needs -- not about postprocessing, "
+                    f"which has not run. Nothing about the campaign's results is wrong; "
+                    f"re-run postprocessing once the pod can start.")
         sleep_unless_stopped(POLL_SECONDS, should_stop)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives

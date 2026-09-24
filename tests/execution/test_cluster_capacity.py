@@ -201,6 +201,25 @@ def test_an_unparseable_headroom_raises_rather_than_meaning_none(monkeypatch):
         p.budget()
 
 
+def test_a_zero_headroom_is_a_value_and_an_empty_one_is_the_default(monkeypatch):
+    """Setup writes the variable into the Deployment on every deploy, empty when the operator
+    named nothing, so empty must read as the default. Zero is named, and legitimate: a
+    single node whose control plane already sits in the requests reserves nothing twice."""
+    p, _ = _provider([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     env={cluster_capacity.HEADROOM_CPU_ENV: "0",
+                          cluster_capacity.HEADROOM_MEMORY_ENV: "0"})
+    b = p.budget()
+    assert b.free_cpu == pytest.approx(8)
+    assert b.free_memory == 16 * 1024 * MIB
+
+    p, _ = _provider([_node("n1", cpu="8", memory="16Gi")], [], monkeypatch,
+                     env={cluster_capacity.HEADROOM_CPU_ENV: "",
+                          cluster_capacity.HEADROOM_MEMORY_ENV: ""})
+    b = p.budget()
+    assert b.free_cpu == pytest.approx(8 - float(cluster_capacity.DEFAULT_HEADROOM_CPU))
+    assert b.free_memory == 14 * 1024 * MIB
+
+
 # -- autoscaling ---------------------------------------------------------------------------
 
 class _Autoscaler:

@@ -38,6 +38,11 @@ execution:
   pre_command: /config/files/pre_command.sh
   post_command: /config/files/post_command.sh
 results_processing:
+  # The shared default is sized for converting rosbags; this campaign records none, so its
+  # postprocessing takes the smallest figure the pod accepts and fits a four-core node.
+  resources:
+    cpu: 2
+    memory: 4Gi
   postprocessing:
   - command:
       script: postprocess.sh
