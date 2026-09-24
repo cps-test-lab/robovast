@@ -294,3 +294,15 @@ def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeyp
     with caplog.at_level("WARNING"):
         assert docs._env_doc_roots() == []
     assert "not a directory" in caplog.text
+
+
+def test_a_listing_carries_the_title_of_an_image_s_page(monkeypatch):
+    """A listing is what a page is chosen from, and the titles are already extracted: a row
+    that restates the page's name spends its title column saying nothing."""
+    client = _FakeCatalogClient({"interfaces": "World YAML\n==========\n\nbody\n"})
+    _with_image(monkeypatch, client)
+
+    row = next(r for r in docs.search_docs()["pages"] if r["name"] == "roqsim-interfaces")
+
+    assert row["title"] == "World YAML"
+    assert row["source"] == "roqsim"
