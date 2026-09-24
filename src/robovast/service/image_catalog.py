@@ -41,6 +41,18 @@ import time
 
 #: The whole-catalog command per group.
 #:
+#: The upstream repository's own pages, read out of the image that carries them. The simulator
+#: image copies roqsim's source tree to /opt/roqsim, so its ``docs/`` is already there -- nothing
+#: is added to an image and no second pin of the same commit is kept in step. The pages that come
+#: back are the ones belonging to the simulator THIS campaign runs, which is the only version an
+#: answer about its world format may be given from.
+DOCS_COMMAND = (
+    "python3 -c 'import json, pathlib; "
+    "d = pathlib.Path(\"/opt/roqsim/docs\"); "
+    "print(json.dumps({\"items\": ["
+    "{\"name\": p.stem, \"text\": p.read_text(errors=\"replace\")} "
+    "for p in sorted(d.glob(\"*.rst\"))]}))'")
+
 #: ``python3`` and not ``python``: the only interpreter a DECLARED base image is guaranteed to
 #: have. Debian/Ubuntu ship no ``python`` at all (PEP 394 -- the name meant Python 2, and it exists
 #: only via the optional ``python-is-python3``), while an image RoboVAST *built* does have one,
@@ -54,6 +66,7 @@ CATALOG_COMMANDS = {
     # and a world by ref before it names anything else.
     "models": "python3 -m roqsim.catalog models",
     "worlds": "python3 -m roqsim.catalog worlds",
+    "docs": DOCS_COMMAND,
 }
 
 #: How a group answers a request for ONE entry's detail. ``scenario_execution``'s list already
@@ -74,6 +87,7 @@ CATALOG_CONTAINERS = {
     "roqsim_plugins": "simulation",
     "models": "simulation",
     "worlds": "simulation",
+    "docs": "simulation",
 }
 
 #: The keys roqsim lets any component carry without its own list naming them, because something

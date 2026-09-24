@@ -1573,10 +1573,14 @@ sized once when the cluster was set up, which had to be re-sized by hand after a
 long-lived was added to or removed from the nodes, and was silently wrong until someone
 did. Nothing needs re-running now.
 
-**Headroom** protects the shared tenants no campaign owns, and is set on the service
-deployment: ``ROBOVAST_NODE_HEADROOM_CPU`` (default ``1``) and
-``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``). Deliberately not a ``.vast`` setting —
-a per-campaign override would let one campaign shrink the margin every other one depends on.
+**Headroom** protects the shared tenants no campaign owns: ``ROBOVAST_NODE_HEADROOM_CPU``
+(default ``1``) and ``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``), read from the
+operator's ``.env`` by ``vast cluster setup`` and ``vast service upgrade`` and written into
+the service Deployment, like the build daemon's settings above. Deliberately not a ``.vast``
+setting — a per-campaign override would let one campaign shrink the margin every other one
+depends on. ``0`` is a value: on a single node whose control plane already sits in the
+requests admission subtracts, the default would reserve the same core twice, and a pod the
+node can place waits in the queue for good.
 
 **Capacity is counted per node, and each job is pinned to the node it was counted against.**
 A pod runs on one machine, so a cluster-wide figure cannot see fragmentation: it says there

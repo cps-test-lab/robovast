@@ -71,6 +71,32 @@ def test_the_bootstrap_is_written_explicitly():
         assert name in named
 
 
+def test_the_headroom_is_carried_from_the_operator_and_checked_at_deploy(monkeypatch):
+    """The per-node reserve is read by the service from its own environment, so it has to be
+    put there: from the operator's `.env`, like the bootstrap, and stated even when unnamed.
+    A value the service could not parse refuses the deploy rather than every admission."""
+    import pytest
+
+    from robovast.execution.cluster_execution.cluster_capacity import (HEADROOM_CPU_ENV,
+                                                                       HEADROOM_MEMORY_ENV)
+
+    monkeypatch.delenv(HEADROOM_CPU_ENV, raising=False)
+    monkeypatch.delenv(HEADROOM_MEMORY_ENV, raising=False)
+    env = _env()
+    assert env[HEADROOM_CPU_ENV] == "" and env[HEADROOM_MEMORY_ENV] == ""
+
+    # Zero is a value -- a one-node cluster whose control plane already sits in the requests
+    # -- and reaches the Deployment as itself, not as "unset".
+    monkeypatch.setenv(HEADROOM_CPU_ENV, "0")
+    assert _env()[HEADROOM_CPU_ENV] == "0"
+    for name in REQUIRED:
+        assert name in _env()
+
+    monkeypatch.setenv(HEADROOM_CPU_ENV, "one core")
+    with pytest.raises(ValueError, match=HEADROOM_CPU_ENV):
+        _env()
+
+
 def test_the_pool_round_trips():
     import json
 

@@ -99,7 +99,16 @@ def check_campaign_dir_structure(campaign_dir):  # pylint: disable=too-many-retu
         return False
 
     print("  ✓ execution.yaml file exists in _execution/")
-    
+
+    # What postprocessing leaves behind: the example's postprocessing step writes this
+    # marker into the campaign root, and the cluster lane's postprocessing pod delivers it
+    # back to the results volume with everything else it changed. Its absence means the
+    # step never ran, whatever phase the campaign reports.
+    if not (first_run / '.postprocessed').exists():
+        print("  ✗ .postprocessed not found in the campaign root: postprocessing did not run")
+        return False
+    print("  ✓ .postprocessed exists: postprocessing ran")
+
     # Check for config directories
     config_dirs = [d for d in campaign_contents if d.is_dir()]
     if not config_dirs:
@@ -537,7 +546,11 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                       "(1 failed/stopped, 2 timeout, 3 no phase, 4 stalled, "
                       "5 health finding)")
                 return None
-            print("✓ campaign finished")
+            verdict = _postprocessing_failure(campaign_id, repo_root, test_directory)
+            if verdict:
+                print(f"✗ the campaign finished, but {verdict}")
+                return None
+            print("✓ campaign finished, postprocessing included")
 
             # Step 5: re-run postprocessing through the service. Inside the service
             # block, because postprocessing acts on a campaign, on whichever lane its runs
@@ -556,6 +569,10 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
                                cwd=test_directory, check=False, stream_output=True)
             if code != 0:
                 print(f"✗ wait after postprocess exited {code}")
+                return None
+            verdict = _postprocessing_failure(campaign_id, repo_root, test_directory)
+            if verdict:
+                print(f"✗ {verdict}")
                 return None
             print("✓ postprocessing re-ran through the service")
 
@@ -576,6 +593,24 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
         print(f"✗ Unexpected error: {e}")
         traceback.print_exc()
         return None
+
+
+def _postprocessing_failure(campaign_id, repo_root, cwd):
+    """What the service says went wrong with *campaign_id*'s postprocessing, or ``""``.
+
+    ``vast campaign wait`` exits 0 for a campaign whose runs finished and whose
+    postprocessing then failed: the campaign *did* finish, and the failure goes to stderr
+    as one ``postprocessing failed:`` line. The exit code the steps branch on therefore
+    says nothing about the one step this script exists to exercise, so the campaign is
+    asked once more here -- it is over, so the wait returns at once -- and that line is
+    the verdict.
+    """
+    _code, out = capture_command(f"vast campaign wait {campaign_id}", repo_root, cwd=cwd,
+                                 quiet=True)
+    for line in out.splitlines():
+        if "postprocessing failed" in line:
+            return line.strip()
+    return ""
 
 
 def _workspace_id_from_init(output):
