@@ -39,7 +39,7 @@ serves a pod log as a sliding ``since_seconds`` window rather than a stream, whi
 :class:`~robovast.execution.cluster_execution.PodLogTail` needs per-container anchors, a
 re-anchor when the window slides, and a documented branch where lines are lost. All of that
 exists because a *job* log has no other source. A ring the process fills itself is honestly
-append-only, so ``next_offset`` means what it says on both lanes with one implementation.
+append-only, so ``next_offset`` means what it says, with one implementation.
 """
 
 import logging

@@ -16,14 +16,12 @@
 
 """Reaching the ``robovast-service`` — one implementation for every MCP tool.
 
-The service is the single execution authority: there is no local subprocess lane, so a
-tool that cannot reach it must say so rather than do something else. That makes *how* a
-tool obtains a client a shared decision, not a per-module one.
-
-Returning ``None`` when nothing answers — rather than ``RobovastClient("")`` — is the
-load-bearing part. The empty-URL client is a perfectly good in-process ``LocalTransport``,
-so a caller that meant to reach a service and got that instead reads local disk and reports
-success, which is the "no service" failure wearing the mask of an answer.
+The service is the single execution authority and the only place a campaign's files
+are: there is no in-process fallback, so a tool that cannot reach it says so rather than
+doing something else. That makes *how* a tool obtains a client a shared decision, not a
+per-module one: :func:`service_client` for a tool that answers "no service" itself, and
+:func:`require_service` for one whose ``except`` already turns a raised refusal into its
+error dict.
 """
 
 import logging
@@ -31,12 +29,20 @@ import logging
 logger = logging.getLogger(__name__)
 
 #: Canonical failure when no ``robovast-service`` answers on the conventional local port.
-NO_SERVICE = ("no robovast-service reachable — start one on this machine "
-              "('vast serve'), or point at the deployed one "
+NO_SERVICE = ("no robovast-service reachable — point at the deployed one "
               "('vast login https://robovast.<domain>'), so the "
               "MCP has an execution authority to drive. Report this and stop; do not "
               "substitute a local docker/script run, which produces no pinned image, "
               "no provenance and no repetitions, and answers a different question")
+
+
+class NoService(RuntimeError):
+    """Raised by :func:`require_service` when no service answers; its message is
+    :data:`NO_SERVICE`, so a tool's ``except`` reports the same sentence the tools that
+    check for ``None`` return."""
+
+    def __init__(self):
+        super().__init__(NO_SERVICE)
 
 
 #: What an unreachable exec path costs, in the vocabulary of the tools. Composed here
@@ -143,21 +149,16 @@ def service_client():
     return RobovastClient(url)
 
 
-def client_or_local():
-    """The service when one answers, otherwise an explicit in-process transport.
+def require_service():
+    """A client for a reachable service, or raise :class:`NoService`.
 
-    For the operations that are meaningful **without** a service — reading a local
-    workspace, listing a campaign's declared plots — as opposed to driving execution,
-    which requires one and reports :data:`NO_SERVICE` instead.
-
-    Written as ``service_client() or LocalTransport()`` rather than
-    ``RobovastClient(detected_service_url())``: the two behave identically today, but the
-    second reads as "connect to the detected service" while silently doing something else
-    when nothing was detected. Spelling the fallback out means a reader can see which of
-    the two answered.
+    For a tool whose body already sits in a ``try`` that reports any exception as its
+    error dict: the refusal then reads exactly as a tool that checked for ``None``.
     """
-    from robovast.service.local_transport import LocalTransport
-    return service_client() or LocalTransport()
+    client = service_client()
+    if client is None:
+        raise NoService()
+    return client
 
 
 def web_url(client, route: str) -> str:
@@ -182,7 +183,7 @@ def _declared_base(client) -> str:
     """The origin the service declares for its callers, or ``""``.
 
     Not cached: an HTTP transport never reaches this (its own base answers first), and
-    ``version()`` is deliberately the cheapest call in the interface — neither lane dials
+    ``version()`` is deliberately the cheapest call in the interface — no backend dials
     anything to answer it — so in-process this is a local attribute read.
 
     Never raises. A link is an extra way to reach a payload; failing a tool call over one

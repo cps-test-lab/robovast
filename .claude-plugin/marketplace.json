@@ -7,7 +7,7 @@
     {
       "name": "robovast",
       "source": "./",
-      "description": "Never end a turn silently in the middle of a campaign."
+      "description": "Never end a turn silently in the middle of a campaign, and write the changelog for a release."
     }
   ]
 }

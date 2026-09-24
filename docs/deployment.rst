@@ -4,14 +4,12 @@
 Deployment Modes and Access
 ===========================
 
-The ``robovast-service`` core (see :ref:`architecture`) is deployment-agnostic:
-the same FastAPI app runs in-process, on a single host, or in a cluster. This
-page covers the three modes, how a client reaches each, and the v1 security
-boundary.
+The ``robovast-service`` (see :ref:`architecture`) is one FastAPI app, deployed into a
+Kubernetes cluster: a one-node cluster on your own machine, or one a team shares. This
+page covers the deployment, how a client reaches it, and the v1 security boundary.
 
-One command owns reachability: **``vast serve`` is the foreground process that
-makes a service answer on the conventional port ``127.0.0.1:8800``. While it is
-running you can work with it — the web UI, the CLI, and the MCP server all
+One port owns reachability: **a service that answers on the conventional port
+``127.0.0.1:8800`` is found by every client** — the web UI, the CLI, and the MCP server all
 auto-detect it there, so none of them needs configuring.** ``vast ui`` is just a
 shortcut that opens a browser at that port; it starts nothing.
 
@@ -19,30 +17,30 @@ shortcut that opens a browser at that port; it starts nothing.
 default, so a single tunnel to ``8800`` reaches the web UI, the REST API, *and*
 MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`).
 
-* **Local service** — ``vast serve``. Persistent local service on its Docker lane; web UI
-  + CLI + MCP share its state (mode 1). ``vast ui`` opens it, and ``vast workspace run``
-  launches through it exactly as it would through a remote one.
-* **Cluster service** — ``vast cluster setup --ingress-host …`` deploys and
-  publishes it (mode 2); users then reach it in a browser, or with ``vast login
-  <url>`` for the CLI and MCP. **No kubeconfig, no kubectl, nothing to hold open.**
-  In-pod, the Deployment runs ``vast serve --backend cluster``. That backend runs only
-  inside the cluster — a campaign's pods deliver their outputs to the service over the
-  cluster network, which cannot reach a process on your host — so debugging the driver
-  against a real cluster means running it *in* that network with the Service's traffic
-  steered to it: ``mirrord exec --target deployment/robovast-service --steal -- vast
-  serve --backend cluster``.
-* **Your own tunnel to any of the above** — an ``ssh -N -L 8800:127.0.0.1:8800
-  <host>`` or ``kubectl port-forward svc/robovast-service 8800:8800`` puts a service
-  on the conventional port, and every client finds it there. That is the break-glass
-  route when the Ingress itself is broken; it is kubectl's feature, not a mode
-  RoboVAST wraps.
+* **A one-node service** — ``vast cluster setup minikube`` deploys it into a minikube or
+  kind cluster on your own machine, and ``kubectl port-forward svc/robovast-service
+  8800:8800`` puts it on the conventional port, where every client finds it
+  (:ref:`quickstart-local`). ``vast ui`` opens it, and ``vast workspace run`` launches
+  through it exactly as it would through a published one.
+* **A published service** — ``vast cluster setup --ingress-host …`` deploys and
+  publishes it; users then reach it in a browser, or with ``vast login <url>`` for the
+  CLI and MCP. **No kubeconfig, no kubectl, nothing to hold open.** In-pod, the
+  Deployment runs ``vast serve``. The service runs only inside the cluster — a
+  campaign's pods deliver their outputs to it over the cluster network, which cannot
+  reach a process on your host — so debugging the driver against a real cluster means
+  running it *in* that network with the Service's traffic steered to it: ``mirrord exec
+  --target deployment/robovast-service --steal -- vast serve``.
+* **Your own tunnel to either** — an ``ssh -N -L 8800:127.0.0.1:8800 <host>`` or the
+  ``kubectl port-forward`` above puts a service on the conventional port, and every
+  client finds it there. That is the break-glass route when the Ingress itself is
+  broken; it is kubectl's feature, not a mode RoboVAST wraps.
 
 .. note::
 
-   **Every request needs the shared token.** There is no unauthenticated mode: when
-   ``ROBOVAST_AUTH_TOKEN`` is unset, ``vast serve`` mints one and prints a login URL
-   carrying it, and ``vast cluster setup`` generates one and preserves it across
-   re-runs (``--rotate-token`` issues a new one, logging everyone out).
+   **Every request needs the shared token.** There is no unauthenticated mode:
+   ``vast cluster setup`` generates one and preserves it across re-runs
+   (``--rotate-token`` issues a new one, logging everyone out), and ``vast service
+   token`` prints it.
 
    Browsers authenticate with a cookie obtained at ``/login``; the CLI and MCP send
    ``Authorization: Bearer``. The cookie is not a preference — ``EventSource`` cannot
@@ -52,35 +50,25 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
    refusals are deliberate: a campaign names its own container image, so an open
    Ingress lets anyone who finds the URL run containers in the cluster.
 
-The three modes
----------------
+The deployment
+--------------
 
-**Mode 1 — single-host service** (``vast serve``)
-    The same FastAPI app running persistently with the Docker backend and the
-    **local filesystem** as its durable home. Campaigns survive client exit, and
-    the CLI, MCP server, and web UI share one workspace/campaign state. Runs on
-    your machine or a **remote VM**.
+``vast cluster setup`` deploys ``robovast-service`` as a Deployment + ClusterIP Service.
+It **drives each campaign in-process** (one worker thread per campaign) over the
+Kubernetes backend, creating the scenario Jobs itself, and keeps each campaign as a
+directory on the service's **results volume**. There is no per-campaign controller pod.
+The CLI, the MCP server and the web UI share one workspace/campaign state, and campaigns
+survive client exit.
 
-    .. code-block:: bash
+The one-node and the published deployment differ in the cluster configuration and in
+whether an Ingress is created, not in what the service does: ``minikube`` is a hostPath
+configuration for a single node, the others (``rke2``, ``gcp``, …) the shapes teams
+deploy on (:doc:`cluster_execution`).
 
-       vast serve --host 127.0.0.1 --port 8800   # OpenAPI at /docs
-
-**Mode 2 — cluster service** (in-cluster Deployment)
-    ``vast cluster setup`` deploys ``robovast-service`` as a Deployment +
-    ClusterIP Service. It **drives each campaign in-process** (one worker thread
-    per campaign) over the Kubernetes backend, creating the scenario Jobs itself,
-    and keeps each campaign as a directory on the service's **results volume**, exactly
-    as a local one lives under the local results root. There is no per-campaign controller
-    pod. In-pod, ``vast serve`` auto-detects the cluster backend
-    (``--backend auto`` → ``cluster`` when ``KUBERNETES_SERVICE_HOST`` is set).
-
-Choosing a mode: mode 1 for a local or single-VM service with no Kubernetes; mode 2
-for scaled, parallel execution.
-
-There is no serviceless mode -- no third, in-process one where the CLI calls the interface
+There is no serviceless mode — no in-process one where the CLI calls the interface
 directly, with no service, no workspace and no ``CampaignOrigin``. A campaign runs a
-*workspace's* project through a service, and a local service on its Docker lane is the same
-path as a remote one, differing only in which service answers.
+*workspace's* project through a service, and which service answers is the only thing
+that differs between a one-node deployment and a published one.
 
 Access matrix
 -------------
@@ -89,54 +77,27 @@ Access matrix
    :header-rows: 1
    :widths: 20 20 60
 
-   * - Mode
+   * - Deployment
      - Transport
      - How the client reaches it
-   * - In-process
-     - ``LocalTransport``
-     - Direct Python calls; no network.
-   * - Local service
+   * - One node, on this machine
      - ``HTTPTransport``
-     - ``http://127.0.0.1:8800`` directly.
-   * - Remote VM
-     - ``HTTPTransport``
-     - **SSH tunnel** — ``ssh -L 8800:127.0.0.1:8800 <vm>`` — then talk to
-       ``127.0.0.1:8800``. The service binds VM-localhost; SSH provides
-       authentication and encryption. The VM analog of ``kubectl port-forward``.
-   * - Cluster service
+     - ``kubectl port-forward svc/robovast-service 8800:8800``, then
+       ``http://127.0.0.1:8800`` — the conventional port, which every client probes.
+   * - Published
      - ``HTTPTransport``
      - ``https://robovast.<domain>`` directly, over the Ingress that
        ``vast cluster setup --ingress-host`` created. A browser logs in at
        ``/login``; the CLI and MCP use ``vast login <url>``. Nothing is held open and
        no kubeconfig is involved.
+   * - Either, through a tunnel
+     - ``HTTPTransport``
+     - **SSH tunnel** — ``ssh -L 8800:127.0.0.1:8800 <host>`` — then talk to
+       ``127.0.0.1:8800``. SSH provides authentication and encryption.
 
-That last row is hardened once for the whole surface: one shared secret, presented as
+The published row is hardened once for the whole surface: one shared secret, presented as
 a cookie by browsers and a bearer header by everything else, in front of an Ingress
 that refuses to exist without TLS.
-
-Walkthrough — a remote VM service over an SSH tunnel
-----------------------------------------------------
-
-On the VM (bound to its own localhost):
-
-.. code-block:: bash
-
-   vast serve --host 127.0.0.1 --port 8800
-
-On your machine, open the tunnel on the **conventional port** and every client
-auto-detects it — nothing to export:
-
-.. code-block:: bash
-
-   ssh -N -L 8800:127.0.0.1:8800 user@vm &          # background tunnel to :8800
-
-   # the CLI and the web UI follow the tunnel on :8800:
-   vast workspace run my-experiment               # no target flags — auto-detected
-   # ...author, run, and query campaigns on the VM.
-
-That one tunnel also reaches MCP, since ``vast serve`` mounts it at ``/mcp`` on
-the same port by default: a client points at ``http://127.0.0.1:8800/mcp``
-through the tunnel, with no second port to forward.
 
 Walkthrough — the in-cluster service
 ------------------------------------
@@ -167,8 +128,8 @@ campaign directory is named in UTC while the people reading those names are not.
 determined logs a warning and leaves the pod in UTC, which is the pre-existing behaviour.
 Only this pod is affected: campaign Jobs get an env list built explicitly for them and
 inherit nothing from it, so their logs stay UTC, as do recorded timestamps everywhere
-(``store`` keeps epoch seconds). A mode-1/2 ``vast serve`` already runs in its host's zone
-and needs none of this.
+(``store`` keeps epoch seconds). A ``vast serve`` started by hand already runs in its
+host's zone and needs none of this.
 
 Everybody else, from a machine with no kubeconfig:
 
@@ -217,7 +178,7 @@ else -- no workspaces, no cluster configuration, no other credential -- and veri
 scoped tokens the control plane mints for pods with that shared secret alone, so the two
 processes share nothing but the disk and a restart of either changes nothing for the other.
 
-A ``vast serve`` on your own machine has no front: it mounts the same data routes into its
+A ``vast serve`` started by hand has no front: it mounts the same data routes into its
 one process on its one port. There the isolation buys nothing and a second process would
 cost every client a port. The front's configuration is rendered by ``setup`` and
 ``upgrade`` into a ConfigMap and never edited on the cluster.
@@ -434,7 +395,7 @@ you know your disk:
 
 .. code-block:: bash
 
-   # .env on the machine you run setup/upgrade from, or the one running `vast serve`
+   # .env on the machine you run setup/upgrade from
    ROBOVAST_DISK_RESERVE_GB=150
 
 It is an absolute amount in gigabytes (10\ :sup:`9` bytes); ``0`` keeps no reserve. An invalid

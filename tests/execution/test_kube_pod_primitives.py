@@ -1,12 +1,9 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The kept-alive-pod primitives shared by the aux pod and the container-exec lane.
+"""The kept-alive-pod primitives shared by the aux pod and ``KubeExecRunner``.
 
-Two subsystems run a pod and exec into it, and each had its own copy of this. The copies
-were not equally correct — only the exec lane reported *why* a pod would not start, only
-it waited for a delete to finish, and only it bounded an exec. These tests pin the three
-properties that were missing on the other side, so sharing cannot regress back to the
-weaker version.
+Both run a pod and exec into it through these. The tests pin three properties both rely
+on: a pod that will not start says why, a delete is waited for, and an exec is bounded.
 
 No cluster is needed: the API surface used here is small enough to fake.
 """
@@ -126,7 +123,7 @@ def test_wait_pod_ready_fails_fast_on_a_terminal_phase():
 def test_wait_pod_ready_ends_when_the_caller_no_longer_wants_it():
     """A stopped campaign must not go on waiting out a pull it will never use.
 
-    The wait is the longest thing a composition does on this lane, so a stop answered
+    The wait is the longest thing a composition does in a pod, so a stop answered
     only when the image lands is a stop nothing distinguishes from a hang.
     """
     with pytest.raises(RuntimeError, match="stopped while waiting"):
@@ -233,7 +230,7 @@ def test_exec_stream_bounds_a_command_that_never_finishes(monkeypatch):
     _patched_stream(monkeypatch, resp)
     code, _out, _err, timed_out = exec_stream("p", "ns", "c", ["sleep", "inf"], limit_s=0.05)
     assert timed_out is True
-    assert code == 124, "same code the local lane's subprocess timeout reports"
+    assert code == 124, "same code timeout(1) reports"
     assert resp.closed, "a bounded exec still releases the channel"
 
 
@@ -329,7 +326,7 @@ def test_the_streaming_helper_is_confined_to_exec_stream():
 
 
 def _shared_client():
-    """A ``CoreV1Api`` standing in for the one a lane caches and threads share."""
+    """A ``CoreV1Api`` standing in for the one a runner caches and threads share."""
     from kubernetes import client
     return client.CoreV1Api(client.ApiClient())
 

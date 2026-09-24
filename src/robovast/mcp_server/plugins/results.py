@@ -126,7 +126,7 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     Args:
         limit: Maximum campaigns to return.
         offset: Campaigns to skip (campaign index).
-        running_only: Only live campaigns, on all lanes and however old; ``total`` counts
+        running_only: Only live campaigns, however old; ``total`` counts
             them.
         sort: ``size`` orders by ``results_bytes``, unknown last; live ones lead.
 
@@ -154,10 +154,9 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     except ValidationError as e:
         return {"error": str(e)}
     client = service_access.service_client()
-    source = "service"
     if client is None:
-        client = service_access.client_or_local()
-        source = "local results root"
+        return {"error": service_access.NO_SERVICE}
+    source = "service"
     try:
         if running_only:
             from robovast.execution.control_server import is_running
@@ -191,7 +190,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, num_configs, num_runs, num_success, num_failed, num_unknown,
         num_killed, worst_configs, advice}`` plus the execution provenance (which
-        robovast, image, lane) once the campaign has produced it; or ``{error}``.
+        robovast, image, backend) once the campaign has produced it; or ``{error}``.
 
         ``retrigger`` says whether this campaign can be re-run, per axis (config version,
         container protocol, images, plugins, providers). Read it before
@@ -364,7 +363,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
     # ignores the key loses nothing, and one that reads it can decide whether to call
     # start_campaign(from_campaign=...) instead of burning a launch to find out. Extended
     # here rather than added as a tool because this is already the campaign-provenance
-    # surface -- it answers "which robovast, which image, which lane" three lines up.
+    # surface -- it answers "which robovast, which image, which backend" three lines up.
     result.update(_retrigger_view(campaign_id))
     return result
 
@@ -481,21 +480,15 @@ def list_campaign_plots(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, plots}`` of ``{title, query, vega_lite}``, or ``{error}``.
     """
-    # Both transports implement this, so a reachable service answers for a cluster
-    # campaign and LocalTransport answers from disk otherwise. Resolved explicitly
-    # rather than through ``RobovastClient(detected_service_url())``: an empty URL there
-    # silently yields the local transport, so "no service answered" would read as a local
-    # answer instead of being reported.
-    #
     # This stays a call to the interface rather than a query over ``config_view``, and
     # that was checked rather than assumed: the service reads the campaign's immutable
-    # ``_config/<name>.vast`` snapshot (``local_transport.list_campaign_plots``), which
+    # ``_config/<name>.vast`` snapshot (``ServiceBase.list_campaign_plots``), which
     # exists from t=0, whereas ``config_view`` is built from
     # ``campaign.campaign.config_json`` and has nothing until the store has a campaign
     # row. Moving to SQL would make a just-started campaign's plots unreadable and would
     # duplicate a reader the service already owns for the web UI.
     try:
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         return client.list_campaign_plots(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
         return {"error": str(e)}
@@ -517,9 +510,8 @@ def get_config_contribution(campaign_id: str, config_name: str) -> dict:
         ``/results/<campaign_id>/``. ``errors`` names a variation that could not contribute:
         an empty view with errors is not an empty configuration. Or ``{error}``.
     """
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
     try:
-        client = data_access.service_client() or LocalTransport()
+        client = service_access.require_service()
         return client.get_config_contribution(campaign_id, config_name).model_dump(
             exclude_none=True)
     except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
@@ -545,9 +537,8 @@ def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
         ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
         has no heights. Or ``{error}``.
     """
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
     try:
-        client = data_access.service_client() or LocalTransport()
+        client = service_access.require_service()
         return client.get_track_deviation(
             campaign_id, config_name, run_id, source=source, frame=frame,
             marker_label=marker_label).model_dump()
@@ -630,9 +621,8 @@ def draw_config(campaign_id: str, config_name: str, run_id: Optional[int] = None
     from robovast.client.file_address import \
         RESULTS, format_address  # noqa: PLC0415
     from robovast.common.config_plot import draw  # noqa: PLC0415
-    from robovast.service.local_transport import LocalTransport  # noqa: PLC0415
 
-    client = data_access.service_client() or LocalTransport()
+    client = service_access.require_service()
     contribution = client.get_config_contribution(campaign_id, config_name).model_dump(
         exclude_none=True)
     track, label = (_drawn_track(campaign_id, config_name, run_id, source, frame)
@@ -662,7 +652,7 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
     Returns:
         ``{cached, in_progress, stage, stage_detail, error, note, world, overrides_known,
         bytes}``, or ``{error}``. ``error`` carries the build's own reason. ``stage`` says which
-        step a build in flight is on and ``stage_detail`` the lane's own words for it — a pod's
+        step a build in flight is on and ``stage_detail`` the cluster's own words for it — a pod's
         ``ImagePullBackOff``, which is how a build waiting on an image this host cannot pull is
         told apart from an ordinary cold start before it times out. ``overrides_known: false``
         means the capture predates override recording, so geometry may miss per-config overrides.
@@ -844,8 +834,8 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     try:
         return Image(data=path.read_bytes(), format="png")
     finally:
-        # Ours to remove whichever lane produced it: the local service rendered into a temp
-        # dir and the HTTP client wrote the bytes into the same shape for exactly this.
+        # Ours to remove whichever client produced it: an in-process service renders into a
+        # temp dir and the HTTP client writes the bytes into the same shape for exactly this.
         screenshot.discard(path)
 
 

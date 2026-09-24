@@ -4,7 +4,7 @@
 Quickstart
 ==========
 
-There are three ways to work with RoboVAST, and only one of them touches Kubernetes.
+There are three ways to work with RoboVAST, and only one of them touches a kubeconfig.
 Find yours before installing anything — they differ in what you install, not just in what
 you do.
 
@@ -27,16 +27,16 @@ you do.
        them. See :ref:`mcp`.
    * - **Operator / developer**
      - the whole product
-     - Running a service — locally over Docker, or deployed on a cluster for a team — and
-       changing RoboVAST itself. The only role that needs a kubeconfig, and only for the
-       cluster half. See :ref:`setup`.
+     - Running a service — on a one-node cluster on your own machine, or deployed for a
+       team — and changing RoboVAST itself. The only role that needs a kubeconfig. See
+       :ref:`setup`.
 
 The service is the same in every case, and so is the contract: the web UI, the REST API,
 the ``vast`` CLI and the MCP tools are four clients of one interface. What changes is
 which of them you use and what you had to install to get there.
 
-If you are evaluating RoboVAST on your own machine, you are all three — but you can stop
-after :ref:`quickstart-local` and ignore the cluster entirely.
+If you are evaluating RoboVAST on your own machine, you are all three, and
+:ref:`quickstart-local` is the whole of it.
 
 
 .. _quickstart-local:
@@ -44,13 +44,22 @@ after :ref:`quickstart-local` and ignore the cluster entirely.
 On this machine
 ===============
 
+A campaign runs as containers in the cluster the service is deployed into, and a service
+runs nowhere else. On one machine that cluster is a `minikube <https://minikube.sigs.k8s.io/>`_
+or `kind <https://kind.sigs.k8s.io/>`_ cluster, and the deployment is the same command an
+operator runs for a team, with the one-node configuration:
+
 .. code-block:: bash
 
    git clone https://github.com/cps-test-lab/robovast.git && cd robovast
    make venv && source venv/bin/activate
-   vast serve
+   minikube start                              # or: kind create cluster
+   vast cluster setup minikube                 # the one-node, hostPath deployment
+   kubectl port-forward svc/robovast-service 8800:8800 &
+   vast login http://127.0.0.1:8800 --token "$(vast service token -q)"
 
-``vast serve`` prints what each of its two clients needs:
+``vast service token`` prints what each client needs — the URL, the token and how to
+connect a browser, the CLI and an agent:
 
 .. code-block:: text
 
@@ -60,32 +69,23 @@ On this machine
        claude mcp add --transport http robovast http://127.0.0.1:8800/mcp \
          --header 'Authorization: Bearer a7f3…'
 
-     (no ROBOVAST_AUTH_TOKEN configured, so this token is temporary and changes on restart;
-      set it in .env to keep a browser login and an agent registration working across restarts)
-
 Click the first; paste the second. There is no unauthenticated mode: the service always
-requires the token, so a development instance and a deployed one behave the same way.
-
-Heed the last line if you are using an agent. A registration carrying a temporary token
-authenticates nothing after the next restart, and the failure looks like the service being
-down rather than the token having changed. Setting ``ROBOVAST_AUTH_TOKEN`` in ``.env``
-makes both the login and the registration durable.
+requires the token, and setup keeps the one it minted across re-runs, so a browser login
+and an agent registration stay valid until you rotate it.
 
 The web UI, the REST API and the MCP server are all on that one port.
 
-**A local service needs no hostname, no domain and no certificate.** It binds
-``127.0.0.1:8800`` over plain HTTP, and every part of RoboVAST that would demand
-otherwise is confined to the cluster half: the session cookie sets ``Secure`` only when
+**A one-node service needs no hostname, no domain and no certificate.** The port-forward
+puts it on ``127.0.0.1:8800`` over plain HTTP, and every part of RoboVAST that would
+demand otherwise is confined to publishing: the session cookie sets ``Secure`` only when
 the request arrived over HTTPS, so a browser login works on ``http://127.0.0.1``, and the
-refusals that reject an unencrypted or tokenless deployment live in ``vast cluster
-setup``, which a local service never runs. There is nothing to register, nothing to put in
-``/etc/hosts``, and no certificate to trust — a DNS name and TLS become necessary only
-when you publish the service to other machines, which is :ref:`the operator's step
-<quickstart-operator>`.
+refusals that reject an unencrypted or tokenless deployment apply to an Ingress, which
+this deployment has none of. A DNS name and TLS become necessary only when you publish
+the service to other machines, which is :ref:`the operator's step <quickstart-operator>`.
 
-Bind somewhere other than ``127.0.0.1`` only behind a tunnel or a TLS-terminating proxy.
-The service always requires its access token, and over plain HTTP on a shared interface
-that token crosses the network in clear text.
+Campaign results live on the node, under the deployment's data root; the web UI, the CLI
+(``vast campaign download``) and the MCP tools read them through the service, exactly as
+they would from a deployment across the room.
 
 
 .. _quickstart-operator:

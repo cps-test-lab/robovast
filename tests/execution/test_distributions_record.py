@@ -4,10 +4,9 @@
 
 "Whose code supplied this campaign's assets" is an entry-point question -- a world or a model
 comes from whichever distribution registers a provider group -- and only the container can
-answer it, because the packages are installed in its image and nowhere else. The record was
-being built instead by walking the interpreter of whatever process prepared the campaign, which
-on a cluster lane is the service pod: it carries no simulator, so it found nothing and wrote "no
-asset providers" for a campaign whose image had three private ones.
+answer it, because the packages are installed in its image and nowhere else. The process that
+prepares the campaign is the service pod, which carries no simulator, so its own interpreter
+would name no asset providers at all.
 
 Per container, not per pod, and that is the point rather than thoroughness: in the ROS shape the
 simulator runs in a container of its own, so every asset provider a campaign used is installed

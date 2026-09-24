@@ -19,8 +19,8 @@
 
 The root group lives in the client distribution because every audience has one. A
 service user installs ``robovast-client`` and gets ``vast login``, ``vast workspace``,
-``vast files`` and ``vast campaign wait``; the core, the execution lanes and the operator
-commands each attach their own verbs to this same group through the
+``vast files`` and ``vast campaign wait``; the core and ``robovast-cluster``
+each attach their own verbs to this same group through the
 ``robovast.cli_plugins`` entry point. One command name for everybody, and the surface
 grows with what is installed rather than listing verbs that cannot run.
 
@@ -117,7 +117,7 @@ def cli(ctx):
     # value *before* calling it) silently ignored a configured .env line.
     #
     # Contributed rather than imported. Everything a `.env` carries -- share credentials,
-    # ntfy, the registry, the image pins -- is consumed by the core and the lanes; a
+    # ntfy, the registry, the image pins -- is consumed by the core and the cluster package; a
     # client reads none of it, and making the root group import the reader would put
     # python-dotenv into a distribution whose whole point is three dependencies.
     run_startup_hooks()
@@ -625,16 +625,11 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
 @click.option('--priority', type=int, default=None, metavar='N',
               help='Which campaign the cluster queue admits first: higher goes first, '
                    '0 is normal, negative waits behind everything else. Ordering only — '
-                   'it never stops a run that has started. Refused by a service on the '
-                   'local Docker lane, which runs one campaign at a time.')
+                   'it never stops a run that has started. Refused by a service that '
+                   'has no queue.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')
-@click.option('--show-gui', 'show_gui', is_flag=True,
-              help="Watch ONE run in the simulator's window (never a sweep). Honoured "
-                   'only by a service on a local Docker lane, which is the only '
-                   'deployment whose docker process sits at a screen; every other lane '
-                   'refuses rather than running windowless.')
 @click.option('--allow-opaque-image', is_flag=True,
               help='Launch even though a container names an image that declares no '
                    "provenance:. Refused by default because nothing in the results "
@@ -653,7 +648,7 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
               help='Seconds between status polls when --wait-and-download is set.')
 @target_options
 def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
-                  campaign_name, description, priority, upload_to_share, show_gui,
+                  campaign_name, description, priority, upload_to_share,
                   allow_opaque_image, image_project, image_project_tag,
                   wait_and_download, poll_interval, namespace, context):
     """Run a ``.vast`` — the one way to start a campaign from a project.
@@ -726,7 +721,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
                 # campaign without failing anything.
                 runs=runs or 0,
                 campaign_name=campaign_name or "", description=description or "",
-                upload_to_share=upload_to_share, show_gui=show_gui,
+                upload_to_share=upload_to_share,
                 allow_opaque_image=allow_opaque_image,
                 priority=priority or 0,
                 image_project=project, image_project_tag=project_tag))

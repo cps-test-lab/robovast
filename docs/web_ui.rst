@@ -7,8 +7,8 @@ Web UI
 RoboVAST ships a small **web frontend** — a browser client of the
 ``robovast-service`` (see :ref:`architecture`). It is a thin client of the same
 :class:`robovast.service.interface.RobovastInterface` contract the CLI and MCP
-server use, so it works identically against a local ``vast serve`` or an
-in-cluster service.
+server use, so it works identically against a one-node deployment on your own machine
+or a published one.
 
 It provides four views:
 
@@ -121,9 +121,8 @@ It provides four views:
   actions menu — **Set queue priority…** (the field starts at the current value, and only a
   whole number is accepted) and **Pause admitting new runs** / **Resume admitting runs** —
   the same operation as ``vast campaign priority|pause|resume``
-  (:ref:`cluster-admission`). The entries appear only on a lane with a queue, which the
-  service reports as ``can_schedule`` in ``/version``: the local Docker lane runs one
-  campaign at a time, has nothing to order, and so offers neither. A change is confirmed by a
+  (:ref:`cluster-admission`). The entries appear only on a service with a queue, which it
+  reports as ``can_schedule`` in ``/version``. A change is confirmed by a
   notice carrying the service's own answer, the priority the campaign now has and that runs
   already started are unaffected.
   The phase reflects the whole lifecycle, including its two pre-run steps:
@@ -145,8 +144,7 @@ It provides four views:
   offered once it is over because there are no live jobs left. Only the selected tab is rendered,
   so an unwatched Log holds no stream open; a job whose log you expanded is still expanded when
   you come back to the Jobs tab. The **Jobs** tab lists
-  each execution unit of the current batch — a *run* locally, a Kubernetes *Job* on the
-  cluster — with its status; expanding a running one streams that **job's own live log**:
+  each execution unit of the current batch — a Kubernetes *Job* — with its status; expanding a running one streams that **job's own live log**:
   every container it runs, merged into one stream, each line tagged ``[<container>]``
   and colored per container when the job has more than one. That matters in the ROS
   shape, where the simulator and the system under test have their own containers and a
@@ -170,9 +168,8 @@ It provides four views:
   on the hover. Where a container states no cpu limit it may use the whole node, so there is no
   ceiling to draw and the bar is scaled to the reservation instead, which the hover says.
   A job that is **not measured** shows no meter at all rather than an empty one: an empty track
-  reads as an idle job, which is a stronger claim than "not measured". That is the case for the
-  whole local Docker lane, which sets no container limits and measures nothing per container,
-  and on a cluster with no metrics-server or a service whose RBAC predates the
+  reads as an idle job, which is a stronger claim than "not measured". That is the case on a
+  cluster with no metrics-server or a service whose RBAC predates the
   ``metrics.k8s.io/pods`` grant -- see :doc:`deployment`, and the Jobs tab says which.
   A **running** job's row also carries a red **Stop** button, which kills *that job alone*
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
@@ -191,8 +188,7 @@ It provides four views:
   usually read. The Log tab beside it is where to look, and the chip's tooltip says so. Both rows are the campaign's
   *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
   and out of the ETA — and neither can be stopped one at a time, because there is no run to
-  record as killed. The conversion's row is the cluster lane's alone: locally, postprocessing
-  runs inside the service process, where there is no job to list.
+  record as killed.
   Confirming asks for an optional reason, and the reason is worth giving —
   it is stored with the run and is what explains the kill to whoever reads the results
   later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see
@@ -218,7 +214,7 @@ It provides four views:
   destroy something — and every entry is conditional, so a campaign with nothing to act on
   yet is offered no menu at all. Its middle group is **Download**, which streams the
   campaign's ``tar.gz`` straight from the service's ``/data/campaigns/{id}/archive`` route,
-  tarred off its results tree as it is read and never buffered, on either lane — and, when
+  tarred off its results tree as it is read and never buffered — and, when
   that campaign also has a copy on the share, **Copy share link** (omitted for a share
   provider that has no link a browser could open — SFTP has none). Below those,
   **Retrigger campaign** starts a **new** campaign from
@@ -271,7 +267,7 @@ It provides four views:
   :ref:`web-ui-campaign-config`.
 * **Results** — browse a campaign's data: an Explorer over its analysis notebooks, a
   panel-based replay of one run, and read-only SQL with charts.
-* **Admin** — the *service* rather than the work: how loaded the lane has been, which
+* **Admin** — the *service* rather than the work: how loaded the cluster has been, which
   version is running, and what the service has been doing. Pinned to the foot of the
   sidebar beside the usage meters, which report the same service. See `The Admin page`_.
 
@@ -283,11 +279,11 @@ The Admin page
 Every other page is about a campaign. This one is about the service running them, and it
 answers the questions no other page does.
 
-**How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
+**How loaded has the cluster been.** The sidebar meters say *now*; "is the cluster busy?" is a
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
 24 hours of readings, plotted as CPU and memory against capacity over the last hour or day.
 
-One chart for the whole lane — every node summed, one colour per resource — and **two
+One chart for the whole cluster — every node summed, one colour per resource — and **two
 readings per resource**: a filled area for what is actually being **consumed**, under a
 dashed line for what has been **reserved**. The gap between them is the number that sizes
 the next sweep: a campaign reserving nine cores per pod and using two draws a chart that
@@ -299,9 +295,7 @@ metrics-server. Where metrics-server is not installed — or where the service's
 the ``metrics.k8s.io`` grant, which ``vast service upgrade`` reconciles — there is **no fill
 and the caption says why**, rather than a zero line that would read as an idle cluster. A
 single sample can be missing its fill too (a node that joined seconds ago is not in metrics
-yet); that is drawn as a gap. Locally the opposite holds: the Docker lane measures and
-reserves nothing at all — it sets no container limits and runs one scenario at a time — so
-the chart shows the fill alone, and that is the whole truth about that lane.
+yet); that is drawn as a gap.
 
 The recording is **in memory only**, and the caption under the chart says what it actually
 covers: a service started ten minutes ago has ten minutes of history, and an empty 24-hour
@@ -351,13 +345,12 @@ so the API is away for a few seconds, and longer where the replacement has campa
 pick up; the page waits for the running digest to change rather than trusting the request
 it just made.
 
-Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
-cluster from outside it — there is no button, just the reason. The same holds for a
-deployment set up with a fixed version (``ROBOVAST_PROJECT_TAG``, see :doc:`images`): the
-button only ever re-pulls the tag the deployment already runs, so it is offered on the
-floating ``latest`` alone. Moving a pinned deployment to another version is
-``vast service upgrade`` with the new tag in its environment. The chart and the log work
-on both lanes unchanged.
+Where a deployment cannot roll itself — a ``vast serve`` started by hand — there is no
+button, just the reason. The same holds for a deployment set up with a fixed version
+(``ROBOVAST_PROJECT_TAG``, see :doc:`images`): the button only ever re-pulls the tag the
+deployment already runs, so it is offered on the floating ``latest`` alone. Moving a pinned
+deployment to another version is ``vast service upgrade`` with the new tag in its
+environment. The chart and the log work unchanged.
 
 **What it is configured with.** RoboVAST is configured entirely through environment
 variables: an operator writes them into a ``.env`` and ``vast cluster setup`` /
@@ -373,7 +366,7 @@ one, so claiming a ``.env`` provenance would be a claim the process cannot check
 caption at the foot says what a change costs on *this* deployment, which differs: a pod
 loads its Secrets through ``envFrom`` at container start and never again, so only
 ``vast service upgrade`` **without** ``--no-restart`` picks one up, while a ``vast serve``
-just needs restarting.
+started by hand just needs restarting.
 
 **No credential is ever rendered** — not masked, not truncated, not behind a reveal. A
 secret shows as ``set`` and its value never leaves the service, because RoboVAST has no
@@ -390,8 +383,8 @@ describe it in ``robovast.service.settings_report``.
 
 **What it can give back.** The **Service cache** panel — collapsed until you open it, and
 measured when you do — lists what the service keeps that it can rebuild from durable data:
-the compiled 3D worlds, on every lane. The results tree is never offered, on either lane: it
-is the campaigns' durable home, not a copy of one. **Clear cache** removes everything not in
+the compiled 3D worlds. The results tree is never offered: it is the campaigns' durable
+home, not a copy of one. **Clear cache** removes everything not in
 use and says what it freed; what it keeps is listed with the reason. It is the thing to reach
 for when new work is refused for disk space. ``vast service cache [--clear]`` does the same
 from a terminal.
@@ -994,47 +987,17 @@ configured — see :ref:`sharing-results`.
 
    ``put`` writes ``.vast``/``.osc`` directly and streams everything else through
    the upload side channel, preserving the executable bit — the same two paths the
-   Config tab's drag-a-folder upload uses. A workspace pinned with
-   ``vast serve --workspace-dir`` takes these writes like any other — they land on
-   the real files.
+   Config tab's drag-a-folder upload uses.
 
    ``update`` re-uploads every file (overwriting in place) with the same inline /
    side-channel split and skip rules as ``init``. By default it only adds and
    overwrites; ``--prune`` also deletes workspace files that no longer exist under
-   the directory, so the workspace mirrors it exactly. Read-only pinned workspaces
-   (``--workspace-dir``) refuse the update — edit their files on disk instead. In the
+   the directory, so the workspace mirrors it exactly. In the
    browser, dragging a project folder onto the **Config → Files** tab performs the
    same add/overwrite sync. An agent has no third route: the MCP interface reaches the
    service, not the caller's disk, so a whole directory goes through this command.
 
 .. tip::
-
-   To skip the upload entirely and always have a project available — even across
-   restarts — pin its directory at launch (local backend only):
-
-   .. code-block:: bash
-
-      vast serve --workspace-dir configs/examples/ros2_basic
-
-   The directory is used **in place**: it appears in the dropdown the moment the
-   service starts, with a path-stable id so its UI link keeps working after a
-   restart, and **edits land on the real files**. That is what lets the Config tab
-   author a project that lives in a git working tree — the browser has no working
-   directory of its own, so without it the only route was to copy the project into
-   the store, edit the copy and copy it back. (Campaign outputs still land in the
-   shared results store, never under the pinned dir.)
-
-   Two things are refused, both because the directory is *yours* rather than the
-   store's: **deleting the workspace** (unpin it by dropping the flag) and a
-   **whole-directory sync** into it (``vast workspace update``), which would
-   overwrite every file at once and, with ``--prune``, delete the ones the source
-   does not have. Editing files one at a time is the point; mirroring a different
-   tree over someone's checkout is not.
-
-   One directory may be pinned, named after itself; it may hold any number of
-   ``.vast`` files, chosen per campaign, so pin the collection rather than each
-   project. Hidden files and ``results/`` are skipped, exactly like
-   ``workspace init``.
 
    **It lands wherever the UI is — with no flag at all.** A workspace lives in the
    store of whichever service you talk to, and ``vast workspace`` follows the same
@@ -1234,38 +1197,36 @@ Build the UI once, then start the service:
 .. code-block:: bash
 
    cd frontend/ui && npm install && npm run build     # emits frontend/ui/dist (served by the service)
-   vast serve                                # serves the UI + REST API on one port
 
 Open the service URL in a browser and you get the UI; the REST API is served
 same-origin under the same URL (OpenAPI at ``/docs``). The in-cluster service
-ships the same build in its image, so the cluster service needs no extra step.
+ships the same build in its image, so a deployment needs no extra step.
 
 Accessing it — ``vast ui``
 --------------------------
 
 ``vast ui`` is a thin shortcut: it opens a browser at the service on the
 conventional local port and does nothing else. Something must already be serving
-there — you make the service reachable with ``vast serve``, and ``vast ui`` opens
-it:
+there — a deployment reached over a port-forward, or the published one recorded by
+``vast login``:
 
 .. code-block:: bash
 
-   vast serve            # this machine: local service on :8800
+   kubectl port-forward svc/robovast-service 8800:8800   # this machine's deployment on :8800
    vast login <url>      # the deployed one, published over its Ingress
    vast ui               # open a browser at whichever of those answers
 
-* **This machine** — run ``vast serve`` (local backend, serves the UI itself),
-  then ``vast ui`` to open it. If nothing answers, ``vast ui`` says so and exits
-  rather than starting anything — ``vast serve`` is the one command that owns the
-  service lifecycle.
-* **Cluster** — deploy and publish it with ``vast cluster setup
+* **This machine** — deploy with ``vast cluster setup minikube``, forward the port, then
+  ``vast ui`` to open it (:ref:`quickstart-local`). If nothing answers, ``vast ui`` says
+  so and exits rather than starting anything.
+* **Published** — deploy and publish it with ``vast cluster setup
   --ingress-host``, then open ``https://robovast.<domain>`` and log in. No kubectl,
   no kubeconfig, nothing held open. ``vast login <url>`` points the CLI and MCP at
   the same place.
-* **Remote VM** — the service binds ``127.0.0.1`` there, so reach it with your
-  own SSH tunnel (``ssh -N -L 8800:127.0.0.1:8800 <vm>``) and open
-  ``http://127.0.0.1:8800``. Because that is the conventional port, ``vast ui``
-  and every other command auto-detect the tunnel — nothing to export.
+* **Through a tunnel** — ``ssh -N -L 8800:127.0.0.1:8800 <host>`` to a machine whose
+  port-forward is up, then open ``http://127.0.0.1:8800``. Because that is the
+  conventional port, ``vast ui`` and every other command auto-detect the tunnel —
+  nothing to export.
 
 Because the service serves the **web UI and the REST API on the same port**,
 whatever ``vast ui`` opens is all a browser, the ``vast`` CLI, and the MCP server
@@ -1277,29 +1238,27 @@ service answers, then becomes a stack of labelled meters showing the backend's
 live **resource usage**, each with the compact ``used/total`` in the bar and a
 hover tooltip spelling the numbers out:
 
-* **CPU** and **Mem** — always shown. The numbers are backend-appropriate: the
-  host machine's utilization for a local ``vast serve``, and the cluster's node
-  capacity vs. the summed requests of the pods scheduled onto those nodes for an
-  in-cluster service (runs still queued for a node show up in the jobs meter as
+* **CPU** and **Mem** — always shown: the cluster's node capacity vs. the summed
+  requests of the pods scheduled onto those nodes (runs still queued for a node show
+  up in the jobs meter as
   pending, not as CPU in use). So on a cluster these meters are what is **reserved**;
   what is actually being consumed is on the Admin page's chart, beside it (see
   `The Admin page`_). ``get_resource_usage`` reports both readings as
-  ``cpu_reserved`` / ``cpu_measured``, either of which is null on a lane that has no
+  ``cpu_reserved`` / ``cpu_measured``, either of which is null where the service has no
   such reading.
 * **Jobs** — only while there is scenario work, since a permanent ``0/0`` on an
   empty track was indistinguishable from a dead widget. Its total is the
   outstanding work (running + pending), not a capacity, so a full bar means the
   queue has drained.
-* **Disk** — the filesystem the backend's runs write into: the campaign results
-  root's filesystem locally, and on a cluster the filesystem of **the node carrying
-  the service pod** — the disk its workspaces are a ``hostPath`` on, named in the
+* **Disk** — the filesystem the backend's runs write into: the filesystem of **the node
+  carrying the service pod** — the disk its workspaces are a ``hostPath`` on, named in the
   tooltip. Deliberately not a cluster-wide sum, which would report tens of terabytes
   free while the one disk that decides whether a campaign can be written filled up.
   Unlike CPU and memory on a cluster, this is **measured** usage rather than a sum of
   pod requests — nothing reserves disk, so a request sum would read near-empty on
   a full disk.
 * **Results** — the results volume, where the backend can measure one separately. This is
-  where every campaign lives, so a full one is not merely a slow lane. It appears only where
+  where every campaign lives, so a full one is not merely a slow cluster. It appears only where
   the volume is a thing of its own — a provisioned claim on the service pod; where the volume
   is a directory on the service's node there is no separate figure to report and **Disk** is
   already that filesystem.
@@ -1466,8 +1425,8 @@ in the editor and **Run** it; the result shows as a table and, via the chart bui
 as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric
 table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric>*".
 
-A query costs the same on either lane. The campaign's databases are files in its own
-directory on the service's results tree, cluster or local, so a first query transfers
+The campaign's databases are files in its own directory on the service's results tree,
+so a first query transfers
 nothing and waits for nothing — there is no cache to warm and no state a view has to
 explain before it runs.
 
@@ -1480,7 +1439,7 @@ explain before it runs.
    ``vast campaign postprocess <id>``. To *change* the postprocessing
    parameters and re-run, use **Retrigger postprocessing** in the Monitor view's
    campaign actions menu (see above). The rosbag→CSV step always runs in
-   the campaign's own execution image (locally in a container, in a cluster as a Job),
+   the campaign's own execution image, as a Job,
    because rosbags only deserialize where the system-under-test's ROS2 message types
    are defined.
 
@@ -1840,9 +1799,9 @@ the ``videos`` table. ``rosbags_to_webm`` is the first such producer (see the
 
 Two properties worth knowing. The encode is **constant-rate** — ``fps`` is derived so the
 first and last frames land exactly on their recorded moments, so only mid-run jitter drifts,
-which is sub-second at a monitor camera's 1 Hz. And **seeking is efficient on the local lane**:
-the file is served with ``FileResponse``, so the browser ranges into it. A cluster campaign
-is served the same way, from the same route: its run directory is on the service's disk too.
+which is sub-second at a monitor camera's 1 Hz. And **seeking is efficient**: the file is
+served with ``FileResponse`` from the run directory on the service's disk, so the browser
+ranges into it.
 
 **Scenario tree** (``scenario_tree``) — an rviz-scenario-execution-style behaviour tree
 that colors each node by its status (running / success / failure) at the current time.
@@ -1969,7 +1928,7 @@ a node to build on*, *Fetching the simulation image onto the node*, *Starting th
 a pod on the campaign's own image, and the pod is the only thing that knows which of those it is on — so
 the stage is read rather than assumed.
 
-Under the stage, when the lane has one, comes **its own words for the wait**: the pod's
+Under the stage, when the cluster has one, comes **its own words for the wait**: the pod's
 ``ImagePullBackOff`` and the registry's message, say. That is the difference between a cold start and a
 wait that will never end, and it is the case to know about for a campaign **imported from another
 cluster**: geometry is compiled in the image that campaign *recorded*, which is a reference into the
@@ -2172,8 +2131,7 @@ whose binary grids need their own endpoint.
 **postprocessing** step produced and needs custom serving (untruncated blobs, nearest-frame
 selection, …), a package can also ship the endpoint: a small class registered in the
 ``robovast.service_endpoints`` entry-point group, serving ``GET /campaigns/{id}/<name>`` from the
-campaign's data — no core change, and it works the same on local ``vast serve`` and the in-cluster
-service. So an analysis package can own the whole chain end-to-end — *postprocessing step →
+campaign's data — no core change. So an analysis package can own the whole chain end-to-end — *postprocessing step →
 service endpoint → panel* — with nothing in core. The costmap panel is exactly this: its
 ``rosbags_costmap_to_csv`` step, its ``costmap`` endpoint, and its panel all ship in
 ``robovast_nav``. (Large binary artifacts don't even need an endpoint — serve them as ordinary files
@@ -2290,8 +2248,8 @@ service:
 
 .. code-block:: bash
 
-   vast serve                # in one terminal (the service to talk to)
-   cd frontend/ui && npm run dev      # in another (Vite on :5173)
+   kubectl port-forward svc/robovast-service 8800:8800   # the service to talk to
+   cd frontend/ui && npm run dev      # in another terminal (Vite on :5173)
 
 The dev server proxies the API path prefixes to the service so the browser stays
 same-origin (no CORS). Point it at a different service with

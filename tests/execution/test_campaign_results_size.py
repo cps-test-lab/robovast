@@ -102,7 +102,7 @@ def test_a_failed_measurement_never_costs_the_campaign(monkeypatch):
 
 
 def test_none_from_the_hook_is_left_unrecorded(monkeypatch):
-    """A lane that cannot answer must not be recorded as a campaign of zero bytes."""
+    """A backend that cannot answer must not be recorded as a campaign of zero bytes."""
     backend = _Backend(size=None)
     _patch_tail(monkeypatch, backend.calls)
     state = _state()
@@ -136,7 +136,7 @@ def test_an_older_record_reads_back_as_not_recorded(tmp_path):
 
 
 def test_the_default_hook_measures_the_campaign_tree(tmp_path):
-    """The local lane's durable home IS the campaign root, so the default walks it."""
+    """The default hook walks the campaign root."""
 
     class _Local(ExecutionBackend):
         def run_batch(self, *a, **k):  # pragma: no cover - not exercised here

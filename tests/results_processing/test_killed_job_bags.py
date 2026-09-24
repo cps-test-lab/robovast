@@ -60,8 +60,8 @@ def test_the_same_job_killed_twice_is_listed_once(tmp_path):
     assert _interrupted_job_dirs(str(tmp_path)) == ["_jobs/batch-0/job-2"]
 
 
-def test_a_local_kill_with_no_job_dir_contributes_nothing(tmp_path):
-    """The local lane records a run key and may have no job dir; that is not a path filter."""
+def test_a_kill_with_no_job_dir_contributes_nothing(tmp_path):
+    """An entry naming a run key and no job dir is not a path filter."""
     _ledger(tmp_path, [{"job_dir": "", "job_name": "cfgA/0", "source": "webui",
                         "reason": "x", "runs": ["cfgA/0"]}])
     assert _interrupted_job_dirs(str(tmp_path)) == []
@@ -165,17 +165,15 @@ def test_the_plugin_passes_no_flag_for_an_untouched_campaign(tmp_path, monkeypat
     assert "--tolerate-under" not in seen["cmd"]
 
 
-# -- the CLUSTER lane, which is where this rule was silently absent ------------------------------
+# -- the cluster Job -----------------------------------------------------------------------------
 #
-# Both lanes build the conversion command from `RosbagsProcess.image_command`, but each lane
-# hands it the jobs to tolerate: the local one in `ExecutionImagePlugin.__call__` (above), the
-# cluster one in `postprocess_job.image_steps_for`. On Kubernetes a hand-stopped job that
-# was not handed over failed the whole campaign's postprocessing -- the exact outcome the flag
-# exists to prevent, on the lane that actually runs the long campaigns. The tests below are
-# deliberately the mirror image of the two above, so the pair cannot drift apart unnoticed.
+# Both paths build the conversion command from `RosbagsProcess.image_command`, but each hands
+# it the jobs to tolerate: `ExecutionImagePlugin.__call__` (above) and the cluster Job's
+# `postprocess_job.image_steps_for`. The tests below mirror the two above, so the pair cannot
+# drift apart unnoticed.
 
 
-#: The campaign the cluster-lane helper below builds a command for. The conversion reads
+#: The campaign the cluster helper below builds a command for. The conversion reads
 #: and writes the one shared campaign mount, so the input root is that campaign's tree
 #: inside the pod -- which is what the flags below have to be emitted ahead of.
 _CAMPAIGN = "camp-2026-08-27-12000000"
@@ -222,8 +220,8 @@ def test_the_cluster_flag_precedes_the_input_root():
     assert script.index("--tolerate-under") < script.rindex(_input_root())
 
 
-def test_the_cluster_lane_reads_the_same_ledger_the_local_one_does(tmp_path):
-    """One seam, not two answers: both lanes resolve killed jobs through the same function."""
+def test_the_cluster_job_reads_the_ledger_the_plugin_does(tmp_path):
+    """One seam, not two answers: both paths resolve killed jobs through the same function."""
     _ledger(tmp_path, [
         {"job_dir": "_jobs/batch-0/job-125", "job_name": "j125", "source": "webui",
          "reason": "takes too long", "runs": []},
@@ -281,9 +279,8 @@ def test_a_probe_does_not_make_a_bag_unreadable(tmp_path):
 # Workers run under ``redirect_stdout`` so 32 of them cannot shred the progress bar. That
 # buffer must not be a throwaway: every ``✗`` a handler prints would die in the worker while
 # its *count* came home in the ``-2`` sentinel, so the summary reports "N handler error(s) —
-# see the messages above" with nothing above it. On the cluster lane, which never passes
-# ``--debug``, that is every campaign. Same shape as the reporting bug beside it: a pointer
-# to evidence nobody kept.
+# see the messages above" with nothing above it. The cluster Job never passes ``--debug``,
+# so that would be every campaign.
 
 
 def test_a_failing_bag_reports_what_it_printed(tmp_path):

@@ -1018,8 +1018,7 @@ runs_per_job
 
 How many *runs* are packed into a single job. A **run** is one configuration
 executed at one run-number (one scenario execution); a **job** is one unit of
-dispatch — one Kubernetes Job on the cluster, or one ``docker compose`` run
-locally.
+dispatch — one Kubernetes Job.
 
 - ``1`` (default): each job runs exactly one run. Right for simulators where
   setup dominates and one job should be one scenario (e.g. Gazebo).
@@ -1066,16 +1065,15 @@ are a separate, disk-backed volume — so this sizes DDS traffic and any other P
 memory the run maps.)
 
 **Most campaigns should not declare it.** RoboVAST gives every run ``512Mi`` unless the
-``.vast`` says otherwise, which is what makes one file mean the same thing on both lanes.
-Left to the lanes the two disagree, and both defaults are traps: on the cluster ``/dev/shm``
-is a memory-backed ``emptyDir`` with no size limit, so it is sized from the pod's memory
-limits — or, when no container declares ``resources.memory``, from the whole node; locally
-the sidecars share the main container's IPC namespace and inherit Docker's 64 MB. A
-container that overruns shared memory dies of **SIGBUS** (``exit 135``), not a clean
-``OOMKilled``, so the death arrives with no reason attached to it.
+``.vast`` says otherwise, which is what makes one file mean the same thing on every
+cluster. Left to Kubernetes the default is a trap: ``/dev/shm`` is a memory-backed
+``emptyDir`` with no size limit, so it is sized from the pod's memory limits — or, when no
+container declares ``resources.memory``, from the whole node. A container that overruns
+shared memory dies of **SIGBUS** (``exit 135``), not a clean ``OOMKilled``, so the death
+arrives with no reason attached to it.
 
-There is deliberately no way to ask for a lane's own default — it is the thing this default
-exists to avoid. Declare a size only to raise or lower the reservation:
+There is deliberately no way to ask for the platform's own default — it is the thing this
+default exists to avoid. Declare a size only to raise or lower the reservation:
 
 .. code-block:: yaml
 
@@ -1101,7 +1099,7 @@ is not the same answer as "used none of it".
 the peak outgrew the size in force, ``shm_over_reserved`` when the reservation is paying for
 room nothing used), sized on the peak plus 25% headroom. A campaign that ran before
 ``shm_size`` had a default reports ``shm_not_declared`` instead, because it really was handed
-whichever default its lane applied.
+whichever default its runtime applied.
 
 .. note::
 
@@ -1119,33 +1117,21 @@ timeout
 
 **Required:** No
 
-**Applies to:** Both execution lanes.
-
 Maximum wall-clock time (in seconds) allowed for a single **job** — one unit of work,
 which is one run unless ``runs_per_job`` packs several into it. The number is used exactly
 as declared; it is not scaled.
 
-A job is the granularity both lanes can actually enforce at, which is why the budget is
-stated in it: Kubernetes caps a Job, and the local lane wraps a whole compose step. Neither
-can stop an individual run inside a packed job.
+A job is the granularity the cluster can actually enforce at, which is why the budget is
+stated in it: Kubernetes caps a Job, and cannot stop an individual run inside a packed
+one. The declaration sets ``activeDeadlineSeconds`` on the Job spec, so Kubernetes
+force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
 
-- **Local (Docker Compose):** each compose step is wrapped in ``timeout``, which
-  SIGTERMs ``docker compose`` — the same shutdown Ctrl+C triggers, so the scenario gets
-  a chance to finish writing its results — and SIGKILLs it 30s later if it ignores that.
-  A step killed this way tears its stack down and counts as a **failed** run, so a
-  truncated batch cannot pass as a shorter successful one.
-- **Cluster (Kubernetes):** sets ``activeDeadlineSeconds`` on the Job spec so Kubernetes
-  force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
-
-If omitted (or ``null``), cluster runs fall back to a **backstop of 1 hour per run**
+If omitted (or ``null``), runs fall back to a **backstop of 1 hour per run**
 (``activeDeadlineSeconds = 3600 * runs_per_job``) so a hung Job is always eventually
 killed rather than hanging the campaign indefinitely. The backstop is per-run and therefore
 scales with packing, where a *declared* budget does not — deliberately: an hour is a number
 chosen in ignorance of the campaign, so a job of 100 runs must not be killed after the
 first few, while a declaration is a statement about the job and is taken at face value.
-**Local runs have no such fallback**: with no ``timeout`` declared they remain unbounded,
-because enforcing a limit the user set is a different decision from inventing one they did
-not.
 
 ``stalled`` still needs a per-run figure, and derives one as ``timeout / runs_per_job``.
 
@@ -1218,9 +1204,7 @@ run_as_user
 
 **Required:** No
 
-The user ID (UID) to run the container as. If not specified, a local run uses the UID of the service and a cluster run uses ``1000``. If your container requires running as root, set this to ``0``.
-
-On a local run, the run output belongs to this UID. If it differs from the service's, the service cannot remove that output, and ``vast campaign delete`` reports the paths it had to leave; remove them as that user, then delete again.
+The user ID (UID) to run the container as; ``1000`` if not specified. If your container requires running as root, set this to ``0``.
 
 .. code-block:: yaml
 
@@ -1373,8 +1357,8 @@ in a container instead, so the *service's* environment stops mattering. With ``s
          inputs: ["floorplans/rooms.fpm"]
          command: floorplan --input {inputs[0]} --output {out}
 
-Locally this is an ephemeral ``docker run``; in-cluster a container in the campaign's
-auxiliary pod.
+In a campaign this is a container in the campaign's auxiliary pod; ``vast configuration
+generate`` on a development machine runs it as an ephemeral ``docker run``.
 
 .. note::
 
@@ -1399,7 +1383,7 @@ previous contents of ``out`` are left untouched rather than half-overwritten, an
    the project directory is copied into a service workspace, so a generator reading a
    sibling checkout (``../other_repo/world.yaml``) composes fine when the campaign is run
    from the tree and fails when the same ``.vast`` is started from a workspace — which is
-   how the cluster lane runs it. Validation emits a warning naming the path. Keep generator
+   how the service runs it. Validation emits a warning naming the path. Keep generator
    inputs under the ``.vast``'s own directory unless the campaign is only ever run in place.
 
 ``shell`` is built in. Other generators come from installed packages (the
@@ -1430,8 +1414,8 @@ with which parameters (``SCENARIO_FILE``, ``SCENARIO_PARAMETER_FILE``,
 ``SCENARIO_EXECUTION_PARAMETERS``), and the credentials results are uploaded with
 (``S3_*``). Setting one of these is refused when the campaign is validated, naming it.
 
-The refusal is at validation and not left to the lanes on purpose. Whether a campaign's
-value would actually displace RoboVAST's depends on emission order and on each lane's
+The refusal is at validation and not left to the backend on purpose. Whether a campaign's
+value would actually displace RoboVAST's depends on emission order and on the backend's
 duplicate-key semantics, so "it happens not to win today" is not something to build on —
 and the failure it would cause is the quiet kind. Repointing ``SCENARIO_PARAMETER_FILE``
 gives a run that succeeds, reads parameters belonging to nothing, and reports its results
@@ -1450,11 +1434,9 @@ resources
 
 **Required:** No
 
-**Applies to:** Local and cluster execution
-
-CPU and memory limits, declared **per container** — Docker Compose enforces them locally,
-Kubernetes on the cluster. The scenario container's values are also exposed as
-``AVAILABLE_CPUS`` and ``AVAILABLE_MEM`` inside it.
+CPU and memory limits, declared **per container**, which Kubernetes enforces. The
+scenario container's values are also exposed as ``AVAILABLE_CPUS`` and ``AVAILABLE_MEM``
+inside it.
 
 .. code-block:: yaml
 
@@ -1485,8 +1467,8 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 - ``gpu`` (Optional): Number of GPUs. **Rarely needed.** Omit it and the container running
   the simulator gets one wherever the cluster advertises GPUs, so the common case is to say
   nothing; ``gpu: 0`` opts out on a cluster that has them (worth doing for a camera-less
-  world, which never renders). Setting it enables the NVIDIA runtime on both lanes. On the
-  Kubernetes lane the GPU must also be schedulable, which ``vast cluster setup``
+  world, which never renders). Setting it enables the NVIDIA runtime; the GPU must also be
+  schedulable, which ``vast cluster setup``
   arranges — see :ref:`cluster-gpu`, which also covers why the replica count caps
   concurrency without partitioning VRAM, and the comparability caveat for a campaign whose
   cells ran at different GPU concurrency.
@@ -1494,9 +1476,8 @@ Kubernetes on the cluster. The scenario container's values are also exposed as
 Fractional cores are worth the trouble on the cluster, where a campaign's throughput is
 ``quota // pod_request``: rounding a sidecar that measures 0.3 cores up to a whole one is
 paid on **every job of the sweep**. The Monitor's **Details** panel measures what each
-container actually used and suggests the number to type here (see :doc:`web_ui`). Both
-lanes take the fractional value — the local lane converts a millicore declaration to
-Compose's decimal core count, since ``cpus: '500m'`` is not a form Compose accepts.
+container actually used and suggests the number to type here (see :doc:`web_ui`). A
+millicore declaration goes into the Job as written.
 
 .. _config-sizing:
 
@@ -1603,10 +1584,6 @@ silently mix two sizings — the inconsistency calibration exists to remove, arr
 the act of failing to measure. The error names the node, why its probe was refused, and which
 of the ``.vast`` or the deployment default to change.
 
-The local Docker lane never probes and knows nothing of ``sizing``: it reads ``resources`` as
-Compose limits, and a container declaring none runs **unconstrained**, which is what a quick
-local run already gets.
-
 .. _config-request-limit-split:
 
 **Splitting the reservation from the ceiling** — and this is a decision about a container's
@@ -1697,85 +1674,15 @@ allocations. See :ref:`cluster-execution` for the full syntax.
          resources:
            cpu:
              - gcp-c4: 4      # 4 CPUs on the gcp-c4 cluster
-             - local:   8     # 8 CPUs when running locally
+             - minikube: 8    # 8 CPUs on the one-node deployment
 
 .. note::
 
-   Every container other than ``scenario`` runs alongside it in the same pod (Kubernetes)
-   or Compose stack (local), sharing its network and IPC namespaces — so they reach each
+   Every container other than ``scenario`` runs alongside it in the same pod, sharing its
+   network and IPC namespaces — so they reach each
    other over localhost, and over ``/ipc``. One that declares no ``command`` runs
    ``secondary_entrypoint.sh``, i.e. a ``scenario_execution_server`` the scenario drives
    with ``remote("ipc:///ipc/<name>")``; one that declares a command runs that instead.
-
-local
-^^^^^
-
-**Type:** Dictionary
-
-**Required:** No
-
-**Applies to:** Local execution only (ignored for cluster runs)
-
-Configuration options that apply only when running tests locally (e.g. ``vast workspace run``).
-
-local.parameter_overrides
-""""""""""""""""""""""""""
-
-**Type:** List of dictionaries (key-value pairs)
-
-**Required:** No
-
-Overrides for scenario parameters that are added to the generated ``scenario.config`` **only for local runs**. Each list item is a single key-value pair. Values override whatever was produced by configuration variations. Nested dictionaries are supported (values are replaced entirely).
-
-Parameters are validated against the scenario file (``.osc``); only parameters defined in the scenario are allowed.
-
-.. code-block:: yaml
-
-   execution:
-     scenario_file: scenario.osc
-     local:
-       parameter_overrides:
-       - use_rviz: "True"
-
-.. note::
-
-   Parameter values must match the types expected by the scenario. If the scenario defines a parameter as a string (e.g. ``headless: string = "False"``), use quoted values.
-
-local.gui.parameter_overrides
-"""""""""""""""""""""""""""""
-
-**Type:** List of dictionaries (key-value pairs)
-
-**Required:** No
-
-The same thing, for local runs that have a **host display** wired in — merged *after*
-``local.parameter_overrides``, so it wins where both set a parameter. This is where a
-parameter that only makes sense with a window belongs, ``headless`` above all: a local run
-launched headless has no display for the scenario to draw on, and asking it to open a
-window there fails or renders nowhere.
-
-A run has a display when it was launched with one — ``vast workspace run`` (the
-default; ``--no-gui`` opts out) or ``start_campaign(show_gui=True)`` / ``exec_in_container(show_gui=True)``
-against a local ``vast serve``. Cluster runs never do, and never apply either block.
-
-.. code-block:: yaml
-
-   execution:
-     scenario_file: scenario.osc
-     env:
-     # No in-container Xvfb: with a window the container draws on the *host* X server
-     # through a mounted socket, which a virtual framebuffer would only shadow.
-     - ENABLE_X11: "false"
-     local:
-       gui:
-         parameter_overrides:
-         - headless: "False"
-
-.. note::
-
-   The condition is in the config path rather than in the meaning of
-   ``local.parameter_overrides``, which still applies to **every** local run. That way
-   adding a window to a project cannot change what its headless runs do.
 
 kubernetes
 ^^^^^^^^^^
@@ -1784,10 +1691,7 @@ kubernetes
 
 **Required:** No
 
-**Applies to:** Cluster execution only (ignored for local runs)
-
-Settings only the cluster lane reads. The local Docker lane ignores the block, as it ignores
-``sizing``, so the same ``.vast`` runs locally unchanged.
+Settings that name things about the cluster a campaign runs on.
 
 kubernetes.jobs.node
 """"""""""""""""""""

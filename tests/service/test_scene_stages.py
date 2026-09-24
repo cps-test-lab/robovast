@@ -21,8 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from robovast.service import scene_cache
-from robovast.service.local_transport import LocalTransport
-
+from tests.service.null_service import NullService
 KEY = "k"
 
 
@@ -70,14 +69,6 @@ def test_a_cluster_build_reports_the_wait_for_its_pod_apart_from_the_compile(sta
     assert scene_cache.current_stage(KEY) == ("", "")
 
 
-def test_a_local_build_claims_no_pull_it_cannot_see(stages):
-    """There is no separable pull on the local lane: ``docker run`` pulls inside the run itself, so
-    naming a stage for it would be a guess a viewer cannot check."""
-    scene_cache.generate({"image": "x"}, KEY)
-
-    assert stages == [scene_cache.STAGE_COMPILING]
-
-
 def test_a_failed_build_leaves_no_stage_behind(tmp_path, monkeypatch):
     """A stage outliving its build is read as a build in flight -- the status reports the two
     together -- so the panel would spin on a build that ended minutes ago."""
@@ -88,7 +79,7 @@ def test_a_failed_build_leaves_no_stage_behind(tmp_path, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no such image")))
 
     with pytest.raises(scene_cache.SceneUnavailable):
-        scene_cache.generate({"image": "x"}, KEY)
+        scene_cache.generate({"image": "x"}, KEY, runner_context=contextlib.nullcontext)
 
     assert scene_cache.current_stage(KEY) == ("", "")
 
@@ -96,14 +87,14 @@ def test_a_failed_build_leaves_no_stage_behind(tmp_path, monkeypatch):
 def test_the_service_reports_the_stage_the_build_named_with_its_reason():
     scene_cache.set_stage(KEY, scene_cache.STAGE_PULLING, "ImagePullBackOff: unauthorized")
 
-    assert LocalTransport._scene_stage(KEY) == (scene_cache.STAGE_PULLING,
+    assert NullService._scene_stage(KEY) == (scene_cache.STAGE_PULLING,
                                                 "ImagePullBackOff: unauthorized")
 
 
 def test_a_build_that_has_not_named_a_step_yet_is_compiling():
     """The gap between taking the key's lock -- which is what makes the status say a build is in
     flight -- and the build naming its first step."""
-    assert LocalTransport._scene_stage("never-started") == (scene_cache.STAGE_COMPILING, "")
+    assert NullService._scene_stage("never-started") == (scene_cache.STAGE_COMPILING, "")
 
 
 def test_the_ui_names_every_stage_and_no_others():

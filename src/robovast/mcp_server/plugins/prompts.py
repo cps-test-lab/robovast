@@ -126,8 +126,8 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    import, `ros2 pkg list`, or one config's scenario inside it. Pass `container=` to pick which one — the check that matters is usually not in the
    same container as the thing you are debugging. Do this instead of learning from a
    failed campaign that a package is missing — that is the same answer, minutes later.
-3. **Size it.** `get_resource_usage` for the lane you intend to use. It touches the lane,
-   so it also tells you the lane is actually reachable.
+3. **Size it.** `get_resource_usage`. It touches the cluster, so it also tells you the
+   cluster is actually reachable.
 4. **Pilot, then scale.** One configuration, `runs=1`, and confirm it produced data.
    Only then the full sweep. A sweep that fails in its last cell has cost everything.
 5. **Describe every run.** `description` is what tells two same-day

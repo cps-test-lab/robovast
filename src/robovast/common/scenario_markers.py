@@ -130,7 +130,7 @@ def split_shutdown(lines: list) -> "tuple[list, int]":
       (a gz warning carries no stamp) survives if it lands before the next stamped line;
       that errs toward keeping, which is the safe direction here.
     * It *ends* at the next scenario start rather than at the end of the stream, because
-      a campaign log concatenates runs locally (``get_campaign_log``'s ``run`` phase).
+      a campaign log concatenates runs (``get_campaign_log``'s ``run`` phase).
       Without that, run 1's verdict would swallow every run after it.
     """
     kept: list = []

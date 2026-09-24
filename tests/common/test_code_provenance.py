@@ -17,7 +17,7 @@ import logging
 import pytest
 
 from robovast.common.execution import (GIT_REVISION_ENV, MAX_RECORDED_CHANGED_PATHS,
-                                       _provenance_yaml, campaign_code_provenance,
+                                       campaign_code_provenance,
                                        code_provenance)
 
 
@@ -96,53 +96,6 @@ def test_a_clean_checkout_says_nothing(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         campaign_code_provenance()
     assert caplog.text == ""
-
-
-def test_provenance_yaml_round_trips():
-    """Both lanes write execution.yaml differently -- one dumps a dict, the other emits text
-    from a shell script -- so the text form has to parse back to the same record."""
-    import yaml
-
-    record = {"revision": "a" * 40, "revision_source": "git", "dirty": True,
-              "changed_count": 2, "changed_paths": ["a.py", "b.py"]}
-    parsed = yaml.safe_load(_provenance_yaml(record))
-    assert parsed == {f"robovast_{key}": value for key, value in record.items()}
-
-
-def test_provenance_yaml_of_nothing_is_nothing():
-    """An unknowable revision must add no keys at all, rather than keys holding null: an
-    absent field reads as "not recorded", a null one as "recorded as nothing"."""
-    assert _provenance_yaml({}) == ""
-
-
-def test_the_local_lane_writes_parseable_provenance(monkeypatch, tmp_path):
-    """Execute the generated shell, because that is the only thing that proves the heredoc.
-
-    The local lane does not write execution.yaml from Python -- it emits a shell script that
-    does, inside the run. So a bad quote or an unindented list item here produces a file that
-    parses as something else entirely, and no amount of inspecting the Python would show it.
-    Asserting on the *parsed* result also pins that ``dirty`` survives as a bool rather than
-    the string "true".
-    """
-    import subprocess
-
-    import yaml
-
-    from robovast.common.execution import generate_execution_yaml_script
-
-    monkeypatch.setenv(GIT_REVISION_ENV, "deadbee+dirty")
-    script = generate_execution_yaml_script(3, {}, output_dir_var="$OUT",
-                                            role_images={"scenario": "img:1"})
-    sh = tmp_path / "run.sh"
-    sh.write_text(f'#!/bin/bash\nset -e\nOUT="{tmp_path}"\nEXECUTION_TIME=now\n'
-                  f'DOCKER_IMAGE=img:1\n{script}')
-    subprocess.run(["bash", str(sh)], check=True, capture_output=True)
-
-    parsed = yaml.safe_load((tmp_path / "_execution" / "execution.yaml").read_text())
-    assert parsed["robovast_revision"] == "deadbee"
-    assert parsed["robovast_revision_source"] == "baked"
-    assert parsed["robovast_dirty"] is True
-    assert parsed["runs"] == 3
 
 
 def test_the_store_keeps_unknown_dirty_as_null(tmp_path):

@@ -117,8 +117,8 @@ FAMILY_IMAGE_PREFIX = "family:"
 
 
 #: Where a built image records what it actually contains. Baked into the image rather than
-#: written beside the campaign, because that is the only form that survives every path: both
-#: lanes get it without extra plumbing, it travels with the image if the image is copied or
+#: written beside the campaign, because that is the only form that survives every path: every
+#: pod gets it without extra plumbing, it travels with the image if the image is copied or
 #: retagged, and a rebuild a year from now can read what the original installed and install
 #: exactly that.
 #:
@@ -486,7 +486,7 @@ def resolve_controller_image(explicit: str | None = None,
 
 
 #: BuildKit secret id for the git token, and the one name both sides of a build agree on: the
-#: service renders ``--mount=type=secret,id=...`` into the Dockerfile, and the execution lane
+#: service renders ``--mount=type=secret,id=...`` into the Dockerfile, and the image build
 #: passes the matching ``--secret id=...`` to the builder. The same id
 #: ``container/robovast/Dockerfile.roqsim`` and ``build.sh`` use for their own clone -- one
 #: convention, so an operator configures a token once.
@@ -588,152 +588,14 @@ def build_date() -> str:
 MAX_RECORDED_CHANGED_PATHS = 20
 
 
-def image_compat_version(image: str) -> "tuple[int | None, str]":
-    """``(version, source)`` for *image*'s protocol version. ``(None, reason)`` when unknown.
-
-    The label, read the standard way: ``docker inspect`` locally, and the registry's config
-    blob for an image this machine does not have. One marker, both ways of reading it.
-
-    A label rather than a file inside the image: a file cannot be read without starting a
-    container, and cannot be read at all for an image this machine does not have -- which is
-    the case that matters, since a year-old campaign's image is rarely local.
-
-    ``source`` is returned so a caller can say what answered.
-    """
-    labelled = _docker_label(image, COMPAT_VERSION_LABEL)
-    if labelled and labelled.strip().isdigit():
-        return int(labelled.strip()), "label"
-    return None, f"not reported by the image (no {COMPAT_VERSION_LABEL} label)"
-
-
-#: Seconds any docker probe here may take. These run inside a pre-flight that is supposed to
-#: answer instantly, so a wedged daemon has to become "cannot tell" rather than a hang.
-_DOCKER_PROBE_TIMEOUT = 20
-
-
-def _docker(args) -> "subprocess.CompletedProcess | None":
-    """Run a docker command for a *probe*. ``None`` when it could not be asked at all."""
-    try:
-        return subprocess.run(args, capture_output=True, text=True, check=False,
-                              timeout=_DOCKER_PROBE_TIMEOUT)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # No docker CLI, or a daemon that did not answer. Neither is a verdict about the image.
-        return None
-
-
-def _image_present_locally(image: str) -> bool:
-    """Whether *image* is already in the local daemon."""
-    result = _docker(['docker', 'image', 'inspect', image])
-    return bool(result and result.returncode == 0)
-
-
-def local_image_id(image: str) -> str:
-    """The local daemon's content ID for *image*, or ``""`` when it cannot be read.
-
-    A tag is not an identity. ``ghcr.io/cps-test-lab/robovast:latest`` names different bytes
-    before and after the base image is rebuilt, so anything that must notice a rebuild -- an
-    image cache key above all -- has to hash this instead of the ref it was asked for.
-
-    Local only, never pulled, and ``""`` rather than an exception when the daemon cannot answer:
-    callers use this on paths that must stay cheap and must not fail because docker is absent.
-    """
-    if not image:
-        return ""
-    result = _docker(['docker', 'image', 'inspect', '--format', '{{.Id}}', image])
-    if not result or result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
-def _docker_label(image: str, label: str) -> str:
-    """One label off *image*, local first and then the registry, or ``""``.
-
-    Never raises -- absence is the answer, here as everywhere else in this module's probes.
-
-    The remote half is what makes this usable for the question it is mostly asked: *can this
-    host still drive the image a year-old campaign recorded?* That image is generally not on
-    the machine asking, and the point of a label over a file was always that a remote read is
-    possible -- ``buildx imagetools inspect`` reads the config blob without pulling a layer.
-    Until now only the local daemon was consulted, so a pre-flight on an archived campaign
-    answered "cannot tell" in exactly the case the label exists for.
-    """
-    if not image:
-        return ""
-    result = _docker(['docker', 'inspect', '--format',
-                      '{{index .Config.Labels "%s"}}' % label, image])
-    if result and result.returncode == 0:
-        value = result.stdout.strip()
-        # `docker inspect` prints the Go zero value for a missing key, not an empty string.
-        if value not in ("", "<no value>"):
-            return value
-        # Present locally and genuinely unlabelled: the registry cannot say otherwise about
-        # the same bytes, so do not pay for a round trip to be told the same thing.
-        return ""
-    return _remote_labels(image).get(label, "")
-
-
-def _remote_labels(image: str) -> dict:
-    """Every label on *image* as the registry reports it, or ``{}``.
-
-    All of them in one call, memoised per ref, because the callers ask for several: reading
-    four build refs off an absent image would otherwise be four network round trips to fetch
-    one config blob four times.
-
-    Memoised **for the life of the process**, which is the honest scope: a moving tag could
-    resolve to different bytes between two calls, but every caller here is a probe inside a
-    single short-lived answer (a pre-flight, one campaign's launch), and a probe that reports
-    two different things about one ref within one answer would be worse than a stale one.
-    """
-    if image in _REMOTE_LABEL_CACHE:
-        return _REMOTE_LABEL_CACHE[image]
-    labels: dict = {}
-    result = _docker(['docker', 'buildx', 'imagetools', 'inspect', '--format',
-                      '{{json .Image}}', image])
-    if result and result.returncode == 0:
-        try:
-            payload = json.loads(result.stdout.strip() or "{}")
-        except ValueError:
-            payload = {}
-        # Two shapes: a single image config, or one config per platform for a multi-arch
-        # index. Any entry answers -- they are pushed together, the same reasoning the
-        # registry client's index handling already uses.
-        candidates = [payload] if "config" in payload else [
-            v for v in payload.values() if isinstance(v, dict)]
-        for candidate in candidates:
-            found = ((candidate.get("config") or {}).get("Labels") or {})
-            if found:
-                labels = {str(k): str(v) for k, v in found.items()}
-                break
-    _REMOTE_LABEL_CACHE[image] = labels
-    return labels
-
-
-#: Per-process memo behind :func:`_remote_labels`. Not an LRU: the number of distinct refs one
-#: process asks about is the number of containers in one campaign.
-_REMOTE_LABEL_CACHE: dict = {}
-
-
 def check_image_compat(image: str, *, version: "int | None" = None,
                        source: str = "", unreadable: bool = False) -> "str | None":
     """``None`` when this host can drive *image*, else a message saying what to do.
 
-    One function for a decision three call sites each spelled out for themselves, with three
-    slightly different messages -- and the one they shared told the reader to "pull the latest
-    image", which is the *opposite* of what a re-run wants: it needs the recorded bytes, not
-    today's. So the message names the window, what the image reports, and the two real ways
-    out.
-
-    *version* / *source* let a caller that already inspected the image avoid a second probe.
-
-    *unreadable* separates the two ways *version* can be ``None``, which the message must not
-    conflate. An image that was READ and carries no label is a fact about the image, and
-    rebuilding it is the fix. An image that could not be read establishes nothing about the
-    image at all -- and telling that caller to rebuild sends them to do work that cannot
-    possibly help, twice, while the actual fault (a registry credential) goes unmentioned.
+    *version* is what the image reports, ``None`` when it reports nothing; *source* says
+    what answered. *unreadable* marks a ``None`` that means the image could not be read at
+    all, which is a fault in reaching it rather than a fact about the image.
     """
-    if version is None and not source:
-        version, source = image_compat_version(image)
-
     if version is None and unreadable:
         return (f"cannot determine the container protocol version of {image!r}: {source}.\n"
                 f"The image itself was never read, so this says NOTHING about the image and "
@@ -840,8 +702,7 @@ _BUILD_REF_LABELS = {
 }
 
 
-def image_build_refs(containers: dict, role_images: dict,
-                     labels_by_role: "dict | None" = None) -> dict:
+def image_build_refs(containers: dict, labels_by_role: "dict | None" = None) -> dict:
     """``{role: {...}}`` naming what each container's image was built from.
 
     Answers the question a re-run asks once the image itself is gone: *rebuild it from what?*
@@ -857,29 +718,16 @@ def image_build_refs(containers: dict, role_images: dict,
     * **the container's declared ``provenance:``** -- for a user-supplied image, where robovast
       cannot know and the author is the only source.
 
-    Absent entries mean "not knowable here", never "nothing to record": recording a guess would
-    be worse than recording nothing, since a rebuild would follow it. What *is* knowable widened
-    with *labels_by_role* -- a caller holding labels it read some other way (the cluster backend
-    reads them from the registry, which is the only way that works inside the controller pod)
-    passes them in, and this stops being a local-docker-only answer.
+    Absent entries mean "not knowable here", never "nothing to record": a rebuild would follow
+    a guess. *labels_by_role* are the labels the caller read from the registry.
     """
     out: dict = {}
     for role, block in sorted((containers or {}).items()):
         block = block or {}
         entry = {}
-
-        image = (role_images or {}).get(role) or block.get("image")
-        # A caller that has already read this image's labels hands them over; nobody else can
-        # get them. The cluster lane writes this file from inside the controller pod, which
-        # ships no docker CLI at all -- so every probe below returned "" there and the block
-        # was silently empty for every campaign that ran on a cluster. Its own docstring said
-        # absent means "not knowable here", which was true and useless.
-        supplied = (labels_by_role or {}).get(role)
+        supplied = (labels_by_role or {}).get(role) or {}
         for key, label in _BUILD_REF_LABELS.items():
-            if supplied is not None:
-                value = supplied.get(label, "")
-            else:
-                value = _docker_label(image, label) if image else ""
+            value = supplied.get(label, "")
             if value:
                 entry[key] = value
 
@@ -898,7 +746,7 @@ def image_build_refs(containers: dict, role_images: dict,
 def campaign_code_provenance() -> dict:
     """:func:`code_provenance` for a campaign about to run, warning when it is not reproducible.
 
-    The warning belongs here rather than at each call site so both lanes report it
+    The warning belongs here rather than at each call site so it is reported
     identically and exactly once per campaign. It is a warning and not a refusal on purpose:
     running from a dirty tree is the normal research loop, and blocking it would only teach
     people to bypass the check. What must not happen is the campaign *looking* reproducible
@@ -923,32 +771,14 @@ def campaign_code_provenance() -> dict:
 def _build_refs_yaml(refs: dict) -> str:
     """Render :func:`image_build_refs` as an ``image_build_refs:`` block, or ``""``.
 
-    Dumped with yaml rather than hand-formatted: this is nested, and the local lane emits
-    execution.yaml from a generated shell script -- where a mis-indented nested mapping produces a
-    file that parses as something else entirely and nothing notices.
+    Dumped with yaml rather than hand-formatted: this is nested, and a mis-indented nested
+    mapping produces a file that parses as something else entirely and nothing notices.
     """
     if not refs:
         return ""
     return yaml.dump({"image_build_refs": refs}, default_flow_style=False, sort_keys=True)
 
 
-def _provenance_yaml(record: dict, indent: str = "") -> str:
-    """Render :func:`code_provenance` as YAML lines with a ``robovast_`` prefix.
-
-    Shared by both execution.yaml writers -- one builds a dict and dumps it, the other emits
-    text from a shell script -- so the two lanes cannot drift into recording different keys.
-    """
-    lines = []
-    for key, value in record.items():
-        name = f"{indent}robovast_{key}"
-        if isinstance(value, list):
-            lines.append(f"{name}:\n")
-            lines.extend(f"{indent}- {item}\n" for item in value)
-        elif isinstance(value, bool):
-            lines.append(f"{name}: {str(value).lower()}\n")
-        else:
-            lines.append(f"{name}: {value}\n")
-    return "".join(lines)
 
 
 def get_app_version() -> str:
@@ -1164,22 +994,17 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
 def scenario_env(campaign_data):
     """The scenario-shaping env vars a run's config implies, for ``entrypoint.sh``.
 
-    Covers only what is derived from the ``.vast`` and is therefore identical on every
-    lane: which scenario file to run, the simulation backend, the runner selection, and
-    whether the behaviour tree status log is recorded.
-    Both execution backends built these separately (compose YAML lines vs a Kubernetes
-    ``env`` list) from the same config keys, so the two could drift while looking
-    correct; container-exec would have been a third copy.
+    Covers only what is derived from the ``.vast``: which scenario file to run, the
+    simulation backend, the runner selection, and whether the behaviour tree status log is
+    recorded. Shared by the Kubernetes backend and container-exec, so the two cannot drift.
 
     Deliberately *not* here:
 
     - **Path-valued vars** (``SCENARIO_PARAMETER_FILE``, ``OUTPUT_DIR``,
-      ``SCENARIO_OUTPUT_DIR``). Those genuinely differ by lane, because the mount
-      layout and job packing do — the caller owns them.
-    - **``SCENARIO_EXECUTION_PARAMETERS``**. Its derivation is not yet common: the
-      local lane builds ``-t``/``-d`` from ``log_tree``/``debug`` and otherwise defers
-      to a ``run.sh`` shell variable, while the cluster lane knows only ``log_tree``.
-      Sharing it would freeze that difference into one contract.
+      ``SCENARIO_OUTPUT_DIR``). Those depend on the mount layout and job packing — the
+      caller owns them.
+    - **``SCENARIO_EXECUTION_PARAMETERS``**. The Kubernetes backend derives it from
+      ``log_tree``.
     """
     execution = campaign_data.get("execution") or {}
     env = {
@@ -1200,8 +1025,8 @@ def scenario_env(campaign_data):
     # ~100 KB beside a multi-MB rosbag -- there is no campaign worth turning it off for,
     # so there is no way to.
     #
-    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites that
-    # whole variable with '-t', which would drop the flag on exactly the runs whose tree
+    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the Kubernetes backend overwrites
+    # that whole variable with '-t', which would drop the flag on exactly the runs whose tree
     # state is hardest to inspect.
     #
     # An execution image whose scenario_execution predates --bt-log ignores the flag rather
@@ -1219,11 +1044,8 @@ def scenario_env(campaign_data):
     # scenario's ``bag_record`` to say, where it sits beside the behaviour that produces it.
     env['LOG_TOPICS'] = '/rosout /clock'
 
-    # A simulator backend's environment, resolved *here* rather than by each emitter.
-    # The three emitters disagreed about precedence -- compose let the later block win,
-    # the cluster emitted duplicate keys and left it to the runtime, and container-exec
-    # let the user win -- so a backend contribution would have meant something different
-    # on each lane. One dict, one rule: the campaign's own execution.env wins, because a
+    # A simulator backend's environment, resolved *here* rather than by each emitter, so
+    # every emitter applies one rule: the campaign's own execution.env wins, because a
     # backend supplies defaults it knows, not decisions it takes away.
     env.update(_backend_env_for(execution))
     return env
@@ -1256,8 +1078,8 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     Only the ``simulation`` container: a backend describes its own simulator, and handing
     ``ROQSIM_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
 
-    A relative path in those variables resolves against ``RUN_OUTPUT_DIR``, which both
-    lanes already give every sidecar -- so a per-run artifact lands in the run's own
+    A relative path in those variables resolves against ``RUN_OUTPUT_DIR``, which every
+    sidecar is already given -- so a per-run artifact lands in the run's own
     directory rather than at the campaign root where each run would overwrite the last.
     """
     if container_name != SIMULATION_CONTAINER:
@@ -1272,8 +1094,8 @@ _LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid
 # sidecar image, so the experiment image carries nothing that reaches storage.
 _CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"\""
 
-# Used when the caller has no cluster provider to ask: a local Docker run is not an
-# instance of anything, so the recorded instance_type is empty (which ingests as NULL).
+# Used when the caller has no cluster provider to ask: a run that is not an instance of
+# anything records an empty instance_type (which ingests as NULL).
 # ``|| true`` is not needed here, but a provider's command must never abort the run —
 # sysinfo collection is explicitly non-fatal — so each implementation keeps its own
 # failure tolerance (a metadata-server curl that 404s yields an empty string).
@@ -1610,8 +1432,8 @@ def job_node_alias(campaign_data) -> str | None:
     """The node alias this campaign's cluster jobs are confined to, or ``None`` for the pool.
 
     The single reader of ``execution.kubernetes.jobs.node``. The alias narrows the cluster's
-    job pool to the one node registered under it; resolving it to that node is the cluster
-    lane's job, and the local lane never asks.
+    job pool to the one node registered under it; resolving it to that node is the
+    Kubernetes backend's job.
 
     Accepts either the raw mapping or a validated model at each level, matching the two
     shapes callers already pass around.
@@ -1621,74 +1443,6 @@ def job_node_alias(campaign_data) -> str | None:
 
     node = field(field(field(field(campaign_data, "execution"), "kubernetes"), "jobs"), "node")
     return node or None
-
-
-def local_parameter_overrides(campaign_data, *, gui: bool) -> list:
-    """The scenario-parameter overrides a **local** run applies, in precedence order.
-
-    Two blocks, because they answer different questions:
-
-    * ``execution.local.parameter_overrides`` — every local run, whatever it looks like.
-    * ``execution.local.gui.parameter_overrides`` — only a run with the host display
-      wired in, merged last so it wins.
-
-    Keeping them apart is what lets a project say ``headless: "False"`` without it firing
-    on a headless run, which would ask the scenario to open a window on a display that is
-    not there. The condition is in the config *path* rather than in the meaning of an
-    existing key, so ``execution.local.parameter_overrides`` still means exactly what it
-    always did.
-
-    Accepts either the raw mapping or a validated model at ``execution.local``, matching
-    the two shapes callers already pass around.
-    """
-    local = (campaign_data.get("execution") or {}).get("local")
-    if hasattr(local, "parameter_overrides"):
-        base = local.parameter_overrides or []
-        gui_block = getattr(local, "gui", None)
-    elif isinstance(local, dict):
-        base = local.get("parameter_overrides") or []
-        gui_block = local.get("gui")
-    else:
-        return []
-    overrides = list(base)
-    if gui and gui_block is not None:
-        if hasattr(gui_block, "parameter_overrides"):
-            overrides += list(gui_block.parameter_overrides or [])
-        elif isinstance(gui_block, dict):
-            overrides += list(gui_block.get("parameter_overrides") or [])
-    return overrides
-
-
-def _apply_local_parameter_overrides(config, parameter_overrides, valid_param_names,
-                                     scenario_name, scenario_path):
-    """Apply local parameter overrides to config, validating against scenario parameters.
-
-    Args:
-        config: The scenario config dict to modify (will be mutated)
-        parameter_overrides: List of dicts, each with a single key-value (e.g. [{"headless": False}])
-        valid_param_names: Set or list of parameter names defined in the scenario
-        scenario_name: Name of the scenario (for error messages)
-        scenario_path: Path to scenario file (for error messages)
-
-    Raises:
-        ValueError: If any override key is not a valid scenario parameter
-    """
-    if not parameter_overrides:
-        return
-    merged = {}
-    for item in parameter_overrides:
-        if isinstance(item, dict):
-            merged.update(item)
-    if not merged:
-        return
-    valid_set = set(valid_param_names) if valid_param_names else set()
-    invalid = [k for k in merged if k not in valid_set]
-    if invalid:
-        raise ValueError(
-            f"Invalid parameter_overrides in execution.local for scenario '{scenario_name}': "
-            f"{invalid}. Valid parameters in {scenario_path} are: {sorted(valid_set)}"
-        )
-    config.update(merged)
 
 
 def check_campaign_inputs(campaign_data):
@@ -1729,12 +1483,12 @@ def render_secondary_entrypoint(*, cluster=False) -> str:
 
 
 def render_entrypoint(*, cluster=False, instance_type_command=None):
-    """The container entrypoint script, with its lane-specific blocks substituted.
+    """The container entrypoint script, with its placement-specific blocks substituted.
 
     The template carries three markers whose content depends on *where* the container
-    runs: the init block (``fixuid`` locally, config fetch in-cluster), the post-run
+    runs: the init block (``fixuid`` outside a pod, config fetch in-cluster), the post-run
     block (how the runner is started and what runs after it), and the instance-type probe. A
-    script rendered for one lane is therefore wrong on the other — which is why a
+    script rendered for one setting is therefore wrong in the other — which is why a
     campaign's staged ``entrypoint.sh`` must never be reused by something running
     elsewhere, and why container-exec renders its own instead of copying one.
 
@@ -1857,13 +1611,8 @@ def _archive_vast_sources(vast_src, campaign_config_dir):
 
 
 def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
-                             instance_type_command=None, gui=False):
+                             instance_type_command=None):
     """Stage a campaign's config tree, including the generated entrypoint.
-
-    *gui* selects whether ``execution.local.gui.parameter_overrides`` is staged along with
-    ``execution.local.parameter_overrides`` (see :func:`local_parameter_overrides`). It
-    defaults to **off** so a caller that does not thread it through under-applies rather
-    than staging a scenario that expects a window nobody asked for.
 
     *instance_type_command* is a shell line that sets ``INSTANCE_TYPE``, obtained from the
     cluster provider's
@@ -1871,7 +1620,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     — the machine type on a cloud (GCP's metadata server, Azure's IMDS), the architecture
     on bare metal. The *caller* resolves it rather than this function looking a provider
     up, so ``robovast.common`` keeps no dependency on the cluster packages. Omitted, the
-    recorded instance type is empty, which is the honest answer for a local Docker run.
+    recorded instance type is empty, which is the honest answer where nothing can say.
     """
     # Create the output directory structure
     logger.debug(f"Campaign Configs: {pformat(campaign_data)}")
@@ -1933,7 +1682,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         vast_file_path,
         sut_source_paths(campaign_data.get("execution", {}) or {}, vast_file_path))
     # Config generation already resolved this against the .vast's location, so it is usable as-is
-    # (see the same note in execute_local). Re-prepending the .vast's directory doubled it -- e.g.
+    # Re-prepending the .vast's directory doubled it -- e.g.
     # `<project>/<project>/scenario.osc` -- for every project whose config path has a
     # directory part, and was a silent no-op only for the usual case of a `.vast` sitting in
     # the project's own directory.
@@ -2019,18 +1768,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             raise ValueError(f"Scenario name not found in {original_scenario_path}")
     except Exception as e:
         raise RuntimeError(f"Could not get scenario name from {original_scenario_path}: {e}") from e
-
-    # Resolve valid scenario parameter names for parameter_overrides validation
-    existing_scenario_parameters = next(iter(scenario_params.values())) if scenario_params else []
-    valid_param_names = [
-        p.get('name') for p in existing_scenario_parameters
-        if isinstance(p, dict) and 'name' in p
-    ]
-
-    # Local-only scenario-parameter overrides; the gui half only when this run has a
-    # display (see local_parameter_overrides).
-    parameter_overrides = [] if cluster else local_parameter_overrides(
-        campaign_data, gui=gui)
 
     for config_data in campaign_data["configs"]:
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
@@ -2129,11 +1866,6 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             config = config_data.get('config')
             if config is not None:
                 config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
-                if parameter_overrides:
-                    _apply_local_parameter_overrides(
-                        config_dict, parameter_overrides, valid_param_names,
-                        scenario_name, original_scenario_path
-                    )
                 wrapped_config_data = {scenario_name: config_dict}
                 dst_path = os.path.join(run_config_dir, 'scenario.config')
                 os.makedirs(run_config_dir, exist_ok=True)
@@ -2193,11 +1925,11 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 #: reaches the container at ``/config/<name>`` -- the entrypoint the container executes, the
 #: scripts it sources, the parameter documents it reads. A configuration's file is staged
 #: where the campaign's copy would have been, so a deploy path equal to one of these would
-#: land on it. Refused at composition rather than left to the lane, which discovers it as a
+#: land on it. Refused at composition rather than left to the cluster, which discovers it as a
 #: refused mount or a pod that dies in its entrypoint, after the image pull.
 #:
 #: An allowlist of what the run owns, not a guess at what a campaign might write: the set is
-#: exactly what :func:`prepare_campaign_configs` and the two lanes put there, and it lives
+#: exactly what :func:`prepare_campaign_configs` and the backend put there, and it lives
 #: beside the code that writes it so the two cannot drift.
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
@@ -2255,7 +1987,7 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
 
     No-op when there are no links (e.g. single-config jobs have no ``_jobs``
     split). The manifest is plain data, so it survives an S3 round-trip and is
-    consumed where results are materialised (locally and in the share archiver).
+    consumed where results are materialised (the results root and the share archiver).
 
     *base* is what this manifest must keep: the links the campaign already has, from
     :func:`read_job_links`. **The manifest is campaign-level while it is written per batch**,
@@ -2291,7 +2023,7 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
 
 
 #: The job-link manifest's location inside a campaign, as one path rather than two joins.
-#: A reader that has the campaign's bytes rather than its directory -- the cluster lane's
+#: A reader that has the campaign's bytes rather than its directory -- the cluster's
 #: object store -- needs the same address, and deriving it twice is how the two drift.
 JOB_LINKS_MANIFEST_REL = os.path.join("_transient", JOB_LINKS_MANIFEST)
 
@@ -2302,8 +2034,8 @@ def resolve_job_artifact_rel(links: dict, job_name: str) -> str:
     The path arithmetic of :func:`job_artifact_dir` without the filesystem: the manifest's
     target is relative to the link's own directory, so it only becomes a campaign-relative
     path after being joined with *job_name* and normalised. Split out because the cluster
-    lane resolves the same job against an object-store prefix, where there is no directory
-    to join against and re-deriving the arithmetic would let the two lanes disagree about
+    resolves the same job against an object-store prefix, where there is no directory
+    to join against and re-deriving the arithmetic would let two readers disagree about
     which job a run's artifacts are in.
 
     Raises:
@@ -2389,128 +2121,6 @@ def create_job_links(campaign_dir) -> int:
     return created
 
 
-def generate_execution_yaml_script(runs, execution_params=None, output_dir_var="${RESULTS_DIR}",
-                                   role_images=None):
-    """Generate shell script code to create execution.yaml with ISO formatted timestamp.
-
-    Args:
-        runs: Number of runs
-        execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
-        output_dir_var: Shell variable name for the output directory (default: ${RESULTS_DIR})
-        role_images: ``{role: image}`` for every container role this run starts, from the
-            campaign's ``ContainerPlan``. Recorded as ``images`` plus a per-role
-            ``image_revisions``, which is the same contract the cluster lane writes -- see
-            below for why a single campaign-level image is not enough.
-
-    Returns:
-        String containing shell script code to create execution.yaml
-    """
-    if execution_params is None:
-        execution_params = {}
-    role_images = role_images or {}
-
-    script = f'echo "Creating execution.yaml..."\n'
-    script += f'EXECUTION_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")\n'
-    # `| tr -d` + `|| true`, not `|| echo unknown`: for an image it does not have, `docker
-    # inspect` prints an empty line on stdout *and* exits non-zero, so the old form captured
-    # "\nunknown" -- a newline inside a YAML scalar, which made the whole file unparseable
-    # rather than merely unknown. Empty now means "could not inspect", defaulted below.
-    script += (f'IMAGE_REVISION=$(docker inspect --format=\'{{{{.Id}}}}\' "${{DOCKER_IMAGE}}" '
-               f'2>/dev/null | tr -d "[:space:]" || true)\n')
-    # One digest per ROLE, not just the campaign's. "The campaign's image" stopped describing
-    # a run once the simulator, the system under test and the scenario got their own
-    # containers, and anything attributing an artifact to the bytes that produced it has to
-    # name the role: the run view compiles its geometry from the world the capture names, and
-    # that world -- with the exporter that reads it -- lives in the SIMULATION image. Without
-    # this the reader fell back to the campaign image and ran the exporter in a container that
-    # had neither, which surfaced only as an exit 127 from a docker command.
-    # Deduplicated by image because roles commonly share one, and `docker inspect` is a
-    # process each.
-    for i, image in enumerate(sorted(set(role_images.values()))):
-        script += (f'ROLE_REVISION_{i}=$(docker inspect --format=\'{{{{.Id}}}}\' '
-                   f'"{image}" 2>/dev/null | tr -d "[:space:]" || true)\n')
-    script += f'mkdir -p "{output_dir_var}/_execution"\n'
-    script += f'cat > "{output_dir_var}/_execution/execution.yaml" << EOF\n'
-    script += "execution_time: '${EXECUTION_TIME}'\n"
-    script += f'robovast_version: {get_app_version()}\n'
-    # Rendered here rather than in the script, because the provenance is a property of the
-    # process COMPOSING the campaign -- asking git from inside the generated script would
-    # answer for whatever directory it happens to run in, which is not the same question.
-    script += _provenance_yaml(campaign_code_provenance())
-    # Rendered at GENERATION time, not by the script: reading an image's labels needs the docker
-    # CLI and the image present, and the generated script runs inside the batch where a failed
-    # label read would be one more confusing line in a run log. Composing here also means the
-    # declared provenance -- the half robovast cannot derive -- is recorded even when no image has
-    # been pulled yet.
-    script += _build_refs_yaml(image_build_refs(execution_params.get('containers') or {},
-                                               role_images))
-    script += f'runs: {runs}\n'
-    script += f'execution_type: local\n'
-    # The image that actually ran, not the .vast's raw entry: for a `build:<tag>` project the raw
-    # entry is symbolic, and postprocessing re-runs its container from this file -- `docker run
-    # build:<tag>` finds no such image, which surfaces as a bogus "compat version <missing>".
-    script += "image: '${DOCKER_IMAGE}'\n"
-    script += 'image_revision: ${IMAGE_REVISION:-unknown}\n'
-    if role_images:
-        slot = {image: i for i, image in enumerate(sorted(set(role_images.values())))}
-        script += 'images:\n'
-        for role, image in sorted(role_images.items()):
-            script += f"  {role}: '{image}'\n"
-        # Written by the shell, one `if` per role, so a role whose image could not be
-        # inspected is OMITTED rather than recorded as "unknown". A recorded non-answer would
-        # satisfy the reader's first source and defeat the point of recording at all.
-        script += 'EOF\n'
-        script += f'echo "image_revisions:" >> "{output_dir_var}/_execution/execution.yaml"\n'
-        # `if`, not `[ ... ] && echo`: the latter exits non-zero when the test fails, which
-        # would abort the run under `set -e` for the entirely normal case of one
-        # uninspectable image.
-        for role, image in sorted(role_images.items()):
-            var = f'ROLE_REVISION_{slot[image]}'
-            script += (f'if [ -n "${{{var}}}" ]; then '
-                       f'echo "  {role}: ${{{var}}}" '
-                       f'>> "{output_dir_var}/_execution/execution.yaml"; fi\n')
-        script += f'cat >> "{output_dir_var}/_execution/execution.yaml" << EOF\n'
-    # Local executions have no cluster information attached
-    script += 'cluster_info: {}\n'
-
-    # Add run_as_user if provided
-    run_as_user = execution_params.get('run_as_user')
-    if run_as_user is not None:
-        script += f'run_as_user: {run_as_user}\n'
-
-    # Add env if provided
-    env = execution_params.get('env')
-    if env:
-        script += 'env:\n'
-        for env_item in env:
-            if isinstance(env_item, dict):
-                for key, value in env_item.items():
-                    # Escape special characters for heredoc
-                    escaped_value = str(value).replace('"', '\\"').replace('$', '\\$') if value is not None else ""
-                    script += f'  {key}: "{escaped_value}"\n'
-
-    script += 'EOF\n'
-    script += f'echo ""\n\n'
-    return script
-
-
-def _get_image_revision(image: str) -> str:
-    """Return the local docker image ID for *image*, or ``'unknown'`` on failure."""
-    if not image:
-        return 'unknown'
-    try:
-        result = subprocess.run(
-            ['docker', 'inspect', '--format={{.Id}}', image],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode == 0:
-            rev = result.stdout.strip()
-            return rev if rev else 'unknown'
-    except FileNotFoundError:
-        pass
-    return 'unknown'
-
-
 #: Fields of ``execution.yaml`` that describe the CAMPAIGN's images rather than one execution
 #: of it, and are therefore carried forward when a rewrite has nothing to put in them.
 #:
@@ -2526,9 +2136,8 @@ _CARRIED_PROVENANCE_FIELDS = ('image', 'images', 'image_revision', 'image_revisi
 def _records_nothing(value) -> bool:
     """Whether a provenance field holds no actual fact.
 
-    ``'unknown'`` counts as nothing, and has to: :func:`_get_image_revision` returns that
-    literal string when it cannot read an image, so a resume writes a *truthy* placeholder over
-    a perfectly good digest. Treating it as a value is exactly the erasure this guards against.
+    ``'unknown'`` is the placeholder written when no digest was known, so it counts as nothing
+    and never overwrites a recorded digest.
     """
     return not value or value == 'unknown'
 
@@ -2574,14 +2183,14 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
         context: Kubernetes context name to use. ``None`` uses the active context.
         image_labels: ``{role: {label: value}}`` already read for each container's image, when
-            the caller has them. The cluster lane does -- it reads them from the registry to
+            the caller has them. The service does -- it reads them from the registry to
             check the container protocol -- and must pass them, because this function runs in
             the controller pod where the docker probes it would otherwise use cannot work.
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the
             runs ran — and postprocessing reuses it (``campaign_execution_image``). Falls
-            back to the local docker image id (``unknown`` off-cluster) when None.
+            back to the docker daemon's image id (``unknown`` without one) when None.
     """
     if execution_params is None:
         execution_params = {}
@@ -2614,7 +2223,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         'execution_type': 'cluster',
         'image': image,
         'images': images,
-        'image_revision': image_digest or _get_image_revision(image),
+        'image_revision': image_digest or 'unknown',
     }
     # One digest per container, because "the campaign's image" stopped being a single
     # fact. `image_revision` is the scenario container's; anything asking which bytes
@@ -2633,7 +2242,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
 
     # What each image was built FROM, as opposed to which bytes it is. A digest is reproducible
     # only for as long as the registry keeps it; this is what a rebuild would start from.
-    build_refs = image_build_refs(containers, images, labels_by_role=image_labels)
+    build_refs = image_build_refs(containers, labels_by_role=image_labels)
     if build_refs:
         execution_data['image_build_refs'] = build_refs
 

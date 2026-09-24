@@ -899,8 +899,8 @@ def _billing_profile(read, prefix: str, filename: str, percentile: float = 95.0)
 
 #: Where a probe's output goes, under the campaign root. Reserved (see
 #: ``RESERVED_CAMPAIGN_DIRS``), so nothing walks it looking for runs.
-#: Re-exported: the name lives in ``campaign_data`` because both postprocessing
-#: lanes must exclude it and neither may import this package.
+#: Re-exported: the name lives in ``campaign_data`` because postprocessing must
+#: exclude it and may not import this package.
 PROBE_DIR = _PROBE_DIR
 
 

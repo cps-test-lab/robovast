@@ -168,7 +168,6 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
         runs=launch.get("runs") or 0,
         postprocess=launch.get("postprocess", True),
         upload_to_share=launch.get("upload_to_share", False),
-        show_gui=False,
         # Restored, unlike a retrigger's: this is the same campaign coming back, and one that
         # was demoted or held before the restart would otherwise return at the default and
         # take capacity an operator had already taken away from it.

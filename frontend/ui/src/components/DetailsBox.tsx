@@ -141,8 +141,8 @@ function CpuAdvice({
   inFlightThen,
 }: {
   cpu: CpuSummary
-  /** How many pods of the declared size fit the lane's quota; null when nothing was declared or
-   *  the lane's capacity is unknown. */
+  /** How many pods of the declared size fit the cluster's quota; null when nothing was declared or
+   *  the cluster's capacity is unknown. */
   inFlightNow: number | null
   inFlightThen: number | null
 }) {
@@ -342,7 +342,7 @@ export function DetailsBox({
   selected = true,
 }: {
   campaignId: string
-  /** Lane CPU capacity, for the "jobs in flight" estimate. Omitted when unknown, and then
+  /** Cluster CPU capacity, for the "jobs in flight" estimate. Omitted when unknown, and then
    *  the estimate is simply not shown -- there is no default worth inventing. */
   quotaCpu?: number | null
   /** Whether the campaign's metric tables exist yet. Part of the query key, not a display flag:
@@ -367,7 +367,7 @@ export function DetailsBox({
   const { data, isLoading, isError, error } = useDetails(campaignId, open, postprocessed)
   // Its own query rather than a fourth SQL statement in `useDetails`: this one is served by the
   // service from `campaign.db` directly, which is what makes the identical chart work on a
-  // campaign that is still running (a SQL query cannot answer that on the cluster lane).
+  // campaign that is still running (a SQL query cannot answer that in the cluster).
   const objective = useQuery({
     queryKey: ['search-history', campaignId, 'details'],
     queryFn: () => robovast.getSearchHistory(campaignId),

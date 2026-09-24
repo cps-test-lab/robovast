@@ -250,8 +250,8 @@ def split_phases(text: str) -> list[tuple[str, str]]:
 def disk_get_bytes(campaign_dir: "Path | str") -> Callable[[str], Optional[bytes]]:
     """A ``get_bytes`` that reads phase files from ``<campaign_dir>/_execution/``.
 
-    Used by every surface that has the campaign on a local filesystem: the service
-    of either lane, MCP, and the cmdline. A missing file yields ``None``.
+    Used by every surface that has the campaign on a local filesystem: the service,
+    MCP, and the cmdline. A missing file yields ``None``.
     """
     exec_dir = Path(campaign_dir) / EXECUTION_DIR
 

@@ -16,9 +16,9 @@ import threading
 import time
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 #: How long the stuck pull would block for -- far past any graceful-shutdown deadline.
 _STUCK_S = 30
@@ -33,7 +33,7 @@ def test_sse_stream_closes_on_shutdown_while_a_pull_is_stuck(tmp_path):
     entered = threading.Event()
     release = threading.Event()
 
-    class _Stuck(LocalTransport):
+    class _Stuck(NullService):
         # test double
         def list_campaigns(self, request):  # pylint: disable=signature-differs
             entered.set()

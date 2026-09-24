@@ -443,26 +443,6 @@ def test_the_pod_derives_and_this_process_does_not_repeat_it(monkeypatch, campai
 
 
 
-def test_the_local_lane_still_derives_here(monkeypatch, campaign_root):
-    """No cluster, no Job: the conversion runs in-process and the local half is still ours.
-
-    The two halves are split for the image the conversion needs, not for where the work
-    happens, so a lane with no Job to submit has to do both.
-    """
-    class _Backend:
-        cluster_config = None
-        kube_context = None
-
-    ran_here = []
-    monkeypatch.setattr('robovast.results_processing.postprocessing.'
-                        'run_postprocessing_commands',
-                        lambda *a, **kw: ran_here.append(a))
-
-    _controller_with_backend(monkeypatch, campaign_root, _Backend())._run_postprocessing('b')
-
-    assert len(ran_here) == 2, 'the local lane runs the conversion and then derives'
-
-
 def test_a_job_that_failed_leaves_the_derivation_to_this_process(monkeypatch,
                                                                  campaign_root):
     """Skipping the local half is earned by a Job that did it, not by one that was asked to.

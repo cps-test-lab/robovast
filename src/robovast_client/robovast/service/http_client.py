@@ -19,11 +19,10 @@
 :class:`HTTPTransport` talks to a running ``robovast-service`` (a local
 ``vast serve``, a remote VM, or an in-cluster deployment) over the HTTP contract
 in :class:`robovast.service.interface.Routes`. :func:`RobovastClient` is the
-transport-agnostic factory: a URL selects the HTTP transport, empty selects the
-in-process :class:`~robovast.service.local_transport.LocalTransport`.
+factory: a URL selects the HTTP transport, and an empty one is refused, because there is
+no service to reach without one.
 
-Split out of the former single ``client`` module; ``client`` now re-exports both
-so existing imports keep working.
+``robovast.service.client`` re-exports both so existing imports keep working.
 """
 
 import logging
@@ -45,7 +44,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest, Campaig
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, UnsupportedOnLane,
+                                        ServiceCache, ServiceError, UnsupportedOperation,
                                         UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
@@ -78,9 +77,9 @@ class HTTPTransport(RobovastInterface):
     """
 
     #: What this transport declines, it declines as the caller's side of the wire: the
-    #: service it forwards to has its own lane, and a refusal from there arrives with that
-    #: lane's name in it.
-    LANE = "http"
+    #: service it forwards to has its own ``IMPLEMENTATION``, and a refusal from there arrives
+    #: with that name in it.
+    IMPLEMENTATION = "http"
 
     def __init__(self, base_url: str, timeout: float = 30.0,
                  token: str = "", user: str = ""):
@@ -184,9 +183,9 @@ class HTTPTransport(RobovastInterface):
         """This service's own recent log (see ``Routes.ADMIN_LOG``).
 
         Not on :class:`RobovastInterface`, so it is not an abstract method the other
-        transports must answer: the log describes the *serving process*, and an in-process
-        ``LocalTransport`` caller is already inside the process whose stderr it is. This is
-        the wire client for a route that only a remote caller needs.
+        transports must answer: the log describes the *serving process*, and a caller
+        inside the service is already in the process whose stderr it is. This is the
+        wire client for a route that only a remote caller needs.
         """
         return LogChunk.model_validate(self._get(Routes.ADMIN_LOG, offset=offset))
 
@@ -472,8 +471,8 @@ class HTTPTransport(RobovastInterface):
                        json={"path": path, "check_world": check_world,
                              "check_scenario": check_scenario},
                        # The world and scenario checks run a container: cold, that is
-                       # seconds on the local lane and can be well over ten on a busy
-                       # cluster, which the default read timeout would cut short
+                       # seconds on an idle cluster and well over ten on a busy one,
+                       # which the default read timeout would cut short
                        # mid-check.
                        timeout=COMMAND_LIMIT_S))
 
@@ -485,15 +484,14 @@ class HTTPTransport(RobovastInterface):
             json={"max_configs": max_configs, "path": path}))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False, backend: str = "") -> WorldDescription:
+                       entities: bool = False) -> WorldDescription:
         # The simulator answers inside a container, and on a node that has never pulled this
         # campaign's image the first thing that happens is the pull -- the same reasoning (and
         # the same budget) as DATA_TIMEOUT below, or a caller sees a ReadTimeout it cannot
         # distinguish from a broken service.
         return WorldDescription.model_validate(self._post(
             Routes.workspace_world(workspace_id),
-            json={"path": path, "targets": targets, "entities": entities,
-                  "backend": backend},
+            json={"path": path, "targets": targets, "entities": entities},
             timeout=self.SCREENSHOT_TIMEOUT))
 
     def get_config_schema(self) -> dict:
@@ -618,7 +616,7 @@ class HTTPTransport(RobovastInterface):
         The interface returns a *path* because the service builds one, and a path means
         nothing across HTTP — so the bytes are written into the same directory shape
         ``screenshot.render`` produces, and ``screenshot.discard`` removes it either way. One
-        cleanup rule for both, rather than a caller that has to know which lane answered.
+        cleanup rule for both, rather than a caller that has to know which implementation answered.
 
         **A long timeout, deliberately.** This is the one call that may pull a 2 GB image
         before it can start, inside the request; the default would give up on a cold node and
@@ -660,8 +658,8 @@ class HTTPTransport(RobovastInterface):
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
         # Same as its campaign sibling: a path on the service's disk means nothing here.
         del workspace_id, path
-        raise UnsupportedOnLane(
-            "resolve_workspace_scene_asset", self.LANE,
+        raise UnsupportedOperation(
+            "resolve_workspace_scene_asset", self.IMPLEMENTATION,
             hint="a scene asset is fetched over HTTP from SceneStatus.url, not resolved to "
                  "a local path")
 
@@ -669,8 +667,8 @@ class HTTPTransport(RobovastInterface):
         # A *path on the service's disk* has no meaning across HTTP; a remote caller fetches the bytes
         # from the address the status reports. Refusing beats returning a path that is not there.
         del campaign_id, path
-        raise UnsupportedOnLane(
-            "resolve_campaign_scene_asset", self.LANE,
+        raise UnsupportedOperation(
+            "resolve_campaign_scene_asset", self.IMPLEMENTATION,
             hint="a scene asset is fetched over HTTP from SceneStatus.url, not resolved to "
                  "a local path")
 
@@ -761,14 +759,11 @@ class HTTPTransport(RobovastInterface):
 def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802  # pylint: disable=invalid-name
                    token: str | None = None,
                    user: str | None = None) -> RobovastInterface:
-    """Return a transport-agnostic client.
+    """Return a client for the ``robovast-service`` at *service_url*.
 
-    * ``service_url`` set → :class:`HTTPTransport` to that ``robovast-service``.
-    * empty (default) → :class:`LocalTransport` (in-process local Docker), imported only
-      on that branch: the in-process server is 3,000 lines this module otherwise has no
-      use for, and an install that ships only the client does not have it at all.
-
-    Callers resolve *service_url* explicitly (see
+    An empty URL is refused rather than answered with something else: every campaign
+    runs through a service, so a caller with no URL has nothing to reach, and the
+    refusal names the remedy. Callers resolve *service_url* explicitly (see
     :func:`robovast.client.service_target.detected_service_url`); there is no
     ambient environment-variable selection of *which service*.
 
@@ -778,15 +773,9 @@ def RobovastClient(service_url: str = "", timeout: float = 30.0,  # noqa: N802  
     remote users. Pass them explicitly to override.
     """
     if not service_url:
-        try:
-            from robovast.service.local_transport import \
-                LocalTransport  # pylint: disable=import-outside-toplevel
-        except ImportError as e:  # a client-only install has no in-process server
-            raise RuntimeError(
-                "no service URL was given, and this install has no in-process service "
-                "to fall back to. Point at a running one: 'vast login <url>', or start "
-                "one with 'vast serve'.") from e
-        return LocalTransport()
+        raise RuntimeError(
+            "no service URL was given. Point at a running robovast-service: "
+            "'vast login <url>'.")
     if token is None or user is None:
         from robovast.client.login import credentials
         _url, stored_token, stored_name = credentials()

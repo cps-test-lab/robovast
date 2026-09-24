@@ -179,7 +179,7 @@ describe('describeCampaignEvent', () => {
   })
 
   it('falls back to the campaign error when the operation recorded none of its own', () => {
-    expect(describeCampaignEvent(evt('failed', { error: 'lane unreachable' }, 'export')).note)
-      .toContain('lane unreachable')
+    expect(describeCampaignEvent(evt('failed', { error: 'cluster unreachable' }, 'export')).note)
+      .toContain('cluster unreachable')
   })
 })

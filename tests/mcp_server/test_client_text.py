@@ -27,7 +27,7 @@ def test_decodes_well_formed_references(escaped, expected):
     "see http://host/x?a=1&param=2&para=3",
     # Longest-prefix matching would make this "\xactit;".
     "a &notit; b",
-    "R&D pilot on the AT&T lane",
+    "R&D pilot on the AT&T cluster",
     "runs 1&2",
     "&; and & alone",
     # A name that is not an entity stays put rather than being partly decoded.

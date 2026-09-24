@@ -18,7 +18,7 @@
 """``vast`` verbs that need the core: running a service, and building for one.
 
 These attach to the root group (:mod:`robovast.client.cli`) through the
-``robovast.cli_plugins`` entry point, exactly as the execution lanes do. They live here
+``robovast.cli_plugins`` entry point. They live here
 rather than with the root group because each needs something a client install does not
 have -- a service implementation, a Docker daemon, the web UI build, the results reader.
 
@@ -80,22 +80,6 @@ def ensure_ui_built(rebuild: bool = False) -> None:
     subprocess.run([npm, 'run', 'build'], cwd=str(ui_dir), check=True)  # noqa: S603
 
 
-def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback signature
-    """Collapse ``--workspace-dir`` to a single directory, refusing more than one.
-
-    Declared ``multiple=True`` only so a second occurrence can be *reported*: click's
-    single-value default would silently keep the last one, and a dropped pin is
-    exactly the kind of quiet substitution that makes a service serve something the
-    operator did not ask for.
-    """
-    if len(value) > 1:
-        raise click.BadParameter(
-            "takes one directory. A pinned directory holds as many .vast files as "
-            "you like (selected per campaign with --config-path), so pin the "
-            "collection — e.g. a repo root — rather than passing several.")
-    return value[0] if value else None
-
-
 @click.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
               help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel or a proxy '
@@ -108,10 +92,6 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               help='Listen on this Unix socket instead of --host/--port. The in-cluster '
                    'layout: a front owns the port and routes here, and the data routes '
                    'to their own process (vast serve-data).')
-@click.option('--backend', type=click.Choice(['auto', 'local', 'cluster']),
-              default='auto', show_default=True,
-              help="Execution backend. 'auto' picks 'cluster' when running inside "
-                   "a Kubernetes pod, else 'local' Docker.")
 @click.option('--rebuild-ui', is_flag=True,
               help='Force a web UI rebuild even if frontend/ui/dist looks up to date '
                    '(source checkout only).')
@@ -121,43 +101,23 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
                    'tools together. Pass --no-mcp to serve the API without them.')
 @click.option('--results-dir', 'results_dir', default=None, metavar='DIR',
               type=click.Path(file_okay=False),
-              help='Where campaigns this service runs land, on the serve host, whichever '
-                   'lane runs them. Omitted, a service-owned directory beside the '
-                   'workspaces store is used, which is stable but not where you were '
-                   'looking; name one to choose.')
-@click.option('--workspace-dir', 'workspace_dir', multiple=True,
-              callback=_one_workspace_dir,
-              type=click.Path(exists=True, file_okay=False),
-              help='Pin a directory as a read-only workspace, used in place. Skips '
-                   'the "vast workspace init" upload — the workspace is present the '
-                   'moment the service starts and survives restarts (edit the files '
-                   'on disk to change it). One directory: it holds as many .vast '
-                   'files as you like, selected per campaign with --config-path, so '
-                   'pin the collection (e.g. a repo root) rather than each project. '
-                   'Requires the service to run on this host, so it is refused '
-                   'in-pod.')
-def serve(host, port, uds, backend, rebuild_ui,
-          results_dir, workspace_dir, mount_mcp):
-    """Make a robovast-service reachable on the local port until Ctrl-C.
+              help='Where campaigns this service runs land, on the serve host. Omitted, a '
+                   'service-owned directory beside the workspaces store is used.')
+def serve(host, port, uds, rebuild_ui, results_dir, mount_mcp):
+    """Run the robovast-service process: what the in-cluster Deployment starts.
 
-    This is the one command that puts a service on ``127.0.0.1:8800``; while it
-    runs, the ``vast`` CLI, the MCP server, and ``vast ui`` all work against it,
-    and campaigns survive client exit. The service serves the web UI at the same
-    URL — from a source checkout this (re)builds ``frontend/ui/dist`` first when it
-    is missing or stale (needs ``npm``; ``--rebuild-ui`` forces it). Ways it makes
-    the port live:
+    The service is the implementation ``robovast-cluster`` ships: it drives each
+    campaign against Kubernetes Jobs, and is what the ``robovast-service`` Deployment
+    runs. It reads which cluster from its own pod, and is refused outside one: the
+    campaigns' pods deliver their results back to this process, which they cannot do
+    across a developer's machine. A developer runs a service with ``vast cluster
+    setup minikube``; to debug the driver against a real cluster, run this command in
+    the cluster's network with the Service's traffic steered to it (``mirrord exec
+    --target deployment/robovast-service --steal -- vast serve``).
 
-    * **local** (default off-cluster) — runs the app in-process: local Docker +
-      local filesystem. Run it on your machine or a remote VM reached
-      over an SSH tunnel.
-    * **cluster** (in-pod only) — runs the app in-process, driving each campaign
-      against Kubernetes Jobs; this is what the in-cluster ``robovast-service``
-      Deployment runs. It reads which cluster from its own pod, and is refused
-      outside one: the campaigns' pods deliver their results back to this process,
-      which they cannot do across a developer's machine. To debug the driver against
-      a real cluster, run this command in the cluster's network with the Service's
-      traffic steered to it (``mirrord exec --target deployment/robovast-service
-      --steal -- vast serve --backend cluster``).
+    The service serves the web UI at the same URL — from a source checkout this
+    (re)builds ``frontend/ui/dist`` first when it is missing or stale (needs ``npm``;
+    ``--rebuild-ui`` forces it).
 
     Security: every request needs the shared token (``ROBOVAST_AUTH_TOKEN``). When
     none is configured one is generated at startup and printed as a login URL you
@@ -177,37 +137,22 @@ def serve(host, port, uds, backend, rebuild_ui,
     ensure_ui_built(rebuild=rebuild_ui)
 
     in_pod = bool(os.environ.get('KUBERNETES_SERVICE_HOST'))
-    if backend == 'auto':
-        backend = 'cluster' if in_pod else 'local'
-
-    # Pinning uses the directory in place, so it needs the service to run on the host
-    # that holds it, which rules out a pod: there is no such directory there.
-    if workspace_dir and in_pod:
-        raise click.ClickException(
-            "--workspace-dir pins a directory on the serve host, and a Kubernetes "
-            "pod has no such directory. Upload the project instead with "
-            "'vast workspace init <dir>'.")
 
     from robovast.service.serve_backends import resolve as resolve_backend
     try:
-        lane = resolve_backend(backend)
+        backend, provider = resolve_backend()
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    store = None
-    if backend == 'cluster':
-        from robovast.service.workspaces import WorkspaceStore
-        store = WorkspaceStore(workspace_dir=workspace_dir)
-    impl = lane.build(in_pod=in_pod,
-                      store=store, workspace_dir=workspace_dir,
-                      results_dir=os.path.abspath(results_dir) if results_dir else None)
-    storage = lane.storage
+    from robovast.service.workspaces import WorkspaceStore
+    store = WorkspaceStore()
+    impl = provider.build(in_pod=in_pod, store=store,
+                          results_dir=os.path.abspath(results_dir) if results_dir else None)
+    storage = provider.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
     click.echo(f"Starting robovast-service on {uds or f'http://{host}:{port}'} "
                f"(OpenAPI at /docs{mcp_note})")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
-    if workspace_dir:
-        click.echo(f"Pinned read-only workspace: {workspace_dir}")
     _serve(impl, host=host, port=port, mount_mcp=mount_mcp, uds=uds)
 
 

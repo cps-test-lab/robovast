@@ -163,9 +163,6 @@ def _resource_advisories(config_path):
     Deliberately NOT triggered when neither is declared: that is the unconstrained default
     a quick local run legitimately uses, and warning about it would be noise on every
     example in the repository.
-
-    Lane-agnostic, because a ``.vast`` does not carry a lane -- and the local lane has the
-    same gap from the other side, falling back to ``/proc/meminfo`` for the same reason.
     """
     raw, problem = _safe_load(config_path)
     if problem or not isinstance(raw, dict):
@@ -542,9 +539,9 @@ def _warn_escaping_inputs(inputs, vast_dir, field):
     An advisory, not a problem: composing from the project tree in place, such a path
     resolves fine, and a campaign deliberately reading a sibling checkout is a legitimate
     arrangement. But only the project directory is copied into a service workspace, so the
-    same ``.vast`` started from a workspace (as the cluster lane does) composes against a
-    path that is not there — a difference invisible until the lane changes, and one that
-    then reads as a lane fault rather than a config one.
+    same ``.vast`` started from a workspace (as the service does) composes against a
+    path that is not there — a difference invisible until then, and one that then reads
+    as a service fault rather than a config one.
     """
     vast_dir = os.path.abspath(vast_dir)
     for path in inputs or []:
@@ -556,7 +553,7 @@ def _warn_escaping_inputs(inputs, vast_dir, field):
         logger.warning(
             "%s: input %r resolves outside the project directory (%s). It composes from "
             "this tree in place, but only the project directory is copied into a service "
-            "workspace, so started from one (as the cluster lane does) this generator "
+            "workspace, so started from one (as the service does) this generator "
             "would not find it.", field, path, resolved)
 
 

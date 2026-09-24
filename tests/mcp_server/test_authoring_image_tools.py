@@ -4,7 +4,7 @@
 """Tests for ``describe_scenario`` and ``get_world_body_tree`` -- the usage-side
 counterparts to ``describe_world``, for a ``.osc`` file and a world's body hierarchy.
 
-Both reuse ``exec_in_container``'s lane-agnostic plumbing (not ``describe_world``'s own
+Both reuse ``exec_in_container``'s plumbing (not ``describe_world``'s own
 ``_make_container_runner`` path), and neither is cached -- their answer depends on the
 named file's own content, not just the image, the same as ``describe_world`` itself.
 """

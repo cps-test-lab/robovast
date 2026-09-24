@@ -202,7 +202,7 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
     to determine one yields ``""`` rather than an error.
 
     The run, exec and warm paths each carry this logic inline (``kubernetes_backend``,
-    ``kube_exec_lane``, ``image_warm``). They predate this helper and can move onto it; nothing
+    ``kube_exec_runner``, ``image_warm``). They predate this helper and can move onto it; nothing
     is gained by leaving a fifth copy for the next pod spec that needs one.
     """
     from .service_deploy import REGISTRY_PUSH_SECRET_NAME  # noqa: PLC0415
@@ -580,7 +580,7 @@ def pod_restarted_containers(pod) -> "tuple[str, str] | None":
 def pod_invalidating_restart(pod) -> "tuple[str, str] | None":
     """``(reason, message)`` if a restart of *pod* invalidated the trial, else ``None``.
 
-    The campaign lane's reading, and it turns on the exit code rather than on which
+    The reading for a campaign pod, and it turns on the exit code rather than on which
     container it was.
 
     A campaign pod runs ``restartPolicy: Never``, so its regular container and its one-shot
@@ -672,7 +672,7 @@ class PodLogTail:
     unique because kubelet stamps every line with a nanosecond timestamp.
 
     The tagging and appending live in :class:`robovast.common.log_tail.MergedLogBuffer`,
-    shared with the local lane so the same campaign reads the same either way. What is
+    so the live and the finished view of a job read the same. What is
     kube-specific — the ``since_seconds`` window, the anchor dedup, the re-anchor — is here.
     """
 
@@ -718,7 +718,7 @@ class PodLogTail:
 
         # Concurrently, because this runs every 0.5s per open panel and a three-container
         # job would otherwise cost three serial round-trips -- over a `kubectl
-        # port-forward` (a service driving the lane from off-cluster) that is enough to
+        # port-forward` (a service running off-cluster) that is enough to
         # make the panel visibly trail the run. The merge below sorts by timestamp, so
         # completion order does not affect the output.
         if len(names) > 1:

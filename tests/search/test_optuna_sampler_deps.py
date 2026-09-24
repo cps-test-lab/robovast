@@ -6,12 +6,11 @@
 
 optuna's ``CmaEsSampler`` constructs fine without the ``cmaes`` distribution and imports it
 lazily, inside ``sample_relative`` -- so the failure lands on the first ``ask``, which is
-after the campaign has started, staged its configs and taken a lane. What surfaces there is
-a bare ``No module named 'cmaes'`` from inside optuna's sampler, on a campaign that has
-produced nothing.
+after the campaign has started, staged its configs and scheduled its jobs. What surfaces
+there is a bare ``No module named 'cmaes'`` from inside optuna's sampler, on a campaign that
+has produced nothing.
 
-Declaring the dependency (the ``optuna`` extra now carries ``cmaes``) fixes it going
-forward. This check is what protects a deployment whose image predates that, and it turns a
+The ``optuna`` extra carries ``cmaes``; this check covers an image without it, and turns a
 spent campaign into a refusal naming the package and the sampler that needs it.
 """
 
@@ -47,7 +46,7 @@ def test_cmaes_without_its_package_is_refused_by_name(monkeypatch):
 
 
 def test_the_refusal_happens_at_build_not_on_the_first_ask(monkeypatch):
-    """The point of the check: before a campaign takes a lane, not after."""
+    """The point of the check: before a campaign schedules a job, not after."""
     import robovast.search.strategies.optuna as mod
 
     monkeypatch.setattr(mod, "_sampler_package_available", lambda name: False)

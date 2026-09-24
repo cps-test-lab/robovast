@@ -289,7 +289,7 @@ def test_v3_drops_the_removed_execution_keys():
 
 
 def test_v3_rescales_a_packed_timeout_into_a_job_budget():
-    """v2's ``timeout`` was per run and both lanes multiplied it up; v3's IS the job budget.
+    """v2's ``timeout`` was per run and the backend multiplied it up; v3's IS the job budget.
 
     So the campaign that asked for 100 runs at 600s a run was asking for a 60000s Job, and
     has to keep asking for it -- the number changes precisely so that what runs does not.

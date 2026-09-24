@@ -116,11 +116,11 @@ def test_a_refused_request_is_recorded_and_readable(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from robovast.service.app import build_app
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    app = build_app(LocalTransport(store=store), mount_mcp=False, auth_token="")
+    app = build_app(NullService(store=store), mount_mcp=False, auth_token="")
     client = TestClient(app)
 
     # The refusal this whole record exists for: retriggering something that cannot be.
@@ -142,12 +142,12 @@ def test_the_record_outlives_the_process_that_served_it(tmp_path):
     from fastapi.testclient import TestClient
 
     from robovast.service.app import build_app
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     def _client():
         store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-        return TestClient(build_app(LocalTransport(store=store), mount_mcp=False,
+        return TestClient(build_app(NullService(store=store), mount_mcp=False,
                                     auth_token=""))
 
     first = _client()
@@ -166,11 +166,11 @@ def test_a_successful_read_records_nothing(tmp_path):
     from fastapi.testclient import TestClient
 
     from robovast.service.app import build_app
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    client = TestClient(build_app(LocalTransport(store=store), mount_mcp=False, auth_token=""))
+    client = TestClient(build_app(NullService(store=store), mount_mcp=False, auth_token=""))
     client.get("/campaigns")
     assert client.get("/admin/events").json()["events"] == []
 
@@ -181,11 +181,11 @@ def _refusing_client(tmp_path, **kwargs):
     from starlette.testclient import TestClient
 
     from robovast.service.app import build_app
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    app = build_app(LocalTransport(store=store), mount_mcp=False, auth_token="")
+    app = build_app(NullService(store=store), mount_mcp=False, auth_token="")
     return TestClient(app, **kwargs)
 
 

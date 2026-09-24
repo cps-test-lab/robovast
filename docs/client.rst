@@ -67,8 +67,8 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
    * - ``vast service info|resources``
-     - Which service is answering, which code it runs and whether its lane has a queue to
-       order; whether the lane has room.
+     - Which service is answering, which code it runs and whether it has a queue to order;
+       whether the cluster has room.
    * - ``vast service cache [--clear]``
      - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
@@ -177,7 +177,7 @@ Then check it, and run it:
 ``validate`` prints each problem with its severity and exits non-zero unless every check it
 covers ran and passed — including the two that need a container: the world check, and parsing
 the scenario in the image that would run it (the only check that sees an ``import
-osc.<library>`` that image lacks). So a lane that cannot start one is reported as ``unchecked``
+osc.<library>`` that image lacks). So a service that cannot start one is reported as ``unchecked``
 rather than counted as a pass; ``--no-world-check`` / ``--no-scenario-check`` ask for the
 narrower verdict on the file alone.
 

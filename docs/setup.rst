@@ -39,19 +39,20 @@ after everything that depends on it is what makes the editable install the one t
 
 The others go in the order shown because each depends on ``robovast`` and never the reverse —
 which is what keeps the dependency graph acyclic. ``poetry install`` at the root will **not**
-give you the lanes: they are separate distributions built on this one, not extras of it.
+give you ``robovast-cluster``: it is a separate distribution built on this one, not an extra of it.
 
 ``pip install -e src/robovast_client`` alone is a complete, supported install — a ``vast`` that
 can log in, push workspaces, have the service build their images, wait for campaigns and fetch
 results, in 13 packages and about 30 MB. Every verb it offers only *drives* a service; nothing
 it can run needs a simulator, Docker or a kubeconfig.
 
-Adding ``pip install -e .`` gives you a service that can run **local Docker
-campaigns**, with no Kubernetes client anywhere in the environment. That is the point of the split,
-so declining the cluster package is a supported setup rather than a broken one: ``vast cluster`` simply
-lists ``local`` and not ``cluster``, and ``vast doctor`` reports ``cluster support: not installed``
-as a warning. Add ``robovast-cluster`` when you need the Kubernetes lane, and ``vast serve
---backend cluster`` starts working.
+Adding ``pip install -e .`` gives you the core: configuration and variation, results
+processing, the MCP server and the service's own code, with no Kubernetes client anywhere
+in the environment. It runs no campaign by itself — the service implementation is
+``robovast-cluster``, its own distribution, and a core without it says so when asked to
+serve. Declining it is a supported setup for everything that is not a service: ``vast
+doctor`` reports ``cluster support: not installed`` as a warning, and every verb that
+drives a service still works.
 
 This will install the ``vast`` command and all its plugins.
 
@@ -62,10 +63,10 @@ This will install the ``vast`` command and all its plugins.
    broken code rather than an incomplete environment.
 
 The web UI and the navigation panels are not built by ``pip``. For a source checkout,
-build them once with ``make frontend`` — ``vast serve`` then finds them there and picks up
-every rebuild. A wheel carries them instead: ``make build`` runs ``make ui-stage`` first,
-which copies the built assets into the package so an installed service has a UI. Without
-either, ``vast serve`` warns and serves the API alone.
+build them once with ``make frontend`` — a service started from the checkout then finds
+them there and picks up every rebuild. A wheel carries them instead: ``make build`` runs
+``make ui-stage`` first, which copies the built assets into the package so an installed
+service has a UI. Without either, the service warns and serves the API alone.
 
 The same set is on PyPI, for a machine that will not edit the code. The released wheels
 carry the frontend, and each name adds exactly what its editable counterpart above does:
@@ -73,8 +74,8 @@ carry the frontend, and each name adds exactly what its editable counterpart abo
 .. code-block:: bash
 
    pip install robovast-client              # drive a service: the CLI alone
-   pip install "robovast[nav,roqsim]"       # run one: the service and the local Docker lane
-   pip install robovast-cluster             # add the Kubernetes lane
+   pip install "robovast[nav,roqsim]"       # the core: config, results, the service's code
+   pip install robovast-cluster             # the service implementation: deploy and run it
 
 The ``vast`` command provides a unified interface to all RoboVAST functionality.
 
@@ -102,7 +103,7 @@ Dependencies
 Kubernetes
 ^^^^^^^^^^
 
-Local execution is possible, but RoboVAST's full capabilities—parallel, cluster-based run execution—require Kubernetes.
+Campaigns run on Kubernetes. A one-node cluster on your own machine (minikube, kind) is enough to evaluate and develop with; parallel execution needs more nodes.
 
 Either follow some Kubernetes Distribution Setup Instructions to set up your own cluster, e.g.
 
@@ -175,7 +176,7 @@ Everything above the host — making the GPU schedulable and requesting it per j
 Docker
 ^^^^^^
 
-RoboVAST uses Docker containers, e.g. for local run execution.
+Docker is needed on a development machine to build the container images, and by ``vast configuration generate`` when a variation composes in a helper image; a campaign's containers run in the cluster.
 
 Follow the instructions here: `Docker Installation Guide <https://docs.docker.com/engine/install/>`_ or this short summary:
 

@@ -1,18 +1,12 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""``vast campaign`` -- act on a campaign, whichever lane it runs on.
+"""``vast campaign`` -- act on a campaign.
 
-Every verb here goes through the **robovast-service**, which drives the campaign in
-process. That is why they are the client's: acting on a campaign is an HTTP verb and
-nothing else -- no kubeconfig, no Kubernetes client, no Docker.
-
-Not under ``vast exec cluster``, which would say something untrue about them.
-``CreateCampaignRequest.backend`` is vestigial -- "one service runs one lane, chosen by
-the serve command's --backend" -- so the lane belongs to the service and never to the
-verb: ``stop`` against a local service stops a local campaign, and a ``cluster`` in the
-path would name a choice the request cannot express. The campaign is what these act on,
-so the campaign is what names them.
+Every verb here goes through the **robovast-service**, which drives the campaign. That is
+why they are the client's: acting on a campaign is an HTTP verb and nothing else -- no
+kubeconfig, no Kubernetes client, no Docker. The campaign is what these act on, so the
+campaign is what names them.
 
 Starting one is not here. A campaign does not exist until it is created, so it cannot be
 the address; the project's location can -- ``vast workspace run WORKSPACE [VAST]``. What
@@ -35,8 +29,8 @@ from robovast.client.tail import tail_chunks
 def campaign():
     """Act on a campaign: list, watch, stop, read its log, re-run it.
 
-    Every verb drives the robovast-service, so these work the same whether the campaign
-    runs on a local Docker lane or in a cluster.
+    Every verb drives the robovast-service, so these work the same whichever
+    deployment runs the campaign.
 
     To *start* a campaign from a project, use ``vast workspace run``.
     """
@@ -184,8 +178,7 @@ def priority(value, campaign, namespace, context):
     has and gives up only the slots they release, so no partial run is produced and no results
     are lost. To end a campaign instead, use ``vast campaign stop``.
 
-    Needs a service whose lane queues campaigns against each other; the local Docker lane runs
-    one at a time and refuses.
+    Needs a service that queues campaigns against each other; one with no queue refuses.
     """
     _set_scheduling(campaign, namespace, context, priority=value, what="Re-queued")
 
@@ -387,9 +380,8 @@ def wait(campaign, interval, timeout, namespace, context):
     still running, but no longer being waited on), 5 (a running job's simulator reported
     something wrong -- likewise still running).
 
-    The lane-agnostic wait: the service drives every campaign, so its phase *is* the
-    campaign's whichever backend the runs execute on. Prints each phase change as it
-    happens and exits when the campaign reaches a terminal one — which now means past
+    The service drives every campaign, so its phase *is* the campaign's. Prints each
+    phase change as it happens and exits when the campaign reaches a terminal one — past
     postprocessing, not merely past the last run.
 
     Exists so a *caller* can wait without holding a request open, and is why the MCP
@@ -690,10 +682,9 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
 def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
     """(Re)run analysis postprocessing for CAMPAIGN.
 
-    The campaign is the address, and the service is the lane: the rosbag->CSV step runs
-    wherever that campaign's runs ran -- in-cluster for a cluster campaign -- and the
-    campaign's derived data is rebuilt. Mirrors the web "Retrigger postprocessing" action and the MCP
-    ``run_postprocessing`` tool, so all three drive one implementation.
+    The rosbag->CSV step runs in-cluster and the campaign's derived data is rebuilt.
+    Mirrors the web "Retrigger postprocessing" action and the MCP ``run_postprocessing``
+    tool, so all three drive one implementation.
 
     This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the
     same job in-process against a results directory on this machine. Two postprocessing

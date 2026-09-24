@@ -1,14 +1,9 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""GET /campaigns/{id}/archive — every lane serves it, and a caller cannot tell which did.
+"""GET /campaigns/{id}/archive -- the service streams a campaign as a tar.gz.
 
-A cluster service streams the postprocessed tar.gz out of the object store with no scratch; a
-local one tars its own results directory. That symmetry is the point: a local service
-answering 409 ("the results are already on this host") states something true of the *service*
-and useless to a browser, a colleague, or anyone importing the campaign somewhere else. So the
-interesting property to defend is that the two lanes agree — same
-exclusions, same streaming, same status codes — because a client that has to ask which backend
-it is talking to before it can offer a download is a client that will get it wrong.
+The archive is streamed rather than refused, has one top-level entry named for the campaign,
+and answers a missing campaign with 404.
 
 ``_postproc/`` is excluded alongside ``.cache``: it is postprocessing's staging area, not part
 of the campaign, and shipping it would make an archive's size depend on when it was taken.
@@ -22,29 +17,29 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 _CAMPAIGN = "camp-2026-01-01-000000"
 
 
-def _local_transport(tmp_path) -> LocalTransport:
-    """A real LocalTransport with its results root under *tmp_path*.
+def _null_service(tmp_path) -> NullService:
+    """A real NullService with its results root under *tmp_path*.
 
     Constructed rather than ``__new__``-ed: streaming an archive goes through the campaign-dir
     resolution the constructor's state backs, so a hand-stubbed object fails on bookkeeping
     instead of on the thing under test.
     """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 
 
 @pytest.fixture(name="env")
 def _env(monkeypatch, tmp_path):
-    transport = _local_transport(tmp_path)
+    transport = _null_service(tmp_path)
     root = tmp_path / "results" / _CAMPAIGN
     (root / "_config").mkdir(parents=True)
     (root / "_config" / "campaign.vast").write_text("configuration:\n  name: x\n",
@@ -66,13 +61,8 @@ def _members(payload: bytes) -> set:
         return set(tar.getnames())
 
 
-def test_a_local_service_streams_its_own_campaign(env):
-    """The local lane serves the archive instead of refusing it.
-
-    Answering 409 makes the campaign view hide its own download button behind a backend
-    check, and leaves an operator on a local service with no way to hand a campaign to
-    anybody without shell access to the host.
-    """
+def test_the_service_streams_a_campaign_from_its_results_root(env):
+    """The service serves the archive of a campaign in its results root; it does not refuse it."""
     resp = env.get(Routes.campaign_archive(_CAMPAIGN))
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-disposition"] == f'attachment; filename="{_CAMPAIGN}.tar.gz"'
@@ -92,7 +82,7 @@ def test_postprocessing_scratch_is_left_out(env):
 
 
 def test_an_unknown_campaign_is_a_404(env):
-    """A missing campaign is absent, not a conflict — the same answer either lane gives."""
+    """A missing campaign is absent, not a conflict."""
     resp = env.get(Routes.campaign_archive("nope-2026-01-01-000000"))
     assert resp.status_code == 404
 
@@ -104,7 +94,7 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     workspace: a service with no workspaces configured answers 501 for project routes, and an
     archive download must not be dragged into that.
     """
-    lt = LocalTransport.__new__(LocalTransport)
+    lt = object.__new__(NullService)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = None
@@ -130,7 +120,7 @@ def test_a_running_campaign_downloads_as_an_incomplete_snapshot(tmp_path, monkey
     """
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
 
-    transport = _local_transport(tmp_path)
+    transport = _null_service(tmp_path)
     root = tmp_path / "results" / _CAMPAIGN / "_config"
     root.mkdir(parents=True)
     (root / "campaign.vast").write_text("configuration:\n  name: x\n", encoding="utf-8")

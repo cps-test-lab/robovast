@@ -48,7 +48,14 @@ def main() -> int:
     source = campaigns[-1]
     print(f"source campaign: {source.name}")
 
-    report = retrigger.check(source, source.name)
+    # The images this run pushed are public, so the registry answers without a credential.
+    from robovast.execution.cluster_execution.registry_client import (manifest_build_lock,
+                                                                      manifest_labels)
+    from robovast.service.image_build import parse_build_manifest_files
+
+    report = retrigger.check(
+        source, source.name, image_labels=manifest_labels,
+        build_lock=lambda ref: parse_build_manifest_files(manifest_build_lock(ref)))
     _report_axes(report)
     if not report["runnable"]:
         print(f"ERROR: a campaign that just ran successfully reports as not re-runnable: "

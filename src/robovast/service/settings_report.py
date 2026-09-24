@@ -38,9 +38,10 @@ something added later.
 
 **Nothing here reaches into another distribution.** Defaults are imported from the constant
 the reading code already uses, never restated — but only where that constant is in this
-distribution. The cluster lane's settings live in ``robovast-cluster``, which a local install
-does not have, so they are described without a default rather than by an optional import that
-would silently report "no default" on exactly the deployment where they matter.
+distribution. The cluster settings live in ``robovast-cluster``, which an install of
+``robovast`` alone does not have, so they are described without a default rather than by
+an optional import that would silently report "no default" on exactly the deployment where
+they matter.
 """
 
 import os
@@ -85,9 +86,7 @@ class Sensitivity(Enum):
     #: not cross the client interface (``cluster_config.base_config.RegistryConfig``,
     #: ``VersionInfo.build_unavailable``). Set/not-set only.
     SERVER_ONLY = "server_only"
-    #: A path on the service's host. Shown only to a loopback caller — the same rule
-    #: ``/version`` applies to ``results_root`` / ``sources_root``, so the two admin
-    #: surfaces do not disagree about whether host paths are publishable.
+    #: A path on the service's host. Shown only to a loopback caller.
     HOST_PATH = "host_path"
     #: Process plumbing rather than configuration: how a container was invoked, what the
     #: build stamped in. Not reported at all — an operator did not set it and cannot.
@@ -112,7 +111,7 @@ class Known:
 
 
 _IMAGES = "Container images"
-_CLUSTER = "Cluster lane"
+_CLUSTER = "Cluster"
 _REGISTRY = "Experiment image registry"
 _SHARE = "Result share"
 _NOTIFY = "Notifications"
@@ -136,7 +135,7 @@ KNOWN: dict[str, Known] = {
         _IMAGES, "Tag the image family is pulled at; the default floats.",
         default=FLOATING_IMAGE_TAG),
 
-    # -- cluster lane ---------------------------------------------------------
+    # -- cluster --------------------------------------------------------------
     # No defaults: these are read in `robovast-cluster`, which this distribution does not
     # import. Stating a literal here would be the restatement this module exists to avoid.
     "ROBOVAST_NAMESPACE": Known(
@@ -253,9 +252,6 @@ KNOWN: dict[str, Known] = {
         _STORAGE, "Root holding workspace sources.", Sensitivity.HOST_PATH),
     "ROBOVAST_BUILDS_ROOT": Known(
         _STORAGE, "Root holding image build contexts.", Sensitivity.HOST_PATH),
-    "ROBOVAST_ARCHIVE_DIR": Known(
-        _STORAGE, "Where the local lane writes campaign archives with no external share.",
-        Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE": Known(
         _STORAGE, "Root of the shared generated-scene cache.", Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE_BYTES": Known(

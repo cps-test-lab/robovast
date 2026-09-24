@@ -11,7 +11,7 @@ metadata:
     that was already wrong. Nothing in RoboVAST's own examples configured a camera, so nothing
     caught it.
 
-    Run this before trusting a rendering campaign on a lane you have not rendered on. It answers in
+    Run this before trusting a rendering campaign on a cluster you have not rendered on. It answers in
     a couple of minutes what a real campaign answers in an hour, and it produces a file rather than
     an opinion: `coverage/report.json` is written by a probe that renders at `configure` time, so
     its presence means a GL context was created and drawn into.

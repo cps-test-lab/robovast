@@ -64,8 +64,8 @@ def test_a_folded_simulator_uses_the_campaign_image(tmp_path):
 
 
 def test_a_declared_tag_is_resolved_to_bytes(tmp_path):
-    """What rescues campaigns recorded before their lane wrote per-role digests: the frozen
-    .vast still names the image, and the lane turns that tag into bytes."""
+    """A campaign recorded without per-role digests resolves through the frozen .vast: it
+    still names the image, and ``resolve_digest`` turns that tag into bytes."""
     c = _campaign(tmp_path, meta={"image_revision": SCENARIO_DIGEST}, vast_execution=SEPARATE)
     seen = []
 
@@ -88,7 +88,7 @@ def test_the_recorded_images_map_is_preferred_over_the_snapshot(tmp_path):
 
 
 def test_a_tag_that_cannot_be_resolved_is_refused(tmp_path):
-    """A lane that cannot resolve (the cluster) must not fall back to something pullable-looking."""
+    """A resolver that cannot resolve must not fall back to something pullable-looking."""
     c = _campaign(tmp_path, meta={"image_revision": SCENARIO_DIGEST}, vast_execution=SEPARATE)
     with pytest.raises(RoleImageUnavailable):
         campaign_role_image(c, "simulation", resolve_digest=lambda _ref: None)
@@ -103,7 +103,7 @@ def test_a_recorded_non_digest_does_not_count(tmp_path):
 
 
 def test_a_bare_local_image_id_counts(tmp_path):
-    """The local lane records ``docker inspect``'s bare id: immutable, just not a registry digest."""
+    """A local record holds ``docker inspect``'s bare id: immutable, just not a registry digest."""
     c = _campaign(tmp_path, meta={"image_revisions": {"simulation": LOCAL_DIGEST}})
     assert campaign_role_image(c, "simulation") == LOCAL_DIGEST
 

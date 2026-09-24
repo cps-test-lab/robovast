@@ -244,7 +244,7 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
     def _refuse(**_kwargs):
         raise AuxContainerUnavailable("needs a container", next_step="start_campaign(...)")
 
-    monkeypatch.setattr(authoring, "_address_lane", lambda address: None)
+    monkeypatch.setattr(authoring, "_address_route", lambda address: None)
     monkeypatch.setattr("robovast.common.common.load_config", lambda p: {})
     monkeypatch.setattr("robovast.common.config_generation.generate_scenario_variations",
                         _refuse)
@@ -256,14 +256,13 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
 
 # -- the container tier: preview is a place a runner is arranged ----------------------
 
-def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
-    """The bug this closes: preview never entered the hook that provides the runner.
+def test_preview_composes_inside_the_service_s_aux_runner_context(monkeypatch, tmp_path):
+    """Preview enters the hook that provides the runner, held and keyed on the project.
 
-    The hook existed and the cluster lane overrode it, but only ``start_campaign`` entered
-    it -- so in a service pod, where there is no ``docker`` to fall back on, a sweep whose
-    variation needs a helper image was refused and the refusal blamed the ``.vast``.
+    A service pod has no ``docker`` to fall back on, so a sweep whose variation needs a helper
+    image is composable only inside that hook.
     """
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
 
     entered = []
 
@@ -272,8 +271,8 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
         entered.append((tag, hold))
         yield
 
-    monkeypatch.setattr(LocalTransport, "_aux_runner_context", _record)
-    monkeypatch.setattr(LocalTransport, "_resolve_project",
+    monkeypatch.setattr(NullService, "_aux_runner_context", _record)
+    monkeypatch.setattr(NullService, "_resolve_project",
                         lambda self, ws, path: SimpleNamespace(config_path=str(tmp_path / "x.vast")))
     monkeypatch.setattr("robovast.common.common.load_config", lambda p: {})
     monkeypatch.setattr(
@@ -281,8 +280,8 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
         lambda **_kw: {"configs": [], "execution": {"runs": 1},
                        "aux_containers": ["aux-builder"]})
 
-    response = LocalTransport.preview_configurations(
-        LocalTransport.__new__(LocalTransport), "ws-1", 1, "x.vast")
+    response = NullService.preview_configurations(
+        object.__new__(NullService), "ws-1", 1, "x.vast")
 
     (tag, hold) = entered[0]
     # Held, not span-scoped: this is the authoring loop, previewed over and over.
@@ -294,16 +293,15 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
     assert response.aux_containers == ["aux-builder"]
 
 
-def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
+def test_validation_composes_inside_the_service_s_aux_runner_context(monkeypatch, tmp_path):
     """Validation composes too, so it is a place a runner has to be arranged.
 
     It counts a sweep's cells by composing the file, which reaches whatever that composition
-    asks for a container -- so on a lane with no ``docker`` to fall back on, a project whose
-    world only the simulator can enumerate was reported invalid for a property of where the
-    check ran. It shares preview's tag: the two are the same authoring loop over the same
-    file, and one warm container serves both.
+    asks for a container, and a service pod has no ``docker`` to fall back on. It shares
+    preview's tag: the two are the same authoring loop over the same file, and one warm
+    container serves both.
     """
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
     from robovast.service.service_base import _preview_tag
 
     entered = []
@@ -313,14 +311,14 @@ def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, t
         entered.append((tag, hold))
         yield
 
-    monkeypatch.setattr(LocalTransport, "_aux_runner_context", _record)
-    monkeypatch.setattr(LocalTransport, "_resolve_project",
+    monkeypatch.setattr(NullService, "_aux_runner_context", _record)
+    monkeypatch.setattr(NullService, "_resolve_project",
                         lambda self, ws, path: SimpleNamespace(config_path=str(tmp_path / "x.vast")))
     monkeypatch.setattr("robovast.common.config_validation.validate_project_file",
                         lambda _path: {"valid": True, "problems": [], "configs": 1,
                                        "runs_per_config": 1, "total_trials": 1})
 
-    LocalTransport.validate_project(LocalTransport.__new__(LocalTransport), "ws-1", "x.vast",
+    NullService.validate_project(object.__new__(NullService), "ws-1", "x.vast",
                                     check_world=False)
 
     assert entered == [(_preview_tag("ws-1", "x.vast"), True)]
@@ -337,31 +335,22 @@ def test_the_preview_tag_is_stable_per_project_and_name_safe():
     assert re.fullmatch(r"[a-z0-9-]+", tag), tag
 
 
-def test_the_base_lane_leaves_the_docker_fallback_alone():
-    """A no-op locally is the whole local design: ``docker run --rm`` is already right."""
-    from robovast.service.local_transport import LocalTransport
-
-    with LocalTransport._aux_runner_context(
-            LocalTransport.__new__(LocalTransport), "t", None, hold=True) as arranged:
-        assert arranged is None
-
-
 def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
     """``_campaign_context`` delegating is the refactor; losing the runner is the risk."""
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
 
     seen = []
     monkeypatch.setattr(
-        LocalTransport, "_aux_runner_context",
+        NullService, "_aux_runner_context",
         lambda self, tag, project, *, hold=False, should_stop=None: (
             seen.append((tag, hold, should_stop)) or contextlib.nullcontext()))
     stop = object()
-    with LocalTransport._campaign_context(
-            LocalTransport.__new__(LocalTransport), "camp-7", None, should_stop=stop):
+    with NullService._campaign_context(
+            object.__new__(NullService), "camp-7", None, should_stop=stop):
         pass
     # The campaign's own id, and *not* held: its span owns the container, which is what
-    # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits a
-    # lane's span makes that are long enough for an operator to give up on.
+    # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits the
+    # span makes that are long enough for an operator to give up on.
     assert seen == [("camp-7", False, stop)]
 
 

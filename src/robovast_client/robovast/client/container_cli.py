@@ -70,8 +70,7 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
             result = client.exec_in_container(ExecRequest(
                 command=shell_command, workspace_id=workspace_id,
                 config_path=config_path, campaign_id=campaign_id,
-                config_name=config_name, keep_alive=keep_alive,
-                backend=None))
+                config_name=config_name, keep_alive=keep_alive))
     except Exception as e:  # noqa: BLE001 - handled uniformly as a CLI error
         handle_cli_exception(e)
         return

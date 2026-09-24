@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Deleting a campaign removes everything it owns on the service host, or says what it left.
 
-A campaign's bytes are not only its directory: the local lane writes each archive it shares
-beside the campaign dirs, and a failed import keeps the copy it fetched from the share. A
-delete that left those behind, or that swallowed a path it could not remove, would answer
-"deleted" while the space stayed taken.
+A campaign's bytes are not only its directory: a failed import keeps the copy it fetched from
+the share. A delete that left it behind, or that swallowed a path it could not remove, would
+answer "deleted" while the space stayed taken.
 """
 
 import os
@@ -25,10 +24,9 @@ class _NullIndexConn:
 
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch):
-    from robovast.service.local_transport import LocalTransport
+    from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
-    monkeypatch.delenv("ROBOVAST_ARCHIVE_DIR", raising=False)
     monkeypatch.setattr("robovast.results_processing.index_schema.forget_campaign",
                         lambda conn, cid: {})
     monkeypatch.setattr("robovast.common.index_db.connect",
@@ -37,40 +35,9 @@ def _env(tmp_path, monkeypatch):
     (results / CID / "cfg" / "0").mkdir(parents=True)
     (results / CID / "cfg" / "0" / "out.bag").write_bytes(b"x" * 16)
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: results        # noqa: SLF001
     return transport, results
-
-
-def test_the_local_archives_go_with_the_campaign(env):
-    transport, results = env
-    archives = results / "_archives"
-    archives.mkdir()
-    mine = [archives / f"{CID}.raw.tar.gz", archives / f"{CID}.postprocessed.tar.gz",
-            archives / f"{CID}.raw.tar.gz.part"]
-    other = archives / "other-2026-09-01-101500.raw.tar.gz"
-    for path in [*mine, other]:
-        path.write_bytes(b"a" * 8)
-
-    result = transport.delete_campaign(CID)
-
-    assert result.ok, result.message
-    assert "3 archive(s)" in result.message
-    assert not (results / CID).exists()
-    assert not any(p.exists() for p in mine)
-    assert other.exists(), "another campaign's archive is not this delete's to remove"
-
-
-def test_the_archive_dir_override_is_honoured(env, tmp_path, monkeypatch):
-    transport, _results = env
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.setenv("ROBOVAST_ARCHIVE_DIR", str(elsewhere))
-    archive = elsewhere / f"{CID}.raw.tar.gz"
-    archive.write_bytes(b"a")
-
-    assert transport.delete_campaign(CID).ok
-    assert not archive.exists()
 
 
 def test_a_share_copy_a_failed_import_kept_is_removed(env):
@@ -229,8 +196,8 @@ def test_the_single_delete_still_raises_where_the_batch_reports(env, monkeypatch
         transport.delete_campaign(CID)
 
 
-def test_the_cluster_lane_reaps_jobs_for_every_id_of_a_batch(env, monkeypatch):
-    """Its extra cleanup hangs off the removal both deletes share, not off the single one."""
+def test_the_cluster_service_reaps_jobs_for_every_id_of_a_batch(env, monkeypatch):
+    """ClusterService's job and secret cleanup runs for every id a batch delete removes."""
     from robovast.execution.cluster_execution import cluster_execution, pod_access
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     from robovast.service.interface import DeleteCampaignsRequest

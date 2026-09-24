@@ -14,14 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a campaign ``tar.gz`` from a local directory — as a file, or streamed.
+"""Stream a campaign ``tar.gz`` from a local directory.
 
-One place produces the campaign archive for both directions of "share":
-
-* :func:`make_campaign_tarball` writes ``<archive_dir>/<campaign>.tar.gz`` — the
-  local backend's upload-to-share deliverable (there is no external provider
-  locally, so the file *is* the artifact).
-* :func:`campaign_tar_stream` / :func:`iter_campaign_tar` produce the same archive
+* :func:`campaign_tar_stream` / :func:`iter_campaign_tar` produce the archive
   as an on-the-fly ``pigz`` stream with **no tar on disk** — used to push a
   campaign to an external share provider (upload-to-share, cluster) and to serve
   the ``/data/campaigns/{id}/archive`` download, both of which run against ~1TB
@@ -33,8 +28,8 @@ compress, so gzip there buys almost no size and costs a core per stream -- a sin
 ``gzip`` caps a transfer near 70 MB/s where the plain tar runs at disk speed, and on the
 pod side that core is taken from the scenario it belongs to.
 
-All of them read a **local directory** -- the campaign's home on every lane is the
-service's results tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
+All of them read a **local directory** -- the campaign's home is the service's results
+tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
 symlink members (``dereference=False``) and not recursed into, so the archive is
 navigable without duplicating ``_jobs/`` under every run.
 
@@ -80,7 +75,7 @@ def snapshot_marker(campaign_id: str, **facts) -> bytes:
     *facts* are whatever the caller knows about the moment of capture (run tallies, the
     phase). Kept open rather than typed: this file is read by a human deciding whether to
     trust the archive at least as often as by :mod:`~robovast.service.ingest`, and the
-    fields worth having differ per lane.
+    fields worth having differ per caller.
     """
     from datetime import datetime, timezone
     return json.dumps({
@@ -298,70 +293,6 @@ def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude, include=No
                 logger.debug("Skipping %s: it changed while the snapshot was taken",
                              entry.path)
                 continue
-
-
-def make_campaign_tarball(campaign_root: str, archive_dir: str,
-                          exclude=DEFAULT_EXCLUDE, name: "str | None" = None,
-                          on_member=None) -> str:
-    """Write the campaign at *campaign_root* into *archive_dir*; return its path.
-
-    *name* is the file name to write, defaulting to ``<campaign>.tar.gz``. The local
-    lane passes the variant-carrying name a share uses
-    (:func:`~robovast.execution.share_providers.naming.archive_name`) so its
-    ``_archives/`` dir and a real share are readable by the same parser.
-
-    Uses Python's built-in gzip (no ``pigz`` dependency) since this runs on the
-    local host where ``pigz`` may be absent; the stream variants use ``pigz`` on the
-    driver/service image where it is present.
-
-    **Written to a temporary name and renamed once complete**, so the archive's final
-    name never exists in a half-written state. Reading a truncated ``.tar.gz`` fails
-    late and confusingly -- the file lists in ``_archives/`` and is offered for download
-    like any other -- and this writer is interrupted by ordinary things: a cancelled
-    upload-to-share, a killed service, a full disk. The rename is atomic within the
-    directory, and the partial is removed on the way out of any failure.
-    """
-    campaign_root = os.path.normpath(str(campaign_root))
-    arcname = os.path.basename(campaign_root)
-    os.makedirs(archive_dir, exist_ok=True)
-    out_path = os.path.join(archive_dir, name or f"{arcname}.tar.gz")
-    part_path = f"{out_path}.part"
-    try:
-        with tarfile.open(part_path, "w:gz") as tar:
-            _add_campaign_tree(tar, campaign_root, exclude, on_member)
-        os.replace(part_path, out_path)
-    except BaseException:
-        # BaseException, not Exception: a KeyboardInterrupt through here would otherwise
-        # leave exactly the partial this exists to prevent, and Ctrl+C on ``vast serve``
-        # is one of the ways this write ends.
-        with contextlib.suppress(OSError):
-            os.unlink(part_path)
-        raise
-    logger.info("Wrote campaign archive %s", out_path)
-    return out_path
-
-
-def local_archive_dir(results_dir: str) -> str:
-    """Where the local lane writes a campaign's archives: ``$ROBOVAST_ARCHIVE_DIR``, or a
-    ``_archives/`` sibling of the campaign dirs under *results_dir*.
-
-    Outside every campaign dir so an archive cannot perturb postprocessing's hash-cache,
-    which also means deleting a campaign's dir does not delete its archives:
-    :func:`local_archive_files` is what finds them.
-    """
-    return os.environ.get("ROBOVAST_ARCHIVE_DIR") or os.path.join(results_dir, "_archives")
-
-
-def local_archive_files(results_dir: str, campaign_id: str) -> list:
-    """The files :func:`make_campaign_tarball` has left for *campaign_id* in the local
-    archive dir: every variant's archive, and the ``.part`` of a writer that was killed."""
-    from robovast.execution.share_providers.naming import VARIANTS, archive_name
-    archive_dir = local_archive_dir(results_dir)
-    found = []
-    for variant in VARIANTS:
-        path = os.path.join(archive_dir, archive_name(campaign_id, variant))
-        found.extend(p for p in (path, f"{path}.part") if os.path.isfile(p))
-    return found
 
 
 class _TarPipe:

@@ -215,7 +215,7 @@ class ToolCallLog:
                 if self._flushes % _PRUNE_EVERY == 0:
                     self._prune(conn)
         except IndexUnreachableError as exc:
-            # The lane may have no index at all; that is a supported way to run the
+            # The deployment may have no index at all; that is a supported way to run the
             # service, so this is not even a warning the first time.
             logger.debug("tool call log not written: %s", exc)
             return 0

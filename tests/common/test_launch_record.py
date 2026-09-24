@@ -24,7 +24,7 @@ def test_the_request_round_trips(tmp_path):
     request = CreateCampaignRequest(
         workspace_id="ws-abc", config_path="p.vast", config_filter="nav-open-space*",
         campaign_name="pilot", runs=1, postprocess=True, upload_to_share=False,
-        show_gui=False, description="ignored here")
+        description="ignored here")
     write_launch_record(tmp_path, request)
 
     record = read_launch_record(tmp_path)
@@ -131,7 +131,7 @@ def _request():
     return CreateCampaignRequest(
         workspace_id="ws-abc", config_path="p.vast", config_filter="goal-1",
         campaign_name="pilot", runs=1, postprocess=True, upload_to_share=False,
-        show_gui=False, description="")
+        description="")
 
 
 def test_a_container_the_campaign_did_not_build_reaches_the_record(tmp_path):
@@ -172,7 +172,7 @@ def test_a_campaign_with_no_launch_record_does_not_gain_a_bare_one(tmp_path):
 
 
 def test_recording_nothing_leaves_the_record_alone(tmp_path):
-    """A lane that resolved no images must not blank the ones already there."""
+    """A launch that resolved no images must not blank the ones already there."""
     write_launch_record(tmp_path, _request(), images={"sut": "reg.example.com/sut:abc"})
 
     update_launch_images(tmp_path, {})

@@ -89,7 +89,7 @@ def test_an_unreachable_short_revision_is_unknown_not_guessed(tmp_path):
 
 
 def test_a_local_image_id_is_refused_rather_than_promoted(tmp_path):
-    """The important image case. `docker inspect .Id` is what the local lane recorded, and it
+    """The important image case. `docker inspect .Id` is what a local record holds, and it
     cannot be pulled anywhere -- compose reads `sha256:<hex>` as `name:tag` and goes looking for
     docker.io/library/sha256. Presenting it as a digest would produce a re-run that fails at
     pull time for reasons nothing explains."""

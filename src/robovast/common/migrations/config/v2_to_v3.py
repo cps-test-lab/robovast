@@ -1,12 +1,10 @@
 """Config version 2 -> 3: ``execution.timeout`` becomes the job's budget, and
 ``execution.bt_log`` / ``execution.log_topics`` are gone.
 
-``timeout`` meant "one run", and both lanes multiplied it by ``runs_per_job`` to get the
-figure they could actually enforce. Neither lane can bound an individual run inside a
-packed job -- the cluster sets ``activeDeadlineSeconds`` on the Job, and the local lane
-wraps a whole compose step -- so the per-run figure was a unit nothing enforced,
-reconstructed by multiplication in two places. In v3 the declared number *is* the job's
-budget, which is why a v2 file has to be multiplied through here: a campaign that packed
+In v2 ``timeout`` meant "one run", multiplied by ``runs_per_job`` to get the figure that
+could actually be enforced: nothing can bound an individual run inside a packed job -- the
+cluster sets ``activeDeadlineSeconds`` on the whole Job. In v3 the declared number *is* the
+job's budget, which is why a v2 file has to be multiplied through here: a campaign that packed
 100 runs behind ``timeout: 600`` asked for 60000 seconds of Job, and must keep asking for
 it.
 

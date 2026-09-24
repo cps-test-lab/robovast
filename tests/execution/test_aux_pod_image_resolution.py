@@ -5,21 +5,8 @@
 """An aux container's ``family:`` image is resolved before it reaches a Pod.
 
 `family:<member>` is symbolic: core resolves it to `<project>/<member>:<tag>` once a campaign
-exists. The local lane does that when it builds the runner
-(``config_generation._make_container_runner``), so a family ref has always worked there. The
-cluster lane bakes the image into a Pod manifest instead, and passed it through unresolved --
-kubelet then read it as a Docker Hub library image:
-
-    failed to resolve reference "docker.io/library/family:robovast-roqsim":
-    pull access denied ... insufficient_scope
-
-which reads like a credentials problem rather than an unresolved reference, and cost 300 s of
-readiness timeout per attempt to say so.
-
-Latent until an aux image could be a family member at all: aux pods were only created for
-variations, and the ones in the wild name concrete refs. An `execution.generate` entry naming
-`family:robovast-roqsim` -- the whole point being that the deployment chooses the project -- is
-what first exercised it.
+exists. The aux Pod manifest bakes the image in, so an unresolved ref would reach kubelet, which
+reads it as a Docker Hub library image and fails with what looks like a credentials error.
 """
 
 import pathlib

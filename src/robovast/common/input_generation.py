@@ -56,8 +56,8 @@ and a cache hit is honoured only while every recorded output is still on disk un
 A generator that needs tooling this process does not have declares an auxiliary container
 via :meth:`BaseInputGenerator.get_required_container`, exactly as a variation plugin does
 (:meth:`robovast.common.variation.base_variation.Variation.get_required_container`) — the
-active backend satisfies it with an ephemeral ``docker run`` locally or a container in the
-campaign's auxiliary pod in-cluster. This is what keeps the *service's* environment out of the question: the
+active backend satisfies it with a container in the campaign's auxiliary pod, or an
+ephemeral ``docker run`` on a development machine. This is what keeps the *service's* environment out of the question: the
 generator runs where its tools are.
 """
 
@@ -114,8 +114,8 @@ class BaseInputGenerator:
         """Auxiliary container this generator needs, or ``None`` to run in-process.
 
         Return a :class:`~robovast.common.variation.container_runner.ContainerSpec`.
-        The declaration is backend-agnostic: locally an ephemeral ``docker run``,
-        in-cluster a container in the campaign's auxiliary pod.
+        The declaration is backend-agnostic: in-cluster a container in the campaign's
+        auxiliary pod, on a development machine an ephemeral ``docker run``.
 
         Args:
             parameters: The raw (unvalidated) parameter dict for this entry, so the

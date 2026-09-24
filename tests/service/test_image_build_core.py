@@ -391,8 +391,7 @@ def test_a_declared_name_is_matched_however_it_was_spelled():
 
 
 def test_without_a_spec_it_claims_nothing_about_the_package_list():
-    """The cluster lane passed no spec, so every message was a guess stated as fact.
-    With no spec the classifier may still report what pip said -- not where to fix it."""
+    """With no spec the classifier may still report what pip said -- not where to fix it."""
     err = classify_build_error(_TRANSITIVE)
     assert err.entry == "roqsim"
     assert "is not declared in build.python_packages" not in err.message
@@ -467,7 +466,7 @@ def test_dockerignore_lists_the_campaign_directories_found(tmp_path):
     assert set(render_dockerignore().splitlines()) <= set(patterns)
 
 
-def test_both_lanes_skip_the_same_campaign_directory(tmp_path):
+def test_the_staging_and_the_dockerignore_skip_the_same_campaign_directory(tmp_path):
     """The staging and the .dockerignore must agree, or the two builders see different trees."""
     from robovast.execution.cluster_execution.cluster_image_build import _copy_tree
 
@@ -494,7 +493,7 @@ def test_a_campaign_directory_does_not_change_the_build_hash(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The answers a lane must not phrase for itself
+# The not-built answers, phrased once for every caller
 # ---------------------------------------------------------------------------
 
 def _status(phase, **kw):
@@ -626,22 +625,6 @@ def test_rebuilt_base_changes_the_hash(tmp_path):
     before = build_hash(spec, tmp_path, "sha256:" + "a" * 64)
     after = build_hash(spec, tmp_path, "sha256:" + "b" * 64)
     assert before != after
-
-
-def test_base_identity_falls_back_to_the_ref(monkeypatch):
-    """No daemon, no verdict -- and the pre-refinement value rather than an exception.
-
-    `_base_identity` sits on the path to every build decision, cache hits included, so it must
-    not fail when docker is absent; the ref is then the honest answer and the behaviour is
-    exactly what it was before the identity refinement.
-    """
-    from robovast.service import image_store
-
-    monkeypatch.setattr(image_store, "local_image_id", lambda _image: "")
-    assert image_store.LocalDockerImageStore._base_identity(BASE) == BASE
-
-    monkeypatch.setattr(image_store, "local_image_id", lambda _image: "sha256:" + "c" * 64)
-    assert image_store.LocalDockerImageStore._base_identity(BASE) == "sha256:" + "c" * 64
 
 
 def test_the_walk_survives_a_symlink_loop(tmp_path):

@@ -175,7 +175,7 @@ def _wait_for_handover(client, before):
 @service.command('info')
 @target_options
 def info(namespace, context):
-    """Which service is answering, which code it runs, and which lane it drives.
+    """Which service is answering, which code it runs, and which backend it drives.
 
     Call this first when something behaves unexpectedly. A service loads robovast **once,
     at startup**, so after an edit a reachable service may still be running the old code;
@@ -206,9 +206,9 @@ def info(namespace, context):
         click.echo(f"  built     {version.built_at}")
     click.echo(f"  api       {version.api_version}")
     if version.backend:
-        click.echo(f"  lane      {version.backend}")
+        click.echo(f"  backend   {version.backend}")
     # Only when the service said: an older one has no verdict, and printing "none" for it
-    # would claim a lane without a queue that may well have one.
+    # would claim no queue for a service that may well have one.
     if version.can_schedule is not None:
         click.echo("  queue     " + ("priority and pause" if version.can_schedule
                                      else "none (one campaign at a time)"))
@@ -220,10 +220,9 @@ def info(namespace, context):
 @service.command('resources')
 @target_options
 def resources(namespace, context):
-    """Does this lane have room, and is it reachable?
+    """Does the cluster have room, and is it reachable?
 
-    Ask before a sweep. The numbers are backend-neutral: the local/cluster difference is
-    resolved inside the service, so the same fields mean the same thing either way.
+    Ask before a sweep.
 
     ``pending`` is work the backend has accepted but is not executing, which is why it is
     counted apart from usage rather than folded into it -- counting queued work as *used*
@@ -240,7 +239,7 @@ def resources(namespace, context):
     def _gib(value):
         return f"{value / (1024 ** 3):.1f} GiB"
 
-    click.echo(f"  lane      {usage.backend}"
+    click.echo(f"  backend   {usage.backend}"
                f" ({'parallel runs' if usage.parallel_runs else 'one run at a time'})")
     click.echo(f"  cpu       {usage.cpu_used:.1f} / {usage.cpu_capacity:.1f} cores")
     click.echo(f"  memory    {_gib(usage.memory_used_bytes)} /"

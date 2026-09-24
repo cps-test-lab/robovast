@@ -20,7 +20,7 @@ Most tools read a campaign through SQL (:mod:`robovast.mcp_server.data_access`) 
 an address for the caller to fetch. A few have to run a program over a file — ffmpeg decoding
 one frame of a recording — and a program takes a path, not an address. On a cluster campaign
 there is no path: the file is an object. Fetching the bytes and writing them into a temp dir
-is what lets such a reader work on either lane instead of only the local one.
+is what lets such a reader work against a service instead of only a disk.
 
 Deliberately small, and deliberately not a general download helper: every byte fetched here is
 a byte held in the service's memory on the way through, so this is for files a tool must

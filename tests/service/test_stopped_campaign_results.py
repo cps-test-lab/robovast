@@ -21,16 +21,16 @@ import yaml
 
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import STOP_RUNS, Phase
-from robovast.service.client import LocalTransport
 from robovast.service.interface import (CreateCampaignRequest, CreateWorkspaceRequest,
                                         WriteFileRequest)
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 
 @pytest.fixture(name="svc")
 def _svc(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullService(store=store)
     results = tmp_path / "results"
     results.mkdir()
     transport._campaigns_root = lambda: results
@@ -93,12 +93,12 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
                 entry.state.request_stop(STOP_RUNS)
         return {}, None
 
-    monkeypatch.setattr(LocalTransport, "_build_specs_for", _specs)
-    monkeypatch.setattr(LocalTransport, "_build_backend", lambda self, state: None)
+    monkeypatch.setattr(NullService, "_build_specs_for", _specs)
+    monkeypatch.setattr(NullService, "_build_backend", lambda self, state: None)
 
     done = []
     monkeypatch.setattr(
-        LocalTransport, "_postprocess",
+        NullService, "_postprocess",
         lambda self, cid, rd, state, entry, ends_at=Phase.FINISHED: done.append(ends_at))
 
     ref = svc.create_campaign(CreateCampaignRequest(
@@ -141,39 +141,30 @@ def test_a_shutting_down_service_does_not_start_it(svc, monkeypatch):
     """On Ctrl+C the storage tunnel dies with the process group -- the line
     ``_record_campaign_stopped`` already draws -- and work this process cannot finish is
     not worth starting."""
-    monkeypatch.setattr(LocalTransport, "_record_campaign_stopped",
+    monkeypatch.setattr(NullService, "_record_campaign_stopped",
                         lambda self, *a, **k: setattr(self, "_shutting_down", True))
     done, _ = _launch(svc, monkeypatch)
     assert done == []
 
 
-def test_an_ordinary_campaign_still_postprocesses_as_finished(svc, monkeypatch):
-    """The unstopped path is unchanged and takes the default ending phase."""
-    done, _ = _launch(svc, monkeypatch, stopped=False)
-    assert done == [Phase.FINISHED]
-
-
-def test_a_stop_between_batches_is_postprocessed_on_a_chaining_lane(svc, monkeypatch):
+def test_a_stop_between_batches_is_postprocessed_when_the_controller_chains_it(svc, monkeypatch):
     """A search stopped at a batch boundary returns cleanly -- and must not fall through.
 
     The loop treats such a stop as an ordinary stopping criterion (``stop_kind="external"``)
-    and ends without raising, so the ``CampaignStopped`` path never sees it. On a lane whose
-    controller normally chains the analysis, that chain skips itself whenever a stop was
-    requested -- so nothing at all would postprocess, and a search stopped between batches
-    would lose the analysis of every batch it completed.
+    and ends without raising, so the ``CampaignStopped`` path never sees it. Where the
+    controller chains the analysis, that chain skips itself whenever a stop was requested,
+    so the service postprocesses the batches the search completed.
 
     It ends ``finished``, which is not this branch's choice: by the loop's own account the
     campaign finished.
     """
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
     done, _ = _launch(svc, monkeypatch, stopped=False, request_stop=True)
     assert done == [Phase.FINISHED]
 
 
-def test_a_chaining_lane_does_not_double_postprocess_an_ordinary_campaign(svc, monkeypatch):
+def test_the_worker_does_not_double_postprocess_an_ordinary_campaign(svc, monkeypatch):
     """The counterpart: with no stop, the controller's chain owns it and the service must
-    keep its hands off, or every cluster campaign would postprocess twice."""
-    monkeypatch.setattr(LocalTransport, "_postprocess_in_process", lambda self: False)
+    keep its hands off, or every campaign would postprocess twice."""
     done, _ = _launch(svc, monkeypatch, stopped=False)
     assert done == []
 
@@ -181,7 +172,8 @@ def test_a_chaining_lane_does_not_double_postprocess_an_ordinary_campaign(svc, m
 def test_shutdown_marks_the_service_before_it_tears_anything_down(tmp_path, monkeypatch):
     """The flag has to be set first, or a worker reaching its tail during the teardown
     starts the very work the flag exists to prevent."""
-    lt = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
+    lt = NullService(store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "w")),
+                     results_dir=str(tmp_path / "r"))
     seen = []
     monkeypatch.setattr(type(lt), "_shutdown_running_campaigns", lambda self, running: None)
     monkeypatch.setattr(type(lt), "_is_done",
@@ -288,7 +280,7 @@ def test_a_campaign_stopped_before_any_run_gets_no_postprocessing(svc, monkeypat
     """The batch began but the stop landed before any run existed -- jobs still queued.
 
     The owed pass reads run directories and nothing else, so it would derive nothing; on the
-    cluster lane it is a Job of its own, a pod scheduled to read an empty campaign. The
+    cluster it is a Job of its own, a pod scheduled to read an empty campaign. The
     campaign still ends ``stopped`` and says so.
     """
     done, status = _launch(svc, monkeypatch, ran=False)

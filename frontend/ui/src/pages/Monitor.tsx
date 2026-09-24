@@ -273,8 +273,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   //
   // A campaign at rest has no live jobs to list, so the query carries an `enabled` gate: without
   // one every card issues the request anyway, and a page of a hundred finished campaigns fires a
-  // hundred `listJobs` calls before the first status reply can turn polling off. On the
-  // cluster lane each of those is a Kubernetes API call, and they all leave at once — the page
+  // hundred `listJobs` calls before the first status reply can turn polling off. Each of
+  // those is a Kubernetes API call, and they all leave at once — the page
   // is served over HTTP/2, so nothing throttles the burst the way a connection limit would.
   // Nothing is lost by skipping them: this view is `liveOnly`, so it already hides the
   // completed jobs such a listing would return.
@@ -287,8 +287,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const jobs = useQuery({
     queryKey: ['jobs', id],
     queryFn: () => robovast.listJobs(id),
-    // `active` for the reason the status above carries it, and with more at stake: on the
-    // cluster lane this is a Kubernetes API call per live campaign every two seconds, and it
+    // `active` for the reason the status above carries it, and with more at stake: in the
+    // cluster this is a Kubernetes API call per live campaign every two seconds, and it
     // was being made for a page nobody was looking at.
     enabled: active && !bornAtRest,
     refetchInterval: () => (terminal ? false : 2000),
@@ -366,7 +366,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     mutationFn: (opts: { priority?: number; paused?: boolean }) =>
       robovast.setScheduling(id, opts),
     // A warning rather than an error, as for stopJob: the expected refusal here is a service
-    // whose lane has no queue, and its message says so in full.
+    // with no queue, and its message says so in full.
     onError: (e: unknown) => notify({
       severity: 'warning', key: `sched:${id}`, message: 'Could not change the queue order.',
       note: (e as Error).message,
@@ -648,7 +648,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     : [postprocError ? 'postprocessing' : '', shareError ? 'upload to share' : ''].filter(Boolean)
   const stepIssue = failedSteps.length ? `${failedSteps.join(' + ')} failed` : null
 
-  // Every lane serves the archive: the service tars the campaign's results directory
+  // The service serves the archive: it tars the campaign's results directory
   // (`campaign_tar_stream` is on the interface) and does not wait on postprocessing. So
   // nothing gates the download:
   // a running campaign is offered as a SNAPSHOT -- what has been written so far, named
@@ -686,7 +686,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     null,
   )
 
-  // Lane capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
+  // Cluster capacity, for the Details panel's "jobs in flight" estimate. Same query key as the
   // sidebar's connection meter, so every card on the page and the sidebar share one poll
   // rather than each issuing its own.
   const usage = useQuery({
@@ -845,7 +845,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
         ) : null,
   ].filter(Boolean)
 
-  // Whether this service's lane has a queue to order. Shared with the admin page's reading by
+  // Whether this service has a queue to order. Shared with the admin page's reading by
   // key, and asked only for a running card, the only one that offers the entries it gates.
   const serviceVersion = useQuery({
     queryKey: ['version'],
@@ -856,8 +856,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
 
   // Only while it runs, and the mirror image of `actItems`: these change what the campaign
   // does NEXT without touching what it has produced, which is what makes them safe on a live
-  // campaign. A finished campaign has no standing with the queue to set, and a lane that runs
-  // one campaign at a time has no queue at all (`can_schedule`).
+  // campaign. A finished campaign has no standing with the queue to set, and a service
+  // without a queue says so (`can_schedule`).
   const queueItems = running && offersQueueControls(serviceVersion.data)
     ? [
         <MenuItem key="priority" onClick={onSetPriority} disabled={setScheduling.isPending}>
@@ -1296,7 +1296,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
             </Menu>
           </>
         ) : null}
-        {/* Last, and offered on every card: a running campaign can be folded away too — a lane
+        {/* Last, and offered on every card: a running campaign can be folded away too — a cluster
             running six of them is six full cards, and the one being watched is usually one of
             them. Only the DEFAULT differs (see `collapsed`). This is also the keyboard and
             screen-reader control for the fold; the row-wide click target above is the mouse

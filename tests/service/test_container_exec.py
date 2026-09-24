@@ -13,7 +13,7 @@ Two things these guard that are easy to lose:
   not kill a running scenario, and replacing a container that is running something must
   be refused rather than inferred from a changed argument.
 
-The lane is faked here (a real one needs Docker); ``tests/service`` stays hermetic.
+The runner is faked here (a real one needs a cluster); ``tests/service`` stays hermetic.
 """
 
 import os
@@ -27,10 +27,10 @@ from robovast.service.interface import ExecRequest
 VAST = "configs/examples/ros2_basic/ros2_service.vast"
 
 
-class FakeLane:
-    """Records what a lane was asked to do, and can pretend to be busy.
+class FakeRunner:
+    """Records what a runner was asked to do, and can pretend to be busy.
 
-    Slot-aware, because the lane is: ``alive`` and ``busy`` stay scalars meaning *the user
+    Slot-aware, because the runner is: ``alive`` and ``busy`` stay scalars meaning *the user
     slot*, which is what almost every test is about, while ``live`` carries every slot so a
     test can assert that one slot's teardown left another alone.
     """
@@ -130,7 +130,7 @@ def test_a_scenario_uses_the_projects_own_timeout():
 
 
 def test_an_absent_timeout_is_reported_as_a_default_not_silently_borrowed():
-    # Never the cluster campaign lane's 1-hour fallback: an hour of life for a
+    # Never a cluster campaign's 1-hour fallback: an hour of life for a
     # diagnostic container is a leak. Reporting "default" is what tells the caller the
     # remedy is to set execution.timeout.
     limit, source = ce.derive_limit({"execution": {}}, "")
@@ -173,17 +173,7 @@ def test_no_virtual_display_is_started():
     assert ce.build_env({}, {}, staged_config=True)["ENABLE_X11"] == "false"
 
 
-def test_a_windowed_exec_uses_the_hosts_display_not_a_virtual_one(monkeypatch):
-    # Xvfb stays off with gui too, and that is the point rather than an oversight: the
-    # container draws on the host's X server through the socket the lane mounts, and a
-    # virtual framebuffer would shadow exactly that.
-    monkeypatch.setenv("DISPLAY", ":7")
-    env = ce.build_env({}, {}, staged_config=True, gui=True)
-    assert env["ENABLE_X11"] == "false"
-    assert env["DISPLAY"] == ":7"
-
-
-def test_without_gui_no_display_is_handed_to_the_container(monkeypatch):
+def test_no_display_is_handed_to_the_container(monkeypatch):
     monkeypatch.setenv("DISPLAY", ":7")
     assert "DISPLAY" not in ce.build_env({}, {}, staged_config=True)
 
@@ -206,137 +196,72 @@ def test_an_empty_command_runs_the_scenario_by_giving_the_entrypoint_no_argv():
     assert spec.runs_scenario
 
 
-# -- the Docker lane's argv (no daemon needed to check its shape) -------------
+def test_a_detached_scenario_that_dies_immediately_is_reported_as_a_failure():
+    """Starting is not the same as running, and the difference must not be silent."""
+    script = _spec(command="").detached_start_script()
+    # It checks the child is still alive, and surfaces the log when it is not.
+    assert 'kill -0 "$pid"' in script
+    assert "exited immediately" in script
+    assert "tail -20" in script
+    assert "exit 1" in script
 
 
 def test_the_entrypoint_is_always_invoked_through_bash():
-    """The staged ``entrypoint.sh`` is written 0644, so it must not be run directly.
-
-    This was a real silent failure: the detached form started
-    ``setsid nohup /config/entrypoint.sh``, which died on the missing exec bit *after*
-    the exec had already returned 0 — so a scenario that never ran reported as started,
-    and the only symptom was an ``OUTPUT_DIR`` with no results in it.
-    """
-    from robovast.service.docker_exec_lane import DockerExecLane
-    lane = DockerExecLane()
-    captured = []
-
-    def fake_capture(cmd, limit_s):
-        captured.append(cmd)
-        return (0, "", "", False)
-
-    import robovast.service.docker_exec_lane as mod
-    original, mod._capture = mod._capture, fake_capture
-    try:
-        lane.exec_in_held(_spec(command="ls"), 300, detach=False)
-        foreground = captured[-1]
-        assert "/bin/bash" in foreground
-        assert foreground.index("/bin/bash") < foreground.index("/config/entrypoint.sh")
-
-        lane.exec_in_held(_spec(command=""), 300, detach=True)
-        script = captured[-1][-1]
-        assert "setsid nohup /bin/bash /config/entrypoint.sh" in script
-    finally:
-        mod._capture = original
+    """The staged ``entrypoint.sh`` is written 0644, so it must not be run directly: a
+    detached start of ``/config/entrypoint.sh`` itself dies on the missing exec bit after
+    the exec has returned 0, so a scenario that never ran reports as started."""
+    spec = _spec(command="")
+    assert "/bin/bash /config/entrypoint.sh" in spec.detached_start_script()
+    foreground = _spec(command="ls").foreground_argv()
+    assert "/bin/bash" in foreground
+    assert foreground.index("/bin/bash") < foreground.index("/config/entrypoint.sh")
 
 
-def test_a_detached_scenario_that_dies_immediately_is_reported_as_a_failure():
-    """Starting is not the same as running, and the difference must not be silent."""
-    import robovast.service.docker_exec_lane as mod
-    from robovast.service.docker_exec_lane import DockerExecLane
-    captured = []
-
-    def fake_capture(cmd, limit_s):
-        captured.append(cmd)
-        return (0, "", "", False)
-
-    original, mod._capture = mod._capture, fake_capture
-    try:
-        DockerExecLane().exec_in_held(_spec(command=""), 300, detach=True)
-        script = captured[-1][-1]
-        # It checks the child is still alive, and surfaces the log when it is not.
-        assert 'kill -0 "$pid"' in script
-        assert "exited immediately" in script
-        assert "tail -20" in script
-        assert "exit 1" in script
-    finally:
-        mod._capture = original
-
-
-def test_both_lanes_start_a_detached_scenario_the_same_way():
-    """The duplication this removes is what let a fix reach only one lane.
-
-    Each lane had its own copy of the background-start shell, so the liveness check that
-    turned "silently never started" into a reported failure existed locally and was
-    missing in-cluster.
-    """
+def test_the_runner_starts_a_detached_scenario_from_the_shared_script():
+    """The start shell is assembled once, on the spec, so a fix to the liveness check
+    reaches the runner rather than a copy of it."""
     import inspect
 
-    from robovast.execution.cluster_execution.kube_exec_lane import KubeExecLane
-    from robovast.service.docker_exec_lane import DockerExecLane
-    for lane in (DockerExecLane, KubeExecLane):
-        source = inspect.getsource(lane.exec_in_held)
-        assert "detached_start_script()" in source, f"{lane.__name__} rolls its own"
-        assert "foreground_argv()" in source
-        # ``nohup``/``mkdir -p`` only appear where the shell is actually assembled, so
-        # this catches a reintroduced copy without tripping over prose about it.
-        for built_inline in ("nohup", "mkdir -p", "kill -0"):
-            assert built_inline not in source, \
-                f"{lane.__name__} builds the start script inline again ({built_inline})"
-
-
-def test_the_config_mount_is_read_only_and_at_one_path():
-    from robovast.service.docker_exec_lane import DockerExecLane
-    spec = _spec()
-    spec.config_dir = "/host/staging/config"
-    spec.workspace_dir, spec.workspace_id = "/host/ws", "ws1"
-    args = DockerExecLane()._common_run_args(spec)
-    joined = " ".join(args)
-    assert "-v /host/staging/config:/config:ro" in joined
-    # The workspace lands at its own file address, so a path from write_file works
-    # verbatim inside the container — and read-only, since inputs are not a
-    # diagnostic's to rewrite.
-    assert "-v /host/ws:/sources/ws1:ro" in joined
-    assert ":/out" not in joined, "a diagnostic must never mount the results dir"
-
-
-def test_no_workspace_mount_when_the_source_is_a_campaign():
-    from robovast.service.docker_exec_lane import DockerExecLane
-    spec = _spec()
-    spec.config_dir = "/host/staging/config"
-    joined = " ".join(DockerExecLane()._common_run_args(spec))
-    assert "/sources/" not in joined
+    from robovast.execution.cluster_execution.kube_exec_runner import KubeExecRunner
+    source = inspect.getsource(KubeExecRunner.exec_in_held)
+    assert "detached_start_script()" in source, "the runner rolls its own"
+    assert "foreground_argv()" in source
+    # ``nohup``/``mkdir -p`` only appear where the shell is actually assembled, so
+    # this catches a reintroduced copy without tripping over prose about it.
+    for built_inline in ("nohup", "mkdir -p", "kill -0"):
+        assert built_inline not in source, \
+            f"the runner builds the start script inline again ({built_inline})"
 
 
 # -- lifetime: at most one container ----------------------------------------
 
 
 def test_a_one_shot_leaves_nothing_behind():
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=False, identity=("a",))
     assert mgr.state() is None
-    assert not lane.alive
+    assert not runner.alive
 
 
 def test_a_one_shot_first_discards_a_held_container():
     # Otherwise "one-shot" would quietly inherit whatever the held container was left in.
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     mgr.run(_spec(), 300, keep_alive=False, identity=("a",))
     assert mgr.state() is None
-    assert not lane.alive
+    assert not runner.alive
 
 
 def test_the_same_source_reuses_the_container():
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     assert mgr.state().reused is False
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     assert mgr.state().reused is True
-    assert len(lane.starts) == 1
+    assert len(runner.starts) == 1
 
 
 def test_fresh_replaces_a_container_the_same_source_would_have_reused():
@@ -348,13 +273,13 @@ def test_fresh_replaces_a_container_the_same_source_would_have_reused():
     and uselessly. Creating a container is what fetches the image, so `fresh` asks for
     exactly that and nothing else.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",), fresh=True)
 
     assert mgr.state().reused is False, "a replaced container is not a reused one"
-    assert len(lane.starts) == 2
+    assert len(runner.starts) == 2
 
 
 def test_fresh_is_not_part_of_the_identity():
@@ -364,13 +289,13 @@ def test_fresh_is_not_part_of_the_identity():
     unreachable by every ordinary call after it -- so each check would strand a
     container, and the next plain call would build a third.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",), fresh=True)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
 
     assert mgr.state().reused is True, "the container a fresh call made is reusable"
-    assert len(lane.starts) == 1
+    assert len(runner.starts) == 1
 
 
 def test_fresh_replaces_a_query_pool_container_too():
@@ -380,50 +305,50 @@ def test_fresh_replaces_a_query_pool_container_too():
     it the wrong instrument for asking whether the image moved, unless it can be told
     to start over.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True)
-    starts_after_first = len(lane.starts)
+    starts_after_first = len(runner.starts)
     mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True)
-    assert len(lane.starts) == starts_after_first, "a repeated query reuses the pool"
+    assert len(runner.starts) == starts_after_first, "a repeated query reuses the pool"
 
     mgr.run(_spec(), 300, keep_alive=False, identity=("a",), query=True, fresh=True)
-    assert len(lane.starts) == starts_after_first + 1
+    assert len(runner.starts) == starts_after_first + 1
 
 
 def test_a_different_source_replaces_an_idle_container_and_says_so():
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     mgr.run(_spec(), 300, keep_alive=True, identity=("b",))
     assert mgr.state().reused is False
-    assert len(lane.starts) == 2
+    assert len(runner.starts) == 2
 
 
 def test_a_different_source_is_refused_while_something_is_still_running():
     # Replacing would kill a scenario the caller deliberately started — a destructive
     # act inferred from a changed argument rather than asked for.
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
-    lane.busy = True
+    runner.busy = True
     with pytest.raises(ValueError, match="stop_container"):
         mgr.run(_spec(), 300, keep_alive=True, identity=("b",))
-    assert len(lane.starts) == 1, "the live container must not have been replaced"
+    assert len(runner.starts) == 1, "the live container must not have been replaced"
 
 
 def test_a_scenario_is_detached_but_a_command_is_not():
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(command=""), 300, keep_alive=True, identity=("a",))
-    assert lane.execs[-1][2] is True
+    assert runner.execs[-1][2] is True
     mgr.run(_spec(command="ls"), 300, keep_alive=True, identity=("a",))
-    assert lane.execs[-1][2] is False
+    assert runner.execs[-1][2] is False
 
 
 def test_stopping_reports_truthfully_and_is_idempotent():
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     assert mgr.stop().stopped is True
     # "there was nothing to stop" is an empty result, not a failure.
@@ -433,9 +358,9 @@ def test_stopping_reports_truthfully_and_is_idempotent():
 def test_a_stray_container_is_stopped_even_without_a_record():
     # A container can outlive the record (a service restart); reaping it by name is why
     # the name is fixed.
-    lane = FakeLane()
-    lane.alive = True
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    runner.alive = True
+    mgr = ce.ContainerExecManager(runner)
     assert mgr.stop().stopped is True
 
 
@@ -447,25 +372,24 @@ def test_a_slot_whose_container_died_is_not_reused():
     a record behind that still says it is held. Trusting the record sends the next command
     into a corpse, and the exec that fails there reports that nothing on this deployment
     can exec at all -- a verdict about the cluster drawn from one dead pod."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
-    assert len(lane.starts) == 1
+    assert len(runner.starts) == 1
 
-    lane.alive = False                      # its deadline killed it; the record remains
+    runner.alive = False                      # its deadline killed it; the record remains
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
 
-    assert len(lane.starts) == 2, "a dead container was reused instead of replaced"
+    assert len(runner.starts) == 2, "a dead container was reused instead of replaced"
 
 
 def test_the_reaper_drops_a_slot_whose_container_is_gone():
-    """The other half: nothing else notices. The reaper's two clocks both assume the
-    container is there, so a slot that died on its own stayed in the map -- and its stopped
-    container stayed on the lane -- until the service restarted."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    """A slot whose container died on its own is dropped by the reaper; nothing else
+    notices it."""
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
-    lane.alive = False
+    runner.alive = False
 
     deadline = time.monotonic() + 5
     while mgr.state() is not None and time.monotonic() < deadline:
@@ -479,28 +403,28 @@ def test_a_probe_that_cannot_answer_replaces_rather_than_reuses():
     reusing one that has died sends the next command into a corpse and reports that as the
     deployment being unable to exec."""
 
-    class Unanswerable(FakeLane):
+    class Unanswerable(FakeRunner):
         def held_container_alive(self, slot=ce.SLOT_USER):
-            raise RuntimeError("the lane could not be asked")
+            raise RuntimeError("the runner could not be asked")
 
-    lane = Unanswerable()
-    mgr = ce.ContainerExecManager(lane)
+    runner = Unanswerable()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
-    assert len(lane.starts) == 2, "an unconfirmable container was reused"
+    assert len(runner.starts) == 2, "an unconfirmable container was reused"
 
 
 def test_a_probe_that_cannot_answer_does_not_reap_a_live_container():
     """Unanswerable reads as alive, for the same reason an unanswerable busyness probe
-    reads as busy: this decides whether to tear a container down, and a lane that cannot
+    reads as busy: this decides whether to tear a container down, and a runner that cannot
     answer is not evidence that there is nothing there."""
 
-    class Unanswerable(FakeLane):
+    class Unanswerable(FakeRunner):
         def held_container_alive(self, slot=ce.SLOT_USER):
-            raise RuntimeError("the lane could not be asked")
+            raise RuntimeError("the runner could not be asked")
 
-    lane = Unanswerable()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = Unanswerable()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     time.sleep(0.3)
     assert mgr.state() is not None, "a live container was reaped on a failed probe"
@@ -511,23 +435,23 @@ def test_a_probe_that_cannot_answer_does_not_reap_a_live_container():
 
 def test_an_idle_container_is_reaped(monkeypatch):
     monkeypatch.setattr(ce, "IDLE_REAP_S", 0.2)
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     deadline = time.monotonic() + 5
     while mgr.state() is not None and time.monotonic() < deadline:
         time.sleep(0.05)
     assert mgr.state() is None
-    assert not lane.alive
+    assert not runner.alive
 
 
 def test_a_running_workload_is_not_idle_reaped(monkeypatch):
     # The bug this prevents: a scenario is running while the exec surface looks idle,
     # so an idle clock that ignored live processes would kill the work it was started for.
     monkeypatch.setattr(ce, "IDLE_REAP_S", 0.2)
-    lane = FakeLane()
-    lane.busy = True
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    runner.busy = True
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     time.sleep(0.6)
     assert mgr.state() is not None
@@ -535,9 +459,9 @@ def test_a_running_workload_is_not_idle_reaped(monkeypatch):
 
 
 def test_the_hard_deadline_fires_even_with_a_running_workload():
-    lane = FakeLane()
-    lane.busy = True
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    runner.busy = True
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     mgr._held[ce.SLOT_USER]["deadline"] = time.monotonic() + 0.1
     deadline = time.monotonic() + 5
@@ -547,12 +471,12 @@ def test_the_hard_deadline_fires_even_with_a_running_workload():
 
 
 def test_an_unanswerable_probe_counts_as_busy_rather_than_reaping_a_live_run():
-    class Unreachable(FakeLane):
+    class Unreachable(FakeRunner):
         def held_workload_running(self, slot=ce.SLOT_USER):
             raise RuntimeError("docker unreachable")
 
-    lane = Unreachable()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = Unreachable()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("a",))
     assert mgr.state().idle_expires_in_s is None
 
@@ -605,7 +529,7 @@ def test_an_unknown_config_name_is_refused_with_the_available_names():
         _staged("no-such-config", "ls")
 
 
-def test_the_entrypoint_is_rendered_for_the_lane_it_will_run_on():
+def test_the_entrypoint_is_rendered_for_where_it_will_run():
     # A cluster campaign's entrypoint carries cluster init and S3-mirroring post-run
     # logic; running that locally would be wrong. This is why a campaign's own staged
     # entrypoint is never reused, only its config.
@@ -616,7 +540,7 @@ def test_the_entrypoint_is_rendered_for_the_lane_it_will_run_on():
         cluster_text = open(os.path.join(cluster.config_dir, "entrypoint.sh")).read()
         assert local_text != cluster_text
         assert "@@" not in local_text and "@@" not in cluster_text
-        assert "fixuid" in local_text, "the local lane's init block is missing"
+        assert "fixuid" in local_text, "the non-cluster init block is missing"
     finally:
         local.close()
         cluster.close()
@@ -639,8 +563,8 @@ def test_a_scenario_run_reports_where_its_output_went():
 def test_staging_is_cleaned_up_and_survives_a_held_container():
     spec, _data, _limit, _src = _staged("minimal", "ls")
     staging = spec._staging_dir
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner)
     mgr.run(spec, 300, keep_alive=True, identity=("a",))
     # Still mounted as /config while the container is held.
     assert os.path.isdir(staging)
@@ -667,7 +591,7 @@ def test_a_result_names_the_image_it_ran_even_without_a_held_container():
 def test_a_one_shot_cleans_up_its_own_staging():
     spec, _data, _limit, _src = _staged("minimal", "ls")
     staging = spec._staging_dir
-    ce.ContainerExecManager(FakeLane()).run(spec, 300, keep_alive=False, identity=("a",))
+    ce.ContainerExecManager(FakeRunner()).run(spec, 300, keep_alive=False, identity=("a",))
     assert not os.path.exists(staging)
 
 
@@ -697,14 +621,14 @@ def test_a_one_shot_does_not_touch_a_held_query_container():
     one-shot never inherits state. Before slots it stopped the *only* container, so a
     plain exec threw away a query container that had cost 7-15 s to start.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
     slot = ce.query_slot(("q",))
-    assert lane.live[slot] is True
+    assert runner.live[slot] is True
 
     mgr.run(_spec(), 300, keep_alive=False, identity=("user",))
-    assert lane.live.get(slot) is True, "a one-shot must not reap the query pool"
+    assert runner.live.get(slot) is True, "a one-shot must not reap the query pool"
 
 
 def test_a_query_does_not_destroy_the_callers_held_container():
@@ -714,14 +638,14 @@ def test_a_query_does_not_destroy_the_callers_held_container():
     it, make one read-only introspection call, and both the file and the container are
     gone. Six MCP tools did exactly that on every call.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("mine",))
     assert mgr.state() is not None
 
     mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
     assert mgr.state() is not None, "the caller's container must survive a query"
-    assert lane.live[ce.SLOT_USER] is True
+    assert runner.live[ce.SLOT_USER] is True
 
 
 def test_two_images_of_one_campaign_get_two_query_containers():
@@ -731,31 +655,31 @@ def test_two_images_of_one_campaign_get_two_query_containers():
     asks the simulator's, describe_scenario the scenario's. One query slot would evict on
     every alternation and leave both tools slower than they were before the pool existed.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("sim",), query=True)
     mgr.run(_spec(), 300, keep_alive=True, identity=("scen",), query=True)
 
-    assert lane.live[ce.query_slot(("sim",))] is True
-    assert lane.live[ce.query_slot(("scen",))] is True
-    assert len(lane.starts) == 2
+    assert runner.live[ce.query_slot(("sim",))] is True
+    assert runner.live[ce.query_slot(("scen",))] is True
+    assert len(runner.starts) == 2
 
     # ...and asking the first again reuses rather than restarts it.
     mgr.run(_spec(), 300, keep_alive=True, identity=("sim",), query=True)
-    assert len(lane.starts) == 2, "a repeat query must not start a container"
+    assert len(runner.starts) == 2, "a repeat query must not start a container"
 
 
 def test_the_query_pool_evicts_rather_than_growing():
     """Bounded: an agent walking many workspaces must not accumulate a container each."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     for i in range(ce.QUERY_POOL_MAX + 2):
         mgr.run(_spec(), 300, keep_alive=True, identity=(f"w{i}",), query=True)
-    held = [s for s in lane.live if s != ce.SLOT_USER]
+    held = [s for s in runner.live if s != ce.SLOT_USER]
     assert len(held) <= ce.QUERY_POOL_MAX
     # The oldest went, the newest stayed.
-    assert ce.query_slot(("w0",)) not in lane.live
-    assert lane.live[ce.query_slot((f"w{ce.QUERY_POOL_MAX + 1}",))] is True
+    assert ce.query_slot(("w0",)) not in runner.live
+    assert runner.live[ce.query_slot((f"w{ce.QUERY_POOL_MAX + 1}",))] is True
 
 
 def test_a_query_container_outlives_the_user_slots_idle_window():
@@ -772,23 +696,23 @@ def test_a_query_container_outlives_the_user_slots_idle_window():
 def test_stop_container_leaves_the_query_pool_alone():
     """``stop_container`` means the caller's. Reaping their query containers with it would
     make the next introspection call pay a cold start they never asked for."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("mine",))
     mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
 
     mgr.stop()
-    assert ce.SLOT_USER not in lane.live
-    assert lane.live[ce.query_slot(("q",))] is True
+    assert ce.SLOT_USER not in runner.live
+    assert runner.live[ce.query_slot(("q",))] is True
 
     # Shutdown, by contrast, takes everything.
     mgr.stop_all()
-    assert not lane.live
+    assert not runner.live
 
 
-def test_every_slot_is_reported_so_the_lane_is_not_read_as_emptier_than_it_is():
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+def test_every_slot_is_reported_so_the_runner_is_not_read_as_emptier_than_it_is():
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     mgr.run(_spec(), 300, keep_alive=True, identity=("mine",))
     mgr.run(_spec(), 300, keep_alive=True, identity=("q",), query=True)
     states = mgr.states()
@@ -826,55 +750,55 @@ def test_holding_starts_a_container_and_runs_nothing_in_it():
     A variation's commands arrive later and repeatedly, from the plugin composing against
     it, so ``hold`` must not exec anything — ``run`` always does.
     """
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     slot = mgr.hold(_held_aux(), ("aux", "preview-abc", "aux-builder"), 300)
-    assert lane.live[slot] is True
-    assert lane.execs == []
+    assert runner.live[slot] is True
+    assert runner.execs == []
 
 
 def test_holding_the_same_project_twice_reuses_one_container():
     """The whole point of holding: an authoring loop previews the same file repeatedly."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     identity = ("aux", "preview-abc", "aux-builder")
     first = mgr.hold(_held_aux(), identity, 300)
     mgr.release_hold(first)
     second = mgr.hold(_held_aux(), identity, 300)
     assert second == first
-    assert len(lane.starts) == 1, "a second preview must not pay a cold start"
+    assert len(runner.starts) == 1, "a second preview must not pay a cold start"
 
 
 def test_releasing_a_hold_does_not_stop_the_container():
     """Two things ride on this: the next preview stays warm, and two previews running at
     once cannot destroy each other's container — which a per-call session did."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     identity = ("aux", "preview-abc", "aux-builder")
     outer = mgr.hold(_held_aux(), identity, 300)
     inner = mgr.hold(_held_aux(), identity, 300)
     mgr.release_hold(inner)
-    assert lane.live[outer] is True, "the other holder is still composing against it"
+    assert runner.live[outer] is True, "the other holder is still composing against it"
     mgr.release_hold(outer)
-    assert lane.live[outer] is True, "idleness reaps it, not a release"
+    assert runner.live[outer] is True, "idleness reaps it, not a release"
 
 
 def test_an_aux_hold_shares_the_query_pools_cap():
     """Deliberately one pool: a warm helper image and a warm query image are the same kind
-    of thing competing for one lane, and one cap is what keeps the total bounded."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    of thing competing for one runner, and one cap is what keeps the total bounded."""
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     for i in range(ce.QUERY_POOL_MAX + 2):
         mgr.hold(_held_aux(), ("aux", f"preview-{i}", "aux-builder"), 300)
-    held = [s for s in lane.live if s != ce.SLOT_USER]
+    held = [s for s in runner.live if s != ce.SLOT_USER]
     assert len(held) <= ce.QUERY_POOL_MAX
 
 
 def test_a_held_aux_container_is_reaped_on_idleness_like_a_query_one():
     """It holds a warm image and nothing else: a runner mirrors its workspace around every
     command, so there is no state in there that reaping could lose."""
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     slot = mgr.hold(_held_aux(), ("aux", "preview-abc", "aux-builder"), 300)
     assert mgr._idle_reap_s(slot) == ce.QUERY_IDLE_REAP_S
     assert mgr._idle_cap_s(slot) == ce.QUERY_IDLE_WAIT_CAP_S
@@ -885,15 +809,15 @@ def test_a_held_container_is_not_idle_until_its_last_holder_lets_go(monkeypatch)
     container directly -- so between two of them nothing distinguishes it from an idle one.
     Idleness is measured from the release, however long the hold."""
     monkeypatch.setattr(ce, "QUERY_IDLE_REAP_S", 0.2)
-    lane = FakeLane()
-    mgr = ce.ContainerExecManager(lane, poll_s=0.05)
+    runner = FakeRunner()
+    mgr = ce.ContainerExecManager(runner, poll_s=0.05)
     identity = ("aux", "preview-abc", "aux-builder")
     outer = mgr.hold(_held_aux(), identity, 300)
     inner = mgr.hold(_held_aux(), identity, 300)
     assert mgr.state(outer).idle_expires_in_s is None, "no idle countdown while held"
     mgr.release_hold(inner)
     time.sleep(0.6)
-    assert lane.live.get(outer) is True, "one holder is still composing against it"
+    assert runner.live.get(outer) is True, "one holder is still composing against it"
     mgr.release_hold(outer)
     deadline = time.monotonic() + 5
     while mgr.state(outer) is not None and time.monotonic() < deadline:

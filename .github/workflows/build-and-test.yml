@@ -35,9 +35,9 @@ jobs:
 
       # `make venv`, not `poetry install`: this repo ships five distributions that all
       # populate the `robovast` namespace, and only three of them are path dependencies of
-      # the root. `poetry install` therefore produced an environment with no execution lane
-      # but `local` -- `vast exec cluster setup` did not exist and the CLI test failed on it
-      # -- and installed robovast-client as a *copy*, which tests/test_editable_installs.py
+      # the root. `poetry install` therefore yields an environment without robovast-cluster
+      # -- `vast cluster setup` does not exist and the CLI test fails on it -- and installs
+      # robovast-client as a *copy*, which tests/test_editable_installs.py
       # exists to catch. The Makefile target is the single supported dev install and is what
       # doc.yml already builds against; installing the same way here keeps CI testing the
       # thing developers run.

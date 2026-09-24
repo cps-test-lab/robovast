@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from robovast.service.client import LocalTransport
+from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
 _VAST = """\
@@ -39,7 +39,7 @@ visualization:
 @pytest.fixture
 def transport(monkeypatch, tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    return LocalTransport(store=store)
+    return NullService(store=store)
 
 
 @pytest.fixture

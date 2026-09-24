@@ -2,14 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reading a build lock without a container runtime.
 
-The lock is baked into the image, and the usual reader inspects a local copy of it. The
-controller pod has no runtime, so on the cluster lane that reader could never answer -- and its
-silence was taken for "this image carries no lock". The campaign's own persisted copy, the only
-one that outlives the image, was therefore never written for any campaign that ran on a cluster:
-it stayed reproducible exactly as long as its images did, which is the one condition the lock
-exists to remove.
-
-So the lock is read straight out of the registry instead: the manifest, then the trailing layer
+The lock is baked into the image, and the controller pod has no container runtime to inspect a
+local copy with. A campaign persists its own copy of the lock, the only one that outlives the
+image, so the lock is read straight out of the registry: the manifest, then the trailing layer
 blobs. No pull, no runtime.
 """
 

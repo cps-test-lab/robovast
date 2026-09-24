@@ -605,7 +605,7 @@ class CampaignStore:
         self._migrate()
         # Set by whoever has a cluster to ask (see :meth:`set_node_facts_resolver`).
         # Absent by default so this module keeps no Kubernetes dependency and every
-        # caller that has no cluster -- the local lane, a re-index, an import -- works
+        # caller that has no cluster -- a re-index, an import -- works
         # unchanged.
         self._node_facts: Optional[Callable[[str], Optional[dict]]] = None
 
@@ -797,7 +797,7 @@ class CampaignStore:
         touched.
 
         *facts* is what only the Kubernetes API can say (capacity, allocatable, nodeInfo,
-        labels); ``None`` means nobody could ask -- the local lane, an unreadable node, or
+        labels); ``None`` means nobody could ask -- an unreadable node, or
         a re-index with no cluster in reach. The row is still written, because *which*
         machine a run used is worth recording even when its hardware is not available.
         *cpu_name* comes the other way, from the run's own ``/proc/cpuinfo``: Kubernetes
@@ -937,8 +937,7 @@ class CampaignStore:
         """Lift ``_execution/execution.yaml`` onto the campaign row.
 
         Called once the backend has produced that file — which is *after* campaign
-        creation on both lanes, and on the local lane happens inside the run itself (a
-        generated shell script writes it), so it cannot be folded into
+        creation, so it cannot be folded into
         :meth:`create_campaign`.
 
         The typed columns are the fields compared across campaigns; ``execution_json``
@@ -1293,7 +1292,7 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     against a store the controller is writing right now — which is the point. A batch's
     objectives are committed per unit as the batch is evaluated, so this is readable the
     instant a round finishes rather than after postprocessing, and it is the only path to
-    that data on the cluster lane (a SQL query there reads a snapshot from the object
+    that data on the cluster (a SQL query there reads a snapshot from the object
     store, which the campaign publishes only once, at the end).
 
     ``status = 'evaluated'`` is required, not tidiness: a ``no_sample`` unit ran but

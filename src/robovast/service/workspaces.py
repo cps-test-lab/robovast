@@ -72,18 +72,13 @@ PROJECT_DIRNAME = "project"
 #: Default lifetime of an upload token; the PUT must arrive within this window.
 UPLOAD_TTL_SECONDS = 600
 
-# The client half of the workspace vocabulary. A client pushing a directory must agree
-# with this module about which files belong to a project, but must not have to install
-# the registry and the store to find out -- so those two live in robovast.client and this
-# module is one of their callers, not their home.
-from robovast.client.workspaces import PINNED_SKIP_DIRS, is_skipped  # pylint: disable=wrong-import-position
 
 
 def default_workspaces_root() -> Path:
     """Root for workspace storage (``ROBOVAST_WORKSPACES_ROOT`` or ``~/.robovast``).
 
     Server-side: it is where *this* process keeps workspaces. A client install has no
-    such store, which is why this stayed here when ``is_skipped`` moved to the client.
+    such store.
     """
     env = os.environ.get("ROBOVAST_WORKSPACES_ROOT")
     if env:
@@ -101,91 +96,12 @@ class WorkspaceError(ValueError):
 
 
 class WorkspaceRegistry:
-    """Crash-safe JSON registry of workspaces (flock + atomic rename).
+    """Crash-safe JSON registry of workspaces (flock + atomic rename)."""
 
-    Beyond the persisted, editable workspaces it also carries **one** optional
-    **static** (pinned, read-only) workspace given at construction — a directory used
-    *in place*, never copied into the store. It is in-memory only (never written to
-    ``registry.json``): a ``vast serve --workspace-dir DIR`` derives it afresh each
-    start with a path-stable id, so links survive a restart without a
-    ``workspace init`` upload. See :meth:`add_static` / :meth:`is_pinned`.
-
-    Exactly one, deliberately: a pinned directory holds as many ``.vast`` files as
-    the caller likes (selected per campaign by ``config_path``), so N directories add
-    no expressiveness — while N arbitrary host paths would leave the service with no
-    single sources root to publish in ``get_service_info``.
-    """
-
-    def __init__(self, root=None, static_dir=None):
+    def __init__(self, root=None):
         self.root = Path(root) if root else default_workspaces_root()
         self.registry_path = self.root / REGISTRY_FILENAME
         self.lock_path = self.root / LOCK_FILENAME
-        #: workspace_id -> registry entry, for the pinned read-only dir (in-memory).
-        self._static: dict[str, dict] = {}
-        #: workspace_id -> on-disk source Path used directly (read-only).
-        self._static_paths: dict[str, Path] = {}
-        if static_dir is not None:
-            # Accept a bare path or a (path, name) pair.
-            if isinstance(static_dir, (tuple, list)):
-                self.add_static(static_dir[0],
-                                static_dir[1] if len(static_dir) > 1 else "")
-            else:
-                self.add_static(static_dir)
-
-    def add_static(self, path, name: str = "") -> dict:
-        """Pin *path* as a workspace used **in place**; return its entry.
-
-        The id is derived from the resolved path (stable across restarts, so the UI link
-        keeps working). The directory is **writable**: an edit in the Config tab lands on
-        the real file, which is what makes a local project editable from the browser at all.
-        Without it the web UI could not replace the desktop editor's Open/Save for anyone
-        working on a git-tracked project -- the only route was to copy the project into the
-        store, edit the copy, and copy it back.
-
-        What stays refused is *deleting the workspace*: the directory is the caller's, not
-        the store's, so unpinning it is a ``--workspace-dir`` flag rather than a DELETE.
-        """
-        import hashlib
-        p = Path(path).expanduser().resolve()
-        if not p.is_dir():
-            raise WorkspaceError(f"workspace dir does not exist: {path}")
-        workspace_id = "ws-" + hashlib.sha1(str(p).encode()).hexdigest()[:12]
-        entry = {
-            "workspace_id": workspace_id,
-            "name": name or p.name,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "source_dir": str(p),
-        }
-        self._static[workspace_id] = entry
-        self._static_paths[workspace_id] = p
-        logger.info("Pinned workspace %s -> %s (edits land on these files)", workspace_id, p)
-        return entry
-
-    def require_syncable(self, workspace_id: str) -> None:
-        """Refuse a **bulk directory sync** into a pinned workspace.
-
-        Individual edits are allowed -- that is the point of a pinned directory. A whole-tree
-        sync is a different act: it overwrites every file at once and, with ``--prune``,
-        deletes the ones the source does not have. Against a directory the caller owns (a git
-        working tree, typically) that is a destructive operation with a plain alternative,
-        which is to edit the directory itself. Nothing is gained by mirroring a directory onto
-        itself, and a mirror of a *different* directory onto it is almost certainly a mistake.
-        """
-        if self.is_pinned(workspace_id):
-            raise WorkspaceError(
-                f"workspace {workspace_id!r} is a directory pinned in place "
-                "(vast serve --workspace-dir), so a whole-directory sync would overwrite -- "
-                "and with --prune delete -- files in that directory. Individual edits through "
-                "the service are fine; to replace the tree, edit it on disk.")
-
-    def is_pinned(self, workspace_id: str) -> bool:
-        """True if *workspace_id* is a directory used in place (``--workspace-dir``).
-
-        Pinned is about *where the files live*, not about whether they may be written: the
-        listing filter below skips what such a tree carries and ``.git`` is not ours, and
-        deleting the workspace is refused. Everything else is an ordinary workspace.
-        """
-        return workspace_id in self._static
 
     def ensure_dirs(self):
         self.root.mkdir(parents=True, exist_ok=True)
@@ -226,9 +142,6 @@ class WorkspaceRegistry:
             raise
 
     def project_dir(self, workspace_id: str) -> Path:
-        # A pinned dir is used in place; everything else lives under project/.
-        if workspace_id in self._static_paths:
-            return self._static_paths[workspace_id]
         return self.root / workspace_id / PROJECT_DIRNAME
 
     def create(self, name: str = "") -> dict:
@@ -237,8 +150,8 @@ class WorkspaceRegistry:
         A requested *name* that already exists gets an incrementing ``-N`` suffix
         (``foo`` → ``foo-2`` → ``foo-3``) so repeated ``workspace init`` of the same
         directory stays distinguishable in the UI dropdown instead of piling up
-        identical labels. The suffixing happens under the lock (against both
-        persisted and pinned names) so concurrent creates can't collide; the caller
+        identical labels. The suffixing happens under the lock so concurrent creates
+        can't collide; the caller
         gets back the *final* name in the returned entry.
         """
         workspace_id = f"ws-{secrets.token_hex(6)}"
@@ -256,12 +169,9 @@ class WorkspaceRegistry:
         return entry
 
     def _unique_name(self, name: str, data: dict) -> str:
-        """Return *name*, or ``name-2``/``-3``/… if it collides with an existing one.
-
-        Considers both persisted (*data*, already read under the lock) and pinned
-        read-only names, so an init'd copy never shadows-by-name a pinned dir."""
+        """Return *name*, or ``name-2``/``-3``/… if it collides with a name in *data*
+        (already read under the lock)."""
         taken = {e.get("name") for e in data.values()}
-        taken |= {e.get("name") for e in self._static.values()}
         if name not in taken:
             return name
         n = 2
@@ -272,12 +182,9 @@ class WorkspaceRegistry:
     def list(self) -> list[dict]:
         with self._locked():
             data = self._read_unlocked()
-        merged = {**data, **self._static}  # pinned dirs shown alongside persisted ones
-        return sorted(merged.values(), key=lambda e: e.get("created_at", ""), reverse=True)
+        return sorted(data.values(), key=lambda e: e.get("created_at", ""), reverse=True)
 
     def get(self, workspace_id: str) -> dict | None:
-        if workspace_id in self._static:
-            return self._static[workspace_id]
         with self._locked():
             return self._read_unlocked().get(workspace_id)
 
@@ -290,20 +197,18 @@ class WorkspaceRegistry:
         """
         with self._locked():
             data = self._read_unlocked()
-        merged = {**data, **self._static}
-        if id_or_name in merged:
+        if id_or_name in data:
             return id_or_name
-        matches = [wid for wid, e in merged.items() if e.get("name") == id_or_name]
+        matches = [wid for wid, e in data.items() if e.get("name") == id_or_name]
         if len(matches) == 1:
             return matches[0]
         if not matches:
             known = ", ".join(
                 f"{wid} ({e.get('name')})" if e.get("name") else wid
-                for wid, e in sorted(merged.items())) or "(none yet)"
+                for wid, e in sorted(data.items())) or "(none yet)"
             raise WorkspaceError(
                 f"unknown workspace {id_or_name!r}. Known: {known}. Create one with "
-                "create_workspace, or pin a directory with "
-                "'vast serve --workspace-dir <dir>'.")
+                "create_workspace.")
         raise WorkspaceError(
             f"workspace name {id_or_name!r} is ambiguous ({len(matches)} matches); "
             "delete it by its ws-… id instead")
@@ -319,12 +224,6 @@ class WorkspaceRegistry:
         """
         import shutil
         workspace_id = self.require(id_or_name)["workspace_id"]
-        if workspace_id in self._static:
-            raise WorkspaceError(
-                f"workspace {workspace_id!r} is a directory pinned in place "
-                "(vast serve --workspace-dir). Its files may be edited through the service, "
-                "but the directory is yours rather than the store's, so it is unpinned by "
-                "dropping the --workspace-dir flag, not by deleting it here.")
         with self._locked():
             data = self._read_unlocked()
             data.pop(workspace_id, None)
@@ -380,9 +279,8 @@ class _UploadTokens:
 class WorkspaceStore:
     """File operations on workspaces, with strict path confinement."""
 
-    def __init__(self, registry: WorkspaceRegistry | None = None, tokens=None,
-                 workspace_dir=None):
-        self.registry = registry or WorkspaceRegistry(static_dir=workspace_dir)
+    def __init__(self, registry: WorkspaceRegistry | None = None, tokens=None):
+        self.registry = registry or WorkspaceRegistry()
         self.tokens = tokens or _UploadTokens()
 
     # -- read-only guard ----------------------------------------------------
@@ -451,23 +349,6 @@ class WorkspaceStore:
         if not rel_path:
             return self.registry.project_dir(workspace_id)
         return self._safe_join(workspace_id, rel_path)
-
-    def skip_entry(self, workspace_id: str):
-        """Predicate for entries a listing must hide, or ``None`` when none do.
-
-        A pinned dir is a live project tree, so skip what ``workspace init`` also skips
-        — hidden files (``.git``/``.cache``) and campaign outputs (``results/``). A
-        normal ``project/`` contains neither, so this is a no-op for those.
-
-        Shares :func:`is_skipped` with the push side. They must agree: a
-        ``sync_directory_to_workspace(prune=True)`` deletes what a listing shows but a
-        push would never re-upload, so a rule added to one and not the other makes
-        prune destructive.
-        """
-        workspace_id = self.registry.require(workspace_id)["workspace_id"]
-        if not self.registry.is_pinned(workspace_id):
-            return None
-        return lambda rel, _is_dir: is_skipped(rel, PINNED_SKIP_DIRS)
 
     def delete_file(self, workspace_id: str, rel_path: str) -> None:
         workspace_id = self.registry.require(workspace_id)["workspace_id"]

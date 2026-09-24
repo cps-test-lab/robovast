@@ -5,7 +5,7 @@
 """The ``command`` postprocessing plugin must run a staged script that arrived
 non-executable.
 
-The cluster lane's staging initContainer fetches a campaign's whole tree with
+The cluster's staging initContainer fetches a campaign's whole tree with
 per-file executable-bit restoration turned off (a deliberate cost decision for the
 bulk fetch — see ``postprocess_stage.py``), so a script this plugin's ``get_files_to_copy``
 staged into ``_config/`` can land there without its executable bit. This plugin is the

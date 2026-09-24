@@ -1,6 +1,6 @@
 // Which of a campaign's listed jobs are its own runs, and which only look like them.
 //
-// The cluster lane lists two other things beside the campaign's trials: node-calibration probes,
+// The cluster lists two other things beside the campaign's trials: node-calibration probes,
 // and the postprocessing conversion that turns its rosbags into CSV. Both are real work holding
 // real capacity, so every selector that counts or cleans up has to keep seeing them, and both
 // reach the job listing through the same path. Neither is one of the campaign's runs -- the

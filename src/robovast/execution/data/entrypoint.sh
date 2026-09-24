@@ -92,7 +92,7 @@ fi
 if [ "${COLLECT_SYSINFO}" != "false" ]; then
   log "Collecting system information..."
   # Replaced with the cluster provider's INSTANCE_TYPE command (get_instance_type_command);
-  # left as an empty assignment on the local lane, which has no instance to identify.
+  # left as an empty assignment where no provider names an instance.
   # @@INSTANCE_TYPE_BLOCK@@
   SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
   # --distributions alongside it: which distributions are installed HERE, with the entry-point
@@ -101,8 +101,8 @@ if [ "${COLLECT_SYSINFO}" != "false" ]; then
   # carries no simulator, so a record built there said "no asset providers" for a campaign whose
   # image had three private ones. Named per container, like resource_usage_main.csv, because in
   # the ROS shape the simulator is a container of its own and so are its providers.
-  # NODE_NAME comes from the downward API on the cluster lane and is empty on the local
-  # one, which has no node to name -- the same shape as INSTANCE_TYPE above. It is passed
+  # NODE_NAME comes from the downward API and is empty in a container no Job placed (a
+  # diagnostic exec), which has no node to name -- the same shape as INSTANCE_TYPE above. It is passed
   # as --node-name rather than --external because collect_sysinfo HASHES it: this file
   # ships inside the campaign archive, so the name itself must not reach it.
   python3 /config/collect_sysinfo.py --output "${SYSINFO_FILE}" --distributions "${OUTPUT_DIR}/distributions_main.json" --external "instance_type=${INSTANCE_TYPE}" --node-name "${NODE_NAME}" --external "available_cpus=${AVAILABLE_CPUS}" --external "available_mem=${AVAILABLE_MEM}"
@@ -195,9 +195,9 @@ else
         log "Started rosbag recording ${LOG_TOPICS} (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
     fi
 
-    # The lane's post-run block: the cleanup hooks the runner is handed, and `run_scenario`,
-    # which is how the runner is started -- an exec over this shell on the local lane, a
-    # child of it on the cluster, where something has to run after the runner is gone.
+    # The post-run block: the cleanup hooks the runner is handed, and `run_scenario`,
+    # which is how the runner is started -- a child of this shell on the cluster, where
+    # something has to run after the runner is gone; an exec over it otherwise.
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"

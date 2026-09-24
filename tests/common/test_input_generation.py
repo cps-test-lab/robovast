@@ -276,7 +276,7 @@ def test_input_outside_the_project_is_advised_not_rejected(tmp_path, caplog):
     """Legitimate from the tree, broken from a workspace — say so without failing it.
 
     Only the project directory is copied into a service workspace, so a sibling-checkout
-    input composes in place and vanishes on the cluster lane. That is a warning, because
+    input composes in place and vanishes in the cluster. That is a warning, because
     reading a sibling checkout on purpose is a real arrangement, not a mistake.
     """
     from robovast.common.config_validation import _generator_problems

@@ -40,7 +40,7 @@ whatever it does not cover is a campaign that fails while composing, on a contai
 declared. Asking is the only enumeration that cannot be incomplete.
 
 **How the workspace moves.** Through the service's **data plane**, the same transport a
-campaign Job, an image-build context and the container-exec lane use
+campaign Job, an image-build context and the container-exec runner use
 (:mod:`.pod_access`): the runner's workspace *is* a staged tree on the service's disk,
 and a ``transfer`` container from the sidecar image fetches it into the pod as one tar
 stream before a command and delivers it back as one afterwards. That container shares
@@ -261,7 +261,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
     the campaign and the container it holds, deleted when the span ends) and a *held* one
     owned by the service's exec manager (named after its slot, reaped on idleness).
     *pod_name*, *container_names* and *extra_labels* are how each says which — a held pod's
-    name and container have to be the ones the exec lane already addresses and sweeps by —
+    name and container have to be the ones the exec runner already addresses and sweeps by —
     and everything else about an aux pod is identical. Forking a second builder for that
     would have put the transfer container, the mountable emptyDirs and the pull secret in
     two places. The campaign label is set either way, so a sweep by campaign finds every
@@ -314,9 +314,9 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
             # pull with `insufficient_scope`, which reads like a credentials problem rather than an
             # unresolved reference. Resolved here, in the service, for the same reason the
             # transfer container below calls resolve_sidecar_image(): this process is the one
-            # carrying the deployment's project and tag. The local lane resolves at
-            # runner-creation time instead (config_generation._make_container_runner), which is
-            # why a family ref worked there and not here.
+            # carrying the deployment's project and tag. ``config_generation``'s own runner
+            # resolves at runner-creation time instead, which is why a family ref worked
+            # there and not here.
             "image": image,
             # From the ref, like every other pod this package writes: see
             # ``pull_policy_for``. A tag is what a spec names in the ordinary case, and it
@@ -353,7 +353,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
     })
 
     # *extra_labels* last, and it may legitimately replace ``app``: a held pod is the exec
-    # manager's, so the exec lane's stray sweep must be the one that finds it. Exactly one
+    # manager's, so the exec runner's stray sweep must be the one that finds it. Exactly one
     # sweep should own a pod — a held one answering to `cleanup_aux_pods` as well would let
     # a campaign's cleanup delete a container somebody's preview is composing against.
     metadata = {
@@ -444,7 +444,7 @@ class AuxPodSession:
         # Only consulted when no client was handed in. It must still be the *service's*
         # context: falling back to the kubeconfig's current one puts this campaign's aux
         # pod in whichever cluster the host happens to point at, while looking perfectly
-        # valid — the same failure the container-exec lane has a regression test for.
+        # valid — the same failure the container-exec runner has a regression test for.
         self._kube_context = kube_context
         self._ready_timeout = ready_timeout
         # Reported on every poll of the ready wait, so a caller with somebody watching can name
@@ -582,7 +582,7 @@ class AuxPodSession:
         self._record_created(pod_name)
         logger.info("Aux pod %s created for %s of campaign %s",
                     pod_name, spec.container_name(), self.campaign_id)
-        # Shared with the container-exec lane so a stuck pod names its reason
+        # Shared with the container-exec runner so a stuck pod names its reason
         # (ImagePullBackOff, say) instead of timing out with only an elapsed time —
         # which matters now that a spec may name the campaign's own private image.
         wait_pod_ready(core, self.namespace, pod_name,
@@ -650,7 +650,7 @@ class ClusterContainerRunner:
         self._kube_context = kube_context
         # A campaign's aux pod names each container after its spec, so the spec is the
         # default. A pod held by the exec manager names its single container the way that
-        # lane names every held container, and passes it — the pod name and the container
+        # runner names every held container, and passes it — the pod name and the container
         # name have to come from the same place or one of them addresses nothing.
         self._container = container or spec.container_name()
         self._exec_limit_s = exec_limit_s
@@ -686,7 +686,7 @@ class ClusterContainerRunner:
         written for, filename included (``/aux/roqsim_scene_overrides.yaml``), and only the
         directory around it can be a volume. Without this the scene build failed on the
         cluster, at the one moment it is least diagnosable -- the run view asking for
-        geometry -- while working on the local lane, where a bind mount does not care.
+        geometry -- while working under a bind mount, which does not care.
 
         A *host_path* outside the workspace is copied into it first (:meth:`_stage_into`), so
         the single transport is a property of this method rather than of every caller's

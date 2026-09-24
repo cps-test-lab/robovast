@@ -124,9 +124,7 @@ Before starting the execution in the cluster, it is recommended to first check t
 Check Result of a Single Execution
 """"""""""""""""""""""""""""""""""
 
-To check that the container image and test are correctly set up, it is recommended to test the execution locally.
-
-The command runs the container using the ``docker`` command and the same parameters and test-files as the kubernetes execution. Afterwards the output can be analyzed manually.
+To check that the container image and test are correctly set up, run one configuration's scenario in the image before a campaign: ``vast container run`` (or the MCP ``exec_in_container``) starts it with the same parameters and test files a campaign would stage, and its log can be read afterwards.
 
 .. code-block:: bash
 

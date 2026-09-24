@@ -717,7 +717,6 @@ Running a search
 ``vast workspace run`` is the single entry point: when the workspace's ``.vast``
 has a ``search:`` block it drives the search loop, otherwise it runs a batch.
 Results, per-batch outputs and a live-queryable ``campaign.db`` are written
-under a timestamped campaign directory in the service's results root (chosen by
-``vast serve --results-dir``). See ``configs/examples/quadrotor_landing/`` for
+under a timestamped campaign directory in the service's results root. See ``configs/examples/quadrotor_landing/`` for
 runnable random, QD and Optuna variants over one shared scenario, sim and
 extract.

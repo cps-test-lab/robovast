@@ -22,34 +22,25 @@ lifecycle (campaign id, results layout, store, the batch loop and scoring); a
 backend only dispatches a batch's jobs so results land at
 ``<campaign_root>/<config>/<run>/``.
 
-:class:`DockerBackend` is the local backend; it reuses the existing
-docker-compose run-script generation but executes each batch **into a fixed
-campaign root** (no per-batch campaign-id nesting). A ``KubernetesBackend`` with
-the same interface can be added later to drive cluster batch and search through
-the same controller.
+The ``KubernetesBackend`` runs each batch as Kubernetes Jobs into a
+fixed campaign root (no per-batch campaign-id nesting); the test suite's null backend
+runs nothing. Both drive batch and search through the same controller.
 """
 
 import logging
 import os
-import re
-import signal
-import subprocess  # nosec - invokes the generated, trusted robovast run script
-import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from robovast.common import prepare_campaign_configs
 # Re-exported: config generation and campaign staging raise the same user-error type,
-# and the stop-aware subprocess helpers raise the stop one, and all of them live in
-# ``common`` (which the execution layer imports), so the classes themselves have to live
-# there too. Every caller keeps importing them from here.
+# and the stop-aware helpers raise the stop one, and all of them live in ``common``
+# (which the execution layer imports), so the classes themselves have to live there
+# too. Every caller keeps importing them from here.
 from robovast.common.errors import \
     CampaignConfigError, CampaignStopped  # noqa: F401  # pylint: disable=unused-import
 from robovast.common.execution import resolve_robovast_image
-from robovast.common.stop import terminate_group
-from robovast.execution.execution_utils.execute_local import generate_compose_run_script
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +67,7 @@ class ShareStopped(Exception):
 
 @dataclass
 class RunOptions:
-    """Per-run execution options (mostly local docker-compose specific)."""
-    gui: bool = False
-    start_only: bool = False
-    abort_on_failure: bool = False
+    """Per-campaign execution options, handed to the backend with every batch."""
     # None ⇒ resolve via resolve_robovast_image() (config / the family default); a
     # non-None value is an explicit ``--image``. It addresses the container the scenario
     # runs in — the only one a single ``--image`` flag can mean.
@@ -95,8 +83,6 @@ class RunOptions:
     # here uses its declared image verbatim.
     images: dict = field(default_factory=dict)
     log_tree: bool = False
-    debug: bool = False
-    skip_resource_allocation: bool = True
     # -- chained analysis postprocessing (cluster backend only) --------------
     # Per-campaign, so it must travel with the options rather than through the
     # process environment: the service drives many campaigns concurrently in one
@@ -107,25 +93,24 @@ class RunOptions:
     namespace: str | None = None
     # -- upload-to-share (pre-postprocess minimal snapshot) -------------------
     # When set, the finish tail produces a raw campaign archive *before* analysis
-    # postprocessing (so the share stays minimal/untouched): the local backend just
-    # writes a tar.gz; the cluster backend streams it to the configured share
-    # provider. Off by default; a per-campaign option (travels with the options, not
-    # the process env) exactly like ``postprocess``.
+    # postprocessing (so the share stays minimal/untouched), which the backend streams
+    # to the configured share provider. Off by default; a per-campaign option (travels
+    # with the options, not the process env) exactly like ``postprocess``.
     upload_to_share: bool = False
     # -- who ends the campaign ------------------------------------------------
     # True when the builders' finish tail is the campaign's **outermost** scope and
     # must therefore publish the terminal phase, stop the heartbeat and send the one
-    # notification (see controller.end_campaign). The local service sets it False:
-    # there postprocessing runs *after* the builder returns, so the builder ending the
-    # campaign would report "finished" with no metrics yet — the very bug this seam
-    # removes. A per-campaign option rather than an env var for the same reason as
-    # ``postprocess``: the service drives many campaigns concurrently in one process.
+    # notification (see controller.end_campaign). A caller that runs work *after* the
+    # builder returned would set it False, since the builder ending the campaign would
+    # then report "finished" with no metrics yet. A per-campaign option rather than an
+    # env var for the same reason as ``postprocess``: the service drives many campaigns
+    # concurrently in one process.
     finalize_phase: bool = True
     # -- a batch's configurations have been staged ----------------------------
     # Called once a batch's configurations are staged and before any of them runs -- the
     # last thing a batch campaign does with the project it was launched from, and so the
     # moment it can stop reading it (see ``CampaignController._on_configs_staged``). A
-    # callback rather than a return value because both lanes stage inside their own
+    # callback rather than a return value because a backend stages inside its own
     # run_batch, and per-campaign rather than per-process because the service drives many
     # campaigns at once. Set by ``CampaignController``, which refuses a value already
     # here rather than dropping it.
@@ -135,9 +120,9 @@ class RunOptions:
 def _scenario_image(execution: dict, options: RunOptions) -> str:
     """The image for the container the scenario runs in.
 
-    One place, because both entry points into the local lane need it and a second copy
-    would be free to drift. Sidecars are *not* resolved here: they come from the
-    container plan, which is built once from the same ``execution`` mapping.
+    One place, because a backend and the exec path both need it and a second copy would
+    be free to drift. Sidecars are *not* resolved here: they come from the container
+    plan, which is built once from the same ``execution`` mapping.
     """
     from robovast.common.config import SCENARIO_CONTAINER
     containers = execution.get("containers") or {}
@@ -147,6 +132,30 @@ def _scenario_image(execution: dict, options: RunOptions) -> str:
                                   config_image=built or declared,
                                   project=options.image_project,
                                   tag=options.image_project_tag)
+
+
+def refuse_unimportable(campaign_root: str) -> None:
+    """Refuse to write an archive no deployment could ever take back in.
+
+    The share is a one-way door as far as diagnosis goes: an archive missing its frozen
+    configuration uploads, lists and downloads exactly like a good one, and only fails
+    at the far end -- on somebody else's service, after a full transfer, with an ingest
+    refusal and no way to repair the source. Campaigns that die before their config is
+    frozen do occur, so this is a real shape and not a hypothetical one.
+
+    Checked by :meth:`ExecutionBackend.share_campaign` rather than in the archive stream:
+    that stream is also how a campaign is *downloaded*, and taking a partial campaign's files
+    off a service is legitimate. Offering it as an importable campaign is not.
+    """
+    from robovast.service.ingest import missing_for_import_in
+    missing = missing_for_import_in(campaign_root)
+    if missing:
+        campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        raise CampaignConfigError(
+            f"Cannot export {campaign_id}: it has no " + " ".join(missing) +
+            "\nAn archive written from it could not be imported by any deployment, "
+            "including this one, so it is refused here rather than at the far end of "
+            "a transfer.")
 
 
 class ExecutionBackend(ABC):
@@ -173,13 +182,11 @@ class ExecutionBackend(ABC):
         cluster held for the campaign -- its node calibration and its place in the queue.
         """
 
-    def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - lane-specific
-        """The build lock inside *image*, for a lane that can read one without a runtime.
+    def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - backend-specific
+        """The build lock inside *image*, for a backend that can read one without a runtime.
 
-        ``{}`` by default, which every lane may answer: the lock is normally read out of a
-        local copy of the image, and a lane whose driver holds one needs nothing here. The
-        cluster lane overrides it because its controller has no container runtime, so the
-        only way to reach the lock is the registry.
+        ``{}`` by default. The :class:`KubernetesBackend` overrides it because its controller has no
+        container runtime, so the only way to reach the lock is the registry.
 
         ``{}`` means "could not be read here", never "the image installed nothing" -- see
         ``read_build_manifests``.
@@ -192,7 +199,7 @@ class ExecutionBackend(ABC):
         Measured once, in the run tail, so that reading the figure later is a field lookup
         rather than a walk of the results: a campaign is displayed far more often than it
         finishes, and enumerating storage per view scales with the campaign while telling
-        every viewer the same thing. ``campaign_root`` is the campaign on every lane.
+        every viewer the same thing. ``campaign_root`` is the campaign's local results tree.
 
         ``None`` means the size could not be established, which a reader must render as
         "not recorded" rather than as zero. Best-effort by contract: a campaign's results
@@ -206,11 +213,15 @@ class ExecutionBackend(ABC):
 
         Called once at campaign start (only when the option is set) so a
         misconfiguration fails *fast and loud* instead of the whole campaign running
-        and the upload then silently skipping at the finish tail. The default (local
-        :class:`DockerBackend`) always can — it writes a tar.gz to the archive dir, no
-        external provider needed. The :class:`KubernetesBackend` overrides this to
-        raise :class:`CampaignConfigError` when no share provider is configured.
+        and the upload then silently skipping at the finish tail. The default refuses:
+        a backend that has not said where an archive goes cannot deliver one, and
+        :meth:`share_campaign` would only say so after the runs. The
+        :class:`KubernetesBackend` overrides this to raise :class:`CampaignConfigError`
+        when no share provider is configured.
         """
+        raise CampaignConfigError(
+            f"{type(self).__name__} cannot deliver an archive to a share; drop "
+            "--upload-to-share.")
 
     def share_campaign(self, campaign_root: str, options: "RunOptions",
                        progress_callback=None) -> None:
@@ -223,77 +234,32 @@ class ExecutionBackend(ABC):
         is told which it is — :func:`~robovast.execution.share_providers.naming.
         campaign_variant` reads it off the directory, so the two cannot disagree.
 
-        The default (local :class:`DockerBackend`) writes the archive into
-        ``$ROBOVAST_ARCHIVE_DIR`` or a ``_archives/`` sibling of the campaign dirs
-        (kept outside every campaign dir so it can't perturb postprocessing's
-        hash-cache) — there is no external share locally, so the file is the
-        deliverable. Nothing crosses a network, but writing it still reads the whole
-        campaign, so *progress_callback* is driven off the bytes going into the tar —
-        the same source-side counter the cluster lane reports, which is what lets one
-        reader render both. The :class:`KubernetesBackend` overrides this to stream the
-        archive to the configured share provider.
+        *progress_callback* is driven off the bytes read from the campaign, the
+        source-side counter. A backend refuses an archive that no deployment could import back
+        (``robovast.service.ingest.missing_for_import_in``) before a byte crosses the
+        network: such an archive uploads, lists and downloads exactly like a good one
+        and fails only at the far end (:func:`refuse_unimportable`).
+
+        The default refuses, as :meth:`preflight_upload_to_share` already did at the
+        start of the campaign.
         """
-        from robovast.execution import campaign_archive
-        from robovast.execution.share_providers.naming import archive_name, campaign_variant
-        self._refuse_unimportable(campaign_root)
-        results_dir = os.path.dirname(os.path.normpath(campaign_root))
-        archive_dir = campaign_archive.local_archive_dir(results_dir)
-        campaign_id = os.path.basename(os.path.normpath(campaign_root))
-        on_member = getattr(progress_callback, "on_member", None)
-        if on_member is not None:
-            # Before a byte is read: this reads the whole campaign, and a share already
-            # cancelled must not start on a terabyte of it.
-            progress_callback.raise_if_stopped()
-            progress_callback.set_source_total(
-                campaign_archive.campaign_source_bytes(campaign_root))
-        campaign_archive.make_campaign_tarball(
-            campaign_root, archive_dir,
-            name=archive_name(campaign_id, campaign_variant(campaign_root)),
-            on_member=on_member)
-        if on_member is not None:
-            progress_callback.finish()
+        del campaign_root, options, progress_callback
+        self.preflight_upload_to_share()
 
     def discard_partial_share(self, object_name: str) -> str:
         """Remove what a cancelled or failed upload left; return a note, or ``""``.
 
-        Nothing to do on this lane, and that is a property of the writer rather than an
-        omission here: ``campaign_archive.make_campaign_tarball`` builds into a temporary
-        name and renames only once the archive is complete, so an interrupted write leaves
-        no archive to mistake for one. The :class:`KubernetesBackend` overrides this,
-        having put its partial object on somebody else's storage.
+        ``""`` by default, for a backend whose writer leaves nothing behind. The
+        :class:`KubernetesBackend` overrides this, having put its partial object on
+        somebody else's storage.
         """
         del object_name
         return ""
 
-    @staticmethod
-    def _refuse_unimportable(campaign_root: str) -> None:
-        """Refuse to write an archive no deployment could ever take back in.
-
-        The share is a one-way door as far as diagnosis goes: an archive missing its frozen
-        configuration uploads, lists and downloads exactly like a good one, and only fails
-        at the far end -- on somebody else's service, after a full transfer, with an
-        ingest refusal and no way to repair the source. Campaigns that die before their
-        config is frozen do occur, so this is a real shape and not a hypothetical one.
-
-        Checked here rather than in ``make_campaign_tarball``: the tarball writer is also
-        how a campaign is *downloaded*, and taking a partial campaign's files off a service
-        is a legitimate thing to want. It is offering it as an importable campaign that is
-        not.
-        """
-        from robovast.service.ingest import missing_for_import_in
-        missing = missing_for_import_in(campaign_root)
-        if missing:
-            campaign_id = os.path.basename(os.path.normpath(campaign_root))
-            raise CampaignConfigError(
-                f"Cannot export {campaign_id}: it has no " + " ".join(missing) +
-                "\nAn archive written from it could not be imported by any deployment, "
-                "including this one, so it is refused here rather than at the far end of "
-                "a transfer.")
-
     #: The per-run JUnit report a finished run publishes. Counting these under the
-    #: campaign root is what "a run completed" means to the progress poller, on either
-    #: lane: the root is the campaign's durable home, and a run's results are under it
-    #: the moment the run has delivered them.
+    #: campaign root is what "a run completed" means to the progress poller: the root is
+    #: the campaign's durable home, and a run's results are under it the moment the run
+    #: has delivered them.
     RUN_SENTINEL = "test.xml"
 
     def node_facts(self, label: str) -> dict | None:
@@ -307,9 +273,9 @@ class ExecutionBackend(ABC):
         sides honest -- if they ever disagreed this returns ``None`` rather than facts about
         the wrong machine.
 
-        ``None`` -- the default -- is a normal answer rather than a failure: the local lane
-        has no nodes, and a re-index or an import runs with no cluster in reach. The caller
-        records the machine anyway, leaving the facts NULL.
+        ``None`` -- the default -- is a normal answer rather than a failure: a re-index or
+        an import runs with no cluster in reach. The caller records the machine anyway,
+        leaving the facts NULL.
         """
         return None
 
@@ -318,11 +284,10 @@ class ExecutionBackend(ABC):
         """Completed per-run artifacts published so far (controller progress poll).
 
         Returns the cumulative number of finished runs under *campaign_root*, counted as
-        the ``test.xml`` files finished runs have written there. That is the answer on
-        both shipped lanes, which is why it is the base's: ``campaign_root`` is the
-        campaign's durable home on either, and a run's results are under it as soon as
-        the run delivers them -- written there by the local lane, delivered there by a
-        cluster job's uploader before the Job counts as complete. A backend whose runs
+        the ``test.xml`` files finished runs have written there. That is the base's
+        answer because ``campaign_root`` is the campaign's durable home, and a run's
+        results are under it as soon as the run delivers them -- a cluster job's uploader
+        puts them there before the Job counts as complete. A backend whose runs
         leave results somewhere the root cannot see overrides this; one that genuinely
         cannot introspect answers ``None``, which disables run-level progress entirely,
         so a campaign on it reports a ``progress`` that can never advance --
@@ -344,146 +309,3 @@ class ExecutionBackend(ABC):
         except OSError:
             # The campaign dir may not exist yet when the poller first probes.
             return 0
-
-
-def _sanitize(tag: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", tag)
-
-
-def stage_run_script(campaign_data: dict, work_dir: str, runs: int,
-                     options: "RunOptions", *, job_prefix: str = "",
-                     results_dir: str = "") -> str:
-    """Prepare a batch's configs + ``run.sh`` under ``work_dir`` (no execution).
-
-    Writes ``work_dir/out_template/`` (the prepared config tree) and a
-    ``work_dir/run.sh`` docker-compose runner whose baked default results dir is
-    ``results_dir/<campaign-id>``. Returns the ``run.sh`` path. Shared by
-    :class:`DockerBackend` (staging into a temp dir, then running) and
-    ``vast workspace run prepare-run`` (staging into a persistent, inspectable
-    directory).
-    """
-    execution = campaign_data.get("execution", {})
-    image = _scenario_image(execution, options)
-    config_path_result = os.path.join(work_dir, "out_template")
-    # gui selects the execution.local.gui parameter overrides, so it has to reach both the
-    # staged scenario.config and the packed job documents the local run actually mounts.
-    prepare_campaign_configs(config_path_result, campaign_data, gui=options.gui)
-    if options.on_configs_staged is not None:
-        options.on_configs_staged()
-
-    run_script = os.path.join(work_dir, "run.sh")
-    generate_compose_run_script(
-        runs, campaign_data, config_path_result,
-        execution.get("pre_command"), execution.get("post_command"),
-        image, results_dir, run_script,
-        skip_resource_allocation=options.skip_resource_allocation,
-        log_tree=options.log_tree, debug=options.debug, job_prefix=job_prefix,
-        gui=options.gui, built_images=options.images)
-    return run_script
-
-
-class DockerBackend(ExecutionBackend):
-    """Local backend: run a batch via docker compose into the campaign root.
-
-    Reuses :func:`generate_compose_run_script`, but invokes the generated script
-    with ``--campaign-dir <campaign_root>`` so the batch writes directly into the
-    campaign root (the controller owns the campaign id). The simulator-side
-    ``entrypoint.sh`` is unchanged.
-
-    A ``state`` (:class:`~robovast.execution.control_server.ControllerState`) makes
-    ``stop`` effective: ``run.sh`` loops over runs in a single subprocess, so
-    killing one scenario container only fails that run — the loop starts the next.
-    When ``state.stop_requested`` is set we SIGTERM the ``run.sh`` process, which
-    fires its own ``SIGTERM`` cleanup trap (``docker compose down``) and exits the
-    whole loop.
-    """
-
-    #: How often to check ``stop_requested`` while a batch subprocess runs.
-    _STOP_POLL_SECONDS = 0.5
-    #: Grace period for ``run.sh``'s cleanup trap before escalating to SIGKILL.
-    _STOP_GRACE_SECONDS = 15
-
-    def __init__(self, state=None):
-        self._state = state
-
-    def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
-                  runs: int, options: RunOptions) -> None:
-        os.makedirs(campaign_root, exist_ok=True)
-        image = _scenario_image(campaign_data.get("execution", {}), options)
-
-        # Stage the prepared configs + run.sh in a temp dir (not the results dir);
-        # run.sh copies out_template into the campaign root, so only results +
-        # campaign metadata remain there. The temp dir is removed afterwards.
-        with tempfile.TemporaryDirectory(prefix=f"robovast_{_sanitize(batch_tag)}_") as work_dir:
-            run_script = stage_run_script(
-                campaign_data, work_dir, runs, options,
-                job_prefix=batch_tag, results_dir=campaign_root)
-
-            cmd = [run_script, "--campaign-dir", os.path.abspath(campaign_root)]
-            if not options.gui:
-                cmd.append("--no-gui")
-            if options.start_only:
-                cmd.append("--start-only")
-            if options.abort_on_failure:
-                cmd.append("--abort-on-failure")
-            # Always, rather than only when it differs from a default: the default is now
-            # computed from the project and this installation's version, so there is no
-            # compile-time constant to compare against -- and passing the ref we resolved
-            # is what keeps run.sh from re-deriving one of its own.
-            cmd.extend(["--image", image])
-
-            logger.info("Launching batch %s: %s", batch_tag, " ".join(cmd))
-            # NOT check=True: in a failure-finding run, scenario runs are *meant*
-            # to fail and a non-zero exit is the signal; the controller reads the
-            # per-config results either way. --abort-on-failure changes the
-            # script's own behaviour, not ours.
-            returncode = self._run_watching_stop(cmd)
-        if returncode != 0:
-            logger.warning(
-                "Batch %s run script exited with code %d (some runs failed); "
-                "continuing to evaluate produced results.", batch_tag, returncode)
-
-    def _run_watching_stop(self, cmd) -> int:
-        """Run *cmd* to completion, terminating it if ``stop_requested`` is set.
-
-        The run script is launched in its own session (process group) so a stop
-        can SIGTERM the group — firing the script's cleanup trap, and reaching the
-        ``docker compose`` client it is waiting on, which a signal to the script alone
-        would not until that client returned — and, if that hangs, SIGKILL the group as
-        a backstop (:func:`~robovast.common.stop.terminate_group`).
-
-        Because the script runs in its *own* session it is not in the terminal's
-        foreground process group, so a terminal Ctrl+C never reaches it directly.
-        We forward the ``SIGINT`` to the script's session ourselves so its
-        ``handle_sigint`` trap runs exactly as when it ran in the foreground:
-        first press → graceful ``docker compose`` shutdown, repeats → force exit.
-        """
-        # nosec - generated, trusted run script
-        proc = subprocess.Popen(cmd, start_new_session=True)  # pylint: disable=consider-using-with
-        stopped = False
-        interrupted = False
-        returncode = None
-        while returncode is None:
-            try:
-                returncode = proc.wait(timeout=self._STOP_POLL_SECONDS)
-            except subprocess.TimeoutExpired:
-                if not stopped and self._state is not None and self._state.stop_requested:
-                    stopped = True
-                    logger.info("Stop requested — terminating batch run script (pid %d)",
-                                proc.pid)
-                    terminate_group(proc, self._STOP_GRACE_SECONDS)
-            except KeyboardInterrupt:
-                interrupted = True
-                self._forward_sigint(proc)
-        if interrupted:
-            # Ctrl+C tore the batch down — propagate so the command exits instead
-            # of proceeding to evaluate a half-finished campaign.
-            raise KeyboardInterrupt
-        return returncode
-
-    def _forward_sigint(self, proc: "subprocess.Popen") -> None:
-        """Relay Ctrl+C to the run script's session so its SIGINT trap fires."""
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-        except (ProcessLookupError, OSError) as e:
-            logger.debug("could not forward SIGINT (process gone?): %s", e)

@@ -51,8 +51,7 @@ def test_the_same_campaign_is_stalled_once_it_is_running():
 
 
 def test_the_default_changes_nothing():
-    """A campaign whose backend never reports the flag -- the local lane, which has no
-    queue -- behaves exactly as before."""
+    """A status that never reports the flag reads as one that reports it off."""
     assert stall_report(_status()) == stall_report(_status(waiting_for_capacity=False))
 
 
@@ -135,8 +134,8 @@ def test_the_wait_is_actually_published():
 
 
 def test_publishing_is_safe_without_a_control_state():
-    """The local lane has no queue and no state to tell; reporting one must never be able
-    to fail a batch."""
+    """A runner with no control state has nothing to tell; reporting a wait must never be
+    able to fail a batch."""
     _runner(None)._publish_capacity_wait(True)      # must not raise
 
 

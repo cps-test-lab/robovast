@@ -43,7 +43,7 @@ def _controller(tmp_path, mode="batch", **kw):
 
 
 def test_staging_is_what_wires_the_backends_to_the_controller(tmp_path):
-    """The lanes stage inside their own run_batch, so the controller cannot watch for it.
+    """The backend stages inside its own run_batch, so the controller cannot watch for it.
 
     Set on the options the controller drives rather than asked of whoever built them: a
     caller that forgot would leave the campaign holding its project for its whole life,

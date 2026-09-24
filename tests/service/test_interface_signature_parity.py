@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every implementation of an interface op must accept every parameter the op declares.
 
-``RobovastInterface`` is bound three times over — ``LocalTransport``, ``ClusterService``
+``RobovastInterface`` is bound three times over — ``NullService``, ``ClusterService``
 and ``HTTPTransport`` — and ``HTTPTransport`` forwards positionally. So adding a parameter
 to an op and its local implementation leaves a trap: the abstract method and the one implementation agree, every type check passes, and the
 route explodes at runtime with ``takes from 4 to 7 positional arguments but 8 were given``
@@ -24,12 +24,10 @@ import pytest
 
 from robovast.service.http_client import HTTPTransport
 from robovast.service.interface import RobovastInterface
-from robovast.service.local_transport import LocalTransport
-
-#: Every concrete binding of the interface. ``ClusterService`` is deliberately absent: it
-#: subclasses ``LocalTransport`` and overriding is optional, so an op it does not override
+from tests.service.null_service import NullService
+#: subclasses ``NullService`` and overriding is optional, so an op it does not override
 #: resolves to the parent's and is already covered.
-_IMPLEMENTATIONS = (LocalTransport, HTTPTransport)
+_IMPLEMENTATIONS = (NullService, HTTPTransport)
 
 
 def _abstract_ops():

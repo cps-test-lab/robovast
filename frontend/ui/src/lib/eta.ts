@@ -32,7 +32,7 @@ export function finishedRuns(status: Status, counts?: JobCounts): number {
 
 /** Seconds until the current batch's runs are done, or null when it can't be stated.
  *
- * A throughput figure — wall-clock per finished run, across however many jobs the lane
+ * A throughput figure — wall-clock per finished run, across however many jobs the cluster
  * runs at once — so it needs to know nothing about parallelism. It inherits that model's
  * one bias: a batch's tail finishes at falling parallelism, so the last few runs take
  * slightly longer than the average projects.

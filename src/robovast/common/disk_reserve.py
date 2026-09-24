@@ -36,7 +36,7 @@ deliver. It is a fraction because that threshold is one: an absolute default wou
 on a large disk and refuse everything on a small one. An operator who knows their disk states an
 absolute amount instead, or ``0`` for none.
 
-Here rather than in the service because the execution lane measures the same disk, and the lane
+Here rather than in the service because the execution backend measures the same disk, and it
 must not reach up into the service.
 """
 

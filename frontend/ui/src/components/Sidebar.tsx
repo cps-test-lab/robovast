@@ -180,7 +180,7 @@ export function Sidebar({
 // wherever the backend can report them — each labelled
 // and captioned with its own hover tooltip; the whole block reads "disconnected" until the backend
 // answers. Jobs is conditional because an always-present "0/0" on an empty track was indis-
-// tinguishable from a dead widget, on a lane that is simply idle. Hidden now means nothing is
+// tinguishable from a dead widget, on a cluster that is simply idle. Hidden now means nothing is
 // running or queued; "disconnected" remains the only way to read a service that isn't answering.
 function ConnectionStatus() {
   const usage = useQuery({
@@ -233,7 +233,7 @@ function ConnectionStatus() {
           be read, or a provider (a cloud bucket) with no capacity to report — and a 0/0
           track reads as either a full disk or a dead widget. Gated on the object, not on
           `backend`: the model is backend-neutral by contract, so the UI hides a row
-          because the numbers are absent, never because it recognised a lane. No colour
+          because the numbers are absent, never because it recognised a backend. No colour
           override: MeterBar turns red at 0.9, which is where kubelet's default hard
           eviction threshold (nodefs.available<10%) starts killing pods. */}
       {u.disk && u.disk.capacity_bytes > 0 ? (

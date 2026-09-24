@@ -76,7 +76,7 @@ def test_every_planned_container_reaches_the_launch_record(tmp_path):
 
     write_launch_record(tmp_path, CreateCampaignRequest(
         workspace_id="ws", config_path="p.vast", config_filter="", campaign_name="c",
-        runs=1, postprocess=True, upload_to_share=False, show_gui=False, description=""))
+        runs=1, postprocess=True, upload_to_share=False, description=""))
 
     runner = types.SimpleNamespace(plan=types.SimpleNamespace(containers=(
         types.SimpleNamespace(name="sut", image="r.example.com/sut@sha256:a", roles=("sut",)),

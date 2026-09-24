@@ -4,24 +4,12 @@
 
 ``load_plugins()`` imports **every** registered CLI plugin on every invocation, so one
 module-level import in one plugin is paid for by ``vast login``, ``vast wait`` and
-``vast --help`` alike. Four such imports in ``execution_utils/cli.py`` pulled the whole
-Kubernetes client into a command that never touches a cluster: 1777 modules where 625 do.
+``vast --help`` alike. Heavy dependencies are imported in the command body that needs them.
 
-That is invisible from the outside -- nothing fails, it is just slow and it makes the
-cluster stack a hard requirement of the CLI. So it needs a test rather than a convention,
-and the test runs in a **subprocess**: by the time the rest of the suite has run,
-``sys.modules`` in this process says nothing about what a fresh CLI start would import.
-
-Deferring is the fix, not removing: the operator commands still need these, they just
-import them in the command body.
-
-``numpy`` and ``scenario_execution`` were once excluded here, as coming from
-``robovast.common`` and needing a larger untangling. That untangling is done -- the CLI
-root imported ``load_config`` for one call site, ``common/common.py`` imported both at
-module level for three ``isinstance`` branches and one function, and
-``variation/parameter_variation.py`` imported numpy for two seeding calls -- so they are
-now held to the same rule as the rest. 1777 modules originally, 624 after the cluster
-lane was deferred, 383 now, and nothing heavy at all.
+Nothing fails when this rule is broken -- the CLI is just slow and the cluster stack becomes
+a hard requirement of it -- so it is a test, and the test runs in a **subprocess**: by the
+time the rest of the suite has run, ``sys.modules`` in this process says nothing about what
+a fresh CLI start would import.
 
 ``convert_dataclasses_to_dict`` shows the trick worth reusing: it consults numpy only
 when ``sys.modules`` already has it. If nothing imported numpy, no object in the process
@@ -35,8 +23,8 @@ import textwrap
 
 import pytest
 
-#: Nothing a plain ``vast`` invocation needs: the first five belong to the cluster lane
-#: and the local Docker lane, the last two to config generation and scenario parsing.
+#: Nothing a plain ``vast`` invocation needs: the first five belong to the cluster and
+#: container clients, the last two to config generation and scenario parsing.
 FORBIDDEN = ("kubernetes", "boto3", "google", "paramiko", "docker",
              "numpy", "scenario_execution")
 

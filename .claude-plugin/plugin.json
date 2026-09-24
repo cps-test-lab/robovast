@@ -1,5 +1,5 @@
 {
   "name": "robovast",
-  "description": "Never end a turn silently in the middle of a campaign.",
+  "description": "Never end a turn silently in the middle of a campaign, and write the changelog for a release.",
   "version": "0.1.0"
 }

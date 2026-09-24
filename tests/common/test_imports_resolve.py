@@ -4,10 +4,8 @@
 
 This repo imports inside functions on purpose and at scale -- to keep module import cheap,
 and to let one distribution reach another only when it actually has to. The cost is that a
-deferred import is not checked until it runs. A caller was once committed without its
-callee, and the whole suite passed: nothing imports that module at test time, so the
-``ImportError`` waited for a user on the cluster lane, survived two further commits, and
-shipped in a release.
+deferred import is not checked until it runs, so a caller committed without its callee
+passes the whole suite when nothing imports that module at test time.
 
 So the check is static rather than dynamic. Nothing here is imported -- both sides are read
 as ASTs -- which is what lets it cover modules that need kubernetes, ROS or a GPU to import,

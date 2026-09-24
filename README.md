@@ -16,8 +16,8 @@ tables, plots and a web view of each run rather than a directory of bags.
 - **Say what to vary, not how.** A campaign is one file: which scenario, which factors, how
   many levels, how many repetitions. RoboVAST does the expansion, the scheduling and the
   bookkeeping.
-- **One campaign, two places to run it.** The same file runs on your laptop's Docker daemon
-  or as jobs across a Kubernetes cluster. Nothing about the campaign changes; only where it
+- **One campaign, any cluster.** The same file runs as jobs on a one-node cluster on your
+  laptop or across a Kubernetes cluster. Nothing about the campaign changes; only where it
   runs and how fast it finishes.
 - **Reproducible by construction.** Pinned container images, recorded seeds and
   configuration, a run's full provenance beside its data. A result can be traced, and a
@@ -37,11 +37,12 @@ tables, plots and a web view of each run rather than a directory of bags.
 
 ```bash
 pip install robovast-client              # drive a RoboVAST service someone runs for you
-pip install "robovast[nav,roqsim]"       # run campaigns yourself, with Docker
-pip install robovast-cluster             # run them across a Kubernetes cluster
+pip install "robovast[nav,roqsim]"       # the core: configuration, results, the MCP server
+pip install robovast-cluster             # deploy and run the service on a Kubernetes cluster
 ```
 
-Then `vast serve` starts the service, and `vast workspace run` launches a campaign.
+Then `vast cluster setup` deploys the service — into minikube on your own machine, or a
+cluster for a team — and `vast workspace run` launches a campaign.
 
 Documentation, from the quickstart to writing your own variation type or simulator backend:
 [cps-test-lab.github.io/robovast](https://cps-test-lab.github.io/robovast/).

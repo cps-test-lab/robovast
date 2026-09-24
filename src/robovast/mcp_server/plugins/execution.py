@@ -17,8 +17,7 @@
 """MCP plugin: running a campaign, and watching it run.
 
 A strict client of a running ``robovast-service`` — the single execution authority. There
-is no local subprocess path: when no service answers these tools fail loudly rather than
-silently running a divergent lane.
+is no local subprocess path: when no service answers these tools fail loudly.
 
 Building derived images lives here too. A build is part of a campaign's driven work
 (``start_campaign`` performs one when a container in ``execution.containers`` adds
@@ -279,12 +278,12 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    allow_opaque_image: bool = False,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
-                   show_gui: bool = False, description: str = "", priority: int = 0,
+                   description: str = "", priority: int = 0,
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
     The only way an experiment is executed: a ``docker compose`` produces no pinned image,
-    no provenance and no repetitions, so its output compares with nothing. Size the lane
+    no provenance and no repetitions, so its output compares with nothing. Size the run
     with ``get_resource_usage`` first, and pilot one configuration before the full sweep
     (``config_filter`` + ``runs=1``).
 
@@ -311,9 +310,6 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
-        show_gui: Watch **one** run in the simulator's window (never a sweep). Local
-            ``vast serve`` on local Docker only, and the window opens on *that* machine.
-            **Do not close it** — the run then never returns.
         allow_opaque_image: Launch anyway when a container's own image declares no
             ``provenance:``. Refused by default: nothing in the results could then say what
             ran. Prefer fixing it — add ``provenance: {source, revision}`` there, or declare
@@ -357,7 +353,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                 ("workspace_id", workspace_id), ("config_path", config_path),
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("show_gui", show_gui), ("description", description),
+                ("description", description),
                 ("priority", priority)) if value]
             if supplied:
                 return {"error":
@@ -382,7 +378,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
             allow_opaque_image=allow_opaque_image, priority=priority,
-            upload_to_share=upload_to_share, show_gui=show_gui))
+            upload_to_share=upload_to_share))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
@@ -450,8 +446,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
     ``false``: inside the declared budget. ``null``: **no verdict is possible** — not
     "healthy"; ``stall_verdict`` says why (no declared timeout, a phase that executes no
-    runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself. The local
-    lane never kills an undeclared one, so a stalled local run stays alive to inspect.
+    runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
     itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
@@ -469,7 +464,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     counts the rounds since the best last moved. Read the SPREAD, not just the best: a flat
     best-so-far with a wide range means the search is still exploring, while a range that has
     collapsed onto the best value means it is re-sampling one region and further batches will buy
-    little. Live during the run — the only route on the cluster lane, where SQL reads a
+    little. Live during the run — the only route on the cluster, where SQL reads a
     snapshot published only when the campaign ends.
 
     Weigh it against ``budget`` before acting: a ``no_improvement`` or ``target_objective``
@@ -540,7 +535,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
 
     Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
     default**: ``build`` (where a campaign that failed before it ever ran explains itself),
-    ``plugin install``, ``variation``, ``run`` (the controller, plus compose output locally),
+    ``plugin install``, ``variation``, ``run`` (the controller),
     ``postprocessing``. A build is large and comes first, so on a campaign that has run,
     narrow instead of paging: ``phase="run"``, or ``phase="build", summarize=True``.
 
@@ -705,8 +700,7 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
 
 
 def list_campaign_jobs(campaign_id: str) -> dict:
-    """The campaign's current-batch jobs, live — one run locally, one Kubernetes Job each
-    on the cluster. Pair with ``get_job_log`` to read a running one.
+    """The campaign's current-batch jobs, live — one Kubernetes Job each. Pair with ``get_job_log`` to read a running one.
 
     To end a single ``running`` job that will not finish on its own, ``stop_job`` — it
     leaves the rest of the campaign running and records that run as ``killed``.
@@ -728,8 +722,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         both are counted apart because neither is one of the campaign's runs; neither can
         be stopped individually.
 
-        ``node`` is the machine the job's pod was placed on -- absent on the local lane, and on
-        a job the scheduler has not placed yet. Reading it across a listing says whether a
+        ``node`` is the machine the job's pod was placed on -- absent on a job the scheduler
+        has not placed yet. Reading it across a listing says whether a
         batch is spread over the cluster or piled onto one machine.
 
         ``started_at`` is epoch seconds -- subtract from now for the age; it is the JOB's
@@ -745,10 +739,10 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         run.
 
         An absent ``usage`` -- or an absent field within it -- means **not measured**, never
-        zero: the job is not running, the lane sets no container limits, or the container left
+        zero: the job is not running, the cluster sets no container limits, or the container left
         a limit open (which means the whole node, so no ceiling is true). When the cause is
         worth acting on, the response carries ``metrics_unavailable`` saying so; without that
-        key, missing numbers are simply numbers this lane does not produce. Do not read a
+        key, missing numbers are simply numbers this deployment does not produce. Do not read a
         listing with no usage anywhere as an idle cluster.
 
         ``blocked`` cannot start and will not recover on its own (an unpullable image,
@@ -972,10 +966,10 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
 
 
 def get_resource_usage() -> dict:
-    """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
+    """Can the cluster run my sweep, and how long will it take? Capacity, usage, parallelism.
 
     Capacity **now**; what a finished run consumed is in its campaign's data
-    (``describe_campaign_data``). Reading the nodes also confirms the lane is reachable,
+    (``describe_campaign_data``). Reading the nodes also confirms the cluster is reachable,
     which ``get_service_info`` cannot.
 
     Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
@@ -984,13 +978,13 @@ def get_resource_usage() -> dict:
 
     **Size a sweep against ``*_reserved``, judge a finished one against ``*_measured``**:
     reserved is what the scheduler committed, measured is what was consumed, and
-    ``cpu_used`` aliases whichever the lane leads with. A ``null`` is "no such reading",
+    ``cpu_used`` aliases whichever the backend leads with. A ``null`` is "no such reading",
     **never zero**; ``metrics_unavailable`` says why.
 
     ``disk`` is what runs write into, ``results`` the volume campaigns live on. On a cluster
     ``disk`` is ONE node's filesystem (``disk_node``), not a sum, and ``results`` is reported
     only where that volume is separately measurable. ``storage_refusal``, when set, says why
-    new work is refused for space. ``jobs_running``/``jobs_pending`` count what the lane is
+    new work is refused for space. ``jobs_running``/``jobs_pending`` count what the cluster is
     already busy with across every campaign, so free cores behind a long queue are not as
     free as they look.
     """
@@ -1224,7 +1218,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
 @lacks(timeout="a command gets a fixed cap, a scenario its execution.timeout")
 def exec_in_container(command: str = "", workspace_id: str = "", config_path: str = "",
                       campaign_id: str = "", config_name: str = "",
-                      keep_alive: bool = False, show_gui: bool = False,
+                      keep_alive: bool = False,
                       tail: int = 200, container: str = "",
                       fresh: bool = False) -> dict:
     """**Test a container and its setup.** Runs a command in the experiment image.
@@ -1234,7 +1228,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
 
     Three questions: is the image right (omit ``config_name`` — imports, ``ros2 pkg list``,
     file checks); does one config run (name a ``config_name``; empty ``command`` starts its
-    scenario, detached); what does bring-up look like (``keep_alive``, ``show_gui``).
+    scenario, detached); what does bring-up look like (``keep_alive``).
 
     **The source you name decides which image.** ``workspace_id`` runs what that project
     builds *now* from the serve host's sources — possibly stale — and never builds
@@ -1258,8 +1252,6 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         keep_alive: Leave the container running for follow-up calls.
         fresh: Replace the container rather than join a held one, so the image is
             re-fetched. Discards whatever that container held.
-        show_gui: Show the simulator's window on the serve host's display — **local ``vast
-            serve`` on local Docker only**. Changing it between calls replaces the container.
         tail: Lines kept per stream.
 
     Returns:
@@ -1276,7 +1268,7 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         result = client.exec_in_container(ExecRequest(
             command=command, workspace_id=workspace_id, config_path=config_path,
             campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive, show_gui=show_gui,
+            keep_alive=keep_alive,
             container=container, fresh=fresh))
     except Exception as e:  # noqa: BLE001
         return error_result(e)

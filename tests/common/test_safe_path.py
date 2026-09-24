@@ -57,9 +57,9 @@ def test_a_nonexistent_but_contained_path_is_allowed(root):
 
 # -- check_relative: the half that applies where there is no filesystem ------
 # An object-store key has nothing to resolve against — no symlink to follow, no
-# ``resolve()`` to verify with — so the cluster's results lane composes ``prefix + rel``
-# after this check alone. It must reject exactly the shapes ``safe_join`` rejects
-# up front, or the object lane quietly becomes a fourth, weaker check.
+# ``resolve()`` to verify with — so the cluster's object-store results compose
+# ``prefix + rel`` after this check alone. It must reject exactly the shapes ``safe_join``
+# rejects up front, or the object-store path quietly becomes a fourth, weaker check.
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "/etc/passwd", "~/secrets",

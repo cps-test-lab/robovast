@@ -5,8 +5,8 @@
 
 Lives here rather than beside the in-process service because both sides of the version
 handshake need it: the HTTP client reports its own version, the service reports the one it
-loaded. Keeping it in ``local_transport`` meant a client could not ask "what am I running?"
-without importing the whole in-process server.
+loaded. Kept apart from the service so a client can ask "what am I running?" without
+importing the whole server.
 """
 
 from importlib.metadata import PackageNotFoundError

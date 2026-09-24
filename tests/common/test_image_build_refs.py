@@ -7,11 +7,8 @@ Dockerfile already pins everything a rebuild needs -- the base by digest, both a
 dated snapshot so a rebuild resolves the same versions rather than whatever is current -- but
 those are build ARGs, invisible from outside the build. The labels are what carry them out.
 
-This block was written by nobody and read by nobody on the cluster lane: it reads labels with
-`docker inspect`, and the controller pod that writes execution.yaml ships no docker CLI, so
-every lookup returned "". Its docstring said absent means "not knowable here", which was true
-and useless -- the answer was one registry read away, and the protocol check was already making
-that read.
+The controller pod that writes execution.yaml ships no docker CLI, so the labels are supplied
+from the registry read the protocol check already makes, rather than from `docker inspect`.
 """
 
 from robovast.common.execution import _BUILD_REF_LABELS, image_build_refs
@@ -32,8 +29,8 @@ def _labels(**over):
 
 
 def test_supplied_labels_are_used_where_no_docker_exists():
-    """The cluster lane's whole problem: the answer exists, the probe cannot reach it."""
-    refs = image_build_refs({"sut": {"image": BASE}}, {"sut": BASE},
+    """In the cluster the answer exists but `docker inspect` cannot reach it."""
+    refs = image_build_refs({"sut": {"image": BASE}},
                             labels_by_role={"sut": _labels()})
     assert refs["sut"]["base_image"] == BASE
     assert refs["sut"]["ubuntu_snapshot"] == "20260819T003043Z"
@@ -43,7 +40,7 @@ def test_supplied_labels_are_used_where_no_docker_exists():
 
 def test_a_role_with_no_supplied_labels_records_nothing_rather_than_guessing():
     """Absent must stay "not knowable", never "nothing was used" -- a rebuild would follow it."""
-    refs = image_build_refs({"sut": {"image": BASE}}, {"sut": BASE},
+    refs = image_build_refs({"sut": {"image": BASE}},
                             labels_by_role={"sut": {}})
     assert "sut" not in refs
 
@@ -56,7 +53,7 @@ def test_the_recipe_covers_every_pin_the_dockerfile_makes():
     """
     for key in ("base_image", "ubuntu_snapshot", "ros_snapshot"):
         assert key in _BUILD_REF_LABELS, f"{key} is not collected"
-    refs = image_build_refs({"sut": {}}, {"sut": BASE}, labels_by_role={"sut": _labels()})
+    refs = image_build_refs({"sut": {}}, labels_by_role={"sut": _labels()})
     assert {"base_image", "ubuntu_snapshot", "ros_snapshot"} <= set(refs["sut"])
 
 
@@ -66,7 +63,7 @@ def test_a_declared_provenance_still_wins_over_the_image():
     refs = image_build_refs(
         {"sut": {"image": BASE, "provenance": {"source": "https://example.com/theirs",
                                                "revision": "theirs"}}},
-        {"sut": BASE}, labels_by_role={"sut": _labels()})
+        labels_by_role={"sut": _labels()})
     assert refs["sut"]["source"] == "https://example.com/theirs"
     assert refs["sut"]["revision"] == "theirs"
     assert refs["sut"]["declared"] is True

@@ -29,7 +29,7 @@ describe('priorityInputError', () => {
 })
 
 describe('offersQueueControls', () => {
-  it('offers them only on a lane that says it queues campaigns', () => {
+  it('offers them only on a service that says it queues campaigns', () => {
     expect(offersQueueControls({ can_schedule: true })).toBe(true)
     expect(offersQueueControls({ can_schedule: false })).toBe(false)
   })

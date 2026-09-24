@@ -285,7 +285,7 @@ class RoqsimBackend(SimulatorBackend):
         Asked of every world the campaign owns rather than only of the ones a test here
         believes are more than one file, because the container this costs is one the caller
         already has: ``validate_project`` and ``preview_configurations`` compose inside the
-        lane's aux-runner context and hold it, sharing one warm container across an authoring
+        service's aux-runner context and hold it, sharing one warm container across an authoring
         loop.
 
         A package ref (``roqsim_scenes:depot``) still needs nothing, and says so without a

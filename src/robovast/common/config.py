@@ -215,13 +215,12 @@ class ResourcesConfig(BaseModel):
             - minikube: 20Gi
 
     ``cpu`` takes fractional cores (``0.5``) and the millicore spelling Kubernetes uses
-    (``"500m"``), not only whole cores. On the cluster lane a campaign's throughput is
+    (``"500m"``), not only whole cores. On the cluster a campaign's throughput is
     ``quota // pod_request``, so rounding a measured 0.3-core sidecar up to a whole core is
-    paid on **every job of the sweep** — and both lanes have always accepted the fractional
-    value (the Kubernetes manifest takes ``str(cpu)``, Compose takes ``cpus: '<cpu>'``). The
-    integer-only annotation was the only thing rejecting it.
+    paid on **every job of the sweep** — and the Kubernetes manifest takes ``str(cpu)``, so
+    the integer-only annotation was the only thing rejecting a fractional value.
     """
-    # ``int`` first so a whole-core declaration stays an int: the lanes render the value with
+    # ``int`` first so a whole-core declaration stays an int: the manifest renders it with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
     # "4" to "4.0" for no reason.
     model_config = ConfigDict(extra='forbid')
@@ -263,7 +262,7 @@ class ResourcesConfig(BaseModel):
     #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
     #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
     #: because pydantic's default ``extra='ignore'`` was dropping it from the model, so the
-    #: documented option only worked where a lane happened to read the raw mapping.
+    #: documented option only worked where the raw mapping happened to be read.
     gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
     @field_validator('cpu', 'cpu_limit')
@@ -560,7 +559,7 @@ def infer_sizing(execution) -> str:
     """The sizing mode *execution* means, whether or not it says so.
 
     **One rule, reachable from both sides.** The model applies it in `resolve_sizing`; the
-    cluster lane needs the same answer from the RAW section, because what reaches a backend is
+    backend needs the same answer from the RAW section, because what reaches a backend is
     the parsed YAML rather than the validated model -- so an inferred mode was invisible there
     and every campaign that declared nothing silently ran as `fixed`, which is the opposite of
     what declaring nothing asks for. Written once so the two cannot answer differently.
@@ -856,8 +855,8 @@ class ContainerConfig(BaseModel):
 
 #: Size of the shared ``/dev/shm`` a run gets when its ``.vast`` does not say.
 #:
-#: Not a guess: it is eight times the 64 MiB the local lane hands out for free, which is
-#: what every campaign has in fact been running inside, and it stays under the threshold at
+#: Not a guess: it is eight times Docker's own 64 MiB default, which is what every
+#: campaign had in fact been running inside, and it stays under the threshold at
 #: which ``get_campaign_summary`` would advise lowering it -- a default that immediately
 #: advised against itself would train the reader to ignore the advice. The pool is a tmpfs
 #: charged to the pod, so this is paid on every job of every sweep; a campaign that measures
@@ -873,8 +872,8 @@ DEFAULT_SHM_SIZE = "512Mi"
 #: cannot see. ``SCENARIO_PARAMETER_FILE`` is the sharpest case: repointing it changes which
 #: parameters the runner reads while every result still carries the configuration's name.
 #:
-#: **What deliberately does NOT belong here** is the handful of display and GPU hints a lane
-#: arranges -- ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*``, ``QT_X11_NO_MITSHM``.
+#: **What deliberately does NOT belong here** is the handful of display and GPU hints the
+#: backend arranges -- ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*``, ``QT_X11_NO_MITSHM``.
 #: Those steer how a container renders, not whether its results mean what they say, and a
 #: campaign has legitimate reasons to set them.
 #:
@@ -884,7 +883,7 @@ DEFAULT_SHM_SIZE = "512Mi"
 #: validator would protect that field and silently not the other.
 #:
 #: This list is checked against the emitters by ``tests/common/test_reserved_env.py``, which
-#: fails when a lane starts injecting a name that is not registered here. A hand-maintained
+#: fails when the backend starts injecting a name that is not registered here. A hand-maintained
 #: denylist goes stale silently -- it passes while it protects nothing -- and that test is
 #: what stops this one from doing so.
 RESERVED_ENV_NAMES = frozenset({
@@ -903,6 +902,8 @@ RESERVED_ENV_NAMES = frozenset({
     'AVAILABLE_CPUS', 'AVAILABLE_MEM',
     # how the pod reaches the service's data plane
     'ROBOVAST_DATA_URL', 'ROBOVAST_TOKEN', 'ROBOVAST_CAMPAIGN_ID',
+    # where the run happened, hashed into its provenance record
+    'NODE_NAME',
 })
 
 
@@ -984,8 +985,7 @@ class JobsConfig(BaseModel):
 
 
 class KubernetesConfig(BaseModel):
-    """``execution.kubernetes``: settings only the cluster lane reads; the local lane ignores
-    the block."""
+    """``execution.kubernetes``: settings that name things about the cluster."""
     model_config = ConfigDict(extra='forbid')
 
     jobs: Optional[JobsConfig] = None
@@ -1007,7 +1007,7 @@ def archived_kubernetes_drops(config: dict) -> list[tuple[str, ...]]:
 
     Serves :func:`validate_config`'s lenient mode and the retrigger's staged copy, which must
     agree. The rule is what the block did when the campaign ran. ``jobs.node`` is the only
-    key any lane reads, so a block without it changed nothing and is dropped whole when it
+    key the backend reads, so a block without it changed nothing and is dropped whole when it
     does not validate. A block with it ran pinned and keeps the pin; only the keys refused
     by name (``jobs.node_labels``, ``control``) go, and anything else in it is validated as
     usual.
@@ -1049,7 +1049,7 @@ def _drop_archived_kubernetes_keys(config: dict) -> dict:
 
 
 class ExecutionConfig(BaseModel):
-    #: Settings only the cluster lane reads. See :class:`KubernetesConfig`.
+    #: Settings for the Kubernetes backend. See :class:`KubernetesConfig`.
     kubernetes: Optional[KubernetesConfig] = None
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
     #: the schema, ``exec_in_container`` and a scenario's ``remote()`` endpoints. Three
@@ -1091,8 +1091,8 @@ class ExecutionConfig(BaseModel):
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
     # Maximum wall-clock time in seconds for one JOB -- one unit of work, which is one run
-    # unless ``runs_per_job`` packs several. A job is the granularity both lanes can
-    # actually enforce at (a Job's activeDeadlineSeconds; a compose step), so the number is
+    # unless ``runs_per_job`` packs several. A job is the granularity the cluster can
+    # actually enforce at (a Job's activeDeadlineSeconds), so the number is
     # used as declared rather than reconstructed from a per-run figure.
     timeout: Optional[int] = None
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
@@ -1123,18 +1123,26 @@ class ExecutionConfig(BaseModel):
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.
     #
-    # Defaulted rather than left to the lanes, because the two lane defaults DISAGREE and
-    # both are traps: the cluster lane's memory-backed ``emptyDir`` has no size limit, so
+    # Defaulted rather than left to the platform, because the platform's default is a trap: a memory-backed ``emptyDir`` has no size limit, so
     # it is sized from the pod's memory limits -- or, with none declared, from the whole
-    # node -- while the local lane inherits Docker's 64 MB. A container that overruns the
+    # node. A container that overruns the
     # pool dies of SIGBUS (exit 135), not a clean OOM, so the death arrives with nothing
-    # explaining it. One default here is what makes a `.vast` mean the same thing on both
-    # lanes without every campaign having to say so.
+    # explaining it. One default here is what makes a `.vast` mean the same thing on every
+    # cluster without every campaign having to say so.
     #
-    # There is deliberately no way to ask for "the lane's own default": it is the thing
+    # There is deliberately no way to ask for "the platform's own default": it is the thing
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_local(cls, data):
+        """``execution.local`` has no effect on any run, so a file declaring it is refused."""
+        if isinstance(data, dict) and "local" in data:
+            raise ValueError("execution.local is not a setting: campaigns run on a cluster, "
+                             "where these overrides apply to nothing. Remove the block.")
+        return data
 
     @model_validator(mode="after")
     def resolve_sizing(self):
@@ -1213,14 +1221,14 @@ class ExecutionConfig(BaseModel):
     @field_validator('shm_size')
     @classmethod
     def validate_shm_size(cls, v: str) -> str:
-        """Reject a value that is not a memory quantity, here rather than at the lane.
+        """Reject a value that is not a memory quantity, here rather than at the backend.
 
-        Both lanes pass this string through to a manifest untouched, so an unparseable one
-        otherwise surfaces as a Kubernetes rejection or a ``docker compose`` error, minutes
+        The backend passes this string through to a manifest untouched, so an unparseable one
+        otherwise surfaces as a Kubernetes rejection, minutes
         into a campaign and nowhere near the line that caused it.
 
         An explicit ``null`` is rejected along with the rest. It reads as "no opinion", but
-        the thing it would ask for -- whatever each lane defaults to on its own -- is what
+        the thing it would ask for -- whatever the platform defaults to on its own -- is what
         this field exists to stop a campaign from getting by accident.
         """
         if to_bytes(v) is None:
@@ -1234,8 +1242,8 @@ class ExecutionConfig(BaseModel):
     def validate_no_reserved_env_vars(cls, v: Optional[list[dict[str, str]]]) -> Optional[list[dict[str, str]]]:
         """Refuse an ``env`` entry naming something RoboVAST sets itself.
 
-        Refused at validation rather than left to the lanes, because whether a campaign's
-        value actually displaces RoboVAST's depends on emission order and on each lane's
+        Refused at validation rather than left to the backend, because whether a campaign's
+        value actually displaces RoboVAST's depends on emission order and on the manifest's
         duplicate-key semantics -- so "it happens not to win today" is not a property to
         rely on, and a campaign that quietly had no effect is indistinguishable from one
         that worked.
@@ -1341,9 +1349,8 @@ DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 def declared_job_seconds(execution_params: dict) -> Optional[int]:
     """``execution.timeout`` as declared: the budget for one **job**, or ``None``.
 
-    A job is what either lane can actually bound -- the cluster sets
-    ``activeDeadlineSeconds`` on the Job, and the local lane wraps a whole compose step --
-    so this is the number they use unchanged. It is deliberately not scaled by
+    A job is what the cluster can actually bound -- it sets ``activeDeadlineSeconds`` on the
+    Job -- so this is the number it uses unchanged. It is deliberately not scaled by
     ``runs_per_job``: a packed job's budget is the budget its author stated, not a per-run
     figure multiplied back up.
     """
@@ -1390,10 +1397,8 @@ def job_deadline_seconds(execution_params: dict) -> int:
     runs would be killed after the first few. A declared number is a statement about the
     job, and is taken at face value.
 
-    The backstop is the cluster lane's alone. The local lane enforces a **declared**
-    timeout exactly as the cluster does (``execute_local`` wraps each compose step in it),
-    but leaves an undeclared one unbounded rather than inventing an hour: enforcing a value
-    the author set is a different decision from supplying one they did not.
+    The backstop is the backend's: enforcing a value the author set is a different decision
+    from supplying one they did not, and only the backend knows what an unbounded run costs.
     """
     declared = declared_job_seconds(execution_params)
     if declared is not None:
@@ -2724,7 +2729,18 @@ def validate_config(config: dict, strict: bool = True):
     if not strict:
         config = _drop_unknown_configuration_keys(config)
         config = _drop_archived_kubernetes_keys(config)
+        config = _drop_archived_local(config)
     return get_validated_config(config, ConfigV1)
+
+
+def _drop_archived_local(config: dict) -> dict:
+    """A copy of an archived *config* without ``execution.local``, which no run applies."""
+    if "local" not in (config.get("execution") or {}):
+        return config
+    config = copy.deepcopy(config)
+    del config["execution"]["local"]
+    logger.warning("execution.local applies to no run; it is dropped")
+    return config
 
 
 def get_validated_config(config: dict, config_class):

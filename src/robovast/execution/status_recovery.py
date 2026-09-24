@@ -231,7 +231,7 @@ def record_step_outcome(campaign_dir: str | Path, *,
         ok, message = postprocessing
         if ok is None:
             # ``ok is None`` is "the step's outcome could not be established" -- the
-            # cluster lane returns it when the driver can no longer read the Job that is
+            # cluster returns it when the driver can no longer read the Job that is
             # doing the work. Nothing is written: the recorded outcome is a claim about
             # the campaign, and this call has no claim to make. The previous record stands
             # (a success stays a success, an earlier error stays readable) and the next

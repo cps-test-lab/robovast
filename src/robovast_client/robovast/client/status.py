@@ -54,7 +54,7 @@ class Phase(StrEnum):
     this enum is the *known* vocabulary, not a lock on the field.
     """
     # -- live: the campaign is still working ------------------------------
-    # Ordered by when they occur: acceptance → lane pre-flight → image build (if any)
+    # Ordered by when they occur: acceptance → pre-flight → image build (if any)
     # → plugin install (if any) → config-variation expansion (batch) → the run loop
     # → finish → postprocess → share. (``importing`` is the exception: it is where a
     # campaign that was taken in rather than run *starts*.) ``initializing``, ``building``, ``plugin
@@ -63,7 +63,7 @@ class Phase(StrEnum):
     #
     # ``initializing`` is the phase a campaign has from the instant the service
     # accepts it: registered, listed, and addressable by id, with none of the slow
-    # lane pre-flight done yet (project push, registry/base-image resolution, the
+    # pre-flight done yet (project push, registry/base-image resolution, the
     # object-store tunnel). It exists because doing that work *before* registering the
     # campaign lets a caller whose start call timed out poll every read path and be
     # told, truthfully and misleadingly, that no such campaign exists -- which is
@@ -201,7 +201,7 @@ class HealthFinding(BaseModel):
     """
 
     #: Which job reported it. Present because a campaign's findings arrive from several
-    #: running jobs at once on the cluster lane, and "something is wedged" is not actionable
+    #: running jobs at once on the cluster, and "something is wedged" is not actionable
     #: without saying which.
     job_name: str
     level: str          # error | warn -- the only word RoboVAST interprets
@@ -298,8 +298,8 @@ class Status(BaseModel):
     # A bounded flag, which is what this payload allows: no series, no per-read computation.
     # While it is set no stall verdict is possible -- the deadline is a per-RUN budget and no
     # run can be running -- which is the same rule ``stall_report`` already applies to a
-    # phase that executes no runs. Written by the lane that has a queue; the local lane has
-    # none and leaves it False, so nothing about a local campaign changes.
+    # phase that executes no runs. Written by a backend with an admission queue;
+    # without one it stays False.
     waiting_for_capacity: bool = False
     # Wall-clock start of the **current batch's** runs. ``RunProgress`` is per-batch and
     # every counter in it resets when a batch begins, while the campaign's ``started_at``
@@ -360,8 +360,8 @@ class Status(BaseModel):
     # runs are the deliverable) and is re-triggerable from disk (service ``run_share``).
     # Cleared on a successful (re-)triggered upload.
     share_error: Optional[str] = None
-    # Total bytes the campaign's results occupy in their durable home -- the local results
-    # tree, or the object store on a cluster lane. Bounded state written once, at the end of
+    # Total bytes the campaign's results occupy in their durable home.
+    # Bounded state written once, at the end of
     # the run, by the backend hook that knows where that home is
     # (``ExecutionBackend.campaign_results_bytes``); this payload's rule permits a counter,
     # not a series, and this is one number set once.
@@ -500,7 +500,7 @@ NO_STALL_VERDICT_QUEUED = (
     "cannot judge: every job of the current batch is queued for cluster capacity, so no run "
     "of this campaign is running and none can complete. The no-progress deadline is a "
     "per-run budget, and this is a queue rather than a stalled run. It resolves itself when "
-    "capacity frees; get_resource_usage() shows what the lane is busy with.")
+    "capacity frees; get_resource_usage() shows what the cluster is busy with.")
 
 NO_STALL_VERDICT_OFF_RUN = (
     "cannot judge: the campaign is in '{phase}', where no run executes, and the only budget "

@@ -169,7 +169,7 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
        containers at all has exactly one, so there the campaign-level image is this role's.
     3. What the campaign *declared* -- ``images``, else the frozen ``.vast`` -- which is a
        tag, so *resolve_digest* has to turn it into bytes. This is what rescues campaigns
-       recorded before (1) existed on their lane.
+       recorded before (1) existed.
 
     **The campaign-level image is never substituted for a role that owns a container.** That
     substitution is the bug this function exists to prevent. It is refused only on *positive*
@@ -180,8 +180,8 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
     Args:
         campaign_dir: the ``campaign-<id>`` directory.
         role: a container role, e.g. ``simulation``.
-        resolve_digest: ``ref -> digest | None``, supplied by the lane that can answer it
-            (locally ``docker inspect``). Omitted when the lane cannot, which turns source
+        resolve_digest: ``ref -> digest | None``, supplied by the backend that can answer it.
+            Omitted when none can, which turns source
             (3) into an explicit refusal instead of a wrong answer.
 
     Raises:
@@ -213,8 +213,8 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
             tried.append(f"the campaign's .vast declares no {role!r} container or role")
     # The container whose image is wanted: the role's own, or the one it folds onto.
     target = backing.name if backing is not None else None
-    # `images` is keyed by declared role, `image_revisions` by container name on the cluster
-    # lane and by role on the local one -- so look under both rather than assuming they agree.
+    # `images` is keyed by declared role, `image_revisions` by container name (by role in
+    # older records) -- so look under both rather than assuming they agree.
     keys = [role] if target in (None, role) else [role, target]
 
     # 1. what ran, per role.
@@ -258,7 +258,7 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
             f"{source}={declared!r} is a mutable tag, and " + (
                 "it could not be resolved to a digest here"
                 if resolve_digest else
-                "this lane cannot resolve a tag to a digest"))
+                "no resolver was given to turn a tag into a digest"))
 
     raise RoleImageUnavailable(
         f"cannot tell which image holds this campaign's {role!r} container, so an "
@@ -308,7 +308,7 @@ class RoleImageRecord:
     role: str
     #: ``image_revisions[role]``, or the scenario container's pod-name alias.
     recorded: str
-    #: ``images[role]`` -- the plan-resolved ref locally, the declaration on the cluster.
+    #: ``images[role]`` -- the declaration, as ``execution.yaml`` records it.
     declared: str
     #: ``launch.yaml``'s ``images[role]``: what the launch itself resolved, before any job.
     launched: str
@@ -332,7 +332,7 @@ class CampaignImageRecord:
     apart, and two callers then disagree about one file, on one disk.
     """
 
-    lane: str
+    execution_type: str
     roles: dict
     #: ``execution.yaml``'s singular ``image_revision``. The SCENARIO container's, and nothing
     #: else's -- handing it to a container that owns one is the substitution several of the
@@ -366,8 +366,8 @@ def campaign_image_record(campaign_dir) -> CampaignImageRecord:
     try:
         meta = read_execution_metadata(root)
     except FileNotFoundError:
-        # A campaign that died before its first batch, which on the cluster lane is the usual
-        # shape of a failed one. "Recorded nothing" is one of the answers this returns.
+        # A campaign that died before its first batch, the usual shape of a failed one.
+        # "Recorded nothing" is one of the answers this returns.
         meta = {}
     revisions = meta.get("image_revisions") or {}
     declared = meta.get("images") or {}
@@ -389,7 +389,7 @@ def campaign_image_record(campaign_dir) -> CampaignImageRecord:
             has_lock=bool(locks.get(name)),
         )
     return CampaignImageRecord(
-        lane=str(meta.get("execution_type") or ""),
+        execution_type=str(meta.get("execution_type") or ""),
         roles=roles,
         campaign_digest=str(meta.get("image_revision") or ""),
         campaign_image=str(meta.get("image") or ""),
@@ -440,11 +440,12 @@ def campaign_images(campaign_dir) -> CampaignImages:
       itself resolved, written before the first job existed and concrete by construction, so
       they answer earlier and better than ``execution.yaml`` -- which is only written once a
       batch has run. That earlier answer is what makes a campaign that died *before* its first
-      batch re-runnable at all, which on the cluster lane is the usual shape of a failure.
-    * a **digest** counts on either lane: it names the same bytes everywhere, which is the
+      batch re-runnable at all, which is the usual shape of a failure.
+    * a **digest** always counts: it names the same bytes everywhere, which is the
       property a tag lacks.
-    * a **tag** counts only on the lane that built it. Locally ``images`` holds the
-      plan-resolved built ref; on the cluster it is whatever the ``.vast`` declared -- a base
+    * a declared **tag** counts only for a campaign recorded with execution_type ``local``,
+      whose tags name images on the machine that ran it. Otherwise ``images`` holds
+      whatever the ``.vast`` declared -- a base
       image, or the symbolic ``build:<tag>`` itself -- and starting that would run the base
       without the campaign's own code.
     * the campaign-level ``image_revision`` is the scenario container's and nothing else's.
@@ -460,7 +461,7 @@ def campaign_images(campaign_dir) -> CampaignImages:
         # "can a new run start from them?" was answered when they ran.
         return CampaignImages(pins=launched, unpinnable={}, built=True)
 
-    is_local = record.lane == "local"
+    is_local = record.execution_type == "local"
     pins: dict[str, str] = {}
     unpinnable: dict[str, str] = {}
     # The containers that ran, post-fold, as the campaign itself recorded them. Derived from the
@@ -485,7 +486,7 @@ def campaign_images(campaign_dir) -> CampaignImages:
             f"{name!r} (execution.yaml image_revisions[{name!r}]={role.recorded or None!r}, "
             f"image_revision={record.campaign_digest or None!r}, "
             f"images[{name!r}]={role.declared or None!r}, "
-            f"execution_type={record.lane or None!r})")
+            f"execution_type={record.execution_type or None!r})")
 
     return CampaignImages(pins=pins, unpinnable=unpinnable, built=record.built)
 
@@ -635,8 +636,8 @@ def read_campaign_finished_at(campaign_dir: Path) -> Optional[str]:
     gives about guessed start times.
 
     ``None`` when the record is absent, unreadable, or **not terminal**: a record written
-    mid-campaign (the local lane writes one non-terminally when its tail does not own the
-    ending -- see ``run_campaign``) describes a campaign that is not over, and reading its
+    mid-campaign (a run whose tail does not own the ending writes one non-terminally --
+    see ``run_campaign``) describes a campaign that is not over, and reading its
     ``phase_since`` as a finish time would date the campaign to the middle of its own run.
     """
     try:
@@ -719,17 +720,16 @@ def record_intervention(campaign_root: Path, *, kind: str, job_dir: str, job_nam
         job_dir: The job's artifact dir, campaign-root-relative (``_jobs/batch-0/job-3``).
             The durable identity of what was touched, and what :func:`intervened_runs` resolves
             through the job-link manifest.
-        job_name: The job as the caller named it -- ``<config>/<run>`` locally, the Kubernetes Job
-            name on the cluster. Recorded for the audit trail; it is lane-specific, so it is not
-            what resolution keys on.
+        job_name: The job as the caller named it -- the Kubernetes Job name.
+            Recorded for the audit trail; it is not what resolution keys on.
         source: Which surface did it -- ``"webui"``, ``"mcp"``, ``"cli"``, or ``"runner"`` when
             the campaign invalidated its own trial. Not a user identity:
             the service is unauthenticated (see ``service/app.py``'s ``serve``), so a name here
             would be invented rather than known.
         detail: The operator's optional explanation, or what was run.
-        runs: Run keys (``<config>/<run>``) the caller already knows this job was executing. The
-            local lane knows exactly one and passes it; the cluster lane passes none and lets the
-            manifest answer. A *hint*, never the only source -- see :func:`intervened_runs`.
+        runs: Run keys (``<config>/<run>``) the caller already knows this job was executing.
+            The cluster passes none and lets the manifest answer. A *hint*, never the only
+            source -- see :func:`intervened_runs`.
 
     Appends rather than replaces: several things may be done to one campaign over its lifetime,
     and each is a separate event with its own reason.
@@ -775,8 +775,7 @@ def intervened_runs(campaign_dir: Path, kind: str = "") -> dict[str, dict[str, A
 
     Resolves each ledger entry to the runs it covers from **two** sources, unioned:
 
-    * the entry's own ``runs`` hint, which the local lane fills because there ``job_name`` *is*
-      the run key; and
+    * the entry's own ``runs`` hint, for a caller whose ``job_name`` *is* the run key; and
     * the job-link manifest, which maps every ``<config>/<run>`` to its job's artifact dir -- the
       only way to answer it for a cluster Job, and the way that also covers a packed job's
       remaining runs without the caller having to enumerate them.
@@ -942,9 +941,8 @@ def killed_failure_message(entry: dict[str, Any]) -> str:
 
 #: Campaign launch record — the request the campaign was *asked for*, beside the records
 #: describing what then happened. Its own file, and not fields on ``execution.yaml``, for a
-#: timing reason: ``execution.yaml`` is written **by the run** (locally by the generated run
-#: script at the start of the first batch, in-cluster after ``run_batch_in_pod`` returns) and
-#: both writers create it from scratch. The launch is known by the *service*, much earlier —
+#: timing reason: ``execution.yaml`` is written **by the run** (after ``run_batch_in_pod``
+#: returns), and its writer creates it from scratch. The launch is known by the *service*, much earlier —
 #: so sharing one file would either have the run truncate what the service wrote, or leave a
 #: campaign that failed before its first batch with no launch record at all. That campaign is
 #: exactly the one someone wants to relaunch. Same argument, mirrored, is why the terminal
@@ -1011,13 +1009,13 @@ def write_plugins_record(campaign_root, resolved: dict) -> None:
     Its own record rather than a key in ``execution.yaml`` because it is known at a different
     time and by different code: plugins resolve while the campaign is being *composed*, where
     the ``.vast`` directory and its ``.robovast_plugins/`` install dir are in hand, whereas
-    execution.yaml is written later -- by a generated shell script on the local lane -- from a
-    place that has neither. Threading the directory through two lanes to reach that file would
+    execution.yaml is written later, from a place that has neither. Threading the directory
+    through the backend to reach that file would
     couple them to composition for one field. ``_execution/`` already holds several records
     for exactly this reason (launch, outcome, killed).
 
     Raises rather than swallowing, like the other writers in this module -- the *caller*
-    decides that a record is best-effort and says so, exactly as ``local_transport`` does for
+    decides that a record is best-effort and says so, exactly as the service does for
     launch.yaml. Keeping that decision here would hide a real failure from the one place that
     knows whether it matters.
     """
@@ -1108,7 +1106,7 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: The written record carries one field beyond these: the resolved ``images``. See
 #: :func:`write_launch_record` for why it belongs with the replay rather than the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
-                  "upload_to_share", "show_gui", "priority", "paused")
+                  "upload_to_share", "priority", "paused")
 
 
 def write_launch_record(campaign_root: Path, request, images: dict | None = None) -> None:
@@ -1556,7 +1554,7 @@ def run_job_dir(run_dir: Path, campaign_root: Path,
     """The job artifact directory *run_dir* ran in, or ``None`` when nothing names one.
 
     Resolved through the campaign's job-link manifest
-    (:func:`~robovast.common.execution.job_artifact_dir`), which both lanes write before the
+    (:func:`~robovast.common.execution.job_artifact_dir`), which the backend writes before the
     first job starts. Not through the run's ``job`` symlink: a batch creates those only once
     it ends, so the finished runs of a batch that was stopped have none, while the manifest
     already names their jobs. The symlink is read only for a campaign recorded before the
@@ -1773,7 +1771,7 @@ def get_vast_configuration_info(
 #: design -- a bug in it costs results that cannot be recovered -- and this needs no deletion
 #: at all, because nothing walks a reserved name looking for runs.
 #: Where a node-calibration probe writes. Named here rather than beside the calibration
-#: code because both lanes' postprocessing must keep it out of the bag scan, and neither may
+#: code because every postprocessing must keep it out of the bag scan, and this module may not
 #: import the cluster package. A probe is deliberately not a run, so its bag is not campaign
 #: data -- and an interrupted probe's unfinalized bag fails the whole conversion step.
 PROBE_DIR = "_calibration"

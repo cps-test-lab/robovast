@@ -8,21 +8,20 @@ Three kinds of thing reach for a helper image while a campaign composes: a varia
 ``execution.generate`` input generator, and the simulator backend's query that resolves what a
 world is made of. The list is open, and every one of them runs *inside* composition.
 
-So the lane does not predict it. It installs a container-runner factory unconditionally, and
+So the service does not predict it. It installs a container-runner factory unconditionally, and
 :class:`AuxPodSession` creates a pod when that factory is first called for a spec. Deciding
 beforehand -- reading the ``.vast``, collecting specs, installing a factory only if the list came
 back non-empty -- is a second implementation of the same enumeration, and whatever it does not
 cover is a campaign that fails while composing on a container it declared: in the service pod
 there is no ``docker`` to fall back on, so a missing factory is a refusal rather than a slow path.
 
-These tests hold the invariant from both ends -- the lane always installs a factory, and the
+These tests hold the invariant from both ends -- the service always installs a factory, and the
 session creates nothing until it is asked -- rather than enumerating who may ask. A new asker
 needs no change here, which is the point.
 
-:func:`test_the_lane_does_not_read_the_project_to_decide` asserts on the *shape* of the code
-rather than on behaviour, because what matters here is an absence: a re-introduced spec list makes
-every behavioural test below pass while the campaigns it cannot enumerate fail, and a branch that
-restores the old source together with its old tests leaves nothing to notice.
+:func:`test_the_service_does_not_read_the_project_to_decide` asserts on the *shape* of the code
+rather than on behaviour, because what matters here is an absence: a spec list makes every
+behavioural test below pass while the campaigns it cannot enumerate fail.
 """
 
 import contextlib
@@ -224,7 +223,7 @@ def test_a_caller_holding_the_spec_may_create_it_up_front(kube, tmp_path):
             runner.close()
 
 
-# -- the lane installs a factory whatever the project says ---------------------------
+# -- the service installs a factory whatever the project says ------------------------
 
 
 def _service():
@@ -241,8 +240,8 @@ def _service():
 
 
 @pytest.mark.parametrize("hold", [False, True])
-def test_the_lane_installs_a_factory_for_a_project_that_declares_no_aux_container(monkeypatch,
-                                                                                 hold):
+def test_the_service_installs_a_factory_for_a_project_that_declares_no_aux_container(
+        monkeypatch, hold):
     """Both spans -- a campaign's, and the held one an authoring loop previews through.
 
     A `.vast` with no variation image and no ``execution.generate`` image is the campaign a
@@ -268,14 +267,14 @@ def test_the_lane_installs_a_factory_for_a_project_that_declares_no_aux_containe
     with service._aux_runner_context("c-2026-09-08-120000", project, hold=hold):
         factory = _container_runner_factory.get()
         assert factory is not None, (
-            "the lane installed no runner factory, so a composition asking for an auxiliary "
+            "the service installed no runner factory, so a composition asking for an auxiliary "
             "container is refused in a pod that has no docker to fall back on"
         )
         assert factory(ContainerSpec(image="family:robovast-roqsim")) is sentinel
     assert _container_runner_factory.get() is None, "the factory outlived its span"
 
 
-def test_the_lane_does_not_read_the_project_to_decide():
+def test_the_service_does_not_read_the_project_to_decide():
     """Structural, and deliberately so -- see the module docstring."""
     from robovast.execution.cluster_execution.cluster_service import ClusterService
 
@@ -288,7 +287,7 @@ def test_the_lane_does_not_read_the_project_to_decide():
     )
 
 
-def test_the_lane_hands_a_campaigns_stop_flag_to_its_session(monkeypatch):
+def test_the_service_hands_a_campaigns_stop_flag_to_its_session(monkeypatch):
     """The other end of the same thread: the span's pod waits are the campaign's to end."""
     built = {}
 
