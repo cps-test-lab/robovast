@@ -520,6 +520,11 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
 
     if page:
         if page not in texts:
+            if not address and page.startswith(f"{UPSTREAM_LABEL}-"):
+                # A name from an address-scoped listing, read without the address. Listing our
+                # pages here would say it does not exist, which is the answer this avoids.
+                return {"error": f"{page!r} is a page of the simulator image; pass the same "
+                                 "address= the listing was made with to read it."}
             return {"error": f"unknown documentation page {page!r}; available: "
                              f"{', '.join(sorted(texts))}"}
         return {"page": page, "title": titles[page], "content": texts[page]}

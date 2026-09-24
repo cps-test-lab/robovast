@@ -209,6 +209,15 @@ def test_a_page_from_the_image_is_read_by_its_prefixed_name(monkeypatch):
     assert "keys" in out["content"]
 
 
+def test_a_page_from_the_image_read_without_the_address_says_so():
+    """The name came from a listing made with an address. Answering "no such page" would be
+    the same wrong answer this exists to remove."""
+    out = docs.search_docs(page="roqsim-interfaces")
+
+    assert "address=" in out["error"]
+    assert "unknown documentation page" not in out["error"]
+
+
 def test_an_image_that_cannot_answer_is_reported_not_guessed_at(monkeypatch):
     client = _FakeCatalogClient({}, exit_code=1)
     _with_image(monkeypatch, client)
