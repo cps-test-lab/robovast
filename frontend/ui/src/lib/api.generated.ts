@@ -2828,8 +2828,8 @@ export interface components {
          *     it is.
          *
          *     For a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not
-         *     the concrete ref the container runs FROM: the concrete form is a local docker tag on one
-         *     lane and a registry-qualified ref on the other, and the second must never reach a client
+         *     the concrete ref the container runs FROM: the concrete form is a registry-qualified
+         *     ref, and that must never reach a client
          *     (the zero-registry-knowledge invariant). The identity still changes exactly when the
          *     image changes, which is all a cache key needs, and it reads the same on every lane.
          */
@@ -3079,7 +3079,7 @@ export interface components {
          * @description An incremental slice of a campaign's ``controller.log``.
          *
          *     The controller runs in the driving process, so its log is a local file there
-         *     (the CLI locally, the service for cluster campaigns). Clients poll from a byte
+         *     (the service). Clients poll from a byte
          *     *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
          *     the campaign has reached a terminal phase and no more will be written.
          */
@@ -3430,7 +3430,7 @@ export interface components {
          *     a lane that sets no container limits reserves nothing. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
          *
          *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
-         *     — the request sum on the cluster, host utilization locally — and exist because every
+         *     — the request sum on the cluster — and exist because every
          *     consumer already reads them. They are the headline "how much is currently claimed", so
          *     they are never null; a consumer that must distinguish the two readings reads the pair
          *     above and branches on neither ``backend`` nor these. On the cluster the request sum is
@@ -3438,7 +3438,7 @@ export interface components {
          *     scheduler reasons about capacity — pods still queued for a node are reported by
          *     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
          *
-         *     ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
+         *     ``disk`` and ``results`` are **actual filesystem bytes** -- the one place
          *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
          *     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
          *     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
@@ -3806,7 +3806,7 @@ export interface components {
          *
          *     Answers "is this search still improving?", which the single ``Status.best_objective``
          *     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
-         *     on both lanes and still there for a finished campaign after a service restart.
+         *     and still there for a finished campaign after a service restart.
          *
          *     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
          *     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
