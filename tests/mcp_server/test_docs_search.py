@@ -9,6 +9,9 @@ few excerpts and a page name already answer. These pin the bound and, as importa
 that the reply says what it left out.
 """
 
+import json
+import types
+
 import pytest
 
 from robovast.mcp_server.plugins import docs
@@ -121,3 +124,132 @@ def test_a_source_checkout_needs_no_env(monkeypatch):
     monkeypatch.delenv("ROBOVAST_DOCS_DIR", raising=False)
     found = docs._find_docs_dir()
     assert found is not None and any(found.glob("*.rst"))
+
+
+# -- a corpus that reaches past this repository ----------------------------------
+
+# The upstream repositories a campaign runs on is documented in its own repository. Serving only
+# robovast's pages meant an agent on the MCP path could not reach the world format, the
+# plugin reference, or the scenario DSL at all -- and a search for them returned zero, which
+# reads as "no such thing" rather than "not indexed here".
+
+
+def _corpus_dir(tmp_path, name, pages):
+    d = tmp_path / name / "docs"
+    d.mkdir(parents=True)
+    for stem, text in pages.items():
+        (d / f"{stem}.rst").write_text(text, encoding="utf-8")
+    return d
+
+
+class _FakeCatalogClient:
+    """The one call ``_upstream_pages`` makes: resolve the image, then exec in it."""
+
+    def __init__(self, pages, exit_code=0):
+        self._pages = pages
+        self._exit_code = exit_code
+        self.commands = []
+
+    def resolve_image(self, request):
+        return types.SimpleNamespace(image="ghcr.io/example/robovast-roqsim:2.1.0")
+
+    def exec_in_container(self, request):
+        self.commands.append((request.container, request.command))
+        payload = json.dumps({"items": [{"name": n, "text": t}
+                                        for n, t in self._pages.items()]})
+        return types.SimpleNamespace(exit_code=self._exit_code, stdout=payload, stderr="")
+
+
+def _with_image(monkeypatch, client):
+    from robovast.mcp_server.plugins import image_catalog
+    from robovast.service import image_catalog as service_catalog
+
+    monkeypatch.setattr(image_catalog.service_access, "service_client", lambda: client)
+    with service_catalog.CACHE_LOCK:
+        service_catalog.LIST_CACHE.clear()
+
+
+def test_the_image_answers_for_its_own_pages(tmp_path, monkeypatch):
+    """The pages that answer a question about a world's format have to be the simulator's
+    that campaign runs, and only the image knows which that is."""
+    client = _FakeCatalogClient({"interfaces": "World YAML\n==========\n\ncomponents list\n"})
+    _with_image(monkeypatch, client)
+
+    pages, error = docs._upstream_pages("/sources/ws-1/w.vast")
+
+    assert not error
+    assert "roqsim-interfaces" in pages, "served under the corpus's own prefix"
+    assert pages["roqsim-interfaces"][0] == "World YAML"
+    container, command = client.commands[0]
+    assert container == "simulation", "roqsim lives in the simulator's image"
+    assert "/opt/roqsim/docs" in command, "the source tree the image already carries"
+
+
+def test_a_search_without_an_address_stays_cheap_and_says_where_else_to_look(monkeypatch):
+    """Zero results reads as "no such thing". These are RoboVAST's pages only, so a miss
+    names the argument that reaches the simulator's rather than leaving the caller to guess."""
+    def _never(*_a, **_k):
+        raise AssertionError("an address-less search reached for an image")
+
+    monkeypatch.setattr(docs, "_upstream_pages", _never)
+
+    out = docs.search_docs(query="zzz-no-such-term-zzz")
+
+    assert out["total"] == 0
+    assert "address=" in out["note"]
+
+
+def test_a_page_from_the_image_is_read_by_its_prefixed_name(monkeypatch):
+    client = _FakeCatalogClient({"plugins": "Plugins\n=======\n\nkeys\n"})
+    _with_image(monkeypatch, client)
+
+    out = docs.search_docs(page="roqsim-plugins", address="/sources/ws-1/w.vast")
+
+    assert out["title"] == "Plugins"
+    assert "keys" in out["content"]
+
+
+def test_a_page_from_the_image_read_without_the_address_says_so():
+    """The name came from a listing made with an address. Answering "no such page" would be
+    the same wrong answer this exists to remove."""
+    out = docs.search_docs(page="roqsim-interfaces")
+
+    assert "address=" in out["error"]
+    assert "unknown documentation page" not in out["error"]
+
+
+def test_an_image_that_cannot_answer_is_reported_not_guessed_at(monkeypatch):
+    client = _FakeCatalogClient({}, exit_code=1)
+    _with_image(monkeypatch, client)
+
+    out = docs.search_docs(query="anything", address="/sources/ws-1/w.vast")
+
+    assert "error" in out
+
+
+def test_a_page_name_both_repositories_use_does_not_shadow(tmp_path):
+    """Both carry an `architecture` page. Letting one win answers a question about the
+    upstream with robovast's own page, which is worse than not answering it."""
+    extra = _corpus_dir(tmp_path, "upstream", {"architecture": "A\n=\n\nupstream\n"})
+    loaded = docs._load_corpus(extra, prefix="upstream")
+    assert set(loaded) == {"upstream-architecture"}
+
+
+def test_an_extra_corpus_is_read_from_the_environment(tmp_path, monkeypatch):
+    extra = _corpus_dir(tmp_path, "upstream", {"plugins": "P\n=\n\nkeys\n"})
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"upstream={extra}")
+    assert docs._env_doc_roots() == [("upstream", extra)]
+
+
+def test_a_bare_path_takes_its_label_from_the_directory_it_is_in(tmp_path, monkeypatch):
+    extra = _corpus_dir(tmp_path, "upstream", {"plugins": "P\n=\n\nkeys\n"})
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, str(extra))
+    assert docs._env_doc_roots() == [("upstream", extra)]
+
+
+def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeypatch, caplog):
+    """Set-but-wrong is a misconfiguration, as it is for ROBOVAST_DOCS_DIR."""
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"upstream={tmp_path / 'nope'}")
+    with caplog.at_level("WARNING"):
+        assert docs._env_doc_roots() == []
+    assert "not a directory" in caplog.text
