@@ -2690,10 +2690,13 @@ recorded nothing is reported rather than silently absent.
 ``*.jsonl`` below a run directory, named after its stem, column types inferred from its values.
 A ``#`` preamble before a CSV's header is skipped; two files in one run claiming one table are
 refused for that table, naming both. A JSONL file declares its layout in the ``format`` key of
-its **first record**, and ``JSONL_READERS`` maps that to the function turning its records into
-rows — dispatch on the file's own declaration rather than on its name, so adding a producer
-does not mean hardcoding a filename. The one such producer is ``behaviors.jsonl``, written by
-``scenario_execution``'s ``--bt-log``, on for every run. Because the runner writes the file
+its **first record**, and ``JSONL_READERS`` maps that to the layout: the tables the file gives,
+as suffixes on its name, and the function turning its records into their rows — dispatch on the
+file's own declaration rather than on its name, so adding a producer does not mean hardcoding a
+filename. The one such producer is ``behaviors.jsonl``, written by ``scenario_execution``'s
+``--bt-log``, on for every run; its metadata record is the one-row table ``behaviors_meta``
+beside ``behaviors`` (``scenario``, ``clock``, ``started_at``, ``tick_period``, ...), which is
+what ``get_job_state`` folds the running tree's clock and origin from. Because the runner writes the file
 itself — rather than the table being decoded from a recorded ``/scenario_execution/snapshots``
 topic, which only works for ROS runs and would leave ``mode: base`` campaigns with no
 behaviour-tree data at all — both kinds of run produce the ``behaviors`` table by the same path,

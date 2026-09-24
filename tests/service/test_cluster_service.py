@@ -26,6 +26,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
 from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, Phase)
 from robovast.service.interface import CreateCampaignRequest, JobKind
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service import behaviour_log
 
 
 @pytest.fixture
@@ -1597,7 +1598,10 @@ _ROS_EXECUTION = {"mode": "ros2", "containers": {"simulation": {"image": "sim:1"
 
 
 def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False),
-                       execution=None):
+                       execution=None, live_run=None):
+    """*live_run* is the run key the pod's own ``find`` answers with, and the run whose
+    behaviour log then sits in the campaign directory -- where the file agent delivers it, and
+    where the scenario's tree is folded from. ``None`` is a job that has written no run yet."""
     # A running job, as the real precondition returns one: the state read reports the status it was
     # checked against rather than asserting "running" a second time.
     monkeypatch.setattr(cs, "_require_running_job",
@@ -1619,6 +1623,13 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
     core = _Core()
     monkeypatch.setattr(cs, "_k8s", lambda: core)
 
+    if live_run is not None:
+        campaign_root = Path(tempfile.mkdtemp()) / "results"
+        monkeypatch.setattr(cs, "_campaigns_root", lambda: campaign_root)
+        config, run_id = live_run.split("/")
+        behaviour_log.write_store(campaign_root / "camp-1", {config: [int(run_id)]})
+        behaviour_log.write_log(campaign_root / "camp-1" / config / run_id)
+
     class _Service:
         calls: list = []
 
@@ -1627,8 +1638,8 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
             # Matched on the joined argv: every read runs through a shell that sources the run's
             # ROS overlay first, so the command is inside one element rather than being them.
             joined = " ".join(argv)
-            if "scenario_execution.tree_state" in joined:
-                return (0, '{"found": true, "running": {"name": "drive_to"}}', "", False)
+            if "-regex" in joined and live_run is not None:
+                return (0, live_run + "\n", "", False)
             if "resource_usage_" in joined:
                 return (0, "", "", False)
             return exec_result
@@ -1639,17 +1650,21 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
 
 
 def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
-    """The exec target is the Job's pod. ``/out`` is *this pod's* emptyDir, so
-    naming it is exact even though a Kubernetes Job may pack several runs and its ``job_name`` is
-    not a run key."""
+    """The exec target is the Job's pod. ``/out`` is *this pod's* emptyDir, so naming it is
+    exact even though its ``job_name`` is not a run key. The scenario's tree is the one
+    exception: it is folded from the run's log in the campaign directory, not read in the pod,
+    and the run it is of is the one the pod named."""
     core, runner = _cluster_job_state(
-        cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+        cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], live_run="cfgA/1",
         exec_result=(0, '{"findings": [], "state": {"sim_ts": 4.0}}', "", False))
 
     state = cs.get_job_state("camp-1", "scenario-abc")
 
     assert state.simulator == {"findings": [], "state": {"sim_ts": 4.0}}
+    assert state.run == "cfgA/1"
     assert state.scenario["running"]["name"] == "drive_to"
+    assert state.scenario["log"].endswith("/camp-1/cfgA/1/behaviors.jsonl")
+    assert not [c for c in runner.calls if "tree_state" in " ".join(c[1])]
     target, argv = [c for c in runner.calls if "tool --json" in " ".join(c[1])][0]
     # The job dir: this is a live run, and that is where its simulator's records are.
     # The container comes from the pod, not from a constant repeated here. This campaign steps its
@@ -1678,7 +1693,7 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, mon
     """The two readers are independent on purpose: a scenario's tree is there whatever the
     simulator is, and the stuck action is the more useful half. Coupling them would let the
     absence of one hide the other."""
-    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], live_run="cfgA/1")
     monkeypatch.setattr("robovast.common.simulators.health_command",
                         lambda execution, *, run_dir, base_dir="": None)
 
@@ -1687,6 +1702,18 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, mon
     assert state.simulator is None
     assert state.scenario["running"]["name"] == "drive_to"
     assert any("does not report its own state" in line for line in state.unavailable)
+
+
+def test_a_job_whose_run_is_not_known_yet_has_no_tree_to_fold(cs, monkeypatch):
+    """A Job between starting and its first record names no run, so there is no log to fold;
+    said as such rather than searched for, because the run the reader would find under ``/out``
+    on its own is a guess the service cannot check."""
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+
+    state = cs.get_job_state("camp-1", "scenario-abc")
+
+    assert state.run is None and state.scenario is None
+    assert any("could not be resolved" in line for line in state.unavailable)
 
 
 def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypatch):

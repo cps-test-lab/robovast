@@ -83,6 +83,28 @@ _POSE_ORIENTATION_NOTES = {
 #: Notes keyed on ``(table, column)``, for columns whose name gives no hint of how they must
 #: be read.
 STATIC_NOTES: dict = {
+    ("behaviors", "seq"): (
+        "the record's position in the run's behaviour log: ORDER BY seq to replay it, never "
+        "by storage order or by timestamp alone, since two records of one node can share a "
+        "stamp and the later one is the node's state."),
+    ("behaviors", "timestamp"): (
+        "when the node changed status, in the clock behaviors_meta.clock names for this run: "
+        "seconds since the run started for `monotonic`, simulated seconds otherwise. The "
+        "snapshot of every node at 0 is the tree before its first tick, not a change."),
+    ("behaviors_meta", "clock"): (
+        "which clock every behaviors.timestamp of this run is in: `monotonic` counts wall "
+        "seconds from started_at; any other value is the scenario's own clock, simulated "
+        "time, which only a reader of the same simulator can relate to now."),
+    ("behaviors_meta", "started_at"): (
+        "ISO wall time the log was opened, before the first tick: the origin of a `monotonic` "
+        "run's timestamps, and the bridge from any run's behaviour log to wall-stamped "
+        "tables (run_log, resource_usage)."),
+    ("behaviors_meta", "tick_period"): (
+        "seconds between behaviour-tree ticks as configured, in the run's clock: the "
+        "resolution below which a status change cannot be placed."),
+    ("behaviors_meta", "scenario_sha256"): (
+        "hash of the scenario file as run, NULL for a scenario given inline: what to compare "
+        "to say two runs executed the same scenario source."),
     ("resource_usage", "cpu_percent"): (
         "one row is one PROCESS NAME, not a container: SUM per (container, wall_ts) before "
         "comparing, or an average reads as a per-process figure. Per-core, so >100 is "

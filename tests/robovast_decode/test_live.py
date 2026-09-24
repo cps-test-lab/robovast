@@ -513,3 +513,145 @@ def test_a_session_gives_the_video_table_at_finish_only(tmp_path):
     (batch,) = session.finish()
     assert batch.table == "videos" and batch.rows.num_rows == 1
     assert (campaign / "cfg" / "0" / batch.rows.to_pylist()[0]["file"]).exists()
+
+
+# -- the derived tables ---------------------------------------------------------------------
+#
+# A derived table is not decoded from a recording but built from the job's files and the
+# ``rosout``/``clock_map`` rows, whole: ``run_log``'s dedup and its sim-time fill need the
+# whole job. So the watcher derives it again, whole, once per period that saw a change, and
+# streams the rows that are new since the previous derivation.
+
+DERIVED_TABLES = ["run_log", "scenario_timestamps", "resource_usage", "run_clock"]
+
+
+def _log_line(epoch: float, message: str, level: str = "INFO") -> str:
+    return f"[{level}] [{epoch}] [scenario_execution_ros]: {message}\n"
+
+
+def _job_files(campaign, log_lines):
+    """The job's container log and its resource samples, as the containers write them."""
+    job = campaign / "_jobs" / "job-0"
+    (job / "logs" / "system.log").write_text("".join(log_lines))
+    (job / "resource_usage_main.csv").write_text(
+        "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
+        "1780000000.0,1,python3,10.0,1000\n1780000000.5,1,python3,12.0,1100\n")
+    return job
+
+
+def _messages(batches, table="run_log"):
+    return [m for b in batches if b.table == table for m in b.rows.column("message").to_pylist()]
+
+
+def test_derived_tables_are_rebuilt_whole_as_the_run_goes_and_stream_the_new_rows(tmp_path):
+    campaign, bag = open_campaign(tmp_path / "c")
+    job = _job_files(campaign, [_log_line(1780000000.0, "Executing scenario 'nav-0'")])
+    watcher = Watcher(str(campaign), NAV_CONFIG, part_s=0.0)
+    seen, done = [], []
+    watcher.subscribe("cfg/0", DERIVED_TABLES, seen.append, finished=lambda: done.append(1))
+    assert set(DERIVED_TABLES) <= watcher.following("cfg/0")
+    assert {"rosout", "clock_map"} <= watcher.following("cfg/0"), "what a derivation reads"
+
+    # Derived at once, from the job's files as they are: one file, stamped live.
+    entry = _entry(campaign, "run_log")
+    assert entry["files"] == ["tables/run_log/cfg/0.parquet"]
+    assert entry["complete"] is False and "live" in entry
+    first = _messages(seen)
+    assert "Executing scenario 'nav-0'" in first
+    assert any("tick" in m for m in first), "the job's rosout rows are joined in"
+    absent = _entry(campaign, "scenario_timestamps")
+    assert absent["files"] == [] and absent["known"] is True and "live" in absent, \
+        "no verdict line yet: a table the run has, empty so far, and still the watcher's"
+
+    # The log grows: the next derivation is whole, its subscribers get the new rows only.
+    with open(job / "logs" / "system.log", "a", encoding="utf-8") as fh:
+        fh.write(_log_line(1780000001.0, "Scenario 'nav-0' succeeded."))
+    before = len(seen)
+    watcher.changed([str(job / "logs" / "system.log")])
+    later = _messages(seen[before:])
+    assert later == ["Scenario 'nav-0' succeeded."], later
+    assert _messages(seen[before:], "scenario_timestamps") == ["Scenario 'nav-0' succeeded."]
+    assert len([b for b in seen if b.table == "run_clock"]) == 1, "an unchanged row is not new"
+    assert len([b for b in seen if b.table == "resource_usage"]) == 1
+
+    # A quiet period rewrites nothing and keeps the stamp fresh.
+    stamp = _entry(campaign, "run_log")["live"]
+    time.sleep(0.01)
+    watcher.tick()
+    assert _entry(campaign, "run_log")["live"] > stamp
+    assert _entry(campaign, "run_log")["rows"] == len(first) + 1
+
+    # The recording closes and the verdict lands: the last derivation is final.
+    bag.close()
+    watcher.changed([str(bag.bag_dir / "metadata.yaml")])
+    assert "run_log" in watcher.following("cfg/0"), "no verdict yet"
+    (campaign / "cfg" / "0" / "test.xml").write_text("<testsuite/>")
+    watcher.changed([str(campaign / "cfg" / "0" / "test.xml")])
+    assert watcher.following("cfg/0") == set() and done == [1]
+    for table in DERIVED_TABLES:
+        entry = _entry(campaign, table)
+        assert entry["complete"] is True and "live" not in entry, table
+    assert _entry(campaign, "scenario_timestamps")["rows"] == 1
+
+
+def test_a_live_derivation_finalised_equals_a_whole_build_and_is_left_alone(tmp_path):
+    """Live == replayed: the file the watcher finalises holds the rows a build writes, and a
+    build finds the entry current."""
+    lines = [_log_line(1780000000.0, "Executing scenario 'nav-0'"),
+             _log_line(1780000000.7, "a warning", "WARN"),
+             _log_line(1780000001.0, "Scenario 'nav-0' succeeded.")]
+    campaign, bag = open_campaign(tmp_path / "c")
+    job = _job_files(campaign, lines[:1])
+    watcher = Watcher(str(campaign), NAV_CONFIG, part_s=0.0)
+    seen = []
+    watcher.subscribe("cfg/0", DERIVED_TABLES, seen.append)
+    for cut in cuts(bag.data, 3):
+        bag.grow(cut)
+        watcher.changed([str(bag.segment)])
+    (job / "logs" / "system.log").write_text("".join(lines[:2]))
+    watcher.changed([str(job / "logs" / "system.log")])
+    bag.close()
+    (job / "logs" / "system.log").write_text("".join(lines))
+    (campaign / "cfg" / "0" / "test.xml").write_text("<testsuite/>")
+    watcher.changed([str(job / "logs" / "system.log"), str(campaign / "cfg" / "0" / "test.xml")])
+    assert watcher.following("cfg/0") == set()
+
+    replayed = make_campaign(tmp_path / "r")
+    _job_files(replayed, lines)
+    build(str(replayed), tables=DERIVED_TABLES, config=NAV_CONFIG)
+    for table in DERIVED_TABLES:
+        live = pq.read_table(campaign / ".cache" / f"tables/{table}/cfg/0.parquet")
+        whole = pq.read_table(replayed / ".cache" / f"tables/{table}/cfg/0.parquet")
+        assert live.schema == whole.schema, table
+        assert _sorted_rows(live) == _sorted_rows(whole), table
+        streamed = pa.concat_tables([b.rows for b in seen if b.table == table],
+                                    promote_options="permissive")
+        if table == "run_log":
+            # A batch carries the ``seq`` of the derivation it came from; a line that
+            # landed between earlier ones renumbered those after it.
+            streamed, whole = streamed.drop_columns(["seq"]), whole.drop_columns(["seq"])
+        # Every row of the finished table was pushed, in the form it has there: a row that
+        # changed between derivations (its sim time filled in, its window marked) was
+        # pushed again as it changed.
+        assert set(_sorted_rows(whole)) <= set(_sorted_rows(streamed)), table
+    for table in DERIVED_TABLES:
+        assert _entry(campaign, table)["sources"] == _entry(replayed, table)["sources"], table
+
+    report = build(str(campaign), tables=DERIVED_TABLES, config=NAV_CONFIG)
+    assert not set(report.built) & set(DERIVED_TABLES), "the finalised entries are current"
+    assert set(DERIVED_TABLES) <= set(report.skipped)
+
+
+def test_a_build_leaves_a_live_derivation_alone_and_takes_a_stale_one(tmp_path):
+    campaign, _bag = open_campaign(tmp_path / "c")
+    _job_files(campaign, [_log_line(1780000000.0, "Executing scenario 'nav-0'")])
+    watcher = Watcher(str(campaign), NAV_CONFIG, part_s=0.0)
+    watcher.demand("cfg/0", ["run_log"])
+    stamp = _entry(campaign, "run_log")["live"]
+    report = build(str(campaign), tables=["run_log"], config=NAV_CONFIG)
+    assert report.skipped["run_log"] == ["cfg/0"] and "run_log" not in report.built
+    assert _entry(campaign, "run_log")["live"] == stamp
+    _abandon(campaign, "run_log")
+    report = build(str(campaign), tables=["run_log"], config=NAV_CONFIG)
+    assert report.built["run_log"] == ["cfg/0"]
+    assert "live" not in _entry(campaign, "run_log")

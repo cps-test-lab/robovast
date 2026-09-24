@@ -799,8 +799,9 @@ def import_cmd(campaigns, as_workspace, new_name, force, rebuild_store):
     The **service** downloads from the share -- the archive never touches this
     machine, which is the point: a campaign can be many gigabytes and your laptop is
     not on the path between two servers. When what arrives is a raw archive,
-    postprocessing is chained automatically, so what you get back is a campaign with
-    its metric tables, not a directory to remember to reprocess.
+    postprocessing is chained automatically, so what you get back is a postprocessed
+    campaign, not a directory to remember to reprocess; its tables are built from its
+    records the first time something names them.
 
     Long-running: it returns as soon as the import is under way, and the campaign
     appears immediately in the campaign view at phase ``importing``. Watch it with

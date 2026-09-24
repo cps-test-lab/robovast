@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
+import Checkbox from '@mui/material/Checkbox'
 import CircularProgress from '@mui/material/CircularProgress'
 import Dialog from '@mui/material/Dialog'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import DialogTitle from '@mui/material/DialogTitle'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
@@ -41,6 +43,9 @@ export function PostprocessingDialog({
   })
 
   const [text, setText] = useState<string | null>(null)
+  // A replay clears every built table and builds every table the records can give, for every
+  // run, before the declared pass: the rows must equal what the live watcher wrote.
+  const [replay, setReplay] = useState(false)
   // Load the fetched source into the buffer (and reset it on reopen / after a save writes a new rev).
   useEffect(() => {
     if (src.data) setText(src.data.content)
@@ -55,7 +60,7 @@ export function PostprocessingDialog({
   const saveAndRerun = useMutation({
     mutationFn: async () => {
       if (changed) await robovast.updatePostprocessingSource(campaignId, text ?? '')
-      return robovast.runPostprocessing(campaignId)
+      return robovast.runPostprocessing(campaignId, { replay })
     },
     onSuccess: (result) => {
       // Not ok = the busy guard (an operation is already running): keep the dialog open and
@@ -92,10 +97,26 @@ export function PostprocessingDialog({
           <Typography variant="body2" color="text.secondary">
             Adapt the <code>results_processing.postprocessing</code> block, then rerun. The change
             overwrites this campaign's config in place (it is only postprocessing config, not
-            captured data — the raw rosbags are untouched), so it can be re-run any number of
+            captured data — the recordings are untouched), so it can be re-run any number of
             times. The rerun starts in the background; this dialog closes so you can follow its
             progress in the campaign view.
           </Typography>
+          <FormControlLabel
+            control={
+              <Checkbox
+                size="small"
+                checked={replay}
+                onChange={(e) => setReplay(e.target.checked)}
+                disabled={busy}
+              />
+            }
+            label={
+              <Typography variant="body2">
+                Replay: clear every built table and build every table the records can give, for
+                every run, before the declared steps
+              </Typography>
+            }
+          />
           {src.isError ? (
             <Alert severity="error">
               <ErrorText>{(src.error as Error).message}</ErrorText>

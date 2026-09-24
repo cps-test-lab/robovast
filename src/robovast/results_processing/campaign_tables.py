@@ -29,7 +29,8 @@ is what RoboVAST adds around that:
   run view reads, the tables its plots query, its videos -- so what it says it shows is ready
   when it finishes; grade it with its health checks (``run_health``); and record how each table
   was made (``postprocessing_steps``). Everything else is built when first asked for.
-* **Clearing** a campaign's tables, which loses nothing but the time to build them again.
+* **Clearing** a campaign's tables, which loses nothing but the time to build them again, and
+  **replaying** them: every table the records can give, for every run, built again whole.
 """
 
 from __future__ import annotations
@@ -48,9 +49,9 @@ from robovast_data import Engine, Problem, QueryError, Scope
 from robovast_data.statement import parse
 from robovast_decode import __version__ as DECODER_VERSION
 from robovast_decode.authored import table_name
-from robovast_decode.build import CAMPAIGN_TABLES
+from robovast_decode.build import CAMPAIGN_TABLES, available_tables
 from robovast_decode.derived import DERIVED
-from robovast_decode.layout import DECODER_CONFIG, MAIN_CONTAINER
+from robovast_decode.layout import DECODER_CONFIG, MAIN_CONTAINER, decoder_config
 from robovast_decode.tables import (CACHE_DIR, TABLES_DIR, cache_root, campaign_table_path,
                                     manifest_lock, read_manifest, record_campaign_table,
                                     write_manifest, write_table)
@@ -211,6 +212,19 @@ def build_tables(campaign_dir: str, tables: List[str], *,
     return engine.ensure(engine.tables_for(tables))
 
 
+def replay_tables(campaign_dir: str, *,
+                  progress: Optional[Callable[[int, int], None]] = None) -> List[Problem]:
+    """Build every table the campaign's records can give, for every run, from the records.
+
+    A replay yields the rows a live watcher wrote as the runs went: the same decoder over the
+    same records, whole. Nothing is cleared here; the caller clears first when it means to
+    build everything again.
+    """
+    tables = sorted(available_tables(campaign_dir, decoder_config(campaign_dir)))
+    engine = Engine([Scope(campaign_dir)], progress=progress)
+    return engine.ensure(tables)
+
+
 def clear_tables(campaign_dir: str) -> int:
     """Remove the campaign's built tables; the bytes freed. Every one is built again on use."""
     root = cache_root(campaign_dir)
@@ -294,5 +308,5 @@ def write_postprocessing_steps(campaign_dir: str, entries: List[dict]) -> int:
 
 __all__ = ["ALWAYS_BUILT", "DECODER_COMMANDS", "DECODER_GROUPS_COMMAND",
            "VIDEO_PRODUCER_COMMANDS", "build_tables", "clear_tables", "declared_tables",
-           "decoder_groups", "is_decoder_command", "table_cache_bytes", "write_decoder_config",
-           "write_postprocessing_steps", "write_run_health"]
+           "decoder_groups", "is_decoder_command", "replay_tables", "table_cache_bytes",
+           "write_decoder_config", "write_postprocessing_steps", "write_run_health"]

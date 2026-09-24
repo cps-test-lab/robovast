@@ -32,8 +32,9 @@ files are written first, then the manifest is replaced in one ``rename``.
 recording appends a part per batch and stamps the entry ``live``; a reader reads every file
 the entry names, so a query during a run sees what has been decoded so far. When the run
 ends the parts are merged into the run's one file, the entry loses its stamp and is
-``complete``. A stamp older than :data:`LIVE_STALE_S` means the session died, and the entry
-is rebuilt whole like any incomplete one.
+``complete``. A derived table a watcher rebuilds whole as the run goes is one file, replaced
+on each derivation, under the same stamp. A stamp older than :data:`LIVE_STALE_S` means the
+session died, and the entry is rebuilt whole like any incomplete one.
 """
 
 from __future__ import annotations
@@ -302,16 +303,21 @@ def record_campaign_table(manifest: dict, table: str, *, files: List[str], rows:
 
 
 def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict,
-                      complete: bool, reason: Optional[str] = None, known: bool = False) -> None:
+                      complete: bool, reason: Optional[str] = None, known: bool = False,
+                      live: Optional[float] = None) -> List[str]:
     """Enter that a run has no rows for *table*: it recorded nothing for it, or *reason*.
 
     Recorded, not left out, so that asking again for a finished run's table costs a lookup
     rather than another look at its recordings; *reason* is why a build failed, which a
     reader reports beside its answer. *known* says the run's records can give the table and
-    it came out empty, as against a table this run never had.
+    it came out empty, as against a table this run never had. *live* is the stamp of a
+    watcher that derives the table whole as the run goes and found no rows yet, so the
+    entry stays its own. Returns the files the entry named before, for the caller to remove
+    once the manifest is written.
     """
     entry = manifest["tables"].setdefault(table, {"runs": {}})
-    entry["runs"][run_key] = {
+    before = entry["runs"].get(run_key) or {}
+    record = {
         "files": [],
         "rows": 0,
         "schema": None,
@@ -321,6 +327,10 @@ def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict
         "reason": reason,
         "known": known or reason is not None,
     }
+    if live is not None:
+        record["live"] = live
+    entry["runs"][run_key] = record
+    return list(before.get("files") or [])
 
 
 __all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "LIVE_STALE_S", "MANIFEST", "TableBuffer",

@@ -548,7 +548,7 @@ def test_every_volume_name_is_one_kubernetes_accepts_however_deep_the_scratch_is
         return f"{RESULTS_DATA_DIR}/_staged/{slot}"
 
     spec = ContainerSpec(image="example/img:1")
-    m = build_aux_pod_manifest("metamorphic-big-map-2026-09-19-141738", [spec], "ns",
+    m = build_aux_pod_manifest("camp-big-map-2026-09-19-141738", [spec], "ns",
                                stage_dir=stage_dir, token_for=lambda scope: "tok",
                                pod_name="robovast-exec-q73431e4cff")["spec"]
     label = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")

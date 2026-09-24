@@ -20,14 +20,15 @@ and queried with read-only SQL
 a campaign's author-declared charts are exposed as Vega-Lite specs by
 ``list_campaign_plots`` (from ``visualization.results.data_browser.plots`` in the snapshot ``.vast``).
 
-What is **not** reachable is any raster or video output. ``read_file`` deliberately
-refuses binary content (it would be mangled, not read), so ``rosbags_to_webm``
-recordings and rendered PNG plots cannot travel to the model — the bytes *are*
-addressable over HTTP and with ``vast files get``, but nothing turns them into MCP
-image content. ``list_campaign_plots`` + SQL covers
-*charts* (declarative specs the client renders), not *pixels*: a trajectory
-overlay, a costmap, or a landing-scatter image cannot be seen. For a
-robotics-simulation tool this is the main remaining analysis gap — 5000 rows of
+What is **not** reachable is video, or a rendered raster. One frame of a recorded camera
+is: ``get_camera_frame`` returns it as MCP image content, as ``draw_config`` and
+``get_simulation_screenshot`` return their pictures. ``read_file`` deliberately hands a binary
+back as a ``url`` rather than its bytes (they would be mangled, not read), so a
+``rosbags_to_webm`` recording as a whole and a rendered PNG plot cannot travel to the model —
+the bytes *are* addressable over HTTP and with ``vast files get``, but nothing turns them into
+MCP image content. ``list_campaign_plots`` + SQL covers *charts* (declarative specs the client
+renders), not *pixels*: a trajectory overlay, a costmap, or a landing-scatter image cannot be
+seen. For a robotics-simulation tool this is the main remaining analysis gap — 5000 rows of
 poses is not how a human notices a robot driving into a wall.
 
 **Open questions** (to decide, not yet decided):
@@ -35,8 +36,8 @@ poses is not how a human notices a robot driving into a wall.
 * Should the model receive images as MCP image content, and for which artifacts?
 * Is video better delivered as a short-lived artifact/link than inline, given
   size?
-* ``draw_config`` and ``get_simulation_screenshot`` already return images as MCP
-  image content — is that the pattern to generalize, or is a campaign-level
+* ``draw_config``, ``get_simulation_screenshot`` and ``get_camera_frame`` already return
+  images as MCP image content — is that the pattern to generalize, or is a campaign-level
   artifact route the right home?
 
 
@@ -92,7 +93,8 @@ it.
 Finished items are not kept here: they are described where they are implemented — the file
 address space in :ref:`file-address-space`, the SQL results surface in :ref:`mcp-analysis`
 and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`, telling a
-wedged run from a slow one in :ref:`mcp-liveness`, and campaign discovery plus the
+wedged run from a slow one in :ref:`mcp-liveness`, a run's log and tables read live as it
+records in :ref:`merged-run-log` and :ref:`run-view-live`, and campaign discovery plus the
 non-blocking image build in :ref:`campaign-discovery` and :ref:`campaign-building-phase`.
 The numbering below is historical and deliberately not compacted, so a note elsewhere
 referring to "item 9" still means item 9.
@@ -114,21 +116,7 @@ easier to lose than the code.
   ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
   second way to ask the same question.
 
-**3b. A run's log is a table only once it has reached the service.** Telling a hanging run
-from a healthy one is in :ref:`mcp-liveness`: the status carries ``progress_age_s`` and a
-``stalled`` verdict against the declared per-run budget, and the log tools take
-``min_severity`` and ``summarize`` so a flood of one message costs one line instead of
-thousands, recomputed per call. The analysis question — "which failed runs share a warning
-pattern?" — is a join, and the ``run_log`` table (see :ref:`merged-run-log`) answers it:
-every container's output joined with ``/rosout``, on the run's own playback clock, joinable
-to ``runs``, and ``search_run_logs`` asks it across runs and campaigns.
 
-The open part is the **live** half. ``run_log`` is built from the job's ``system*.log`` files
-and its infra bag, and a query builds a run that is still going again rather than keeping
-what it found. Those files grow in the job directory as the run goes (the pod's file agent
-delivers them), so a running campaign's ``run_log`` is current, rebuilt whole on each query.
-What is open is building it incrementally from what has already been parsed, which is the
-watcher's job; until then the live question is cheapest through ``get_job_log``.
 
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and

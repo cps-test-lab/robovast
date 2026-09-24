@@ -1470,8 +1470,9 @@ class ServiceBase(RobovastInterface):
         # campaign again.
         self._admit_storage("import a campaign")
         campaign_id, fetch, raw = self._resolve_import_source(request)
-        note = ("this archive has no metric tables, so postprocessing runs once it lands -- "
-                "the import is not over when the extraction is") if raw else ""
+        note = ("this archive carries no postprocessing record, so postprocessing runs once "
+                "it lands -- the import is not over when the extraction is; its tables are "
+                "built from its records the first time something names them") if raw else ""
 
         # Pre-flight, the same shape as preflight_upload_to_share: the authoritative claim
         # (which deletes, under force) happens in the worker once the busy guard has
@@ -1700,7 +1701,8 @@ class ServiceBase(RobovastInterface):
                            target.name, exc_info=True)
 
     def _postprocess_campaign(self, campaign_id: str, campaign_dir: Path, *,
-                              force: bool = False, skip=(), state=None) -> tuple:
+                              force: bool = False, replay: bool = False, skip=(),
+                              state=None) -> tuple:
         """Run the campaign's own postprocessing pipeline; return ``(ok, message)``.
 
         One call for both callers -- the ``run_postprocessing`` retrigger and the chain an
@@ -1727,7 +1729,7 @@ class ServiceBase(RobovastInterface):
             run_postprocessing  # pylint: disable=import-outside-toplevel
         return run_postprocessing(
             results_dir=str(campaign_dir.parent), campaign=campaign_id,
-            force=force, skip=list(skip),
+            force=force, replay=replay, skip=list(skip),
             output_callback=stage_output_callback(state, logger.info),
             # A re-run is a tracked campaign like any other while it is going, so
             # ``stop_campaign`` reaches it -- and with this, ends it.
@@ -1751,7 +1753,8 @@ class ServiceBase(RobovastInterface):
             try:
                 ok, message = self._postprocess_campaign(
                     request.campaign_id, campaign_dir,
-                    force=request.force, skip=list(request.skip or []), state=state)
+                    force=request.force, replay=request.replay,
+                    skip=list(request.skip or []), state=state)
             finally:
                 remove_campaign_log_handler(handler)
             status = record_step_outcome(campaign_dir, postprocessing=(ok, message))
@@ -3453,25 +3456,30 @@ class ServiceBase(RobovastInterface):
         return campaign_execution(self.campaign_dir(campaign_id))
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
-        """What a running job is doing, from the run's own tools by fixed commands.
+        """What a running job is doing: its scenario's tree from the run's own tables, its
+        simulator's and resource monitor's word from the run's containers by fixed commands.
 
-        Two readers, asked independently on purpose: the scenario's tree is there whatever the
+        Three readers, asked independently on purpose: the scenario's tree is there whatever the
         simulator is, so a campaign whose simulator cannot report on itself still gets the more
         useful half. Coupling them would have made the absence of one hide the other.
 
-        Neither parses another component's file format. The tool that owns each record reads it
-        and prints JSON, so a record can be reshaped by its owner without breaking this.
+        The scenario half is folded from the run's ``behaviors`` and ``behaviors_meta`` tables
+        (:mod:`robovast.service.scenario_state`) -- the rows the campaign's data engine reads out
+        of the ``behaviors.jsonl`` the run writes, which grows in the campaign directory -- so
+        nothing runs in the run to answer it. It is read fresh every time: a fold over
+        every recorded transition rather than a tail, which is why it is asked for here and never
+        polled. A log without its metadata record raises, naming the file.
 
         The health half is served from whatever the status path last pulled (see
         :meth:`_read_health`), so an agent asking is never charged for a check a poll has already
-        paid for. The scenario's tree is always read fresh: it is the expensive half -- a fold over
-        every recorded transition rather than a tail -- which is exactly why it is asked for here
-        and never polled.
+        paid for. It parses no simulator's file format: the tool that owns the record reads it and
+        prints JSON, so the record can be reshaped by its owner without breaking this.
 
-        **Each read is asked of the container that owns it**, which is why the target is resolved
-        per role and not per job: the scenario runs in the scenario container always, while a
-        simulator with a container of its own answers only there. Sending both to one target sent
-        ``roqsim health`` into a container with no roqsim in it for every ROS-shape campaign.
+        **Each exec is asked of the container that owns it**, which is why the target is resolved
+        per role and not per job: the resource monitor writes under the scenario container's
+        ``/out``, while a simulator with a container of its own answers only there. Sending both
+        to one target sent ``roqsim health`` into a container with no roqsim in it for every
+        ROS-shape campaign.
 
         Everything that decides *what* is asked is here, and only :meth:`_job_state_target`
         knows how to address the job's pod.
@@ -3491,7 +3499,7 @@ class ServiceBase(RobovastInterface):
         except Exception as err:  # noqa: BLE001 - a job between scheduling and running, or gone
             state.unavailable.append(str(err))
             return state
-        self._read_scenario_state(state, target, run_dir)
+        self._fold_scenario_state(state, campaign_id)
         self._read_resources(state, target, job_dir)
         document, reason = self._read_health(campaign_id, job_name, job_dir, run_dir)
         if reason:
@@ -3829,55 +3837,27 @@ class ServiceBase(RobovastInterface):
             return ""
         return prefix + " | ".join(lines[-cls._STDERR_TAIL_LINES:])
 
-    #: How scenario-execution reports where a scenario has got to. A *fixed* command, so this is
-    #: a read and not a probe -- and named here rather than derived from a backend because the
-    #: scenario runs in every campaign whatever the simulator is.
-    _TREE_STATE_COMMAND = "python3 -m scenario_execution.tree_state"
+    def _fold_scenario_state(self, state, campaign_id: str) -> None:
+        """Fold the run's behaviour-tree tables into ``state.scenario``, or say why not.
 
-    def _read_scenario_state(self, state, target, run_dir: str) -> None:
-        """Fold the run's behaviour-tree log into ``state.scenario``, or say why not.
+        From the campaign directory, which holds the run's ``behaviors.jsonl`` as it grows,
+        and through the campaign's data engine, so the tree an agent is shown here
+        is the one a query of ``behaviors`` sees. The run is the one ``state.run`` names; a job
+        whose run could not be resolved has no log to fold, and says so.
 
-        Asked of scenario-execution's own reader rather than parsed here: the log's shape is
-        its record to change, and a second implementation of someone else's format in this repo
-        would be the thing that breaks when it does.
-
-        Run through :func:`~robovast.common.execution.in_run_env`, which is not optional:
-        ``scenario_execution`` is colcon-built into ``/ws`` and is on no interpreter's path until
-        that overlay is sourced, so a bare argv answers ``No module named 'scenario_execution'``
-        in every image ever built.
+        A log that has not been written or not ticked is the reader's own stated reason, already
+        phrased for a reader. A log without its metadata record, or one the engine could not
+        turn into rows, raises: an unreadable tree reported as "unavailable" beside a healthy
+        simulator reads as a run with nothing to show, which it is not.
         """
-        from robovast.common.execution import in_run_env
-        # The exit code is not consulted: the reader states its own outcome in the JSON (``found``
-        # plus its reason), and a nonzero exit with a usable reply is its business, not ours.
-        _code, stdout, stderr, timed_out = self._exec_runner().exec_in(
-            target, in_run_env(f"{self._TREE_STATE_COMMAND} {shlex.quote(run_dir)}"),
-            _JOB_STATE_LIMIT_S)
-        if timed_out:
+        from robovast.service.scenario_state import scenario_state
+        if state.run is None:
             state.unavailable.append(
-                f"reading the scenario's tree did not finish within {_JOB_STATE_LIMIT_S}s")
+                "which run this job is on could not be resolved, so its scenario tree was not "
+                "read")
             return
-        text = (stdout or "").strip()
-        if not text:
-            # The reader is a command RoboVAST ships, so there are only two ways it can be
-            # missing, and the stderr above distinguishes them: the note says whether the run's
-            # overlay was sourced, and Python says whether it was the package or the module it
-            # could not find. Naming that here rather than leaving a runpy sentence to be
-            # interpreted -- three rounds of this were spent deciding which of the two it was.
-            state.unavailable.append(
-                "could not read the scenario's tree"
-                + (self._said(stderr) or ": it printed nothing at all")
-                + ". If the note says the overlay was sourced, this image's scenario-execution "
-                  "is older than the reader and the image needs rebuilding; if it says no "
-                  "overlay was found, the container is not one a run's tools live in.")
-            return
-        try:
-            reply = json.loads(text)
-        except ValueError:
-            state.unavailable.append("the scenario's tree reader did not return JSON")
-            return
+        reply = scenario_state(str(self.campaign_dir(campaign_id)), campaign_id, state.run)
         if not reply.get("found"):
-            # Its own stated reason -- a run with bt_log off, or one that has not ticked yet --
-            # which is more use than "unavailable" and is already phrased for a reader.
             state.unavailable.append(reply.get("error", "the scenario reported no tree"))
             return
         state.scenario = reply

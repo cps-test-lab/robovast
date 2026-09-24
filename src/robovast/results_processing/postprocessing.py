@@ -44,7 +44,7 @@ from robovast.common.plugin_ref import is_file_ref, load_ref
 from robovast.common.results_utils import campaign_vast_or_none, find_campaign_vast_file
 from robovast.results_processing.campaign_tables import (build_tables, clear_tables,
                                                          declared_tables, is_decoder_command,
-                                                         write_decoder_config,
+                                                         replay_tables, write_decoder_config,
                                                          write_postprocessing_steps,
                                                          write_run_health)
 from robovast.results_processing.metadata import generate_campaign_metadata
@@ -510,6 +510,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
         skip_metadata: bool = False,
         campaign: Optional[str] = None,
         should_stop=None,
+        replay: bool = False,
 ):
     """Run what ends **one campaign**: its steps, its tables, its provenance, its metadata.
 
@@ -530,6 +531,9 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
         should_stop: Polled between steps, and handed to the steps that can honour it
             mid-flight, so a stopped campaign stops here in seconds. A cancelled pass never
             writes the provenance record, so it never reads as postprocessed.
+        replay: Clear the campaign's tables and build every table its records can give, for
+            every run -- not only the declared ones -- before the campaign-end pass. A
+            replay yields the rows a live watcher wrote as the runs went.
 
     Returns:
         ``(success, message)``. A cancelled run returns ``(False, POSTPROCESSING_CANCELLED)``.
@@ -586,10 +590,12 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     # The decoder builds this campaign's tables with its own configuration, which an edited
     # postprocessing block may just have changed.
     write_decoder_config(campaign_dir, vast_path)
-    if force:
+    if force or replay:
         freed = clear_tables(campaign_dir)
-        output(f"Force mode: cleared the campaign's tables ({freed // (1024 * 1024)} MiB); "
-               "what is declared is built again")
+        output(f"{'Replay' if replay else 'Force mode'}: cleared the campaign's tables "
+               f"({freed // (1024 * 1024)} MiB); "
+               + ("every table the records can give is built again" if replay
+                  else "what is declared is built again"))
 
     plugins = load_postprocessing_plugins()
     commands = campaign_postprocessing_commands(vast_path, skip=skip, output=output)
@@ -647,13 +653,18 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     # are untouched and re-running builds again, while continuing quietly would let
     # "postprocessed" stop meaning "what it declares is there".
     tables = declared_tables(vast_path)
-    output(f"Building {len(tables)} declared table(s): {', '.join(tables)}")
 
     def _progress(done, total):
         if done == total or done % 25 == 0:
             output(f"  built {done}/{total} run(s)")
 
-    problems = build_tables(campaign_dir, tables, progress=_progress)
+    problems = []
+    if replay:
+        output("Replaying every table the records can give, for every run")
+        problems = replay_tables(campaign_dir, progress=_progress)
+    output(f"Building {len(tables)} declared table(s): {', '.join(tables)}")
+    problems += [p for p in build_tables(campaign_dir, tables, progress=_progress)
+                 if p not in problems]
     if problems:
         shown = "; ".join(str(p) for p in problems[:3])
         more = f" (+{len(problems) - 3} more)" if len(problems) > 3 else ""

@@ -6,9 +6,10 @@ Four properties this defends, each of which was a wrong answer at some point:
 
 * the campaign is registered **before** any bytes move, so it appears in the campaign view
   at ``importing`` while it is still arriving rather than materialising at the end;
-* postprocessing is chained exactly when the archive arrived **raw**, because a campaign
-  with no metric tables is not one anybody can query -- and a postprocessed one must not be
-  recomputed;
+* postprocessing is chained exactly when the archive arrived **raw** -- carrying no
+  postprocessing record, so its own steps and the campaign-end pass never ran -- and a
+  postprocessed one must not be recomputed. An archive never carries tables either way:
+  every table is built from the records the first time something names it;
 * the campaign is made **durable before** that postprocess rather than after it, because the
   postprocess reads the campaign from its durable home;
 * a failed import is **kept**, as a failed campaign. Deleting the tree was tried and was
@@ -30,6 +31,7 @@ import pytest
 from robovast.client.status import Phase
 from robovast.service.interface import ImportCampaignRequest
 from robovast.execution.status_recovery import reconstruct_status_from_disk
+from tests.robovast_decode.conftest import make_campaign, make_roqsim_campaign
 from tests.service.null_service import NullService
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 _SOURCE = _FIXTURES / "v1-campaign-2025-03-04-101500"
@@ -408,3 +410,70 @@ def test_an_archive_exported_from_an_object_store_imports(service, tmp_path):
     assert (landed / "_config" / "files" / "prepare.sh").stat().st_mode & 0o111
     log = service.get_campaign_logs(ref.campaign_id, 0).text
     assert log.index("first postprocess") < log.index("second postprocess")
+
+
+# -- what an archive carries, and what is built from it ------------------------------------
+
+_CURRENT = _FIXTURES / "v5-campaign-2026-09-23-090000"
+
+
+def _recorded_archive(tmp_path, name: str, fill) -> Path:
+    """An archive of a campaign whose runs carry a recording and nothing derived from it.
+
+    *fill* writes the run directories (the decoder fixtures' campaign makers); the frozen
+    configuration comes from the current-version fixture, so the ``config`` stage reads it
+    as it is. No ``.cache/`` goes in: an archive never carries tables, whichever service
+    wrote it, because the tables are built from the records wherever the campaign is read.
+    """
+    import shutil
+    staged = tmp_path / "staged" / name
+    fill(staged)
+    shutil.copytree(_CURRENT / "_config", staged / "_config")
+    (staged / "_execution").mkdir(exist_ok=True)
+    out = tmp_path / f"{name}.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(staged, arcname=name)
+    return out
+
+
+@pytest.mark.parametrize("fill, table", [
+    pytest.param(make_campaign, "poses", id="rosbag2"),
+    pytest.param(make_roqsim_campaign, "sim_poses", id="roqsim_bag"),
+])
+def test_an_imported_recording_is_a_table_the_first_time_something_names_it(
+        service, tmp_path, fill, table):
+    """An import builds no table: what the records can give is listed, and built on use.
+
+    The scenario recording (``rosbag2/``) gives ``poses``, roqsim's own (``roqsim_bag/``)
+    gives ``sim_poses``. After the import each is described as built for none of its runs,
+    a query over it answers by building it, and it is then described as built for all.
+    The postprocessing chain is stubbed by the fixture, so nothing here rides on the
+    campaign-end pass: the engine is what answers.
+    """
+    runs = (("cfg", 0), ("cfg", 1))
+    archive = _recorded_archive(tmp_path, "recorded-2026-01-01-000000",
+                                lambda root: fill(root, runs=runs))
+    ref = service.import_campaign(ImportCampaignRequest(archive_path=str(archive)))
+    status = _wait_done(service, ref.campaign_id)
+    assert status.phase == Phase.FINISHED, status.error
+
+    report = json.loads((service.campaign_dir(ref.campaign_id) / "_execution"
+                         / "import.json").read_text(encoding="utf-8"))
+    assert report["stages"]["tables"]["verdict"] == "ok"
+    assert "first time" in report["stages"]["tables"]["detail"]
+
+    def described():
+        return {t.table: t for t in service.describe_campaign_data(ref.campaign_id).tables}
+
+    before = described()[table]
+    assert (before.built, before.runs) == (0, len(runs)), "an archive carries no tables"
+    assert before.columns == [], "columns are known once it is built for some run"
+
+    result = service.query_campaign_data_sql(
+        ref.campaign_id, f"SELECT config_name, run_id, count(*) AS n FROM {table} "
+                         f"GROUP BY 1, 2 ORDER BY 2")
+    assert [(r["run_id"], r["n"] > 0) for r in result.rows] == [(0, True), (1, True)]
+
+    after = described()[table]
+    assert (after.built, after.runs) == (len(runs), len(runs))
+    assert "frame" in " ".join(after.columns)

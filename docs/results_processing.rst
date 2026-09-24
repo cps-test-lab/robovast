@@ -465,7 +465,11 @@ as parquet **parts** the manifest names under the run's entry with a ``live`` st
 every part written so far and leaves the entry to the session while the stamp is fresh; once the
 run has its verdict and the recorder closed the bag, the parts are merged into the run's one
 file and the entry is complete. A stamp that has gone stale belongs to a session that died, and
-the table is built whole from the recording like any other.
+the table is built whole from the recording like any other. The :ref:`derived tables
+<results-derived-tables>` of a run being followed are not read in parts: they are derived
+again, whole, from the job's files as they are, on the same period, written with the same
+``live`` stamp, and recorded as a build records them once the run has its verdict and its
+recordings are closed.
 
 **The cache is disposable.** Clearing it (:ref:`results-tables-ahead`) loses nothing but the time
 to rebuild; archives and downloads leave it out, and an imported or downloaded campaign builds its
@@ -1149,6 +1153,16 @@ postprocessing step, or on a campaign imported raw — name the campaign:
 
    Clear the campaign's built tables first, so what it declares is built again — by this
    decoder, from the records. The steps are passed ``force`` too.
+
+.. option:: --replay
+
+   Clear the campaign's built tables and build **every table its records can give, for every
+   run** — not only the declared ones — before the campaign-end pass. The invariant it rests
+   on: a replay yields the rows a live watcher wrote as the runs went. The tables a run's
+   recordings were decoded into as it recorded, and the derived tables its job's files were
+   derived into whole, are the same decoder over the same records, so the campaign reads the
+   same whether it was followed live or replayed afterwards. ``replay`` on the MCP
+   ``run_postprocessing`` tool and on the service's request body is the same switch.
 
 .. option:: --skip PLUGIN
 

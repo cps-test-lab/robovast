@@ -968,18 +968,23 @@ Where the scenario has got to
 
 The simulator's half says whether the world is stepping and where its bodies are. It cannot say
 which **action** the scenario is stuck in, which is usually the sentence that identifies the
-fault -- so ``get_job_state`` asks scenario-execution's own reader for that too, by a fixed
-command, and returns what it says under ``scenario``.
+fault -- so ``get_job_state`` folds that from the run's ``behaviors`` and ``behaviors_meta``
+tables, the rows the campaign's data engine reads out of the ``behaviors.jsonl`` the run writes,
+and returns it under ``scenario`` in the shape scenario-execution's own ``tree_state`` reader
+gives. Nothing runs in the job for it: the log grows in the campaign directory as the file
+agent delivers it, and the tree shown is the one a query of the run sees.
 
 Two properties, both deliberate:
 
 * **The two reads are independent.** The scenario runs in every campaign whatever the simulator
-  is, so it is asked unconditionally: a campaign whose simulator cannot report on itself still
+  is, so it is read unconditionally: a campaign whose simulator cannot report on itself still
   gets the more useful half.
 * **It is the expensive half, and therefore on demand.** The behaviour-tree log holds one line
-  per status change, so the current tree is a fold over the whole file rather than a tail read.
+  per status change, so the current tree is a fold over every row rather than a tail read.
   That is why it lives on ``get_job_state``, asked for when someone wants it, and never in the
-  cheap reply the service polls. Every run records it; there is no way to turn it off.
+  cheap reply the service polls. Every run records it; there is no way to turn it off. A log
+  without its metadata record is refused, naming the file: without it the tree is of an
+  unknown run.
 
 Alongside both, ``resources`` carries the newest sample the run's own monitor wrote, per
 container and per process. It answers what neither of the others can: a run stuck at 0% CPU is
@@ -1334,10 +1339,10 @@ What changed is that the perturbation is now *recordable* rather than forbidden.
 reach a live job, and the difference between them is who chooses the command:
 
 * ``get_job_state`` runs only **fixed** commands the service chose — the simulator's own health
-  read, scenario-execution's own tree reader, and a tail of the run's own resource samples, each
-  in the container that runs it. Nothing arbitrary can ride in, nothing is perturbed, and nothing
-  is recorded. That property holds *because* the commands are ours: they read files the run is
-  already writing.
+  read and a tail of the run's own resource samples, each in the container that runs it — and
+  folds the scenario's tree from the run's tables without entering the job at all. Nothing
+  arbitrary can ride in, nothing is perturbed, and nothing is recorded. That property holds
+  *because* the commands are ours: they read files the run is already writing.
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
   campaign instead: every run the job covers is recorded as probed in the campaign's
   ``_execution/interventions.json``, which is the ``runs.probed`` column a query reads.
