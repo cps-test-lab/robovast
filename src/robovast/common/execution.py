@@ -166,6 +166,23 @@ DEFAULT_IMAGE_PROJECT = "ghcr.io/cps-test-lab"
 #: A floating tag, so resolving to it warns -- see :func:`default_image_tag`.
 FLOATING_IMAGE_TAG = "latest"
 
+#: The branch CI publishes the family under on every push to it: ``image.yml`` builds pushes
+#: to this branch alone and tags them ``type=ref,event=branch``, so the tag is its name.
+DEFAULT_BRANCH_IMAGE_TAG = "main"
+
+#: What ``type=ref,event=pr`` publishes for a pull request, moved by every push to it.
+_PULL_REQUEST_IMAGE_TAG = re.compile(r"pr-\d+")
+
+
+def is_floating_image_tag(reference: str) -> bool:
+    """Whether CI moves this tag: ``latest``, the default branch's, or a pull request's.
+
+    Any other reference -- a release version, a date, a digest -- was chosen for the
+    deployment that names it, and pulling it again is meant to land on the same bytes.
+    """
+    return (reference in (FLOATING_IMAGE_TAG, DEFAULT_BRANCH_IMAGE_TAG)
+            or _PULL_REQUEST_IMAGE_TAG.fullmatch(reference) is not None)
+
 
 # Marks an image ref that is *produced by a build* rather than pulled: ``build:<name>``,
 # where the name is the container whose packages produced it. Internal only -- no .vast

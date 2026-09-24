@@ -188,6 +188,20 @@ def test_a_deployment_pinned_to_a_version_is_not_rolled(svc, image):
     assert not s.patched
 
 
+@pytest.mark.parametrize("image", [
+    "repo/robovast-controller:latest",
+    "repo/robovast-controller:main",
+    "repo/robovast-controller:pr-691",
+])
+def test_a_deployment_on_a_tag_ci_moves_is_rolled(svc, image):
+    """A branch's tag floats as ``latest`` does: a roll is how it reaches what was pushed."""
+    s = svc(image=image, running="sha256:old", published="repo/robovast-controller@sha256:new")
+    info = s.upgrade_info()
+    assert info.supported is True, info.unsupported_reason
+    s.upgrade_service()
+    assert s.patched
+
+
 def test_a_service_outside_the_cluster_has_no_deployment_of_its_own(svc):
     info = svc(in_pod=False).upgrade_info()
     assert info.supported is False

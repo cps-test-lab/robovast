@@ -348,9 +348,10 @@ it just made.
 Where a deployment cannot roll itself — a ``vast serve`` started by hand — there is no
 button, just the reason. The same holds for a deployment set up with a fixed version
 (``ROBOVAST_PROJECT_TAG``, see :doc:`images`): the button only ever re-pulls the tag the
-deployment already runs, so it is offered on the floating ``latest`` alone. Moving a pinned
-deployment to another version is ``vast service upgrade`` with the new tag in its
-environment. The chart and the log work unchanged.
+deployment already runs, so it is offered only on a tag CI moves — ``latest``, ``main``, or
+a pull request's ``pr-<n>``. Moving a pinned deployment to another version is
+``vast service upgrade`` with the new tag in its environment. The chart and the log work
+unchanged.
 
 **What it is configured with.** RoboVAST is configured entirely through environment
 variables: an operator writes them into a ``.env`` and ``vast cluster setup`` /
