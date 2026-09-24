@@ -3,6 +3,8 @@
 """The log summarizer: a flood collapses to one counted pattern, and severity is
 classified from the producer's own marker rather than a keyword guess."""
 
+import pytest
+
 from robovast.common.log_summary import (DEFAULT_TOP, SEVERITIES, normalize, peel_prefixes,
                                          severity_of, severity_rank, summarize)
 
@@ -221,3 +223,56 @@ def test_empty_input_summarizes_to_nothing_rather_than_failing():
 
 def test_default_top_is_a_summary_not_a_log():
     assert 0 < DEFAULT_TOP <= 50
+
+
+# -- RoboVAST's own log lines -------------------------------------------------
+#
+# A campaign's infrastructure log is written by RoboVAST's own logging, not by a ROS node,
+# so its lines wear the stdlib's stamp. Recognizing only the ROS one left every one of them
+# unmarked and classified by keyword, which is wrong in both directions at once.
+
+
+@pytest.mark.parametrize("line, level, node", [
+    ("2026-01-02 03:04:05 ERROR robovast.service.app: it broke", "ERROR", "robovast.service.app"),
+    ("2026-01-02 03:04:05,123 WARNING robovast.x: slow", "WARNING", "robovast.x"),
+    # The one configuration that logs no logger name.
+    ("2026-01-02 03:04:05 INFO nothing named it", "INFO", ""),
+])
+def test_robovast_s_own_stamp_is_read_as_a_level(line, level, node):
+    parsed = peel_prefixes(line)
+    assert (parsed.level, parsed.node) == (level, node)
+    assert parsed.wall_ts is not None, "the line carries its own stamp"
+
+
+def test_an_error_of_ours_is_an_error_and_not_a_keyword_match():
+    """``min_severity='error'`` over a campaign that failed returned nothing while the log
+    said so on its own line: unmarked lines are classified by keyword, and by keyword there
+    is no way to tell an error from a warning."""
+    assert severity_of(
+        "2026-01-02 03:04:05 ERROR robovast.x: 2 of 8 parts failed") == "error"
+
+
+def test_a_line_of_ours_that_merely_mentions_an_error_is_not_one():
+    """The other direction, and the reason a level marker outranks the keyword scan at all:
+    a pip resolver complaint relayed at INFO is not the campaign reporting an error."""
+    assert severity_of(
+        "2026-01-02 03:04:05 INFO robovast.x: pip: ERROR: resolver conflict") == "other"
+
+
+def test_a_line_with_no_stamp_at_all_still_falls_to_the_keyword_scan():
+    """The new stamp must not claim lines that do not wear it -- a bash echo has no level,
+    and reporting one would invent a verdict its producer never gave."""
+    parsed = peel_prefixes("cp: failed to copy 'x'")
+    assert parsed.level == "" and parsed.wall_ts is None
+    assert severity_of("cp: failed to copy 'x'") == "warn"
+
+
+def test_the_postprocessing_verdict_reaches_the_log_as_an_error():
+    """End to end for the reason this exists: a campaign's section is assembled rather than
+    logged, so the line that says its postprocessing failed has to be given the stamp the
+    rest of the log wears -- and then be read as the error it is."""
+    from robovast.execution.cluster_execution.postprocess_job import stamped
+
+    line = stamped("ERROR", "2 of 8 postprocessing part(s) failed -- job-a: exited 1")
+
+    assert severity_of(line.rstrip("\n")) == "error"
