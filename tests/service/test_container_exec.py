@@ -91,9 +91,14 @@ def _spec(command="ls", config_name="", image="img:1"):
 
 @pytest.mark.parametrize("kwargs, expected", [
     ({"command": "ls"}, "no source named"),
-    ({"command": "ls", "workspace_id": "w", "campaign_id": "c"}, "one source, not both"),
+    ({"command": "ls", "workspace_id": "w", "campaign_id": "c"}, "name one source, not 2"),
+    ({"command": "ls", "workspace_id": "w", "image_family": "family:robovast-roqsim"},
+     "name one source, not 2"),
     ({"command": "  ", "workspace_id": "w"}, "nothing to run"),
     ({"command": "ls", "campaign_id": "c", "config_path": "p.vast"}, "needs workspace_id"),
+    ({"command": "ls", "image_family": "family:robovast-roqsim", "config_name": "c"},
+     "no configuration to stage"),
+    ({"command": "  ", "image_family": "family:robovast-roqsim"}, "runs a command"),
 ])
 def test_a_request_that_cannot_be_honoured_is_refused(kwargs, expected):
     with pytest.raises(ValueError, match=expected):

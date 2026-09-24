@@ -295,21 +295,35 @@ weigh it rather than reading the hint as an instruction.
 What the documentation corpus covers
 ------------------------------------
 
-``search_docs`` serves RoboVAST's own pages, and with an ``address`` the simulator's too. A
-campaign is authored against more than RoboVAST -- the world format, the plugin reference,
+``search_docs`` serves RoboVAST's own pages, roqsim's and OpenSCENARIO DSL's, as one corpus.
+A campaign is authored against more than RoboVAST -- the world format, the plugin reference,
 the scene catalog -- and that is documented in the repository that owns it. Searching only
 this one returns zero for a world's ``components:`` list, which reads as "no such thing"
-rather than "not indexed here", so a miss without an address says where the rest is.
+rather than "not indexed here".
 
-**The image answers for its own pages.** The simulator image already carries roqsim's source
-tree at ``/opt/roqsim``, so ``search_docs(address=...)`` reads ``docs/`` out of the image that
-``.vast`` runs -- the same held-container path and per-image cache the catalogs use. Nothing
-is added to an image and no commit is pinned twice, and the pages that answer a question
-about a world are the ones belonging to the simulator that campaign runs, not whichever
-version sits beside the service.
+**The image answers for its own pages.** The simulator image carries both upstream source
+trees -- roqsim's at ``/opt/roqsim``, scenario-execution's in the ROS workspace -- so their
+``docs/`` are read out of the image, over the same query pool and per-image cache the
+catalogs use. Deriving the same pages from a source ref instead would put a second pin
+beside the one the image was built from, free to name a different commit, and the service
+would then document a simulator nobody runs.
 
-They are served under a ``roqsim-`` prefix, so both repositories keep an ``architecture``
-page and neither shadows the other, and every listing row carries a ``source``.
+No address is needed: the deployment's own simulator image answers, which is what a question
+asked before there is a project to name is about. An ``address`` narrows it to the image that
+``.vast`` resolves to, for a project pinning a different simulator than the service does.
+
+The pages are served under the prefix of the corpus they came from, so both repositories keep
+an ``architecture`` page and neither shadows the other, and every listing row carries a
+``source``. The image says which corpus each page belongs to; a reader deriving it from the
+path would be a second answer to that question.
+
+The corpus is fetched once per resolved image, and warmed when the server starts so the first
+question does not pay for it. The resolution runs on every search -- it costs no container --
+so a redeployed image is picked up by the next one.
+
+**When the service is unreachable**, RoboVAST's own pages still answer and the reply carries
+an ``incomplete`` field naming what could not be read. A search that quietly dropped the
+world format would answer "no match" to a question the missing half documents.
 
 ``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path separator, for a
 checkout with no image behind it.

@@ -2516,9 +2516,10 @@ export interface components {
          * @description Run one command in the experiment image — a diagnostic, never a campaign.
          *
          *     Names exactly one source of the image (and, with ``config_name``, of a staged
-         *     configuration): a workspace project, or an existing campaign whose ``_config/`` is
-         *     itself a project. A running campaign's container is deliberately not addressable;
-         *     see :meth:`RobovastInterface.exec_in_container`.
+         *     configuration): a workspace project, an existing campaign whose ``_config/`` is
+         *     itself a project, or -- for a question about the software rather than about any
+         *     project -- an image family member. A running campaign's container is deliberately
+         *     not addressable; see :meth:`RobovastInterface.exec_in_container`.
          *
          *     Carries **no timeout field**, so no client can set one: the limit is derived from
          *     what is being run (``execution.timeout`` for a scenario, a fixed cap for a command)
@@ -2555,6 +2556,11 @@ export interface components {
              * @default false
              */
             fresh: boolean;
+            /**
+             * Image Family
+             * @default
+             */
+            image_family: string;
             /**
              * Keep Alive
              * @default false

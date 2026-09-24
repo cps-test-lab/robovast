@@ -100,15 +100,20 @@ def _address_to_request_kwargs(address: str) -> dict:
     return {"workspace_id": _resolve_workspace_id(client, workspace_id), "config_path": rel_path}
 
 
-def _fetch(group: str, address: str) -> dict:
+def _fetch(group: str, address: str, family: str = "") -> dict:
     """The full catalog for *group* in *address*'s resolved image, cached by image.
+
+    With no *address*, *family* names an image family member instead -- for a catalog that
+    describes the software rather than a project, which every project would otherwise have
+    to supply a project to ask about.
 
     Returns ``{items, image, cache: {hit, seconds}}`` or ``{"error": "..."}``.
     """
     from robovast.service.interface import ExecRequest
 
     try:
-        request_kwargs = _address_to_request_kwargs(address)
+        request_kwargs = ({"image_family": family} if family and not address
+                          else _address_to_request_kwargs(address))
     except ValueError as e:
         return {"error": str(e)}
     client = service_access.service_client()
@@ -180,9 +185,9 @@ _SUMMARY_FIELDS = {
 _DEFAULT_SUMMARY_FIELDS = ("name", "kind", "doc")
 
 
-def _fetch_catalog(group: str, address: str) -> dict:
+def _fetch_catalog(group: str, address: str, family: str = "") -> dict:
     """:func:`_fetch` for a reader outside this module -- the docs corpus is one."""
-    return _fetch(group, address)
+    return _fetch(group, address, family)
 
 
 def _list(group: str, address: str, query: str) -> dict:
