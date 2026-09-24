@@ -23,7 +23,7 @@ parameterized by the campaign **directory** so it serves both callers:
   ``results_resolver`` (or delegates to a configured service); and
 * the ``robovast-service`` (``describe_campaign_data`` / ``query_campaign_data_sql``
   on :class:`~robovast.service.interface.RobovastInterface`), which resolves the
-  dir under its results root, where campaigns of either lane live.
+  dir under its results root, where every campaign lives.
 
 The rows themselves live in the central index now (:mod:`.index_query`), which is why the
 directory is only a *name* here: it identifies the campaign, and that name is what the

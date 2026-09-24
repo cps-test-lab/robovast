@@ -19,8 +19,7 @@ import time
 # container that has no other way to report them.
 
 #: The shared-memory pool, sampled once per tick alongside the process rows. It is ONE tmpfs
-#: for the whole run -- the pod's `dshm` volume mounted into every container on the cluster
-#: lane, the main container's `/dev/shm` shared through its IPC namespace locally -- so the
+#: for the whole run -- the pod's `dshm` volume mounted into every container -- so the
 #: figure is a property of the tick, not of a process, and is repeated across the tick's rows.
 #: Nothing else reports it: a container that overruns shared memory dies of SIGBUS (exit 135)
 #: rather than a clean OOM, so without this the death arrives with no number behind it.

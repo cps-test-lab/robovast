@@ -20,14 +20,14 @@ This module is backend-agnostic: it turns a validated project's ``build:`` secti
 into a deterministic Dockerfile + a content hash, and classifies builder failures
 into the structured :class:`~robovast.service.interface.ImageBuildError`. It is the
 **recipe**: nothing here knows where an image ends up. That is the *store*
-(:mod:`robovast.service.image_store`) -- the local docker daemon or a cluster registry --
-which reuses these pure helpers (``build_hash``, ``generate_dockerfile``,
+(:mod:`robovast.service.image_store`) -- the deployment's registry -- which reuses these
+pure helpers (``build_hash``, ``generate_dockerfile``,
 ``classify_build_error``) rather than restating them per lane.
 
 Registry invariant: nothing here emits or accepts a registry endpoint, credential,
 or registry-qualified ref. The agent-facing image is always the symbolic
-``build:<tag>``; concrete refs are formed by the backend (a local docker tag here,
-a ``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a client.
+``build:<tag>``; concrete refs are formed by the backend (a
+``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a client.
 """
 
 import hashlib
@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 #: Where the project dir is COPYed inside the image build context.
 _CONTEXT_DIR = "/robovast_build_context"
-#: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by both
-#: builders we drive: ``docker buildx`` locally and ``buildctl --frontend dockerfile.v0`` in-cluster.
+#: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by
+#: ``buildctl --frontend dockerfile.v0`` in-cluster and by ``docker buildx`` alike.
 _SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1"
 #: Prefix the experiment's packages are installed into. ``/usr/local`` and not a fresh directory:
 #: it is where pip on a Debian base already installs, so ``PATH``, ``share/ament_index`` and every
@@ -839,7 +839,7 @@ def read_image_build_manifest(image: str) -> dict:
     loose spec a year later gives a different answer, which is precisely the silent substitution
     a re-run must not make.
 
-    Read by starting a container, and only for an image already present locally: `docker run` on
+    Read by starting a container, and only for an image already on this host's daemon: `docker run` on
     an absent image *pulls* it, and a caller asking "what is in this image" must not be the thing
     that fetches gigabytes. ``{}`` means "cannot tell" -- an image built before manifests existed
     has none, and that is a different answer from "installed nothing".
@@ -863,7 +863,7 @@ def parse_build_manifest_files(texts: dict) -> dict:
     """``{apt: {...}, pip: {...}, vcs: {...}}`` from the raw ``{filename: text}`` of a lock.
 
     The reading half split out from :func:`read_image_build_manifest`, which can only ask an
-    image that is present locally. A caller that obtained the same files some other way -- the
+    image on this host's daemon. A caller that obtained the same files some other way -- the
     cluster's registry client reads them out of a layer blob, because the controller pod has no
     container runtime -- parses them through here rather than through a second parser that
     would have to agree with this one forever.
@@ -1318,7 +1318,7 @@ def not_built_message(container: str, build_id: str,
                       status: "Optional[ImageBuildStatus]") -> "tuple[str, str]":
     """``(message, next_step)`` for "this container's image is not on the store".
 
-    Pure, so it is testable without a service, and one function so both lanes phrase the
+    Pure, so it is testable without a service, and one function so every lane phrases the
     refusal identically.
 
     The old message said only "call build_experiment_image first", which is a dead end for
@@ -1378,8 +1378,8 @@ def not_built_message(container: str, build_id: str,
                 f"get_image_build_log(build_id='{build_id}', summarize=True)")
     if status is not None and phase in ("succeeded", "cached"):
         return (f"the image for container '{container}' was built (build {build_id}) and "
-                f"is no longer on this lane's image store -- pruned locally, or deleted "
-                f"from the registry. It has to be built again. {tail}",
+                f"is no longer on this lane's image store -- deleted from the registry. "
+                f"It has to be built again. {tail}",
                 f"build_experiment_image(container='{container}')")
     return (f"the image for container '{container}' is not built, and no build is "
             f"running for these inputs. {tail}",

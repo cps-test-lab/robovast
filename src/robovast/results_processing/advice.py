@@ -696,10 +696,10 @@ def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
             "detail": (
                 "This campaign was given whichever default its lane happened to apply -- on "
                 "the cluster the pod's memory limits, or the whole node when none were "
-                f"declared; locally Docker's {format_memory(SHM_ADVICE_FLOOR_BYTES)}. Those "
-                "disagree, which is why the same .vast could survive on one lane and die of "
-                "SIGBUS (exit 135) on the other, unreported as an out-of-memory kill. A "
-                "campaign composed today gets one size on both lanes; declare "
+                f"declared; under Docker its {format_memory(SHM_ADVICE_FLOOR_BYTES)}. Those "
+                "disagree, which is why the same .vast could survive in one place and die of "
+                "SIGBUS (exit 135) in another, unreported as an out-of-memory kill. A "
+                "campaign composed today gets one size everywhere; declare "
                 f"execution.shm_size: {format_memory(suggested)} if this peak is "
                 "representative. " + _SHM_BASIS),
             "evidence": evidence,

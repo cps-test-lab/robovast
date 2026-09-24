@@ -24,7 +24,7 @@ is a service-level fact rather than something derived from a campaign directory.
 It lives in ``common`` because both directions need it and neither may depend on the
 other: postprocessing writes rows, the service and the notebooks read them.
 
-**There is no degraded mode, deliberately.** Postgres is a hard dependency of both lanes.
+**There is no degraded mode, deliberately.** Postgres is a hard dependency of the service.
 A reader that answered "no rows" when the index is unreachable would render an empty
 campaign as a finished one, which is worse than an error and indistinguishable from a real
 result. So a missing DSN and an unreachable server are both raised, by name, with the

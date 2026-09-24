@@ -82,7 +82,7 @@ class ExecSlotContainerRunner:
 
     *exec_call* is a one-argument callable taking an ``ExecRequest`` and returning an
     ``ExecResult`` — the transport's own ``exec_in_container``, passed in rather than
-    imported so this stays usable from either lane and testable without one.
+    imported so this stays usable from any lane and testable without one.
     """
 
     def __init__(self, exec_call, *, workspace_id: str, config_path: str,

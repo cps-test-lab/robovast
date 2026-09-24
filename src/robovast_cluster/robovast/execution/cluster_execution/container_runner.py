@@ -314,9 +314,9 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
             # pull with `insufficient_scope`, which reads like a credentials problem rather than an
             # unresolved reference. Resolved here, in the service, for the same reason the
             # transfer container below calls resolve_sidecar_image(): this process is the one
-            # carrying the deployment's project and tag. The local lane resolves at
-            # runner-creation time instead (config_generation._make_container_runner), which is
-            # why a family ref worked there and not here.
+            # carrying the deployment's project and tag. ``config_generation``'s own runner
+            # resolves at runner-creation time instead, which is why a family ref worked
+            # there and not here.
             "image": image,
             # From the ref, like every other pod this package writes: see
             # ``pull_policy_for``. A tag is what a spec names in the ordinary case, and it
@@ -686,7 +686,7 @@ class ClusterContainerRunner:
         written for, filename included (``/aux/roqsim_scene_overrides.yaml``), and only the
         directory around it can be a volume. Without this the scene build failed on the
         cluster, at the one moment it is least diagnosable -- the run view asking for
-        geometry -- while working on the local lane, where a bind mount does not care.
+        geometry -- while working under a bind mount, which does not care.
 
         A *host_path* outside the workspace is copied into it first (:meth:`_stage_into`), so
         the single transport is a property of this method rather than of every caller's

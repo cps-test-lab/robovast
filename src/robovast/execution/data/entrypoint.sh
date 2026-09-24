@@ -92,7 +92,7 @@ fi
 if [ "${COLLECT_SYSINFO}" != "false" ]; then
   log "Collecting system information..."
   # Replaced with the cluster provider's INSTANCE_TYPE command (get_instance_type_command);
-  # left as an empty assignment on the local lane, which has no instance to identify.
+  # left as an empty assignment where no provider names an instance.
   # @@INSTANCE_TYPE_BLOCK@@
   SYSINFO_FILE="${OUTPUT_DIR}/sysinfo.yaml"
   # --distributions alongside it: which distributions are installed HERE, with the entry-point
@@ -196,8 +196,8 @@ else
     fi
 
     # The lane's post-run block: the cleanup hooks the runner is handed, and `run_scenario`,
-    # which is how the runner is started -- an exec over this shell on the local lane, a
-    # child of it on the cluster, where something has to run after the runner is gone.
+    # which is how the runner is started -- a child of this shell on the cluster, where
+    # something has to run after the runner is gone; an exec over it otherwise.
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"

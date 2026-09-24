@@ -217,9 +217,8 @@ class ResourcesConfig(BaseModel):
     ``cpu`` takes fractional cores (``0.5``) and the millicore spelling Kubernetes uses
     (``"500m"``), not only whole cores. On the cluster lane a campaign's throughput is
     ``quota // pod_request``, so rounding a measured 0.3-core sidecar up to a whole core is
-    paid on **every job of the sweep** — and both lanes have always accepted the fractional
-    value (the Kubernetes manifest takes ``str(cpu)``, Compose takes ``cpus: '<cpu>'``). The
-    integer-only annotation was the only thing rejecting it.
+    paid on **every job of the sweep** — and the Kubernetes manifest takes ``str(cpu)``, so
+    the integer-only annotation was the only thing rejecting a fractional value.
     """
     # ``int`` first so a whole-core declaration stays an int: the lanes render the value with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
@@ -856,8 +855,8 @@ class ContainerConfig(BaseModel):
 
 #: Size of the shared ``/dev/shm`` a run gets when its ``.vast`` does not say.
 #:
-#: Not a guess: it is eight times the 64 MiB the local lane hands out for free, which is
-#: what every campaign has in fact been running inside, and it stays under the threshold at
+#: Not a guess: it is eight times Docker's own 64 MiB default, which is what every
+#: campaign had in fact been running inside, and it stays under the threshold at
 #: which ``get_campaign_summary`` would advise lowering it -- a default that immediately
 #: advised against itself would train the reader to ignore the advice. The pool is a tmpfs
 #: charged to the pod, so this is paid on every job of every sweep; a campaign that measures
@@ -986,8 +985,7 @@ class JobsConfig(BaseModel):
 
 
 class KubernetesConfig(BaseModel):
-    """``execution.kubernetes``: settings only the cluster lane reads; the local lane ignores
-    the block."""
+    """``execution.kubernetes``: settings that name things about the cluster."""
     model_config = ConfigDict(extra='forbid')
 
     jobs: Optional[JobsConfig] = None
@@ -1093,8 +1091,8 @@ class ExecutionConfig(BaseModel):
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
     # Maximum wall-clock time in seconds for one JOB -- one unit of work, which is one run
-    # unless ``runs_per_job`` packs several. A job is the granularity both lanes can
-    # actually enforce at (a Job's activeDeadlineSeconds; a compose step), so the number is
+    # unless ``runs_per_job`` packs several. A job is the granularity the lane can
+    # actually enforce at (a Job's activeDeadlineSeconds), so the number is
     # used as declared rather than reconstructed from a per-run figure.
     timeout: Optional[int] = None
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
@@ -1125,15 +1123,14 @@ class ExecutionConfig(BaseModel):
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.
     #
-    # Defaulted rather than left to the lanes, because the two lane defaults DISAGREE and
-    # both are traps: the cluster lane's memory-backed ``emptyDir`` has no size limit, so
+    # Defaulted rather than left to the platform, because the platform's default is a trap: a memory-backed ``emptyDir`` has no size limit, so
     # it is sized from the pod's memory limits -- or, with none declared, from the whole
-    # node -- while the local lane inherits Docker's 64 MB. A container that overruns the
+    # node. A container that overruns the
     # pool dies of SIGBUS (exit 135), not a clean OOM, so the death arrives with nothing
-    # explaining it. One default here is what makes a `.vast` mean the same thing on both
-    # lanes without every campaign having to say so.
+    # explaining it. One default here is what makes a `.vast` mean the same thing on every
+    # cluster without every campaign having to say so.
     #
-    # There is deliberately no way to ask for "the lane's own default": it is the thing
+    # There is deliberately no way to ask for "the platform's own default": it is the thing
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
@@ -1217,12 +1214,12 @@ class ExecutionConfig(BaseModel):
     def validate_shm_size(cls, v: str) -> str:
         """Reject a value that is not a memory quantity, here rather than at the lane.
 
-        Both lanes pass this string through to a manifest untouched, so an unparseable one
-        otherwise surfaces as a Kubernetes rejection or a ``docker compose`` error, minutes
+        The lane passes this string through to a manifest untouched, so an unparseable one
+        otherwise surfaces as a Kubernetes rejection, minutes
         into a campaign and nowhere near the line that caused it.
 
         An explicit ``null`` is rejected along with the rest. It reads as "no opinion", but
-        the thing it would ask for -- whatever each lane defaults to on its own -- is what
+        the thing it would ask for -- whatever the platform defaults to on its own -- is what
         this field exists to stop a campaign from getting by accident.
         """
         if to_bytes(v) is None:
@@ -1343,9 +1340,8 @@ DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 def declared_job_seconds(execution_params: dict) -> Optional[int]:
     """``execution.timeout`` as declared: the budget for one **job**, or ``None``.
 
-    A job is what either lane can actually bound -- the cluster sets
-    ``activeDeadlineSeconds`` on the Job, and the local lane wraps a whole compose step --
-    so this is the number they use unchanged. It is deliberately not scaled by
+    A job is what the lane can actually bound -- the cluster sets
+    ``activeDeadlineSeconds`` on the Job -- so this is the number it uses unchanged. It is deliberately not scaled by
     ``runs_per_job``: a packed job's budget is the budget its author stated, not a per-run
     figure multiplied back up.
     """

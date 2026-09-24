@@ -285,7 +285,7 @@ def _available_locks(source_dir: Path, pinned: dict) -> dict:
     replaced by the versions that actually ran. Without it, a rebuild re-resolves them and gets
     whatever is current, which is a different experiment wearing the same name.
 
-    Only images already present locally can be asked, so an empty answer means "cannot tell here",
+    Only images on this host's daemon can be asked, so an empty answer means "cannot tell here",
     not "no lock" -- the same rule every probe in this pre-flight follows.
     """
     from robovast.common.campaign_data import read_build_manifests
@@ -344,7 +344,7 @@ def _check_host(source_dir: Path, images_axis: dict) -> dict:
     if unknown:
         return _axis(AXIS_UNKNOWN,
                      f"could not read the container protocol of {', '.join(sorted(unknown))} "
-                     f"-- the image is not available locally, or predates the marker. This "
+                     f"-- the image is not on this host, or predates the marker. This "
                      f"host speaks {window}.", roles=reports)
     return _axis(AXIS_OK, f"every recorded image is within {window}", roles=reports)
 

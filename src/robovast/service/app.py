@@ -292,8 +292,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # Nothing anywhere kept a series, so this process keeps one: 24 h at a 30 s sample.
     #
     # It lives here, in the serving layer, rather than on a transport. ``build_app(impl)``
-    # is the single path both lanes take, so one recorder covers local and cluster; a
-    # sampler inside ``LocalTransport`` would instead start a thread in every in-process
+    # is the single path every lane takes, so one recorder covers them; a sampler inside
+    # the base would instead start a thread in every in-process
     # client and every test that constructs one. The precedent is ``_sse_campaign_list``
     # below: also a server-side derivative of an interface op, also with no method of its
     # own on ``RobovastInterface``.
@@ -787,9 +787,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         on the cluster lane, and a Ctrl+C must not wait on it.
 
         One honest wrinkle, recorded here because it is invisible at the call site:
-        ``psutil.cpu_percent(interval=None)`` averages *since the previous call*, so on the
-        local lane the averaging window is now sometimes this 30 s and sometimes the
-        sidebar's 15 s poll, whichever asked last. Both are truthful "average since the
+        a lane sampling ``psutil.cpu_percent(interval=None)`` averages *since the previous
+        call*, so its averaging window is sometimes this 30 s and sometimes the sidebar's
+        15 s poll, whichever asked last. Both are truthful "average since the
         last reading"; the window simply is not fixed. Taking a private psutil sample to
         fix that would put a second source of truth behind one number.
         """
@@ -1981,7 +1981,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # ``GET /campaigns/{id}/<name>?config_name&run_id&…`` → JSON, dispatched to the plugin
     # handler with a RunDataContext. Registered after the core routes and before the SPA
     # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
-    # ``impl.campaign_dir``, which is the campaign itself on either lane.
+    # ``impl.campaign_dir``, which is the campaign itself.
     from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
         RunDataContext, load_service_endpoints)
 

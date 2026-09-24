@@ -35,8 +35,8 @@ from robovast.client.tail import tail_chunks
 def campaign():
     """Act on a campaign: list, watch, stop, read its log, re-run it.
 
-    Every verb drives the robovast-service, so these work the same whether the campaign
-    runs on a local Docker lane or in a cluster.
+    Every verb drives the robovast-service, so these work the same whichever
+    deployment runs the campaign.
 
     To *start* a campaign from a project, use ``vast workspace run``.
     """
@@ -184,8 +184,8 @@ def priority(value, campaign, namespace, context):
     has and gives up only the slots they release, so no partial run is produced and no results
     are lost. To end a campaign instead, use ``vast campaign stop``.
 
-    Needs a service whose lane queues campaigns against each other; the local Docker lane runs
-    one at a time and refuses.
+    Needs a service whose lane queues campaigns against each other; a lane with no queue
+    refuses.
     """
     _set_scheduling(campaign, namespace, context, priority=value, what="Re-queued")
 

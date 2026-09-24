@@ -18,9 +18,8 @@
 
 One place produces the campaign archive for both directions of "share":
 
-* :func:`make_campaign_tarball` writes ``<archive_dir>/<campaign>.tar.gz`` — the
-  local backend's upload-to-share deliverable (there is no external provider
-  locally, so the file *is* the artifact).
+* :func:`make_campaign_tarball` writes ``<archive_dir>/<campaign>.tar.gz`` — an
+  archive on disk, for ``vast share`` and the tests.
 * :func:`campaign_tar_stream` / :func:`iter_campaign_tar` produce the same archive
   as an on-the-fly ``pigz`` stream with **no tar on disk** — used to push a
   campaign to an external share provider (upload-to-share, cluster) and to serve

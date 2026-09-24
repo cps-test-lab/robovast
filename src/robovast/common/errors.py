@@ -132,7 +132,7 @@ class IndexUnreachableError(RuntimeError):
     undefined column, a syntax error in caller SQL) is the caller's to interpret.
 
     **This must never degrade into a fallback.** Postgres is a hard dependency of
-    both lanes now, so a reader that quietly returned "no data" when the index is
+    the service, so a reader that quietly returned "no data" when the index is
     down would present an empty campaign as a finished one -- the failure mode the
     whole design exists to avoid. Say the index is unreachable and let the caller
     decide.

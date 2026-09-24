@@ -471,8 +471,8 @@ class HTTPTransport(RobovastInterface):
                        json={"path": path, "check_world": check_world,
                              "check_scenario": check_scenario},
                        # The world and scenario checks run a container: cold, that is
-                       # seconds on the local lane and can be well over ten on a busy
-                       # cluster, which the default read timeout would cut short
+                       # seconds on an idle cluster and well over ten on a busy one,
+                       # which the default read timeout would cut short
                        # mid-check.
                        timeout=COMMAND_LIMIT_S))
 

@@ -1,4 +1,4 @@
-"""The append-only merged log buffer behind a job's live log, shared by both lanes.
+"""The append-only merged log buffer behind a job's live log.
 
 A job runs several containers at once (the scenario, and — in the ROS shape — a simulator
 and a system under test), and the web UI shows their output as ONE stream so the causal
@@ -27,8 +27,8 @@ The lanes differ only in how they get that delta, which is why the fetching is N
 
 from __future__ import annotations
 
-#: What the main container is called. The runtime container is ``robovast`` on both lanes (the
-#: compose service, and the pod's container in ``manifests.py``) -- NOT ``scenario``, which is the
+#: What the main container is called. The runtime container is ``robovast`` (the pod's
+#: container in ``manifests.py``) -- NOT ``scenario``, which is the
 #: container plan's *role* name. Defined here, beside :func:`tag_line`, because two readers depend
 #: on it agreeing: the live job log tags its lines with it, and the merged ``run_log`` table files
 #: its rows under it. They differed once (``robovast`` vs ``main``), which made one campaign read
@@ -86,8 +86,8 @@ class MergedLogBuffer:
 
     :attr:`buf` is the whole stream so far; a client's byte offset indexes straight into
     it. :attr:`grew` reports whether the last :meth:`append` added anything, which is how
-    a caller decides a log has settled — the local lane needs that to avoid declaring EOF
-    while a sidecar is still flushing after the scenario finished.
+    a caller decides a log has settled, so it does not declare EOF while a sidecar is
+    still flushing after the scenario finished.
     """
 
     def __init__(self):
@@ -98,8 +98,8 @@ class MergedLogBuffer:
         """Append *entries*, tagged with their container when there is more than one.
 
         *entries* is an iterable of ``(sort_key, container_name, message)``. It is sorted
-        by ``sort_key`` — a stable sort, so entries a lane cannot order (the local lane's
-        untimestamped lines) keep the order they were produced in.
+        by ``sort_key`` — a stable sort, so entries a lane cannot order (untimestamped
+        lines) keep the order they were produced in.
 
         ``multi`` is the caller's decision, not ``len(entries) > 1``: it must stay True
         once a job is known to have several containers, even on a poll where only one of

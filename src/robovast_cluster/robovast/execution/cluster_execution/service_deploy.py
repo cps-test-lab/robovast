@@ -110,7 +110,7 @@ WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
 DEFAULT_WORKSPACES_HOST_PATH = data_paths.DEFAULT_WORKSPACES_HOST_PATH
 WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 
-#: Where every campaign lives, on either lane, and the volume backing it.
+#: Where every campaign lives, and the volume backing it.
 #:
 #: Not a cache and not a mirror: ``<results_root>/<campaign_id>/`` **is** the campaign.
 #: The driver writes into it, a job pod's outputs are extracted into it by the data plane,
@@ -1249,8 +1249,7 @@ def _share_env_from_host():
     """Resolve the configured share provider's pod env from the host, or ``None``.
 
     Reads ``ROBOVAST_SHARE_TYPE`` (and the provider's own vars) from the host
-    environment / project ``.env`` — the same source ``vast serve`` uses locally
-    — and asks the provider to materialise its **pod** environment via
+    environment / project ``.env`` — and asks the provider to materialise its **pod** environment via
     :meth:`~robovast.execution.share_providers.base.BaseShareProvider.build_pod_env`, which
     resolves host credential *files* (a GCS key file, an SFTP key file) into the
     inline values a pod can carry. ``ROBOVAST_SHARE_TYPE`` is included so the
@@ -1292,7 +1291,7 @@ def _ntfy_env_from_host():
 
     Collects whichever of ``ROBOVAST_NTFY_TOPIC`` / ``ROBOVAST_NTFY_SERVER`` /
     ``ROBOVAST_NTFY_TOKEN`` are present in the host environment / project ``.env``
-    (the same source ``vast serve`` uses locally). Notifications are **optional**, so
+    Notifications are **optional**, so
     — unlike :func:`_share_env_from_host` — this never raises: it returns ``None``
     when ``ROBOVAST_NTFY_TOPIC`` is unset, leaving the in-pod ``Notifier`` a no-op.
     """

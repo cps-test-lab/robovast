@@ -31,8 +31,8 @@ What still runs as its own Kubernetes workload — because each genuinely needs 
 * **auxiliary variation containers** — one aux Pod per campaign the driver execs
   into (see :mod:`..execution.cluster_execution.container_runner`).
 
-A campaign's home is the service's results volume, exactly as on the local lane, so
-every file, scene, config and query path is the inherited one and nothing here reads
+A campaign's home is the service's results volume, so every file, scene, config and
+query path is the inherited one and nothing here reads
 results from anywhere but the campaign directory. Pods reach that directory through
 the data plane (:mod:`.pod_access`): a Job fetches its inputs as one tar stream and
 delivers its outputs as one, so a finished Job's results are already home. Finished
@@ -288,8 +288,8 @@ class ClusterService(ServiceBase):
         # service's volumes, and that disk is the cluster's, not the caller's.
         v.results_root = None
         v.sources_root = None
-        # Overrides the local lane's unconditional True: here a build needs somewhere to
-        # push to, and this deployment may not have one. Read from the cached cluster
+        # Not unconditionally True: a build needs somewhere to push to, and this
+        # deployment may not have one. Read from the cached cluster
         # config, which is a plain `os.environ` lookup -- deliberately not
         # `_resolve_registry_objects`, which does Secret lookups and would put an API
         # call in the one call a client makes to find out where it is pointed.
@@ -915,8 +915,8 @@ class ClusterService(ServiceBase):
         a container it declared. A span that asks for nothing still creates nothing, which is
         what deciding in advance was for.
 
-        The two spans differ only in who owns the container's death — see
-        the local lane's ``_aux_runner_context``. A campaign's pods are deleted here;
+        The two spans differ only in who owns the container's death. A campaign's pods
+        are deleted here;
         a held one is released to the exec manager's reaper.
 
         *should_stop* ends the pod's ready wait for a campaign that was stopped while it
@@ -1372,8 +1372,8 @@ class ClusterService(ServiceBase):
 
         log_dir = campaign_dir / job_rel / "logs"
         names = sorted(p.name for p in log_dir.iterdir()) if log_dir.is_dir() else []
-        # Main container first, then the sidecars in name order -- the local lane's order,
-        # so the same job does not read differently depending on which lane served it.
+        # Main container first, then the sidecars in name order -- the order the live
+        # merge uses, so the same job does not read differently once it has finished.
         files = [n for n in names if n == MAIN_LOG]
         files += [n for n in names if is_sidecar_log(n)]
         if not files:
@@ -2259,8 +2259,8 @@ class ClusterService(ServiceBase):
         scope instead: ``run_conversion_job`` polls it and deletes the Job.
 
         Which unit of work a stop lands on is
-        :func:`~robovast.execution.control_server.stop_scope_for_phase`'s to decide, shared
-        with the local lane so the two cannot disagree, and the reply it carries says what
+        :func:`~robovast.execution.control_server.stop_scope_for_phase`'s to decide, and
+        the reply it carries says what
         that stop leaves behind.
         """
         with self._lock:
@@ -2821,7 +2821,7 @@ class ClusterService(ServiceBase):
         same volume, delivering what it derived back into the campaign. This process only
         submits the Job and records its outcome.
 
-        No campaign log handler is attached around this, unlike the local lane: the pod's
+        No campaign log handler is attached around this: the pod's
         own output is what the POSTPROCESSING section shows, published into the campaign's
         ``postprocessing.log`` while the Job runs, so a handler streaming this process's
         lines into the same file would be overwritten by each publish. The failure path
@@ -2859,8 +2859,8 @@ class ClusterService(ServiceBase):
         # campaign ended, and a live entry that disagreed with it would answer
         # differently until the next restart.
         state.set_phase(status.phase)
-        # Same one-shot notifier as the local lane, and it matters more here: this is
-        # the detached lane the push notifications exist for.
+        # The one-shot notifier: this is the detached lane the push notifications exist
+        # for.
         notifier = self._notifier(campaign_id)
         if ok:
             notifier.postprocessed()

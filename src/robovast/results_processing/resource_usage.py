@@ -152,8 +152,8 @@ class Tick:
     #: ``{process name: (cpu_percent, memory_rss_bytes, num_pids)}``
     processes: Dict[str, Tuple[float, int, int]]
     #: The tick's shared-memory pool -- used, and the limit in force. A property of the RUN,
-    #: not of this container: one tmpfs is mounted into all of them (locally, shared through
-    #: the main container's IPC namespace), so every container of a tick reports the same
+    #: not of this container: one tmpfs is mounted into all of them, so every container of
+    #: a tick reports the same
     #: pair. ``None`` when the monitor did not record it.
     shm_used_bytes: Optional[int] = None
     shm_total_bytes: Optional[int] = None

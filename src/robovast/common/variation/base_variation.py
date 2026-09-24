@@ -649,9 +649,9 @@ class Variation():
         :class:`~robovast.common.variation.container_runner.ContainerSpec`, or
         ``None`` (the default) to require no container.
 
-        The declaration is backend-agnostic: locally the backend satisfies it
-        with an ephemeral ``docker run``; in-cluster it adds a container to the
-        campaign's auxiliary pod. Either way the plugin talks to it through
+        The declaration is backend-agnostic: in-cluster the backend adds a container
+        to the campaign's auxiliary pod; on a development machine it satisfies it with
+        an ephemeral ``docker run``. Either way the plugin talks to it through
         ``self.container_runner`` (see
         :mod:`robovast.common.variation.container_runner`).
 

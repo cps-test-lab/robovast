@@ -110,7 +110,7 @@ class RunOptions:
     # Called once a batch's configurations are staged and before any of them runs -- the
     # last thing a batch campaign does with the project it was launched from, and so the
     # moment it can stop reading it (see ``CampaignController._on_configs_staged``). A
-    # callback rather than a return value because both lanes stage inside their own
+    # callback rather than a return value because a backend stages inside its own
     # run_batch, and per-campaign rather than per-process because the service drives many
     # campaigns at once. Set by ``CampaignController``, which refuses a value already
     # here rather than dropping it.

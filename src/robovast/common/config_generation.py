@@ -1006,9 +1006,8 @@ def _check_config_file_paths(configs, scenario_file):
     entrypoint, the parameter documents, the scripts every container sources. A deploy path
     equal to one of those would replace it.
 
-    Refused here because both lanes discover it late and unhelpfully: locally as two mount
-    sources for one target, on the cluster as a pod whose entrypoint is a campaign's YAML
-    file -- in both cases after the image pull, at the cost of a cell.
+    Refused here because the lane discovers it late and unhelpfully: as a pod whose
+    entrypoint is a campaign's YAML file, after the image pull, at the cost of a cell.
     """
     from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
         RESERVED_CONFIG_MOUNT_NAMES, RESERVED_CONFIG_MOUNT_PATTERNS)
@@ -1057,7 +1056,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     the default, and a variation writing ``sim_values`` overlays it per cell.
 
     Two things come out of it. Each configuration carries its resolved block (recorded in
-    ``configurations.yaml``, written to ``sim.config``, and read by both lanes at dispatch),
+    ``configurations.yaml``, written to ``sim.config``, and read by the lane at dispatch),
     and the **union** of the worlds those blocks name joins ``run_files``, once per distinct
     block, since a campaign varying its world has several and each has to be mounted for the
     simulator to open it.
@@ -1560,7 +1559,7 @@ def _collect_analysis_input_files(parameters, base_dir=None):
 #: ``_generated`` -- so passing them on as well would be a second, staler copy.
 #:
 #: This is the whole exception list. Anything else a campaign states under ``execution:``
-#: reaches both lanes, including a field added after this comment was written.
+#: reaches the lane, including a field added after this comment was written.
 COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "generate"})
 
 
@@ -2152,8 +2151,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         for variation_class, variation_parameters, variation_ref in variation_classes_and_parameters:
             started_at = datetime.now(timezone.utc).isoformat()
             t0 = time.monotonic()
-            # Auxiliary container: if the plugin declares one, the active backend
-            # (local docker or cluster sidecar) provides a runner for its use.
+            # Auxiliary container: if the plugin declares one, the active backend (an aux
+            # pod in a campaign, ``docker run`` on a development machine) provides a runner.
             container_spec = variation_class.get_required_container(variation_parameters)
             container_runner = _make_container_runner(
                 container_spec, purpose=f"variation {variation_class.__name__}")
@@ -2303,7 +2302,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                                         project=image_project, tag=image_project_tag)
     execution_params = {
         # A COPY minus what composition consumes itself -- deliberately not a whitelist.
-        # Both lanes read this dict and nothing else, so a key missing here is a key the
+        # The lane reads this dict and nothing else, so a key missing here is a key the
         # run behaves as if nobody had declared: silently, and indistinguishably from a
         # typo. Listing what to carry made that the default failure, and four fields lived
         # outside the list for their whole lives -- declared, documented, validated, and

@@ -320,8 +320,8 @@ class SimulatorBackend:
         doing. The caller reports that as a capability this campaign's simulator lacks, never as
         a healthy run.
 
-        *run_dir* is where this run's records are **inside the container** (``/out/<config>/<run>``
-        on both lanes). Returned as a **string** run through ``shlex.split``, as
+        *run_dir* is where this run's records are **inside the container**
+        (``/out/<config>/<run>``). Returned as a **string** run through ``shlex.split``, as
         :meth:`simulation_screenshot` is, so a backend writes the command it would type.
         """
         return None

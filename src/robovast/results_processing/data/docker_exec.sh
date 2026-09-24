@@ -52,8 +52,8 @@ EOF
 PROVENANCE_MOUNT=()
 EXPLICIT_INPUT=""
 # What the container may use. Unset runs it uncontained, which is what a direct caller of this
-# script gets; the postprocessing plugin always passes both, so that the local lane holds a
-# conversion to the same figure the cluster lane reserves for it. The figure also reaches the
+# script gets; the postprocessing plugin always passes both, so that a conversion here is held
+# to the same figure the cluster lane reserves for it. The figure also reaches the
 # conversion's worker count on its own: rosbags_process reads its cgroup quota rather than the
 # machine's core count, so a capped container converts as many bags at once as it has cores.
 LIMITS=()

@@ -74,7 +74,7 @@ def _campaign_config_path(results_dir: str, config_dir: str):
 
     The campaign's own frozen config comes first: it is the single source of truth for what
     ran, it is the file the cluster lane reads, and it is what a re-run dialog edits -- so
-    preferring it keeps both lanes answering from the same place. A campaign tree need not
+    preferring it keeps every reader answering from the same place. A campaign tree need not
     hold one, though. Results are projected into it by a step that may not have run, and this
     plugin is also called against a directory that is no campaign tree at all; then
     *config_dir* answers, being the directory holding the ``.vast`` being executed, which is
@@ -350,8 +350,8 @@ def conversion_groups(plugins: Optional[List[dict]] = None, bag_dir: Optional[st
 
     ``plugins`` (with an optional ``bag_dir``) is one group, as a ``.vast`` entry writes it;
     ``groups`` is several, each ``{"bag_dir": …, "plugins": […]}``, as the orchestrator
-    passes a campaign's combined entries. Both lanes build the script's ``--config`` from
-    this, so an entry means the same thing wherever it runs.
+    passes a campaign's combined entries. Every runner builds the script's ``--config``
+    from this, so an entry means the same thing wherever it runs.
 
     Raises ``ValueError`` when both or neither are given, or ``bag_dir`` is given with
     ``groups`` -- an argument that would otherwise be dropped.
@@ -369,8 +369,8 @@ def conversion_groups(plugins: Optional[List[dict]] = None, bag_dir: Optional[st
 
 
 #: The directory every image step's command runs from: the conversion scripts, and whatever
-#: an :class:`ExecutionImagePlugin` ships beside them. The same path on every lane -- the
-#: local lane mounts it, a cluster Job mounts its ConfigMap there.
+#: an :class:`ExecutionImagePlugin` ships beside them. The same path wherever it runs --
+#: ``docker_exec.sh`` mounts it, a cluster Job mounts its ConfigMap there.
 IMAGE_SCRIPTS_DIR = "/scripts"
 
 
@@ -416,7 +416,8 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
     image. A subclass says which with :meth:`image_command`, and every lane runs exactly
     that command:
 
-    * the local lane, through ``docker_exec.sh`` (this class's :meth:`__call__`);
+    * ``vast results postprocess`` on a development machine, through ``docker_exec.sh``
+      (this class's :meth:`__call__`);
     * a cluster postprocessing Job, directly in its execution-image container.
 
     The command runs from :data:`IMAGE_SCRIPTS_DIR`, which holds the conversion scripts of
@@ -484,7 +485,7 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
                 cmd.extend(["--provenance-file", provenance_file])
             # What the step may use, from the campaign's `results_processing.resources` over
             # the shared defaults -- the same figure the cluster lane reserves for its image
-            # container, so one block means one thing on both lanes.
+            # container, so one block means one thing wherever it runs.
             from robovast.results_processing.postprocessing import (  # noqa: PLC0415
                 postprocess_convert_resources)
             sized = postprocess_convert_resources(
@@ -656,7 +657,7 @@ class RosbagsProcess(ExecutionImagePlugin):
                 *bag_dir*. Give either this or *groups*.
             workers: Bags to convert at once. Omitted -- the normal case -- the conversion
                 derives it from the CPU it is actually allowed (its cgroup quota), so it
-                matches ``results_processing.resources.cpu`` on either lane. Set it only to
+                matches ``results_processing.resources.cpu`` wherever it runs. Set it only to
                 override that.
             bag_dir: Rosbag subdirectory name to search for (default: "rosbag2").
             groups: Several ``{"bag_dir": …, "plugins": […]}`` converted in one pass: what the
@@ -729,10 +730,10 @@ class RunLog(BasePostprocessingPlugin):
                 have their own severity control.
             **kwargs: The runner injects lane-dependent extras — ``provenance_file``,
                 ``execution_image``, ``debug``, ``force`` — and only those it has
-                (``execution_image`` is set on the cluster and not locally). Naming a subset
-                therefore passes on one lane and raises ``unexpected keyword argument`` on
-                the other, which is exactly how this plugin first failed on the cluster after
-                passing locally. This plugin needs none of them: it reads the campaign's own
+                (``execution_image`` is set by the cluster Job and not by
+                ``docker_exec.sh``). Naming a subset therefore passes with one runner and
+                raises ``unexpected keyword argument`` with the other, which is exactly how
+                this plugin first failed on the cluster. This plugin needs none of them: it reads the campaign's own
                 output and runs in-process.
 
         Returns:
@@ -864,10 +865,10 @@ class ResourceUsage(BasePostprocessingPlugin):
             config_dir: Unused; the plugin reads only campaign output.
             **kwargs: The runner injects lane-dependent extras — ``provenance_file``,
                 ``execution_image``, ``debug``, ``force`` — and only those it has
-                (``execution_image`` is set on the cluster and not locally). Naming a subset
-                therefore passes on one lane and raises ``unexpected keyword argument`` on
-                the other, which is how ``RunLog`` first failed on the cluster after passing
-                locally. This plugin needs none of them.
+                (``execution_image`` is set by the cluster Job and not by
+                ``docker_exec.sh``). Naming a subset therefore passes with one runner and
+                raises ``unexpected keyword argument`` with the other, which is how
+                ``RunLog`` first failed on the cluster. This plugin needs none of them.
 
         Returns:
             Tuple of (success, message, provenance entries).

@@ -537,7 +537,7 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
 
     Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
     default**: ``build`` (where a campaign that failed before it ever ran explains itself),
-    ``plugin install``, ``variation``, ``run`` (the controller, plus compose output locally),
+    ``plugin install``, ``variation``, ``run`` (the controller),
     ``postprocessing``. A build is large and comes first, so on a campaign that has run,
     narrow instead of paging: ``phase="run"``, or ``phase="build", summarize=True``.
 
@@ -702,8 +702,7 @@ def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
 
 
 def list_campaign_jobs(campaign_id: str) -> dict:
-    """The campaign's current-batch jobs, live — one run locally, one Kubernetes Job each
-    on the cluster. Pair with ``get_job_log`` to read a running one.
+    """The campaign's current-batch jobs, live — one Kubernetes Job each. Pair with ``get_job_log`` to read a running one.
 
     To end a single ``running`` job that will not finish on its own, ``stop_job`` — it
     leaves the rest of the campaign running and records that run as ``killed``.

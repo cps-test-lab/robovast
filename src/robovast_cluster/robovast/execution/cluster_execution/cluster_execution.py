@@ -672,7 +672,7 @@ class PodLogTail:
     unique because kubelet stamps every line with a nanosecond timestamp.
 
     The tagging and appending live in :class:`robovast.common.log_tail.MergedLogBuffer`,
-    shared with the local lane so the same campaign reads the same either way. What is
+    so the live and the finished view of a job read the same. What is
     kube-specific — the ``since_seconds`` window, the anchor dedup, the re-anchor — is here.
     """
 

@@ -18,7 +18,7 @@
 
 Polling the service's ``get_status`` until :func:`~robovast.client.status.is_terminal`
 is not lane-specific: the service drives every campaign, so its phase *is* the
-campaign's, whether the runs execute in local Docker or as Kubernetes Jobs. Under a
+campaign's, wherever the runs execute. Under a
 cluster-flavoured name it is not found, and every other surface grows its own hand-rolled
 poll loop beside it. :data:`~robovast.client.status.TERMINAL_PHASES` records what that
 costs: a re-inlined terminal test, with divergent membership, across the CLI, the service

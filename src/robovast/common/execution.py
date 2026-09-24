@@ -593,8 +593,8 @@ MAX_RECORDED_CHANGED_PATHS = 20
 def image_compat_version(image: str) -> "tuple[int | None, str]":
     """``(version, source)`` for *image*'s protocol version. ``(None, reason)`` when unknown.
 
-    The label, read the standard way: ``docker inspect`` locally, and the registry's config
-    blob for an image this machine does not have. One marker, both ways of reading it.
+    The label, read the standard way: ``docker inspect`` for an image this machine has, and
+    the registry's config blob for one it does not. One marker, both ways of reading it.
 
     A label rather than a file inside the image: a file cannot be read without starting a
     container, and cannot be read at all for an image this machine does not have -- which is
@@ -900,7 +900,7 @@ def image_build_refs(containers: dict, role_images: dict,
 def campaign_code_provenance() -> dict:
     """:func:`code_provenance` for a campaign about to run, warning when it is not reproducible.
 
-    The warning belongs here rather than at each call site so both lanes report it
+    The warning belongs here rather than at each call site so every lane reports it
     identically and exactly once per campaign. It is a warning and not a refusal on purpose:
     running from a dirty tree is the normal research loop, and blocking it would only teach
     people to bypass the check. What must not happen is the campaign *looking* reproducible
@@ -925,9 +925,8 @@ def campaign_code_provenance() -> dict:
 def _build_refs_yaml(refs: dict) -> str:
     """Render :func:`image_build_refs` as an ``image_build_refs:`` block, or ``""``.
 
-    Dumped with yaml rather than hand-formatted: this is nested, and the local lane emits
-    execution.yaml from a generated shell script -- where a mis-indented nested mapping produces a
-    file that parses as something else entirely and nothing notices.
+    Dumped with yaml rather than hand-formatted: this is nested, and a mis-indented nested
+    mapping produces a file that parses as something else entirely and nothing notices.
     """
     if not refs:
         return ""
@@ -937,8 +936,8 @@ def _build_refs_yaml(refs: dict) -> str:
 def _provenance_yaml(record: dict, indent: str = "") -> str:
     """Render :func:`code_provenance` as YAML lines with a ``robovast_`` prefix.
 
-    Shared by both execution.yaml writers -- one builds a dict and dumps it, the other emits
-    text from a shell script -- so the two lanes cannot drift into recording different keys.
+    One derivation for every execution.yaml writer, so two writers cannot drift into
+    recording different keys.
     """
     lines = []
     for key, value in record.items():
@@ -1178,10 +1177,9 @@ def scenario_env(campaign_data):
     - **Path-valued vars** (``SCENARIO_PARAMETER_FILE``, ``OUTPUT_DIR``,
       ``SCENARIO_OUTPUT_DIR``). Those genuinely differ by lane, because the mount
       layout and job packing do — the caller owns them.
-    - **``SCENARIO_EXECUTION_PARAMETERS``**. Its derivation is not yet common: the
-      local lane builds ``-t``/``-d`` from ``log_tree``/``debug`` and otherwise defers
-      to a ``run.sh`` shell variable, while the cluster lane knows only ``log_tree``.
-      Sharing it would freeze that difference into one contract.
+    - **``SCENARIO_EXECUTION_PARAMETERS``**. The cluster lane derives it from
+      ``log_tree``; a lane with more switches would derive it differently, and sharing
+      it would freeze one lane's choice into the contract.
     """
     execution = campaign_data.get("execution") or {}
     env = {
@@ -1274,8 +1272,8 @@ _LOCAL_INIT_BLOCK = "command -v fixuid > /dev/null 2>&1 || { echo 'ERROR: fixuid
 # sidecar image, so the experiment image carries nothing that reaches storage.
 _CLUSTER_INIT_BLOCK = "EXTRA_REQUIRED_TOOLS=\"\""
 
-# Used when the caller has no cluster provider to ask: a local Docker run is not an
-# instance of anything, so the recorded instance_type is empty (which ingests as NULL).
+# Used when the caller has no cluster provider to ask: a run that is not an instance of
+# anything records an empty instance_type (which ingests as NULL).
 # ``|| true`` is not needed here, but a provider's command must never abort the run —
 # sysinfo collection is explicitly non-fatal — so each implementation keeps its own
 # failure tolerance (a metadata-server curl that 404s yields an empty string).
@@ -1613,7 +1611,7 @@ def job_node_alias(campaign_data) -> str | None:
 
     The single reader of ``execution.kubernetes.jobs.node``. The alias narrows the cluster's
     job pool to the one node registered under it; resolving it to that node is the cluster
-    lane's job, and the local lane never asks.
+    lane's job.
 
     Accepts either the raw mapping or a validated model at each level, matching the two
     shapes callers already pass around.
@@ -1666,9 +1664,9 @@ def render_entrypoint(*, cluster=False, instance_type_command=None):
     """The container entrypoint script, with its lane-specific blocks substituted.
 
     The template carries three markers whose content depends on *where* the container
-    runs: the init block (``fixuid`` locally, config fetch in-cluster), the post-run
+    runs: the init block (``fixuid`` outside a pod, config fetch in-cluster), the post-run
     block (how the runner is started and what runs after it), and the instance-type probe. A
-    script rendered for one lane is therefore wrong on the other — which is why a
+    script rendered for one setting is therefore wrong in the other — which is why a
     campaign's staged ``entrypoint.sh`` must never be reused by something running
     elsewhere, and why container-exec renders its own instead of copying one.
 
@@ -1800,7 +1798,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     — the machine type on a cloud (GCP's metadata server, Azure's IMDS), the architecture
     on bare metal. The *caller* resolves it rather than this function looking a provider
     up, so ``robovast.common`` keeps no dependency on the cluster packages. Omitted, the
-    recorded instance type is empty, which is the honest answer for a local Docker run.
+    recorded instance type is empty, which is the honest answer where nothing can say.
     """
     # Create the output directory structure
     logger.debug(f"Campaign Configs: {pformat(campaign_data)}")
@@ -2109,7 +2107,7 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 #: refused mount or a pod that dies in its entrypoint, after the image pull.
 #:
 #: An allowlist of what the run owns, not a guess at what a campaign might write: the set is
-#: exactly what :func:`prepare_campaign_configs` and the two lanes put there, and it lives
+#: exactly what :func:`prepare_campaign_configs` and the lane put there, and it lives
 #: beside the code that writes it so the two cannot drift.
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
@@ -2167,7 +2165,7 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
 
     No-op when there are no links (e.g. single-config jobs have no ``_jobs``
     split). The manifest is plain data, so it survives an S3 round-trip and is
-    consumed where results are materialised (locally and in the share archiver).
+    consumed where results are materialised (the results root and the share archiver).
 
     *base* is what this manifest must keep: the links the campaign already has, from
     :func:`read_job_links`. **The manifest is campaign-level while it is written per batch**,
@@ -2215,7 +2213,7 @@ def resolve_job_artifact_rel(links: dict, job_name: str) -> str:
     target is relative to the link's own directory, so it only becomes a campaign-relative
     path after being joined with *job_name* and normalised. Split out because the cluster
     lane resolves the same job against an object-store prefix, where there is no directory
-    to join against and re-deriving the arithmetic would let the two lanes disagree about
+    to join against and re-deriving the arithmetic would let two readers disagree about
     which job a run's artifacts are in.
 
     Raises:
@@ -2302,7 +2300,7 @@ def create_job_links(campaign_dir) -> int:
 
 
 def _get_image_revision(image: str) -> str:
-    """Return the local docker image ID for *image*, or ``'unknown'`` on failure."""
+    """Return the docker daemon's image ID for *image*, or ``'unknown'`` on failure."""
     if not image:
         return 'unknown'
     try:
@@ -2388,7 +2386,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the
             runs ran — and postprocessing reuses it (``campaign_execution_image``). Falls
-            back to the local docker image id (``unknown`` off-cluster) when None.
+            back to the docker daemon's image id (``unknown`` without one) when None.
     """
     if execution_params is None:
         execution_params = {}

@@ -183,7 +183,7 @@ def _declared_base(client) -> str:
     """The origin the service declares for its callers, or ``""``.
 
     Not cached: an HTTP transport never reaches this (its own base answers first), and
-    ``version()`` is deliberately the cheapest call in the interface — neither lane dials
+    ``version()`` is deliberately the cheapest call in the interface — no lane dials
     anything to answer it — so in-process this is a local attribute read.
 
     Never raises. A link is an extra way to reach a payload; failing a tool call over one

@@ -325,8 +325,8 @@ def exec_stream(pod: str, namespace: str, container: str, command,
     """Exec *command* in a running pod. Returns ``(code, stdout, stderr, timed_out)``.
 
     The in-cluster equivalent of ``docker exec``, and the one implementation of it. A
-    timed-out exec reports ``124`` with whatever was collected, mirroring the local lane's
-    ``subprocess`` timeout, rather than returning ``None`` for the exit code.
+    timed-out exec reports ``124`` with whatever was collected, as ``timeout(1)`` would,
+    rather than returning ``None`` for the exit code.
 
     *limit_s* is a real bound, not a poll interval. Without one this loop spins for as long
     as the command runs, which is fine until the command never finishes — a plugin's helper

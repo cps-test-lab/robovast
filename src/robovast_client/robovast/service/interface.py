@@ -22,8 +22,7 @@ pydantic request/response models. Three bindings mirror this contract 1:1:
 * the **service** HTTP endpoints (:mod:`robovast.service.app`) call an
   implementation of :class:`RobovastInterface`;
 * the **client** (:class:`robovast.service.client.RobovastClient`) implements it
-  over a transport (in-process for local Docker, HTTP for a remote/cluster
-  service);
+  over a transport (HTTP to the service, or in process inside it);
 * the **MCP tools** and **``vast`` CLI commands** are thin wrappers over the
   client.
 
@@ -359,8 +358,8 @@ class ImageResolution(BaseModel):
     it is.
 
     For a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not
-    the concrete ref the container runs FROM: the concrete form is a local docker tag on one
-    lane and a registry-qualified ref on the other, and the second must never reach a client
+    the concrete ref the container runs FROM: the concrete form is a registry-qualified
+    ref, and that must never reach a client
     (the zero-registry-knowledge invariant). The identity still changes exactly when the
     image changes, which is all a cache key needs, and it reads the same on every lane.
     """
@@ -739,7 +738,7 @@ class JobCounts(BaseModel):
     # run meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
     # reports a campaign run that never existed as finished.
     #
-    # Cluster lane only; always 0 locally, where every job is a run.
+    # 0 on a lane whose every job is a run.
     calibration: int = 0
     # The campaign's postprocessing job in the same listing, on the same terms as
     # ``calibration`` and for the same reason: a conversion is not a trial, so counting it
@@ -750,7 +749,7 @@ class JobCounts(BaseModel):
     # it says is "there is postprocessing to look at in the jobs list", not how far along it
     # is -- the conversion reports its own progress in the campaign log.
     #
-    # Cluster lane only; always 0 locally, where postprocessing runs in the service process.
+    # 0 on a lane whose postprocessing is no job of its own.
     postprocessing: int = 0
     #: The campaign's own runs. See :attr:`calibration` and :attr:`postprocessing` for what
     #: is deliberately not in it.
@@ -798,7 +797,7 @@ class SearchHistory(BaseModel):
 
     Answers "is this search still improving?", which the single ``Status.best_objective``
     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
-    on both lanes and still there for a finished campaign after a service restart.
+    and still there for a finished campaign after a service restart.
 
     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
@@ -907,7 +906,7 @@ class LogChunk(BaseModel):
     """An incremental slice of a campaign's ``controller.log``.
 
     The controller runs in the driving process, so its log is a local file there
-    (the CLI locally, the service for cluster campaigns). Clients poll from a byte
+    (the service). Clients poll from a byte
     *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
     the campaign has reached a terminal phase and no more will be written.
     """
@@ -1184,7 +1183,7 @@ class ResourceUsage(BaseModel):
     a lane that sets no container limits reserves nothing. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
 
     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
-    — the request sum on the cluster, host utilization locally — and exist because every
+    — the request sum on the cluster — and exist because every
     consumer already reads them. They are the headline "how much is currently claimed", so
     they are never null; a consumer that must distinguish the two readings reads the pair
     above and branches on neither ``backend`` nor these. On the cluster the request sum is
@@ -1192,7 +1191,7 @@ class ResourceUsage(BaseModel):
     scheduler reasons about capacity — pods still queued for a node are reported by
     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
 
-    ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
+    ``disk`` and ``results`` are **actual filesystem bytes** -- the one place
     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
@@ -1238,8 +1237,8 @@ class ResourceUsage(BaseModel):
     #: Also ``None`` from a service too old to have the field.
     cpu_reserved: Optional[float] = None
     memory_reserved_bytes: Optional[int] = None
-    #: What is actually being **consumed**: metrics-server's node totals on the cluster,
-    #: ``psutil`` locally (the same number ``cpu_used`` carries there). ``None`` means no
+    #: What is actually being **consumed**: metrics-server's node totals on the cluster.
+    #: ``None`` means no
     #: reading, never zero -- see ``metrics_unavailable`` for why, when the backend knows.
     cpu_measured: Optional[float] = None
     memory_measured_bytes: Optional[int] = None
@@ -1250,7 +1249,7 @@ class ResourceUsage(BaseModel):
     metrics_unavailable: Optional[str] = None
     #: The filesystem this backend's runs write into: nodefs on the cluster (container
     #: writable layers, emptyDir scratch, pulled image layers -- the disk kubelet's
-    #: eviction thresholds watch), the campaign results root locally. **``None`` means "no
+    #: eviction thresholds watch). **``None`` means "no
     #: verdict"** -- an older service, or a backend whose disk could not be read -- and a
     #: consumer must then show nothing rather than a zero.
     disk: Optional[DiskSpace] = None
@@ -1263,8 +1262,7 @@ class ResourceUsage(BaseModel):
     #: The **results volume** -- where campaigns live -- when it is separately measurable:
     #: a provisioned claim on the service pod. ``None`` where the volume is a directory on
     #: the service's node (the kubelet reports no per-volume figure for one, and ``disk``
-    #: is then the same filesystem) and locally, where the results root *is* the filesystem
-    #: ``disk`` already reports.
+    #: is then the same filesystem).
     results: Optional[DiskSpace] = None
     #: Why there is no ``disk``, when the backend tried and failed. Non-null only when
     #: ``disk`` is None *and* the reason is known -- a service too old to have this field
@@ -2596,8 +2594,8 @@ class Routes:
 
     @staticmethod
     def job_stop(campaign_id: str) -> str:
-        # ``job_name`` is a query param for the same reason as ``job_log`` below: locally
-        # it is a "<config>/<run>" id and contains a '/'.
+        # ``job_name`` is a query param for the same reason as ``job_log`` below: a lane
+        # may name a job "<config>/<run>", which contains a '/'.
         return f"/campaigns/{campaign_id}/job-stop"
 
     @staticmethod
@@ -3023,8 +3021,8 @@ class RobovastInterface(ABC):
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
         """List the campaign's current-batch jobs (live) plus aggregate counts.
 
-        A "job" is one execution unit (a run locally, a Kubernetes Job on the
-        cluster). Reports live status only; pair with :meth:`get_job_log` to read a
+        A "job" is one execution unit (a Kubernetes Job on the cluster). Reports live
+        status only; pair with :meth:`get_job_log` to read a
         running job's log.
 
         Jobs that are not the campaign's own runs are listed and marked with
@@ -3039,8 +3037,7 @@ class RobovastInterface(ABC):
 
         Same streaming protocol as :meth:`get_campaign_logs` (poll, append
         :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). Live source
-        only — the running pod on the cluster, the job's ``logs/system*.log`` files
-        locally. Raises if the job's log source is gone.
+        only — the running pod on the cluster. Raises if the job's log source is gone.
 
         **Every** container the job runs, merged into one stream: a job is not one
         container (the ROS shape gives the simulator and the system under test their
@@ -3172,8 +3169,8 @@ class RobovastInterface(ABC):
 
         Args:
             campaign_id: The campaign the job belongs to.
-            job_name: The job as :meth:`list_jobs` reports it — ``<config>/<run>``
-                locally, the Kubernetes Job name on the cluster.
+            job_name: The job as :meth:`list_jobs` reports it — the Kubernetes Job name
+                on the cluster.
             reason: The operator's optional explanation, stored with the record.
             source: Which surface asked — ``"webui"``, ``"mcp"``, ``"cli"``. Recorded for
                 the audit trail; not a user identity, since the service is

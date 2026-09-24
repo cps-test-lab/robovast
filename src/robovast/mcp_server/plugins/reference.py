@@ -231,8 +231,8 @@ def get_service_info() -> dict:
     # bound to a wildcard), not an origin that happens to be unknown.
     if v.web_base:
         info["web_base"] = v.web_base
-    # Only when there is a cluster lane: on a local-only service these would all be
-    # None, and five null fields read as "unknown" rather than "not applicable".
+    # Only from a lane that has them: on any other these would all be None, and five
+    # null fields read as "unknown" rather than "not applicable".
     if v.backend == "kubernetes":
         info.update({
             "kube_context": v.kube_context,

@@ -44,7 +44,6 @@ class ServeBackend(Protocol):
                 ``None`` to let the lane make its own.
             workspace_dir: A directory pinned in place instead of uploaded.
             results_dir: Where campaigns land, or ``None`` for the lane's default.
-                Campaigns of either lane live under it.
         """
 
     #: One word for the storage this lane uses, for the startup line.

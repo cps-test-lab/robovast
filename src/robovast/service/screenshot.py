@@ -122,8 +122,7 @@ def render(identity: dict, *, state_path: Path, at: Optional[float], view: dict,
     *runner_context* is a zero-argument callable returning a **context manager** yielding the
     generator's ``container_runner_factory``, exactly as :func:`scene_cache.generate` takes
     one: on the cluster the factory is backed by a pod, and whoever creates it has to close
-    it. The local lane passes nothing, and an absent factory makes the generator fall back to
-    an ephemeral ``docker run`` — which is what that lane wants.
+    it. An absent factory makes the generator fall back to an ephemeral ``docker run``.
     """
     import contextlib  # pylint: disable=import-outside-toplevel
 

@@ -143,8 +143,8 @@ class ContainerSpec:
             overridden with this). Ignored by the local backend, which uses
             ephemeral ``docker run``.
         env: Environment variables to set in the container.
-        run_as_user: ``uid[:gid]`` the container process runs as. Locally this is
-            the ``docker run --user`` value (defaults to the current user so files
+        run_as_user: ``uid[:gid]`` the container process runs as. Under ``docker run``
+            this is the ``--user`` value (defaults to the current user so files
             written into the workspace are owned by the caller); in-cluster it is
             the sidecar's ``runAsUser``.
     """

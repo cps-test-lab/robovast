@@ -744,7 +744,7 @@ class BatchJobRunner:
         self.k8s_api_client = None
         self._k8s_initialized = False
 
-        # One container plan, shared with the local lane and exec_in_container.
+        # One container plan, shared with exec_in_container.
         self.plan = plan_containers(execution_params, images=built_images,
                                     explicit_main=image)
         # Before anything is put in a manifest: every ref these pods will run, resolved
@@ -1009,7 +1009,7 @@ class BatchJobRunner:
                 containers[0]['env'].append({'name': 'SCENARIO_EXECUTION_PARAMETERS', 'value': '-t'})
 
             # SCENARIO_FILE / SIMULATION / SCENARIO_MODE, derived from the .vast by the
-            # same helper the local lane and container-exec use.
+            # same helper container-exec uses.
             for name, val in scenario_env(self.campaign_data).items():
                 containers[0]['env'].append({'name': name, 'value': str(val)})
 
@@ -1163,9 +1163,8 @@ class BatchJobRunner:
         # The simulator's overrides document ships per job (``<job-tag>.sim.yaml``, unique
         # like the parameter file) but is READ at a fixed path, because a backend builds
         # its command before any job exists and argv cannot expand an environment
-        # variable. Locally the two are reconciled by the bind mount's target; here the
-        # whole ``_transient/`` tree lands in ``/config``, so the reconciliation is this
-        # one copy.
+        # variable. The whole ``_transient/`` tree lands in ``/config``, so the
+        # reconciliation is this one copy.
         sim_rename = (
             f"(cp /config/{sim_name} {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
             if sim_overlay["document"] else "")
@@ -3618,7 +3617,7 @@ class KubernetesBackend(ExecutionBackend):
         Never fatal. This improves a record; the campaign it describes is already running.
 
         Effective only where the driver shares a filesystem with whoever wrote the launch
-        record. It does on the local lane. On this one the record is written by the service
+        record. Here the record is written by the service
         and the driver runs elsewhere, so there may be nothing here to merge into -- and then
         this does nothing, deliberately, rather than creating a launch record holding images
         and no request, which every reader would take for a campaign that asked for nothing.

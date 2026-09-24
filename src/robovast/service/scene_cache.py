@@ -138,8 +138,8 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
         campaign_dir: the campaign root (already local — on the cluster the caller materialises the two
             small objects it needs first).
         capture_manifest: the parsed ``capture/capture.json`` of the run being viewed.
-        resolve_digest: ``ref -> digest | None``, from the lane that can answer it (locally
-            ``docker inspect``). Lets a campaign that recorded only a declared *tag* still be
+        resolve_digest: ``ref -> digest | None``, from the lane that can answer it. Lets a
+            campaign that recorded only a declared *tag* still be
             keyed on bytes; without it such a campaign is refused rather than guessed at.
         config_name: the configuration this run belongs to. Needed because a world may be a
             file the *configuration* owns rather than the campaign -- see
@@ -177,10 +177,9 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
 
     # Geometry is compiled from the world the capture names, and that world -- with the exporter that
     # reads it -- lives in the SIMULATION image, so that is the role asked for. `campaign_role_image`
-    # owns the whole answer, identically on both lanes, and refuses rather than substituting another
-    # role's image: keying on the scenario container's digest sent the build into an image with
-    # neither the world nor the exporter, which surfaced locally as a bare `exit status 127` and on
-    # the cluster as "invalid literal for int()" (the Kubernetes client int()s an exec status that
+    # owns the whole answer and refuses rather than substituting another role's image: keying on
+    # the scenario container's digest sent the build into an image with neither the world nor the
+    # exporter, which surfaced as "invalid literal for int()" (the Kubernetes client int()s an exec status that
     # carries a message instead of an exit code).
     #
     # Deliberately not ``postprocess_job.campaign_execution_image``: that resolves an image to *run*,
@@ -472,8 +471,8 @@ def _tree_sha(root: Path) -> str:
 def _is_immutable_image(image: str) -> bool:
     """Whether *image* names bytes that cannot change under it.
 
-    Two shapes qualify: a registry digest (``repo@sha256:…``, what the cluster records) and a bare local
-    image id (``sha256:…``, what ``docker inspect .Id`` gives the local lane). A tag never does.
+    Two shapes qualify: a registry digest (``repo@sha256:…``, what the cluster records) and a bare
+    image id (``sha256:…``, what ``docker inspect .Id`` gives). A tag never does.
     """
     if not image:
         return False
@@ -630,7 +629,7 @@ def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = 
 #: the directory has to be one of ``AUX_MOUNTABLE_PATHS`` -- ``/tmp`` was neither mountable
 #: (the scene build failed with "a new path has to be added to AUX_MOUNTABLE_PATHS") nor a
 #: path worth mounting, since an emptyDir over it would shadow whatever the aux image keeps
-#: there. The local lane bind-mounts the file and never saw the difference.
+#: there.
 _OVERRIDES_MOUNT = "/aux/roqsim_scene_overrides.yaml"
 
 
@@ -696,9 +695,9 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
 
     *runner_context* is a zero-argument callable returning a **context manager** that yields the
     generator's ``container_runner_factory`` — a context rather than a bare factory because on the
-    cluster the factory is backed by a pod, and whoever creates that pod has to close it. The local lane
-    passes nothing: an absent factory makes the generator fall back to an ephemeral ``docker run``,
-    which is exactly right there.
+    cluster the factory is backed by a pod, and whoever creates that pod has to close it. An
+    absent factory makes the generator fall back to an ephemeral ``docker run``, which is right
+    on a development machine.
 
     Reports its progress through :func:`set_stage` for as long as it runs, so a viewer polling the
     status is told which cost it is waiting on rather than watching one undifferentiated spinner.
@@ -722,8 +721,8 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
             # Entering the context is where the cluster creates the pod that will run the build and
             # waits for the campaign's image to land on its node -- minutes on a cold node, and the
             # step that fails outright when that image cannot be pulled at all. So it is a stage of
-            # its own, refined from the pod itself by the lane's own callback; locally there is no
-            # separable pull to watch, and claiming one would be a guess.
+            # its own, refined from the pod itself by the lane's own callback; with no pod there
+            # is no separable pull to watch, and claiming one would be a guess.
             set_stage(key, STAGE_QUEUED if runner_context else STAGE_COMPILING)
             context = runner_context() if runner_context else contextlib.nullcontext(None)
             with context as factory:

@@ -237,9 +237,9 @@ class CampaignController:
         #: here as well as published on ``state`` so a controller driven without one (the
         #: offline callers, the tests) still does this exactly once.
         self._released_project = False
-        # Set on the options this controller drives rather than asked of the caller: the
-        # two lanes stage inside their own run_batch, and the controller is what both of
-        # them are staging for. A value a caller supplied is refused rather than replaced:
+        # Set on the options this controller drives rather than asked of the caller: a
+        # backend stages inside its own run_batch, and the controller is what it is
+        # staging for. A value a caller supplied is refused rather than replaced:
         # it would be dropped here and never called.
         if self.options.on_configs_staged is not None:
             raise ValueError(
@@ -396,8 +396,8 @@ class CampaignController:
         campaign that was stopped or crashed still ran on some image for some time; that
         is more worth recording than less.
 
-        The file is produced by the backend during execution (on the local lane by a
-        generated shell script inside the run), so it cannot exist at campaign creation
+        The file is produced by the backend during execution, so it cannot exist at
+        campaign creation
         and may legitimately be absent here — a campaign that died before execution
         started. Best-effort throughout: this is bookkeeping and must never convert a
         finished campaign into a failed one.
@@ -420,9 +420,8 @@ class CampaignController:
     def _persist_build_manifests(self, execution: dict) -> None:
         """Copy each image's build lock into the campaign, while the images are still here.
 
-        Done here because this is the one point that runs in Python, on both lanes, with the
-        campaign root and the resolved images both in hand -- the local lane writes execution.yaml
-        from a generated shell script, so nothing earlier knows the directory.
+        Done here because this is the one point that runs in Python with the campaign root
+        and the resolved images both in hand.
 
         And it has to happen at all because the lock is baked *into* the image: leave it there and
         it disappears with the image, which is precisely when a rebuild would need it.
@@ -1269,8 +1268,8 @@ class CampaignController:
         """Postprocess a search batch the way the campaign-level path does; did the pod derive?
 
         Returns ``True`` when the Job ran the whole pipeline beside the data, so the caller
-        must not derive again here, and ``False`` on the local backend, where only the
-        conversion ran in-process and the pure-Python half is still the caller's to run.
+        must not derive again here, and ``False`` from a backend that ran only the
+        conversion, leaving the pure-Python half the caller's to run.
 
         **One Job per conversion.** *tag* discriminates it. Naming the Job after the campaign
         alone makes the second conversion's create return 409; the wait then reads the FIRST

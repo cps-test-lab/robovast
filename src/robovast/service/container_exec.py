@@ -258,9 +258,9 @@ class ExecSpec:
     def detached_start_script(self) -> str:
         """Shell that starts this spec's scenario in the background and proves it lives.
 
-        Shared by both lanes, and that sharing is the point: the two had their own copies,
-        and the fix for a silent failure — a scenario that died on launch while the exec
-        reported success — landed in only one of them.
+        On the spec rather than in a lane, and that is the point: a lane with its own copy
+        can miss the fix for a silent failure — a scenario that died on launch while the
+        exec reported success.
 
         Three things it must do:
 
@@ -397,7 +397,7 @@ def stage(vast_file: str, config_name: str, *,
     The entrypoint is always rendered **for the lane this exec runs on** — never copied
     from a campaign. ``prepare_campaign_configs`` substitutes lane-specific init and
     post-run blocks, so a cluster campaign's entrypoint carries cluster init and the
-    done-marker hand-off to the pod's uploader, which would be wrong to run locally.
+    done-marker hand-off to the pod's uploader.
     """
     from robovast.common import load_config
     from robovast.execution.controller import build_campaign_data, filter_configs_by_name

@@ -23,7 +23,7 @@ replaces the pod outright when the identity changes, so ``/config`` never needs
 refreshing underneath a live pod.
 
 Three things here exist because a live cluster disagreed with what looked obviously
-correct, and each was invisible on the local lane:
+correct:
 
 - the kube **context** must come from the service, or this execs into whichever cluster
   the kubeconfig currently points at while looking perfectly valid;
@@ -57,8 +57,8 @@ EXEC_PREFIX = "container-exec"
 CONFIG_SUBDIR = "config"
 WORKSPACE_SUBDIR = "workspace"
 
-#: Where the workspace is fetched to, when one was named. The local lane bind-mounts it at
-#: the same address, so a path taken from ``write_file`` is usable verbatim on both.
+#: Where the workspace is fetched to, when one was named: the address ``write_file``
+#: uses, so a path taken from there is usable verbatim.
 SOURCES_ROOT = "/sources"
 
 
@@ -241,9 +241,8 @@ class KubeExecLane:
 
         The wait is the whole point: a Kubernetes delete returns while the pod is still
         ``Terminating``, so a caller that immediately started another one got
-        ``AlreadyExists``. The local lane's ``docker rm -f`` is synchronous, and this must
-        offer the same contract — "stopped" has to mean stopped, or the single-container
-        rule cannot be relied on.
+        ``AlreadyExists``. "Stopped" has to mean stopped, or the single-container rule
+        cannot be relied on.
         """
         from kubernetes.client.rest import ApiException
 
@@ -320,8 +319,7 @@ class KubeExecLane:
     def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides the idle PID 1 runs in the pod.
 
-        Same rule as the local lane, asked through ``pods/exec`` since there is no
-        ``docker top`` here. A failure other than "no such pod" propagates, so an
+        Asked through ``pods/exec``, since there is no ``docker top`` here. A failure other than "no such pod" propagates, so an
         unanswerable probe is never read as "idle".
         """
         from kubernetes.client.rest import ApiException
@@ -430,7 +428,7 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
         volumes.append({"name": "sources", "emptyDir": {}})
         init_mounts.append({"name": "sources", "mountPath": mount_path})
         # Read-only in the main container: campaign inputs are not a diagnostic's to
-        # rewrite, matching the local lane's `-v <dir>:/sources/<id>:ro`.
+        # rewrite.
         main_mounts.append({"name": "sources", "mountPath": mount_path,
                             "readOnly": True})
 

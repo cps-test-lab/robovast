@@ -164,8 +164,7 @@ def _resource_advisories(config_path):
     a quick local run legitimately uses, and warning about it would be noise on every
     example in the repository.
 
-    Lane-agnostic, because a ``.vast`` does not carry a lane -- and the local lane has the
-    same gap from the other side, falling back to ``/proc/meminfo`` for the same reason.
+    Lane-agnostic, because a ``.vast`` does not carry a lane.
     """
     raw, problem = _safe_load(config_path)
     if problem or not isinstance(raw, dict):

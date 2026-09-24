@@ -16,9 +16,9 @@
 
 """In-cluster analysis postprocessing Job — the whole of it, in one pod.
 
-Locally ``docker_exec.sh`` runs the ROS2 conversion in a container and *bind-mounts*
-the campaign dir, so outputs appear in place and the pure-Python half runs beside it.
-A pod cannot bind-mount the service's results volume, so in-cluster postprocessing runs
+``vast results postprocess`` on a development machine runs the ROS2 conversion through
+``docker_exec.sh``, which *bind-mounts* the campaign dir, so outputs appear in place and
+the pure-Python half runs beside it. A pod cannot bind-mount the service's results volume, so in-cluster postprocessing runs
 as a **Job** and this module builds/creates/tracks it.
 
 One pod, one copy of the data. A ``campaign`` ``emptyDir`` mounted at
@@ -422,7 +422,7 @@ def await_admission(admission, campaign_id: str, name: str, manifest: dict,
 def image_commands_for(campaign_root: str, skip=None, skip_rosout: bool = False) -> list:
     """The steps of a campaign's postprocessing that run in its execution image, in order.
 
-    Taken from the same list the local lane runs
+    Taken from the same list ``vast results postprocess`` runs
     (:func:`~robovast.results_processing.postprocessing.campaign_postprocessing_commands`),
     so the Job's image container runs exactly what ``vast campaign postprocess`` would run in
     a container, and the host step then runs the rest. Which steps those are is each
@@ -565,7 +565,7 @@ def _read_submit_inputs(campaign_root: str, skip=None, skip_rosout: bool = False
         # postprocesses. The sizing goes the same way: with no conversion container there is
         # nothing for it to size.
         return [], None, (), None, split
-    # The same seam the local lane reads, for the same reason: a bag belonging to a job
+    # The same seam the host-side postprocessing reads, for the same reason: a bag belonging to a job
     # that was stopped by hand or invalidated by the runner cannot be opened, ever, and
     # must not fail the conversion for every job that finished.
     return (image_cmds, campaign_execution_image(campaign_root),
@@ -776,8 +776,8 @@ def run_host_postprocessing(results_dir: str, campaign_id: str, force: bool = Fa
     postprocessing sequence. Returns ``(ok, message)``.
 
     *state*, when given, also receives each step's line as the live ``stage`` marker — the
-    same wiring the local lane uses, so the campaign view narrates this phase identically on
-    both. ``None`` leaves it logging only.
+    same wiring the in-process postprocessing uses, so the campaign view narrates this
+    phase identically. ``None`` leaves it logging only.
 
     This is the CAMPAIGN-level pass, and it reads ``results_processing.postprocessing``.
     A search's per-batch pass is a different list -- ``search.postprocessing`` -- and runs
@@ -806,8 +806,9 @@ _POSTPROC_LOG_REL = "_execution/postprocessing.log"
 #:
 #: The host steps run with the image steps *skipped*, so they have nothing to record for
 #: them, and a campaign whose image steps recorded nothing carries a ``postprocessing_steps``
-#: table naming only the host's own steps while the others had run. The local lane records
-#: them, so without this the provenance a campaign carries would depend on its lane.
+#: table naming only the host's own steps while the others had run. ``docker_exec.sh``
+#: records them, so without this the provenance a campaign carries would depend on where
+#: its postprocessing ran.
 _IMAGE_PROVENANCE_REL = "_execution/image_provenance.json"
 
 
@@ -945,8 +946,8 @@ def _conversion_script(steps: list, campaign_id: str = "", part: str = "") -> st
 
     Each step's command is its plugin's own
     (:meth:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin.image_command`),
-    run through ``ros2_exec.sh`` from the scripts mount -- the same command the local lane
-    runs through ``docker_exec.sh``.
+    run through ``ros2_exec.sh`` from the scripts mount -- the same command
+    ``docker_exec.sh`` runs on a development machine.
 
     All setup and step stdout/stderr is teed into the campaign's ``postprocessing.log`` so
     it becomes the POSTPROCESSING section of the unified campaign log; the host container
@@ -1047,7 +1048,7 @@ def scripts_configmap_manifest(campaign_id: str, namespace: str,
     text ConfigMap suffices.
 
     The files each of *steps* ships (``image_files``) are added beside them, so a step's
-    command finds them where the local lane's ``docker_exec.sh`` mount puts them.
+    command finds them where ``docker_exec.sh``'s mount puts them.
     """
     from importlib.resources import files  # noqa: PLC0415
 
@@ -1434,7 +1435,7 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     question either way.
 
     Infrastructure causes come from :func:`pod_termination_reason`, shared with the run
-    loop so both lanes agree on what those mean. A plain non-zero exit is added here, which
+    loop so the two agree on what those mean. A plain non-zero exit is added here, which
     that function deliberately omits: for a *run* the reason is in the scenario's own log,
     but this Job's step may have died before writing one, and then the container's name and
     exit code are the whole of what is known.

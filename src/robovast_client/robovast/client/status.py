@@ -298,8 +298,8 @@ class Status(BaseModel):
     # A bounded flag, which is what this payload allows: no series, no per-read computation.
     # While it is set no stall verdict is possible -- the deadline is a per-RUN budget and no
     # run can be running -- which is the same rule ``stall_report`` already applies to a
-    # phase that executes no runs. Written by the lane that has a queue; the local lane has
-    # none and leaves it False, so nothing about a local campaign changes.
+    # phase that executes no runs. Written by the lane that has a queue; one with none
+    # leaves it False.
     waiting_for_capacity: bool = False
     # Wall-clock start of the **current batch's** runs. ``RunProgress`` is per-batch and
     # every counter in it resets when a batch begins, while the campaign's ``started_at``
