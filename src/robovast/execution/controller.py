@@ -30,8 +30,7 @@ A campaign runs one or more *batches*; the batch is a logical grouping recorded
 in the store, not a directory level, so batch and search share the flat layout.
 
 **Where this runs:** always *in the driving process*, against the backend for
-that deployment — the ``vast`` CLI with a ``DockerBackend`` locally, or the
-``robovast-service`` with a ``KubernetesBackend`` for cluster campaigns (one
+that deployment — the ``robovast-service`` with a ``KubernetesBackend`` (one
 worker thread per campaign). This module is a **library**, not an entrypoint:
 the per-campaign controller *pod* (and its in-pod ``main()`` / control server)
 is gone, so cluster and local now share the same driver-hosting shape.
@@ -56,8 +55,8 @@ from robovast.common.config import declared_job_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.search.extractor import NoSampleError
 
-from .backends import (CampaignConfigError, CampaignStopped, DockerBackend, ExecutionBackend,
-                       RunOptions, ShareStopped)
+from .backends import (CampaignConfigError, CampaignStopped, ExecutionBackend, RunOptions,
+                       ShareStopped)
 from .control_server import STOP_RUNS, Phase, failure_detail, is_terminal, stop_checker
 from .notify import Notifier
 
@@ -131,7 +130,7 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
                 budget = _MAX_CAMPAIGN_ID_LEN - (len(cid) - len(name))
                 raise CampaignConfigError(
                     f"Campaign id {cid!r} is {len(cid)} characters, past the "
-                    f"{_MAX_CAMPAIGN_ID_LEN}-character limit the cluster lane's storage "
+                    f"{_MAX_CAMPAIGN_ID_LEN}-character limit the cluster's storage "
                     f"backend puts on a bucket name. The timestamp suffix is fixed, so "
                     f"the campaign name/slug {name!r} ({len(name)} chars) is what has to "
                     f"shorten -- to {budget} characters or fewer.")
@@ -238,9 +237,9 @@ class CampaignController:
         #: here as well as published on ``state`` so a controller driven without one (the
         #: offline callers, the tests) still does this exactly once.
         self._released_project = False
-        # Set on the options this controller drives rather than asked of the caller: the
-        # two lanes stage inside their own run_batch, and the controller is what both of
-        # them are staging for. A value a caller supplied is refused rather than replaced:
+        # Set on the options this controller drives rather than asked of the caller: a
+        # backend stages inside its own run_batch, and the controller is what it is
+        # staging for. A value a caller supplied is refused rather than replaced:
         # it would be dropped here and never called.
         if self.options.on_configs_staged is not None:
             raise ValueError(
@@ -355,7 +354,7 @@ class CampaignController:
         campaign of stalling. Published on the status because only the controller can see
         the ``.vast``; readers just compare against it.
 
-        This is the same number the cluster lane puts on ``activeDeadlineSeconds``, which
+        This is the same number the cluster puts on ``activeDeadlineSeconds``, which
         is the point -- were the two to diverge, a Job could be force-killed while the
         status still called the run healthy.
 
@@ -397,8 +396,8 @@ class CampaignController:
         campaign that was stopped or crashed still ran on some image for some time; that
         is more worth recording than less.
 
-        The file is produced by the backend during execution (on the local lane by a
-        generated shell script inside the run), so it cannot exist at campaign creation
+        The file is produced by the backend during execution, so it cannot exist at
+        campaign creation
         and may legitimately be absent here — a campaign that died before execution
         started. Best-effort throughout: this is bookkeeping and must never convert a
         finished campaign into a failed one.
@@ -421,9 +420,8 @@ class CampaignController:
     def _persist_build_manifests(self, execution: dict) -> None:
         """Copy each image's build lock into the campaign, while the images are still here.
 
-        Done here because this is the one point that runs in Python, on both lanes, with the
-        campaign root and the resolved images both in hand -- the local lane writes execution.yaml
-        from a generated shell script, so nothing earlier knows the directory.
+        Done here because this is the one point that runs in Python with the campaign root
+        and the resolved images both in hand.
 
         And it has to happen at all because the lock is baked *into* the image: leave it there and
         it disappears with the image, which is precisely when a rebuild would need it.
@@ -444,13 +442,12 @@ class CampaignController:
                 if isinstance(refs, dict) and not refs.get("declared")}
         roles = sorted(ours | set(images))
         # The roles are the campaign's containers, but the REF has to be what actually ran.
-        # On the cluster lane ``images`` records what the .vast declared, and for a container
+        # ``images`` records what the .vast declared, and for a container
         # robovast builds that is its *base* -- whose lock describes different software than
         # the image the campaign ran. ``image_revisions`` is the digest of the built image.
         revisions = execution.get("image_revisions") or {}
         try:
             from robovast.common.campaign_data import write_build_manifests
-            from robovast.service.image_build import read_image_build_manifest
 
             manifests = {}
             for role in roles:
@@ -458,17 +455,9 @@ class CampaignController:
                 if not image:
                     continue
                 # Per role, so one role's failure cannot discard the locks already read for
-                # the others. Both readers reach outside the process -- a container runtime,
-                # a registry -- and either can fail for one image and work for the next.
+                # the others.
                 try:
-                    # Local first: it needs no network, and it answers for an image built
-                    # here that may never have been pushed anywhere.
-                    lock = read_image_build_manifest(image)
-                    if not lock:
-                        # getattr, so a backend from outside this tree that predates the hook
-                        # degrades to "cannot read one here" instead of losing every lock.
-                        reader = getattr(self.backend, "read_build_lock", None)
-                        lock = reader(image) if callable(reader) else {}
+                    lock = self.backend.read_build_lock(image)
                 except Exception:  # pylint: disable=broad-except
                     logger.debug("Could not read the build lock of %s.", image,
                                  exc_info=True)
@@ -1270,8 +1259,8 @@ class CampaignController:
         """Postprocess a search batch the way the campaign-level path does; did the pod derive?
 
         Returns ``True`` when the Job ran the whole pipeline beside the data, so the caller
-        must not derive again here, and ``False`` on the local backend, where only the
-        conversion ran in-process and the pure-Python half is still the caller's to run.
+        must not derive again here, and ``False`` from a backend that ran only the
+        conversion, leaving the pure-Python half the caller's to run.
 
         **One Job per conversion.** *tag* discriminates it. Naming the Job after the campaign
         alone makes the second conversion's create return 409; the wait then reads the FIRST
@@ -1291,19 +1280,10 @@ class CampaignController:
         metadata and the provenance record are the account of a *finished* campaign, and
         this runs per batch on one that is still growing.
 
-        On a local backend there is no Job to submit and the in-process path is already
-        correct, so the conversion falls through to it and the caller derives. A failure is reported and does not
-        raise: the extractor decides whether a batch is scorable and refuses loudly when its
-        inputs are missing, which says more than an exception about a Job.
+        A failure is reported and does not raise: the extractor decides whether a batch is
+        scorable and refuses loudly when its inputs are missing, which says more than an
+        exception about a Job.
         """
-        cluster_config = getattr(self.backend, "cluster_config", None)
-        if cluster_config is None:
-            from robovast.results_processing.postprocessing import run_postprocessing_commands
-            run_postprocessing_commands(
-                image_cmds, results_dir=self.campaign_root,
-                config_dir=self.vast_dir, output=logger.info,
-                should_stop=stop_checker(self.state, scope=STOP_RUNS))
-            return False
         # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
         # opened, ever, and must not fail the conversion for every job that finished. A
         # search feels that harder than the campaign-level path it is copied from: one
@@ -1315,7 +1295,7 @@ class CampaignController:
         try:
             run_job, image_for, complete_message, job_role = _conversion_job_runner()
             ok, message = run_job(
-                cluster_config, self.campaign_id, self.campaign_root,
+                self.backend.cluster_config, self.campaign_id, self.campaign_root,
                 os.environ.get("ROBOVAST_NAMESPACE", "default"),
                 image_for(self.campaign_root),
                 image_cmds,
@@ -1456,9 +1436,7 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     options = options or RunOptions()
     if not options.postprocess:
         return
-    cluster_config = getattr(backend, "cluster_config", None)
-    if cluster_config is None:  # local backend — the in-process chain handles it
-        return
+    cluster_config = backend.cluster_config
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
     try:
@@ -1624,7 +1602,7 @@ def publish_terminal_phase(state) -> None:
 def end_campaign(campaign_id: str, state, notifier=None) -> None:
     """End a campaign exactly once: terminal phase, heartbeat off, one notification.
 
-    Called by whichever scope is **outermost** for the lane, and only by it — see
+    Called by whichever scope is **outermost** for the campaign, and only by it — see
     ``RunOptions.finalize_phase``. ``run()`` does not publish ``finished`` when it
     returns, because share and postprocessing still have to happen; the campaign is over
     when this runs and not before.
@@ -1663,8 +1641,8 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
     nothing was indistinguishable from a campaign still running.
 
     ``end_campaign`` runs from a ``finally`` and only when this tail is the campaign's
-    outermost scope (``RunOptions.finalize_phase``). The local service sets that false
-    and ends the campaign itself, after the postprocessing it runs once this returns.
+    outermost scope (``RunOptions.finalize_phase``). A caller that sets it false
+    ends the campaign itself, after the postprocessing it runs once this returns.
     """
     options = options or RunOptions()
     # Read the verdict *before* any step of this tail can move the phase: the share step
@@ -1718,7 +1696,7 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
             if state is not None:
                 _record_controller_outcome(campaign_root, campaign_id, state, backend)
         _finalize(backend, campaign_root)
-        # After the finalize upload, not before: on a lane whose durable home is a store,
+        # After the finalize upload, not before: where the durable home is a store,
         # the data postprocessing derived reaches that home in the upload above, so a total
         # taken earlier would under-report exactly the artifacts the campaign was
         # postprocessed to produce. Skipped for a failed campaign, which never finished
@@ -1819,13 +1797,24 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
 
+def _required_backend(backend) -> ExecutionBackend:
+    """The backend a campaign runs on, which every caller names.
+
+    There is no default: a campaign's runs happen wherever its backend puts them, and
+    a driver that silently picked one would launch onto a backend nobody chose.
+    """
+    if backend is None:
+        raise ValueError("a campaign needs an execution backend; none was given")
+    return backend
+
+
 def share_cancelled_detail(backend, stopped: ShareStopped) -> str:
     """Discard a cancelled upload's partial artifact; return what to record.
 
     The cleanup is the reason this is not just a message. A cancelled upload leaves a
     truncated archive behind, and a truncated archive "uploads, lists and downloads
     exactly like a good one, and only fails at the far end" -- the very shape
-    ``DockerBackend._refuse_unimportable`` exists to keep off a share. So the partial is
+    ``ExecutionBackend.share_campaign`` refuses to put on a share. So the partial is
     removed, and where the provider cannot remove it the sentence **names the object it
     left** rather than reporting a clean cancellation over a share that now holds a
     half-written campaign.
@@ -2067,7 +2056,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     vast_dir = os.path.dirname(os.path.abspath(vast_file))
     runs = runs if runs is not None else campaign_config.execution.runs
     campaign_id = campaign_id or campaign_id_for(campaign_config)
-    be = backend or DockerBackend(state=state)
+    be = _required_backend(backend)
     opts = options or RunOptions()
     _preflight_upload_to_share(be, opts)
     # Install declared plugins first, as their own logged phase (no-op if none), before
@@ -2260,7 +2249,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         if state is not None:
             state.raise_if_stopped("stopped while composing the campaign's configurations")
 
-        be = backend or DockerBackend(state=state)
+        be = _required_backend(backend)
         _preflight_upload_to_share(be, opts)
         # One notifier drives the whole campaign: the controller fires the lifecycle
         # events, and _finish_campaign (outside the controller) fires `uploaded`.

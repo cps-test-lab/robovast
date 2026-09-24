@@ -240,38 +240,6 @@ def test_manifest_parsing(kind, text, expected):
     assert _parse_manifest(kind, text) == expected
 
 
-def test_reading_a_manifest_never_pulls(monkeypatch):
-    """Same rule as the pre-flight: asking what is in an image must not be the thing that
-    fetches gigabytes of it."""
-    from robovast.service import image_build
-
-    calls = []
-
-    def fake_run(args, **_kwargs):
-        calls.append(list(args))
-
-        class Result:
-            returncode = 1
-            stdout = ""
-        return Result()
-
-    monkeypatch.setattr(image_build.subprocess, "run", fake_run)
-    monkeypatch.setattr("robovast.common.execution._image_present_locally", lambda _i: True)
-    image_build.read_image_build_manifest("img:1")
-    for args in calls:
-        if args[:2] == ["docker", "run"]:
-            assert "--pull=never" in args, args
-
-
-def test_an_absent_image_reports_unknown_rather_than_empty(monkeypatch):
-    """`{}` means "cannot tell". An image built before manifests existed has none, and that is a
-    different answer from "installed nothing" -- which a caller must not treat as a lock."""
-    from robovast.service.image_build import read_image_build_manifest
-
-    monkeypatch.setattr("robovast.common.execution._image_present_locally", lambda _i: False)
-    assert read_image_build_manifest("img:1") == {}
-
-
 # ---------------------------------------------------------------------------
 # Installing FROM the lock: what makes the manifest a mechanism, not a note
 # ---------------------------------------------------------------------------

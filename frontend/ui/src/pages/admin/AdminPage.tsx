@@ -138,7 +138,7 @@ export function AdminPage() {
     // than saying nothing.
     enabled: active || rolling,
     // Fast while a roll is in flight — this poll IS how the handover is detected — and
-    // slow otherwise: it costs a registry round trip on the cluster lane.
+    // slow otherwise: it costs a registry round trip.
     refetchInterval: rolling ? 3_000 : 60_000,
     // For the same reason, a floor on the arrival read: flipping to Admin and back is a plausible
     // thing to do, and it must not spend a registry round trip each time.

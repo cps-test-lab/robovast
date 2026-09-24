@@ -20,8 +20,7 @@ from fastapi.testclient import TestClient
 
 from robovast.service import scene_cache
 from robovast.service.app import build_app
-from robovast.service.local_transport import LocalTransport
-
+from tests.service.null_service import NullService
 CAMPAIGN = "demo-2026-08-06-000000"
 QUERY = {"config_name": "goal-1", "run_id": "0"}
 
@@ -58,8 +57,8 @@ def client(tmp_path, monkeypatch):
     fake.chmod(0o755)
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": f"{fake} {{out}}"}})
-    monkeypatch.setattr(LocalTransport, "_campaigns_root", lambda self: Path(results))
-    return TestClient(build_app(LocalTransport()))
+    monkeypatch.setattr(NullService, "_campaigns_root", lambda self: Path(results))
+    return TestClient(build_app(NullService()))
 
 
 def _wait_ready(client, tries=60):

@@ -46,7 +46,7 @@ log "Secondary container starting ($(hostname))..."
 log "Running as UID: $(id -u), GID: $(id -g)..."
 
 # The sockets the scenario drives the sidecars over, and a per-pod scratch space: an emptyDir on
-# the cluster, a per-job tmpfs locally, so what one container instance leaves here the next
+# the cluster, so what one container instance leaves here the next
 # instance in the SAME pod finds and the next job never does.
 IPC_DIR="${IPC_DIR:-/ipc}"
 
@@ -138,8 +138,7 @@ log "Started resource monitor (PID=${_monitor_pid}) -> ${OUTPUT_DIR}/resource_us
 # is written rather than left running until the kubelet's TERM.
 #
 # The workload is stopped when the SCENARIO says it is finished, by the main container's
-# own marker: locally that marker is never written (/out is a bind mount there, and the
-# compose tears the sidecars down with the scenario), so a sidecar simply holds.
+# own marker; where it is never written (a bind-mounted /out), a sidecar simply holds.
 _DONE_MAIN="${IPC_DIR}/done.main"
 
 _post_run() {

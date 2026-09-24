@@ -105,7 +105,7 @@ easier to lose than the code.
 * *Discovery needs no side record at all.* The design called for each campaign to publish
   an entry a listing could enumerate, so that postprocessing-failed / share-failed /
   stopped / crashed campaigns stay discoverable. A campaign is a directory under the
-  service's results root on both lanes, so the listing's own ``iterdir`` sees every one of
+  service's results root, so the listing's own ``iterdir`` sees every one of
   them from the moment the driver creates it, with no entry to publish and no question of
   when to publish it.
 * *The status does not carry a* ``build_id``. That clause existed to keep the build *log*
@@ -131,13 +131,8 @@ column is not queryable data.
 
 The open part is the ingest path, and it is genuinely open. It must work on a **live**
 campaign, where ``data.db`` does not exist yet and ``campaign.db``'s writer does not
-tail container logs. Note the asymmetry that makes this harder than it looks: on the
-local lane the run's own output is folded into ``controller.log``, which the controller
-already writes and could count as lines pass through it; on the cluster that output
-exists only in pod logs, which no in-campaign writer sees. A single ingest point that
-works on both lanes is the thing to design, and until it exists an aggregate written on
-only one lane would be worse than none — it would silently mean different things per
-backend.
+tail container logs, and the run's own output exists only in pod logs, which no
+in-campaign writer sees. A live ingest point is the thing to design.
 
 The post-hoc half of this **shipped** as ``run_log`` (see :ref:`merged-run-log`): every
 container's output joined with ``/rosout``, on the run's own playback clock, as a table
@@ -150,28 +145,16 @@ has only its streams.
 written to the **job** directory, which the index ingest does not glob. That gap is what
 ``run_log`` closes.)
 
-**9. A smaller defect found alongside the above.**
-
-The other one — ``RobovastClient("")`` silently returning an in-process
-``LocalTransport``, so a tool passing an unresolved URL read local disk instead of
-reporting that no service answered — is fixed. ``robovast.mcp_server.service_access`` is
-now the only place that resolves a service URL: ``service_client()`` returns the client or
-``None`` (the control tools then report ``NO_SERVICE``), and ``client_or_local()`` spells
-the fallback out for the operations that *are* meaningful without a service.
-``RobovastClient("")`` itself still behaves this way; the fix was to stop calling it that
-way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
-
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
   every postprocessed artifact was present -- the campaign-level counters were never
-  populated. **Traced** on both lanes to the same cause: the backend's
-  ``count_run_artifacts`` answered ``None``, which made ``_start_progress_poller``
-  return early, so nothing ever wrote the counters and a live campaign also published
-  a ``progress`` that could not move. ``ExecutionBackend.count_run_artifacts`` now
-  counts the per-run ``test.xml`` files under the campaign root, which is where a run's
-  results land on either lane, and a backend that genuinely cannot count is logged
-  rather than passed over. What is still unverified is whether the *search*
-  lane's per-batch record and the campaign row's aggregate agree with those counters over
+  populated. **Traced** to the backend's ``count_run_artifacts`` answering ``None``,
+  which made ``_start_progress_poller`` return early, so nothing ever wrote the counters
+  and a live campaign also published a ``progress`` that could not move.
+  ``ExecutionBackend.count_run_artifacts`` now counts the per-run ``test.xml`` files under
+  the campaign root, where a run's results land, and a backend that genuinely cannot
+  count is logged rather than passed over. What is still unverified is whether a search's
+  per-batch record and the campaign row's aggregate agree with those counters over
   a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
   from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``
   this used to name is gone; the per-batch record now lives in ``campaign.db``'s ``batch``
@@ -203,7 +186,7 @@ runs`` is a machine type rather than ``NULL``. The API versions in particular ag
 The developer loop against a real cluster
 =========================================
 
-``vast serve --backend cluster`` runs **inside** the cluster and is refused anywhere else:
+``vast serve`` runs **inside** the cluster and is refused anywhere else:
 every pod a campaign runs delivers its outputs to the service's data plane over the cluster
 network, which cannot reach a process on a developer's machine. A local debugger against a
 real cluster comes from running that same process in the cluster's network with the
@@ -211,7 +194,7 @@ Service's traffic steered to it:
 
 .. code-block:: bash
 
-   mirrord exec --target deployment/robovast-service --steal -- vast serve --backend cluster
+   mirrord exec --target deployment/robovast-service --steal -- vast serve
 
 `mirrord <https://mirrord.dev>`_ needs no cluster-side install — it spawns a temporary agent
 pod — while `telepresence <https://telepresence.io>`_ wants a traffic manager. Under either,
@@ -250,8 +233,8 @@ creates once. It is also a bearer credential with no expiry that any process rea
 Secret can replay. Kubernetes offers the honest version: a **projected service-account
 token** with an audience and a lifetime, which the service validates with a ``TokenReview``
 and maps to the pod's own identity. That removes the Secret, the mint and the campaign-id
-scope in one go, at the cost of an API-server call per verification and a lane that must
-work in-pod only.
+scope in one go, at the cost of an API-server call per verification and a verification
+that works in-pod only.
 
 **Every ``/results`` byte is copied through Python.** The file address space serves a run's
 artifacts through the control plane's ``FileResponse``, so a 2 GB rosbag is read and written
@@ -399,7 +382,7 @@ sixteenth.
   (:mod:`robovast.results_processing.advice`) as though it were one. A sibling
   ``system_usage`` table is the right shape, and the split should be structural so later
   metrics of either kind have an obvious home.
-* **Make the new lane column-generic.** CSV → index already is: any ``*.csv`` in a run
+* **Make the new table column-generic.** CSV → index already is: any ``*.csv`` in a run
   directory becomes a table, columns are the union of row keys and types are inferred
   (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
   :mod:`robovast.results_processing.csv_types`), including ``ALTER TABLE`` for a column that
@@ -412,7 +395,7 @@ sixteenth.
 * **Reuse the sampler and the slicing helpers.** One daemon should write both files:
   :mod:`robovast.execution.data.monitor_resources` can derive the sibling path from its
   ``argv[1]``, which leaves both entrypoint scripts — and the launch contract pinned by
-  ``tests/execution/test_resource_monitor_lanes.py`` — untouched. Per-run splitting,
+  ``tests/execution/test_resource_monitor_output_path.py`` — untouched. Per-run splitting,
   ``in_window`` and the clock conversion all come from
   :mod:`robovast.results_processing.run_slices`; its ``container_of`` is deliberately the one
   place per-container artifact names are inverted, so a new filename is registered there.

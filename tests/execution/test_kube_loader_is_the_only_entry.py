@@ -18,9 +18,8 @@ import pathlib
 import re
 
 _REPO = pathlib.Path(__file__).resolve().parents[2] / "src"
-#: Both trees. The cluster lane is its own distribution, and scanning only the core one
-#: made this pass by scanning nothing that could fail -- a guard that stops guarding is
-#: worse than no guard, because the green tick says otherwise.
+#: Both trees. The cluster backend is its own distribution, and scanning only the core one
+#: would pass by scanning nothing that could fail.
 SRC_TREES = (_REPO / "robovast", _REPO / "robovast_cluster" / "robovast")
 SRC = SRC_TREES[0]  # what offender paths are reported relative to
 #: The one module allowed to call the generated client's loader.

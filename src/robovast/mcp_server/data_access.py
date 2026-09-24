@@ -18,8 +18,8 @@
 
 Every tool that answers a question about what a campaign *did* goes through here, so
 there is a single place that knows how to reach a campaign — delegating to a reachable
-``robovast-service`` (so a cluster campaign works, not just local disk) and otherwise
-resolving the directory locally and querying it in process.
+``robovast-service``, and inside the service resolving the directory and querying it
+in process.
 
 This exists because the alternative was nine tools each parsing ``metadata.yaml`` with
 its own response schema, which meant every one of them answered "run postprocessing

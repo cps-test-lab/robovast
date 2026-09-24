@@ -2,7 +2,7 @@ import { PRE_RUN_PHASES, RobovastError, isTerminalPhase } from './robovastClient
 
 /** A campaign freezes its project under `_config/` when its FIRST BATCH is prepared — after the
  *  controller has advanced to `running`, not when the campaign starts. So between those two points
- *  the prefix is genuinely not there yet, on either lane. */
+ *  the prefix is genuinely not there yet. */
 const WHEN_STAGED =
   'A campaign freezes its configuration under _config/ when its first batch is prepared.'
 

@@ -22,7 +22,7 @@ each a little weaker than the last:
 
 * ``WorkspaceStore._safe_join`` — rejected absolute / ``~`` / ``..`` **and** verified
   the resolved path, so symlinks could not point out either.
-* ``LocalTransport.get_job_log`` — only ``campaign_dir.resolve() not in
+* the service's ``get_job_log`` — only ``campaign_dir.resolve() not in
   run_dir.parents``, with no up-front ``..``/``~`` rejection.
 * the run-artifact route's own check — only a ``str.startswith`` test on the resolved
   path.
@@ -37,8 +37,8 @@ The check comes in two halves because there are two substrates. :func:`check_rel
 rejects the path *shapes* that must never be accepted anywhere; :func:`safe_join` adds
 the resolve-and-verify that only a filesystem can perform. An object-store key has no
 filesystem to resolve against — nothing to follow a symlink through, and no ``resolve()``
-— so the cluster's results lane composes ``prefix + rel`` after :func:`check_relative`
-alone. One rule, two substrates; the split exists so the object lane cannot quietly
+— so an object-store key is composed as ``prefix + rel`` after :func:`check_relative`
+alone. One rule, two substrates; the split exists so the object store cannot quietly
 become a fourth, weaker check.
 """
 

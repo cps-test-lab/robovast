@@ -302,7 +302,7 @@ def test_the_campaign_can_be_composed_again_from_its_own_snapshot(tmp_path):
 
 
 def test_the_environment_carrier_refuses_rather_than_doing_nothing(tmp_path):
-    """It is the channel's second carrier and no lane delivers it per configuration yet.
+    """It is the channel's second carrier and the backend does not deliver it per configuration.
     Silently dropping it would be a campaign whose factor did not vary."""
     with pytest.raises(Exception, match="not delivered per configuration yet"):
         _compose(tmp_path, """\

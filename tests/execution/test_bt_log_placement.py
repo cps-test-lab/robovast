@@ -12,8 +12,7 @@ file in the wrong place, and the assertion that catches it is not "the file exis
 The tests drive the real derivation (``JobSpec``/``WorkItem`` →
 ``build_job_parameter_documents`` → ``dump_multi_document_yaml``) rather than a hand-written
 parameter file, so they break if that derivation changes rather than testing a copy of it.
-``build_job_parameter_documents`` decides the run directory for every run on both lanes and
-had no test before this one.
+``build_job_parameter_documents`` decides the run directory for every run.
 """
 
 import json
@@ -23,8 +22,7 @@ from xml.etree import ElementTree
 
 import pytest
 
-from robovast.common.execution import (build_job_parameter_documents, dump_multi_document_yaml,
-                                       scenario_env)
+from robovast.common.execution import build_job_parameter_documents, dump_multi_document_yaml
 from robovast.execution.packer import JobSpec, WorkItem
 from robovast.results_processing.postprocessing_plugins import _JSONL_READERS
 
@@ -156,34 +154,3 @@ def test_single_run_job_writes_into_its_run_directory(tmp_path):
     assert (run_dir / "behaviors.jsonl").is_file()
     assert (run_dir / "test.xml").is_file()
     assert not (out_root / "behaviors.jsonl").exists()
-
-
-def test_local_lane_compose_carries_the_flag(tmp_path):
-    """The env the local lane derives reaches the compose file as a plain variable."""
-    from robovast.execution.execution_utils.execute_local import _build_packed_compose_yaml
-
-    campaign_data = {"execution": {"containers": {"scenario": {"image": "img:test"}}, "runs": 1},
-                     "scenario_file": "scenario.osc"}
-    yaml_text = _build_packed_compose_yaml(
-        docker_image="img:test", out_path=str(tmp_path), results_dir_var="${RESULTS}",
-        job=JobSpec(items=[_item("cfg-a", 0)], index=0), param_file_rel="p.yaml",
-        run_files=[], env_vars={}, pre_command=None, post_command=None, uid=1000, gid=1000,
-        main_cpu=1, main_memory=None, main_gpu=False, plan=_plan(),
-        use_gui_block=False, scenario_env_vars=scenario_env(campaign_data))
-    assert "- BT_LOG=true" in yaml_text
-
-
-def test_local_lane_compose_states_the_topics_it_records(tmp_path):
-    """Fixed at what the merged run_log needs. Stated for the same reason BT_LOG is: the
-    compose file says what the run recorded rather than deferring to an image default."""
-    from robovast.execution.execution_utils.execute_local import _build_packed_compose_yaml
-
-    campaign_data = {"execution": {"containers": {"scenario": {"image": "img:test"}}, "runs": 1},
-                     "scenario_file": "scenario.osc"}
-    yaml_text = _build_packed_compose_yaml(
-        docker_image="img:test", out_path=str(tmp_path), results_dir_var="${RESULTS}",
-        job=JobSpec(items=[_item("cfg-a", 0)], index=0), param_file_rel="p.yaml",
-        run_files=[], env_vars={}, pre_command=None, post_command=None, uid=1000, gid=1000,
-        main_cpu=1, main_memory=None, main_gpu=False, plan=_plan(),
-        use_gui_block=False, scenario_env_vars=scenario_env(campaign_data))
-    assert "- LOG_TOPICS=/rosout /clock" in yaml_text

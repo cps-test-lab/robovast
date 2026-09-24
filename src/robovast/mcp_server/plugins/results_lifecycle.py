@@ -47,7 +47,7 @@ def get_postprocessing(campaign_id: str) -> dict:
     overrides. Pair with :func:`update_postprocessing` + :func:`run_postprocessing`.
     """
     try:
-        return service_access.client_or_local() \
+        return service_access.require_service() \
             .get_postprocessing(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -63,7 +63,7 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
     """
     from robovast.service.interface import UpdatePostprocessingRequest
     try:
-        return service_access.client_or_local() \
+        return service_access.require_service() \
             .update_postprocessing(UpdatePostprocessingRequest(
                 campaign_id=campaign_id, entries=entries)).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -88,7 +88,7 @@ def run_postprocessing(campaign_id: str, force: bool = False,
     """
     from robovast.service.interface import RunPostprocessingRequest
     try:
-        return service_access.client_or_local() \
+        return service_access.require_service() \
             .run_postprocessing(RunPostprocessingRequest(
                 campaign_id=campaign_id, force=force, skip=skip or [])).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -114,7 +114,7 @@ def run_share(campaign_id: str) -> dict:
     """
     from robovast.service.interface import RunShareRequest
     try:
-        return service_access.client_or_local() \
+        return service_access.require_service() \
             .run_share(RunShareRequest(campaign_id=campaign_id)).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -179,7 +179,7 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
     """
     from robovast.service.interface import ImportCampaignRequest
     try:
-        ref = service_access.client_or_local().import_campaign(ImportCampaignRequest(
+        ref = service_access.require_service().import_campaign(ImportCampaignRequest(
             archive_path=archive_path, share_archive=share_archive,
             force=force, rebuild_store=rebuild_store))
         return {"campaign_id": ref.campaign_id, "note": ref.note}

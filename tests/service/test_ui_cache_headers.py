@@ -19,9 +19,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
-
-
+from tests.service.null_service import NullService
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """An app serving a fake dist: one entry document, one hashed asset."""
@@ -35,7 +33,7 @@ def client(tmp_path, monkeypatch):
     # not about being a document.
     (dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
     monkeypatch.setenv("ROBOVAST_UI_DIST", str(dist))
-    with TestClient(build_app(LocalTransport(), mount_mcp=False)) as test_client:
+    with TestClient(build_app(NullService(), mount_mcp=False)) as test_client:
         yield test_client
 
 

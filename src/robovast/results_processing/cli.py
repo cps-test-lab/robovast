@@ -44,9 +44,7 @@ def results():
     honest signal that none of it is a service operation.
 
     What acts on a *campaign* is ``vast campaign`` -- including postprocessing, which
-    lives there because the service owns the lane the runs executed on. This group used
-    to carry a second, in-process ``postprocess`` beside it; it could only ever see a
-    local campaign, and one postprocessing path is the point.
+    lives there because the service owns the cluster the runs executed on.
     """
 
 

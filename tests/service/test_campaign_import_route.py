@@ -51,9 +51,9 @@ from robovast.client.status import TERMINAL_PHASES
 from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
 from robovast.service import retrigger
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.interface import DESCRIPTION_MAX_LEN, Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 from tests.service.conftest import CreateCampaignRequestStub
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
@@ -64,14 +64,14 @@ _SETTLE_TIMEOUT_S = 30
 
 
 def _transport(tmp_path):
-    """A fully constructed LocalTransport with its results root pinned under *tmp_path*.
+    """A fully constructed NullService with its results root pinned under *tmp_path*.
 
     Really constructed, not ``__new__``-ed past its ``__init__``: these tests drive the listing
     and the background dispatcher, both of which read state the constructor sets up, so a
     half-built transport fails on bookkeeping that has nothing to do with importing.
     """
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 
@@ -82,7 +82,7 @@ def _env(monkeypatch, tmp_path):
     # Postprocessing is a different subject with its own tests, and a raw fixture would drag a
     # whole pipeline into every case here. Stubbed to a no-op so what is under test is the
     # import: the chain itself is asserted once, in its own test below.
-    monkeypatch.setattr(LocalTransport, "_postprocess_after_import",
+    monkeypatch.setattr(NullService, "_postprocess_after_import",
                         lambda self, state, campaign_id, target: state.set_phase("finished"))
     transport = _transport(tmp_path)
     with TestClient(build_app(transport)) as client:
@@ -207,7 +207,7 @@ def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_p
     assert _settle(client, fixture.name) == "finished"
 
     imported = transport._campaigns_root() / fixture.name
-    report = retrigger.check(imported, fixture.name)
+    report = retrigger.check(imported, fixture.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
     assert report["runnable"] is True, report["blocking"]
 
     plan = retrigger.prepare(imported, fixture.name,
@@ -215,8 +215,8 @@ def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_p
                              description_limit=DESCRIPTION_MAX_LEN,
                              request_model=CreateCampaignRequestStub)
     try:
-        # Whatever version was uploaded, what a re-run launches is a current config: the lane
-        # that runs it reads only the current shape.
+        # Whatever version was uploaded, what a re-run launches is a current config: the
+        # service reads only the current shape.
         staged = yaml.safe_load(Path(plan.config_path).read_text(encoding="utf-8"))
         assert staged["version"] == SUPPORTED_CONFIG_VERSION
     finally:

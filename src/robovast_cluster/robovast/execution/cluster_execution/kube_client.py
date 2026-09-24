@@ -28,10 +28,9 @@ host instead of a urllib3 retry traceback.
 
 Finally it holds the **kept-alive pod** primitives — :func:`wait_pod_ready`,
 :func:`wait_pod_gone` and :func:`exec_stream`. Two subsystems run a pod and exec into it
-(the per-campaign aux pod for variation plugins, and the diagnostic container-exec lane),
-they had a copy each, and the copies were not equally correct: only one reported *why* a
-pod was not starting, only one waited for a delete to finish, and only one bounded an
-exec. Sharing them is what makes those three properties true in both places at once.
+(the per-campaign aux pod for variation plugins, and the diagnostic container-exec runner),
+and sharing these is what makes both report *why* a pod is not starting, wait for a
+delete to finish, and bound an exec.
 They live here rather than beside either caller because
 ``tests/execution/test_layering.py`` forbids the execution engine from importing
 ``robovast.service``, and ``common`` is the only place both sides may depend on.
@@ -108,9 +107,8 @@ def load_kube_config(context: str | None = None) -> str:
 
     Asserted in prose alone, that rule goes false quietly: a cluster-config provider, a
     service deploy/cleanup path or the RBAC setup loading config directly runs its API
-    calls with ``timeout=None``, which shows up as an off-cluster ``vast serve --backend
-    cluster`` hanging for minutes on an unreachable cluster and then dying in a urllib3
-    traceback. A test enforces it (``tests/execution/test_kube_loader_is_the_only_entry.py``).
+    calls with ``timeout=None``, which shows up as a ``vast cluster`` command hanging
+    for minutes on an unreachable cluster and then dying in a urllib3 traceback. A test enforces it (``tests/execution/test_kube_loader_is_the_only_entry.py``).
 
     Args:
         context: Host kubeconfig context to select when not running in-cluster.
@@ -326,8 +324,8 @@ def exec_stream(pod: str, namespace: str, container: str, command,
     """Exec *command* in a running pod. Returns ``(code, stdout, stderr, timed_out)``.
 
     The in-cluster equivalent of ``docker exec``, and the one implementation of it. A
-    timed-out exec reports ``124`` with whatever was collected, mirroring the local lane's
-    ``subprocess`` timeout, rather than returning ``None`` for the exit code.
+    timed-out exec reports ``124`` with whatever was collected, as ``timeout(1)`` would,
+    rather than returning ``None`` for the exit code.
 
     *limit_s* is a real bound, not a poll interval. Without one this loop spins for as long
     as the command runs, which is fine until the command never finishes — a plugin's helper

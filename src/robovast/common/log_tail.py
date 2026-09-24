@@ -1,4 +1,4 @@
-"""The append-only merged log buffer behind a job's live log, shared by both lanes.
+"""The append-only merged log buffer behind a job's live log.
 
 A job runs several containers at once (the scenario, and — in the ROS shape — a simulator
 and a system under test), and the web UI shows their output as ONE stream so the causal
@@ -13,22 +13,19 @@ points into the middle of a line it has already seen. (The campaign log gets awa
 plain concatenation only because its phases are strictly sequential — see
 :mod:`robovast.common.campaign_logs`.)
 
-The fix is this class: a buffer that is only ever appended to. Each lane computes its own
+The fix is this class: a buffer that is only ever appended to. The caller computes the
 *delta* — the lines it has not yet consumed from each container — and hands them here; the
 buffer tags, orders and appends them, and the client's offset indexes it directly.
 
-The lanes differ only in how they get that delta, which is why the fetching is NOT here:
-
-* cluster — a trailing ``since_seconds`` window of the kube API, deduped against the last
-  line consumed per container, ordered by kubelet's per-line RFC3339 timestamp;
-* local — a byte offset per ``logs/system*.log`` file on disk, which has no timestamps at
-  all, so ordering is per-poll rather than per-line.
+The fetching is NOT here: on the cluster it is a trailing ``since_seconds`` window of the
+kube API, deduped against the last line consumed per container, ordered by kubelet's
+per-line RFC3339 timestamp.
 """
 
 from __future__ import annotations
 
-#: What the main container is called. The runtime container is ``robovast`` on both lanes (the
-#: compose service, and the pod's container in ``manifests.py``) -- NOT ``scenario``, which is the
+#: What the main container is called. The runtime container is ``robovast`` (the pod's
+#: container in ``manifests.py``) -- NOT ``scenario``, which is the
 #: container plan's *role* name. Defined here, beside :func:`tag_line`, because two readers depend
 #: on it agreeing: the live job log tags its lines with it, and the merged ``run_log`` table files
 #: its rows under it. They differed once (``robovast`` vs ``main``), which made one campaign read
@@ -37,11 +34,9 @@ MAIN_CONTAINER = "robovast"
 
 
 #: The main container's log file. Every reader of a job's log dir has to agree on which file is
-#: whose container, so the naming lives here with :data:`MAIN_CONTAINER` rather than in whichever
-#: lane needed it first -- the local tail reads these files directly, and the cluster lane reads
-#: the same names out of the campaign directory once a pod has delivered them. The names are
-#: written by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a
-#: property of the artifact rather than of a lane.
+#: whose container, so the naming lives here with :data:`MAIN_CONTAINER`. The names are written
+#: by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a property of
+#: the artifact rather than of its reader.
 MAIN_LOG = "system.log"
 
 _SIDECAR_PREFIX = "system_"
@@ -75,8 +70,7 @@ def tag_line(name: str, message: str, width: int) -> str:
     """One log line prefixed with its container, as the web UI expects to parse it.
 
     The UI matches ``/^(\\[[^\\]]+\\]) ?/`` and colors the prefix by hashing the name, so
-    this format is a contract with ``StatusView.tsx`` and must stay identical on both
-    lanes — a local run and a cluster run of the same campaign should read the same.
+    this format is a contract with ``StatusView.tsx``.
     """
     return f"{f'[{name}]'.ljust(width + 2)} {message}"
 
@@ -86,8 +80,8 @@ class MergedLogBuffer:
 
     :attr:`buf` is the whole stream so far; a client's byte offset indexes straight into
     it. :attr:`grew` reports whether the last :meth:`append` added anything, which is how
-    a caller decides a log has settled — the local lane needs that to avoid declaring EOF
-    while a sidecar is still flushing after the scenario finished.
+    a caller decides a log has settled, so it does not declare EOF while a sidecar is
+    still flushing after the scenario finished.
     """
 
     def __init__(self):
@@ -98,8 +92,8 @@ class MergedLogBuffer:
         """Append *entries*, tagged with their container when there is more than one.
 
         *entries* is an iterable of ``(sort_key, container_name, message)``. It is sorted
-        by ``sort_key`` — a stable sort, so entries a lane cannot order (the local lane's
-        untimestamped lines) keep the order they were produced in.
+        by ``sort_key`` — a stable sort, so entries the caller cannot order (untimestamped
+        lines) keep the order they were produced in.
 
         ``multi`` is the caller's decision, not ``len(entries) > 1``: it must stay True
         once a job is known to have several containers, even on a poll where only one of

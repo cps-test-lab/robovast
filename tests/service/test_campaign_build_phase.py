@@ -8,11 +8,9 @@ going and the campaign succeeds* — a reported failure for work that worked —
 campaign created only after the build, nothing about that work is observable while it
 runs.
 
-The wait now happens on the campaign's own worker, through
-``LocalTransport._await_build_image``. That loop is **shared by both lanes** (it drives
-``get_image_build_status`` / ``get_image_build_log``, which each transport implements), so
-these tests exercise it once and it holds for the local Docker build and the in-cluster
-BuildKit Job alike.
+The wait happens on the campaign's own worker, through ``_await_build_image``, which is on
+``ServiceBase`` (it drives ``get_image_build_status`` / ``get_image_build_log``, which the
+implementation supplies), so these tests exercise it through ``NullService``.
 """
 
 import threading
@@ -25,8 +23,8 @@ from robovast.common.errors import ImageBuildFailed
 from robovast.execution.backends import CampaignStopped
 from robovast.execution.control_server import ControllerState
 from robovast.service.interface import ImageBuildStatus, LogChunk
-from robovast.service.local_transport import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 
 class _FakeBuild:
@@ -48,7 +46,7 @@ class _FakeBuild:
 @pytest.fixture
 def svc(tmp_path):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullService(store=store)
     transport._campaigns_root = lambda: tmp_path / "results"  # noqa: SLF001
     return transport
 
@@ -59,7 +57,7 @@ def _wire(svc, build, monkeypatch):
         svc, "get_image_build_log",
         lambda bid, offset=0: LogChunk(text=build.log[offset:],
                                        next_offset=len(build.log), eof=False))
-    monkeypatch.setattr(LocalTransport, "_BUILD_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(NullService, "_BUILD_POLL_SECONDS", 0.01)
 
 
 def test_the_wait_returns_only_once_the_build_is_done(svc, monkeypatch, tmp_path):
@@ -132,7 +130,7 @@ def test_an_unreadable_build_log_does_not_fail_the_campaign(svc, monkeypatch, tm
     monkeypatch.setattr(svc, "get_image_build_status", lambda bid: build.status())
     monkeypatch.setattr(svc, "get_image_build_log",
                         lambda bid, offset=0: (_ for _ in ()).throw(RuntimeError("gone")))
-    monkeypatch.setattr(LocalTransport, "_BUILD_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(NullService, "_BUILD_POLL_SECONDS", 0.01)
     build.done.set()
 
     svc._await_build_image("b-1", ControllerState(),

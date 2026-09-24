@@ -19,7 +19,7 @@ from robovast.service.interface import UploadGrant, VersionInfo
 
 
 class _FakeClient:
-    """An in-process transport: ``create_upload`` behaves like ``LocalTransport``'s
+    """An in-process transport: ``create_upload`` behaves like the service's own
     (no ``url``), and ``version()`` carries the service's declared web origin, exactly
     as it does for a real in-process deployment (``get_service_info``'s ``web_base``)."""
 

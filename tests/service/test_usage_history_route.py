@@ -14,15 +14,15 @@ import pytest
 
 from robovast.service.app import build_app
 from robovast.service.interface import Routes, UsageSample
-from robovast.service.local_transport import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 
 @pytest.fixture
 def client(tmp_path):
     from starlette.testclient import TestClient
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    app = build_app(LocalTransport(store=store), mount_mcp=False, auth_token="t")
+    app = build_app(NullService(store=store), mount_mcp=False, auth_token="t")
     return TestClient(app, headers={"Authorization": "Bearer t"})
 
 

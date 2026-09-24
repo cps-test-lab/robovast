@@ -72,3 +72,23 @@ def test_a_clean_config_is_untouched_by_the_lenient_path():
     c = validate_config(_cfg(dict(entry)), strict=False)
     assert c.configuration[0].model_dump(exclude_none=True) == {
         "name": "a", "parameters": {"sut": {"nav2.a": 1}}}
+
+
+# -- execution.local ---------------------------------------------------------------
+
+def _with_local():
+    cfg = _cfg({"name": "a"})
+    cfg["execution"]["local"] = {"parameter_overrides": {"headless": False}}
+    return cfg
+
+
+def test_execution_local_is_refused_when_authoring():
+    with pytest.raises(ValueError, match="execution.local"):
+        validate_config(_with_local())
+
+
+def test_an_archived_campaign_with_execution_local_still_reads(caplog):
+    with caplog.at_level(logging.WARNING):
+        c = validate_config(_with_local(), strict=False)
+    assert "execution.local" in caplog.text
+    assert c.execution.runs == 1

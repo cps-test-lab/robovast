@@ -110,7 +110,7 @@ WORKSPACES_DATA_DIR = "/var/lib/robovast-workspaces"
 DEFAULT_WORKSPACES_HOST_PATH = data_paths.DEFAULT_WORKSPACES_HOST_PATH
 WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 
-#: Where every campaign lives, on either lane, and the volume backing it.
+#: Where every campaign lives, and the volume backing it.
 #:
 #: Not a cache and not a mirror: ``<results_root>/<campaign_id>/`` **is** the campaign.
 #: The driver writes into it, a job pod's outputs are extracted into it by the data plane,
@@ -149,7 +149,7 @@ SERVICE_RESOURCES = {"requests": {"cpu": "100m", "memory": "512Mi"}}
 #: (:func:`registry_deploy.registry_prefix`) and for the same reason: the in-pod service is
 #: deliberately given no RBAC to read its own Ingress. Empty without an Ingress -- an
 #: unpublished service has no origin to declare, and a link nobody can open is worse than
-#: no link. Read back by ``LocalTransport._declared_web_base``, which also takes it from
+#: no link. Read back by ``ServiceBase._declared_web_base``, which also takes it from
 #: ``serve`` for a service started by hand -- one input either way.
 PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
 
@@ -759,7 +759,7 @@ def _rollout_pod_state(core, namespace):
     the caller decides what an unreadable cluster means.
     """
     # Deferred: this module is imported by the client-side CLI, and cluster_execution
-    # pulls in the batch lane.
+    # pulls in the batch backend.
     from .cluster_execution import (  # pylint: disable=import-outside-toplevel
         mount_failure_events, pod_awaiting_setup, pod_block_reason, pod_restarted_containers,
         pod_volume_reason)
@@ -1249,8 +1249,7 @@ def _share_env_from_host():
     """Resolve the configured share provider's pod env from the host, or ``None``.
 
     Reads ``ROBOVAST_SHARE_TYPE`` (and the provider's own vars) from the host
-    environment / project ``.env`` — the same source ``vast serve`` uses locally
-    — and asks the provider to materialise its **pod** environment via
+    environment / project ``.env`` — and asks the provider to materialise its **pod** environment via
     :meth:`~robovast.execution.share_providers.base.BaseShareProvider.build_pod_env`, which
     resolves host credential *files* (a GCS key file, an SFTP key file) into the
     inline values a pod can carry. ``ROBOVAST_SHARE_TYPE`` is included so the
@@ -1292,7 +1291,7 @@ def _ntfy_env_from_host():
 
     Collects whichever of ``ROBOVAST_NTFY_TOPIC`` / ``ROBOVAST_NTFY_SERVER`` /
     ``ROBOVAST_NTFY_TOKEN`` are present in the host environment / project ``.env``
-    (the same source ``vast serve`` uses locally). Notifications are **optional**, so
+    Notifications are **optional**, so
     — unlike :func:`_share_env_from_host` — this never raises: it returns ``None``
     when ``ROBOVAST_NTFY_TOPIC`` is unset, leaving the in-pod ``Notifier`` a no-op.
     """
@@ -2743,8 +2742,7 @@ def read_service_config_from_cluster(namespace="default", kube_context=None):
         raise click.ClickException(
             f"the Kubernetes cluster{where}{for_ctx} did not answer within "
             f"{CONNECT_TIMEOUT_SECONDS:g}s — check the cluster is up and reachable "
-            "(kubectl get nodes), or start a local-only service with "
-            "'vast serve --backend local'. Raise the limit with "
+            "(kubectl get nodes). Raise the limit with "
             "ROBOVAST_KUBE_CONNECT_TIMEOUT=<seconds> if the cluster is simply slow."
         ) from exc
     containers = dep.spec.template.spec.containers or []

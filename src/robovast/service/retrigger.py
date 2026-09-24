@@ -42,7 +42,7 @@ computed afresh, which is visible in one place: ``execution.generate`` generator
 cache is not archived), so a stochastic generator draws new samples.
 
 This module is the pure half -- it takes a source directory and returns data. Ordering,
-threads and lanes belong to the transport (``LocalTransport.retrigger_campaign``), which is a
+threads and storage belong to the transport (``ServiceBase.retrigger_campaign``), which is a
 thin orchestrator over :func:`prepare`. Same split as
 :mod:`robovast.service.postprocessing_edit`.
 """
@@ -58,10 +58,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 #: Where staged project trees live: one directory per retrigger, under the workspaces root.
-#: Dot-prefixed deliberately -- ``_project_for_workspace`` skips dot components when it looks
-#: for a pinned workspace's ``.vast``, so a staged copy can never be mistaken for a project the
-#: service was told to run. It is also *not* under the results root, which is scanned with
-#: ``is_campaign_dir``.
+#: It is *not* under the results root, which is scanned with ``is_campaign_dir``.
 STAGING_DIRNAME = ".retriggers"
 
 
@@ -130,7 +127,8 @@ def _axis(verdict: str, detail: str, **extra) -> dict:
     return {"verdict": verdict, "detail": detail, **extra}
 
 
-def check(source_dir, source_id: str) -> dict:
+def check(source_dir, source_id: str, *, image_labels: Callable[[str], "dict | None"],
+          build_lock: Callable[[str], dict]) -> dict:
     """Can this campaign be re-run? Answer without staging anything or spending compute.
 
     :func:`prepare` can only answer this by *doing* it -- it stages a tree, then raises
@@ -156,15 +154,18 @@ def check(source_dir, source_id: str) -> dict:
         Were third-party ``plugins:`` resolved to something re-installable.
     ``providers``
         Which asset-provider distributions supplied it, and can they be obtained.
+
+    *image_labels* and *build_lock* read an image from its registry: the labels, ``None`` when
+    the image could not be read, and the build lock, ``{}`` when it has none or cannot be read.
     """
     source_dir = Path(source_dir)
     axes = {
         "config": _check_config(source_dir),
-        "images": _check_images(source_dir),
+        "images": _check_images(source_dir, build_lock),
         "plugins": _check_plugins(source_dir),
         "providers": _check_providers(source_dir),
     }
-    axes["host"] = _check_host(source_dir, axes["images"])
+    axes["host"] = _check_host(axes["images"], image_labels)
     blocking = sorted(name for name, axis in axes.items()
                       if axis["verdict"] in BLOCKING_VERDICTS)
     return {"campaign_id": source_id, "runnable": not blocking,
@@ -227,7 +228,7 @@ def _unpinned_is_fatal(images, campaign_config) -> bool:
     return images.built
 
 
-def _check_images(source_dir: Path) -> dict:
+def _check_images(source_dir: Path, build_lock) -> dict:
     """Whether a new run can start from the images this campaign recorded."""
     from robovast.common.campaign_data import campaign_images
 
@@ -248,18 +249,18 @@ def _check_images(source_dir: Path) -> dict:
                      f"{len(images.pins)} image(s) pinnable; "
                      f"{', '.join(sorted(images.unpinnable))} re-resolved at launch (the "
                      f"campaign built neither, so this runs the current ref, not the recorded "
-                     f"bytes)" + _lock_note(source_dir, images.pins),
+                     f"bytes)" + _lock_note(source_dir, images.pins, build_lock),
                      images=dict(images.pins),
                      reresolved=sorted(images.unpinnable),
-                     locks=_available_locks(source_dir, images.pins))
+                     locks=_available_locks(source_dir, images.pins, build_lock))
     if not images.pins:
         return _axis(AXIS_UNKNOWN,
                      "no container image recorded (no usable _execution/execution.yaml). If "
                      "the campaign builds its own image there is nothing to reuse; otherwise "
                      "the backend supplies one at launch.")
     return _axis(AXIS_OK, f"{len(images.pins)} image(s) recorded and pinnable"
-                          + _lock_note(source_dir, images.pins), images=dict(images.pins),
-                 locks=_available_locks(source_dir, images.pins))
+                          + _lock_note(source_dir, images.pins, build_lock), images=dict(images.pins),
+                 locks=_available_locks(source_dir, images.pins, build_lock))
 
 
 def _read_vast_or_empty(source_dir: Path) -> dict:
@@ -277,52 +278,43 @@ def _read_vast_or_empty(source_dir: Path) -> dict:
         return {}
 
 
-def _available_locks(source_dir: Path, pinned: dict) -> dict:
+def _available_locks(source_dir: Path, pinned: dict, build_lock) -> dict:
     """``{role: {apt: n, pip: n}}`` for every recorded image whose build lock can be read.
 
-    Reported because it answers a question the digest cannot: *if this image is gone, would a
-    rebuild install the same software?* With the lock, yes -- the author's loose specs can be
-    replaced by the versions that actually ran. Without it, a rebuild re-resolves them and gets
-    whatever is current, which is a different experiment wearing the same name.
-
-    Only images already present locally can be asked, so an empty answer means "cannot tell here",
-    not "no lock" -- the same rule every probe in this pre-flight follows.
+    The lock says whether a rebuild would install the software that ran: with it the author's
+    loose specs are replaced by the versions that actually ran. The campaign's own copy comes
+    first, since it outlives the image; the registry answers for a role it did not record.
     """
     from robovast.common.campaign_data import read_build_manifests
-    from robovast.service.image_build import read_image_build_manifest
 
-    # The campaign's own copy first. It is the one that survives -- the lock is baked into the
-    # image, so reading it from there answers only while the image still exists, which is not the
-    # case this question is being asked in.
     persisted = read_build_manifests(source_dir)
     out = {role: {kind: len(entries) for kind, entries in sorted(lock.items())}
            for role, lock in sorted(persisted.items()) if lock}
     for role, image in sorted((pinned or {}).items()):
         if role in out:
             continue
-        lock = read_image_build_manifest(image)
+        lock = build_lock(image)
         if lock:
             out[role] = {kind: len(entries) for kind, entries in sorted(lock.items())}
     return out
 
 
-def _lock_note(source_dir: Path, pinned: dict) -> str:
-    locks = _available_locks(source_dir, pinned)
+def _lock_note(source_dir: Path, pinned: dict, build_lock) -> str:
+    locks = _available_locks(source_dir, pinned, build_lock)
     if not locks:
         return ""
     return (f"; {len(locks)} carry a build lock, so a rebuild could install the same "
             f"package versions")
 
 
-def _check_host(source_dir: Path, images_axis: dict) -> dict:
+def _check_host(images_axis: dict, image_labels) -> dict:
     """Whether this robovast still speaks the recorded image's container protocol.
 
-    Depends on the images axis rather than re-deriving the refs: if the images are not pinnable
-    there is nothing to ask about, and reporting a protocol verdict for an image nobody can
-    obtain would be noise on top of the real problem.
+    Depends on the images axis rather than re-deriving the refs: an image nobody can obtain
+    has no protocol worth reporting.
     """
-    from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT, check_image_compat,
-                                           image_compat_version)
+    from robovast.common.execution import (COMPAT_VERSION, COMPAT_VERSION_LABEL,
+                                           MIN_IMAGE_COMPAT, check_image_compat)
 
     window = f"{MIN_IMAGE_COMPAT}..{COMPAT_VERSION}"
     images = images_axis.get("images") or {}
@@ -332,8 +324,17 @@ def _check_host(source_dir: Path, images_axis: dict) -> dict:
 
     reports = {}
     for role, image in sorted(images.items()):
-        version, source = image_compat_version(image)
-        problem = check_image_compat(image, version=version, source=source)
+        labels = image_labels(image)
+        raw = ((labels or {}).get(COMPAT_VERSION_LABEL) or "").strip()
+        version = int(raw) if raw.isdigit() else None
+        if version is not None:
+            source = "label"
+        elif labels is None:
+            source = "the registry would not answer for it"
+        else:
+            source = f"not reported by the image (no {COMPAT_VERSION_LABEL} label)"
+        problem = check_image_compat(image, version=version, source=source,
+                                     unreadable=labels is None)
         reports[role] = {"image": image, "protocol": version, "source": source,
                          "problem": problem}
     blocked = {role: r for role, r in reports.items() if r["problem"] and r["protocol"] is not None}
@@ -343,9 +344,9 @@ def _check_host(source_dir: Path, images_axis: dict) -> dict:
     unknown = [role for role, r in reports.items() if r["protocol"] is None]
     if unknown:
         return _axis(AXIS_UNKNOWN,
-                     f"could not read the container protocol of {', '.join(sorted(unknown))} "
-                     f"-- the image is not available locally, or predates the marker. This "
-                     f"host speaks {window}.", roles=reports)
+                     f"could not read the container protocol of {', '.join(sorted(unknown))}: "
+                     + "; ".join(reports[r]["source"] for r in sorted(unknown))
+                     + f". This host speaks {window}.", roles=reports)
     return _axis(AXIS_OK, f"every recorded image is within {window}", roles=reports)
 
 
@@ -401,7 +402,7 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     launching a campaign that will fail.
 
     Args:
-        source_dir: the source campaign's directory, already materialised for this lane.
+        source_dir: the source campaign's directory, already materialised locally.
         source_id: its campaign id -- used in the new campaign's description.
         workspaces_root: where :data:`STAGING_DIRNAME` is created.
         description_limit: ``DESCRIPTION_MAX_LEN``, passed in so this module needs no import
@@ -653,8 +654,6 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
         # Replayed so the new id keeps the same name stem and sorts beside the source's.
         campaign_name=str(launch.get("campaign_name") or ""),
         runs=runs,
-        # A retrigger is nobody sitting at a screen, whatever the original launch asked for.
-        show_gui=False,
         postprocess=bool(launch.get("postprocess", True)),
         upload_to_share=bool(launch.get("upload_to_share", False)),
         # Replayed for the reason the filter and the run count are: the record says what this
@@ -672,8 +671,8 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
 def stage_project(source_dir, staging_dir, campaign_config) -> None:
     """Copy the campaign's frozen config into *staging_dir* and check it is complete.
 
-    Runs on the campaign's worker thread: ``_config/`` is small but it is a per-object fetch on
-    the cluster lane, and a slow or failing read has to become an inspectable failed campaign
+    Runs on the campaign's worker thread: ``_config/`` is small but it is a per-object fetch from
+    the cluster's store, and a slow or failing read has to become an inspectable failed campaign
     rather than a hung request.
     """
     source_dir, staging_dir = Path(source_dir), Path(staging_dir)

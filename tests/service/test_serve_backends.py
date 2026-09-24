@@ -1,17 +1,9 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``vast serve`` resolves its execution lane instead of importing one.
+"""``vast serve`` resolves its implementation instead of importing one.
 
-Reaching directly into the cluster service meant the core could not be
-installed without the cluster code: an install with no Kubernetes at all would have died
-on an import of a module the user never named, which reads as broken rather than absent.
-
-Two properties carry that, and both are easy to lose by accident:
-
-* **Listing is free.** ``available()`` is what lets a caller say "cluster is not
-  installed" politely. If it imported the lanes to list them, asking the question would
-  cost the answer — and on a machine without a kubeconfig, raise instead of reporting.
-* **Choosing one does not load the other.** The whole point of separating them.
+Listing what is installed imports none of it, and ``ServiceBase`` loads no driver, so a core
+without the cluster code reports what is missing rather than failing on an import.
 """
 
 import subprocess
@@ -36,68 +28,50 @@ def _imports_after(statement: str) -> set:
     return set(json.loads(out.stdout.strip().splitlines()[-1]))
 
 
-def test_both_lanes_are_registered():
-    assert {"local", "cluster"} <= set(serve_backends.available())
+def test_the_cluster_implementation_is_registered():
+    assert "cluster" in serve_backends.available()
 
 
-@pytest.mark.parametrize("name", ["local", "cluster"])
-def test_a_registered_lane_resolves_to_something_buildable(name):
-    lane = serve_backends.resolve(name)
-    assert isinstance(lane, serve_backends.ServeBackend)
-    assert lane.storage
+def test_the_installed_implementation_is_the_one_served():
+    name, backend = serve_backends.resolve()
+    assert name == "cluster"
+    assert isinstance(backend, serve_backends.ServeBackend)
+    assert backend.storage
 
 
-def test_an_absent_lane_names_the_ones_that_exist():
-    """The message is the feature: "not installed", not ModuleNotFoundError."""
-    with pytest.raises(ValueError) as excinfo:
-        serve_backends.resolve("gpu")
-    message = str(excinfo.value)
-    assert "no execution lane named 'gpu' is installed" in message
-    assert "cluster" in message and "local" in message
+def test_none_installed_names_the_distribution_that_ships_one(monkeypatch):
+    """A core alone serves nothing, and says which package to install."""
+    monkeypatch.setattr(serve_backends, "available", lambda: {})
+    with pytest.raises(ValueError, match="robovast-cluster"):
+        serve_backends.resolve()
 
 
-def test_listing_the_lanes_imports_none_of_them():
+def test_several_installed_are_refused_rather_than_guessed(monkeypatch):
+    monkeypatch.setattr(serve_backends, "available", lambda: {"cluster": "a", "other": "b"})
+    with pytest.raises(ValueError, match="install exactly one"):
+        serve_backends.resolve()
+
+
+def test_listing_the_implementations_imports_none_of_them():
     mods = _imports_after("from robovast.service.serve_backends import available;"
                           " available()")
     for forbidden in ("kubernetes", "docker",
-                      "robovast.execution.cluster_execution.cluster_service",
-                      "robovast.service.local_transport"):
+                      "robovast.execution.cluster_execution.cluster_service"):
         assert forbidden not in mods, f"listing pulled {forbidden}"
 
 
-def test_choosing_the_local_lane_does_not_load_the_cluster_one():
-    mods = _imports_after("from robovast.service.serve_backends import resolve;"
-                          " resolve('local')")
-    assert "robovast.execution.cluster_execution.cluster_service" not in mods
-    assert "kubernetes" not in mods
-
-
-def test_choosing_the_cluster_lane_does_not_load_the_local_transport():
-    """Symmetry matters once the lanes are separate packages: the in-pod service has no
-    Docker, and should not import 3,000 lines of local lane to find that out."""
-    mods = _imports_after("from robovast.service.serve_backends import resolve;"
-                          " resolve('cluster')")
-    assert "robovast.service.local_transport" not in mods
-
-
-def test_the_shared_base_loads_neither_lane_nor_either_driver():
-    """``ServiceBase`` is what both lanes subclass, so it is imported wherever either is --
-    in a pod with no Docker, on a workstation with no kubeconfig. It must reach for neither,
-    and must not import a lane: a lane reaches its driver inside the hook that needs it, and
-    the base has no hook body to reach with."""
+def test_the_shared_base_loads_no_driver():
+    """``ServiceBase`` reaches for no driver: an implementation reaches its driver inside the
+    hook that needs it."""
     mods = _imports_after("import robovast.service.service_base")
     for forbidden in ("kubernetes", "docker",
-                      "robovast.execution.cluster_execution.cluster_service",
-                      "robovast.service.local_transport"):
+                      "robovast.execution.cluster_execution.cluster_service"):
         assert forbidden not in mods, f"the shared base pulled {forbidden}"
 
 
 def test_the_conventional_port_has_one_definition():
-    """8800 was declared twice -- in `service/app.py` and in the cluster deploy
-    manifests -- and a client probing for a local service read the *cluster* one. One
-    edit to either would have had clients probing a port nothing listens on, and the
-    client reaching into an operator module for an integer is what made that possible.
-    """
+    """The port clients probe and the port the service and its manifests use are one
+    definition."""
     from robovast.execution.cluster_execution.service_deploy import SERVICE_PORT
     from robovast.service.app import DEFAULT_PORT as served
     from robovast.service.interface import DEFAULT_PORT as canonical

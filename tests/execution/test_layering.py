@@ -15,8 +15,8 @@ import sys
 
 # The engine: dispatch, lifecycle, packing, status recovery, and the whole
 # cluster backend. NOT execution_utils (CLI/host-side orchestration), and NOT
-# `cluster_execution.cluster_service` -- it now lives under `execution/` because that is
-# where the cluster lane is packaged, but it *is* a service binding and imports the
+# `cluster_execution.cluster_service` -- it lives under `execution/` because that is
+# where the cluster backend is packaged, but it *is* a service binding and imports the
 # service layer by design. Membership here is about the role, not the directory.
 _ENGINE_MODULES = [
     "robovast.execution.backends",

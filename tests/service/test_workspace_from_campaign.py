@@ -25,8 +25,8 @@ import pytest
 import yaml
 
 from robovast.service.interface import CreateWorkspaceRequest
-from robovast.service.local_transport import LocalTransport
 from robovast.service.workspaces import WorkspaceError, WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 CAMPAIGN = "pilot-2026-08-08-120000"
 
@@ -57,7 +57,7 @@ def _source_campaign(root, campaign_id=CAMPAIGN, *, vast=None, run_files=(), ext
 @pytest.fixture
 def svc(tmp_path, monkeypatch):
     store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = LocalTransport(store=store)
+    transport = NullService(store=store)
     results = tmp_path / "results"
     results.mkdir()
     transport._campaigns_root = lambda: results        # noqa: SLF001

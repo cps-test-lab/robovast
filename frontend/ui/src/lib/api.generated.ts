@@ -42,13 +42,10 @@ export interface paths {
          * @description What this service is configured with, read back out of its own environment.
          *
          *     Not a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it
-         *     describes the process that is serving rather than the campaigns it drives, and both
-         *     lanes answer it identically -- the pod and a `vast serve` both hold their settings
-         *     in the environment.
+         *     describes the process that is serving rather than the campaigns it drives, and the
+         *     process holds its settings in the environment.
          *
-         *     Host paths are blanked for a non-loopback caller, the same rule ``/version``
-         *     applies to ``results_root`` -- so the two admin surfaces do not disagree about
-         *     whether a path on the service's disk is publishable.
+         *     Host paths are blanked for a non-loopback caller.
          */
         get: operations["service_config_admin_config_get"];
         put?: never;
@@ -1848,11 +1845,6 @@ export interface components {
         /** Body_describe_world_workspaces__workspace_id__world_post */
         Body_describe_world_workspaces__workspace_id__world_post: {
             /**
-             * Backend
-             * @default
-             */
-            backend: string;
-            /**
              * Entities
              * @default false
              */
@@ -2265,14 +2257,7 @@ export interface components {
         };
         /**
          * CreateCampaignRequest
-         * @description Start a campaign from a workspace's current project.
-         *
-         *     ``backend`` is normally **absent**: for a single-backend service it is
-         *     implicit in *which* service the client is talking to (an in-process/local
-         *     ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every
-         *     service ignores the field: one service runs one lane, chosen by
-         *     ``vast serve --backend``. Retained only so an older client's request still
-         *     parses; ``None`` is the only meaningful value.
+         * @description Start a campaign from a workspace's current project. An unknown field is refused.
          */
         CreateCampaignRequest: {
             /**
@@ -2335,11 +2320,6 @@ export interface components {
              * @default 1
              */
             runs: number;
-            /**
-             * Show Gui
-             * @default false
-             */
-            show_gui: boolean;
             /**
              * Upload To Share
              * @default false
@@ -2487,7 +2467,7 @@ export interface components {
          * ExecContainerState
          * @description State of the single exec container, as of one call.
          *
-         *     Also embedded in :class:`ResourceUsage`, so a caller that finds the lane full can
+         *     Also embedded in :class:`ResourceUsage`, so a caller that finds the cluster full can
          *     attribute the shortfall to its own held container instead of guessing.
          */
         ExecContainerState: {
@@ -2519,6 +2499,8 @@ export interface components {
         /**
          * ExecRequest
          * @description Run one command in the experiment image — a diagnostic, never a campaign.
+         *
+         *     An unknown field is refused.
          *
          *     Names exactly one source of the image (and, with ``config_name``, of a staged
          *     configuration): a workspace project, an existing campaign whose ``_config/`` is
@@ -2576,11 +2558,6 @@ export interface components {
              * @default false
              */
             query: boolean;
-            /**
-             * Show Gui
-             * @default false
-             */
-            show_gui: boolean;
             /**
              * Workspace Id
              * @default
@@ -2844,10 +2821,10 @@ export interface components {
          *     it is.
          *
          *     For a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not
-         *     the concrete ref the container runs FROM: the concrete form is a local docker tag on one
-         *     lane and a registry-qualified ref on the other, and the second must never reach a client
+         *     the concrete ref the container runs FROM: the concrete form is a registry-qualified
+         *     ref, and that must never reach a client
          *     (the zero-registry-knowledge invariant). The identity still changes exactly when the
-         *     image changes, which is all a cache key needs, and it reads the same on every lane.
+         *     image changes, which is all a cache key needs.
          */
         ImageResolution: {
             /**
@@ -2987,12 +2964,10 @@ export interface components {
          * JobSummary
          * @description One execution unit of a campaign's current batch.
          *
-         *     A "job" is whatever the backend fans a batch out into: a single **run** on the
-         *     local Docker backend (sequential, so at most one is ``running``), or a
-         *     **Kubernetes Job** on the cluster backend (which may pack several runs).
-         *     ``job_name`` is the id :meth:`RobovastInterface.get_job_log` takes; ``display_name``
-         *     is an optional human-friendly label (config/run locally, batch/job-index on the
-         *     cluster).
+         *     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
+         *     cluster backend, which may pack several runs. ``job_name`` is the id
+         *     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
+         *     human-friendly label (batch/job-index on the cluster).
          */
         JobSummary: {
             /** Detail */
@@ -3028,8 +3003,8 @@ export interface components {
          *     measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
          *     may legitimately sit anywhere between the two.
          *
-         *     Every field is optional, and absent means *not known* -- never zero. A lane that sets no
-         *     container limits has no ceiling to state; a container whose cpu limit was left open may use
+         *     Every field is optional, and absent means *not known* -- never zero. A container with no
+         *     limits has no ceiling to state; a container whose cpu limit was left open may use
          *     the whole node, so no finite number is the truth; a cluster with no metrics API measures
          *     nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
          *     numbers are missing, when there is a reason worth reporting, is on
@@ -3097,7 +3072,7 @@ export interface components {
          * @description An incremental slice of a campaign's ``controller.log``.
          *
          *     The controller runs in the driving process, so its log is a local file there
-         *     (the CLI locally, the service for cluster campaigns). Clients poll from a byte
+         *     (the service). Clients poll from a byte
          *     *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
          *     the campaign has reached a terminal phase and no more will be written.
          */
@@ -3434,22 +3409,22 @@ export interface components {
          * ResourceUsage
          * @description Live compute capacity and current usage of the service's execution backend.
          *
-         *     Backend-neutral by design: the local↔cluster difference is resolved inside the
-         *     service (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``
-         *     reads the Kubernetes nodes), so a consumer — the UI chip or the MCP tool — reads
-         *     the same fields regardless of where it runs and never branches on ``backend``.
+         *     Backend-neutral by design: how the backend measures is resolved inside the service
+         *     (it reads the Kubernetes nodes), so a consumer — the UI chip or the
+         *     MCP tool — reads the same fields regardless of where it runs and never branches on
+         *     ``backend``.
          *
          *     **Reserved and measured are two different questions, and the field names say which.**
          *     ``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually
          *     being consumed. A cluster campaign that reserves nine cores per pod and uses two
          *     reports 9 and 2, and the gap between them is the number that sizes the next sweep.
-         *     Either can be ``None``, meaning **this lane has no such reading** rather than zero:
-         *     nothing reserves on the local Docker lane (it sets no container CPU/memory limits and
-         *     is single-flight), and a cluster without metrics-server cannot measure — see
-         *     ``metrics_unavailable``. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
+         *     Either can be ``None``, meaning **this backend has no such reading** rather than zero:
+         *     a cluster without metrics-server cannot measure — see ``metrics_unavailable`` — and
+         *     a pod that sets no container limits reserves nothing. ``cpu_*`` are CPU cores;
+         *     ``memory_*`` are bytes.
          *
-         *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
-         *     — the request sum on the cluster, host utilization locally — and exist because every
+         *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the backend leads with**
+         *     — the request sum on the cluster — and exist because every
          *     consumer already reads them. They are the headline "how much is currently claimed", so
          *     they are never null; a consumer that must distinguish the two readings reads the pair
          *     above and branches on neither ``backend`` nor these. On the cluster the request sum is
@@ -3457,30 +3432,29 @@ export interface components {
          *     scheduler reasons about capacity — pods still queued for a node are reported by
          *     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
          *
-         *     ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
+         *     ``disk`` and ``results`` are **actual filesystem bytes** -- the one place
          *     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
          *     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
          *     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
          *     run writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying
          *     the service pod, deliberately not a sum over the node set -- the workspaces are a
          *     ``hostPath`` there, so that is the disk which decides whether a campaign can be
-         *     written, and a total would read as tens of terabytes free while it filled. Locally it
-         *     is the campaign results root's filesystem. ``results`` is the volume the campaigns
+         *     written, and a total would read as tens of terabytes free while it filled.
+         *     ``results`` is the volume the campaigns
          *     live on, reported only where it is a separately measurable claim.
          *
          *     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
-         *     scenario runs execute one at a time (local Docker is single-flight), ``True``
-         *     means they run in parallel bounded only by free capacity (cluster). How many runs
+         *     scenario runs execute one at a time, ``True`` means they run in parallel bounded
+         *     only by free capacity (cluster). How many runs
          *     actually fit is left to the consumer, which knows each project's per-run
          *     reservation — the service does not.
          *
          *     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
-         *     this backend is driving, not one. One definition, both lanes: ``running`` is what is
+         *     this backend is driving, not one. One definition: ``running`` is what is
          *     **executing right now**, ``pending`` is work the backend has **accepted but is not
-         *     executing**. On the cluster that means planned + pod-pending + blocked Jobs;
-         *     locally it is the remainder of the current batch, with ``running`` 0 or 1 because
-         *     the Docker lane is single-flight. So the pair can be read — and summed into an
-         *     "outstanding work" total — without branching on ``backend``.
+         *     executing**. On the cluster that means planned + pod-pending + blocked Jobs. So the
+         *     pair can be read — and summed into an "outstanding work" total — without branching
+         *     on ``backend``.
          *
          *     The two counts deliberately answer a different question from ``cpu_used`` above:
          *     they include work that has been accepted but has no compute granted yet, which is
@@ -3826,7 +3800,7 @@ export interface components {
          *
          *     Answers "is this search still improving?", which the single ``Status.best_objective``
          *     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
-         *     on both lanes and still there for a finished campaign after a service restart.
+         *     and still there for a finished campaign after a service restart.
          *
          *     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
          *     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
@@ -4354,7 +4328,7 @@ export interface components {
          *
          *     Persisting it was considered and refused. A durable metrics store is a real dependency
          *     -- retention, a disk budget, a rotation policy -- and this answers "how busy has the
-         *     lane been lately", which a volatile 24 h window answers.
+         *     cluster been lately", which a volatile 24 h window answers.
          */
         UsageHistory: {
             /**
@@ -4538,7 +4512,7 @@ export interface components {
          * VariationRemote
          * @description Where a variation type's Module-Federation preview bundle is served from.
          *
-         *     Field-for-field what ``local_transport._plugin_remotes`` builds — the container name
+         *     Field-for-field what ``ServiceBase._plugin_remotes`` builds — the container name
          *     (``REMOTE_NAME``, defaulting to the entry-point name), the ``remoteEntry.js`` URL, and
          *     the exposed module.
          */
@@ -4649,8 +4623,6 @@ export interface components {
              * @default /results/{campaign_id}/{path}
              */
             results_address: string;
-            /** Results Root */
-            results_root: string | null;
             /** Robovast Version */
             robovast_version: string;
             /**
@@ -4658,8 +4630,6 @@ export interface components {
              * @default /sources/{workspace_id}/{path}
              */
             sources_address: string;
-            /** Sources Root */
-            sources_root: string | null;
             /**
              * Web Base
              * @default

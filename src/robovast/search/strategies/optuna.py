@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 #: Samplers optuna offers whose implementation lives in a SEPARATE distribution. optuna
 #: constructs these fine without it and imports lazily on first use, so an absent package
 #: surfaces from inside ``sample_relative`` -- on the first ask, after a campaign has taken a
-#: lane and staged its configs. Checked up front instead, by name.
+#: cluster capacity and staged its configs. Checked up front instead, by name.
 _SAMPLER_PACKAGES = {"cmaes": "cmaes"}
 
 
@@ -64,8 +64,8 @@ def _require_sampler_package(sampler: str) -> None:
     raise ValueError(
         f"optuna sampler '{sampler}' needs the '{package}' distribution, which is not "
         f"installed. optuna imports it lazily, so without this check the campaign would "
-        f"start, take a lane and fail on its first batch. Install robovast's 'optuna' extra "
-        f"(which provides it), or choose a sampler that needs no extra package "
+        f"start, take cluster capacity and fail on its first batch. Install robovast's "
+        f"'optuna' extra (which provides it), or choose a sampler that needs no extra package "
         f"(tpe, random).")
 
 

@@ -544,7 +544,7 @@ jobs:
             echo "  $plat present"
           done
 
-  # The one end-to-end test: a real campaign, through a real service, on the cluster lane.
+  # The one end-to-end test: a real campaign, through a real service, in a cluster.
   # The service is deployed into a kind cluster on the runner, which is the same shape as a
   # developer's minikube -- one node, hostPath directories -- and reached through a
   # port-forward. It needs every image of the family at this run's tag: the base the
@@ -584,8 +584,8 @@ jobs:
         run: |
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # The cluster lane is its own distribution, installed by its own step and never as an
-      # extra (docs/architecture.rst, "Execution lanes are resolved, not imported"): without
+      # robovast-cluster is its own distribution, installed by its own step and never as an
+      # extra (docs/architecture.rst, "The service implementation is resolved, not imported"): without
       # it `vast cluster setup` does not exist, and this test deploys the service with it.
       - name: Install dependencies with Poetry
         run: |

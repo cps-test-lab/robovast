@@ -217,7 +217,7 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
     Twice: once as soon as the plan is pinned and again after the jobs. The digests are known
     at the first point and this file is the only place they are recorded, so written only at
     the end a campaign that died during its first batch named none of the images it ran --
-    which is the ordinary shape of a failure on this lane. The writer is idempotent, which is
+    which is the ordinary shape of a failure on a cluster. The writer is idempotent, which is
     what makes writing it twice free.
     """
     calls = []

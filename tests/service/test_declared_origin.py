@@ -9,11 +9,11 @@ instead. The service reports the origin itself, from the one input that knows it
 the Ingress it was published on, or the address it bound.
 """
 
-from robovast.service.local_transport import LocalTransport
-
-
+from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 def _impl(tmp_path):
-    return LocalTransport(workspace_dir=str(tmp_path))
+    return NullService(
+        store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces")))
 
 
 def test_a_service_nobody_told_declares_nothing(tmp_path, monkeypatch):
@@ -66,15 +66,11 @@ def test_a_baked_origin_is_not_overwritten_by_the_bound_one(tmp_path, monkeypatc
     assert _impl(tmp_path).version().web_base == "https://robovast.example.org"
 
 
-def test_the_cluster_lane_needs_no_override_of_its_own():
-    """Resolved once in the base class, on purpose.
-
-    The cluster lane runs both in-pod (env) and off-cluster through a port-forward (bound
-    address). A lane-local assignment would have had to remember not to blank the second
-    case, which is exactly the bug that shape invites -- so it inherits instead.
-    """
+def test_the_cluster_service_needs_no_override_of_its_own():
+    """The web base is resolved once, in the base class: ClusterService inherits it, and so
+    covers both in-pod (env) and off-cluster through a port-forward (bound address)."""
     from robovast.execution.cluster_execution.cluster_service import ClusterService
-    assert ClusterService._declared_web_base is LocalTransport._declared_web_base
+    assert ClusterService._declared_web_base is NullService._declared_web_base
 
 
 def test_a_named_bind_is_an_origin_and_a_wildcard_is_not():

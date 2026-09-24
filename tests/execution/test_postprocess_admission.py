@@ -231,12 +231,12 @@ def test_a_campaigns_postprocessing_is_a_separate_owner_from_its_trials():
     assert admission.states("camp-1" + pj._POSTPROCESS_OWNER_SUFFIX)
 
 
-# -- the lanes that have no queue ----------------------------------------------------
+# -- a caller that has no queue ------------------------------------------------------
 
 
 def test_no_queue_means_create_directly():
-    """A local service and an off-cluster driver have no admission controller, and
-    postprocessing must still run there."""
+    """A caller without an admission controller, such as an off-cluster driver, creates
+    the Job directly, and postprocessing must still run there."""
     import inspect  # noqa: PLC0415
 
     for func in (pj.run_conversion_job, pj.postprocess_campaign):

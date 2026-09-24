@@ -14,31 +14,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``RobovastClient`` — one interface, two transports (compatibility re-export).
+"""``RobovastClient`` — the client's view of a running service (compatibility re-export).
 
-The client is how the ``vast`` CLI, the MCP server, and (later) a web UI reach
-RoboVAST operations without caring where they run. The two transports live in their own
-modules — :mod:`robovast.service.local_transport` (in-process) and
-:mod:`robovast.service.http_client` (to a running ``robovast-service``) — and are
-re-exported here so ``from robovast.service.client import ...`` keeps working.
-
-Both implement :class:`~robovast.service.interface.RobovastInterface`, so a caller
-holding a ``RobovastClient`` is transport-agnostic.
-
-**The in-process transport is re-exported lazily.** Most callers here want
-``RobovastClient`` to reach a *running* service — ``campaign_wait``, ``service_target``,
-the MCP's service access — and a plain import here would hand them 3,000 lines of
-in-process server as well. Under PEP 562 they pay for it only if they name it.
+The client is how the ``vast`` CLI, the MCP server and the web UI reach RoboVAST
+operations without caring where they run. The transport lives in
+:mod:`robovast.service.http_client` and is re-exported here so
+``from robovast.service.client import ...`` keeps working; the service's own bookkeeping
+class is re-exported lazily so that importing this module costs no more than the client.
 """
-
-from typing import TYPE_CHECKING
 
 from robovast.service.http_client import HTTPTransport, RobovastClient
 
-_LAZY = {"LocalTransport": "robovast.service.local_transport",
-         "_TrackedCampaign": "robovast.service.service_base"}
+_LAZY = {"_TrackedCampaign": "robovast.service.service_base"}
 
-__all__ = ["LocalTransport", "HTTPTransport", "RobovastClient"]
+__all__ = ["HTTPTransport", "RobovastClient"]
 
 
 def __getattr__(name):
@@ -53,8 +42,3 @@ def __getattr__(name):
 
 def __dir__():
     return sorted(set(globals()) | set(_LAZY))
-
-
-if TYPE_CHECKING:  # for type checkers and IDEs only
-    from robovast.service.local_transport import LocalTransport  # noqa: F401
-    from robovast.service.service_base import _TrackedCampaign  # noqa: F401

@@ -20,14 +20,14 @@ This module is backend-agnostic: it turns a validated project's ``build:`` secti
 into a deterministic Dockerfile + a content hash, and classifies builder failures
 into the structured :class:`~robovast.service.interface.ImageBuildError`. It is the
 **recipe**: nothing here knows where an image ends up. That is the *store*
-(:mod:`robovast.service.image_store`) -- the local docker daemon or a cluster registry --
-which reuses these pure helpers (``build_hash``, ``generate_dockerfile``,
-``classify_build_error``) rather than restating them per lane.
+(:mod:`robovast.service.image_store`) -- the deployment's registry -- which reuses these
+pure helpers (``build_hash``, ``generate_dockerfile``,
+``classify_build_error``) rather than restating them.
 
 Registry invariant: nothing here emits or accepts a registry endpoint, credential,
 or registry-qualified ref. The agent-facing image is always the symbolic
-``build:<tag>``; concrete refs are formed by the backend (a local docker tag here,
-a ``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a client.
+``build:<tag>``; concrete refs are formed by the backend (a
+``<registry_prefix>/<tag>:<hash>`` on the cluster) and never returned to a client.
 """
 
 import hashlib
@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 #: Where the project dir is COPYed inside the image build context.
 _CONTEXT_DIR = "/robovast_build_context"
-#: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by both
-#: builders we drive: ``docker buildx`` locally and ``buildctl --frontend dockerfile.v0`` in-cluster.
+#: BuildKit frontend pin — required for the ``RUN --mount=type=cache`` below. Honoured by
+#: ``buildctl --frontend dockerfile.v0`` in-cluster and by ``docker buildx`` alike.
 _SYNTAX_DIRECTIVE = "# syntax=docker/dockerfile:1"
 #: Prefix the experiment's packages are installed into. ``/usr/local`` and not a fresh directory:
 #: it is where pip on a Debian base already installs, so ``PATH``, ``share/ament_index`` and every
@@ -101,7 +101,7 @@ _PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
                 f"pip --python {_VENV}/bin/python3 install")
 
 #: Re-exported: the id itself lives in ``robovast.common.execution`` because it is a contract
-#: shared with the execution lane, which must not import this module (see the note there).
+#: shared with the execution layer, which must not import this module (see the note there).
 GIT_TOKEN_SECRET_ID = _GIT_TOKEN_SECRET_ID
 _GIT_TOKEN_SECRET_PATH = f"/run/secrets/{GIT_TOKEN_SECRET_ID}"
 
@@ -277,11 +277,6 @@ def _ros_entry(entry) -> dict:
 # python_packages classification (shared vocabulary with top-level ``plugins:``)
 # ---------------------------------------------------------------------------
 
-# BUILD_MANIFEST_DIR and BUILD_MANIFEST_FILES are imported from robovast.common.execution,
-# which both readers of the lock can reach -- this module writes it from a local image, and the
-# cluster's registry client reads it out of a layer blob. A second literal in either would be a
-# path that drifts silently, and the reader would simply find nothing.
-_MANIFEST_FILES = BUILD_MANIFEST_FILES
 
 
 #: Splits ``<name> @ <git+url>`` at the requirement separator. Anchored on the ``git+`` scheme
@@ -831,42 +826,10 @@ def _ros_workspace_lines(spec: BuildSpec) -> list:
     return lines
 
 
-def read_image_build_manifest(image: str) -> dict:
-    """``{apt: {...}, pip: {...}, vcs: {...}}`` recorded inside *image*, or ``{}``.
-
-    This is the lock a rebuild installs from. The author's ``.vast`` says ``tree`` and
-    ``numpy<=1.13``; the manifest says ``tree=2.2.1-1`` and ``numpy==1.12.1``. Re-resolving the
-    loose spec a year later gives a different answer, which is precisely the silent substitution
-    a re-run must not make.
-
-    Read by starting a container, and only for an image already present locally: `docker run` on
-    an absent image *pulls* it, and a caller asking "what is in this image" must not be the thing
-    that fetches gigabytes. ``{}`` means "cannot tell" -- an image built before manifests existed
-    has none, and that is a different answer from "installed nothing".
-    """
-    from robovast.common.execution import \
-        _image_present_locally  # pylint: disable=import-outside-toplevel
-
-    if not image or not _image_present_locally(image):
-        return {}
-    out = {}
-    for name in _MANIFEST_FILES:
-        text = _read_image_file(image, f"{BUILD_MANIFEST_DIR}/{name}")
-        if text is None:
-            continue
-        key = name.removesuffix(".txt")
-        out[key] = _parse_manifest(key, text)
-    return out
-
-
 def parse_build_manifest_files(texts: dict) -> dict:
     """``{apt: {...}, pip: {...}, vcs: {...}}`` from the raw ``{filename: text}`` of a lock.
 
-    The reading half split out from :func:`read_image_build_manifest`, which can only ask an
-    image that is present locally. A caller that obtained the same files some other way -- the
-    cluster's registry client reads them out of a layer blob, because the controller pod has no
-    container runtime -- parses them through here rather than through a second parser that
-    would have to agree with this one forever.
+    The files are read out of the image's layer by the registry client.
     """
     out = {}
     for name, text in (texts or {}).items():
@@ -960,18 +923,6 @@ def _canonical_pip(name: str, pip: dict) -> str:
         if re.sub(r"[-_.]+", "-", key).lower() == wanted:
             return key
     return name
-
-
-def _read_image_file(image: str, path: str) -> "str | None":
-    """One file's contents from inside *image*, or ``None`` if it is not there."""
-    try:
-        result = subprocess.run(
-            ["docker", "run", "--rm", "--pull=never", "--user", "root",
-             "--entrypoint", "cat", image, path],
-            capture_output=True, text=True, check=False, timeout=60)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout if result.returncode == 0 else None
 
 
 def _parse_manifest(kind: str, text: str) -> dict:
@@ -1303,7 +1254,7 @@ def validate_build_spec(spec: BuildSpec, project_dir: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Answers about a build that no lane should phrase for itself
+# Answers about a build, phrased once
 # ---------------------------------------------------------------------------
 
 #: Phases in which a build is under way rather than finished, either way -- ``blocked``
@@ -1318,13 +1269,12 @@ def not_built_message(container: str, build_id: str,
                       status: "Optional[ImageBuildStatus]") -> "tuple[str, str]":
     """``(message, next_step)`` for "this container's image is not on the store".
 
-    Pure, so it is testable without a service, and one function so both lanes phrase the
+    Pure, so it is testable without a service, and one function so every caller phrases the
     refusal identically.
 
-    The old message said only "call build_experiment_image first", which is a dead end for
-    the caller who *did* call it -- the reported bug this replaces. Four states need four
-    different actions, and the service already knows which one it is in, so *status* (the
-    build's, or ``None`` when no build is known) picks the wording and the next step:
+    Four states need four different actions, and the service already knows which one it
+    is in, so *status* (the build's, or ``None`` when no build is known) picks the wording
+    and the next step:
 
     ``None``
         nothing was ever started for these inputs.
@@ -1378,8 +1328,8 @@ def not_built_message(container: str, build_id: str,
                 f"get_image_build_log(build_id='{build_id}', summarize=True)")
     if status is not None and phase in ("succeeded", "cached"):
         return (f"the image for container '{container}' was built (build {build_id}) and "
-                f"is no longer on this lane's image store -- pruned locally, or deleted "
-                f"from the registry. It has to be built again. {tail}",
+                f"is no longer on the service's image store -- deleted from the registry. "
+                f"It has to be built again. {tail}",
                 f"build_experiment_image(container='{container}')")
     return (f"the image for container '{container}' is not built, and no build is "
             f"running for these inputs. {tail}",

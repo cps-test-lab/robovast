@@ -9,8 +9,8 @@ Four properties this defends, each of which was a wrong answer at some point:
 * postprocessing is chained exactly when the archive arrived **raw**, because a campaign
   with no metric tables is not one anybody can query -- and a postprocessed one must not be
   recomputed;
-* the campaign is made **durable before** that postprocess rather than after it, because a
-  lane whose durable home is elsewhere is where the postprocess reads the campaign from;
+* the campaign is made **durable before** that postprocess rather than after it, because the
+  postprocess reads the campaign from its durable home;
 * a failed import is **kept**, as a failed campaign. Deleting the tree was tried and was
   strictly worse: registering the campaign is what makes it visible while it arrives, and
   that entry outlives the failure, so removing the directory left it listed as ``failed``
@@ -30,8 +30,7 @@ import pytest
 from robovast.client.status import Phase
 from robovast.service.interface import ImportCampaignRequest
 from robovast.execution.status_recovery import reconstruct_status_from_disk
-from robovast.service.local_transport import LocalTransport
-
+from tests.service.null_service import NullService
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 _SOURCE = _FIXTURES / "v1-campaign-2025-03-04-101500"
 
@@ -76,7 +75,7 @@ def _archive(tmp_path, *, postprocessed=False, name="camp.tar.gz",
 @pytest.fixture(name="service")
 def _service(tmp_path, monkeypatch):
     monkeypatch.setenv("ROBOVAST_RESULTS_DIR", str(tmp_path / "results"))
-    transport = LocalTransport()
+    transport = NullService()
     monkeypatch.setattr(type(transport), "_campaigns_root",
                         lambda self: tmp_path / "results")
 

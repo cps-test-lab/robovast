@@ -90,7 +90,8 @@ def test_a_mutable_tag_refuses_to_cache(tmp_path):
 
 
 def test_a_local_image_id_is_accepted(tmp_path):
-    """The local lane records `docker inspect .Id`, which is immutable though not a registry digest."""
+    """A campaign recorded by a Docker run carries `docker inspect .Id`: immutable, though not a
+    registry digest."""
     ident = scene_cache.world_identity(
         _campaign(tmp_path, image="sha256:" + "b" * 64), _manifest())
     assert ident["image"].startswith("sha256:")
@@ -187,8 +188,8 @@ def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
         _manifest(overrides={"components": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
-    # The real mount, not a literal: where the file appears is a lane constraint (the cluster
-    # only mounts AUX_MOUNTABLE_PATHS), so a test carrying its own path hid a mismatch once.
+    # The real mount, not a literal: the cluster only mounts AUX_MOUNTABLE_PATHS, so a test
+    # carrying its own path would hide a mismatch.
     cmd = scene_cache._command_for(ident, 1024, scene_cache._OVERRIDES_MOUNT)
     args = shlex.split(cmd)
     assert "--override" in args
@@ -256,6 +257,16 @@ def test_a_campaign_naming_no_simulator_is_named_not_guessed(tmp_path):
         scene_cache._command_for(ident, 1024)
 
 
+
+@contextlib.contextmanager
+def _in_process():
+    yield None
+
+
+def _no_runner():
+    """The runner context of a build these tests run in-process."""
+    return _in_process()
+
 def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypatch):
     """The happy path, with the container replaced by a local writer.
 
@@ -275,7 +286,7 @@ def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypa
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": f"{fake} {{out}}"}})
 
-    out = scene_cache.generate(ident, key)
+    out = scene_cache.generate(ident, key, runner_context=_no_runner)
     assert scene_cache.is_cached(key)
     assert os.path.isfile(os.path.join(out, "scene.json"))
     identity = json.loads(open(os.path.join(out, scene_cache.IDENTITY_FILE), encoding="utf-8").read())
@@ -284,7 +295,7 @@ def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypa
     # A second call is a no-op: it must not re-run the generator.
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: (_ for _ in ()).throw(AssertionError("regenerated a hit")))
-    assert scene_cache.generate(ident, key) == out
+    assert scene_cache.generate(ident, key, runner_context=_no_runner) == out
 
 
 def test_a_generator_that_writes_nothing_is_not_cached(tmp_path, monkeypatch):
@@ -299,7 +310,7 @@ def test_a_generator_that_writes_nothing_is_not_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": "true"}})
     with pytest.raises(scene_cache.SceneUnavailable, match="wrote no files|wrote no scene.json"):
-        scene_cache.generate(ident, key)
+        scene_cache.generate(ident, key, runner_context=_no_runner)
     assert not scene_cache.is_cached(key)
     assert not os.path.isdir(scene_cache.entry_dir(key))
 

@@ -49,7 +49,7 @@ class CampaignStopped(Exception):
     ``"stopped"`` and skip the finish work that would otherwise fail noisily against a
     torn-down cluster tunnel and produce misleading tracebacks. The analysis of the
     batches that did finish is *not* part of what is skipped — it is owed, and the
-    service runs it (``LocalTransport.start_campaign``'s stopped path).
+    service runs it (``ServiceBase._launch_campaign``'s stopped path).
     """
 
 
@@ -132,7 +132,7 @@ class IndexUnreachableError(RuntimeError):
     undefined column, a syntax error in caller SQL) is the caller's to interpret.
 
     **This must never degrade into a fallback.** Postgres is a hard dependency of
-    both lanes now, so a reader that quietly returned "no data" when the index is
+    the service, so a reader that quietly returned "no data" when the index is
     down would present an empty campaign as a finished one -- the failure mode the
     whole design exists to avoid. Say the index is unreachable and let the caller
     decide.
@@ -182,7 +182,7 @@ class ActionableError(Exception):
 
 
 class ImageNotBuilt(ActionableError):
-    """Raised when a container's ``build:`` image is not on the lane's own image store.
+    """Raised when a container's ``build:`` image is not in the deployment's own image store.
 
     Never built implicitly: a diagnostic exec that quietly became a multi-minute image
     build would answer a question nobody asked. What separates this from a dead end is the
@@ -196,11 +196,10 @@ class AuxContainerUnavailable(ActionableError):
     """A variation needs an auxiliary container and nothing can provide one here.
 
     A runner for a *variation's* helper image is arranged **per span** by whoever is about
-    to compose (``LocalTransport._aux_runner_context``): a campaign gets one for the run, a
-    preview gets one held by the exec manager, and the local lane needs none because
-    ``docker`` on the service host is the fallback. This is raised when a composition
-    reached a variation that wants one and none of the three applied -- a process with no
-    backend and no ``docker``, or a caller that composed without arranging anything.
+    to compose (``ServiceBase._aux_runner_context``): a campaign gets one for the run and
+    a preview gets one held by the exec manager. This is raised when a composition
+    reached a variation that wants one and neither applied -- a process with no backend,
+    or a caller that composed without arranging anything.
 
     So the reason is always the *caller's context*, never the ``.vast``: the same file
     composes wherever a runner is arranged. A runner is **not** confined to a campaign's
@@ -208,7 +207,7 @@ class AuxContainerUnavailable(ActionableError):
     reading
     it as a rule is what left ``preview_configurations`` refusing a perfectly good sweep.
 
-    What this does *not* extend to is the exec lane's **query slot**: that runs a read-only
+    What this does *not* extend to is the exec manager's **query slot**: that runs a read-only
     question in a campaign's own image with nothing written back, so it is not a substitute
     for a helper image a variation writes into. A held *aux* slot in the same manager is,
     and is how a preview gets one.

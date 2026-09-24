@@ -14,13 +14,13 @@
 #
 # Five distributions are installed at build time: robovast, its robovast-client,
 # robovast-nav and robovast-sim-roqsim path dependencies, and robovast-cluster (the
-# execution lane -- the only one needing its own step, added separately below).
+# service implementation -- the only one needing its own step, added separately below).
 # robovast-client is not optional and not an extra: it is the layer robovast is built on,
 # so `poetry install` brings it in with the root project. There is no wheel-injection shortcut -- an earlier comment here
 # described one that the launch path no longer does -- so changing any of them
 # means rebuilding this image and rolling the Deployment with `vast service upgrade`.
-# The cheaper loops are local `vast serve`, or `vast serve --backend cluster -x <ctx>`
-# driving a real cluster from an editable checkout.
+# The cheaper loop is `mirrord exec` running `vast serve` from an editable checkout
+# inside the cluster's network (see the serve command's help).
 #
 # Build context is the repository root (so pyproject + src are available):
 #   docker build -f container/controller/Dockerfile -t <you>/robovast-controller:dev .
@@ -150,10 +150,10 @@ COPY --from=nav-panels-build /build/src/robovast_nav/robovast_nav/web/dist \
      ./src/robovast_nav/robovast_nav/web/dist
 RUN poetry install --only main --extras "qd optuna nav roqsim analysis notebooks fair sftp" --no-cache
 
-# The Kubernetes execution lane. It is a separate distribution that depends on robovast --
+# The Kubernetes service implementation. It is a separate distribution that depends on robovast --
 # not an extra of it -- so it cannot join the --extras string above and needs its own step.
-# Without it the pod starts, serves, and then fails every create_campaign for want of a
-# lane: the service comes up looking healthy and can run nothing. Its dependencies
+# Without it the pod starts, serves, and then fails every create_campaign for want of an
+# implementation: the service comes up looking healthy and can run nothing. Its dependencies
 # resolve here rather than in layer 1, which costs a little cache; they are small next to
 # the scientific stack layer 1 protects.
 # Kept as its own layer against DL3059: consolidating with the RUN above is exactly what the

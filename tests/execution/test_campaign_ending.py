@@ -6,11 +6,11 @@ Publishing ``finished`` the moment the run loop returns — while share and post
 are still to come — is believed by every reader: a waiter returns "done" for a campaign
 with no metrics, and the ntfy message says so on a phone nobody re-reads. So ``run()``
 stops at ``finishing`` there, and ``end_campaign`` publishes the terminal phase from
-whichever scope is outermost for the lane.
+whichever scope is outermost.
 
 The tests that matter here are the two failure directions, because they are opposites and
-a fix for one produces the other: ending *too early* is the original bug; never ending at
-all strands every waiter until its timeout, which is worse.
+a fix for one produces the other: ending *too early* reports a campaign without metrics;
+never ending at all strands every waiter until its timeout, which is worse.
 """
 
 import types
@@ -66,7 +66,7 @@ def _no_side_effects(monkeypatch):
 # -- who publishes the terminal phase ---------------------------------------
 
 def test_finish_tail_ends_the_campaign_when_it_is_outermost():
-    """Cluster lanes and the bare CLI: nothing happens after this tail, so it ends."""
+    """When nothing happens after this tail, it ends the campaign."""
     state = _state()
     controller._finish_campaign(object(), "/root", "c1", state,
                                 RunOptions(finalize_phase=True))
@@ -74,10 +74,10 @@ def test_finish_tail_ends_the_campaign_when_it_is_outermost():
 
 
 def test_finish_tail_leaves_the_campaign_open_when_it_is_not_outermost():
-    """The local service runs postprocessing *after* this returns.
+    """A caller that runs postprocessing *after* this returns sets ``finalize_phase`` off.
 
-    Ending here would republish the original bug on that lane: terminal before the
-    metrics exist. The worker ends it instead (see LocalTransport._drive_campaign).
+    Ending here would then be terminal before the metrics exist; the worker ends it
+    instead.
     """
     state = _state()
     controller._finish_campaign(object(), "/root", "c1", state,
@@ -176,12 +176,12 @@ def test_exactly_one_terminal_message_per_campaign():
 
 
 def test_two_scopes_ending_the_same_campaign_send_one_message():
-    """Both scopes legitimately end a campaign on the cluster lane.
+    """Both scopes legitimately end a campaign.
 
-    ``ClusterService`` subclasses ``LocalTransport``, so the service worker's ``finally``
-    ends every campaign it drives — it has to, because one that failed before the builder
-    ran (an image build that could not resolve) never reaches the finish tail at all. On
-    the lanes where the finish tail is *also* outermost, both fire. The phase is
+    The service worker's ``finally`` (``ServiceBase._launch_campaign``) ends every
+    campaign it drives — it has to, because one that failed before the builder
+    ran (an image build that could not resolve) never reaches the finish tail at all. When
+    the finish tail is *also* outermost, both fire. The phase is
     idempotent; two "Campaign finished" pushes to someone's phone are not.
     """
     from robovast.execution.notify import Notifier

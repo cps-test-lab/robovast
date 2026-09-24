@@ -2,21 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Which image an ``exec_in_container`` runs, and what it says when there is none.
 
-The reported bug lived here. A deployment on the cluster lane answered
-``build_experiment_image`` with ``cached: true`` and then refused the very next
-``exec_in_container`` with "the image for container 'sut' is not built", for three different
-call shapes -- because ``_exec_image`` was implemented once, for the local docker daemon, and
-inherited unchanged by a lane whose images live in a registry and whose service pod has no
-docker at all. Two separate faults, one per config source:
+Two questions: *which store answers*, and *what the caller is told when the answer is no*.
 
-* a **workspace** source asked the wrong store, and got "absent" from a probe that had in
-  fact failed to run;
-* a **campaign** source re-derived a content hash from the campaign's frozen ``_config/``,
-  which holds the ``.vast`` and the run files but not the build inputs -- so every source dir
-  and workspace wheel hashed as a bare requirement and the hash could not match the build's.
-
-So these tests are about the two questions the old code conflated: *which store answers*, and
-*what the caller is told when the answer is no*.
+* a **workspace** source is resolved through the image store the service installed, which on
+  a cluster is its registry;
+* a **campaign** source reads the per-role digests the campaign recorded, not a hash
+  re-derived from its frozen ``_config/``, which does not hold the build inputs.
 """
 
 import types
@@ -24,10 +15,10 @@ import types
 import pytest
 
 from robovast.common.errors import ImageNotBuilt, ImageStoreUnavailable
-from robovast.service.client import LocalTransport
 from robovast.service.image_store import ImageRef
 from robovast.service.interface import ImageBuildStatus
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 BUILT = ImageRef(ref="registry.local:5000/robovast/sut:abc123",
                  identity="build:sut@abc123", build_id="imgbuild-sut-abc123",
@@ -47,7 +38,7 @@ def _vast(tmp_path, packages=("shapely>=2.0",)):
 
 
 def _transport(tmp_path, store):
-    t = LocalTransport(store=WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path))))
+    t = NullService(store=WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path))))
     t._image_store = store
     return t
 
@@ -71,17 +62,15 @@ class _Store:
 # which store answers
 # ---------------------------------------------------------------------------
 
-def test_the_lanes_own_store_resolves_the_image(tmp_path):
-    """The fix for the report: resolution goes through whichever store the lane installed,
-    so a cluster deployment is answered by its registry and not by a docker daemon it has
-    never had."""
+def test_the_installed_image_store_resolves_the_image(tmp_path):
+    """Resolution goes through the image store the service installed."""
     t = _transport(tmp_path, _Store(present=True))
     assert t._exec_image(_vast(tmp_path), "sut") == BUILT.ref
 
 
 def test_a_client_is_told_the_identity_and_never_the_concrete_ref(tmp_path):
     """``resolve_image`` crosses the API boundary — it keys the per-image catalog cache and
-    is reported to the caller — and on this lane the concrete ref names a registry."""
+    is reported to the caller — and the concrete ref names a registry."""
     t = _transport(tmp_path, _Store(present=True))
     vast = _vast(tmp_path)
     # Which .vast a request names is resolved before this point and is not what is under
@@ -186,7 +175,7 @@ def test_a_campaign_source_uses_what_the_campaign_recorded(tmp_path, monkeypatch
 def test_the_role_image_lookup_reads_the_campaign_directory(tmp_path, monkeypatch):
     """Both records it needs -- ``_execution/execution.yaml`` for the per-role digests and the
     frozen ``.vast`` that says whether the role owns a container -- are in the campaign
-    directory, which is the campaign on either lane."""
+    directory."""
     t = _transport(tmp_path, _Store(present=True))
     seen = {}
     monkeypatch.setattr(
@@ -226,7 +215,7 @@ def test_the_simulation_container_resolves_to_the_simulators_own_image(tmp_path)
     worked on a project whose roqsim comes from the image family — and the world check would
     have inherited exactly the same silence.
     """
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = object.__new__(NullService)
     scenario = transport._resolve_exec_image(_roqsim_vast(tmp_path), "scenario")
     simulation = transport._resolve_exec_image(_roqsim_vast(tmp_path), "simulation")
     assert scenario.identity == "base:1"
@@ -247,7 +236,7 @@ def test_a_stepped_campaign_keeps_the_simulator_in_the_scenario_container(tmp_pa
                       "containers": {
                           "scenario": {},
                           "simulation": {"backend": "roqsim", "config": "world.yaml"}}}}))
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = object.__new__(NullService)
     scenario = transport._resolve_exec_image(str(vast), "scenario")
     simulation = transport._resolve_exec_image(str(vast), "simulation")
     assert simulation.identity == scenario.identity
@@ -257,12 +246,12 @@ def test_an_image_family_source_resolves_without_a_project(monkeypatch):
     """The question is about the software, not about a campaign. Requiring a project to ask
     it means every caller inventing one, and each invented project is a different answer.
 
-    No build and no store either: a family image is pulled, not built here, so the lane's
+    No build and no store either: a family image is pulled, not built here, so the
     "is it built?" probe has nothing to say about it.
     """
     monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example/team")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2.1.0")
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = object.__new__(NullService)
 
     found = transport._resolve_exec_image("", None, image_family="family:robovast-roqsim")
 
@@ -275,7 +264,7 @@ def test_an_unknown_family_member_is_refused_by_name(monkeypatch):
     """A typo resolves to a registry ref that pulls nothing, and the failure would arrive as
     a pull error naming an image nobody wrote down."""
     from robovast.common.errors import CampaignConfigError
-    transport = LocalTransport.__new__(LocalTransport)
+    transport = object.__new__(NullService)
 
     with pytest.raises(CampaignConfigError, match="robovast-roqsym"):
         transport._resolve_exec_image("", None, image_family="family:robovast-roqsym")

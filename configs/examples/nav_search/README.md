@@ -98,18 +98,18 @@ operator could ever have realised, and which flatter whichever sampler happened 
 good cell early within its batch.
 
 `qd`'s row is the weakest evidence in the table and is kept for that reason. It was run under
-a `time:` budget on a contended lane, which bought it 63 runs where its siblings had 180-256,
+a `time:` budget on a contended cluster, which bought it 63 runs where its siblings had 180-256,
 so its figures rest on eight scored cells. That measurement is why the file now declares a
 `runs:` budget like the others -- wall-clock is not a measure of compute on a shared cluster,
 and a campaign budgeted in it is not comparable with one budgeted in runs.
 
 Re-run at `runs: 240` it spent its budget properly (256 runs, four batches) and still scored
-only 16 cells, because two of those four batches went unscored on a saturated lane -- see the
+only 16 cells, because two of those four batches went unscored on a saturated cluster -- see the
 scheduling note under *Notes for anyone extending this*. Both QD numbers here are therefore
-about the lane as much as about the strategy, and neither should be quoted against the others
+about the cluster as much as about the strategy, and neither should be quoted against the others
 without that caveat.
 
-**QD fills its own archive worse than uniform sampling does**, and that is not a lane
+**QD fills its own archive worse than uniform sampling does**, and that is not a cluster
 artifact. Of the 40 archive cells, a single `random` campaign occupied 14 (coverage 0.350)
 and `halton` 13, against QD's 5 -- and `random` reached 8 cells in 44 runs, more than QD
 managed in 128. Its `coverage >= 0.25` criterion is therefore comfortably reachable and has
@@ -325,8 +325,8 @@ The budgets here are **demo-sized** — a few hundred runs each. A research budg
 considerably larger; they are small so the directory can be run through end to end, not
 because these are the numbers to publish.
 
-At ~25 s of driving per run plus bring-up, and with the lane to itself, a campaign is tens of
-minutes. **Sharing the lane changes that by an order of magnitude, and not only in wall
+At ~25 s of driving per run plus bring-up, and with the cluster to itself, a campaign is tens of
+minutes. **Sharing the cluster changes that by an order of magnitude, and not only in wall
 clock.** Run every campaign here at once on a small cluster alongside another user's work and
 each one takes hours rather than minutes, a campaign can abort before its first batch because
 a contended node fails calibration, and a search can spend much of its budget on batches that
@@ -362,12 +362,12 @@ campaigns against each other is `analysis/compare.py`, above.
   campaign's copy would have been — and drops the original from `run_files`, so exactly one
   copy exists and it is the running cell's. The trial finds it by writing the ordinary path
   relative to its own directory, which is that mount.
-- **Do not saturate the lane a search is running on -- its own scoring is what loses the
+- **Do not saturate the cluster a search is running on -- its own scoring is what loses the
   race.** A search scores each batch before proposing the next, and on a cluster that means a
   small conversion Job scheduled alongside the batch's runs. The runs are the bulk and get
   placed; the little job does not, and a batch whose conversion never ran has no
   `nav_metrics.csv` for the extractor to read. It refuses that batch -- correctly, and it says
-  exactly why -- but the runs are already spent. On a contended lane a search can lose a
+  exactly why -- but the runs are already spent. On a contended cluster a search can lose a
   large fraction of its batches this way, so **much of its simulator buys nothing** and its
   archive is built from a fraction of the feedback it paid for.
 

@@ -16,8 +16,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Kubernetes execution backend for the in-cluster campaign controller.
 
-:class:`KubernetesBackend` is the cluster counterpart of
-:class:`~robovast.execution.backends.DockerBackend`: it runs **one batch** of a
+:class:`KubernetesBackend` is the
+:class:`~robovast.execution.backends.ExecutionBackend`: it runs **one batch** of a
 campaign as Kubernetes Jobs and leaves results at
 ``<campaign_root>/<config>/<run>/`` so the controller's scoring and store are
 backend-agnostic. It is meant to run **inside the controller pod**
@@ -38,8 +38,8 @@ Per batch it:
    are already under ``campaign_root``; then
 3. materialises the per-run ``job`` symlinks and records ``_execution/execution.yaml``.
 
-That leaves ``campaign_root`` **complete** — the same shape a local (``DockerBackend``)
-run leaves — so the backend-agnostic analysis postprocessing consumes it identically.
+That leaves ``campaign_root`` **complete**, so the backend-agnostic analysis
+postprocessing consumes it as one campaign.
 ``campaign_root`` **is** the campaign: the results volume is its durable home.
 
 Batches of one search campaign share the root and never collide, because the job
@@ -77,6 +77,7 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
 from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
+                                         refuse_unimportable,
                                          ShareStopped)
 from robovast.execution.campaign_archive import job_documents
 from robovast.execution.packer import build_jobs
@@ -103,8 +104,8 @@ logger = logging.getLogger(__name__)
 #: ``graphics``: it is what injects ``/dev/dri``, ``libEGL_nvidia`` and the glvnd ICD, and
 #: without it the container gets the device but no way to render on it -- which is not an
 #: error anywhere, just a job that quietly renders in software many times slower. ``all``
-#: rather than an explicit list so one ``.vast`` key means the same thing here as on the
-#: Compose lane, which already writes exactly this.
+#: rather than an explicit list so one ``.vast`` key means the same thing here as it does
+#: to Docker, which takes exactly this.
 GPU_DRIVER_CAPABILITIES = "all"
 
 def pull_policy_for(image_ref: str) -> str:
@@ -683,9 +684,7 @@ class BatchJobRunner:
         self = cls()
         self.on_configs_staged = on_configs_staged
         # The process-wide admission queue, or None. None means "create every job at once",
-        # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
-        # and what the cluster lane did before the queue existed -- so this parameter arriving
-        # changes nothing until a caller actually passes one.
+        # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs.
         self.admission = admission
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -743,7 +742,7 @@ class BatchJobRunner:
         self.k8s_api_client = None
         self._k8s_initialized = False
 
-        # One container plan, shared with the local lane and exec_in_container.
+        # One container plan, shared with exec_in_container.
         self.plan = plan_containers(execution_params, images=built_images,
                                     explicit_main=image)
         # Before anything is put in a manifest: every ref these pods will run, resolved
@@ -1008,7 +1007,7 @@ class BatchJobRunner:
                 containers[0]['env'].append({'name': 'SCENARIO_EXECUTION_PARAMETERS', 'value': '-t'})
 
             # SCENARIO_FILE / SIMULATION / SCENARIO_MODE, derived from the .vast by the
-            # same helper the local lane and container-exec use.
+            # same helper container-exec uses.
             for name, val in scenario_env(self.campaign_data).items():
                 containers[0]['env'].append({'name': name, 'value': str(val)})
 
@@ -1162,9 +1161,8 @@ class BatchJobRunner:
         # The simulator's overrides document ships per job (``<job-tag>.sim.yaml``, unique
         # like the parameter file) but is READ at a fixed path, because a backend builds
         # its command before any job exists and argv cannot expand an environment
-        # variable. Locally the two are reconciled by the bind mount's target; here the
-        # whole ``_transient/`` tree lands in ``/config``, so the reconciliation is this
-        # one copy.
+        # variable. The whole ``_transient/`` tree lands in ``/config``, so the
+        # reconciliation is this one copy.
         sim_rename = (
             f"(cp /config/{sim_name} {SIM_OVERRIDES_MOUNT} 2>/dev/null || true); "
             if sim_overlay["document"] else "")
@@ -1267,9 +1265,9 @@ class BatchJobRunner:
         """Write one multi-document scenario-parameter file per packed job into
         ``out_dir/_transient/`` so they upload with the campaign and are mirrored
         into each packed job's ``/config`` as ``job-<idx>.params.yaml``."""
-        # Already resolved against the .vast's location by config generation (same note as in
-        # execute_local); prepending the .vast's directory again doubles it whenever the project's
-        # config path has a directory part.
+        # Already resolved against the .vast's location by config generation; prepending the
+        # .vast's directory again doubles it whenever the project's config path has a
+        # directory part.
         scenario_path = self.campaign_data["scenario_file"]
         scenario_name = next(iter(get_scenario_parameters(scenario_path).keys()))
         transient_dir = os.path.join(out_dir, "_transient")
@@ -1335,7 +1333,7 @@ class BatchJobRunner:
     def _poll_wait(self, seconds: float) -> None:
         """Wait *seconds* between polls of the batch, ending the batch if a stop lands.
 
-        The batch wait is this lane's longest -- hours, on the campaigns worth stopping --
+        The batch wait is the longest -- hours, on the campaigns worth stopping --
         and it is where the stop must be read rather than slept through: the service's own
         teardown deletes the Jobs, but it is this loop noticing that winds the campaign
         down.
@@ -2156,8 +2154,8 @@ class BatchJobRunner:
     def _publish_capacity_wait(self, waiting: bool) -> None:
         """Tell the status whether this batch is queued, if anyone is listening.
 
-        Best-effort and idempotent: a campaign driven without a control state (the local
-        lane, a unit test) simply has nobody to tell, and reporting a queue must never be
+        Best-effort and idempotent: a campaign driven without a control state (a unit
+        test) simply has nobody to tell, and reporting a queue must never be
         able to fail a batch.
         """
         if self._state is None:
@@ -2744,8 +2742,8 @@ class BatchJobRunner:
         # job is admitted onto a node with none.
         spec['resources'].setdefault('requests', {})[GPU_RESOURCE] = str(count)
         spec['resources'].setdefault('limits', {})[GPU_RESOURCE] = str(count)
-        # NVIDIA_VISIBLE_DEVICES is deliberately NOT set, and the asymmetry with the
-        # Compose lane (which sets it to `all`) is the point: there, nothing allocates
+        # NVIDIA_VISIBLE_DEVICES is deliberately NOT set, and the asymmetry with a plain
+        # `docker run --gpus` (which sets it to `all`) is the point: there, nothing allocates
         # devices, so the container must claim them. Here the device plugin injects the
         # UUID it allocated into exactly the container that requested one, and overriding
         # that with `all` would hand every container every GPU regardless of quota.
@@ -2900,7 +2898,7 @@ class BatchJobRunner:
         Written to the campaign's own ledger rather than kept in memory, because the Job that
         carried the evidence is deleted moments later and the fact has to outlive it -- and
         because that ledger is what the service reads to report it (see
-        ``LocalTransport._findings_from_record``).
+        ``ServiceBase._findings_from_record``).
 
         Only a figure this campaign measured is recorded: a container killed at what its author
         DECLARED is a campaign asking for too little, which the author states and this must not
@@ -3617,7 +3615,7 @@ class KubernetesBackend(ExecutionBackend):
         Never fatal. This improves a record; the campaign it describes is already running.
 
         Effective only where the driver shares a filesystem with whoever wrote the launch
-        record. It does on the local lane. On this one the record is written by the service
+        record. Here the record is written by the service
         and the driver runs elsewhere, so there may be nothing here to merge into -- and then
         this does nothing, deliberately, rather than creating a launch record holding images
         and no request, which every reader would take for a campaign that asked for nothing.
@@ -3636,7 +3634,7 @@ class KubernetesBackend(ExecutionBackend):
     def read_build_lock(self, image: str) -> dict:
         """The build lock inside *image*, from what this campaign's runners read. See the base.
 
-        A lookup, not a read. The lock has to come from the registry on this lane, because the
+        A lookup, not a read. The lock has to come from the registry, because the
         controller pod has no container runtime to inspect a local image with -- but that pod
         has no Kubernetes client either, so it cannot resolve the pull Secret the registry read
         needs. A runner can, and does, into the cache this consults.
@@ -3910,7 +3908,7 @@ class KubernetesBackend(ExecutionBackend):
                        progress_callback=None) -> None:
         """Stream the campaign straight to the configured share provider.
 
-        Overrides the local tar.gz-on-disk behaviour: the campaign is already on the
+        The campaign is already on the
         driver's scratch (the batch runner downloaded it back for scoring), so it is
         tarred + gzipped **on the fly** into the provider's request body — no
         compressed copy ever lands on disk, which matters for ~1TB campaigns. At
@@ -3935,6 +3933,9 @@ class KubernetesBackend(ExecutionBackend):
                 "upload-to-share enabled but no share provider is configured "
                 "(ROBOVAST_SHARE_TYPE unset) for %s." % campaign_id)
         in_pod_upload.verify_share_access(provider)
+        # Before a byte is read: an archive no deployment could import is refused here,
+        # where the source can still be repaired, rather than at the far end.
+        refuse_unimportable(campaign_root)
         variant = campaign_variant(campaign_root)
         object_name = archive_name(campaign_id, variant)
         logger.info("Streaming %s campaign %s to %s share as %s...",
@@ -3971,9 +3972,8 @@ class KubernetesBackend(ExecutionBackend):
         The streamed path is chunked and cannot resume, so an interrupted upload leaves a
         partial object under the archive's real name -- and that object lists and downloads
         exactly like a complete one, failing only at the far end, on somebody else's
-        service, after a full transfer. That is the shape
-        ``DockerBackend._refuse_unimportable`` exists to keep off a share, and a
-        cancellation must not manufacture it.
+        service, after a full transfer. That is the shape ``share_campaign`` refuses to
+        put on a share, and a cancellation must not manufacture it.
 
         Raises if the delete did not happen, and does **not** soften that into a note: it
         cannot tell a provider that will not delete from an object that was never created

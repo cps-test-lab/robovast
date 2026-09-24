@@ -65,17 +65,13 @@ _LAYOUT = """
 
 
 def _client():
-    """A client for the file operations: the service when one answers, else local disk.
+    """A client for the file operations: the service, which is where the files are.
 
-    The control tools require a service because they need an execution authority. Files
-    do not: a campaign directory on this host is readable with no service running, which
-    is how ``vast results`` has always worked. So the fallback is an
-    explicit in-process ``LocalTransport`` — constructed deliberately here rather than
-    obtained by passing an empty URL to ``RobovastClient``, where "no service" would be
-    substituted for a reachable one without anyone deciding it.
+    Raises :class:`~robovast.mcp_server.service_access.NoService` when none answers,
+    which every tool here reports as its error.
     """
     from robovast.mcp_server import service_access
-    return service_access.client_or_local()
+    return service_access.require_service()
 
 
 def list_files(address: str, recursive: bool = False, offset: int = 0,
@@ -141,7 +137,7 @@ def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
         return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         url = service_access.web_url(client, Routes.file(address))
-        # A binary read is a refusal only in the text lane; over HTTP it is an ordinary
+        # A binary read is a refusal only as text; over HTTP it is an ordinary
         # GET. Answering with the URL turns "you cannot have this" into "here is where it
         # is" — the caller wanted the bytes, and they are one request away.
         if "binary" in str(e).lower() and url:

@@ -23,7 +23,7 @@ parameterized by the campaign **directory** so it serves both callers:
   ``results_resolver`` (or delegates to a configured service); and
 * the ``robovast-service`` (``describe_campaign_data`` / ``query_campaign_data_sql``
   on :class:`~robovast.service.interface.RobovastInterface`), which resolves the
-  dir under its results root, where campaigns of either lane live.
+  dir under its results root, where every campaign lives.
 
 The rows themselves live in the central index now (:mod:`.index_query`), which is why the
 directory is only a *name* here: it identifies the campaign, and that name is what the
@@ -625,7 +625,7 @@ _TABLE_DESCRIPTIONS = {
     ("main", "resource_usage"): (
         "What a run COST: CPU and memory sampled every ~1s in each container, one row per "
         "container per process name per tick. Not the get_resource_usage tool, which "
-        "reports a lane's free capacity now. "
+        "reports the cluster's free capacity now. "
         "container joins run_log.container ('robovast' is the main container; a simulator "
         "stepped in-process has none of its own, so its processes are in the 'robovast' "
         "rows). timestamp is sim seconds and is empty outside the clock map's range (boot, "
@@ -763,7 +763,7 @@ def campaign_id_of(campaign_dir) -> str:
     **A caller that already knows the id passes it instead**, and every caller in the
     service does. Deriving it from a path asks the filesystem a question that ingestion has
     already answered: the rows are in the index, so the campaign needs no directory here at
-    all, and on the cluster lane it has none. The answer then turns on what happens to be on
+    all, and on the cluster it has none. The answer then turns on what happens to be on
     disk -- a scratch directory carries the campaign's name while holding only the objects
     some reader fetched into it, so the walk below refuses a campaign whose rows are sitting
     in the index. Passing the id keeps the question from being asked.

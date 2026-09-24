@@ -121,7 +121,7 @@ def render_dockerignore(project_dir=None) -> str:
     *project_dir* adds the campaign outputs found under it (:func:`campaign_outputs_in`).
     They have to be listed by path because they are recognised by structure and a
     ``.dockerignore`` cannot express "a directory containing ``_execution/``" -- so this
-    is the one part of the two lanes' agreement that is computed rather than declared.
+    is the one part of the build context's contract that is computed rather than declared.
     Omitting it yields the static set alone, which is a *larger* context and never a
     wrong one.
     """

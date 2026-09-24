@@ -15,14 +15,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 
 def _transport(tmp_path):
-    """A LocalTransport with both roots pinned under *tmp_path*, and disjoint."""
+    """A NullService with both roots pinned under *tmp_path*, and disjoint."""
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport.__new__(LocalTransport)
+    lt = object.__new__(NullService)
     lt._campaigns = {}
     lt._lock = threading.Lock()
     lt.store = store
@@ -282,8 +282,8 @@ def test_a_transport_that_serves_no_files_says_so(tmp_path):
     to be a sentence rather than an ``AttributeError``.
     """
     from robovast.service.http_client import HTTPTransport
-    from robovast.service.interface import UnsupportedOnLane
+    from robovast.service.interface import UnsupportedOperation
 
-    with pytest.raises(UnsupportedOnLane,
-                       match="local_file is not supported on the http lane"):
+    with pytest.raises(UnsupportedOperation,
+                       match="local_file is not supported by the http implementation"):
         HTTPTransport("http://127.0.0.1:1").local_file("/results/camp-1/x.bin")

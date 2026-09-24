@@ -28,12 +28,8 @@ SIM_DIGEST = "reg.example/sim@sha256:" + "b" * 64
 
 @pytest.fixture(autouse=True)
 def _no_probes(monkeypatch):
-    """Keep the unit under test off docker and off a cluster.
-
-    Both are probed with multi-second timeouts per call, and neither has anything to do with
-    what these tests assert -- which is purely how a rewrite treats the record already on disk.
-    """
-    monkeypatch.setattr(execution_mod, "_get_image_revision", lambda image: "unknown")
+    """Keep the unit under test off a cluster: these tests are about how a rewrite treats the
+    record already on disk."""
     monkeypatch.setattr(execution_mod, "_get_cluster_info", lambda context=None: None)
     monkeypatch.setattr(execution_mod, "image_build_refs", lambda *a, **kw: {})
 
@@ -81,17 +77,10 @@ def test_fields_describing_this_execution_are_not_carried_forward(tmp_path):
 
 
 def test_the_unknown_placeholder_does_not_count_as_a_value(tmp_path):
-    """The subtle half, and the one that bit first.
-
-    ``_get_image_revision`` returns the literal string ``'unknown'`` when it cannot read an
-    image, so a resume's ``image_revision`` is *truthy* while carrying no fact at all. A
-    carry-forward that only fills falsy fields would let that placeholder overwrite a recorded
-    digest -- the very erasure it exists to prevent.
-    """
+    """A rewrite with no digest writes the ``'unknown'`` placeholder, which must not overwrite
+    a recorded digest."""
     create_execution_yaml(3, str(tmp_path), execution_params=_params(), image_digest=DIGEST)
     assert _read(tmp_path)["image_revision"] == DIGEST
 
-    # image_digest=None makes create_execution_yaml fall back to the probe, which is stubbed
-    # to the same 'unknown' it returns off-cluster.
     create_execution_yaml(3, str(tmp_path), execution_params=_params(), image_digest=None)
     assert _read(tmp_path)["image_revision"] == DIGEST

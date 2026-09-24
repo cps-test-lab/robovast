@@ -49,7 +49,7 @@ def test_service_client_follows_detected_service(monkeypatch):
 def test_service_client_raises_when_no_service_answers(monkeypatch):
     """No service is a missing dependency, for every verb -- not a second implementation.
 
-    Yielding a ``LocalTransport`` unless the caller passes ``require_service=True`` has
+    Yielding an in-process transport unless the caller passes ``require_service=True`` has
     ``workspace init`` writing into a local store with nothing listening while ``workspace
     run`` refuses: one command name, two systems, chosen by what happens to be on the port.
     There is no such parameter to default, so a caller cannot ask for that back.

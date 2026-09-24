@@ -20,10 +20,10 @@ from robovast.client.status import Phase, Status
 from robovast.common.campaign_data import write_execution_outcome
 from robovast.service import auth
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.data_app import build_data_app
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 from .conftest import TEST_TOKEN
 
@@ -92,7 +92,7 @@ def _standalone(root):
 def _mounted(root, tmp_path):
     """``vast serve``'s one app, with the same routes mounted."""
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: root
     with TestClient(build_app(lt, mount_mcp=False)) as client:
         yield client
@@ -266,7 +266,7 @@ def test_a_scoped_token_reaches_its_campaign_and_nothing_else(root):
         assert client.get(Routes.staged("image-builds/b")).status_code == 403
     # The control plane refuses it everywhere but the data routes it mounts.
     store = WorkspaceStore(registry=WorkspaceRegistry(root=root.parent / "ws"))
-    lt = LocalTransport(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: root
     with TestClient(build_app(lt, mount_mcp=False), headers=headers) as client:
         assert client.get(Routes.campaign_archive(_CAMPAIGN)).status_code == 200
@@ -320,7 +320,7 @@ def test_an_upload_that_is_not_a_tar_is_a_400(client):
 def test_the_control_plane_mints_tokens_the_data_plane_honours(root):
     """The scope a pod carries is minted by the transport from the secret its gate enforces."""
     store = WorkspaceStore(registry=WorkspaceRegistry(root=root.parent / "ws"))
-    lt = LocalTransport(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: root
     build_app(lt, mount_mcp=False, auth_token="a-configured-secret")
     token = lt.scoped_token(auth.scope_for_campaign(_CAMPAIGN))

@@ -17,8 +17,7 @@
 """Live campaign state holder (``ControllerState``).
 
 Every campaign is driven by a :class:`~robovast.execution.controller.CampaignController`
-that runs **in the driving process** — the ``vast`` CLI locally, or the
-``robovast-service`` for cluster runs. The controller advances a shared
+that runs **in the driving process** — the ``robovast-service``. The controller advances a shared
 :class:`ControllerState`; the service reads its :meth:`~ControllerState.snapshot`
 directly to answer ``GET /campaigns/{id}/status`` (no separate control server, no
 pod-IP hop — those existed only when the controller lived in its own pod).
@@ -376,9 +375,8 @@ STOP_ALREADY_OVER = (
 def stop_scope_for_phase(phase: str) -> "str | None":
     """Which unit of work a stop lands on for a campaign in *phase*, or ``None``.
 
-    The single place that decision is made, so the two lanes' ``stop`` implementations
-    cannot answer it differently -- they both used to inline ``phase ==
-    Phase.POSTPROCESSING`` and each restated the consequence in its own docstring.
+    The single place that decision is made, so an implementation's ``stop`` cannot answer
+    it differently from the base's reply.
 
     ``None`` means nothing of this campaign is running: every terminal phase, and any
     phase this vocabulary does not know. Callers report that rather than setting a flag

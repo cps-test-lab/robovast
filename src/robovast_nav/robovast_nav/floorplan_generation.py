@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 # Auxiliary container image that produces floorplan maps/meshes. Declared by
 # FloorplanVariation.get_required_container(); the active execution backend runs
-# our commands in it (ephemeral ``docker run`` locally, a controller-pod sidecar
-# via pods/exec in the cluster). Its entrypoint is ``floorplan``.
+# our commands in it (a container of the campaign's aux pod via pods/exec in the
+# cluster, an ephemeral ``docker run`` on a development machine). Its entrypoint is ``floorplan``.
 SCENERY_BUILDER_IMAGE = "ghcr.io/secorolab/scenery_builder"
 SCENERY_BUILDER_ENTRYPOINT = ["floorplan"]
 

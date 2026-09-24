@@ -66,7 +66,7 @@ def test_the_parse_runs_in_the_scenario_container_on_the_query_pool():
     assert request.container == "scenario"
     assert request.query is True, "a validation query must not disturb a held container"
     assert "/sources/ws-1/sim/scenario.osc" in request.command, \
-        "the exec lane mounts the workspace, so the path is spelled from there"
+        "the exec container mounts the workspace, so the path is spelled from there"
 
 
 def test_an_unresolved_import_is_the_campaigns_defect_and_fails_validation():
@@ -137,13 +137,13 @@ def test_the_check_crashing_is_reported_as_the_services_defect():
     And not blamed on the ``.vast`` either — the message says so in as many words, or the
     next hour goes into a file that was never the problem.
     """
-    exec_call = _Exec(raises=RuntimeError("no lane"))
+    exec_call = _Exec(raises=RuntimeError("no exec runner"))
 
     problems = _check(exec_call)
 
     assert problems[0]["severity"] == "unchecked"
     assert "defect in the service" in problems[0]["message"]
-    assert "no lane" in problems[0]["message"]
+    assert "no exec runner" in problems[0]["message"]
 
 
 def test_a_deployment_that_cannot_exec_is_not_the_services_defect():

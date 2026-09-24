@@ -141,7 +141,7 @@ SHM_HEADROOM = 1.25
 #: about a size is not.
 #:
 #: The threshold is Docker's own default rather than a number chosen here: a peak that
-#: fits in it -- the smallest pool any lane has applied -- needs no declaration,
+#: fits in it -- the smallest pool any runtime has applied -- needs no declaration,
 #: and reducing a declaration below it would buy nothing. One condition, and it covers every
 #: shape above without naming any of them.
 SHM_ADVICE_FLOOR_BYTES = 64 * 1024 * 1024
@@ -602,7 +602,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
 _UNDER_DETAIL = {
     "cpu": ("Exceeding a cpu reservation costs throttling for that scheduling period, so "
             "this is slow rather than broken -- but the runs are not getting the cpu the "
-            "campaign says they get, which makes timings incomparable across lanes."),
+            "campaign says they get, which makes timings incomparable across deployments."),
     "memory": ("Exceeding a memory limit is an OOM kill, not throttling: a run that touches "
                "the limit dies and the campaign loses that cell."),
 }
@@ -685,7 +685,7 @@ def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
         # Only a campaign recorded before robovast defaulted the pool can reach this: the
         # default is written into the campaign's config, so a composed campaign always has
         # a size to report. Kept rather than deleted because the advice is still true of
-        # those runs -- they really were handed whichever lane default applied -- and
+        # those runs -- they really were handed whichever runtime default applied -- and
         # dropping it would silently stop explaining their SIGBUS deaths.
         return [{
             "kind": "shm_not_declared",
@@ -694,12 +694,12 @@ def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
                       f"execution.shm_size had a default; a rerun reserves "
                       f"{format_memory(DEFAULT_SHM_SIZE_BYTES)} unless it says otherwise"),
             "detail": (
-                "This campaign was given whichever default its lane happened to apply -- on "
+                "This campaign was given whichever default its runtime happened to apply -- on "
                 "the cluster the pod's memory limits, or the whole node when none were "
-                f"declared; locally Docker's {format_memory(SHM_ADVICE_FLOOR_BYTES)}. Those "
-                "disagree, which is why the same .vast could survive on one lane and die of "
-                "SIGBUS (exit 135) on the other, unreported as an out-of-memory kill. A "
-                "campaign composed today gets one size on both lanes; declare "
+                f"declared; under Docker its {format_memory(SHM_ADVICE_FLOOR_BYTES)}. Those "
+                "disagree, which is why the same .vast could survive in one place and die of "
+                "SIGBUS (exit 135) in another, unreported as an out-of-memory kill. A "
+                "campaign composed today gets one size everywhere; declare "
                 f"execution.shm_size: {format_memory(suggested)} if this peak is "
                 "representative. " + _SHM_BASIS),
             "evidence": evidence,

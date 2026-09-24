@@ -20,9 +20,9 @@
 implementation and exposes it over the :class:`~robovast.service.interface.Routes`
 contract, so the same app serves:
 
-* a **local** ``vast serve`` (impl = :class:`~robovast.service.client.LocalTransport`,
-  Docker backend, local filesystem) — a persistent single-host service;
-* a **cluster** deployment (impl = the cluster service core).
+* a **cluster** deployment (impl = the cluster service core), which is every
+  production service;
+* the test suite's null service, for the routes themselves.
 
 This generalizes the per-campaign FastAPI control channel in
 :mod:`robovast.execution.control_server` into a persistent, campaign-spanning
@@ -52,8 +52,8 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
-                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_ON_LANE,
-                                        UnsupportedOnLane,
+                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
+                                        UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
@@ -292,8 +292,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # Nothing anywhere kept a series, so this process keeps one: 24 h at a 30 s sample.
     #
     # It lives here, in the serving layer, rather than on a transport. ``build_app(impl)``
-    # is the single path both lanes take, so one recorder covers local and cluster; a
-    # sampler inside ``LocalTransport`` would instead start a thread in every in-process
+    # is the single path every implementation takes, so one recorder covers it; a sampler
+    # inside the base would instead start a thread in every in-process
     # client and every test that constructs one. The precedent is ``_sse_campaign_list``
     # below: also a server-side derivative of an interface op, also with no method of its
     # own on ``RobovastInterface``.
@@ -500,14 +500,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             logger.warning("%s", e)
             raise HTTPException(status_code=503, detail=str(e),
                                 headers={ERROR_CODE_HEADER: EXEC_PATH_UNAVAILABLE}) from e
-        except UnsupportedOnLane as e:
-            # 501: the operation is on the interface and this lane does not offer it. Not a
-            # 400 (the input was fine), not a 409 (nothing to retry after) and not the 500
-            # a bare NotImplementedError would become -- that one still means a bug. The
-            # code lets a client tell "this lane cannot" from every other refusal without
+        except UnsupportedOperation as e:
+            # 501: the operation is on the interface and this implementation does not offer
+            # it. Not a 400 (the input was fine), not a 409 (nothing to retry after) and not
+            # the 500 a bare NotImplementedError would become -- that one still means a bug.
+            # The code lets a client tell "not offered" from every other refusal without
             # matching on the sentence.
             raise HTTPException(status_code=e.status, detail=str(e),
-                                headers={ERROR_CODE_HEADER: UNSUPPORTED_ON_LANE}) from e
+                                headers={ERROR_CODE_HEADER: UNSUPPORTED_OPERATION}) from e
         except RuntimeError as e:          # conflict (e.g. single-flight)
             raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -776,52 +776,25 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     async def _sample_usage():
         """Record one ``resource_usage()`` reading every ``_usage_sample_s``.
 
-        Goes through ``impl.resource_usage`` rather than reaching past it to a lane's
-        internals, which means it runs *through* ``LocalTransport``'s 10 s usage cache: at
+        Goes through ``impl.resource_usage`` rather than reaching past it to the service's
+        internals, which means it runs *through* the base's 10 s usage cache: at
         a 30 s cadence that never hits, so every entry here is a fresh reading, while a UI
         poll landing between two samples is still served from the cache. One pull per
         window either way -- on the cluster that pull is a ``list_node`` plus a filtered
         ``list_pod``, and a second, independent sampler would have doubled it.
 
         ``_pull_or_exit`` for the same reason the streams use it: the pull is network I/O
-        on the cluster lane, and a Ctrl+C must not wait on it.
-
-        One honest wrinkle, recorded here because it is invisible at the call site:
-        ``psutil.cpu_percent(interval=None)`` averages *since the previous call*, so on the
-        local lane the averaging window is now sometimes this 30 s and sometimes the
-        sidebar's 15 s poll, whichever asked last. Both are truthful "average since the
-        last reading"; the window simply is not fixed. Taking a private psutil sample to
-        fix that would put a second source of truth behind one number.
+        to the cluster, and a Ctrl+C must not wait on it.
         """
-        # One reading taken and discarded, then a full interval before the first recorded
-        # one. A lane whose "used" is an average *since the previous call* has no previous
-        # call at process start and answers 0.0 (documented on
-        # LocalTransport._compute_resource_usage). That is harmless for a meter which
-        # corrects itself seconds later, and not harmless here: a recorder makes the
-        # transient permanent, as a dip to 0% sitting at the head of the chart for a day.
-        #
-        # Both halves are needed, and the second is why this loop sleeps before it reads
-        # rather than after. Priming alone did not work: resource_usage memoises for
-        # _USAGE_CACHE_TTL, so a record taken immediately after the prime is served the
-        # primed 0.0 straight back out of the cache. Waiting a whole sample interval clears
-        # the cache and gives the average a real span to cover, without this code having to
-        # know what the TTL is -- only that a sample interval is longer than one.
-        #
-        # The cost is no data for the first interval, which is honest: an empty series
-        # says "nothing recorded yet", where a zero would have said "nothing running".
-        await _pull_or_exit(lambda: impl.resource_usage())  # pylint: disable=unnecessary-lambda
         while not app.state.should_exit():
             await anyio.sleep(_usage_sample_s)
-            # A lambda, not ``impl.resource_usage``: passing the bound method resolves the
-            # attribute *here*, outside the guarded call, so an impl without one (a partial
-            # test double, an older transport) raised straight out of this task and took
-            # the app's task group down with it. Recording usage must never be able to
-            # break serving.
+            # A lambda, so an implementation without the method fails inside the guarded
+            # call: recording usage must never be able to break serving.
             reading = await _pull_or_exit(lambda: impl.resource_usage())  # pylint: disable=unnecessary-lambda
             if reading is None:  # shutting down
                 return
             if isinstance(reading, Exception):
-                # A lane that cannot be read is not a reason to stop recording -- a cluster
+                # A failed reading is not a reason to stop recording -- a cluster
                 # is unreachable for a minute and then is not. Skipping the sample leaves a
                 # gap, which is the truth; ``sample_interval_s`` is what lets a reader see
                 # it as one.
@@ -969,19 +942,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return response
 
     @app.get(Routes.VERSION, response_model=VersionInfo, tags=["meta"])
-    def version(request: Request) -> VersionInfo:
-        info = _guard(impl.version)
-        # ``results_root``/``sources_root`` are documented as non-null *only when the
-        # caller can actually open them* -- a local-filesystem service AND a same-host
-        # request. The transport can only answer the first half, and this is the second.
-        # It was asserted rather than enforced (``local_transport`` even said "app.py
-        # blanks them again for a non-loopback request", of code that did not exist), so
-        # a `vast serve` reached through a tunnel handed a remote caller absolute paths
-        # on the *service's* disk -- which it would then try, and fail, to open.
-        if not _from_loopback(request):
-            info.results_root = None
-            info.sources_root = None
-        return info
+    def version() -> VersionInfo:
+        return _guard(impl.version)
 
     @app.get(Routes.USAGE, response_model=ResourceUsage, tags=["meta"])
     def resource_usage() -> ResourceUsage:
@@ -1040,13 +1002,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         """What this service is configured with, read back out of its own environment.
 
         Not a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it
-        describes the process that is serving rather than the campaigns it drives, and both
-        lanes answer it identically -- the pod and a `vast serve` both hold their settings
-        in the environment.
+        describes the process that is serving rather than the campaigns it drives, and the
+        process holds its settings in the environment.
 
-        Host paths are blanked for a non-loopback caller, the same rule ``/version``
-        applies to ``results_root`` -- so the two admin surfaces do not disagree about
-        whether a path on the service's disk is publishable.
+        Host paths are blanked for a non-loopback caller.
         """
         loopback = _from_loopback(request)
         return ServiceConfig(
@@ -1391,10 +1350,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def describe_world(
         workspace_id: str, path: str = Body("", embed=True),
         targets: str = Body("", embed=True), entities: bool = Body(False, embed=True),
-        backend: str = Body("", embed=True),
     ) -> WorldDescription:
-        return _guard(
-            lambda: impl.describe_world(workspace_id, path, targets, entities, backend))
+        return _guard(lambda: impl.describe_world(workspace_id, path, targets, entities))
 
     # -- file side channel: grant + raw PUT ---------------------------------
 
@@ -1547,9 +1504,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         # before playing.
         #
         # `impl.local_file` is asked for outright rather than probed with getattr: every
-        # transport implements it (they all subclass LocalTransport), so a presence check
-        # could only ever succeed, so a branch guarded on it -- buffering the bytes for "a
-        # lane with no path" -- is unreachable.
+        # transport implements it (they all subclass ServiceBase), so a presence check
+        # could only ever succeed, so a branch guarded on it -- buffering the bytes for "an
+        # implementation with no path" -- is unreachable.
         return _guard(lambda: FileResponse(impl.local_file(address), media_type=media_type))
 
     @app.get(Routes.RESULTS + "/{campaign_id}/{path:path}", tags=["files"])
@@ -1981,7 +1938,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # ``GET /campaigns/{id}/<name>?config_name&run_id&…`` → JSON, dispatched to the plugin
     # handler with a RunDataContext. Registered after the core routes and before the SPA
     # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
-    # ``impl.campaign_dir``, which is the campaign itself on either lane.
+    # ``impl.campaign_dir``, which is the campaign itself.
     from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
         RunDataContext, load_service_endpoints)
 
@@ -2142,8 +2099,8 @@ def _mount_ui(app) -> None:
 
 #: Where the origin comes from, for a service that was deployed rather than started by
 #: hand: ``vast cluster setup`` bakes it from the Ingress, because an in-pod service is
-#: given no RBAC to read its own. Named here as well as in the cluster lane that writes it,
-#: since this is the side that reads it and the core must not import a lane.
+#: given no RBAC to read its own. Named here as well as in the cluster service that writes
+#: it, since this is the side that reads it and the core must not import the cluster service.
 PUBLIC_URL_ENV = "ROBOVAST_PUBLIC_URL"
 
 

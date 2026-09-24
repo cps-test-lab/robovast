@@ -69,9 +69,9 @@ search:
   per_batch: 8
   budget:
   # RUNS, like every other campaign here, and for the reason they all use it: wall-clock is
-  # not a measure of compute on a shared lane. A `time:` budget spends whatever the cluster
+  # not a measure of compute on a shared cluster. A `time:` budget spends whatever the cluster
   # happened to give this campaign while it was contended -- measured, the same 5400 s that
-  # is ample on a quiet lane bought 63 runs against the sibling campaigns' 180-256, so the
+  # is ample on a quiet cluster bought 63 runs against the sibling campaigns' 180-256, so the
   # archive was judged on a fraction of their simulator and its coverage criterion never had
   # the chance to fire.
   #

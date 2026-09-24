@@ -31,7 +31,7 @@ The four images
        image carrying roqsim *and* the RoboVAST contract, so the ROS shape runs its own
        simulator container from this image too.
    * - ``robovast-controller``
-     - The service: ``vast serve``, the REST API and the web UI. ``python:3.12-slim``, with
+     - The service (``vast serve``): the REST API and the web UI. ``python:3.12-slim``, with
        no ROS and no GL — deliberately, so the long-lived Deployment stays small.
    * - ``robovast-sidecar``
      - An alpine helper carrying ``curl`` and GNU ``tar`` — the two halves of every
@@ -372,10 +372,9 @@ image without pulling it:
    then fails. Like the source refs above these are build ``ARG``\ s, so the labels are the only
    way out of the build — see ``container/pins/``.
 
-All of them reach a campaign's ``_execution/execution.yaml`` as ``image_build_refs``. On the
-cluster lane that block used to be empty for every campaign: it read labels with ``docker
-inspect``, and the controller pod that writes the file has no docker CLI. It now uses the labels
-the protocol check already read from the registry.
+All of them reach a campaign's ``_execution/execution.yaml`` as ``image_build_refs``. The
+controller pod that writes the file has no docker CLI, so the block takes the labels the protocol
+check already read from the registry.
 
 ``org.robovast.roqsim-ref`` is also how a campaign says **which simulator it ran**: the build
 resolves the ref it clones to a commit before building, and an image built ``FROM`` the family

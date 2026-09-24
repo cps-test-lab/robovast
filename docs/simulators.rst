@@ -80,15 +80,15 @@ a constant because the role name is:
    ros_launch('nav2_bringup', 'bringup_launch.py', [...]) with:
        remote("ipc:///ipc/sut")
 
-``/ipc`` is the one address that is identical on both lanes — Compose mounts a tmpfs
-volume there, Kubernetes an ``emptyDir`` — so a scenario needs no lane-dependent branch.
+``/ipc`` is one address for every run — an ``emptyDir`` the pod's containers share — so
+a scenario needs no deployment-dependent branch.
 
 .. warning::
 
    **Do not reach for ``osc.docker``.** Its ``docker_exec`` / ``docker_put`` take a
    ``container:`` parameter and look like the right tool, but they drive the Docker
-   daemon: they need a socket mount and do not exist on the Kubernetes lane. A campaign
-   built on them works locally and fails in-cluster. Anything that must reach the SUT —
+   daemon: they need a socket mount, which a cluster pod does not have, so a campaign built on
+   them fails in-cluster. Anything that must reach the SUT —
    including writing a file inside it at run time — goes through ``remote()``.
 
 **Only node-free actions can be ``remote()``-modified.** The server passes exactly three
@@ -408,7 +408,7 @@ Asking every time rather than only when a cheap test suspects a chain: that test
 second copy of the simulator's rule, free to disagree with it, and wrong in the direction that
 stages too little -- which nothing notices until a run opens the file that never traveled. What
 it costs instead is an exec in a container the caller already holds, since ``validate_project``
-and ``preview_configurations`` compose inside the lane's aux-runner context and keep it warm
+and ``preview_configurations`` compose inside the service's aux-runner context and keep it warm
 across an authoring loop.
 
 Every world, and each question once: within one composition the answer is memoized on what
@@ -419,11 +419,11 @@ question and one container round trip, however many ``sim`` blocks it resolves t
 That query is a container like any other, so it is subject to the same two facts every aux
 container is: it is handed the campaign's files at ``/config`` (the command names the world
 there, not by its path on the host), and its image reference must be one a registry can serve
--- a ``family:`` ref is resolved for the local ``docker run`` fallback, and deliberately left
-symbolic for the cluster factory, whose aux Pod names its containers after the spec's image.
-Both were once missing here and the query could not run at all: on the local lane it asked
-``docker`` for an image called ``family``, and once past that it was given a world path
-relative to a directory the container did not have.
+-- a ``family:`` ref is resolved for the ``docker run`` fallback ``vast configuration
+generate`` uses, and deliberately left symbolic for the cluster factory, whose aux Pod names
+its containers after the spec's image. Both were once missing here and the query could not
+run at all: it asked for an image called ``family``, and once past that it was given a world
+path relative to a directory the container did not have.
 
 **Packing groups by the resolved block.** A job's containers start once and are not restarted
 between packed work items, so one job runs one compiled model; ``runs_per_job > 1`` therefore

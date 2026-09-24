@@ -10,8 +10,8 @@ Kubernetes stream client can write stdin but cannot half-close it, so the receiv
 forever, the exec never returns, and ``run()`` hangs. Framing the read with ``head -c
 <n>`` is what avoids it.
 
-The transfer goes through the service's data plane instead, the way a campaign Job and the
-container-exec lane stage: a ``curl | tar`` fetch and a ``tar | curl`` delivery, both
+The transfer goes through the service's data plane instead, the way a campaign Job and
+``KubeExecRunner`` stage: a ``curl | tar`` fetch and a ``tar | curl`` delivery, both
 exec'd in the pod's transfer container, so no stdin in either direction and that failure
 mode is excluded by construction rather than by a correct byte count. What is pinned here
 is that *absence*, the empty-workspace short-circuit, and the cleanup — a per-variation
@@ -601,15 +601,12 @@ def test_aux_pod_pull_secret_is_set_only_when_named(secret, staged):
         assert "imagePullSecrets" not in m
 
 
-# -- the exec bound (shared with the container-exec lane) ---------------------
+# -- the exec bound (shared with KubeExecRunner) ------------------------------
 
 
 def test_a_hung_helper_does_not_hang_the_campaign_forever(monkeypatch, staged):
-    """``_exec`` had no overall bound: it polled ``update(timeout=1)`` until the command
-    ended, so a helper that never ended took the campaign's worker thread with it.
-
-    It now shares the exec-lane's bounded stream, and a timeout is reported as the same
-    failure type as any other non-zero exit, so the plugin contract is unchanged.
+    """``_exec`` runs on ``KubeExecRunner``'s bounded stream, so a helper that never ends
+    times out, and the timeout is reported as the same failure type as any non-zero exit.
     """
     import subprocess
 
@@ -683,10 +680,8 @@ def test_a_terminating_pod_is_waited_out_rather_than_adopted(monkeypatch, staged
 def test_the_session_honours_the_service_context(monkeypatch, staged):
     """Without it, an aux pod lands in whichever cluster the *host* kubeconfig points at.
 
-    That is not a small inconvenience: the campaign's helper containers would run
-    somewhere else entirely while looking perfectly valid. The container-exec lane has had
-    this test since a live cluster taught it the lesson; this path had the same fallback
-    and no test, and it sent a standalone driver to a different cloud.
+    The campaign's helper containers would then run somewhere else entirely while looking
+    perfectly valid.
     """
     seen = {}
     monkeypatch.setattr("robovast.execution.cluster_execution.kube_client.load_kube_config",
@@ -871,11 +866,8 @@ def test_a_runner_exposes_a_single_file_inside_a_mounted_directory(monkeypatch, 
 
     `mount_at` names the path the command was written for -- the scene build's
     `--override /aux/roqsim_scene_overrides.yaml` -- and only the directory around it can be a
-    volume. Both halves of this were broken: `expose` refused any path that was not itself
-    mountable, and the copy assumed a tree (`cp -R 'file/.'` copies nothing). It failed only
-    on the cluster, where a mount is an emptyDir the Pod declares, while the local lane
-    bind-mounted the file and never noticed -- so the run view asked for geometry and got
-    "a new path has to be added to AUX_MOUNTABLE_PATHS".
+    volume, an emptyDir the Pod declares: `expose` accepts a file inside a mountable
+    directory, and the copy places the file itself (`cp -R 'file/.'` would copy nothing).
     """
     runner = _runner(staged)
     rec = _Recorder()
@@ -908,11 +900,9 @@ def test_a_runner_still_refuses_a_file_outside_every_mounted_directory():
 
 
 def test_the_scene_builds_overrides_mount_is_one_the_cluster_can_declare():
-    """The bug was a broken JOIN: `scene_cache` picked a path, this lane declares them.
+    """`scene_cache` picks the overrides path; the aux Pod declares the mountable ones.
 
-    Nothing connected the two, so the mismatch surfaced as a generator failure on the
-    cluster only. This is that connection, in the direction that matters -- whoever moves
-    `_OVERRIDES_MOUNT` next has to move it somewhere the Pod mounts.
+    Whoever moves `_OVERRIDES_MOUNT` has to move it somewhere the Pod mounts.
     """
     from robovast.execution.cluster_execution.container_runner import AUX_MOUNTABLE_PATHS
     from robovast.service.scene_cache import _OVERRIDES_MOUNT

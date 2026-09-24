@@ -82,7 +82,7 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool,
 
     from robovast.service.interface import \
         ListCampaignsRequest  # pylint: disable=import-outside-toplevel
-    client = service_access.client_or_local()
+    client = service_access.require_service()
     page = client.list_campaigns(ListCampaignsRequest(limit=_CAMPAIGN_SCAN, offset=0))
     matched = [c.campaign_id for c in page.campaigns if pattern.search(c.campaign_id)]
     note = ""
@@ -346,7 +346,7 @@ def search_run_logs(
         terms = _predicates(grep=grep, min_severity=min_severity, config_filter=config_filter,
                             run_id=run_id, container=container, node=node, source="",
                             t0=t0, t1=t1, in_window=None)
-    except ValueError as e:
+    except (ValueError, service_access.NoService) as e:
         return {"error": str(e)}
     if not campaigns:
         return {"error": f"no campaign matches {campaign_id!r}"}

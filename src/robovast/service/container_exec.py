@@ -1,4 +1,4 @@
-"""Run one command in an experiment image — the lane-agnostic half.
+"""Run one command in an experiment image — the runner-agnostic half.
 
 This is a **diagnostic**: it answers "is this container set up correctly?" and "does
 this one config run?" without producing a campaign. Nothing it does is durable, and
@@ -9,7 +9,7 @@ it dies with it. A caller cannot accidentally mistake its output for a result.
 What lives here: request validation, limit derivation, the staging that turns a project
 into a mountable ``/config``, the environment the command runs under, and the
 single-container state machine plus its reaper. What lives in a transport: actually
-starting a container and exec'ing in it, via :class:`ExecLane`.
+starting a container and exec'ing in it, via :class:`ExecRunner`.
 
 Two invariants worth stating, because both were deliberate choices:
 
@@ -19,9 +19,7 @@ Two invariants worth stating, because both were deliberate choices:
   bounded pool of *query* containers for read-only introspection, which the caller never
   holds state in. Slots exist because a one-shot exec stops whatever is held: while there
   was a single container, every read-only ``describe_scenario`` destroyed the one its
-  caller was debugging in. Neither name may be the campaign container's, which is
-  single-flight and force-removed by ``LocalTransport`` to unblock a stop; strays are
-  swept by name prefix (docker) or by :data:`POD_LABEL` (cluster), since a query slot's
+  caller was debugging in. Strays are swept by :data:`POD_LABEL`, since a query slot's
   key does not survive a restart.
 - **The command runs through the run's own ``entrypoint.sh``**, never a hand-rolled
   prelude. The environment a scenario sees (the ROS overlay, ``/ws/install``, the
@@ -40,14 +38,11 @@ import time
 from typing import Optional, Protocol
 
 from robovast.common.execution import prepare_campaign_configs, render_entrypoint, scenario_env
-from robovast.common.host_display import host_display
 from robovast.service.interface import ExecContainerState, ExecRequest, ExecResult, ExecStopResult
 
 logger = logging.getLogger(__name__)
 
-#: Deliberately not ``robovast``: that is the campaign container's single-flight name,
-#: and ``LocalTransport`` runs ``docker rm -f robovast`` to unblock a stop — which would
-#: kill a held diagnostic container, or be blocked by it.
+#: The held container's name, distinct from anything a campaign runs.
 CONTAINER_NAME = "robovast-exec"
 #: Cluster equivalent, for finding and reaping strays. Deliberately shared by every slot:
 #: a stray sweep has to find *all* of them, including a query container whose slot key
@@ -128,10 +123,10 @@ LIMIT_SOURCE_CONFIG = "execution.timeout"
 LIMIT_SOURCE_DEFAULT = "default"
 
 
-class ExecLane(Protocol):
-    """The lane-specific half: a *named* held container, started and exec'd into.
+class ExecRunner(Protocol):
+    """The runner half: a *named* held container, started and exec'd into.
 
-    Implemented by ``LocalTransport`` (docker) and ``ClusterService`` (an aux pod).
+    Implemented by ``KubeExecRunner`` (an aux pod).
 
     Every held operation takes a *slot*, and the container it addresses is
     :func:`container_name` of it. The slot was a constant until the read-only
@@ -149,26 +144,16 @@ class ExecLane(Protocol):
         """Start *slot*'s container, idle, so commands can be exec'd into it.
 
         With :attr:`ExecSpec.aux_spec` set the container is a variation's helper image:
-        nothing is staged into it and it is created however that lane already creates an
-        aux container. A lane with no separate aux mechanism may ignore the field.
+        nothing is staged into it and it is created from the aux manifest.
         """
 
-    def exec_in(self, target, argv: list, limit_s: int,
-                env: dict | None = None) -> tuple[int, str, str, bool]:
+    def exec_in(self, target, argv: list, limit_s: int) -> tuple[int, str, str, bool]:
         """Run *argv* in an **already-running** container named by *target*.
 
-        The lane-specific half of every exec, with the container to enter as a parameter
-        rather than a constant. *target* is opaque and lane-shaped -- a container name on
-        docker, a ``(pod, container)`` pair on Kubernetes -- so a caller obtains one from
-        the lane rather than constructing it.
-
-        Both docker and the Kubernetes API require that argument regardless, so naming it
-        is not a new capability: it is the same call with the constant lifted out. That is
-        what lets one primitive serve the held diagnostic container *and* a live job's,
-        instead of a second exec path growing beside this one.
-
-        *env* is applied where the lane can: ``docker exec`` carries it per call, while a
-        pod bakes its environment at creation and ignores it here.
+        The runner half of every exec, with the container to enter as a parameter rather
+        than a constant. *target* is opaque -- a ``(pod, container)`` pair -- so a caller
+        obtains one from the runner rather than constructing it. That is what lets one
+        primitive serve the held diagnostic container *and* a live job's.
         """
 
     def exec_in_held(self, spec: "ExecSpec", limit_s: int, detach: bool,
@@ -194,7 +179,7 @@ class ExecLane(Protocol):
         """
 
     def sweep_held(self) -> list:
-        """Remove **every** exec container this lane owns; return what went.
+        """Remove **every** exec container this runner owns; return what went.
 
         Not ``stop_held`` per slot: after a restart the query slots' keys are gone (they
         are derived from an identity nothing persists), so a sweep has to find containers
@@ -205,7 +190,7 @@ class ExecLane(Protocol):
 
 
 class ExecSpec:
-    """Everything a lane needs to run one command: image, mounts, env, argv.
+    """Everything a runner needs to run one command: image, mounts, env, argv.
 
     ``config_dir`` is a staging directory this object owns — the caller must
     :meth:`close` it (or use it as a context manager) so a failed exec does not leak a
@@ -215,20 +200,20 @@ class ExecSpec:
     def __init__(self, *, image: str, command: str, config_dir: str,
                  env: dict, workspace_dir: str = "", workspace_id: str = "",
                  config_name: str = "", log_path: str = "", staging_dir: str = "",
-                 gui: bool = False, image_identity: str = "", aux_spec=None):
+                 image_identity: str = "", aux_spec=None):
         self.image = image
         #: The :class:`~robovast.common.variation.container_runner.ContainerSpec` this
         #: container exists to *be*, when it is a variation's helper image rather than a
-        #: campaign's. Set only by :meth:`ExecManager.hold`, and what tells a lane to
+        #: campaign's. Set only by :meth:`ExecManager.hold`, and what tells the runner to
         #: create the container from the aux manifest and stage nothing into it: an aux
         #: runner mirrors its own workspace around each command, so there is no ``/config``
         #: tree to put there and no command to run at creation. ``None`` is every other
         #: held container, whose contract is unchanged.
         self.aux_spec = aux_spec
-        #: The registry-free name of :attr:`image`, for the caller. The concrete ref is a
-        #: local docker tag on one lane and a registry-qualified one on the other, and the
-        #: second must never reach a client — but a caller still needs to know *which* image
-        #: its container is, so the two travel together rather than the wrong one going out.
+        #: The registry-free name of :attr:`image`, for the caller. The concrete ref is
+        #: registry-qualified and must never reach a client — but a caller still needs to
+        #: know *which* image its container is, so the two travel together rather than the
+        #: wrong one going out.
         self.image_identity = image_identity or image
         self.command = command
         #: Host directory mounted read-only at ``/config`` — already in final layout.
@@ -238,10 +223,6 @@ class ExecSpec:
         self.workspace_id = workspace_id
         self.config_name = config_name
         self.log_path = log_path
-        #: Mount the host's X socket so the container can draw on the serve host's
-        #: display. A lane property rather than an env one: the mount exists only from
-        #: container creation, which is why it is part of the held container's identity.
-        self.gui = gui
         #: The temp tree that owns ``config_dir``; removed by :meth:`close`.
         self._staging_dir = staging_dir or config_dir
 
@@ -267,9 +248,8 @@ class ExecSpec:
     def detached_start_script(self) -> str:
         """Shell that starts this spec's scenario in the background and proves it lives.
 
-        Shared by both lanes, and that sharing is the point: the two had their own copies,
-        and the fix for a silent failure — a scenario that died on launch while the exec
-        reported success — landed in only one of them.
+        On the spec rather than in the runner, so the check against a silent failure — a
+        scenario that died on launch while the exec reported success — has one copy.
 
         Three things it must do:
 
@@ -371,8 +351,7 @@ def deadline_for(limit_s: int) -> int:
     return max(IDLE_WAIT_CAP_S, limit_s + DEADLINE_GRACE_S)
 
 
-def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
-              gui: bool = False) -> dict:
+def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> dict:
     """The environment the command runs under.
 
     Reuses the run's own derivation (:func:`~robovast.common.scenario_env`) so the
@@ -386,17 +365,8 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
     # config's parameters at ``<config>/_config/scenario.config``, and the assembled
     # mount puts them at ``/config/scenario.config`` — already the entrypoint's default.
     # No *virtual* framebuffer: Xvfb costs seconds we exist to save, and a command that
-    # needs one belongs in a campaign. This holds with `gui` too — there the container
-    # draws on the host's X server through a mounted socket, which costs nothing and is
-    # precisely what Xvfb would shadow.
+    # needs one belongs in a campaign.
     env["ENABLE_X11"] = "false"
-    if gui:
-        # The socket is mounted by the lane; this says which display to use. Read from
-        # the service process, defaulting like the generated compose does, so a daemon
-        # started without DISPLAY still reaches a running :0.
-        env["DISPLAY"] = host_display() or ":0"
-        env.setdefault("LIBGL_ALWAYS_SOFTWARE",
-                       os.environ.get("LIBGL_ALWAYS_SOFTWARE", "0"))
     if not staged_config:
         # Nothing is staged in the bare-image case, so /config/collect_sysinfo.py does
         # not exist — and under `set -e` the entrypoint would abort on it before ever
@@ -417,8 +387,7 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool,
 
 
 def stage(vast_file: str, config_name: str, *,
-          cluster: bool, command: str,
-          gui: bool = False) -> tuple[ExecSpec, dict, int, str]:
+          cluster: bool, command: str) -> tuple[ExecSpec, dict, int, str]:
     """Turn a resolved ``.vast`` into a runnable :class:`ExecSpec`.
 
     A campaign's ``_config/`` is itself a project, so both sources reach this with just
@@ -429,10 +398,9 @@ def stage(vast_file: str, config_name: str, *,
     entrypoint is staged. It implies an empty *config_name*, which is the same branch a
     bare-image exec of a project already takes.
 
-    The entrypoint is always rendered **for the lane this exec runs on** — never copied
-    from a campaign. ``prepare_campaign_configs`` substitutes lane-specific init and
-    post-run blocks, so a cluster campaign's entrypoint carries cluster init and the
-    done-marker hand-off to the pod's uploader, which would be wrong to run locally.
+    The entrypoint is always rendered **for this exec** — never copied from a campaign,
+    whose entrypoint carries cluster init and the done-marker hand-off to the pod's
+    uploader.
     """
     from robovast.common import load_config
     from robovast.execution.controller import build_campaign_data, filter_configs_by_name
@@ -445,7 +413,7 @@ def stage(vast_file: str, config_name: str, *,
             # That keeps a "does this import?" check off the variation-plugin path, and
             # avoids failing input checks (a missing .osc) that the question does not
             # depend on.
-            # An image-family exec has no project, so there is nothing to read a lane
+            # An image-family exec has no project, so there is nothing to read a
             # timeout or an env override out of -- the bare image and its command.
             execution = ((load_config(vast_file) or {}).get("execution") or {}
                          if vast_file else {})
@@ -459,19 +427,15 @@ def stage(vast_file: str, config_name: str, *,
             campaign_data = build_campaign_data(vast_file, generated)
             campaign_data["configs"] = filter_configs_by_name(
                 campaign_data["configs"], config_name)
-            # gui is forwarded so ``execution.local.gui.parameter_overrides`` reaches the
-            # staged scenario: without it a windowed exec would stage the headless
-            # defaults and draw nothing on the display it just mounted.
-            prepare_campaign_configs(generated, campaign_data, cluster=cluster, gui=gui)
+            prepare_campaign_configs(generated, campaign_data, cluster=cluster)
             scenario_vars = scenario_env(campaign_data)
         execution = campaign_data.get("execution") or {}
         config_mount = _assemble_config_mount(staging, generated, campaign_data)
         limit_s, limit_source = derive_limit(campaign_data, command)
-        env = build_env(scenario_vars, execution, staged_config=bool(config_name),
-                        gui=gui)
+        env = build_env(scenario_vars, execution, staged_config=bool(config_name))
         spec = ExecSpec(
             image="", command=command, config_dir=config_mount, env=env,
-            staging_dir=staging, config_name=config_name, gui=gui,
+            staging_dir=staging, config_name=config_name,
             log_path=f"{OUTPUT_DIR}/logs/system.log" if not command.strip() else "")
         return spec, campaign_data, limit_s, limit_source
     except Exception:
@@ -559,7 +523,7 @@ def vast_in_dir(project_dir: str, config_path: str = "") -> str:
 
 
 class ContainerExecManager:
-    """Owns each slot's container lifetime; delegates container work to an :class:`ExecLane`.
+    """Owns each slot's container lifetime; delegates container work to an :class:`ExecRunner`.
 
     Two kinds of slot, with deliberately different lifetimes:
 
@@ -579,8 +543,8 @@ class ContainerExecManager:
     takes the same lock, so a reap cannot race a call that is about to reuse a container.
     """
 
-    def __init__(self, lane: ExecLane, *, poll_s: float = 5.0):
-        self._lane = lane
+    def __init__(self, runner: ExecRunner, *, poll_s: float = 5.0):
+        self._runner = runner
         self._poll_s = poll_s
         self._lock = threading.RLock()
         #: slot -> record. Insertion order is the LRU order for query eviction, kept by
@@ -607,10 +571,10 @@ class ContainerExecManager:
                 deadline_in_s=max(0, int(held["deadline"] - time.monotonic())))
 
     def states(self) -> dict:
-        """Every held container, by slot — what a lane's occupancy actually is.
+        """Every held container, by slot — what the service's exec occupancy actually is.
 
-        ``get_resource_usage`` reports this so a caller that finds the lane full can
-        attribute the shortfall. Reporting only the user slot would show a lane holding
+        ``get_resource_usage`` reports this so a caller that finds the cluster full can
+        attribute the shortfall. Reporting only the user slot would show a service holding
         containers as holding none.
         """
         with self._lock:
@@ -639,7 +603,7 @@ class ContainerExecManager:
         :data:`SLOT_USER`'s container.
 
         *fresh* stops this call joining a container that is already held, so one is
-        created and the image is fetched under the lane's pull policy. It is deliberately
+        created and the image is fetched under the cluster's pull policy. It is deliberately
         not part of *identity*: the caller is replacing what that identity addresses, not
         addressing something else, so the next ordinary call reuses what this one made.
         """
@@ -652,7 +616,7 @@ class ContainerExecManager:
             with self._lock:
                 if slot in self._held:
                     self._held[slot]["reused"] = reused
-            result = self._lane.exec_in_held(spec, limit_s, detach=False, slot=slot)
+            result = self._runner.exec_in_held(spec, limit_s, detach=False, slot=slot)
             self._touch(slot)
             return result
 
@@ -664,7 +628,7 @@ class ContainerExecManager:
             # purpose is to survive calls like this one.
             self.stop()
             try:
-                return self._lane.run_once(spec, limit_s)
+                return self._runner.run_once(spec, limit_s)
             finally:
                 spec.close()
 
@@ -676,7 +640,7 @@ class ContainerExecManager:
                 self._held[SLOT_USER]["reused"] = reused
         # A scenario is detached so this call can return and the next one inspect it;
         # a command runs in the foreground and its output is the answer.
-        result = self._lane.exec_in_held(spec, limit_s, detach=spec.runs_scenario,
+        result = self._runner.exec_in_held(spec, limit_s, detach=spec.runs_scenario,
                                          slot=SLOT_USER)
         self._touch(SLOT_USER)
         return result
@@ -694,7 +658,7 @@ class ContainerExecManager:
         only latency and the windows are far longer" — because an aux runner mirrors its
         workspace around each command and leaves nothing in the container between them. It
         shares :data:`QUERY_POOL_MAX` with the introspection containers for the same
-        reason: they are the same kind of thing competing for one lane.
+        reason: they are the same kind of thing competing for one cluster.
         """
         slot = query_slot(identity)
         self._evict_query_over_cap(keep=slot)
@@ -729,7 +693,7 @@ class ContainerExecManager:
     def stop(self, slot: str = SLOT_USER) -> ExecStopResult:
         """Stop *slot*'s container. Nothing held is an empty result, not a failure.
 
-        The lane's answer counts even when this manager has no record: a container can
+        The runner's answer counts even when this manager has no record: a container can
         outlive the record (a service restart), and reaping that stray is the point of
         giving it a fixed name.
         """
@@ -737,7 +701,7 @@ class ContainerExecManager:
             had_record = slot in self._held
         # Container first, then its /config: unmounting by removing the host directory
         # under a live container would be the wrong order.
-        stopped = bool(self._lane.stop_held(slot)) or had_record
+        stopped = bool(self._runner.stop_held(slot)) or had_record
         self._release_held_spec(slot)
         with self._lock:
             self._held.pop(slot, None)
@@ -816,9 +780,9 @@ class ContainerExecManager:
                         "discard it")
         # Replace an idle container: nothing to lose.
         self._release_held_spec(slot)
-        self._lane.stop_held(slot)
+        self._runner.stop_held(slot)
         deadline = deadline_for(limit_s)
-        self._lane.start_held(spec, deadline, slot)
+        self._runner.start_held(spec, deadline, slot)
         with self._lock:
             now = time.monotonic()
             self._held.pop(slot, None)      # re-insert, so order stays LRU
@@ -855,7 +819,7 @@ class ContainerExecManager:
 
     def _workload_running_locked(self, slot: str = SLOT_USER) -> bool:
         try:
-            return self._lane.held_workload_running(slot)
+            return self._runner.held_workload_running(slot)
         except Exception as exc:            # a probe failure must not reap a live run
             logger.debug("could not probe %s workload: %s", container_name(slot), exc)
             return True
@@ -870,7 +834,7 @@ class ContainerExecManager:
         failure to a caller who asked only for a container to run in.
         """
         try:
-            return self._lane.held_container_alive(slot)
+            return self._runner.held_container_alive(slot)
         except Exception as exc:  # noqa: BLE001 - unanswerable means replace, never reuse
             logger.debug("could not confirm %s is still up; replacing it: %s",
                          container_name(slot), exc)
@@ -880,11 +844,11 @@ class ContainerExecManager:
         """Whether *slot*'s container is still up; ``True`` when the probe cannot say.
 
         Unanswerable reads as alive for the same reason an unanswerable busyness probe
-        reads as busy: this decides whether to tear a container down, and a lane that
+        reads as busy: this decides whether to tear a container down, and a runner that
         cannot answer is not evidence that there is nothing there.
         """
         try:
-            return self._lane.held_container_alive(slot)
+            return self._runner.held_container_alive(slot)
         except Exception as exc:  # noqa: BLE001 - a probe failure must not reap a live one
             logger.debug("could not probe whether %s is still up: %s",
                          container_name(slot), exc)
@@ -916,7 +880,7 @@ class ContainerExecManager:
                             and not self._workload_running_locked(slot)
                             and now >= held["idle_deadline"]):
                         due.append((slot, "idle"))
-            # Outside the lock: stop() takes it, and a lane teardown is slow enough that
+            # Outside the lock: stop() takes it, and a pod teardown is slow enough that
             # holding it across one would stall every call for the duration.
             for slot, reason in due:
                 logger.info("reaping exec container %s (%s)",
@@ -948,7 +912,7 @@ __all__ = [
     "SLOT_USER", "SLOT_QUERY_PREFIX", "QUERY_IDLE_REAP_S", "QUERY_IDLE_WAIT_CAP_S",
     "QUERY_POOL_MAX", "container_name", "query_slot",
     "LIMIT_SOURCE_COMMAND", "LIMIT_SOURCE_CONFIG", "LIMIT_SOURCE_DEFAULT",
-    "ExecLane", "ExecSpec", "ContainerExecManager",
+    "ExecRunner", "ExecSpec", "ContainerExecManager",
     "validate", "derive_limit", "deadline_for", "build_env", "stage", "result_from",
     "vast_in_dir",
 ]

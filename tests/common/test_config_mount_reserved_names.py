@@ -6,8 +6,8 @@
 A configuration's file is staged where the campaign's copy would have been, and the run's
 own furniture lives at that same mount: the entrypoint the container executes, the scenario
 it runs, the parameter documents it reads. A deploy path equal to one of those would replace
-it, so composition refuses it -- both lanes would otherwise discover it after the image
-pull, one as a refused mount and the other as a pod that dies in its entrypoint.
+it, so composition refuses it -- the cluster would otherwise discover it after the image
+pull, as a pod that dies in its entrypoint.
 """
 
 import textwrap

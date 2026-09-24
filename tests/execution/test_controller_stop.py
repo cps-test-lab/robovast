@@ -170,7 +170,12 @@ def test_composition_runs_on_when_no_stop_was_asked_for(monkeypatch, tmp_path):
 
     monkeypatch.setattr(controller, "CampaignStore", _reached)
 
+    class _Backend(controller.ExecutionBackend):
+        def run_batch(self, *a, **k):
+            raise AssertionError("no batch runs before the store is opened")
+
     with pytest.raises(_Reached):
         controller.run_batch_campaign(
             str(tmp_path / "c.vast"), types.SimpleNamespace(), str(tmp_path), 1,
-            campaign_id="camp-1", state=_state(False, phase=Phase.VARIATION))
+            campaign_id="camp-1", state=_state(False, phase=Phase.VARIATION),
+            backend=_Backend())

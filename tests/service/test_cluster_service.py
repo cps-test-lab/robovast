@@ -4,7 +4,7 @@
 
 The service drives cluster campaigns **in-process** (one worker thread each) over a
 KubernetesBackend; there is no per-campaign controller pod any more, so these cover
-the launch *hooks* it overrides on LocalTransport plus the aux-pod manifest that
+the launch *hooks* it answers for ServiceBase plus the aux-pod manifest that
 replaced the old controller-pod sidecar.
 """
 
@@ -190,12 +190,7 @@ def test_run_options_carry_upload_to_share(cs):
     assert default.upload_to_share is False
 
 
-def test_postprocessing_is_chained_by_the_builder_not_the_worker(cs):
-    """So data.db rides the campaign's existing upload rather than a second one."""
-    assert cs._postprocess_in_process() is False
-
-
-# -- a build the lane cannot do is a config error, not a crash ---------------
+# -- a build the service cannot do is a config error, not a crash ------------
 
 def _project_needing_a_build(tmp_path, python_packages=None):
     """A validated config whose scenario container adds packages, so an image is built."""
@@ -226,8 +221,8 @@ def test_a_build_ref_without_a_registry_fails_the_campaign_without_a_traceback(
         cs, "_cluster_config",
         lambda: types.SimpleNamespace(get_registry_config=RegistryConfig))
     # A registry with no prefix: enabled() is false. The lookup that would fill in its
-    # Secrets lives in the image store now, so it is stubbed there — installing a store is
-    # how a lane supplies one.
+    # Secrets lives in the image store, so it is stubbed there — installing a store is how
+    # the service supplies one.
     monkeypatch.setattr(
         cs, "_image_store",
         types.SimpleNamespace(
@@ -740,7 +735,7 @@ def test_measured_usage_names_the_fix_and_stops_asking(cs, monkeypatch, status, 
 
     assert usage.cpu_measured is None
     assert expected in usage.metrics_unavailable
-    # The lane still answers what it can -- a chart with no fill, not a broken meter.
+    # The service still answers what it can -- a chart with no fill, not a broken meter.
     assert usage.cpu_capacity == 8
     assert usage.cpu_reserved == 0
 
@@ -1423,7 +1418,7 @@ def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
 
 
 def test_cluster_stop_on_an_ended_campaign_is_refused(cs, monkeypatch):
-    """Both lanes share one scope decision, so both refuse a campaign that is over."""
+    """The stop scope decision is on the base, and it refuses a campaign that is over."""
     flagged = {}
     cs._campaigns["camp-1"] = types.SimpleNamespace(
         state=_stop_state(flagged, phase=Phase.FINISHED))
@@ -1472,16 +1467,16 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
     assert stopped == []    # and no cooperative stop, which would end the campaign
 
 
-def test_the_cluster_lane_cannot_reach_the_local_container_teardown(cs, monkeypatch):
-    """The ``docker rm -f`` is the local lane's answer to exiting, and only the local
-    lane's ``_shutdown_running_campaigns`` reaches it. Left on a shared ``shutdown`` behind
-    a predicate, it was one flag away from running inside a controller pod, where there is
-    no daemon and the container name means nothing.
+def test_shutdown_never_shells_out(cs, monkeypatch):
+    """Exiting leaves the running campaigns to the successor and touches no container
+    runtime: a teardown by shell would run inside the controller pod, where there is no
+    daemon and a container name means nothing. The answer is ClusterService's own hook, not a
+    predicate on a shared ``shutdown``.
     """
     import subprocess
 
     def _no_daemon_here(*_a, **_k):
-        raise AssertionError("the cluster lane shelled out on shutdown")
+        raise AssertionError("ClusterService shelled out on shutdown")
 
     monkeypatch.setattr(subprocess, "run", _no_daemon_here)
     state = types.SimpleNamespace(request_stop=lambda scope=STOP_RUNS: None)
@@ -1491,34 +1486,7 @@ def test_the_cluster_lane_cannot_reach_the_local_container_teardown(cs, monkeypa
 
     cs.shutdown()
 
-    assert "_shutdown_running_campaigns" in vars(type(cs)), "the answer is the lane's own"
-
-
-def test_local_lane_still_tears_down_on_shutdown(monkeypatch, tmp_path):
-    """The local lane does not adopt, so exiting still kills its scenario container.
-
-    The counterpart of the test above: nothing comes back for a local campaign's
-    containers, so leaving them would orphan them.
-    """
-    from robovast.service.local_transport import LocalTransport
-
-    impl = LocalTransport(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
-    killed = []
-    monkeypatch.setattr(type(impl), "_kill_scenario_container",
-                        lambda self: killed.append(True))
-    stopped = []
-    state = types.SimpleNamespace(
-        request_stop=lambda scope=STOP_RUNS: stopped.append(scope))
-    impl._campaigns["camp-a"] = types.SimpleNamespace(
-        campaign_id="camp-a", state=state, thread=None)
-    monkeypatch.setattr(type(impl), "_is_done", lambda self, e: False)
-
-    impl.shutdown()
-
-    assert killed == [True]
-    # The run scope: what shutdown is for is ending the campaign so its container
-    # teardown runs before the process exits.
-    assert stopped == [STOP_RUNS]
+    assert "_shutdown_running_campaigns" in vars(type(cs)), "the answer is ClusterService's own"
 
 
 def test_stop_still_tears_down_that_campaigns_jobs(cs, monkeypatch):
@@ -1587,9 +1555,9 @@ def test_stop_leaves_the_aux_pod_its_own_composition_holds(cs, monkeypatch):
 def test_recording_the_launch_writes_it_into_the_campaign(cs, tmp_path):
     """At the top of the driver, into the campaign itself.
 
-    The campaign directory is the durable home on this lane as on the local one, so a
-    campaign that never finished still carries the record of what it was launched with --
-    which is the set someone comes looking at, and the set a restart re-launches from.
+    The campaign directory is the campaign's durable home, so a campaign that never finished
+    still carries the record of what it was launched with -- which is the set someone comes
+    looking at, and the set a restart re-launches from.
     """
     cs._record_launch("camp-a", str(tmp_path), CreateCampaignRequest(workspace_id="ws"))
 
@@ -1893,11 +1861,11 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
     core = _Core()
     monkeypatch.setattr(cs, "_k8s", lambda: core)
 
-    class _Lane:
+    class _Service:
         calls: list = []
 
-        def exec_in(self, target, argv, limit_s, env=None):
-            _Lane.calls.append((target, argv))
+        def exec_in(self, target, argv, limit_s):
+            _Service.calls.append((target, argv))
             # Matched on the joined argv: every read runs through a shell that sources the run's
             # ROS overlay first, so the command is inside one element rather than being them.
             joined = " ".join(argv)
@@ -1907,16 +1875,16 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
                 return (0, "", "", False)
             return exec_result
 
-    _Lane.calls = []
-    monkeypatch.setattr(cs, "_exec_lane", lambda: _Lane())
-    return core, _Lane
+    _Service.calls = []
+    monkeypatch.setattr(cs, "_exec_runner", lambda: _Service())
+    return core, _Service
 
 
 def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
-    """The lane difference is the target and nothing else. ``/out`` is *this pod's* emptyDir, so
+    """The exec target is the Job's pod. ``/out`` is *this pod's* emptyDir, so
     naming it is exact even though a Kubernetes Job may pack several runs and its ``job_name`` is
     not a run key."""
-    core, lane = _cluster_job_state(
+    core, runner = _cluster_job_state(
         cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
         exec_result=(0, '{"findings": [], "state": {"sim_ts": 4.0}}', "", False))
 
@@ -1924,7 +1892,7 @@ def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
 
     assert state.simulator == {"findings": [], "state": {"sim_ts": 4.0}}
     assert state.scenario["running"]["name"] == "drive_to"
-    target, argv = [c for c in lane.calls if "tool --json" in " ".join(c[1])][0]
+    target, argv = [c for c in runner.calls if "tool --json" in " ".join(c[1])][0]
     # The job dir: this is a live run, and that is where its simulator's records are.
     # The container comes from the pod, not from a constant repeated here. This campaign steps its
     # simulator in-process, so the simulation role IS this container.
@@ -1964,18 +1932,17 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, mon
 
 
 def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypatch):
-    """The lane that matters, so the pull is asserted here and not only locally: each running Job
-    is asked in *its own* pod, over the Kubernetes exec API, and a job with no pod yet is skipped
-    rather than crashing the sweep.
+    """Each running Job is asked in *its own* pod, over the Kubernetes exec API, and a job
+    with no pod yet is skipped rather than crashing the sweep.
 
-    The inherited resolver walks ``list_jobs`` and asks the lane hook for each running one, so this
-    pins the composition rather than a second implementation of it.
+    The inherited resolver walks ``list_jobs`` and asks the ClusterService hook for each
+    running one, so this pins the composition rather than a second implementation of it.
     """
     # A ROS-shape pod: the simulator is a sidecar with its own image, which is the container the
     # health read has to reach -- `roqsim health` sent to the scenario container names a tool that
     # container does not have.
     pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
-    core, lane = _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
+    core, runner = _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
         # ``kind`` as the service always sets it: the sweep skips what is not a run.
         types.SimpleNamespace(job_name="scenario-abc", status="running", kind="run"),
@@ -1988,13 +1955,13 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
     # Job has no single run dir to name even in principle.
     # Both paths, because the simulator's records and the job's artifacts are different subtrees:
     # the job dir first (where a LIVE run's clock record is), the run dir after it. The run dir is
-    # the resolved one -- the fixture's lane returns no run key, so it falls back to the job root,
+    # the resolved one -- the fixture's runner returns no run key, so it falls back to the job root,
     # which is the documented behaviour for a job that has not written a record yet.
     assert targets == [("scenario-abc", "/out/_jobs/batch-0/job-0", "/out")]
     assert "job-name=scenario-abc" in core.selector
     # One exec, and only the run-dir resolution: the reads themselves are the caller's to make, so
     # a target that is merely being ENUMERATED must not trigger a health command.
-    assert [" ".join(c[1]) for c in lane.calls if "tool --json" in " ".join(c[1])] == []
+    assert [" ".join(c[1]) for c in runner.calls if "tool --json" in " ".join(c[1])] == []
     # And the read itself lands in the simulator's own container, from the pod rather than from a
     # name built here: that is the difference between asking the simulator and asking a container
     # that has never heard of it.
@@ -2059,12 +2026,12 @@ def test_an_unpacked_job_is_located_too(cs, monkeypatch):
     a heuristic ("the newest below here") where the service has the fact. Worse, searching around
     a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looks past it and then
     blames ``--bt-log``."""
-    _core, lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    _core, runner = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "cfga/0\n", "", False)))
 
     assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfga/0", "cfga/0")
-    del lane
+    del runner
 
 
 def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
@@ -2072,9 +2039,9 @@ def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
     of the reply must describe that one. Pointed at the Job's whole ``/out``, the three readers
     each picked a run for themselves and the caller could not tell which."""
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
-    _core, _lane = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
-                                    execution=execution)
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    _core, _runner = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+                                      execution=execution)
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "cfgb/2\n", "", False)))
 
     assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfgb/2", "cfgb/2")
@@ -2087,7 +2054,7 @@ def test_the_live_run_search_looks_for_run_dirs_and_not_for_the_newest_file(cs, 
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     seen = {}
     _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (
             seen.setdefault("argv", " ".join(argv)), "", "", False) and (0, "", "", False)))
 
@@ -2137,14 +2104,14 @@ def test_a_packed_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatc
     is a better answer than a failure from the step that was only trying to be more precise."""
     execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
-    monkeypatch.setattr(cs, "_exec_lane", lambda: types.SimpleNamespace(
+    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "", "", False)))
 
     assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out", None)
 
 
 def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypatch):
-    """Normal on this lane: a Job exists before its pod does. One unanswerable job must not cost
+    """Normal on a cluster: a Job exists before its pod does. One unanswerable job must not cost
     the campaign's other jobs their check."""
     _cluster_job_state(cs, monkeypatch, pods=[])
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
@@ -2154,7 +2121,7 @@ def test_a_job_between_scheduling_and_running_is_skipped_not_fatal(cs, monkeypat
 
 
 def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
-    """``vast serve --results-dir`` has to reach the cluster lane, not just the local one.
+    """``vast serve --results-dir`` decides ClusterService's results root.
 
     The results volume is where a cluster campaign lives: its pods deliver their runs into
     it, per-run extraction reads it through a path, and postprocessing derives ``data.db``
@@ -2172,7 +2139,7 @@ def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
     assert svc.campaign_dir("camp-a") == tmp_path / "mounted" / "camp-a"
 
 
-def test_without_results_dir_the_lane_keeps_its_default(cs):
+def test_without_results_dir_the_service_keeps_its_default(cs):
     """No flag, no surprise: the shared ``local_results_root`` precedence still decides."""
     from robovast.common.results_root import local_results_root
     assert cs._campaigns_root() == local_results_root(cs.store.registry.root)

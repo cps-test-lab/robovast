@@ -86,7 +86,7 @@ def test_the_client_closure_does_not_import_the_in_process_server():
 
     They reach `RobovastClient` through `service.client`. Re-exporting the 3,000-line
     in-process server eagerly there makes asking "is this campaign done yet?" pull the
-    whole local Docker lane -- which a client distribution does not even have.
+    whole execution stack -- which a client distribution does not even have.
     """
     result = _import_in_subprocess(
         "import robovast.execution.campaign_wait, robovast.client.service_target, "

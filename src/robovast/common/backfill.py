@@ -100,8 +100,8 @@ def _derive_full_revision(recorded: str) -> dict:
 def _derive_image_digests(execution: dict) -> dict:
     """Classify each recorded image ref: already a digest, a local-only id, or a bare tag.
 
-    A local id is the important case. ``docker inspect .Id`` was what the local lane recorded,
-    and it cannot be pulled anywhere -- compose parses ``sha256:<hex>`` as ``name:tag`` and goes
+    A local id is the important case. ``docker inspect .Id`` is what an archived campaign may
+    have recorded, and it cannot be pulled anywhere -- compose parses ``sha256:<hex>`` as ``name:tag`` and goes
     looking for ``docker.io/library/sha256``. Marking it as local-only is the honest answer and
     matches what ``campaign_pinned_images`` already concludes; silently promoting it to a digest
     would produce a re-run that fails at pull time for reasons nothing explains.

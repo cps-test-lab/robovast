@@ -36,7 +36,8 @@ def _scenery_builder_container_spec():
     """ContainerSpec for the scenery_builder image both floorplan variations use.
 
     Its entrypoint is ``floorplan`` (carried in command_prefix so the same
-    invocation works via ``docker run`` locally and ``pods/exec`` in-cluster).
+    invocation works via ``pods/exec`` in-cluster and ``docker run`` on a development
+    machine).
     """
     return ContainerSpec(
         image=SCENERY_BUILDER_IMAGE,

@@ -27,7 +27,6 @@ import codecs
 import logging
 import os
 from pathlib import Path
-from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ def is_binary_bytes(data: bytes) -> bool:
     samples avoid ``0x00`` carries none -- a grayscale occupancy map of open floor is
     every byte ``0xfe`` -- so a NUL-only rule renders it as text, and the caller gets
     replacement characters instead of the byte URL that exists for this case. The text
-    lane decodes as UTF-8, so "does this decode" is the question that matches what the
+    view decodes as UTF-8, so "does this decode" is the question that matches what the
     page will actually do with the bytes.
 
     The decode is incremental so a multi-byte character straddling the end of the
@@ -50,7 +49,7 @@ def is_binary_bytes(data: bytes) -> bool:
     depending on where its characters happened to fall.
 
     Text in a non-UTF-8 encoding therefore reads as binary. That is the intended
-    trade: such a file renders as replacement characters in the text lane, and an
+    trade: such a file renders as replacement characters in the text view, and an
     address the caller can fetch the real bytes from is worth more than a mangled page.
     """
     sample = data[:_SNIFF_BYTES]
@@ -74,8 +73,8 @@ def is_binary(path: Path) -> bool:
 
 
 def binary_refused(name: str) -> ValueError:
-    """The one refusal both substrates raise, so the advice does not depend on which
-    lane answered."""
+    """The one refusal every file reader raises, so the advice does not depend on which
+    one answered."""
     return ValueError(
         f"{name} is a binary file — read it as bytes (GET the address without "
         "'as=text', or 'vast files get'), or download the campaign archive.")
@@ -85,9 +84,8 @@ def split_lines(text: str) -> list[str]:
     """Split *text* the way iterating an opened text file does.
 
     Deliberately **not** ``str.splitlines()``: that also breaks on form feed, NEL and
-    the Unicode separators, so a lane using it reported a different ``total_lines``
-    than the lane that iterated an open file — same file, same call, two answers
-    depending on which backend served it. Universal-newline translation is applied
+    the Unicode separators, so a reader using it would report a different
+    ``total_lines`` than one that iterates an open file. Universal-newline translation is applied
     here so a ``\\r\\n`` object reads like the same file on disk, and a trailing
     newline does not invent a final empty line.
     """
@@ -147,20 +145,13 @@ def read_text_page(path: Path, lines: int = 200, offset: int = 0) -> dict:
     }
 
 
-def scan_dir(directory: Path, recursive: bool = False,
-             skip: Optional[Callable[[str, bool], bool]] = None) -> list[tuple[str, Path]]:
+def scan_dir(directory: Path, recursive: bool = False) -> list[tuple[str, Path]]:
     """List *directory* as ``(name, path)`` pairs, sorted, directories suffixed ``/``.
 
     Non-recursive (the default) lists this level only — files **and** directories, so a
     caller can walk down. Recursive lists files only, at paths relative to *directory*:
     the intermediate directories are implied by the paths, and repeating them doubles
     the listing for no information.
-
-    *skip* takes ``(relative_posix_path, is_dir)`` and is consulted **before** a
-    directory is descended into, so a hidden subtree costs one call rather than one per
-    file underneath it. That matters: a pinned workspace is a live git checkout, and
-    walking it before rejecting ``.git`` took ~650 ms per listing on the web UI's
-    config page — 6000× the cost of the entries it actually returns.
 
     Uses :func:`os.scandir`, whose entries carry the type from ``readdir`` — no
     ``stat`` per name, which is what makes this cheap over NFS and overlayfs too.
@@ -175,8 +166,6 @@ def scan_dir(directory: Path, recursive: bool = False,
                 for entry in entries:
                     rel = f"{prefix}{entry.name}"
                     is_dir = entry.is_dir(follow_symlinks=False)
-                    if skip is not None and skip(rel, is_dir):
-                        continue
                     if not recursive:
                         out.append((f"{rel}/" if is_dir else rel, Path(entry.path)))
                     elif is_dir:

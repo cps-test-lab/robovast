@@ -51,7 +51,7 @@ def create_workspace(name: str = "", from_campaign: str = "", from_share: str = 
     """
     from robovast.service.interface import CreateWorkspaceRequest
     try:
-        return service_access.client_or_local().create_workspace(
+        return service_access.require_service().create_workspace(
             CreateWorkspaceRequest(name=name, from_campaign=from_campaign,
                                    from_share=from_share)).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -66,12 +66,9 @@ def list_workspaces(workspace_id: str = "") -> dict:
 
     Returns:
         ``{workspaces, total}`` of ``{workspace_id, name, created_at}``, or ``{error}``.
-        A workspace registered with ``vast serve --workspace-dir`` is a directory used
-        in place: its files are editable through this API like any other workspace's,
-        but it is unpinned by dropping the flag rather than deleted here.
     """
     try:
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         if workspace_id:
             found = [client.get_workspace(workspace_id).model_dump()]
         else:
@@ -85,7 +82,7 @@ def list_workspaces(workspace_id: str = "") -> dict:
 def delete_workspace(workspace_id: str) -> dict:
     """Delete a workspace and its inputs. Existing campaigns are unaffected."""
     try:
-        return service_access.client_or_local().delete_workspace(workspace_id).model_dump()
+        return service_access.require_service().delete_workspace(workspace_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -103,7 +100,7 @@ def export_workspace(workspace_id: str) -> dict:
         ``{slug, object_name, size, url}``, or ``{error}``.
     """
     try:
-        return service_access.client_or_local().export_workspace(workspace_id).model_dump()
+        return service_access.require_service().export_workspace(workspace_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -125,8 +122,8 @@ def create_upload(address: str, executable: bool = False) -> dict:
         when nobody can name an origin for it (see ``service_access.web_url``).
     """
     from robovast.service.interface import CreateUploadRequest, Routes
-    client = service_access.client_or_local()
     try:
+        client = service_access.require_service()
         grant = client.create_upload(CreateUploadRequest(
             address=address, executable=executable))
     except Exception as e:  # noqa: BLE001
@@ -145,7 +142,7 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: choice, and stating it twice is how the two halves drift apart — and every tool
 #: description is sent on every request, so a duplicated paragraph is paid for twice.
 #:
-#: The lane matters beyond tidiness. Against a cluster or ``--attach`` service the
+#: The route matters beyond tidiness. Against a cluster or ``--attach`` service the
 #: workspace is not on this host at all, so a filesystem read would check a different
 #: file, or none, and report the verdict as if it were about the one the campaign runs.
 #:
@@ -153,15 +150,15 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: indented by four leaves the docstring with no common indent, so ``Args:``/``Returns:``
 #: stop being recognised as sections and are served as prose in the tool description --
 #: on every request, duplicating what the parameter schema already carries.
-_ADDRESS_LANE = """
+_ADDRESS_ROUTE = """
     A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so
     this is the file the campaign will actually run. Anything else is read as a path on
-    the MCP-server host — for authoring before a workspace exists, and the only lane with
-    no service running. ``lane`` says which answered.
+    the MCP-server host — for authoring before a workspace exists, and the only route with
+    no service running. ``source`` says which answered.
 """
 
 
-def _address_lane(address: str):
+def _address_route(address: str):
     """``(workspace_id, rel_path)`` for a ``/sources`` address, or ``None`` for a path.
 
     Returning ``None`` rather than guessing is the point: an absolute filesystem path
@@ -183,7 +180,7 @@ def _address_lane(address: str):
 
 
 def _unchecked_world_advisory(config_path: str) -> list:
-    """Advisory for the local-file lane, which has no service to run a simulator in.
+    """Advisory for a plain-file address, which has no service to run a simulator in.
 
     Only when the project actually declares a simulator backend: a campaign without one has
     no world, and an advisory on every reply is a line callers learn to skip.
@@ -202,11 +199,12 @@ def _unchecked_world_advisory(config_path: str) -> list:
                         "that runs the simulator, and this address was read as a plain file "
                         "with no service to run one. Validate through a workspace address "
                         "(/sources/<workspace_id>/<path>) to have it checked, or pass "
-                        "check_world=False for the narrower verdict this lane can give."}]
+                        "check_world=False for the narrower verdict a plain file can "
+                        "give."}]
 
 
 def _unchecked_scenario_advisory() -> list:
-    """Advisory for the local-file lane, which has no scenario image to parse in.
+    """Advisory for a plain-file address, which has no scenario image to parse in.
 
     Unconditional where the world advisory is not: every campaign has a scenario, so
     there is always something that went unparsed.
@@ -218,7 +216,7 @@ def _unchecked_scenario_advisory() -> list:
                         "what is installed there, and this address was read as a plain "
                         "file with no image to ask. Validate through a workspace address "
                         "(/sources/<workspace_id>/<path>) to have it checked, or pass "
-                        "check_scenario=False for the narrower verdict this lane can "
+                        "check_scenario=False for the narrower verdict a plain file can "
                         "give."}]
 
 
@@ -260,7 +258,7 @@ def validate_project(address: str, check_world: bool = True,
 
     Returns:
         ``{valid, world_checked, scenario_checked, configs, runs_per_config,
-        total_trials, problems, lane}``, each problem ``{stage, config, field, message,
+        total_trials, problems, source}``, each problem ``{stage, config, field, message,
         severity}`` with ``severity`` one of ``error`` / ``advice`` / ``unchecked``. A
         clean campaign returns no world or scenario entry.
     """
@@ -268,13 +266,13 @@ def validate_project(address: str, check_world: bool = True,
     from robovast.service.interface import ValidationReport
     from robovast.service.project_push import _resolve_workspace_id
     try:
-        target = _address_lane(address)
+        target = _address_route(address)
         if target is None:
-            # No service, so no lane that can run a simulator: say the world went
+            # No service, so nothing that can run a simulator: say the world went
             # unchecked rather than letting a clean reply read as a checked one.
             report = validate_project_file(address)
             if check_world:
-                # Same rule as the service lane, because the answer is the same one: a
+                # Same rule as the service, because the answer is the same one: a
                 # world nobody could look at is not a world that passed. Empty when the
                 # campaign declares no simulator -- then there is no world to check, and
                 # `world_checked` stays null rather than claiming a verdict.
@@ -289,13 +287,13 @@ def validate_project(address: str, check_world: bool = True,
                           "valid": bool(report.get("valid")) and not advisory,
                           "problems": list(report.get("problems") or []) + advisory}
             return {**ValidationReport.model_validate(report).model_dump(),
-                    "lane": "local file"}
-        client = service_access.client_or_local()
+                    "source": "local file"}
+        client = service_access.require_service()
         workspace_id, rel_path = target
         report = client.validate_project(
             _resolve_workspace_id(client, workspace_id), rel_path, check_world,
             check_scenario)
-        return {**report.model_dump(), "lane": "workspace"}
+        return {**report.model_dump(), "source": "workspace"}
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"valid": False, "world_checked": None, "scenario_checked": None,
                 "configs": 0,
@@ -324,13 +322,13 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
 
     Returns:
         ``{configs, runs_per_config, total_trials, configurations, truncated,
-        aux_containers, lane}``, each configuration ``{name, parameters}``; or ``{error}``.
+        aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``.
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
     from robovast.service.project_push import _resolve_workspace_id
     try:
-        target = _address_lane(address)
+        target = _address_route(address)
         if target is None:
             # A search .vast expands per sampled ParamSet, not from a `configuration:`
             # block; composing a sample is the only preview that reflects what it runs.
@@ -356,9 +354,9 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                 "configurations": items[:limit] if truncated else items,
                 "truncated": truncated,
                 "aux_containers": aux,
-                "lane": "local file",
+                "source": "local file",
             }
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         workspace_id, rel_path = target
         resp = client.preview_configurations(
             _resolve_workspace_id(client, workspace_id), limit, rel_path)
@@ -372,7 +370,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                                for c in resp.configurations],
             "truncated": resp.truncated,
             "aux_containers": list(resp.aux_containers),
-            "lane": "workspace",
+            "source": "workspace",
         }
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         # error_result rather than {"error": str(e)}: composing here can refuse with an
@@ -381,8 +379,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         return service_access.error_result(e)
 
 
-def describe_world(address: str, targets: str = "", entities: bool = False,
-                   backend: str = "") -> dict:
+def describe_world(address: str, targets: str = "", entities: bool = False) -> dict:
     """What does this campaign's world offer an override? Asked of the simulator itself.
 
     Which components a ``sim`` override can address, and with ``targets`` which model values a run
@@ -395,8 +392,6 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
         targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
             overridable *fields* only and builds no model; a glob builds one, as does
             *entities*.
-        backend: ``"local"`` or ``"cluster"``; the cluster lane refuses this query today and
-            says why.
 
     Returns:
         ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
@@ -408,16 +403,16 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
     """
     from robovast.service.project_push import _resolve_workspace_id
     try:
-        target = _address_lane(address)
+        target = _address_route(address)
         if target is None:
             raise ValueError(
                 "describe_world needs a workspace address (/sources/<workspace_id>/<path>): "
                 "the world is described by the campaign's own image, which only the service "
                 "knows how to reach")
-        client = service_access.client_or_local()
+        client = service_access.require_service()
         workspace_id, rel_path = target
         described = client.describe_world(
-            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities, backend)
+            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities)
         return described.model_dump()
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         # error_result rather than {"error": str(e)}: this answer comes from a container, so
@@ -432,7 +427,7 @@ def _resolved_request(address: str):
     """
     from robovast.service.interface import ExecRequest
     from robovast.service.project_push import _resolve_workspace_id
-    target = _address_lane(address)
+    target = _address_route(address)
     if target is None:
         raise ValueError(
             "this needs a workspace address (/sources/<workspace_id>/<path>): the answer "
@@ -446,10 +441,10 @@ def _resolved_request(address: str):
 
 
 def _exec_json(client, request, command: str, container: str = "") -> dict:
-    """*request* run with *command*, via ``exec_in_container``'s own lane-agnostic
-    plumbing -- not ``describe_world``'s ``_make_container_runner`` path, which only
-    gets a cluster-capable runner inside a live campaign's composition and is refused
-    standalone on the cluster lane. Returns the command's parsed stdout, or raises
+    """*request* run with *command*, via ``exec_in_container``'s own plumbing -- not
+    ``describe_world``'s ``_make_container_runner`` path, which only gets a
+    cluster-capable runner inside a live campaign's composition and is refused
+    standalone. Returns the command's parsed stdout, or raises
     ``ValueError`` naming why (a non-zero exit, unparseable output).
 
     Always ``query=True``: these are read-only questions put to an image, so they run in
@@ -457,7 +452,7 @@ def _exec_json(client, request, command: str, container: str = "") -> dict:
     design, so a call here would destroy the container its caller is debugging in. And the
     pool *holds* the container, so a second
     question about the same project costs an exec rather than a container start -- measured
-    at ~0.5 s against 6-15 s on the cluster lane.
+    at ~0.5 s against 6-15 s on the cluster.
 
     *container* names which one answers, because they are different images: ``roqsim``
     lives in the simulator's and ``scenario_execution`` in the scenario's.
@@ -532,7 +527,7 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
 
 for _fn in (validate_project, preview_configurations, describe_world):
     _fn.__doc__ = _fn.__doc__.replace(
-        "    Args:\n", f"{_ADDRESS_LANE}\n    Args:\n", 1)
+        "    Args:\n", f"{_ADDRESS_ROUTE}\n    Args:\n", 1)
 
 
 # -- Plugin class ------------------------------------------------------------

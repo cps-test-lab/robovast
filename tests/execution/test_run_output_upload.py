@@ -57,8 +57,8 @@ def test_the_cluster_post_run_is_cleanup_then_the_marker():
     assert done_marker(MAIN_CONTAINER) == "/ipc/done.main"
 
 
-def test_the_local_lane_renders_no_marker_and_execs_the_runner():
-    """/out is a bind mount there and nothing waits for a marker, so the runner simply
+def test_the_non_cluster_entrypoint_renders_no_marker_and_execs_the_runner():
+    """Rendered with ``cluster=False`` nothing waits for a marker, so the runner simply
     replaces the shell."""
     local = render_entrypoint(cluster=False)
     assert "done.main" not in local
@@ -66,7 +66,7 @@ def test_the_local_lane_renders_no_marker_and_execs_the_runner():
     assert re.search(r"run_scenario\(\) \{\s+exec \"\$@\"", local)
 
 
-def test_the_cluster_lane_needs_no_extra_tool():
+def test_the_cluster_entrypoint_needs_no_extra_tool():
     """The experiment image carries nothing that reaches storage: the transfer is the
     sidecar image's, in the pod's init and uploader containers."""
     assert execution._CLUSTER_INIT_BLOCK == 'EXTRA_REQUIRED_TOOLS=""'
@@ -75,8 +75,8 @@ def test_the_cluster_lane_needs_no_extra_tool():
 # -- the scenario container, run -------------------------------------------------------
 
 def _run_cluster_post_run(tmp_path, command: str, *, term_after: float | None = None):
-    """The cluster lane's post-run block as a script of its own: the lane's shell around
-    the runner, with the runner replaced by *command*.
+    """The cluster post-run block as a script of its own: the pod's shell around the
+    runner, with the runner replaced by *command*.
 
     The block is what the entrypoint substitutes verbatim, so what it does with a runner
     that crashes, or is signalled, is exactly what a pod's scenario container does.

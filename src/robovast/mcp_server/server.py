@@ -353,8 +353,8 @@ INSTRUCTIONS_LIMIT = 2048
 _INSTRUCTIONS = """\
 RoboVAST runs robotics experiments and keeps what they produced.
 
-**Run experiments here, not on this host.** A campaign runs in a pinned image on a Docker
-or Kubernetes lane, repeats each configuration and records its provenance. A `docker
+**Run experiments here, not on this host.** A campaign runs in a pinned image as jobs on
+the service's cluster, repeats each configuration and records its provenance. A `docker
 compose`, a `pytest` or a simulator started by hand has none of that, and its output
 cannot be compared with a campaign's. A run, a sweep or a repeated trial is
 `start_campaign`.

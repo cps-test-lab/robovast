@@ -5,7 +5,6 @@ import argparse
 import math
 import os
 import re
-import secrets
 import signal
 import socket
 import subprocess
@@ -102,7 +101,7 @@ def check_campaign_dir_structure(campaign_dir):  # pylint: disable=too-many-retu
     print("  ✓ execution.yaml file exists in _execution/")
 
     # What postprocessing leaves behind: the example's postprocessing step writes this
-    # marker into the campaign root, and the cluster lane's postprocessing pod delivers it
+    # marker into the campaign root, and the postprocessing pod delivers it
     # back to the results volume with everything else it changed. Its absence means the
     # step never ran, whatever phase the campaign reports.
     if not (first_run / '.postprocessed').exists():
@@ -262,175 +261,32 @@ def capture_command(cmd, repo_root, cwd=None, secret=None, quiet=False):
     return result.returncode, result.stdout or ""
 
 
-class LocalService:
-    """A ``vast serve`` on the local Docker lane, for the duration of the test.
+def refuse_a_foreign_service():
+    """Fail if the port is already served, rather than testing whatever answers.
 
-    A campaign runs through a service -- that is the only execution path there is -- so an
-    end-to-end test needs one. Started here rather than assumed, so the test is
-    self-contained and so CI fails on "the service did not come up" with that sentence
-    rather than with a connection error from whatever ran next.
-
-    The auth token is generated here and put in the environment of both halves: the
-    service has no unauthenticated mode, and a token it invents at startup would only be
-    printed, not readable by the client this script then runs.
-
-    ``ROBOVAST_AUTH_TOKEN`` is what the *service* reads; the client reads a stored login,
-    so this also runs ``vast login`` with that token. Into ``ROBOVAST_CONFIG`` under the
-    test directory rather than ``~/.config``, so running this script on a developer's
-    machine does not overwrite the login they already have.
+    A service that is not this one has its own results directory, so the campaign
+    this test launches would land somewhere the test never looks -- a failure that
+    names a missing directory and not the service it actually used.
     """
+    from robovast.service.interface import DEFAULT_PORT
 
-    def __init__(self, repo_root, results_dir, cwd):
-        self.repo_root = repo_root
-        self.results_dir = results_dir
-        self.cwd = cwd
-        self.proc = None
-        self.log = None
-
-    def __enter__(self):
-        os.environ.setdefault('ROBOVAST_AUTH_TOKEN', secrets.token_urlsafe(16))
-        os.environ['ROBOVAST_CONFIG'] = os.path.join(self.cwd, 'robovast-login.json')
-        self._refuse_a_foreign_service()
-        self._build_ui()
-        self.log = open(os.path.join(self.cwd, 'serve.log'), 'w', encoding='utf-8')
-        cmd = (f'vast serve --backend local --no-mcp '
-               f'--results-dir {self.results_dir}')
-        print(f"Starting: {cmd}")
-        self.proc = subprocess.Popen(
-            ['poetry', 'run', '--directory', str(self.repo_root),
-             'bash', '-c', f'cd {self.cwd} && {cmd}'],
-            stdout=self.log, stderr=subprocess.STDOUT, text=True,
-            start_new_session=True,
-        )
-        try:
-            self._wait_until_answering()
-        except BaseException:
-            # A context manager whose ``__enter__`` raises never gets its ``__exit__``,
-            # so a service that came up late would keep running -- and keep the port --
-            # for the rest of the job. The next test then logs in to *that* service,
-            # runs its campaign into the previous test's results directory, and fails on
-            # a missing directory instead of on the startup that actually went wrong.
-            self.__exit__()
-            raise
-        return self
-
-    def _refuse_a_foreign_service(self):
-        """Fail if the port is already served, rather than testing whatever answers.
-
-        A service that is not this one has its own results directory, so the campaign
-        this test launches would land somewhere the test never looks -- a failure that
-        names a missing directory and not the service it actually used.
-        """
-        from robovast.service.interface import DEFAULT_PORT
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.settimeout(2)
-            if probe.connect_ex(('127.0.0.1', DEFAULT_PORT)) == 0:
-                raise RuntimeError(
-                    f"something is already listening on 127.0.0.1:{DEFAULT_PORT}; "
-                    "stop it before running this test, which needs the service it "
-                    "starts itself and its results directory")
-
-    def _build_ui(self):
-        """Build the web UI before the service is started, not while it is timed.
-
-        ``vast serve`` builds ``frontend/ui/dist`` itself on a source checkout whose
-        bundle is missing or stale, which on a cold tree is an npm install and a
-        bundle. Done inside the readiness wait below, that deadline is really a budget
-        for npm and expires on a service that was about to answer; done here, the
-        deadline measures the service. Once the bundle is fresh this costs an mtime
-        scan, so every service after the first pays nothing.
-        """
-        code, _ = capture_command(
-            'python -c "from robovast.common.cli.core_commands import ensure_ui_built; '
-            'ensure_ui_built()"',
-            self.repo_root, cwd=self.cwd)
-        if code != 0:
-            raise RuntimeError("the web UI build failed; its output is above")
-
-    def _wait_until_answering(self, timeout=180):
-        """Block until the service answers *and* this client is logged in to it.
-
-        ``vast login`` is the readiness probe rather than ``vast doctor``: it verifies the
-        service with a real request before storing anything, so a zero exit means both
-        halves of "can I use it" at once. ``vast doctor`` cannot be the probe here because
-        it fails on a missing login -- which is the very thing this establishes -- so it
-        would have waited out the full timeout on a service that was up all along.
-
-        ``--no-link``: logging in would otherwise symlink ``vast`` onto the PATH, which is
-        a change to the machine and nothing this test needs.
-        """
-        # The port `vast serve` binds, from the constant it binds it with, rather than an
-        # 8800 written here that would keep pointing at the old port if it ever moved.
-        from robovast.service.interface import DEFAULT_PORT
-
-        url = f"http://127.0.0.1:{DEFAULT_PORT}"
-        token = os.environ['ROBOVAST_AUTH_TOKEN']
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.proc.poll() is not None:
-                raise RuntimeError(
-                    f"vast serve exited with {self.proc.returncode} before answering; "
-                    f"its log follows:\n{self._read_log()}")
-            code, _ = capture_command(
-                f"vast login {url} --token {token} --name ci --no-link",
-                self.repo_root, cwd=self.cwd, secret=token)
-            if code == 0:
-                print("✓ robovast-service is answering, and this client is logged in")
-                # Now that there are credentials, doctor can say what it was going to say.
-                capture_command('vast doctor', self.repo_root, cwd=self.cwd)
-                return
-            time.sleep(3)
-        raise RuntimeError(
-            f"vast serve did not answer within {timeout}s; its log follows:\n"
-            f"{self._read_log()}")
-
-    def _signal_group(self, sig):
-        try:
-            os.killpg(os.getpgid(self.proc.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            # Already gone, or never became a group leader; the direct signal is all
-            # that is left and is right in both cases.
-            self.proc.send_signal(sig)
-
-    def _read_log(self):
-        try:
-            with open(os.path.join(self.cwd, 'serve.log'), encoding='utf-8') as fh:
-                return fh.read()[-4000:]
-        except OSError as exc:
-            return f"(could not read serve.log: {exc})"
-
-    def __exit__(self, *_exc):
-        # The whole group, not ``self.proc``: what Popen holds is the ``poetry run bash``
-        # wrapper, and signalling it leaves the ``vast serve`` underneath running. It kept
-        # port 8800 for the rest of the job, so the *next* LocalService died on "address
-        # already in use" -- a failure that named neither this teardown nor the test that
-        # actually leaked. ``start_new_session=True`` above is what makes the group killable.
-        if self.proc is not None and self.proc.poll() is None:
-            self._signal_group(signal.SIGTERM)
-            try:
-                self.proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self._signal_group(signal.SIGKILL)
-                self.proc.wait(timeout=10)
-        if self.log is not None:
-            self.log.close()
-        # The service log is where several failures are only visible, so surface it
-        # whatever happened -- a green run costs a few lines, a red one needs them.
-        print("--- vast serve log (tail) ---")
-        print(self._read_log())
-        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(2)
+        if probe.connect_ex(('127.0.0.1', DEFAULT_PORT)) == 0:
+            raise RuntimeError(
+                f"something is already listening on 127.0.0.1:{DEFAULT_PORT}; "
+                "stop it before running this test, which forwards the service it "
+                "deployed to that port and reads that deployment's results")
 
 
 class ClusterSession:
     """A ``robovast-service`` deployed into a Kubernetes cluster, for the length of the script.
 
-    The cluster lane runs only inside a cluster -- a campaign's pods deliver their outputs
-    to the service over the cluster network -- so the service is deployed *into* the
+    The service runs only inside a cluster -- a campaign's pods deliver their outputs
+    to the service over the cluster network -- so it is deployed *into* the
     cluster the caller names (``--context``) with ``vast cluster setup``, and reached from
     here through a ``kubectl port-forward`` on the conventional port, which every client
-    finds. One deployment serves every workflow of a run: unlike a local service, which
-    each workflow started afresh with its own results directory, every campaign lands
+    finds. One deployment serves every workflow of a run: every campaign lands
     under the service's one results volume, so a workflow is told its campaign's directory
     rather than left to find "the" campaign under a root.
 
@@ -473,7 +329,7 @@ class ClusterSession:
         if self.ready:
             return
         os.environ['ROBOVAST_CONFIG'] = os.path.join(self.cwd, 'robovast-login.json')
-        LocalService._refuse_a_foreign_service(self)  # the same port, the same reason
+        refuse_a_foreign_service()
         self._setup()
         self._wait_for_rollout()
         self._port_forward()
@@ -577,25 +433,23 @@ class ClusterSession:
             print(_scrub(log.stdout + log.stderr, self.token))
 
 
-#: The cluster session of this run, when ``--context`` named one; ``None`` runs the
-#: workflows on a local service started per workflow.
+#: The cluster session of this run, deployed into the context ``--context`` named.
 _CLUSTER = None
 
 
 def service_context(repo_root, results_dir, cwd):
-    """The service a workflow runs through: the run's cluster deployment, or a local one."""
-    if _CLUSTER is not None:
-        return _CLUSTER
-    return LocalService(repo_root, results_dir, cwd)
+    """The service a workflow runs through: the run's cluster deployment."""
+    del repo_root, results_dir, cwd
+    if _CLUSTER is None:
+        raise RuntimeError("no service: this script runs against a cluster (--context)")
+    return _CLUSTER
 
 
 def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None):  # pylint: disable=too-many-return-statements
     """Test the complete workflow: serve -> workspace init -> workspace run -> postprocess.
 
     This is the only end-to-end test of the whole stack, so it drives the real path a user
-    takes: a campaign runs a *workspace's* project through a service. It used to call
-    ``vast exec local run``, an in-process Docker lane with no service and no workspace,
-    which no longer exists -- and which tested a path the documentation did not describe.
+    takes: a campaign runs a *workspace's* project through a service.
 
     Returns the campaign's directory on success, ``None`` on failure: on a cluster every
     workflow's campaign lands under one results root, so the caller comparing two of them
@@ -696,8 +550,8 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
             print("✓ campaign finished, postprocessing included")
 
             # Step 5: re-run postprocessing through the service. Inside the service
-            # block, because postprocessing acts on a campaign, on whichever lane its runs
-            # executed. Running it as `vast results postprocess` against the results tree
+            # block, because postprocessing acts on a campaign, in the cluster its runs
+            # executed in. Running it as `vast results postprocess` against the results tree
             # instead would force this step after the shutdown.
             #
             # Dispatched, not awaited, exactly like a launch: the campaign re-enters its
@@ -810,7 +664,7 @@ def _collect_non_job_files(campaign_dir):
     - the ``_jobs/`` artifact tree,
     - the per-run ``job`` symlinks,
     - the ``_transient/`` job bookkeeping: ``job_links.yaml`` and each job's
-      ``params.yaml``, which the cluster lane namespaces by batch
+      ``params.yaml``, which the backend namespaces by batch
       (``batch-0-job-N.params.yaml``) and so is matched by shape, not prefix.
     """
     result = set()
@@ -824,7 +678,7 @@ def _collect_non_job_files(campaign_dir):
             rel = os.path.relpath(os.path.join(root, fn), campaign_dir)
             parts = rel.split(os.sep)
             # Skip per-job transient bookkeeping: job_links.yaml, and a job's params
-            # file under whichever batch prefix the lane gives it.
+            # file under whichever batch prefix the backend gives it.
             if parts[0] == '_transient' and (
                     fn == 'job_links.yaml' or _JOB_PARAMS.fullmatch(fn)):
                 continue
@@ -978,9 +832,9 @@ def main():
         '--context', '-x',
         type=str,
         default=None,
+        required=True,
         help='Run through a robovast-service deployed into this kubeconfig context '
-             '(vast cluster setup) instead of a local `vast serve`. Needs --data-root and '
-             '--data-mount.'
+             '(vast cluster setup). Needs --data-root and --data-mount.'
     )
     parser.add_argument(
         '--namespace', '-n',
@@ -1076,13 +930,12 @@ def main():
         print(f"Image family: {project}/<member>:{tag}")
 
     global _CLUSTER  # pylint: disable=global-statement
-    if args.context:
-        if not (args.data_root and args.data_mount):
-            raise SystemExit("--context needs --data-root and --data-mount")
-        _CLUSTER = ClusterSession(repo_root, args.test_directory, args.context,
-                                  args.namespace, args.data_root, args.data_mount,
-                                  args.cluster_config)
-        print(f"Service: deployed into context {args.context}, namespace {args.namespace}")
+    if not (args.data_root and args.data_mount):
+        raise SystemExit("--context needs --data-root and --data-mount")
+    _CLUSTER = ClusterSession(repo_root, args.test_directory, args.context,
+                              args.namespace, args.data_root, args.data_mount,
+                              args.cluster_config)
+    print(f"Service: deployed into context {args.context}, namespace {args.namespace}")
 
     tests = [
         ("Complete workflow: init -> execution -> postprocess", test_vast_workflow, args.vast_file, args.test_directory, args.config, args.runs),

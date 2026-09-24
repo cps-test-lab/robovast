@@ -1164,7 +1164,7 @@ def process_rosbag_worker(args: tuple) -> BagResult:
     # ``io.StringIO()`` kills every ``✗`` a handler prints inside the worker while its
     # *count* travels home in the ``-2`` sentinel, so the parent reports "N handler
     # error(s) -- see the messages above" with nothing above it -- the one line saying what
-    # went wrong being the one line thrown away, on every campaign of the cluster lane,
+    # went wrong being the one line thrown away, on every campaign on the cluster,
     # which never passes --debug. Returned below for a bag that failed, and printed by the
     # parent once the bar is done.
     captured = io.StringIO()

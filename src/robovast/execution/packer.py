@@ -18,7 +18,7 @@
 
 A *work item* is one configuration executed at one run number (one scenario
 execution). A *packer* groups work items into :class:`JobSpec`s; each JobSpec
-becomes exactly one job (one Kubernetes Job, or one local docker-compose run).
+becomes exactly one job (one Kubernetes Job).
 All work items in a job run sequentially inside a single simulator setup (the
 simulator is reset between them), which amortises setup cost for simulators with
 a cheap per-run cost.

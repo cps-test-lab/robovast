@@ -7,11 +7,9 @@ all. The archive is the one shape that serves every direction: the download butt
 workspace download``, and the bytes the share carries — so what a colleague extracts and
 what another deployment imports are the same tree.
 
-Two properties are defended here. The single top-level directory, because an import strips
-exactly one component and a flat archive would scatter a project across whatever directory
-it was unpacked in. And the skip rule, because a pinned workspace is a live directory whose
-*listing* hides ``.git`` and campaign outputs: an archive that carried them would contradict
-what the same service says is in that workspace.
+Defended here: the single top-level directory, because an import strips exactly one
+component and a flat archive would scatter a project across whatever directory it was
+unpacked in.
 """
 
 import tarfile
@@ -21,13 +19,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from robovast.service.client import LocalTransport
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 
-def _transport(tmp_path) -> LocalTransport:
+def _transport(tmp_path) -> NullService:
     store = WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces"))
-    lt = LocalTransport(store=store)
+    lt = NullService(store=store)
     lt._campaigns_root = lambda: tmp_path / "results"
     return lt
 
@@ -98,27 +96,3 @@ def test_an_unknown_workspace_is_refused_before_any_bytes(env):
     resp = client.get("/workspaces/ws-nope/archive")
     assert resp.status_code == 400, resp.text
     assert "ws-nope" in resp.text
-
-
-def test_a_pinned_workspace_ships_what_its_listing_shows(tmp_path):
-    """``.git`` and a campaign ``results/`` tree are not project input.
-
-    They are hidden from the workspace's listing, and an archive that carried them would
-    make the same service answer two different things about what is in this workspace --
-    and would put somebody's git history on a share.
-    """
-    source = tmp_path / "pinned"
-    (source / ".git").mkdir(parents=True)
-    (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-    (source / "results" / "old-2026-01-01-000000").mkdir(parents=True)
-    (source / "results" / "old-2026-01-01-000000" / "log.txt").write_text("x", encoding="utf-8")
-    (source / "campaign.vast").write_text("configuration:\n  name: x\n", encoding="utf-8")
-
-    transport = _transport(tmp_path)
-    ws = transport.store.registry.add_static(source, name="pinned")["workspace_id"]
-    with TestClient(build_app(transport)) as client:
-        names = _members(client.get(f"/workspaces/{ws}/archive").content)
-
-    assert f"{ws}/campaign.vast" in names
-    assert not [n for n in names if ".git" in n.split("/")]
-    assert not [n for n in names if "results" in n.split("/")]

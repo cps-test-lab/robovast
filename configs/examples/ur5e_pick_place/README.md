@@ -11,7 +11,7 @@ campaign asks how accurate perception has to be before the task stops working.
 vast workspace run ur5e_pick_place ur5e_pick_place.vast --push configs/examples/ur5e_pick_place
 ```
 
-4 noise levels × 5 repetitions = 20 trials, about two and a half minutes on an idle cluster lane.
+4 noise levels × 5 repetitions = 20 trials, about two and a half minutes on an idle cluster.
 
 ## What it measures
 

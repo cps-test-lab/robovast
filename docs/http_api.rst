@@ -7,8 +7,8 @@ HTTP API
 Everything RoboVAST does remotely goes through one HTTP service
 (:mod:`robovast.service.app`, FastAPI). The CLI, the web UI and the MCP server are all
 clients of it: ``HTTPTransport`` (:mod:`robovast.service.http_client`) is a method-per-route
-mirror of this table, and ``LocalTransport`` implements the same interface in process for a
-local run. So the routes below are not a second API — they are the one interface
+mirror of this table, and the service implements the same interface in process. So the
+routes below are not a second API — they are the one interface
 :class:`~robovast.service.interface.RobovastInterface` describes, over HTTP.
 
 The service also serves its own OpenAPI at ``/docs`` (and ``/openapi.json``), which is
@@ -21,9 +21,10 @@ Who may call it
 
 **Every request needs the shared access token** — there is no unauthenticated mode.
 A browser exchanges it for a session cookie at ``/login``; the CLI and MCP send
-``Authorization: Bearer``. A local ``vast serve`` binds ``127.0.0.1`` and mints a token
-if none is configured; a deployed one is published over an Ingress with TLS. See
-:doc:`deployment` for the boundary and ``vast login``.
+``Authorization: Bearer``. ``vast cluster setup`` mints the token and ``vast service
+token`` prints it; a published service sits behind an Ingress with TLS, and a one-node
+one is reached over a port-forward on ``127.0.0.1``. See :doc:`deployment` for the
+boundary and ``vast login``.
 
 The gate is ASGI middleware (:class:`robovast.service.auth.AuthMiddleware`), not a FastAPI
 dependency, so a new route is covered automatically: a dependency would miss the mounted
@@ -83,7 +84,8 @@ keeps having no write verb at all. Streamed both ways, never buffered: a downloa
 tarred as it is read and an upload is extracted as it arrives, through a bounded queue,
 so a slow disk holds the socket back rather than the body piling up in memory. In the
 cluster Deployment they are answered by their own process behind the front
-(:doc:`deployment`); a ``vast serve`` mounts them into its one app, at the same paths.
+(:doc:`deployment`); a ``vast serve`` started by hand mounts them into its one app, at the
+same paths.
 
 A **campaign archive** has its own channel rather than an address in that space, because
 ``/sources`` needs workspaces configured (a ``501`` otherwise) and an archive is not project
@@ -116,7 +118,7 @@ the meaning of a status is uniform across every route:
    * - Code
      - Meaning
    * - ``400``
-     - ``ValueError`` — a malformed or rejected argument (an unknown lane, a path
+     - ``ValueError`` — a malformed or rejected argument (an unknown backend, a path
        escaping its namespace, a non-``SELECT`` query).
    * - ``404``
      - ``KeyError`` — no such campaign, workspace, build or file.
@@ -127,12 +129,10 @@ the meaning of a status is uniform across every route:
    * - ``422``
      - A notebook or visualization failed to render.
    * - ``501``
-     - ``UnsupportedOnLane`` — the operation exists and the lane answering does not offer
-       it: a rank or a hold on the local Docker lane, which runs one campaign at a time;
-       ``show_gui`` on the cluster lane, which has no screen. The ``detail`` is one sentence
-       naming the operation and the lane, so it cannot be mistaken for bad input, a
-       conflict, or a bug, and the same call on the other lane is the only thing that
-       changes it. Also: workspaces are not configured on this service.
+     - ``UnsupportedOperation`` — the operation exists and the implementation answering does
+       not offer it. The ``detail`` is one sentence naming the operation and the
+       implementation, so it cannot be mistaken for bad input, a conflict, or a bug. Also:
+       workspaces are not configured on this service.
    * - ``503``
      - A dependency did not answer, so the request could not be attempted: the object
        store, the index, or the exec path into a container. Worth retrying, unlike the
@@ -152,8 +152,8 @@ above: ``400`` for an id that is not a campaign id, ``409`` for a running campai
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class: ``exec_path_unavailable``, for a deployment
-where no command can be run in a container at all, and ``unsupported_on_lane``, for an
-operation this lane does not offer (a client neither retries it nor blames its input). The
+where no command can be run in a container at all, and ``unsupported_operation``, for an
+operation this service does not offer (a client neither retries it nor blames its input). The
 exception type is what an
 HTTP boundary drops, and a client that has to *behave* differently (report the deployment
 rather than the image, degrade a check to "unchecked") would otherwise have to match on the
@@ -167,9 +167,9 @@ Five routes stream instead of returning a body. The two ``.../stream`` log route
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
 than replaying the whole log. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
-campaign, tarred from the campaign directory as it is read. Both lanes answer it: refusing
-on a local service with a ``409`` ("the results are already on this host's filesystem")
-asserts something true of a caller on that host and false of everyone else.
+campaign, tarred from the campaign directory as it is read. Every service answers it:
+refusing because "the results are already on this host's filesystem" would assert
+something true of a caller on that host and false of everyone else.
 ``GET /workspaces/{id}/archive`` is the same for a workspace's project files, under a
 single top-level directory. It is a control-plane route rather than a data one, because a
 workspace is not on the results volume the data routes serve.

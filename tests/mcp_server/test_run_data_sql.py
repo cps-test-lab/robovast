@@ -211,9 +211,13 @@ def test_query_scopes_to_the_campaign_it_was_asked_about(campaign):
         "no row of the other campaign may reach a query scoped to this one"
 
 
-def test_list_campaign_plots(campaign):
+def test_list_campaign_plots(campaign, monkeypatch, tmp_path):
     # Author-declared plots live in the snapshot .vast under
-    # visualization.results.data_browser.plots.
+    # visualization.results.data_browser.plots, which the service reads.
+    from robovast.mcp_server import service_access
+    from tests.service.null_service import serving
+    service = serving(tmp_path, tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
     config_dir = Path(campaign) / "_config"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "demo.vast").write_text(
@@ -225,7 +229,7 @@ def test_list_campaign_plots(campaign):
         "          query: SELECT param_wind, objective FROM runs\n"
         "          vega_lite: {mark: point}\n",
         encoding="utf-8")
-    r = run_data.list_campaign_plots(campaign)
+    r = run_data.list_campaign_plots(_CAMPAIGN)
     assert r["plots"][0]["title"] == "Wind vs objective"
     assert "SELECT" in r["plots"][0]["query"]
     assert r["plots"][0]["vega_lite"] == {"mark": "point"}

@@ -165,7 +165,7 @@ def test_an_authored_env_value_beats_the_backend():
     """A backend supplies defaults it knows, not decisions it takes away.
 
     ``scenario_env`` carries only *derived* variables; a campaign's own ``execution.env``
-    is emitted separately by each lane. So winning here means the backend's value is
+    is emitted separately by the backend. So winning here means the backend's value is
     **withheld** -- emitting it too would leave two entries for one name, resolved by
     emission order, which is exactly the ambiguity this precedence exists to remove.
     """

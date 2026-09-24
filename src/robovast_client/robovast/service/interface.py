@@ -22,8 +22,7 @@ pydantic request/response models. Three bindings mirror this contract 1:1:
 * the **service** HTTP endpoints (:mod:`robovast.service.app`) call an
   implementation of :class:`RobovastInterface`;
 * the **client** (:class:`robovast.service.client.RobovastClient`) implements it
-  over a transport (in-process for local Docker, HTTP for a remote/cluster
-  service);
+  over a transport (HTTP to the service, or in process inside it);
 * the **MCP tools** and **``vast`` CLI commands** are thin wrappers over the
   client.
 
@@ -44,7 +43,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from robovast.client import file_address
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
@@ -72,15 +71,9 @@ PRIORITY_LIMIT = 100
 
 
 class CreateCampaignRequest(BaseModel):
-    """Start a campaign from a workspace's current project.
+    """Start a campaign from a workspace's current project. An unknown field is refused."""
 
-    ``backend`` is normally **absent**: for a single-backend service it is
-    implicit in *which* service the client is talking to (an in-process/local
-    ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every
-    service ignores the field: one service runs one lane, chosen by
-    ``vast serve --backend``. Retained only so an older client's request still
-    parses; ``None`` is the only meaningful value.
-    """
+    model_config = ConfigDict(extra="forbid")
 
     workspace_id: str
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
@@ -105,13 +98,6 @@ class CreateCampaignRequest(BaseModel):
     allow_opaque_image: bool = False
     postprocess: bool = True         # trigger analysis postprocessing once when done
     upload_to_share: bool = False    # stream a raw (pre-postprocess) archive to the share
-    #: Put the simulator's window on the serve host's X display. Honoured **only** by a
-    #: local ``vast serve`` on its Docker lane, which is the only deployment whose
-    #: ``docker`` process sits at a screen; every other lane refuses the request rather
-    #: than running windowless (see :mod:`robovast.service.host_display`). Named for the
-    #: effect rather than after the internal ``RunOptions.gui`` it sets, because a client
-    #: reads this field without the run machinery in front of it.
-    show_gui: bool = False
     #: Which project (registry/namespace) and tag this campaign's **RoboVAST family**
     #: images come from — ``""`` for the service's own default. Per campaign, and on the
     #: request rather than in the service's environment, because that is what makes
@@ -130,8 +116,8 @@ class CreateCampaignRequest(BaseModel):
     #:
     #: Ordering only, and only where there is a queue to order. It never stops a run that has
     #: started, so a campaign overtaken keeps what it is running and gives up only the slots
-    #: those runs release. The local Docker lane runs one campaign at a time and has no queue,
-    #: so it refuses a non-default value rather than accepting one it cannot act on.
+    #: those runs release. An implementation with no queue refuses a non-default value rather than
+    #: accepting one it cannot act on.
     priority: int = Field(0, ge=-PRIORITY_LIMIT, le=PRIORITY_LIMIT)
     #: Launch, but admit nothing until resumed. Carried here because a campaign's scheduling
     #: is replayed when a service restart adopts it, and a paused campaign must come back
@@ -144,11 +130,10 @@ class CampaignRef(BaseModel):
 
     campaign_id: str
     #: Present when the launch was accepted but something about it will not do what the
-    #: caller probably meant — currently only ``show_gui`` on a project that declares no
-    #: ``execution.local.gui.parameter_overrides``, whose scenario then still runs
-    #: headless. Not an error: a scenario may open its window unconditionally, so
-    #: refusing would be wrong. But silence would leave "I asked for a window and got
-    #: none" indistinguishable from a broken display.
+    #: caller probably meant — currently a project that declares no ``execution.timeout``,
+    #: for which no stall verdict is possible. Not an error: such a campaign is a
+    #: legitimate thing to run. But silence would leave the caller waiting on a verdict
+    #: that cannot come.
     note: str = ""
 
 
@@ -260,6 +245,8 @@ class ImageBuildStatus(BaseModel):
 class ExecRequest(BaseModel):
     """Run one command in the experiment image — a diagnostic, never a campaign.
 
+    An unknown field is refused.
+
     Names exactly one source of the image (and, with ``config_name``, of a staged
     configuration): a workspace project, an existing campaign whose ``_config/`` is
     itself a project, or -- for a question about the software rather than about any
@@ -270,6 +257,8 @@ class ExecRequest(BaseModel):
     what is being run (``execution.timeout`` for a scenario, a fixed cap for a command)
     and reported back in :class:`ExecResult`.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     #: Shell command. Empty means "run the staged config's scenario as the campaign
     #: would" and requires ``config_name``; empty with no config is an error.
@@ -286,11 +275,6 @@ class ExecRequest(BaseModel):
     #: the project has exactly one.
     config_name: str = ""
     keep_alive: bool = False         # hold the one container open for follow-up calls
-    #: Put the simulator's window on the serve host's X display — same restriction as
-    #: :attr:`CreateCampaignRequest.show_gui`. Part of the held container's *identity*:
-    #: the X11 mount can only be established when the container is created, so changing
-    #: this replaces the container rather than exec'ing into a mount-less one.
-    show_gui: bool = False
     #: Which container to run in: ``scenario`` (the default -- where the scenario runs,
     #: and the only container a campaign without a simulator has), ``simulation``,
     #: ``sut``, or an ad-hoc container's name. The names are the same ones a scenario's
@@ -317,7 +301,7 @@ class ExecRequest(BaseModel):
 class ExecContainerState(BaseModel):
     """State of the single exec container, as of one call.
 
-    Also embedded in :class:`ResourceUsage`, so a caller that finds the lane full can
+    Also embedded in :class:`ResourceUsage`, so a caller that finds the cluster full can
     attribute the shortfall to its own held container instead of guessing.
     """
 
@@ -378,10 +362,10 @@ class ImageResolution(BaseModel):
     it is.
 
     For a built image this is the **registry-free identity**, ``build:<tag>@<hash>``, and not
-    the concrete ref the container runs FROM: the concrete form is a local docker tag on one
-    lane and a registry-qualified ref on the other, and the second must never reach a client
+    the concrete ref the container runs FROM: the concrete form is a registry-qualified
+    ref, and that must never reach a client
     (the zero-registry-knowledge invariant). The identity still changes exactly when the
-    image changes, which is all a cache key needs, and it reads the same on every lane.
+    image changes, which is all a cache key needs.
     """
 
     image: str = ""
@@ -587,8 +571,8 @@ class JobState(BaseModel):
     status: str = "running"
     #: Which run every section below describes, as ``<config>/<run>``.
     #:
-    #: A job is one run on the local lane and may **pack** several on the cluster, run one after
-    #: another -- so a packed job has exactly one live run at a time, and this names it. Present
+    #: A job may **pack** several runs, run one after another -- so a packed job has exactly
+    #: one live run at a time, and this names it. Present
     #: because without it a caller could not tell which of a job's runs it had been told about, and
     #: the sections were free to disagree with each other about that.
     #:
@@ -637,13 +621,12 @@ class JobKind(StrEnum):
     """
 
     RUN = "run"                  # one of the campaign's own trials
-    CALIBRATION = "calibration"  # a node-sizing probe (cluster lane only)
+    CALIBRATION = "calibration"  # a node-sizing probe
     #: The campaign's own postprocessing work, running as a job of its own: the rosbag
     #: conversion, which runs in the execution image its runs were recorded with. Listed for the same reason
     #: a probe is -- it is real work holding real capacity, and it is the only thing a
     #: campaign in its ``postprocessing`` phase is doing -- and, like a probe, it carries no
-    #: run. Cluster lane only: the local lane converts in the service process, where there
-    #: is no job to list.
+    #: run.
     POSTPROCESSING = "postprocessing"
 
 
@@ -657,8 +640,8 @@ class JobUsage(BaseModel):
     measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
     may legitimately sit anywhere between the two.
 
-    Every field is optional, and absent means *not known* -- never zero. A lane that sets no
-    container limits has no ceiling to state; a container whose cpu limit was left open may use
+    Every field is optional, and absent means *not known* -- never zero. A container with no
+    limits has no ceiling to state; a container whose cpu limit was left open may use
     the whole node, so no finite number is the truth; a cluster with no metrics API measures
     nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
     numbers are missing, when there is a reason worth reporting, is on
@@ -676,19 +659,17 @@ class JobUsage(BaseModel):
 class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
-    A "job" is whatever the backend fans a batch out into: a single **run** on the
-    local Docker backend (sequential, so at most one is ``running``), or a
-    **Kubernetes Job** on the cluster backend (which may pack several runs).
-    ``job_name`` is the id :meth:`RobovastInterface.get_job_log` takes; ``display_name``
-    is an optional human-friendly label (config/run locally, batch/job-index on the
-    cluster).
+    A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
+    cluster backend, which may pack several runs. ``job_name`` is the id
+    :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
+    human-friendly label (batch/job-index on the cluster).
     """
 
     job_name: str
     #: One of :class:`JobKind`, as a plain string.
     #:
-    #: Defaults to ``RUN`` rather than to an empty "unknown": every job on the local lane and
-    #: every job of a campaign's own batch *is* a run, so the default is a true statement and
+    #: Defaults to ``RUN`` rather than to an empty "unknown": every job of a campaign's own
+    #: batch *is* a run, so the default is a true statement and
     #: no construction site has to restate it. It is also what a client sees from a service
     #: older than this field -- which is why a reader must test for the kinds it cares about
     #: (``== "calibration"``, ``== "postprocessing"``) and never for ``!= "run"``.
@@ -706,16 +687,16 @@ class JobSummary(BaseModel):
     # reason worth reading. So a detail here is not by itself a sign of trouble —
     # ``status`` is what says whether anyone needs to act.
     detail: Optional[str] = None
-    #: What this job is consuming right now, where the lane can measure it -- see
+    #: What this job is consuming right now, where the cluster can measure it -- see
     #: :class:`JobUsage`. ``None`` on a job that is not running (a sample outlives the pod it
-    #: came from, and a finished job carrying one reads as still burning cores) and on any lane
+    #: came from, and a finished job carrying one reads as still burning cores) and on a cluster
     #: with nothing to measure. Never a zeroed record: absent is the honest answer.
     usage: Optional[JobUsage] = None
-    #: The node this job's pod is running on, or ``None`` where the lane has no nodes (local)
-    #: or the scheduler has not placed it yet. A pending job without one is the normal case,
+    #: The node this job's pod is running on, or ``None`` while the
+    #: scheduler has not placed it yet. A pending job without one is the normal case,
     #: not a gap: it is what "not placed yet" looks like.
     node: Optional[str] = None
-    #: When this job started, epoch seconds, or ``None`` where the lane cannot say.
+    #: When this job started, epoch seconds, or ``None`` where the service cannot say.
     #:
     #: The *job's* start, not its containers': it is stamped before the pod is scheduled and
     #: before the inputs are staged, so it answers "how long has this trial been going" rather
@@ -760,8 +741,6 @@ class JobCounts(BaseModel):
     # the web UI takes as the runs that will never deliver (``lib/eta.ts``), and it feeds the
     # run meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
     # reports a campaign run that never existed as finished.
-    #
-    # Cluster lane only; always 0 locally, where every job is a run.
     calibration: int = 0
     # The campaign's postprocessing job in the same listing, on the same terms as
     # ``calibration`` and for the same reason: a conversion is not a trial, so counting it
@@ -771,8 +750,6 @@ class JobCounts(BaseModel):
     # Not a progress figure. It is 1 while a conversion is in flight and 0 otherwise, so what
     # it says is "there is postprocessing to look at in the jobs list", not how far along it
     # is -- the conversion reports its own progress in the campaign log.
-    #
-    # Cluster lane only; always 0 locally, where postprocessing runs in the service process.
     postprocessing: int = 0
     #: The campaign's own runs. See :attr:`calibration` and :attr:`postprocessing` for what
     #: is deliberately not in it.
@@ -786,8 +763,7 @@ class ListJobsResponse(BaseModel):
     counts: JobCounts = Field(default_factory=JobCounts)
     #: Why no job here carries :attr:`JobSummary.usage`, when the absence has a cause worth
     #: reporting -- no metrics API on the cluster, or a service role that predates the grant it
-    #: needs. ``None`` when usage is available, and when its absence needs no explaining (a lane
-    #: that measures nothing by design says so once, in its documentation, not on every read).
+    #: needs. ``None`` when usage is available, and when its absence needs no explaining.
     #:
     #: One reason for the response rather than one per job, because the cause is always the
     #: whole read failing and never a single job's. Without it, a listing whose rows simply
@@ -820,7 +796,7 @@ class SearchHistory(BaseModel):
 
     Answers "is this search still improving?", which the single ``Status.best_objective``
     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
-    on both lanes and still there for a finished campaign after a service restart.
+    and still there for a finished campaign after a service restart.
 
     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
@@ -929,7 +905,7 @@ class LogChunk(BaseModel):
     """An incremental slice of a campaign's ``controller.log``.
 
     The controller runs in the driving process, so its log is a local file there
-    (the CLI locally, the service for cluster campaigns). Clients poll from a byte
+    (the service). Clients poll from a byte
     *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
     the campaign has reached a terminal phase and no more will be written.
     """
@@ -978,33 +954,33 @@ class VersionInfo(BaseModel):
     #: nothing rather than a placeholder: a substituted date would be believed.
     built_at: str = ""
     api_version: str = "0"
-    backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
+    backend: Optional[str] = None    # "kubernetes" (informational)
 
-    # -- cluster lane, when there is one ------------------------------------
+    # -- cluster ------------------------------------------------------------
     # Which cluster a campaign would land in. Reported because the defaults are
     # invisible and each is a different cluster: an unset context means "whatever
     # kubectl points at", which is a property of the host the service happens to run
     # on, not of the service. A campaign started against the wrong one is only
     # discovered by its absence.
-    #: Kubeconfig context the cluster lane dispatches into; ``None`` = the active one.
+    #: Kubeconfig context the service dispatches into; ``None`` = the active one.
     kube_context: Optional[str] = None
     #: Where ``kube_context`` came from: ``"--context"``, ``"ROBOVAST_KUBE_CONTEXT"``
     #: or ``"active kubeconfig context"``. The implicit case is the one that surprises.
     kube_context_source: Optional[str] = None
-    #: Namespace the cluster lane submits Jobs into.
+    #: Namespace the service submits Jobs into.
     namespace: Optional[str] = None
-    #: True when the service runs *inside* the cluster (it reads the object store
+    #: True when the service runs *inside* the cluster (it reads its volumes
     #: directly); false off-cluster, where campaigns are driven through a kubectl
     #: port-forward that is fragile under large result transfers. The two modes fail
     #: in different ways, so a client diagnosing a stalled transfer needs to know which.
     in_pod: Optional[bool] = None
-    #: The API server URL the cluster lane resolves to, so "which cluster is this?"
+    #: The API server URL the service resolves to, so "which cluster is this?"
     #: is answerable without reading the caller's kubeconfig.
     api_server: Optional[str] = None
 
     # -- can this deployment build an experiment image? ----------------------
     # A campaign whose container adds packages needs somewhere to push the derived image.
-    # On the cluster lane that is the service's own in-pod registry, reached over its
+    # That is the service's own in-pod registry, reached over its
     # Ingress — so a service that is unpublished, or whose registry prefix a `setup`
     # re-run dropped, cannot build at all. Nothing said so until a campaign was
     # submitted and refused, after a project push, a workspace create and a launch.
@@ -1015,7 +991,7 @@ class VersionInfo(BaseModel):
     # and by the run preflight; probing it here would make the cheapest call in the
     # interface the slowest.
     #
-    # So `True` is not a promise that a build will be *published*. On the cluster lane it
+    # So `True` is not a promise that a build will be *published*. It
     # means a registry is configured; whether the credential it would push with is still
     # accepted is asked once per build, at submit time and before any layer is built (see
     # `RegistryImageStore.push_refused`), because that answer costs a round trip to the
@@ -1031,11 +1007,11 @@ class VersionInfo(BaseModel):
     #: False. Never carries a registry host, prefix or credential — registry details do
     #: not cross this interface (see :class:`RegistryConfig`), and this reaches a client.
     build_unavailable: Optional[str] = None
-    #: True when this lane queues campaigns against each other, so a campaign's priority and
+    #: True when this service queues campaigns against each other, so a campaign's priority and
     #: pause mean something (``set_campaign_scheduling``, ``--priority`` at launch); False on
-    #: a lane that runs one campaign at a time and refuses both. ``None`` when the service did
+    #: a service that runs one campaign at a time and refuses both. ``None`` when the service did
     #: not say -- an older one has no such field -- which a consumer must read as "no
-    #: verdict", the same rule as ``can_build_images``. A property of the lane, fixed when the
+    #: verdict", the same rule as ``can_build_images``. A property of the deployment, fixed when the
     #: service started, not of how busy it is.
     can_schedule: Optional[bool] = None
 
@@ -1044,23 +1020,6 @@ class VersionInfo(BaseModel):
     #: service rather than from documentation it may not have.
     results_address: str = "/results/{campaign_id}/{path}"
     sources_address: str = "/sources/{workspace_id}/{path}"
-    #: Filesystem roots behind those two namespaces — **non-null only when the caller
-    #: can actually open them**: the service must be backed by a local filesystem *and*
-    #: the request must come from loopback. Then a caller on the same machine reads
-    #: files with its own tools instead of relaying every byte through this interface.
-    #:
-    #: A service with a cluster lane reports both as null. Its results live in the
-    #: object store; the ``/tmp/robovast-campaigns`` fetch scratch looks eligible and is
-    #: not — it is ephemeral and holds only already-fetched campaigns, so advertising it
-    #: would name a path that is right for one campaign and absent for the next.
-    #:
-    #: ``/results/<campaign_id>/<path>`` is ``<results_root>/<campaign_id>/<path>``.
-    #: ``/sources/<workspace_id>/<path>`` is
-    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a directory
-    #: pinned in place with ``--workspace-dir``, which is used where it is and
-    #: therefore lives outside this root.
-    results_root: Optional[str] = None
-    sources_root: Optional[str] = None
     #: The origin to prefix a route or an address with, so a caller that cannot be handed
     #: bytes can be handed a link instead: ``"https://<ingress-host>"`` on a published
     #: deployment, the bound address for a local ``vast serve``.
@@ -1192,22 +1151,22 @@ class DiskSpace(BaseModel):
 class ResourceUsage(BaseModel):
     """Live compute capacity and current usage of the service's execution backend.
 
-    Backend-neutral by design: the local↔cluster difference is resolved inside the
-    service (``LocalTransport`` reads the host via ``psutil``; ``ClusterService``
-    reads the Kubernetes nodes), so a consumer — the UI chip or the MCP tool — reads
-    the same fields regardless of where it runs and never branches on ``backend``.
+    Backend-neutral by design: how the backend measures is resolved inside the service
+    (it reads the Kubernetes nodes), so a consumer — the UI chip or the
+    MCP tool — reads the same fields regardless of where it runs and never branches on
+    ``backend``.
 
     **Reserved and measured are two different questions, and the field names say which.**
     ``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually
     being consumed. A cluster campaign that reserves nine cores per pod and uses two
     reports 9 and 2, and the gap between them is the number that sizes the next sweep.
-    Either can be ``None``, meaning **this lane has no such reading** rather than zero:
-    nothing reserves on the local Docker lane (it sets no container CPU/memory limits and
-    is single-flight), and a cluster without metrics-server cannot measure — see
-    ``metrics_unavailable``. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
+    Either can be ``None``, meaning **this backend has no such reading** rather than zero:
+    a cluster without metrics-server cannot measure — see ``metrics_unavailable`` — and
+    a pod that sets no container limits reserves nothing. ``cpu_*`` are CPU cores;
+    ``memory_*`` are bytes.
 
-    ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
-    — the request sum on the cluster, host utilization locally — and exist because every
+    ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the backend leads with**
+    — the request sum on the cluster — and exist because every
     consumer already reads them. They are the headline "how much is currently claimed", so
     they are never null; a consumer that must distinguish the two readings reads the pair
     above and branches on neither ``backend`` nor these. On the cluster the request sum is
@@ -1215,30 +1174,29 @@ class ResourceUsage(BaseModel):
     scheduler reasons about capacity — pods still queued for a node are reported by
     ``jobs_pending``, not here, so ``used`` never exceeds ``capacity``).
 
-    ``disk`` and ``results`` are **actual filesystem bytes on both lanes** -- the one place
+    ``disk`` and ``results`` are **actual filesystem bytes** -- the one place
     this model does not follow the ``cpu_used``/``memory_used`` pattern. Requests cannot
     answer it: ``ephemeral-storage`` is almost never requested, so a request sum would
     report a few hundred MB used on a node that is 95% full. ``disk`` is the filesystem a
     run writes into: on the cluster the kubelet-reported *nodefs* of the ONE node carrying
     the service pod, deliberately not a sum over the node set -- the workspaces are a
     ``hostPath`` there, so that is the disk which decides whether a campaign can be
-    written, and a total would read as tens of terabytes free while it filled. Locally it
-    is the campaign results root's filesystem. ``results`` is the volume the campaigns
+    written, and a total would read as tens of terabytes free while it filled.
+    ``results`` is the volume the campaigns
     live on, reported only where it is a separately measurable claim.
 
     ``parallel_runs`` is a backend-intrinsic flag, **not** a count: ``False`` means
-    scenario runs execute one at a time (local Docker is single-flight), ``True``
-    means they run in parallel bounded only by free capacity (cluster). How many runs
+    scenario runs execute one at a time, ``True`` means they run in parallel bounded
+    only by free capacity (cluster). How many runs
     actually fit is left to the consumer, which knows each project's per-run
     reservation — the service does not.
 
     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
-    this backend is driving, not one. One definition, both lanes: ``running`` is what is
+    this backend is driving, not one. One definition: ``running`` is what is
     **executing right now**, ``pending`` is work the backend has **accepted but is not
-    executing**. On the cluster that means planned + pod-pending + blocked Jobs;
-    locally it is the remainder of the current batch, with ``running`` 0 or 1 because
-    the Docker lane is single-flight. So the pair can be read — and summed into an
-    "outstanding work" total — without branching on ``backend``.
+    executing**. On the cluster that means planned + pod-pending + blocked Jobs. So the
+    pair can be read — and summed into an "outstanding work" total — without branching
+    on ``backend``.
 
     The two counts deliberately answer a different question from ``cpu_used`` above:
     they include work that has been accepted but has no compute granted yet, which is
@@ -1248,23 +1206,22 @@ class ResourceUsage(BaseModel):
     ``blocked`` apart, which a capacity meter has no use for).
     """
 
-    backend: str                     # "docker" | "kubernetes" (informational only)
+    backend: str                     # "kubernetes" (informational only)
     cpu_capacity: float              # total cores (cluster allocatable / host logical CPUs)
     cpu_used: float                  # cores claimed (cluster pod requests / host utilization)
     memory_capacity_bytes: int
     memory_used_bytes: int
-    parallel_runs: bool              # runs execute in parallel? cluster=True, local=False
+    parallel_runs: bool              # runs execute in parallel? cluster=True
     jobs_running: int = 0            # scenario-run pods in phase Running, backend-wide
     jobs_pending: int = 0            # scenario-run pods admitted/queued but not yet Running
     #: What the scheduler has **committed**: the pod-request sum on the cluster (the same
-    #: number ``cpu_used`` carries there). ``None`` on the local lane, which reserves
-    #: nothing -- it sets no container CPU/memory limits and runs one scenario at a time --
-    #: so a consumer draws no reservation there rather than mislabelling a measurement as
-    #: one. Also ``None`` from a service too old to have the field.
+    #: number ``cpu_used`` carries there). ``None`` on a backend that reserves nothing, so a
+    #: consumer draws no reservation there rather than mislabelling a measurement as one.
+    #: Also ``None`` from a service too old to have the field.
     cpu_reserved: Optional[float] = None
     memory_reserved_bytes: Optional[int] = None
-    #: What is actually being **consumed**: metrics-server's node totals on the cluster,
-    #: ``psutil`` locally (the same number ``cpu_used`` carries there). ``None`` means no
+    #: What is actually being **consumed**: metrics-server's node totals on the cluster.
+    #: ``None`` means no
     #: reading, never zero -- see ``metrics_unavailable`` for why, when the backend knows.
     cpu_measured: Optional[float] = None
     memory_measured_bytes: Optional[int] = None
@@ -1275,7 +1232,7 @@ class ResourceUsage(BaseModel):
     metrics_unavailable: Optional[str] = None
     #: The filesystem this backend's runs write into: nodefs on the cluster (container
     #: writable layers, emptyDir scratch, pulled image layers -- the disk kubelet's
-    #: eviction thresholds watch), the campaign results root locally. **``None`` means "no
+    #: eviction thresholds watch). **``None`` means "no
     #: verdict"** -- an older service, or a backend whose disk could not be read -- and a
     #: consumer must then show nothing rather than a zero.
     disk: Optional[DiskSpace] = None
@@ -1288,8 +1245,7 @@ class ResourceUsage(BaseModel):
     #: The **results volume** -- where campaigns live -- when it is separately measurable:
     #: a provisioned claim on the service pod. ``None`` where the volume is a directory on
     #: the service's node (the kubelet reports no per-volume figure for one, and ``disk``
-    #: is then the same filesystem) and locally, where the results root *is* the filesystem
-    #: ``disk`` already reports.
+    #: is then the same filesystem).
     results: Optional[DiskSpace] = None
     #: Why there is no ``disk``, when the backend tried and failed. Non-null only when
     #: ``disk`` is None *and* the reason is known -- a service too old to have this field
@@ -1304,13 +1260,13 @@ class ResourceUsage(BaseModel):
     #: Names amounts, **never a node or a path**.
     storage_refusal: Optional[str] = None
     #: The held container-exec container, when one exists. A diagnostic container can
-    #: hold a ROS stack's worth of memory, and a caller told only "the lane is full"
+    #: hold a ROS stack's worth of memory, and a caller told only "the cluster is full"
     #: has no way to discover that its own container is the reason.
     exec_container: Optional[ExecContainerState] = None
     #: The service's *query* containers, held for read-only introspection (see
     #: ``ExecRequest.query``), keyed by slot. Reported for the same reason as the one
     #: above and never folded into it: they are not the caller's, they are reaped on their
-    #: own schedule, and a lane holding three of them while reporting one would read as
+    #: own schedule, and a service holding three of them while reporting one would read as
     #: having capacity it does not have.
     query_containers: dict[str, ExecContainerState] = Field(default_factory=dict)
 
@@ -1375,7 +1331,7 @@ class UsageSample(BaseModel):
     cpu_capacity: float
     memory_used_bytes: int
     memory_capacity_bytes: int
-    #: As on :class:`ResourceUsage`, and ``None`` for the same reasons: a lane with no such
+    #: As on :class:`ResourceUsage`, and ``None`` for the same reasons: a backend with no such
     #: reading, a window whose measurement failed, or a sample recorded by a service too old
     #: to have the fields.
     cpu_reserved: Optional[float] = None
@@ -1426,7 +1382,7 @@ class UsageHistory(BaseModel):
 
     Persisting it was considered and refused. A durable metrics store is a real dependency
     -- retention, a disk budget, a rotation policy -- and this answers "how busy has the
-    lane been lately", which a volatile 24 h window answers.
+    cluster been lately", which a volatile 24 h window answers.
     """
 
     samples: list[UsageSample] = Field(default_factory=list)
@@ -1947,7 +1903,7 @@ class WorkOrder(BaseModel):
 class VariationRemote(BaseModel):
     """Where a variation type's Module-Federation preview bundle is served from.
 
-    Field-for-field what ``local_transport._plugin_remotes`` builds — the container name
+    Field-for-field what ``ServiceBase._plugin_remotes`` builds — the container name
     (``REMOTE_NAME``, defaulting to the entry-point name), the ``remoteEntry.js`` URL, and
     the exposed module.
     """
@@ -2186,7 +2142,7 @@ class SceneStatus(BaseModel):
     #: cost, and where an image this host cannot reach stalls) / ``starting`` / ``compiling`` /
     #: ``""`` when nothing is running.
     stage: str = ""
-    #: The lane's own words for that step, when it has any — a pod's ``ImagePullBackOff`` message,
+    #: The cluster's own words for that step, if any — a pod's ``ImagePullBackOff`` message,
     #: say. Shown beside the stage and never in place of it: the stage is what a client branches on,
     #: this is what only a human can read. It is why a wait that will never end says so in seconds
     #: rather than at the build's deadline.
@@ -2338,46 +2294,44 @@ ERROR_CODE_HEADER = "x-robovast-error"
 #: and the detail already say.
 EXEC_PATH_UNAVAILABLE = "exec_path_unavailable"
 
-#: The operation exists on the interface but the lane answering does not offer it --
-#: :class:`UnsupportedOnLane` crossing HTTP. A client acts on it by not retrying and not
-#: blaming its input: the same call on the other lane is the only thing that changes it.
-UNSUPPORTED_ON_LANE = "unsupported_on_lane"
+#: The operation exists on the interface but the implementation answering does not offer it --
+#: :class:`UnsupportedOperation` crossing HTTP. A client acts on it by not retrying and not
+#: blaming its input.
+UNSUPPORTED_OPERATION = "unsupported_operation"
 
 
-class UnsupportedOnLane(ServiceError):
-    """An operation this lane does not offer, refused by name.
+class UnsupportedOperation(ServiceError):
+    """An operation this implementation does not offer, refused by name.
 
-    One sentence, ``<operation> is not supported on the <lane> lane``, followed by a hint
-    when there is somewhere else to go. One sentence on both sides of HTTP: a service raises
+    One sentence, ``<operation> is not supported by the <implementation> implementation``,
+    followed by a hint when there is somewhere else to go. One sentence on both sides of HTTP: a service raises
     it, the app maps it to ``501`` with the sentence as ``detail`` and
-    :data:`UNSUPPORTED_ON_LANE` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands a
+    :data:`UNSUPPORTED_OPERATION` in :data:`ERROR_CODE_HEADER`, and the HTTP transport hands a
     caller a :class:`ServiceError` carrying that status, code and sentence -- so the CLI, the
     MCP tools, the web UI and a raw HTTP client all print the same line. Across the wire the
     class is that :class:`ServiceError` and the code is what identifies it; in process it is
     this exception itself, so an MCP mounted inside the service reports what a remote one
     does without matching on the words.
 
-    What it is for is the difference between a lane that *cannot* and a lane that *did not*:
-    a refusal that names the lane cannot be mistaken for bad input (``400``), a conflict to
-    retry after (``409``) or a bug (``500``), and it cannot be mistaken for success -- the
-    failure this exists to prevent is an operation that a lane accepts and quietly does
-    nothing with.
+    A refusal that names the implementation cannot be mistaken for bad input (``400``), a
+    conflict to retry after (``409``), a bug (``500``) or success -- an operation accepted and
+    quietly not done.
 
-    A lane raises it for itself, in its own class, never as an inherited default: the
-    refusal is a fact about *that* lane, and ``grep UnsupportedOnLane`` should list every
-    asymmetry between the lanes in full.
+    An implementation raises it for itself, in its own class, never as an inherited default,
+    so ``grep UnsupportedOperation`` lists every operation an implementation does not offer.
     """
 
     STATUS = 501
 
-    def __init__(self, operation: str, lane: str, hint: str = ""):
+    def __init__(self, operation: str, implementation: str, hint: str = ""):
         self.operation = operation
-        self.lane = lane
+        self.implementation = implementation
         self.hint = hint
-        where = f"on the {lane} lane" if lane else "by this service"
+        where = (f"by the {implementation} implementation" if implementation
+                 else "by this service")
         sentence = f"{operation} is not supported {where}"
         super().__init__(self.STATUS, f"{sentence}. {hint}" if hint else sentence,
-                         code=UNSUPPORTED_ON_LANE)
+                         code=UNSUPPORTED_OPERATION)
 
 
 API_VERSION = "0"
@@ -2621,8 +2575,8 @@ class Routes:
 
     @staticmethod
     def job_stop(campaign_id: str) -> str:
-        # ``job_name`` is a query param for the same reason as ``job_log`` below: locally
-        # it is a "<config>/<run>" id and contains a '/'.
+        # ``job_name`` is a query param for the same reason as ``job_log`` below: a job
+        # name may be "<config>/<run>", which contains a '/'.
         return f"/campaigns/{campaign_id}/job-stop"
 
     @staticmethod
@@ -2774,11 +2728,11 @@ class RobovastInterface(ABC):
     the identical contract so callers are transport-agnostic.
     """
 
-    #: Which side is answering: ``"local"`` and ``"cluster"`` for the two execution lanes a
-    #: service runs, ``"http"`` for the transport that only forwards to one. Named in every
-    #: :class:`UnsupportedOnLane` an implementation raises, so a refusal says *which* lane
+    #: Which side is answering: ``"cluster"`` for the service itself,
+    #: ``"http"`` for the transport that only forwards to one. Named in every
+    #: :class:`UnsupportedOperation` an implementation raises, so a refusal says *which* side
     #: declined rather than "this service". Empty only on the interface itself.
-    LANE: str = ""
+    IMPLEMENTATION: str = ""
 
     # -- version / health ---------------------------------------------------
 
@@ -2788,11 +2742,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def resource_usage(self) -> ResourceUsage:
-        """Report the execution backend's CPU/memory capacity + current usage.
-
-        ``backend`` selects the lane on a multi-backend service ("local"/"cluster");
-        single-backend services offer one lane and ignore it.
-        """
+        """Report the execution backend's CPU/memory capacity + current usage."""
 
     @abstractmethod
     def service_cache(self) -> ServiceCache:
@@ -2813,7 +2763,7 @@ class RobovastInterface(ABC):
     def upgrade_info(self) -> UpgradeInfo:
         """Can this deployment roll itself, and is there anything newer to roll onto?
 
-        Read-only, and safe to call on any lane: a deployment that cannot roll itself says
+        Read-only, and safe to call on any deployment: a deployment that cannot roll itself says
         so in ``unsupported_reason`` rather than raising, because "there is no button here"
         is an answer a caller renders, not a failure it reports.
         """
@@ -2830,7 +2780,7 @@ class RobovastInterface(ABC):
 
         Refuses while campaigns are live, because the controller driving them runs in the
         pod being replaced. ``force`` overrides that refusal and nothing else -- in
-        particular it does not make an unsupported lane supported.
+        particular it does not make an unsupported deployment supported.
         """
 
     # -- workspaces (editable project inputs) -------------------------------
@@ -2913,16 +2863,16 @@ class RobovastInterface(ABC):
         Concrete-with-a-refusal rather than ``@abstractmethod`` because an implementation
         that only *calls* a service (:class:`HTTPTransport`) has no local file to offer and
         should not be forced to write a stub claiming otherwise. It says so here, as
-        :class:`UnsupportedOnLane` naming the lane, instead of failing as a missing
+        :class:`UnsupportedOperation` naming the implementation, instead of failing as a missing
         attribute in a route.
 
-        Every implementation that is actually served from — ``LocalTransport`` and its
+        Every implementation that is actually served from — ``ServiceBase`` and its
         subclasses — overrides this. Callers must therefore **not** probe for it with
         ``getattr``: such a check can only succeed, and the code that believed otherwise sent
         cluster campaigns down the local resolver for years.
         """
-        raise UnsupportedOnLane(
-            "local_file", self.LANE,
+        raise UnsupportedOperation(
+            "local_file", self.IMPLEMENTATION,
             hint=f"only a served transport has a file to stream, and {address!r} is not "
                  "one here")
 
@@ -3048,8 +2998,8 @@ class RobovastInterface(ABC):
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
         """List the campaign's current-batch jobs (live) plus aggregate counts.
 
-        A "job" is one execution unit (a run locally, a Kubernetes Job on the
-        cluster). Reports live status only; pair with :meth:`get_job_log` to read a
+        A "job" is one execution unit (a Kubernetes Job on the cluster). Reports live
+        status only; pair with :meth:`get_job_log` to read a
         running job's log.
 
         Jobs that are not the campaign's own runs are listed and marked with
@@ -3064,8 +3014,7 @@ class RobovastInterface(ABC):
 
         Same streaming protocol as :meth:`get_campaign_logs` (poll, append
         :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). Live source
-        only — the running pod on the cluster, the job's ``logs/system*.log`` files
-        locally. Raises if the job's log source is gone.
+        only — the running pod on the cluster. Raises if the job's log source is gone.
 
         **Every** container the job runs, merged into one stream: a job is not one
         container (the ROS shape gives the simulator and the system under test their
@@ -3095,10 +3044,10 @@ class RobovastInterface(ABC):
 
         Not abstract: a transport that cannot do this inherits a refusal rather than being
         forced to implement one, which is the same courtesy :meth:`share` gets. The refusal
-        is :class:`UnsupportedOnLane`, so it names the lane that declined.
+        is :class:`UnsupportedOperation`, so it names the implementation that declined.
         """
         del campaign_id, job_name
-        raise UnsupportedOnLane("get_job_state", self.LANE)
+        raise UnsupportedOperation("get_job_state", self.IMPLEMENTATION)
 
     def exec_in_job(self, campaign_id: str, job_name: str, command: str,
                     container: str = "scenario", source: str = "api") -> "ExecResult":
@@ -3125,10 +3074,9 @@ class RobovastInterface(ABC):
 
         Args:
             container: A **role** (``scenario`` / ``simulation`` / ``sut``), not a container name
-                -- the concrete name differs by lane, so naming one here would make the same call
-                mean different things on the two. Spelled literally rather than imported from
-                ``robovast.common.config``: this package deliberately does not depend on the core
-                (see ``test_client_needs_no_core``).
+                -- the concrete name is the implementation's to choose. Spelled literally rather
+                than imported from ``robovast.common.config``: this package deliberately does
+                not depend on the core (see ``test_client_needs_no_core``).
             source: Which surface asked, for the ledger. Not an identity: the service is
                 unauthenticated.
 
@@ -3136,7 +3084,7 @@ class RobovastInterface(ABC):
         inherits a refusal rather than being made to write one.
         """
         del campaign_id, job_name, command, container, source
-        raise UnsupportedOnLane("exec_in_job", self.LANE)
+        raise UnsupportedOperation("exec_in_job", self.IMPLEMENTATION)
 
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
@@ -3164,16 +3112,16 @@ class RobovastInterface(ABC):
 
         Raises ``ValueError`` when neither argument is given -- a call that asked for nothing
         is a caller's mistake, and answering it "done" would report a change that never
-        happened. Raises :class:`UnsupportedOnLane` on a lane with no queue to order (the
-        local Docker lane runs one campaign at a time), and ``ValueError`` on a campaign that
-        is already over.
+        happened. Raises :class:`UnsupportedOperation` on an implementation with no queue to
+        order, and ``ValueError`` on a campaign that is already over.
 
         Not abstract, for the reason :meth:`exec_in_job` is not: a transport that cannot do
         this inherits a refusal rather than being made to write one.
         """
         del campaign_id, priority, paused
-        raise UnsupportedOnLane("set_campaign_scheduling", self.LANE,
-                                hint="this lane does not queue campaigns against each other")
+        raise UnsupportedOperation(
+            "set_campaign_scheduling", self.IMPLEMENTATION,
+            hint="this implementation does not queue campaigns against each other")
 
     @abstractmethod
     def stop_job(self, campaign_id: str, job_name: str,
@@ -3198,8 +3146,8 @@ class RobovastInterface(ABC):
 
         Args:
             campaign_id: The campaign the job belongs to.
-            job_name: The job as :meth:`list_jobs` reports it — ``<config>/<run>``
-                locally, the Kubernetes Job name on the cluster.
+            job_name: The job as :meth:`list_jobs` reports it — the Kubernetes Job name
+                on the cluster.
             reason: The operator's optional explanation, stored with the record.
             source: Which surface asked — ``"webui"``, ``"mcp"``, ``"cli"``. Recorded for
                 the audit trail; not a user identity, since the service is
@@ -3240,8 +3188,8 @@ class RobovastInterface(ABC):
     @abstractmethod
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Permanently delete **one** campaign wholesale: its directory under the results
-        root, the archives the local lane wrote beside it (``_archives/``), a share copy
-        an import staged and kept, its rows in the central index, plus, on a cluster, any
+        root, a share copy an import staged and kept, its rows in the central index, plus
+        any
         leftover Jobs and its token Secret.
 
         Refuses a campaign that is still running (raises so it surfaces as a 409);
@@ -3279,11 +3227,6 @@ class RobovastInterface(ABC):
         campaign layout. *selection* narrows it (:class:`ArchiveSelection`); ``None`` is
         the whole campaign. Streamed, never buffered: the tree is tarred into the
         response as it is read.
-
-        On the interface rather than only on the lane that first needed it: this was a
-        cluster-only method the HTTP route probed for with ``hasattr``, so a local service
-        answered 409 and the web UI hid its download button there. Which lane a service
-        runs is not what decides whether a caller can be handed a file.
         """
 
     @abstractmethod
@@ -3521,8 +3464,8 @@ class RobovastInterface(ABC):
     @abstractmethod
     def resolve_image(self, request: ExecRequest) -> ImageResolution:
         """Resolve the image :meth:`exec_in_container` would use for *request*, without
-        running anything. See :class:`ImageResolution`. ``request.command``/``keep_alive``/
-        ``show_gui`` are unused — only the addressing fields matter.
+        running anything. See :class:`ImageResolution`. ``request.command``/``keep_alive``
+        are unused — only the addressing fields matter.
         """
 
     # -- postprocessing (editable, re-runnable; never mutates _config) ------
@@ -3604,7 +3547,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False, backend: str = "") -> WorldDescription:
+                       entities: bool = False) -> WorldDescription:
         """Describe the world this campaign's simulator will load.
 
         The other half of authoring the ``sim`` channel. ``preview_configurations`` says what
@@ -3619,11 +3562,9 @@ class RobovastInterface(ABC):
         campaign runs**, and carries which image that was.
 
         *targets* is a glob over object names and *entities* asks for the compiled entity list;
-        both cost a model build, which is why neither is implied. *backend* names the lane the
-        query runs on (``"local"``/``"cluster"``) — a service offering both must not accept a lane
-        and then answer from the other one. Raises ``ValueError`` when no answer is possible — no
-        backend, an image that must be built first, no container runner here — because
-        "unverifiable" is not an empty result.
+        both cost a model build, which is why neither is implied.
+        Raises ``ValueError`` when no answer is possible — no backend, an image that must be
+        built first, no container runner here — because "unverifiable" is not an empty result.
         """
 
     @abstractmethod

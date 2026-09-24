@@ -35,7 +35,7 @@ NAMESPACE_MODULES = {
     "robovast.client.campaign_cli": "robovast-client (src/robovast_client)",
     "robovast.client.service_cli": "robovast-client (src/robovast_client)",
     "robovast.client.container_cli": "robovast-client (src/robovast_client)",
-    "robovast.service.local_transport": "robovast",
+    "robovast.service.service_base": "robovast",
 }
 
 

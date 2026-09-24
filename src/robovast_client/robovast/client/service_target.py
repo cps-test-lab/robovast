@@ -111,8 +111,8 @@ def service_client(namespace='default', context=None):
 
     There is no serviceless mode to fall into. The client speaks HTTP to a service and
     nothing else, so "no service" is a missing dependency to report, not a second
-    implementation to switch to -- which is what makes a command mean the same thing on
-    both lanes, and on a client-only install as on a full one.
+    implementation to switch to -- which is what makes a command mean the same thing
+    against every service, and on a client-only install as on a full one.
 
     *namespace* and *context* are accepted and unused here; commands still take them for
     the Kubernetes operations they perform themselves.

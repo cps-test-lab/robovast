@@ -32,7 +32,6 @@ from click.testing import CliRunner
 CORE_ONLY = (
     "robovast.common",
     "robovast.service.client",
-    "robovast.service.local_transport",
     "robovast.service.app",
     "robovast.service.workspaces",
     "robovast.service.container_exec",
@@ -298,24 +297,14 @@ def test_waiting_builds_its_own_client(without_core, monkeypatch):
 
 
 def test_doctor_can_ask_about_a_deployment_without_the_core(without_core):
-    """`check_deployment` reads the cluster lane, which a client install does not have.
-
-    Its import is deferred inside the function for exactly that reason. A module-level one
-    would pass `test_core_without_cluster_package.py` -- that only removes the *lane* --
-    and break the install this distribution exists for.
-    """
+    """`check_deployment` imports the cluster package inside the function, because a client
+    install does not have it."""
     from robovast.client.doctor import check_deployment  # pylint: disable=import-outside-toplevel
 
-    # The lane is made absent HERE rather than in `CORE_ONLY`, and scoped to this test.
-    # Adding it to the fixture's block list evicted `robovast.execution.cluster_execution`
-    # from sys.modules for the rest of the session, and other suites hold references into
-    # it -- six tests in three other files started failing while passing in isolation.
-    #
-    # It has to be absent somehow, though: without it the deferred import SUCCEEDS, the
-    # code calls the cluster, and returns [] ten seconds later because nothing answered.
-    # That is the same answer the ImportError path gives, so the assertion would hold
-    # while proving nothing about it -- and would fail on a machine that can reach a
-    # deployment. `None` in sys.modules is what makes an import raise.
+    # The cluster package is made absent here, scoped to this test, rather than in
+    # `CORE_ONLY`: evicting it from sys.modules for the session breaks other suites that hold
+    # references into it. `None` in sys.modules is what makes the deferred import raise;
+    # without it the code would call the cluster and return [] because nothing answered.
     with patch.dict(sys.modules, {"robovast.execution.cluster_execution": None}):
         assert check_deployment(namespace="default") == []
 
@@ -328,5 +317,5 @@ def test_no_service_url_and_no_core_is_a_clear_refusal(without_core):
 
     with pytest.raises(RuntimeError) as excinfo:
         RobovastClient("")
-    assert "no in-process service" in str(excinfo.value)
+    assert "no service URL" in str(excinfo.value)
     assert "vast login" in str(excinfo.value)

@@ -116,7 +116,7 @@ def test_cpu_takes_fractional_cores_and_millicores(cpu):
 
 
 def test_a_whole_core_stays_an_int():
-    """Both lanes render the value with ``str()``. Coercing 4 to 4.0 would rewrite every
+    """The manifest renders the value with ``str()``. Coercing 4 to 4.0 would rewrite every
     existing campaign's manifest from "4" to "4.0" for no reason."""
     c = validate_config(_cfg(scenario={"image": "a", "resources": {"cpu": 4}}))
     assert isinstance(c.execution.containers["scenario"].resources.cpu, int)

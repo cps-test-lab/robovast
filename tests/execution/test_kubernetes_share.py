@@ -43,6 +43,13 @@ def _backend():
     return KubernetesBackend(cluster_config=types.SimpleNamespace())
 
 
+def _freeze_config(campaign) -> None:
+    """The frozen configuration every importable campaign carries; without it the share
+    is refused before a byte is read."""
+    (campaign / "_config").mkdir(parents=True, exist_ok=True)
+    (campaign / "_config" / "nav.vast").write_text("version: 4\n", encoding="utf-8")
+
+
 def test_share_campaign_streams_to_provider_naming_the_variant(monkeypatch, tmp_path):
     provider = _FakeProvider()
     monkeypatch.setattr(in_pod_upload, "load_provider_from_env", lambda: provider)
@@ -50,6 +57,7 @@ def test_share_campaign_streams_to_provider_naming_the_variant(monkeypatch, tmp_
     _patch_stream(monkeypatch, b"tar-bytes")
     campaign = tmp_path / "camp-2026-01-01-000000"
     (campaign / "_execution").mkdir(parents=True)
+    _freeze_config(campaign)
 
     _backend().share_campaign(str(campaign), RunOptions(),
                               progress_callback="the-callback")
@@ -71,6 +79,7 @@ def test_share_campaign_names_a_postprocessed_campaign_as_such(monkeypatch, tmp_
     _patch_stream(monkeypatch, b"tar-bytes")
     campaign = tmp_path / "camp-2026-01-01-000000"
     (campaign / "_transient").mkdir(parents=True)
+    _freeze_config(campaign)
     (campaign / "_transient" / "postprocessing.yaml").write_text(
         "generated_by: robovast\nentries:\n  - output: run-0/nav.csv\n"
         "    sources: [run-0/rosbag2]\n    plugin: rosbags_to_csv\n    params: {}\n",

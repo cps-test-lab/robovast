@@ -80,7 +80,7 @@ def test_the_preflight_reports_every_axis_and_stays_runnable(campaign):
     """These campaigns predate plugins.yaml and providers.yaml, so those axes are `unknown` --
     and `unknown` must not block. Refusing a campaign for lacking a record nobody wrote would
     refuse exactly the campaigns this exists to rescue."""
-    report = retrigger.check(campaign, campaign.name)
+    report = retrigger.check(campaign, campaign.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
 
     assert set(report["axes"]) == {"config", "host", "images", "plugins", "providers"}
     assert all(axis["detail"] for axis in report["axes"].values()), "every axis needs a detail"
@@ -186,7 +186,7 @@ def test_a_campaign_whose_image_vanished_is_blocked_with_a_recovery(tmp_path):
         record.pop(key, None)
     execution.write_text(yaml.safe_dump(record), encoding="utf-8")
 
-    report = retrigger.check(source, source.name)
+    report = retrigger.check(source, source.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
     images = report["axes"]["images"]
     assert images["verdict"] in (AXIS_UNKNOWN, AXIS_BLOCKED)
     assert "image" in images["detail"].lower()

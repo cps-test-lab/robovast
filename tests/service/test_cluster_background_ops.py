@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The cluster lane's re-triggerable post-run operations dispatch at all.
+"""ClusterService's re-triggerable post-run operations dispatch at all.
 
 ``run_postprocessing`` / ``run_share`` are the two operations a caller reaches for
 *after* a campaign has finished — exactly when the runs are already paid for and a

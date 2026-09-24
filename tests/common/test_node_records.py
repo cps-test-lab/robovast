@@ -105,7 +105,7 @@ def test_the_api_facts_are_stored_as_given(tmp_path):
 
 
 def test_a_machine_nobody_could_ask_about_is_still_recorded(tmp_path):
-    """The local lane, a re-index, an unreadable node. WHICH machine a run used is worth
+    """A local record, a re-index, an unreadable node. WHICH machine a run used is worth
     keeping even when its hardware is not available -- NULL facts, not a missing row, and
     never invented ones."""
     with _store(tmp_path, resolver=None) as store:
@@ -171,7 +171,7 @@ def test_the_file_the_pod_writes_carries_the_label_and_not_the_name(tmp_path):
 
 
 def test_a_pod_with_no_node_writes_no_label(tmp_path):
-    """The local lane passes an empty NODE_NAME; it must not record an empty machine."""
+    """An empty NODE_NAME must not record an empty machine."""
     import subprocess
     import sys
     from importlib.resources import files

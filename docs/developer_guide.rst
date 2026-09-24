@@ -36,58 +36,28 @@ To test your scenario locally, you can run:
 Create a RoboVAST configuration file, based on the existing examples in the `configs/` directory.
 Do not set any configuration, as this will be done in the next step.
 
-Point a service at the directory **in place** — no upload, and edits on disk are live — and
-run one configuration through it. This is the local development loop: the same path a remote
-campaign takes, differing only in which service answers.
+Push the directory to a service — the one-node deployment on your own machine
+(:ref:`quickstart-local`) is the development loop — and run one configuration through it.
+This is the same path every campaign takes, differing only in which service answers.
 
 .. code-block:: bash
 
-    # in one shell: a local service, pinning this directory as a workspace
-    vast serve --workspace-dir . --results-dir ./test_run
+    vast workspace init .                                   # upload the project
+    vast workspace validate <workspace> my.vast             # check it
+    vast workspace run <workspace> my.vast --filter config1 --runs 1
 
-    # in another: check it, then run a single configuration once
-    vast workspace validate <pinned-workspace> my.vast
-    vast workspace run <pinned-workspace> my.vast --filter config1 --runs 1
+``vast workspace list`` names the workspace; ``vast workspace update . <workspace>`` pushes
+an edit. Before a campaign, ``vast container run`` (or the MCP ``exec_in_container``) runs
+a command or one configuration's scenario in the image, which is where an import error or
+a missing package shows up in seconds rather than after a pull.
 
-``vast workspace list`` names the pinned workspace. Afterwards you can verify the scenario,
-the RoboVAST configuration and the container image from what the run wrote under
-``./test_run``.
-
-    # analyze issues by using an interactive shell
-    ./test_run/run.sh --start-only
-
-    # check that a standalone non-GUI environment (like in Kubernetes) works
-    ./test_run/run.sh --no-gui
-
-    # enable extra scenario-execution output: live py-tree (-t) and debug log (-d)
-    ./test_run/run.sh -t -d
-
-To enable GUI visualization (RViz, a simulator window) for local runs while keeping cluster
-runs headless, add ``execution.local.gui.parameter_overrides`` to your ``.vast`` (see
-:doc:`configuration`). ``vast workspace run`` opts in by default; through a service
-the equivalent is ``start_campaign(show_gui=True)`` or ``exec_in_container(show_gui=True)``.
-
-Either way the window opens on the host running the **service** (or, for the CLI, on the
-host you ran it from), whose ``DISPLAY`` the containers inherit.
-
-The two entry points differ on purpose when there is no display:
-
-* ``show_gui=True`` is a **request**, so it is refused — a ``vast serve`` started outside a
-  desktop session or reached over an SSH tunnel has no screen to draw on, and a cluster
-  backend refuses it outright. Accepting it would produce a run that looks fine and shows
-  nothing.
-* ``vast workspace run`` has GUI as its **default**, so it prints a notice and
-  continues headless. A build machine must keep running it unattended without passing
-  ``--no-gui``.
-
-Next, it is important to verify that the output (e.g. ROS bag) is stored correctly. 
+Next, it is important to verify that the output (e.g. ROS bag) is stored correctly.
 
 .. code-block:: bash
 
-    vast workspace run <pinned-workspace> my.vast --filter config1
-
-    # check that output is created in ./test_run/<campaign-name>-<timestamp>/<config-name>/<run_number>
-    ls -l ./test_run/*-*/config1/0/
+    vast workspace run <workspace> my.vast --filter config1
+    vast campaign wait <campaign-id>
+    vast campaign download <campaign-id>          # <campaign-id>/<config-name>/<run_number>/
 
 Once you are satisfied that the scenario and configuration work as expected, you can proceed to the next step.
 
@@ -284,7 +254,7 @@ nothing depends on. The two triggers of the workflow are the two halves of that 
 
       pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ \
           "robovast[nav,roqsim]==2.1.0rc1" "robovast-cluster==2.1.0rc1"
-      vast serve          # the web UI must come up, not "API only"
+      vast cluster setup minikube   # the web UI must come up, not "API only"
 
    Something wrong is a fix on ``main`` and ``rc2``; nothing has been consumed.
 
@@ -345,23 +315,17 @@ image by digest could never be re-run again — even with those exact bytes stil
 the registry.  Bumping the maximum is harmless; **dropping** support is a separate,
 deliberate act of raising the minimum.
 
-A label, and read the standard way: ``docker inspect`` gets it without starting a
-container, and for an image this machine does not have, the registry serves it out
-of the config blob without pulling a layer.  That second reading is the one that
-matters — the question is usually asked *about* an image the asker does not have,
-by a pre-flight on a year-old campaign.
+A label, read from the registry's config blob without pulling a layer or starting a
+container, so it answers for an image that exists only in the registry.
 
-There used to be a second marker, the file ``/etc/robovast_compat_version``, read
-by starting a container to ``cat`` one integer.  It could not be read remotely at
-all, and reading it cost a container start.  It is gone.
-
-- **Local execution**: the generated ``run.sh`` checks before ``docker-compose up``.
 - **Cluster execution**: the **submitter** checks, host-side, immediately after the
   campaign's refs are pinned to digests and before any manifest is written — so the
   verdict is about the exact bytes the pods will run, and a refusal creates no pods.
   It is deliberately not asked of the image itself: a workload inspecting its own image
   is not how admission is decided anywhere else, and could only report a mismatch by
   failing one init container per job in the batch.
+- **Retrigger pre-flight**: the service reads the label of each recorded image from
+  its registry; an image the registry will not answer for is reported as unknown.
 - **Postprocessing**: ``docker_exec.sh`` checks before ``docker run``.
 
 The cluster check **fails closed**: if the registry will not say what protocol the
@@ -497,14 +461,15 @@ Every remote operation is a method on
 
 #. **The interface** — the abstract method, its ``Routes`` entry and the request/response
    models. They live in ``robovast-client``, so a client install has them without the core.
-#. **The lanes and the HTTP transport** — in
-   ``robovast.service.service_base.ServiceBase`` when both lanes answer the same way,
-   otherwise an abstract hook there and a body in each of ``LocalTransport`` and
-   ``ClusterService`` (:ref:`two-lanes-one-base`); and ``HTTPTransport`` over the route. A
-   lane may decline an operation the other offers, and then it raises ``UnsupportedOnLane``
-   naming the operation and itself, in its own class; never a default the other lane would
-   inherit, and never a ``ValueError`` that reads as bad input. The refusal crosses HTTP as
-   a ``501`` and reaches every client as the one sentence (:doc:`http_api`, "Status codes").
+#. **The service and the HTTP transport** — in
+   ``robovast.service.service_base.ServiceBase`` when the body is correct for any
+   implementation,
+   otherwise an abstract hook there and a body in ``ClusterService`` and in the suite's
+   ``NullService`` (:ref:`one-base-hooks`); and ``HTTPTransport`` over the route. An
+   implementation may decline an operation, and then it raises ``UnsupportedOperation`` naming the operation
+   and itself, in its own class; never a default on the base, and never a ``ValueError``
+   that reads as bad input. The refusal crosses HTTP as a ``501`` and reaches every client
+   as the one sentence (:doc:`http_api`, "Status codes").
 #. **The HTTP route** in :mod:`robovast.service.app`.
 #. **The surfaces** — the ``vast`` CLI, the MCP tools, and, where the web UI shows the
    operation, ``frontend/ui/src/lib/robovastClient.ts`` (:ref:`web-ui-internals`).
@@ -512,15 +477,15 @@ Every remote operation is a method on
 An operation implemented inside one client — an MCP tool calling a local function directly,
 say — is reachable from that client alone, and the CLI, the web UI and the HTTP API have no
 way to it. Putting it on the interface is what gives every client the same answer, over
-either transport and on either execution lane.
+either transport.
 
 Anything the executing pod needs travels the same way: a value the controller reads must be
-passed through the cluster path (``cluster_service.py`` into the pod's environment) as well as
-the local one, or the operation works under ``vast serve --backend local`` and does nothing
-on the cluster. The lanes being siblings is what keeps that failure loud rather than silent:
-a hook the cluster has not answered refuses to construct, and a body on the base is one that
-is correct for any lane, so the only way a cluster path can be missing is for the cluster's
-own class to leave it out.
+passed through ``ClusterService`` (``cluster_service.py`` into the pod's environment), or
+the operation is accepted by the service and does nothing in the pod. The hooks are what
+keep that failure loud rather than silent: a hook ``ClusterService`` has not answered
+refuses to construct, and a body on the base is one that is correct for any
+implementation, so the only way a cluster path can be missing is for ``ClusterService``
+itself to leave it out.
 
 Keep disk and database I/O off the event loop
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1026,7 +991,7 @@ returns a ``ContainerSpec`` from ``input_files`` and runs *inside the simulator'
 **It can arrive through** ``plugins:``, but not via the driver's plugin-install phase.
 That phase (``controller._install_plugins``) is deliberately ``add_to_path=False`` and in
 any case runs long after the image and environment hooks. What makes a packaged backend
-work is a separate, earlier install: ``local_transport._build_specs_for`` resolves the
+work is a separate, earlier install: ``ServiceBase._build_specs_for`` resolves the
 campaign's ``plugins:`` *before* extracting the build specs, precisely because the
 container plan depends on the backend. The ordinary answer is still an installed
 distribution of the service environment, like ``robovast_nav``, or a ``.vast``-relative
@@ -1066,7 +1031,7 @@ generated files anywhere downstream. A *per-configuration* artifact — one a va
 produces per cell — is staged at that same ``/config/<path>`` instead of the campaign's copy,
 so a generator and a variation put a file in the same place and the campaign-wide one simply
 loses the path when a cell owns it. It also means generation is **host-side, before
-publication**, so the cluster lane gets the artifacts with no extra work.
+publication**, so the cluster gets the artifacts with no extra work.
 
 **Generation vs. variation.** Both can produce artifacts, and the test for which you want is:
 *does it produce configurations, or only files?* A generator produces files, once per
@@ -1108,9 +1073,10 @@ artifact.
         def get_required_container(cls, parameters):
             """Optional: an aux image, when the tool is not installed alongside RoboVAST.
 
-            Same contract as a variation's — ephemeral ``docker run`` locally, a
-            container in an aux pod in-cluster (the campaign's during a run; one held by
-            the container-exec manager when a preview composes). Reached via
+            Same contract as a variation's — a container in an aux pod (the campaign's
+            during a run; one held by the container-exec manager when a preview
+            composes), or an ephemeral ``docker run`` under ``vast configuration
+            generate`` on a development machine. Reached via
             ``self.container_runner``,
             whose ``workspace`` is visible at the same path on both sides (use
             ``stage_for_container`` / ``collect_from_container``).
@@ -1191,9 +1157,10 @@ command to run there instead of implementing ``__call__``:
             # Shipped beside the conversion scripts, under their own names.
             return [os.path.join(os.path.dirname(__file__), "decode_camera.py")]
 
-Every lane runs exactly that command from ``/scripts`` through ``ros2_exec.sh``: the local lane with
-``docker_exec.sh`` against the campaign's execution image, a cluster postprocessing Job in its image
-container. A parameter the command does not take fails the step. The script runs **without**
+The postprocessing Job runs exactly that command from ``/scripts`` through ``ros2_exec.sh``
+in its image container; ``vast results postprocess`` on a development machine runs it with
+``docker_exec.sh`` against the campaign's execution image. A parameter the command does not
+take fails the step. The script runs **without**
 ``robovast`` — only the standard library, what the image provides, and the files beside it
 (``rosbags_common`` among them). It writes its outputs into the campaign tree; on the cluster, every
 file it writes is delivered back, whether or not it records provenance. To record provenance it
@@ -1768,8 +1735,8 @@ Who writes it
   the store *live* for both modes as each batch is evaluated, so progress is
   queryable while a campaign runs. It owns the campaign id, the flat results
   layout (``<campaign>/<config>/<run>/``) and the batch loop; an
-  :class:`~robovast.execution.backends.ExecutionBackend` (``DockerBackend``
-  locally) only dispatches one batch's jobs.
+  :class:`~robovast.execution.backends.ExecutionBackend` (``KubernetesBackend``)
+  only dispatches one batch's jobs.
 * **The post-hoc indexer** ``robovast.common.campaign_index.build_campaign_store(campaign_dir)``
   reconstructs the same store by scanning a finished results tree (reusing the
   ``campaign_data`` readers). It is used for campaign dirs not produced by the
@@ -1824,8 +1791,8 @@ Campaign state and control
 --------------------------
 
 A campaign is driven by a :class:`~robovast.execution.controller.CampaignController`
-running **in the driving process** — the ``vast`` CLI locally, the
-``robovast-service`` for a cluster campaign (one worker thread each). There is no
+running **in the driving process** — the ``robovast-service``, one worker thread per
+campaign. There is no
 separate controller pod and no in-pod HTTP control channel: monitoring and control
 are ordinary :class:`~robovast.service.interface.RobovastInterface` calls the
 service answers directly, so the CLI, MCP and web UI all use one path.
@@ -1858,7 +1825,7 @@ Status: phase and stage
    * - ``phase``
      - Meaning
    * - ``initializing``
-     - Accepted: registered, listed, and addressable by id, with the lane's pre-flight
+     - Accepted: registered, listed, and addressable by id, with the service's pre-flight
        (project push, registry/base-image resolution) still to do. The first phase every
        campaign has, and the one that guarantees a caller can always find what it just
        started — see :ref:`a-started-campaign-is-findable`.
@@ -1913,7 +1880,7 @@ actually true: retrying a start that in fact succeeded creates a second campaign
 only defense is that the first one can be found.
 
 Two things back it. Registration happens *before* the slow work — ``create_campaign``
-records the campaign in the lane's registry and returns, and the driver builds the image —
+records the campaign in the service's registry and returns, and the driver builds the image —
 so the campaign is live from ``t=0`` rather than from whenever its results directory
 appears (see :ref:`campaign-building-phase`). ``list_campaigns`` unions that registry into
 its id set beside the disk scan, so a campaign is listed for the whole length of its
@@ -1928,10 +1895,10 @@ Discovering campaigns across a service restart
 
 ``list_campaigns`` builds its id set from two sources: the results root on disk, and the
 in-memory registry of what is being driven.
-The first is what survives the process, and it is the whole picture **on both lanes** — a
-cluster campaign is a directory under ``<results_root>/<campaign_id>/`` on the service's
-results volume, exactly as a local one is under the local results root, so a service that
-restarts finds every campaign from every previous life by the same ``iterdir``. There is no
+The first is what survives the process, and it is the whole picture — a campaign is a
+directory under ``<results_root>/<campaign_id>/`` on the service's results volume, so a
+service that restarts finds every campaign from every previous life by the same
+``iterdir``. There is no
 second home to enumerate and no index of campaigns to keep in step with the tree.
 
 That is also what makes the records cheap to read. ``_summary_for``, ``_started_at_for``,
@@ -1980,11 +1947,10 @@ two campaigns needing the same image both wait on one build. Two consequences:
   local ``docker rm -f robovast`` cannot reach a ``buildx`` thread — and it must stay that
   way.
 
-One wait loop serves both lanes: ``_await_build_image`` drives ``get_image_build_status``
+One wait loop: ``_await_build_image`` drives ``get_image_build_status``
 and ``get_image_build_log``, which are interface operations each transport implements, so
-the local Docker build and the in-cluster BuildKit Job are waited on by the same code
-rather than by two that drift. It replaced ``_ensure_build_image`` plus a per-lane await
-loop on each side — three methods where there were four, one of them shared.
+the in-cluster BuildKit Job is waited on by the base's code rather than by a loop of
+``ClusterService``'s own.
 
 The loop also **tees the build log into the campaign's own** ``_execution/build.log``,
 which ``INFRA_PHASES`` serves as a leading ``BUILD`` section (see :ref:`the MCP build workflow <mcp-build-phase>`). That
@@ -1996,8 +1962,7 @@ is exactly when someone comes looking. It is also why
 
 This changes an error path on purpose: a failed build is now an inspectable ``failed``
 campaign — reason in its status, output in its own log — rather than a 500 and no campaign.
-It applies to the local docker build too: building is part of the campaign's driven work,
-not a precondition of its existence.
+Building is part of the campaign's driven work, not a precondition of its existence.
 
 Control operations
 ^^^^^^^^^^^^^^^^^^^
@@ -2016,10 +1981,8 @@ Control operations
   streams a raw, pre-postprocessing archive of the campaign to the configured share
   the moment the runs finish, *before* analysis postprocessing. A share failure never
   loses the campaign: it stays ``finished`` and the reason is recorded on
-  ``share_error`` (durable). Local backends write the ``tar.gz`` to
-  ``<results>/_archives/`` instead (``$ROBOVAST_ARCHIVE_DIR`` overrides it, resolved by
-  ``campaign_archive.local_archive_dir``), and ``delete_campaign`` removes them with the
-  campaign; cluster backends stream it to the share provider with no on-disk copy. The download counterpart is the ``/data/campaigns/{id}/archive``
+  ``share_error`` (durable). The backend streams it to the share provider with no on-disk
+  copy. The download counterpart is the ``/data/campaigns/{id}/archive``
   stream (the campaign as the service holds it, tarred on the fly off the results volume).
 * ``run_share`` (``client.run_share``) — re-triggers the upload-to-share on a finished
   campaign, from the stored campaign alone (works after a service restart, no live
@@ -2376,17 +2339,16 @@ new interface op, then a page/tab that queries it.
 
 **Resource usage (``/usage``).** ``resource_usage`` is a backend-agnostic interface op
 returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory bytes,
-capacity vs. used, and a ``parallel_runs`` flag). The local↔cluster split lives entirely
-in the implementations: ``LocalTransport._compute_resource_usage`` reads the host via
-``psutil``; ``ClusterService`` overrides it to sum node ``allocatable`` (capacity, reusing
-``kube_client.parse_resource``) and the requests of the non-terminal pods *bound to
-those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP tool)
-never branch on backend. Summing both sides over one node set is what keeps ``used <=
+capacity vs. used, and a ``parallel_runs`` flag). How the service measures lives entirely in
+its ``_compute_resource_usage``: ``ClusterService`` sums node ``allocatable`` (capacity,
+reusing ``kube_client.parse_resource``) and the requests of the non-terminal pods *bound
+to those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP
+tool) never branch on backend. Summing both sides over one node set is what keeps ``used <=
 capacity``: a pod still queued for a node requests cores nothing has granted, and counting
 it reported "29.7/24" on a 24-core cluster. Pending work is ``jobs_pending``, not usage.
 
-That scenario-run tally is the other half of the op, and it is counted from **Jobs, not pods**, on
-both lanes: ``running`` = executing, ``pending`` = accepted but not executing. A Job waiting its
+That scenario-run tally is the other half of the op, and it is counted from **Jobs, not
+pods**: ``running`` = executing, ``pending`` = accepted but not executing. A Job waiting its
 turn has no pod at all — the state every cluster batch *starts* in, because the admission
 queue has not created it yet — so a pod-based count reports a freshly launched sweep as
 ``0/0`` with its whole queue waiting for capacity.
@@ -2394,14 +2356,11 @@ queue has not created it yet — so a pod-based count reports a freshly launched
 ``cluster_execution.list_jobs_with_phase`` (the single place Jobs + pods become a phase, so no
 consumer re-derives it and drifts) and folds ``waiting``/``blocked`` into ``pending``, namespace-
 scoped because it answers "what is *this* service running" while CPU/memory must stay cluster-wide.
-``LocalTransport._scenario_job_tally`` reads the same pair off the live campaigns' controller
-snapshots — ``running`` is 0 or 1, the lane being single-flight — rather than off disk, which would
-call a run that died without a ``test.xml`` "running" forever. The UI's sidebar meter reads
-``running/(running+pending)`` and hides itself when both are zero.
+The UI's sidebar meter reads ``running/(running+pending)`` and hides itself when both are zero.
 
-Both share one
-TTL-cached path on the base class (``LocalTransport.resource_usage`` memoizes for
-``_USAGE_CACHE_TTL`` under a lock), so many polling clients cost one sampling per window.
+The reading goes through one TTL-cached path on the base class
+(``ServiceBase.resource_usage`` memoizes for ``_USAGE_CACHE_TTL`` under a lock), so many
+polling clients cost one sampling per window.
 The cluster read needs cluster-scoped RBAC (nodes are not namespaced): setup grants the
 service ServiceAccount a read-only ``ClusterRole`` over ``nodes``/``pods``
 (``service_deploy._service_rbac_manifests``), so **upgrading an already-deployed service to
@@ -2415,7 +2374,7 @@ workspace's ``.vast`` (workspace = the project, since a browser has no CWD), aut
 debounce-validates through ``validate_project``, and previews resolved configurations through
 ``preview_configurations``. These four ops — ``validate_project`` / ``preview_configurations`` /
 ``get_config_schema`` / ``list_variation_types`` — live **on** ``RobovastInterface``, so
-every client reaches them; ``LocalTransport`` wraps ``validate_project_file`` /
+every client reaches them; ``ServiceBase`` wraps ``validate_project_file`` /
 ``generate_scenario_variations`` / ``ConfigV1.model_json_schema()`` / the
 ``robovast.variation_types`` entry points, and ``validate_project`` swallows unexpected errors into
 a structured problem so the editor's live validation never 500s on in-progress YAML.
@@ -2439,8 +2398,8 @@ The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sq
 **promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
 helper, :mod:`robovast.results_processing.data_query` (``mode=ro`` + a ``sqlite3`` authorizer,
 ``campaign.db`` attached as schema ``campaign``). Both callers reuse it: the service methods
-resolve the campaign dir the same way on both lanes (``campaign_dir`` under the results
-root), and the MCP ``run_data`` plugin resolves it via
+resolve the campaign dir the same way (``campaign_dir`` under the results root), and the
+MCP ``run_data`` plugin resolves it via
 ``results_resolver`` **or delegates to a configured service** — so CLI, MCP, and the web UI query
 results identically, local or cluster. User-declared plots (``visualization.results.data_browser.plots`` in the ``.vast``,
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
@@ -2603,8 +2562,8 @@ plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataCon
 ``ctx.run_dir(config, run)``, ``ctx.params``. Handlers raise ``KeyError``/``ValueError``/
 ``DataQueryError`` → 404/400 via the shared ``_guard``. **Cluster-transparent** because dispatch
 resolves the campaign dir through the public ``impl.campaign_dir(campaign_id)`` seam, which is
-a directory under the results root on either lane — so a plugin endpoint works on both
-deployments unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
+a directory under the results root — so a plugin endpoint works on every deployment
+unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
 collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **Scope:** run-scoped
 GET→JSON only — *binary/large per-run artifacts* are already served by the file address space,
 ``GET /results/<campaign>/<config>/<run>/<path>`` (``DataProvider.runFileUrl``), and
@@ -2722,7 +2681,7 @@ only. Further:
 
 The host stage is pure Python and reuses the normal pipeline with the image steps skipped
 (``run_host_postprocessing``), so there is no second copy of the postprocessing sequence — the
-same function the local lane calls, run beside the data instead of fetching it.
+same function ``vast results postprocess`` calls, run beside the data instead of fetching it.
 
 Two entry points share that one implementation (``postprocess_campaign``):
 
@@ -2732,15 +2691,15 @@ Two entry points share that one implementation (``postprocess_campaign``):
   flushed — the index's ``runs`` table is built from it) and **before ``_finalize``**, so the results ride
   the campaign's existing upload rather than needing one of their own.
 * **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
-  which overrides the ``LocalTransport`` implementation — unusable in the service, which has no local
-  results root and no ROS runtime. It submits the Job, whose pod is what holds the campaign, and
+  the cluster's body for the interface operation: the service has no ROS runtime, so it
+  submits the Job, whose pod is what holds the campaign, and
   materialises only the few small status objects it edits and publishes back — before and again
   after the pod, since the pod is what wrote the provenance the reconstruction reads. This backs the web **Retrigger postprocessing** dialog, the MCP
   ``run_postprocessing`` tool, and the CLI. It reads the campaign's own ``_config/<name>.vast`` (which
   the edit dialog overwrites in place — the single source of truth resolved by
   ``common.results_utils.campaign_vast``), refreshes the durable outcome (clearing/setting
-  ``postprocessing_error``), and is **dispatched in the background**: both transports run it via
-  ``LocalTransport._dispatch_background``, which registers a tracked campaign entry set to the
+  ``postprocessing_error``), and is **dispatched in the background** via
+  ``ServiceBase._dispatch_background``, which registers a tracked campaign entry set to the
   ``postprocessing`` phase (busy-guarded against a second concurrent op) and returns at once, so the
   campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
 

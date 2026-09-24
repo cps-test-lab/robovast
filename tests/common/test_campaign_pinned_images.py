@@ -10,10 +10,10 @@ is refused here — compose reads it as ``name:tag`` and goes looking for ``dock
 
 Two traps these tests pin down:
 
-- **the lanes disagree under the same keys.** On the cluster ``images`` is what the ``.vast``
-  *declared* (for a ``build:`` project, the symbolic ref itself), while locally it is the
-  plan-resolved built ref. Getting that backwards runs the base image without the campaign's own
-  code — a campaign that finishes and measured nothing.
+- **cluster and local records disagree under the same keys.** On the cluster ``images`` is
+  what the ``.vast`` *declared* (for a ``build:`` project, the symbolic ref itself), while in
+  a local record it is the plan-resolved built ref. Getting that backwards runs the base image
+  without the campaign's own code — a campaign that finishes and measured nothing.
 - **which containers to pin comes from the record, not the declaration.** ``images`` is written
   from the execution mapping *after* ``apply_backend``, so its keys are the containers that
   actually ran. Re-deriving that would need the campaign's plugins installed just to learn that a
@@ -32,7 +32,7 @@ SIM_DIGEST = "harbor.example/robovast/sim@sha256:" + "b" * 64
 #: What ``docker inspect --format={{.Id}}`` prints. Identifies bytes, cannot be started
 #: anywhere but the host that built them.
 LOCAL_ID = "sha256:" + "d" * 64
-#: What a ``build:<tag>`` project records as its declared image on the cluster lane.
+#: What a ``build:<tag>`` project records as its declared image on the cluster.
 SYMBOLIC = "build:roqsim-basic-nav-roqsim"
 
 
@@ -42,7 +42,7 @@ def _campaign(tmp_path, **meta):
     return tmp_path
 
 
-# -- cluster lane ----------------------------------------------------------------
+# -- cluster records -------------------------------------------------------------
 
 
 def test_a_single_container_cluster_campaign_pins_from_the_campaign_level_digest(tmp_path):
@@ -100,7 +100,7 @@ def test_a_container_that_owns_one_gets_no_campaign_level_substitute(tmp_path):
     assert "simulation" in str(e.value)
 
 
-# -- local lane ------------------------------------------------------------------
+# -- local records ---------------------------------------------------------------
 
 
 def test_local_images_are_the_plan_resolved_built_refs_and_are_usable(tmp_path):
@@ -199,10 +199,10 @@ def test_unpinnable_names_the_container_and_keeps_the_diagnostic(tmp_path):
 
 
 def test_a_cluster_digest_in_images_is_a_pin(tmp_path):
-    """Once the lane records what RAN rather than what was declared, ``images`` is startable.
+    """A digest recorded in ``images`` is startable.
 
-    The lane check is about the *shape* of the ref, not the lane: a digest names the same bytes
-    everywhere, which is the property a tag lacks.
+    The check is about the *shape* of the ref: a digest names the same bytes everywhere, which
+    is the property a tag lacks.
     """
     c = _campaign(tmp_path, execution_type="cluster", images={"sut": SIM_DIGEST})
     assert campaign_pinned_images(c) == {"sut": SIM_DIGEST}

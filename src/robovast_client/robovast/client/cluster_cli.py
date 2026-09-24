@@ -7,9 +7,7 @@ What is here needs a kubeconfig, an API server or a cluster Secret.
 
 What is deliberately not here: launching (``vast workspace run`` -- a campaign runs a
 workspace's project, never a property of the cluster), and ``stop``/``stop-job``/``log``,
-which only drive the service and work identically against a local one. Placed here they
-would name a lane the request cannot express, so a ``stop`` against a local service says
-"cluster" and stops a Docker campaign. They are ``vast campaign`` verbs.
+which only drive the service and so are ``vast campaign`` verbs.
 
 What stays in ``robovast-cluster`` is the half that genuinely needs a cluster: ``setup``,
 ``cleanup``, ``upgrade``, ``token``, ``jobs-cleanup``, and ``monitor``. They attach here

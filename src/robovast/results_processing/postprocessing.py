@@ -548,20 +548,21 @@ POSTPROCESS_CONVERT_DEFAULTS = {"cpu": 4, "memory": "4Gi"}
 def postprocess_convert_resources(config_path, resolver=None) -> dict:
     """``{"cpu": …, "memory": …}`` the conversion step runs at.
 
-    The single place the figure is decided, for both lanes: the Kubernetes lane renders it as
-    a container's requests and limits, the local lane as ``docker run --cpus/--memory``, and
-    both derive the worker count from the same ``cpu``. Keeping the decision here is what
-    stops the two lanes from meaning different things by one ``.vast`` block.
+    The single place the figure is decided: the Kubernetes backend renders it as a container's
+    requests and limits, a development machine as ``docker run --cpus/--memory``, and both
+    derive the worker count from the same ``cpu``. Keeping
+    the decision here is what stops two readers from meaning different things by one
+    ``.vast`` block.
 
     *config_path* may be ``None``, for a caller that has no ``.vast`` to read -- a campaign
     tree whose config was never projected into it. The block is optional, so its absence and
     an unreadable file mean the same thing as declaring nothing: the shared defaults. What
     would be wrong is refusing to convert over an optional block nobody wrote.
 
-    *resolver* resolves the per-cluster list form (``cpu: [{context: 4}, …]``) for a lane that
-    has a cluster context; it is handed the declared mapping and returns a mapping of scalars.
-    A lane without one -- the local lane, where there is no context and so no entry to choose
-    -- passes ``None``, and a list then raises rather than being guessed at.
+    *resolver* resolves the per-cluster list form (``cpu: [{context: 4}, …]``) for a caller
+    that has a cluster context; it is handed the declared mapping and returns a mapping of scalars.
+    A caller without one -- a development machine, where there is no context and so no
+    entry to choose -- passes ``None``, and a list then raises rather than being guessed at.
     """
     if not config_path:
         return dict(POSTPROCESS_CONVERT_DEFAULTS)
@@ -576,15 +577,15 @@ def postprocess_convert_resources(config_path, resolver=None) -> dict:
             continue
         if isinstance(value, list):
             raise ValueError(
-                f"results_processing.resources.{key} is declared per cluster, but this "
-                f"lane has no cluster context to choose an entry with. Give it a plain "
+                f"results_processing.resources.{key} is declared per cluster, but there "
+                f"is no cluster context here to choose an entry with. Give it a plain "
                 f"value, or run the postprocessing on a cluster.")
         resolved[key] = value
     return resolved
 
 
 #: Written by the execution-image steps that ran elsewhere -- the image container of the
-#: cluster lane's postprocessing Job -- and carried back with their outputs. Named here and
+#: cluster's postprocessing Job -- and carried back with their outputs. Named here and
 #: in ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
 #: half.
 STAGED_PROVENANCE = "_execution/image_provenance.json"
@@ -598,8 +599,8 @@ PART_PROVENANCE_SUFFIX = "provenance.json"
 def _staged_provenance_entries(campaign_dir: str) -> List[dict]:
     """Provenance recorded by a stage that ran outside this process, or ``[]``.
 
-    Absent is the normal case -- the local lane records everything inline -- so a missing
-    file is not a problem. A malformed one is logged rather than raised: provenance is a
+    Absent is the normal case -- a run on a development machine records everything inline
+    -- so a missing file is not a problem. A malformed one is logged rather than raised: provenance is a
     description of work that already succeeded, and failing the campaign because its
     description could not be read would turn a complete result into a failed one.
     """
@@ -747,7 +748,7 @@ def _name_and_params(command) -> Tuple[str, dict]:
 
 def campaign_postprocessing_commands(vast_path: str, skip=None, skip_rosout: bool = False,
                                      output=None) -> List:
-    """The ordered steps a campaign's postprocessing runs: the one list both lanes execute.
+    """The ordered steps a campaign's postprocessing runs: the one list every runner executes.
 
     The ``.vast``'s ``results_processing.postprocessing``, less the names in *skip*, with
     the ``rosbags_*`` shorthand batched into one ``rosbags_process`` (see
@@ -815,12 +816,12 @@ def _scope(command, config_dir: str, plugins=None) -> str:
 
 
 def image_steps(commands, config_dir: str, ctx) -> list:
-    """The commands to run in the execution image for *commands*, as the lane in *ctx* sees it.
+    """The commands to run in the execution image for *commands*, as the runner in *ctx* sees it.
 
     Every entry must be a step that needs the image, and every such step must name its
     command (:meth:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin.image_command`).
     A plugin that declares ``needs_execution_image`` without one is refused here, before any
-    compute is spent: a lane without Docker has no other way to run it.
+    compute is spent: a cluster Job has no other way to run it.
     """
     from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
         ExecutionImagePlugin, ImageStep)
@@ -1087,7 +1088,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         output(f"⏹  {POSTPROCESSING_CANCELLED}")
         return False, POSTPROCESSING_CANCELLED
 
-    # Entries from work this process did not run. On the cluster lane the rosbag
+    # Entries from work this process did not run. On the cluster the rosbag
     # conversions happen in a Job, and this pass runs with those steps skipped -- so
     # without merging its record, a cluster campaign's provenance would describe only
     # the steps that happened to run here, and silently omit the rest.
@@ -1197,8 +1198,8 @@ def _campaign_provider_records(campaign_dir) -> list:
     ``_jobs/[<batch>/]job-N/`` is the shared job-artifact layout -- see
     ``run_slices.iter_run_slices`` for its authority, and ``resource_usage`` for the sibling
     that reads ``resource_usage_<container>.csv`` out of the same directories. The batch level
-    is optional (the cluster lane has one, the local lane does not), so the walk is recursive
-    rather than assuming either shape.
+    is optional (an unpacked campaign has none), so the walk is recursive rather than
+    assuming either shape.
 
     Per CONTAINER, because that is how they were written: in the ROS shape the simulator runs
     in a container of its own, so a record from the main container alone would name none of the
@@ -1225,11 +1226,11 @@ def _record_campaign_providers(campaign_dir, output) -> None:
     Derived here, in stage 2, rather than when the campaign was prepared. The question is
     "which installed distributions register a provider group", and only a container can answer
     it -- the packages are in its image and nowhere else. Prepared instead by walking the
-    preparing process's own interpreter, the answer was right on a local lane (roqsim is
-    installed beside the service) and empty on a cluster one (the service pod carries no
-    simulator), so a campaign that used three private providers recorded none.
+    preparing process's own interpreter, the answer was right on a machine with roqsim
+    installed beside the service and empty in the service pod, which carries no simulator,
+    so a campaign that used three private providers recorded none.
 
-    Stage 2 is the one place both lanes run: ``run_host_postprocessing`` delegates here for the
+    Stage 2 is the one place every runner runs: ``run_host_postprocessing`` delegates here for the
     cluster, and the CLI and controller come here directly, "so there is no second
     implementation of the postprocessing sequence".
 
