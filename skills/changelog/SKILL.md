@@ -27,7 +27,7 @@ with no pull request number is keyed by its short sha and is cited as that.
 ## Write the section
 
 A new `## X.Y.Z` section at the top of `CHANGELOG.md` (create the file with its two-line
-header if it does not exist). Its parts are `### ` headings, in this order, empty ones left
+header if it does not exist). Its parts are `###` headings, in this order, empty ones left
 out — Markdown headings rather than bold lines, which the linter refuses as headings:
 
 | heading | holds |
