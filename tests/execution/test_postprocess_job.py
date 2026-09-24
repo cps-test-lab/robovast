@@ -157,14 +157,25 @@ def test_a_message_that_promises_no_log_is_left_alone(tmp_path):
         assert pj.with_log_pointer(message, tmp_path / "nope.log") == message
 
 
+_SIGNALS = "robovast.execution.cluster_execution.cluster_execution.blocked_and_contended_reasons"
+_FULL_NODE = "Unschedulable: 0/1 nodes are available: 1 Insufficient cpu."
+
+
 def test_a_blocked_pod_is_reported_by_its_reason(monkeypatch):
     """What the Job's own status cannot say: `active` is indistinguishable between "converting"
     and "will never start"."""
     monkeypatch.setattr(
-        "robovast.execution.cluster_execution.cluster_execution.blocked_job_reasons",
-        lambda *_a, **_kw: {"job-x": "ImagePullBackOff: pull access denied"})
+        _SIGNALS, lambda *_a, **_kw: ({"job-x": "ImagePullBackOff: pull access denied"}, {}))
     assert pj._blocked_reason(object(), "ns", "job-x") == (
-        "ImagePullBackOff: pull access denied")
+        "ImagePullBackOff: pull access denied", False)
+
+
+def test_a_pod_waiting_its_turn_is_told_apart_from_one_that_will_never_start(monkeypatch):
+    """The second half of the signal: a node that could hold the pod is busy, which clears by
+    itself and is what decides the tolerance the wait gives it."""
+    monkeypatch.setattr(
+        _SIGNALS, lambda *_a, **_kw: ({"job-x": _FULL_NODE}, {"job-x": _FULL_NODE}))
+    assert pj._blocked_reason(object(), "ns", "job-x") == (_FULL_NODE, True)
 
 
 def test_an_unreadable_pod_list_does_not_condemn_a_running_conversion(monkeypatch):
@@ -173,9 +184,80 @@ def test_an_unreadable_pod_list_does_not_condemn_a_running_conversion(monkeypatc
     def _boom(*_a, **_kw):
         raise RuntimeError("pods forbidden")
 
-    monkeypatch.setattr(
-        "robovast.execution.cluster_execution.cluster_execution.blocked_job_reasons", _boom)
-    assert pj._blocked_reason(object(), "ns", "job-x") == ""
+    monkeypatch.setattr(_SIGNALS, _boom)
+    assert pj._blocked_reason(object(), "ns", "job-x") == ("", False)
+
+
+# -- the wait's patience with a pod that cannot start -----------------------
+
+class _JobStatusFeed:
+    """``read_namespaced_job_status`` answering from a script of statuses, the last repeated."""
+
+    def __init__(self, *statuses):
+        self.statuses = list(statuses)
+
+    def read_namespaced_job_status(self, name, namespace):
+        status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+        return types.SimpleNamespace(status=types.SimpleNamespace(
+            active=status.get("active"), succeeded=status.get("succeeded"),
+            failed=status.get("failed")))
+
+
+_ACTIVE = {"active": 1}
+_SUCCEEDED = {"succeeded": 1}
+
+
+def _await(monkeypatch, *, probes, statuses, timeout=100_000):
+    """Drive ``await_job`` on a fake clock that advances by each poll's sleep, with the
+    blocked probe answering from *probes* (the last repeated). Returns
+    ``((ok, message), seconds_waited)``."""
+    now = {"t": 1_000.0}
+    monkeypatch.setattr(pj, "time", types.SimpleNamespace(time=lambda: now["t"]))
+    monkeypatch.setattr(pj, "sleep_unless_stopped",
+                        lambda seconds, _stop=None: now.__setitem__("t", now["t"] + seconds))
+    monkeypatch.setattr(pj, "publish_live_log", lambda *_a, **_kw: None)
+    script = iter(probes)
+    monkeypatch.setattr(pj, "_blocked_reason",
+                        lambda *_a, **_kw: next(script, probes[-1]))
+    result = pj.await_job(object(), _JobStatusFeed(*statuses), "/nowhere", "ns", "job-x",
+                          timeout=timeout)
+    return result, now["t"] - 1_000.0
+
+
+def test_a_pod_unschedulable_behind_the_runs_still_terminating_is_waited_for(monkeypatch):
+    """The queue reserved the pod's room, but Kubernetes charges a deleted run pod to its
+    node until it is gone, so on a one-node cluster the scheduler's first pass finds the
+    node full and its next pass places the pod. That first pass is not a verdict."""
+    contended = (_FULL_NODE, True)
+    (ok, message), _waited = _await(
+        monkeypatch, probes=[contended, contended, ("", False)],
+        statuses=[_ACTIVE, _ACTIVE, _ACTIVE, _SUCCEEDED])
+    assert ok is True, message
+    assert "complete" in message
+
+
+def test_a_pod_the_cluster_never_finds_room_for_is_reported_after_the_long_grace(monkeypatch):
+    """The same tolerance the run loop gives a pod that only waits for a busy node -- and
+    the same limit, because a cluster still full after it is oversubscribed, not busy."""
+    from robovast.execution.cluster_execution.cluster_execution import CONTENDED_GRACE_SECONDS
+
+    (ok, message), waited = _await(monkeypatch, probes=[(_FULL_NODE, True)],
+                                   statuses=[_ACTIVE])
+    assert ok is False
+    assert "cannot start" in message and _FULL_NODE in message
+    assert waited >= CONTENDED_GRACE_SECONDS
+
+
+def test_a_pod_with_an_unpullable_image_is_reported_after_the_short_grace(monkeypatch):
+    """Anything that is not contention looks the same in ten minutes as in one."""
+    from robovast.execution.cluster_execution.cluster_execution import (
+        BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS)
+
+    (ok, message), waited = _await(
+        monkeypatch, probes=[("ImagePullBackOff: no such image", False)], statuses=[_ACTIVE])
+    assert ok is False
+    assert "cannot start" in message and "ImagePullBackOff: no such image" in message
+    assert BLOCKED_GRACE_SECONDS <= waited < CONTENDED_GRACE_SECONDS
 
 
 # -- one campaign, many conversions ------------------------------------------

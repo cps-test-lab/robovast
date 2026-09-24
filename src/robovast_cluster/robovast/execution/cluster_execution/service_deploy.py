@@ -1987,6 +1987,17 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     # was configured rather than leaving the variable absent and ambiguous.
     for var in (BOOTSTRAP_CPU_ENV, BOOTSTRAP_MEMORY_ENV):
         env.append({"name": var, "value": os.environ.get(var, "").strip()})
+    # The per-node reserve admission keeps free for the tenants no campaign owns, read by
+    # the service from its own environment (cluster_capacity). The operator's, from the
+    # same `.env`, for the same reason -- and the one figure a small cluster has to state:
+    # on a single node whose control plane already sits in the requests, the default holds
+    # back a core nothing will use, and a pod that node could hold waits forever. Checked
+    # here so a value the service could not parse refuses the deploy instead of every
+    # admission after it.
+    from .cluster_capacity import HEADROOM_CPU_ENV, HEADROOM_MEMORY_ENV, headroom  # noqa: PLC0415
+    headroom()
+    for var in (HEADROOM_CPU_ENV, HEADROOM_MEMORY_ENV):
+        env.append({"name": var, "value": os.environ.get(var, "").strip()})
     # Into how many Jobs a campaign's postprocessing may be split: the operator's, from the
     # same `.env`, for the same reason. Checked here so a value the service could not use
     # refuses the deploy instead of every postprocess after it.
