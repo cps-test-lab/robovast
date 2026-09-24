@@ -43,7 +43,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from robovast.client import file_address
 # Reused verbatim — the controller's live status model. (The old ``Command`` /
@@ -71,15 +71,9 @@ PRIORITY_LIMIT = 100
 
 
 class CreateCampaignRequest(BaseModel):
-    """Start a campaign from a workspace's current project.
+    """Start a campaign from a workspace's current project. An unknown field is refused."""
 
-    ``backend`` is normally **absent**: for a single-backend service it is
-    implicit in *which* service the client is talking to (an in-process/local
-    ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every
-    service ignores the field: one service runs one lane, chosen by
-    ``vast serve --backend``. Retained only so an older client's request still
-    parses; ``None`` is the only meaningful value.
-    """
+    model_config = ConfigDict(extra="forbid")
 
     workspace_id: str
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
@@ -251,6 +245,8 @@ class ImageBuildStatus(BaseModel):
 class ExecRequest(BaseModel):
     """Run one command in the experiment image — a diagnostic, never a campaign.
 
+    An unknown field is refused.
+
     Names exactly one source of the image (and, with ``config_name``, of a staged
     configuration): a workspace project, an existing campaign whose ``_config/`` is
     itself a project, or -- for a question about the software rather than about any
@@ -261,6 +257,8 @@ class ExecRequest(BaseModel):
     what is being run (``execution.timeout`` for a scenario, a fixed cap for a command)
     and reported back in :class:`ExecResult`.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     #: Shell command. Empty means "run the staged config's scenario as the campaign
     #: would" and requires ``config_name``; empty with no config is an error.
@@ -961,7 +959,7 @@ class VersionInfo(BaseModel):
     #: nothing rather than a placeholder: a substituted date would be believed.
     built_at: str = ""
     api_version: str = "0"
-    backend: Optional[str] = None    # "docker" | "kubernetes" (informational)
+    backend: Optional[str] = None    # "kubernetes" (informational)
 
     # -- cluster lane, when there is one ------------------------------------
     # Which cluster a campaign would land in. Reported because the defaults are
@@ -1229,7 +1227,7 @@ class ResourceUsage(BaseModel):
     ``blocked`` apart, which a capacity meter has no use for).
     """
 
-    backend: str                     # "docker" | "kubernetes" (informational only)
+    backend: str                     # "kubernetes" (informational only)
     cpu_capacity: float              # total cores (cluster allocatable / host logical CPUs)
     cpu_used: float                  # cores claimed (cluster pod requests / host utilization)
     memory_capacity_bytes: int

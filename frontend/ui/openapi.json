@@ -778,7 +778,8 @@
         "type": "object"
       },
       "CreateCampaignRequest": {
-        "description": "Start a campaign from a workspace's current project.\n\n``backend`` is normally **absent**: for a single-backend service it is\nimplicit in *which* service the client is talking to (an in-process/local\n``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every\nservice ignores the field: one service runs one lane, chosen by\n``vast serve --backend``. Retained only so an older client's request still\nparses; ``None`` is the only meaningful value.",
+        "additionalProperties": false,
+        "description": "Start a campaign from a workspace's current project. An unknown field is refused.",
         "properties": {
           "allow_opaque_image": {
             "default": false,
@@ -1148,7 +1149,8 @@
         "type": "object"
       },
       "ExecRequest": {
-        "description": "Run one command in the experiment image \u2014 a diagnostic, never a campaign.\n\nNames exactly one source of the image (and, with ``config_name``, of a staged\nconfiguration): a workspace project, an existing campaign whose ``_config/`` is\nitself a project, or -- for a question about the software rather than about any\nproject -- an image family member. A running campaign's container is deliberately\nnot addressable; see :meth:`RobovastInterface.exec_in_container`.\n\nCarries **no timeout field**, so no client can set one: the limit is derived from\nwhat is being run (``execution.timeout`` for a scenario, a fixed cap for a command)\nand reported back in :class:`ExecResult`.",
+        "additionalProperties": false,
+        "description": "Run one command in the experiment image \u2014 a diagnostic, never a campaign.\n\nAn unknown field is refused.\n\nNames exactly one source of the image (and, with ``config_name``, of a staged\nconfiguration): a workspace project, an existing campaign whose ``_config/`` is\nitself a project, or -- for a question about the software rather than about any\nproject -- an image family member. A running campaign's container is deliberately\nnot addressable; see :meth:`RobovastInterface.exec_in_container`.\n\nCarries **no timeout field**, so no client can set one: the limit is derived from\nwhat is being run (``execution.timeout`` for a scenario, a fixed cap for a command)\nand reported back in :class:`ExecResult`.",
         "properties": {
           "campaign_id": {
             "default": "",

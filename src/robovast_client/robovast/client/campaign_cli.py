@@ -1,18 +1,12 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""``vast campaign`` -- act on a campaign, whichever lane it runs on.
+"""``vast campaign`` -- act on a campaign.
 
-Every verb here goes through the **robovast-service**, which drives the campaign in
-process. That is why they are the client's: acting on a campaign is an HTTP verb and
-nothing else -- no kubeconfig, no Kubernetes client, no Docker.
-
-Not under ``vast exec cluster``, which would say something untrue about them.
-``CreateCampaignRequest.backend`` is vestigial -- "one service runs one lane, chosen by
-the serve command's --backend" -- so the lane belongs to the service and never to the
-verb: ``stop`` against a local service stops a local campaign, and a ``cluster`` in the
-path would name a choice the request cannot express. The campaign is what these act on,
-so the campaign is what names them.
+Every verb here goes through the **robovast-service**, which drives the campaign. That is
+why they are the client's: acting on a campaign is an HTTP verb and nothing else -- no
+kubeconfig, no Kubernetes client, no Docker. The campaign is what these act on, so the
+campaign is what names them.
 
 Starting one is not here. A campaign does not exist until it is created, so it cannot be
 the address; the project's location can -- ``vast workspace run WORKSPACE [VAST]``. What

@@ -1135,6 +1135,15 @@ class ExecutionConfig(BaseModel):
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
 
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_local(cls, data):
+        """``execution.local`` has no effect on any run, so a file declaring it is refused."""
+        if isinstance(data, dict) and "local" in data:
+            raise ValueError("execution.local is not a setting: campaigns run on a cluster, "
+                             "where these overrides apply to nothing. Remove the block.")
+        return data
+
     @model_validator(mode="after")
     def resolve_sizing(self):
         """Unset means *infer it from the file*, and the file already says.
@@ -2720,7 +2729,18 @@ def validate_config(config: dict, strict: bool = True):
     if not strict:
         config = _drop_unknown_configuration_keys(config)
         config = _drop_archived_kubernetes_keys(config)
+        config = _drop_archived_local(config)
     return get_validated_config(config, ConfigV1)
+
+
+def _drop_archived_local(config: dict) -> dict:
+    """A copy of an archived *config* without ``execution.local``, which no run applies."""
+    if "local" not in (config.get("execution") or {}):
+        return config
+    config = copy.deepcopy(config)
+    del config["execution"]["local"]
+    logger.warning("execution.local applies to no run; it is dropped")
+    return config
 
 
 def get_validated_config(config: dict, config_class):

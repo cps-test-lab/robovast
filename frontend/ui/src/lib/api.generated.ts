@@ -2265,14 +2265,7 @@ export interface components {
         };
         /**
          * CreateCampaignRequest
-         * @description Start a campaign from a workspace's current project.
-         *
-         *     ``backend`` is normally **absent**: for a single-backend service it is
-         *     implicit in *which* service the client is talking to (an in-process/local
-         *     ``vast serve`` uses Docker; an in-cluster service uses Kubernetes), so every
-         *     service ignores the field: one service runs one lane, chosen by
-         *     ``vast serve --backend``. Retained only so an older client's request still
-         *     parses; ``None`` is the only meaningful value.
+         * @description Start a campaign from a workspace's current project. An unknown field is refused.
          */
         CreateCampaignRequest: {
             /**
@@ -2514,6 +2507,8 @@ export interface components {
         /**
          * ExecRequest
          * @description Run one command in the experiment image — a diagnostic, never a campaign.
+         *
+         *     An unknown field is refused.
          *
          *     Names exactly one source of the image (and, with ``config_name``, of a staged
          *     configuration): a workspace project, an existing campaign whose ``_config/`` is
