@@ -104,11 +104,6 @@
       },
       "Body_describe_world_workspaces__workspace_id__world_post": {
         "properties": {
-          "backend": {
-            "default": "",
-            "title": "Backend",
-            "type": "string"
-          },
           "entities": {
             "default": false,
             "title": "Entities",
@@ -126,7 +121,6 @@
           }
         },
         "required": [
-          "backend",
           "entities",
           "path",
           "targets"
@@ -4607,17 +4601,6 @@
             "title": "Results Address",
             "type": "string"
           },
-          "results_root": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Results Root"
-          },
           "robovast_version": {
             "title": "Robovast Version",
             "type": "string"
@@ -4626,17 +4609,6 @@
             "default": "/sources/{workspace_id}/{path}",
             "title": "Sources Address",
             "type": "string"
-          },
-          "sources_root": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sources Root"
           },
           "web_base": {
             "default": "",
@@ -4659,10 +4631,8 @@
           "namespace",
           "package_version",
           "results_address",
-          "results_root",
           "robovast_version",
           "sources_address",
-          "sources_root",
           "web_base"
         ],
         "title": "VersionInfo",
@@ -4899,7 +4869,7 @@
     },
     "/admin/config": {
       "get": {
-        "description": "What this service is configured with, read back out of its own environment.\n\nNot a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it\ndescribes the process that is serving rather than the campaigns it drives, and the\nprocess holds its settings in the environment.\n\nHost paths are blanked for a non-loopback caller, the same rule ``/version``\napplies to ``results_root`` -- so the two admin surfaces do not disagree about\nwhether a path on the service's disk is publishable.",
+        "description": "What this service is configured with, read back out of its own environment.\n\nNot a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it\ndescribes the process that is serving rather than the campaigns it drives, and the\nprocess holds its settings in the environment.\n\nHost paths are blanked for a non-loopback caller.",
         "operationId": "service_config_admin_config_get",
         "responses": {
           "200": {

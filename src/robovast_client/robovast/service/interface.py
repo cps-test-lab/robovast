@@ -1020,21 +1020,6 @@ class VersionInfo(BaseModel):
     #: service rather than from documentation it may not have.
     results_address: str = "/results/{campaign_id}/{path}"
     sources_address: str = "/sources/{workspace_id}/{path}"
-    #: Filesystem roots behind those two namespaces — **non-null only when the caller
-    #: can actually open them**: the service must be backed by a local filesystem *and*
-    #: the request must come from loopback. Then a caller on the same machine reads
-    #: files with its own tools instead of relaying every byte through this interface.
-    #:
-    #: ``ClusterService`` reports both as null: its campaigns and workspaces are on the
-    #: service's volumes, which no caller can open.
-    #:
-    #: ``/results/<campaign_id>/<path>`` is ``<results_root>/<campaign_id>/<path>``.
-    #: ``/sources/<workspace_id>/<path>`` is
-    #: ``<sources_root>/<workspace_id>/project/<path>`` — **except** for a directory
-    #: pinned in place with ``--workspace-dir``, which is used where it is and
-    #: therefore lives outside this root.
-    results_root: Optional[str] = None
-    sources_root: Optional[str] = None
     #: The origin to prefix a route or an address with, so a caller that cannot be handed
     #: bytes can be handed a link instead: ``"https://<ingress-host>"`` on a published
     #: deployment, the bound address for a local ``vast serve``.
@@ -3562,7 +3547,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False, backend: str = "") -> WorldDescription:
+                       entities: bool = False) -> WorldDescription:
         """Describe the world this campaign's simulator will load.
 
         The other half of authoring the ``sim`` channel. ``preview_configurations`` says what
@@ -3577,8 +3562,7 @@ class RobovastInterface(ABC):
         campaign runs**, and carries which image that was.
 
         *targets* is a glob over object names and *entities* asks for the compiled entity list;
-        both cost a model build, which is why neither is implied. *backend* selects the execution
-        backend on a service that offers several; one with a single backend ignores it.
+        both cost a model build, which is why neither is implied.
         Raises ``ValueError`` when no answer is possible — no backend, an image that must be
         built first, no container runner here — because "unverifiable" is not an empty result.
         """

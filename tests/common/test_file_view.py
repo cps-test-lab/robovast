@@ -40,29 +40,6 @@ def test_lines_zero_means_the_whole_file():
     assert page["returned_lines"] == 3
 
 
-def test_scan_dir_does_not_descend_into_a_skipped_directory(tmp_path):
-    """The skip is consulted before the walk, not after it — a hidden subtree costs
-    one call, not one per file. A pinned workspace is a live git checkout, so the
-    difference is milliseconds versus most of a second per web-UI listing."""
-    (tmp_path / "project").mkdir()
-    (tmp_path / "project" / "demo.vast").write_text("x")
-    heavy = tmp_path / ".git" / "objects"
-    heavy.mkdir(parents=True)
-    for i in range(200):
-        (heavy / f"obj{i}").write_text("x")
-
-    seen = []
-
-    def skip(rel, _is_dir):
-        seen.append(rel)
-        return rel.split("/")[0].startswith(".")
-
-    found = file_view.scan_dir(tmp_path, recursive=True, skip=skip)
-    assert [name for name, _ in found] == ["project/demo.vast"]
-    # ``.git`` was rejected once; nothing underneath it was ever offered.
-    assert not any(s.startswith(".git/") for s in seen)
-
-
 def test_scan_dir_marks_directories_and_lists_one_level(tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "deep.txt").write_text("x")

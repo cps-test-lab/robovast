@@ -1808,17 +1808,6 @@ def _required_backend(backend) -> ExecutionBackend:
     return backend
 
 
-def _required_backend(backend) -> ExecutionBackend:
-    """The backend a campaign runs on, which every caller names.
-
-    There is no default: a campaign's runs happen wherever its backend puts them, and
-    a driver that silently picked one would launch onto a backend nobody chose.
-    """
-    if backend is None:
-        raise ValueError("a campaign needs an execution backend; none was given")
-    return backend
-
-
 def share_cancelled_detail(backend, stopped: ShareStopped) -> str:
     """Discard a cancelled upload's partial artifact; return what to record.
 

@@ -370,31 +370,8 @@ does. Omitting ``workspace_id`` is refused rather than resolved from somewhere e
 because such a fallback ignores ``config_path`` and so could run a different ``.vast``
 than the caller named.
 
-**Pinned workspaces.** ``vast serve --workspace-dir DIR`` registers a directory as a
-workspace used *in place* rather than copied into the store: no upload, present at
-start-up, and stable across restarts (the id is derived from the resolved path). These
-entries live only in memory, never in ``registry.json``. Only a service run by hand on
-the host that holds the directory can take it; a pod refuses the option.
-
-The directory stays **writable**, and that is the point: an edit in the Config tab lands
-on the real file, so a git-tracked project is editable from the browser without copying
-it into the store and back. Two things are refused instead. *Deleting* the workspace —
-the directory is the caller's, not the store's, so unpinning it is a ``--workspace-dir``
-flag rather than a DELETE. And a **whole-tree sync** into it
-(``WorkspaceRegistry.require_syncable``), which would mirror a local directory over one
-the caller did not give this service to manage; individual edits are exactly what a pin
-is for.
-
-Exactly **one** directory may be pinned. It holds as many ``.vast`` files as you
-like — selected per campaign by ``config_path`` — so several pins would add no
-expressiveness while leaving the service with no single sources root to report.
-Pin the collection (a repo root), not each project.
-
-Pinning needs the service to run on the host holding the directory, and a deployed
-service runs in a pod, which has no such directory: a project is uploaded with ``vast
-workspace init``, and edits need a re-push. The option exists for a ``vast serve`` run by
-hand on the host that holds the directory (``mirrord exec``, :doc:`deployment`), and is
-refused in a pod.
+A project reaches the service by upload, with ``vast workspace init``, and edits need a
+re-push.
 
 The service implementation is resolved, not imported
 ----------------------------------------------------

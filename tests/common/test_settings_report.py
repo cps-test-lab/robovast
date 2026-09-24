@@ -85,7 +85,7 @@ def test_the_report_covers_robovast_settings_and_nothing_else(clean_env):
 
 
 def test_host_paths_follow_the_loopback_rule(clean_env):
-    """The same rule ``/version`` applies to results_root: same-host callers only."""
+    """A host path is shown to a same-host caller only."""
     clean_env.setenv("ROBOVAST_WORKSPACES_ROOT", "/srv/robovast/workspaces")
 
     local = {r.key: r for r in describe(loopback=True)}["ROBOVAST_WORKSPACES_ROOT"]

@@ -786,29 +786,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         ``_pull_or_exit`` for the same reason the streams use it: the pull is network I/O
         to the cluster, and a Ctrl+C must not wait on it.
         """
-        # One reading taken and discarded, then a full interval before the first recorded
-        # one. A reading whose "used" is an average *since the previous call* has no
-        # previous call at process start and answers 0.0. That is harmless for a meter which
-        # corrects itself seconds later, and not harmless here: a recorder makes the
-        # transient permanent, as a dip to 0% sitting at the head of the chart for a day.
-        #
-        # Both halves are needed, and the second is why this loop sleeps before it reads
-        # rather than after. Priming alone did not work: resource_usage memoises for
-        # _USAGE_CACHE_TTL, so a record taken immediately after the prime is served the
-        # primed 0.0 straight back out of the cache. Waiting a whole sample interval clears
-        # the cache and gives the average a real span to cover, without this code having to
-        # know what the TTL is -- only that a sample interval is longer than one.
-        #
-        # The cost is no data for the first interval, which is honest: an empty series
-        # says "nothing recorded yet", where a zero would have said "nothing running".
-        await _pull_or_exit(lambda: impl.resource_usage())  # pylint: disable=unnecessary-lambda
         while not app.state.should_exit():
             await anyio.sleep(_usage_sample_s)
-            # A lambda, not ``impl.resource_usage``: passing the bound method resolves the
-            # attribute *here*, outside the guarded call, so an impl without one (a partial
-            # test double, an older transport) raised straight out of this task and took
-            # the app's task group down with it. Recording usage must never be able to
-            # break serving.
+            # A lambda, so an implementation without the method fails inside the guarded
+            # call: recording usage must never be able to break serving.
             reading = await _pull_or_exit(lambda: impl.resource_usage())  # pylint: disable=unnecessary-lambda
             if reading is None:  # shutting down
                 return
@@ -961,19 +942,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return response
 
     @app.get(Routes.VERSION, response_model=VersionInfo, tags=["meta"])
-    def version(request: Request) -> VersionInfo:
-        info = _guard(impl.version)
-        # ``results_root``/``sources_root`` are documented as non-null *only when the
-        # caller can actually open them* -- a local-filesystem service AND a same-host
-        # request. The transport can only answer the first half, and this is the second.
-        # It was asserted rather than enforced (``local_transport`` even said "app.py
-        # blanks them again for a non-loopback request", of code that did not exist), so
-        # a `vast serve` reached through a tunnel handed a remote caller absolute paths
-        # on the *service's* disk -- which it would then try, and fail, to open.
-        if not _from_loopback(request):
-            info.results_root = None
-            info.sources_root = None
-        return info
+    def version() -> VersionInfo:
+        return _guard(impl.version)
 
     @app.get(Routes.USAGE, response_model=ResourceUsage, tags=["meta"])
     def resource_usage() -> ResourceUsage:
@@ -1035,9 +1005,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         describes the process that is serving rather than the campaigns it drives, and the
         process holds its settings in the environment.
 
-        Host paths are blanked for a non-loopback caller, the same rule ``/version``
-        applies to ``results_root`` -- so the two admin surfaces do not disagree about
-        whether a path on the service's disk is publishable.
+        Host paths are blanked for a non-loopback caller.
         """
         loopback = _from_loopback(request)
         return ServiceConfig(
@@ -1382,10 +1350,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def describe_world(
         workspace_id: str, path: str = Body("", embed=True),
         targets: str = Body("", embed=True), entities: bool = Body(False, embed=True),
-        backend: str = Body("", embed=True),
     ) -> WorldDescription:
-        return _guard(
-            lambda: impl.describe_world(workspace_id, path, targets, entities, backend))
+        return _guard(lambda: impl.describe_world(workspace_id, path, targets, entities))
 
     # -- file side channel: grant + raw PUT ---------------------------------
 

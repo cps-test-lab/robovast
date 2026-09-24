@@ -88,8 +88,14 @@ class NullService(ServiceBase):
         del tag, project, hold, should_stop
         return contextlib.nullcontext(None)
 
-    def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):
-        del campaign_id, identity, on_wait
+    def _scene_runner_context(self, identity: dict, on_wait=None):
+        del identity, on_wait
+
+        @contextlib.contextmanager
+        def context():
+            yield None
+
+        return context
 
     def _shutdown_running_campaigns(self, running) -> None:
         del running

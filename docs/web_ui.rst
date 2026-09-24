@@ -995,30 +995,6 @@ configured — see :ref:`sharing-results`.
 
 .. tip::
 
-   A ``vast serve`` started by hand on the host that holds a project (``mirrord exec``,
-   :doc:`deployment`) can pin its directory at launch with ``--workspace-dir``; a pod
-   refuses the option.
-
-   The directory is then used **in place**: it appears in the dropdown the moment the
-   service starts, with a path-stable id so its UI link keeps working after a
-   restart, and **edits land on the real files**. That is what lets the Config tab
-   author a project that lives in a git working tree — the browser has no working
-   directory of its own, so without it the only route was to copy the project into
-   the store, edit the copy and copy it back. (Campaign outputs still land in the
-   shared results store, never under the pinned dir.)
-
-   Two things are refused, both because the directory is *yours* rather than the
-   store's: **deleting the workspace** (unpin it by dropping the flag) and a
-   **whole-directory sync** into it (``vast workspace update``), which would
-   overwrite every file at once and, with ``--prune``, delete the ones the source
-   does not have. Editing files one at a time is the point; mirroring a different
-   tree over someone's checkout is not.
-
-   One directory may be pinned, named after itself; it may hold any number of
-   ``.vast`` files, chosen per campaign, so pin the collection rather than each
-   project. Hidden files and ``results/`` are skipped, exactly like
-   ``workspace init``.
-
    **It lands wherever the UI is — with no flag at all.** A workspace lives in the
    store of whichever service you talk to, and ``vast workspace`` follows the same
    one the browser is on: a service answering on the local port, otherwise the one

@@ -17,7 +17,7 @@ import logging
 import pytest
 
 from robovast.common.execution import (GIT_REVISION_ENV, MAX_RECORDED_CHANGED_PATHS,
-                                       _provenance_yaml, campaign_code_provenance,
+                                       campaign_code_provenance,
                                        code_provenance)
 
 
@@ -96,22 +96,6 @@ def test_a_clean_checkout_says_nothing(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         campaign_code_provenance()
     assert caplog.text == ""
-
-
-def test_provenance_yaml_round_trips():
-    """The text form of the provenance record parses back to the same record."""
-    import yaml
-
-    record = {"revision": "a" * 40, "revision_source": "git", "dirty": True,
-              "changed_count": 2, "changed_paths": ["a.py", "b.py"]}
-    parsed = yaml.safe_load(_provenance_yaml(record))
-    assert parsed == {f"robovast_{key}": value for key, value in record.items()}
-
-
-def test_provenance_yaml_of_nothing_is_nothing():
-    """An unknowable revision must add no keys at all, rather than keys holding null: an
-    absent field reads as "not recorded", a null one as "recorded as nothing"."""
-    assert _provenance_yaml({}) == ""
 
 
 def test_the_store_keeps_unknown_dirty_as_null(tmp_path):

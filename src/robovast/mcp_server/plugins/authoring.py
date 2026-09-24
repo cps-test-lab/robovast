@@ -66,9 +66,6 @@ def list_workspaces(workspace_id: str = "") -> dict:
 
     Returns:
         ``{workspaces, total}`` of ``{workspace_id, name, created_at}``, or ``{error}``.
-        A workspace registered with ``vast serve --workspace-dir`` is a directory used
-        in place: its files are editable through this API like any other workspace's,
-        but it is unpinned by dropping the flag rather than deleted here.
     """
     try:
         client = service_access.require_service()
@@ -382,8 +379,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         return service_access.error_result(e)
 
 
-def describe_world(address: str, targets: str = "", entities: bool = False,
-                   backend: str = "") -> dict:
+def describe_world(address: str, targets: str = "", entities: bool = False) -> dict:
     """What does this campaign's world offer an override? Asked of the simulator itself.
 
     Which components a ``sim`` override can address, and with ``targets`` which model values a run
@@ -396,7 +392,6 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
         targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
             overridable *fields* only and builds no model; a glob builds one, as does
             *entities*.
-        backend: Accepted and ignored: the service has one backend.
 
     Returns:
         ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
@@ -417,7 +412,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
         client = service_access.require_service()
         workspace_id, rel_path = target
         described = client.describe_world(
-            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities, backend)
+            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities)
         return described.model_dump()
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         # error_result rather than {"error": str(e)}: this answer comes from a container, so

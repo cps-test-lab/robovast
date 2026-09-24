@@ -69,14 +69,6 @@ def test_a_cluster_build_reports_the_wait_for_its_pod_apart_from_the_compile(sta
     assert scene_cache.current_stage(KEY) == ("", "")
 
 
-def test_a_local_build_claims_no_pull_it_cannot_see(stages):
-    """Without a runner context there is no separable pull: ``docker run`` pulls inside the run
-    itself, so naming a stage for it would be a guess a viewer cannot check."""
-    scene_cache.generate({"image": "x"}, KEY)
-
-    assert stages == [scene_cache.STAGE_COMPILING]
-
-
 def test_a_failed_build_leaves_no_stage_behind(tmp_path, monkeypatch):
     """A stage outliving its build is read as a build in flight -- the status reports the two
     together -- so the panel would spin on a build that ended minutes ago."""
@@ -87,7 +79,7 @@ def test_a_failed_build_leaves_no_stage_behind(tmp_path, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no such image")))
 
     with pytest.raises(scene_cache.SceneUnavailable):
-        scene_cache.generate({"image": "x"}, KEY)
+        scene_cache.generate({"image": "x"}, KEY, runner_context=contextlib.nullcontext)
 
     assert scene_cache.current_stage(KEY) == ("", "")
 

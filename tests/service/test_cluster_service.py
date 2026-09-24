@@ -1864,7 +1864,7 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
     class _Service:
         calls: list = []
 
-        def exec_in(self, target, argv, limit_s, env=None):
+        def exec_in(self, target, argv, limit_s):
             _Service.calls.append((target, argv))
             # Matched on the joined argv: every read runs through a shell that sources the run's
             # ROS overlay first, so the command is inside one element rather than being them.

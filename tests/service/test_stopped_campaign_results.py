@@ -172,7 +172,8 @@ def test_the_worker_does_not_double_postprocess_an_ordinary_campaign(svc, monkey
 def test_shutdown_marks_the_service_before_it_tears_anything_down(tmp_path, monkeypatch):
     """The flag has to be set first, or a worker reaching its tail during the teardown
     starts the very work the flag exists to prevent."""
-    lt = NullService(workspace_dir=str(tmp_path), results_dir=str(tmp_path / "r"))
+    lt = NullService(store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "w")),
+                     results_dir=str(tmp_path / "r"))
     seen = []
     monkeypatch.setattr(type(lt), "_shutdown_running_campaigns", lambda self, running: None)
     monkeypatch.setattr(type(lt), "_is_done",

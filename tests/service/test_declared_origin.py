@@ -9,9 +9,11 @@ instead. The service reports the origin itself, from the one input that knows it
 the Ingress it was published on, or the address it bound.
 """
 
+from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 def _impl(tmp_path):
-    return NullService(workspace_dir=str(tmp_path))
+    return NullService(
+        store=WorkspaceStore(registry=WorkspaceRegistry(root=tmp_path / "workspaces")))
 
 
 def test_a_service_nobody_told_declares_nothing(tmp_path, monkeypatch):

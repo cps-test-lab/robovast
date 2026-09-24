@@ -116,16 +116,13 @@ def _entry(identity: dict, out_name: str, command: str, state_path: Path) -> dic
 
 
 def render(identity: dict, *, state_path: Path, at: Optional[float], view: dict, focus: list,
-           camera: Optional[str], size: str, runner_context=None) -> Path:
+           camera: Optional[str], size: str, runner_context) -> Path:
     """Render one frame and return its path. The caller owns (and removes) its directory.
 
     *runner_context* is a zero-argument callable returning a **context manager** yielding the
     generator's ``container_runner_factory``, exactly as :func:`scene_cache.generate` takes
-    one: on the cluster the factory is backed by a pod, and whoever creates it has to close
-    it. An absent factory makes the generator fall back to an ephemeral ``docker run``.
+    one: the factory is backed by a pod, and whoever creates it has to close it.
     """
-    import contextlib  # pylint: disable=import-outside-toplevel
-
     from robovast.common.input_generation import \
         run_input_generators  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import \
@@ -159,8 +156,7 @@ def render(identity: dict, *, state_path: Path, at: Optional[float], view: dict,
     root = Path(tempfile.mkdtemp(prefix="robovast-screenshot-"))
     out_name = "render"
     try:
-        context = runner_context() if runner_context else contextlib.nullcontext(None)
-        with context as factory:
+        with runner_context() as factory:
             run_input_generators(str(root), [_entry(identity, out_name, command, state_path)],
                                  progress_update_callback=logger.info,
                                  container_runner_factory=factory, use_cache=False)

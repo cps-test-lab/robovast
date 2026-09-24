@@ -143,10 +143,9 @@ def refuse_unimportable(campaign_root: str) -> None:
     refusal and no way to repair the source. Campaigns that die before their config is
     frozen do occur, so this is a real shape and not a hypothetical one.
 
-    Checked by :meth:`ExecutionBackend.share_campaign` rather than in
-    ``make_campaign_tarball``: the tarball writer is also how a campaign is *downloaded*,
-    and taking a partial campaign's files off a service is a legitimate thing to want.
-    It is offering it as an importable campaign that is not.
+    Checked by :meth:`ExecutionBackend.share_campaign` rather than in the archive stream:
+    that stream is also how a campaign is *downloaded*, and taking a partial campaign's files
+    off a service is legitimate. Offering it as an importable campaign is not.
     """
     from robovast.service.ingest import missing_for_import_in
     missing = missing_for_import_in(campaign_root)

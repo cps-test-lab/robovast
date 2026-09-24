@@ -37,35 +37,19 @@ def _members(tar_bytes):
         return {m.name: m for m in tf.getmembers()}
 
 
-def test_make_campaign_tarball_includes_files_excludes_cache_keeps_symlink(tmp_path):
+def test_the_stream_includes_files_excludes_cache_keeps_symlink(tmp_path):
     root = tmp_path / "camp-2026-01-01-000000"
     _make_campaign(str(root))
-    archive_dir = tmp_path / "_archives"
-    out = campaign_archive.make_campaign_tarball(str(root), str(archive_dir))
-    assert out == str(archive_dir / "camp-2026-01-01-000000.tar.gz")
-
-    members = _members(open(out, "rb").read())
+    members = _members(b"".join(campaign_archive.iter_campaign_tar(str(root))))
     cid = "camp-2026-01-01-000000"
     assert f"{cid}/config1/1/test.xml" in members
     assert f"{cid}/campaign.db" in members
-    # .cache is excluded entirely.
     assert not any("/.cache/" in n for n in members)
     # The job link is stored as a symlink, not recursed into (no _jobs duplicated under it).
     job = members[f"{cid}/config1/1/job"]
     assert job.issym()
     assert job.linkname == "../../_jobs/batch-0/job-0"
     assert not any(n.startswith(f"{cid}/config1/1/job/") for n in members)
-
-
-def test_iter_campaign_tar_matches_the_file_tarball(tmp_path):
-    root = tmp_path / "camp-2026-01-01-000000"
-    _make_campaign(str(root))
-    streamed = b"".join(campaign_archive.iter_campaign_tar(str(root)))
-    members = _members(streamed)
-    cid = "camp-2026-01-01-000000"
-    assert f"{cid}/config1/1/test.xml" in members
-    assert members[f"{cid}/config1/1/job"].issym()
-    assert not any("/.cache/" in n for n in members)
 
 
 def test_campaign_tar_stream_cm_yields_readable(tmp_path):

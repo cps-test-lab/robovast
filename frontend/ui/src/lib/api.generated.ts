@@ -45,9 +45,7 @@ export interface paths {
          *     describes the process that is serving rather than the campaigns it drives, and the
          *     process holds its settings in the environment.
          *
-         *     Host paths are blanked for a non-loopback caller, the same rule ``/version``
-         *     applies to ``results_root`` -- so the two admin surfaces do not disagree about
-         *     whether a path on the service's disk is publishable.
+         *     Host paths are blanked for a non-loopback caller.
          */
         get: operations["service_config_admin_config_get"];
         put?: never;
@@ -1846,11 +1844,6 @@ export interface components {
         };
         /** Body_describe_world_workspaces__workspace_id__world_post */
         Body_describe_world_workspaces__workspace_id__world_post: {
-            /**
-             * Backend
-             * @default
-             */
-            backend: string;
             /**
              * Entities
              * @default false
@@ -4630,8 +4623,6 @@ export interface components {
              * @default /results/{campaign_id}/{path}
              */
             results_address: string;
-            /** Results Root */
-            results_root: string | null;
             /** Robovast Version */
             robovast_version: string;
             /**
@@ -4639,8 +4630,6 @@ export interface components {
              * @default /sources/{workspace_id}/{path}
              */
             sources_address: string;
-            /** Sources Root */
-            sources_root: string | null;
             /**
              * Web Base
              * @default

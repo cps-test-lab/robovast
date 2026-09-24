@@ -80,22 +80,6 @@ def ensure_ui_built(rebuild: bool = False) -> None:
     subprocess.run([npm, 'run', 'build'], cwd=str(ui_dir), check=True)  # noqa: S603
 
 
-def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback signature
-    """Collapse ``--workspace-dir`` to a single directory, refusing more than one.
-
-    Declared ``multiple=True`` only so a second occurrence can be *reported*: click's
-    single-value default would silently keep the last one, and a dropped pin is
-    exactly the kind of quiet substitution that makes a service serve something the
-    operator did not ask for.
-    """
-    if len(value) > 1:
-        raise click.BadParameter(
-            "takes one directory. A pinned directory holds as many .vast files as "
-            "you like (selected per campaign with --config-path), so pin the "
-            "collection — e.g. a repo root — rather than passing several.")
-    return value[0] if value else None
-
-
 @click.command()
 @click.option('--host', default='127.0.0.1', show_default=True,
               help='Interface to bind. Keep 127.0.0.1 unless behind a tunnel or a proxy '
@@ -119,19 +103,7 @@ def _one_workspace_dir(ctx, param, value):  # noqa: ARG001 - click callback sign
               type=click.Path(file_okay=False),
               help='Where campaigns this service runs land, on the serve host. Omitted, a '
                    'service-owned directory beside the workspaces store is used.')
-@click.option('--workspace-dir', 'workspace_dir', multiple=True,
-              callback=_one_workspace_dir,
-              type=click.Path(exists=True, file_okay=False),
-              help='Pin a directory as a read-only workspace, used in place. Skips '
-                   'the "vast workspace init" upload — the workspace is present the '
-                   'moment the service starts and survives restarts (edit the files '
-                   'on disk to change it). One directory: it holds as many .vast '
-                   'files as you like, selected per campaign with --config-path, so '
-                   'pin the collection (e.g. a repo root) rather than each project. '
-                   'Requires the service to run on this host, so it is refused '
-                   'in-pod.')
-def serve(host, port, uds, rebuild_ui,
-          results_dir, workspace_dir, mount_mcp):
+def serve(host, port, uds, rebuild_ui, results_dir, mount_mcp):
     """Run the robovast-service process: what the in-cluster Deployment starts.
 
     The service is the implementation ``robovast-cluster`` ships: it drives each
@@ -166,32 +138,21 @@ def serve(host, port, uds, rebuild_ui,
 
     in_pod = bool(os.environ.get('KUBERNETES_SERVICE_HOST'))
 
-    # Pinning uses the directory in place, so it needs the service to run on the host
-    # that holds it, which rules out a pod: there is no such directory there.
-    if workspace_dir and in_pod:
-        raise click.ClickException(
-            "--workspace-dir pins a directory on the serve host, and a Kubernetes "
-            "pod has no such directory. Upload the project instead with "
-            "'vast workspace init <dir>'.")
-
     from robovast.service.serve_backends import resolve as resolve_backend
     try:
         backend, provider = resolve_backend()
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     from robovast.service.workspaces import WorkspaceStore
-    store = WorkspaceStore(workspace_dir=workspace_dir)
-    impl = provider.build(in_pod=in_pod,
-                      store=store, workspace_dir=workspace_dir,
-                      results_dir=os.path.abspath(results_dir) if results_dir else None)
+    store = WorkspaceStore()
+    impl = provider.build(in_pod=in_pod, store=store,
+                          results_dir=os.path.abspath(results_dir) if results_dir else None)
     storage = provider.storage
 
     mcp_note = ", MCP at /mcp" if mount_mcp else ""
     click.echo(f"Starting robovast-service on {uds or f'http://{host}:{port}'} "
                f"(OpenAPI at /docs{mcp_note})")
     click.echo(f"Backend: {backend} | storage: {storage} | Ctrl-C to stop")
-    if workspace_dir:
-        click.echo(f"Pinned read-only workspace: {workspace_dir}")
     _serve(impl, host=host, port=port, mount_mcp=mount_mcp, uds=uds)
 
 

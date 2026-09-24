@@ -25,7 +25,7 @@ SERVE_BACKEND_GROUP = "robovast.execution_backends"
 class ServeBackend(Protocol):
     """Builds the :class:`~robovast.service.interface.RobovastInterface` implementation."""
 
-    def build(self, *, in_pod: bool, store, workspace_dir=None, results_dir=None):
+    def build(self, *, in_pod: bool, store, results_dir=None):
         """Return the service implementation.
 
         Args:
@@ -33,7 +33,6 @@ class ServeBackend(Protocol):
                 cluster is read from its own deployment.
             store: A prepared :class:`~robovast.service.workspaces.WorkspaceStore`, or
                 ``None`` to let the implementation make its own.
-            workspace_dir: A directory pinned in place instead of uploaded.
             results_dir: Where campaigns land, or ``None`` for the default.
         """
 

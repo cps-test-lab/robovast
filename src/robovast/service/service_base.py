@@ -562,14 +562,6 @@ def _throttled_transfer_log(log, every: float = 0.10):
     return _cb
 
 
-#: Why a rank or a hold is refused -- the hint an :class:`UnsupportedOperation` carries. One
-#: string, because the launch path and the set-scheduling operation refuse the same thing
-#: and must not describe it differently.
-NO_CAMPAIGN_QUEUE = (
-    "this service executes one campaign at a time, so there is no queue to order -- stop "
-    "the running campaign to start another")
-
-
 def require_scheduling_change(priority, paused) -> None:
     """Refuse a call that asked for nothing.
 
@@ -602,7 +594,7 @@ class ServiceBase(RobovastInterface):
     #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
     _JOB_LOG_CACHE_MAX = 128
 
-    def __init__(self, store=None, workspace_dir=None, results_dir=None):
+    def __init__(self, store=None, results_dir=None):
         #: Where local campaigns land, when the caller pinned one (``vast serve
         #: --results-dir``). ``None`` leaves it to the service-owned default; see
         #: :meth:`_campaigns_root`.
@@ -667,7 +659,7 @@ class ServiceBase(RobovastInterface):
         self._archive_grants_lock = threading.Lock()
         if store is None:
             from robovast.service.workspaces import WorkspaceStore
-            store = WorkspaceStore(workspace_dir=workspace_dir)
+            store = WorkspaceStore()
         self.store = store
         #: This service's durable event log, opened lazily. See :meth:`_event_log`.
         self._events = None
@@ -737,8 +729,7 @@ class ServiceBase(RobovastInterface):
         if not workspace_id:
             raise ValueError(
                 "workspace_id is required: the service runs a workspace's project. "
-                "List them with 'vast workspace list' / list_workspaces(); pin a "
-                "directory in place with 'vast serve --workspace-dir <dir>', or "
+                "List them with 'vast workspace list' / list_workspaces(), or "
                 "upload one with 'vast workspace init <dir>'.")
         return self._project_for_workspace(workspace_id, vast_path)
 
@@ -790,15 +781,7 @@ class ServiceBase(RobovastInterface):
             if not config_path.is_file():
                 raise ValueError(f"no such .vast in workspace {workspace_id!r}: {vast_path!r}")
         else:
-            # A pinned dir is a live project tree that may hold campaign-output
-            # snapshots (results/**/_config/*.vast); skip those (and hidden dirs)
-            # so a project with one authored .vast still resolves cleanly. Normal
-            # workspaces never contain results/, so this is a no-op for them.
-            from robovast.client.workspaces import PINNED_SKIP_DIRS
-            vasts = [
-                v for v in sorted(project_dir.rglob("*.vast"))
-                if not any(part.startswith(".") or part in PINNED_SKIP_DIRS
-                           for part in v.relative_to(project_dir).parts)]
+            vasts = sorted(project_dir.rglob("*.vast"))
             # A base another .vast is built on is not itself a campaign to launch, so it does
             # not make the workspace ambiguous. One that nothing extends still does -- an
             # orphan is indistinguishable from a second campaign, and saying so is right.
@@ -1062,12 +1045,10 @@ class ServiceBase(RobovastInterface):
                 f"{address!r} is a file, not a directory — read it instead")
         if not target.is_dir():
             raise KeyError(f"no directory at {address!r}")
-        skip = (self.store.skip_entry(owner)
-                if namespace == file_address.SOURCES else None)
         return file_view.build_listing(
             FileListing,
             file_address.format_address(namespace, owner, _as_dir(rel)),
-            file_view.scan_dir(target, recursive=recursive, skip=skip),
+            file_view.scan_dir(target, recursive=recursive),
             recursive=recursive, detail=detail, offset=offset, limit=limit,
             detail_fn=_detail_entry)
 
@@ -1279,25 +1260,12 @@ class ServiceBase(RobovastInterface):
 
         Shared by the download and the share export so the two cannot produce different
         archives -- the export is the download, sent somewhere else.
-
-        A pinned workspace is a live directory on disk, so the listing's own skip rule is
-        applied here too (``WorkspaceStore.skip_entry``): ``.git`` and a ``results/`` tree
-        are not project input, and an archive that carried them would not round-trip
-        through a workspace that hides them.
         """
         workspace_id = self.store.registry.require(workspace_id)["workspace_id"]
         project_dir = self.store.registry.project_dir(workspace_id)
-        skip = self.store.skip_entry(workspace_id)
-
-        def _filter(info):
-            rel = info.name[len(workspace_id):].lstrip("/")
-            if rel and skip is not None and skip(rel, info.isdir()):
-                return None
-            return info
 
         def _add(tar):
-            tar.add(str(project_dir), arcname=workspace_id,
-                    filter=_filter if skip is not None else None)
+            tar.add(str(project_dir), arcname=workspace_id)
 
         return _add, workspace_id
 
@@ -4585,8 +4553,7 @@ class ServiceBase(RobovastInterface):
                                    _panel_remotes("config"), workspace_id))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
-                       entities: bool = False, backend: str = "") -> WorldDescription:
-        del backend  # one simulator backend here; a multi-backend service overrides this
+                       entities: bool = False) -> WorldDescription:
         import yaml
 
         from robovast.common.config_generation import WorldQueryUnavailable, describe_world_payload
@@ -4847,9 +4814,10 @@ class ServiceBase(RobovastInterface):
             raise SceneUnavailable(f"this run's capture manifest could not be read: {err}") from err
 
     @abstractmethod
-    def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):  # pylint: disable=useless-return
-        """A context yielding the runner a scene capture is rendered through, or ``None``
-        where each capture starts an ephemeral one.
+    @abstractmethod
+    def _scene_runner_context(self, identity: dict, on_wait=None):
+        """A zero-argument callable returning a context that yields the runner factory a scene
+        build or capture of *identity*'s image runs through.
         """
 
     @abstractmethod
@@ -4965,11 +4933,8 @@ class ServiceBase(RobovastInterface):
         if scene_cache.is_generating(key):
             return ActionResult(ok=True, message="this world's geometry is already being built")
 
-        # ``None`` where the implementation starts an ephemeral container per capture,
-        # which makes the generator fall back to one; one that holds a runner yields it.
-        runner_context = self._scene_runner_context(  # pylint: disable=assignment-from-none
-            campaign_id, identity,
-            on_wait=lambda stage, detail: scene_cache.set_stage(key, stage, detail))
+        runner_context = self._scene_runner_context(
+            identity, on_wait=lambda stage, detail: scene_cache.set_stage(key, stage, detail))
 
         # A retry starts clean, so a stale reason cannot outlive the attempt that is about to replace it.
         scene_cache.clear_failure(key)
@@ -5071,10 +5036,12 @@ class ServiceBase(RobovastInterface):
         if scene_cache.is_generating(key):
             return ActionResult(ok=True, message="this world's geometry is already being built")
         scene_cache.clear_failure(key)
+        runner_context = self._scene_runner_context(
+            identity, on_wait=lambda stage, detail: scene_cache.set_stage(key, stage, detail))
 
         def work():
             try:
-                scene_cache.generate(identity, key)
+                scene_cache.generate(identity, key, runner_context=runner_context)
             except scene_cache.SceneUnavailable as err:
                 logger.warning("scene generation failed for workspace %s: %s", workspace_id, err)
                 scene_cache.record_failure(key, str(err))
@@ -5116,7 +5083,7 @@ class ServiceBase(RobovastInterface):
             state_path=self._run_state_path(campaign_id, config_name, run_id,
                                             screenshot.state_filename(identity)),
             at=at, view=view or {}, focus=focus or [], camera=camera, size=size,
-            runner_context=self._scene_runner_context(campaign_id, identity)))
+            runner_context=self._scene_runner_context(identity)))
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
         """Resolve ``<key>/<file>`` within the shared descriptor cache.

@@ -16,7 +16,7 @@ class ClusterServeBackend:
 
     storage = "the service's results volume"
 
-    def build(self, *, in_pod: bool, store, workspace_dir=None, results_dir=None):
+    def build(self, *, in_pod: bool, store, results_dir=None):
         """In-pod only: the config comes from the pod env, and the campaigns live on the
         results volume the deployment mounts (``service_deploy.RESULTS_DATA_DIR``).
 

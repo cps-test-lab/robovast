@@ -779,23 +779,6 @@ def _build_refs_yaml(refs: dict) -> str:
     return yaml.dump({"image_build_refs": refs}, default_flow_style=False, sort_keys=True)
 
 
-def _provenance_yaml(record: dict, indent: str = "") -> str:
-    """Render :func:`code_provenance` as YAML lines with a ``robovast_`` prefix.
-
-    One derivation for every execution.yaml writer, so two writers cannot drift into
-    recording different keys.
-    """
-    lines = []
-    for key, value in record.items():
-        name = f"{indent}robovast_{key}"
-        if isinstance(value, list):
-            lines.append(f"{name}:\n")
-            lines.extend(f"{indent}- {item}\n" for item in value)
-        elif isinstance(value, bool):
-            lines.append(f"{name}: {str(value).lower()}\n")
-        else:
-            lines.append(f"{name}: {value}\n")
-    return "".join(lines)
 
 
 def get_app_version() -> str:

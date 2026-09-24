@@ -284,10 +284,6 @@ class ClusterService(ServiceBase):
             kube_context_source=self._kube_context_source, namespace=self.namespace,
             in_pod=bool(os.environ.get("KUBERNETES_SERVICE_HOST")),
             api_server=self._api_server_url())
-        # No filesystem roots: the campaigns and the workspaces are on this
-        # service's volumes, and that disk is the cluster's, not the caller's.
-        v.results_root = None
-        v.sources_root = None
         # Not unconditionally True: a build needs somewhere to push to, and this
         # deployment may not have one. Read from the cached cluster
         # config, which is a plain `os.environ` lookup -- deliberately not
@@ -2745,7 +2741,7 @@ class ClusterService(ServiceBase):
         # unfinished function.
         return None
 
-    def _scene_runner_context(self, campaign_id: str, identity: dict, on_wait=None):
+    def _scene_runner_context(self, identity: dict, on_wait=None):
         """A context manager yielding an aux-pod runner factory on the campaign's own image.
 
         Deliberately not ``AuxPodSession``'s campaign-scoped use: this build is not part of a campaign's
@@ -2768,7 +2764,6 @@ class ClusterService(ServiceBase):
 
         from .container_runner import AuxPodSession
 
-        del campaign_id
         image = identity["image"]
         # A pod name has to be label-safe and stable for this world, and an image digest is neither
         # short nor label-safe. `aux_pod_name` sanitises what it is given, so give it a digest of the

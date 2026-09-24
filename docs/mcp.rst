@@ -39,13 +39,10 @@ binding the service accepts, and ``config_path`` selects among several
 ``.vast`` files in that workspace. There is no "current project" anywhere — not
 server-side, and not CLI-side either: every command names its own input, and
 ``vast workspace run`` takes the same workspace-and-path pair this tool does.
-Get a ``workspace_id`` either by pinning a directory in place
-with ``vast serve --workspace-dir <dir>`` (no upload; edits on disk are live —
-only for a service running on that host), or by uploading one from the machine
-that holds the project: ``vast workspace init <dir>``. That is the only route for
-a remote or in-pod service, because this interface can reach the service but not
-your filesystem — ``create_workspace`` + ``write_file`` covers ``.vast``/``.osc``,
-and ``create_upload`` covers a single file of any other kind.
+Get a ``workspace_id`` by uploading one from the machine that holds the project:
+``vast workspace init <dir>``. That is the route because this interface can reach
+the service but not your filesystem — ``create_workspace`` + ``write_file`` covers
+``.vast``/``.osc``, and ``create_upload`` covers a single file of any other kind.
 
 The one exception is a **retrigger**: ``start_campaign(from_campaign=<campaign-id>)``
 runs a *previous campaign's* frozen configuration and the image its runs actually used,

@@ -86,9 +86,7 @@ class Sensitivity(Enum):
     #: not cross the client interface (``cluster_config.base_config.RegistryConfig``,
     #: ``VersionInfo.build_unavailable``). Set/not-set only.
     SERVER_ONLY = "server_only"
-    #: A path on the service's host. Shown only to a loopback caller — the same rule
-    #: ``/version`` applies to ``results_root`` / ``sources_root``, so the two admin
-    #: surfaces do not disagree about whether host paths are publishable.
+    #: A path on the service's host. Shown only to a loopback caller.
     HOST_PATH = "host_path"
     #: Process plumbing rather than configuration: how a container was invoked, what the
     #: build stamped in. Not reported at all — an operator did not set it and cannot.

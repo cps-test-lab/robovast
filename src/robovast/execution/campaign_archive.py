@@ -14,13 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a campaign ``tar.gz`` from a local directory — as a file, or streamed.
+"""Stream a campaign ``tar.gz`` from a local directory.
 
-One place produces the campaign archive for both directions of "share":
-
-* :func:`make_campaign_tarball` writes ``<archive_dir>/<campaign>.tar.gz`` — an
-  archive on disk, for ``vast share`` and the tests.
-* :func:`campaign_tar_stream` / :func:`iter_campaign_tar` produce the same archive
+* :func:`campaign_tar_stream` / :func:`iter_campaign_tar` produce the archive
   as an on-the-fly ``pigz`` stream with **no tar on disk** — used to push a
   campaign to an external share provider (upload-to-share, cluster) and to serve
   the ``/data/campaigns/{id}/archive`` download, both of which run against ~1TB
@@ -297,47 +293,6 @@ def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude, include=No
                 logger.debug("Skipping %s: it changed while the snapshot was taken",
                              entry.path)
                 continue
-
-
-def make_campaign_tarball(campaign_root: str, archive_dir: str,
-                          exclude=DEFAULT_EXCLUDE, name: "str | None" = None,
-                          on_member=None) -> str:
-    """Write the campaign at *campaign_root* into *archive_dir*; return its path.
-
-    *name* is the file name to write, defaulting to ``<campaign>.tar.gz``. Passing the
-    variant-carrying name a share uses
-    (:func:`~robovast.execution.share_providers.naming.archive_name`) keeps an
-    ``_archives/`` dir readable by the same parser as a real share.
-
-    Uses Python's built-in gzip (no ``pigz`` dependency) since this runs on the
-    local host where ``pigz`` may be absent; the stream variants use ``pigz`` on the
-    driver/service image where it is present.
-
-    **Written to a temporary name and renamed once complete**, so the archive's final
-    name never exists in a half-written state. Reading a truncated ``.tar.gz`` fails
-    late and confusingly -- the file lists in ``_archives/`` and is offered for download
-    like any other -- and this writer is interrupted by ordinary things: a cancelled
-    upload-to-share, a killed service, a full disk. The rename is atomic within the
-    directory, and the partial is removed on the way out of any failure.
-    """
-    campaign_root = os.path.normpath(str(campaign_root))
-    arcname = os.path.basename(campaign_root)
-    os.makedirs(archive_dir, exist_ok=True)
-    out_path = os.path.join(archive_dir, name or f"{arcname}.tar.gz")
-    part_path = f"{out_path}.part"
-    try:
-        with tarfile.open(part_path, "w:gz") as tar:
-            _add_campaign_tree(tar, campaign_root, exclude, on_member)
-        os.replace(part_path, out_path)
-    except BaseException:
-        # BaseException, not Exception: a KeyboardInterrupt through here would otherwise
-        # leave exactly the partial this exists to prevent, and Ctrl+C on ``vast serve``
-        # is one of the ways this write ends.
-        with contextlib.suppress(OSError):
-            os.unlink(part_path)
-        raise
-    logger.info("Wrote campaign archive %s", out_path)
-    return out_path
 
 
 class _TarPipe:

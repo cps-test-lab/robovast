@@ -147,16 +147,13 @@ class ExecRunner(Protocol):
         nothing is staged into it and it is created from the aux manifest.
         """
 
-    def exec_in(self, target, argv: list, limit_s: int,
-                env: dict | None = None) -> tuple[int, str, str, bool]:
+    def exec_in(self, target, argv: list, limit_s: int) -> tuple[int, str, str, bool]:
         """Run *argv* in an **already-running** container named by *target*.
 
         The runner half of every exec, with the container to enter as a parameter rather
         than a constant. *target* is opaque -- a ``(pod, container)`` pair -- so a caller
         obtains one from the runner rather than constructing it. That is what lets one
         primitive serve the held diagnostic container *and* a live job's.
-
-        *env* is ignored: a pod bakes its environment at creation.
         """
 
     def exec_in_held(self, spec: "ExecSpec", limit_s: int, detach: bool,

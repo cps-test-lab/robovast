@@ -18,10 +18,6 @@ listing and a push that disagree make ``prune`` delete files it would not restor
 
 from pathlib import Path
 
-#: Dir names hidden from a *pinned* (read-only) workspace listing / .vast lookup --
-#: campaign outputs, not project inputs (mirrors the CLI ``workspace init`` skip).
-PINNED_SKIP_DIRS = {"results"}
-
 #: Entries a campaign writes into its own results directory, at that directory's top
 #: level. Used to recognise a results tree by what it CONTAINS rather than by what it is
 #: called -- see :func:`is_campaign_results_dir`.

@@ -211,13 +211,8 @@ class KubeExecRunner:
             logger.warning("could not discard the staged exec tree: %s", e)
             return False
 
-    def exec_in(self, target, argv: list, limit_s: int,
-                env: dict | None = None) -> tuple[int, str, str, bool]:
-        """Exec into *target*, a ``(pod, container)`` pair.
-
-        *env* is accepted for the ``ExecRunner`` signature and ignored here: a pod bakes its
-        environment at creation, so there is nothing per-exec to carry.
-        """
+    def exec_in(self, target, argv: list, limit_s: int) -> tuple[int, str, str, bool]:
+        """Exec into *target*, a ``(pod, container)`` pair."""
         from .kube_client import exec_stream
         pod, container = target
         return exec_stream(pod, self._namespace, container,

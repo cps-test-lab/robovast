@@ -686,24 +686,20 @@ def _generate_entry(identity: dict, key: str, max_tex_dim: int) -> dict:
     return entry
 
 
-def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
-             runner_context=None, progress=None) -> str:
+def generate(identity: dict, key: str, runner_context, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
+             progress=None) -> str:
     """Build the descriptor for *identity* into the cache and return its directory.
 
     Idempotent and safe under concurrency: the key's lock is held for the whole build, and a caller that
     finds the entry already complete returns it without generating.
 
     *runner_context* is a zero-argument callable returning a **context manager** that yields the
-    generator's ``container_runner_factory`` — a context rather than a bare factory because on the
-    cluster the factory is backed by a pod, and whoever creates that pod has to close it. An
-    absent factory makes the generator fall back to an ephemeral ``docker run``, which is right
-    on a development machine.
+    generator's ``container_runner_factory`` — a context rather than a bare factory because the
+    factory is backed by a pod, and whoever creates that pod has to close it.
 
     Reports its progress through :func:`set_stage` for as long as it runs, so a viewer polling the
     status is told which cost it is waiting on rather than watching one undifferentiated spinner.
     """
-    import contextlib
-
     from robovast.common.input_generation import \
         run_input_generators  # pylint: disable=import-outside-toplevel
 
@@ -721,11 +717,9 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
             # Entering the context is where the cluster creates the pod that will run the build and
             # waits for the campaign's image to land on its node -- minutes on a cold node, and the
             # step that fails outright when that image cannot be pulled at all. So it is a stage of
-            # its own, refined from the pod itself by the runner's own callback; with no pod there
-            # is no separable pull to watch, and claiming one would be a guess.
-            set_stage(key, STAGE_QUEUED if runner_context else STAGE_COMPILING)
-            context = runner_context() if runner_context else contextlib.nullcontext(None)
-            with context as factory:
+            # its own, refined from the pod itself by the runner's own callback.
+            set_stage(key, STAGE_QUEUED)
+            with runner_context() as factory:
                 set_stage(key, STAGE_COMPILING)
                 run_input_generators(cache_root(), [entry], progress_update_callback=progress,
                                      container_runner_factory=factory, use_cache=False)

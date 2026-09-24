@@ -58,10 +58,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 #: Where staged project trees live: one directory per retrigger, under the workspaces root.
-#: Dot-prefixed deliberately -- ``_project_for_workspace`` skips dot components when it looks
-#: for a pinned workspace's ``.vast``, so a staged copy can never be mistaken for a project the
-#: service was told to run. It is also *not* under the results root, which is scanned with
-#: ``is_campaign_dir``.
+#: It is *not* under the results root, which is scanned with ``is_campaign_dir``.
 STAGING_DIRNAME = ".retriggers"
 
 

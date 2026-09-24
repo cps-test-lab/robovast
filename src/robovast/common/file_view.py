@@ -27,7 +27,6 @@ import codecs
 import logging
 import os
 from pathlib import Path
-from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,20 +145,13 @@ def read_text_page(path: Path, lines: int = 200, offset: int = 0) -> dict:
     }
 
 
-def scan_dir(directory: Path, recursive: bool = False,
-             skip: Optional[Callable[[str, bool], bool]] = None) -> list[tuple[str, Path]]:
+def scan_dir(directory: Path, recursive: bool = False) -> list[tuple[str, Path]]:
     """List *directory* as ``(name, path)`` pairs, sorted, directories suffixed ``/``.
 
     Non-recursive (the default) lists this level only — files **and** directories, so a
     caller can walk down. Recursive lists files only, at paths relative to *directory*:
     the intermediate directories are implied by the paths, and repeating them doubles
     the listing for no information.
-
-    *skip* takes ``(relative_posix_path, is_dir)`` and is consulted **before** a
-    directory is descended into, so a hidden subtree costs one call rather than one per
-    file underneath it. That matters: a pinned workspace is a live git checkout, and
-    walking it before rejecting ``.git`` took ~650 ms per listing on the web UI's
-    config page — 6000× the cost of the entries it actually returns.
 
     Uses :func:`os.scandir`, whose entries carry the type from ``readdir`` — no
     ``stat`` per name, which is what makes this cheap over NFS and overlayfs too.
@@ -174,8 +166,6 @@ def scan_dir(directory: Path, recursive: bool = False,
                 for entry in entries:
                     rel = f"{prefix}{entry.name}"
                     is_dir = entry.is_dir(follow_symlinks=False)
-                    if skip is not None and skip(rel, is_dir):
-                        continue
                     if not recursive:
                         out.append((f"{rel}/" if is_dir else rel, Path(entry.path)))
                     elif is_dir:
