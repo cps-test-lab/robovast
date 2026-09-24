@@ -478,7 +478,7 @@ failure mode instead of documenting it.
 
 Two more views carry a derivation that is easy to get wrong by hand. ``run_validity_view``
 says whether a run was a clean observation or was capped at its CPU limit.
-``pose_track_view`` summarises every recorded track (length, duration, speeds, start and end
+``pose_track_view`` summarizes every recorded track (length, duration, speeds, start and end
 pose) over every pose, on the measurement clock (:ref:`pose-contract`). Both are listed with
 their columns by ``describe_campaign_data``.
 
@@ -1436,7 +1436,7 @@ What it keeps, and does not:
 
 **A page of the record says how much of the record it is.** ``read_calls`` is one page; the total
 it was cut from is ``count_calls``, and the routes report both, so a reader can tell a record
-that ended from a page that did -- the ranking printed beside it summarises the full retained
+that ended from a page that did -- the ranking printed beside it summarizes the full retained
 window. The panel's page ceiling bounds one JSON response the service holds in memory; the CSV
 export streams and so is bounded only by what is retained.
 

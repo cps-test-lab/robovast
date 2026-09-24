@@ -406,12 +406,12 @@ starting a container.
 
 Asking every time rather than only when a cheap test suspects a chain: that test would be a
 second copy of the simulator's rule, free to disagree with it, and wrong in the direction that
-stages too little -- which nothing notices until a run opens the file that never travelled. What
+stages too little -- which nothing notices until a run opens the file that never traveled. What
 it costs instead is an exec in a container the caller already holds, since ``validate_project``
 and ``preview_configurations`` compose inside the lane's aux-runner context and keep it warm
 across an authoring loop.
 
-Every world, and each question once: within one composition the answer is memoised on what
+Every world, and each question once: within one composition the answer is memoized on what
 the query asks (image, command, documents). roqsim's query names the world and nothing else,
 so a sweep whose cells differ only in an override -- a mesh swapped per cell -- is one
 question and one container round trip, however many ``sim`` blocks it resolves to.
