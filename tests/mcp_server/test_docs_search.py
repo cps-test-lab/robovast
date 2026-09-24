@@ -139,46 +139,48 @@ def _corpus_dir(tmp_path, name, pages):
     return d
 
 
-class _FakeEntryPoint:
-    def __init__(self, name, target):
-        self.name = name
-        self._target = target
-
-    def load(self):
-        if isinstance(self._target, Exception):
-            raise self._target
-        return self._target
-
-
-def _with_entry_points(monkeypatch, eps):
-    import importlib.metadata as md
-    monkeypatch.setattr(md, "entry_points", lambda group=None: list(eps))
+def _substrate_root(tmp_path, monkeypatch, corpora):
+    """``corpora`` is ``{label: ({stem: text}, ref)}``, laid out as the image build leaves it."""
+    root = tmp_path / "substrate-docs"
+    for label, (pages, ref) in corpora.items():
+        d = root / label
+        d.mkdir(parents=True)
+        for stem, text in pages.items():
+            (d / f"{stem}.rst").write_text(text, encoding="utf-8")
+        if ref:
+            (d / ".ref").write_text(ref + "\n", encoding="utf-8")
+    monkeypatch.setenv(docs.SUBSTRATE_DOCS_ENV, str(root))
+    return root
 
 
-def test_a_package_publishing_docs_has_them_served_under_its_own_prefix(tmp_path, monkeypatch):
-    extra = _corpus_dir(tmp_path, "substrate", {
-        "interfaces": "World YAML\n==========\n\nThe components list.\n"})
+def test_the_image_build_leaves_a_corpus_served_under_its_own_prefix(tmp_path, monkeypatch):
+    """The build clones the simulator at the commit this repository pins, so the pages arrive
+    with the image rather than through an import or a path into a sibling checkout."""
+    _substrate_root(tmp_path, monkeypatch, {
+        "roqsim": ({"interfaces": "World YAML\n==========\n\nThe components list.\n"},
+                   "f08dda192aab4fdd3b68d23e540d2db0cf5f69ca")})
 
-    class _Pkg:
-        DOCS_DIR = str(extra)
+    [(label, root, ref)] = docs._substrate_doc_roots()
 
-    _with_entry_points(monkeypatch, [_FakeEntryPoint("substrate", _Pkg)])
-    assert docs._entry_point_doc_roots() == [("substrate", extra)]
-
-    label, root = docs._entry_point_doc_roots()[0]
+    assert label == "roqsim"
+    assert ref == "f08dda192aab4fdd3b68d23e540d2db0cf5f69ca"
     loaded = docs._load_corpus(root, prefix=label)
-    assert "substrate-interfaces" in loaded
-    assert loaded["substrate-interfaces"][2] == "substrate"
+    assert "roqsim-interfaces" in loaded
+    assert loaded["roqsim-interfaces"][2] == "roqsim"
 
 
-def test_a_package_that_exposes_no_docs_dir_is_skipped_with_a_reason(monkeypatch, caplog):
-    class _Pkg:
-        pass
+def test_a_corpus_the_build_recorded_no_commit_for_is_still_served(tmp_path, monkeypatch):
+    """A ref is what keeps the pages honest about which simulator they describe, but its
+    absence is not a reason to answer nothing."""
+    _substrate_root(tmp_path, monkeypatch, {"roqsim": ({"worlds": "Worlds\n======\n"}, "")})
 
-    _with_entry_points(monkeypatch, [_FakeEntryPoint("substrate", _Pkg)])
-    with caplog.at_level("WARNING"):
-        assert docs._entry_point_doc_roots() == []
-    assert "DOCS_DIR" in caplog.text
+    assert docs._substrate_doc_roots()[0][2] == ""
+
+
+def test_no_substrate_corpus_is_not_an_error(tmp_path, monkeypatch):
+    """A checkout has no image behind it, and robovast's own pages are the whole corpus."""
+    monkeypatch.setenv(docs.SUBSTRATE_DOCS_ENV, str(tmp_path / "absent"))
+    assert docs._substrate_doc_roots() == []
 
 
 def test_a_page_name_both_repositories_use_does_not_shadow(tmp_path):
@@ -192,13 +194,13 @@ def test_a_page_name_both_repositories_use_does_not_shadow(tmp_path):
 def test_an_extra_corpus_is_read_from_the_environment(tmp_path, monkeypatch):
     extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
     monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"substrate={extra}")
-    assert docs._env_doc_roots() == [("substrate", extra)]
+    assert docs._env_doc_roots() == [("substrate", extra, "")]
 
 
 def test_a_bare_path_takes_its_label_from_the_directory_it_is_in(tmp_path, monkeypatch):
     extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
     monkeypatch.setenv(docs.DOCS_EXTRA_ENV, str(extra))
-    assert docs._env_doc_roots() == [("substrate", extra)]
+    assert docs._env_doc_roots() == [("substrate", extra, "")]
 
 
 def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeypatch, caplog):
@@ -209,16 +211,13 @@ def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeyp
     assert "not a directory" in caplog.text
 
 
-def test_one_packages_broken_entry_point_does_not_cost_the_others_their_docs(
-        tmp_path, monkeypatch):
-    """A package that fails to import must not take every other package's docs with it."""
-    extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
+def test_a_stray_file_beside_the_corpora_is_not_one(tmp_path, monkeypatch):
+    """The root holds one directory per corpus; anything else the build left there is not a
+    corpus, and reading it as one would serve a label nothing is under."""
+    root = tmp_path / "substrate-docs"
+    (root / "roqsim").mkdir(parents=True)
+    (root / "roqsim" / "worlds.rst").write_text("Worlds\n======\n", encoding="utf-8")
+    (root / "BUILD-INFO").write_text("built at ...\n", encoding="utf-8")
+    monkeypatch.setenv(docs.SUBSTRATE_DOCS_ENV, str(root))
 
-    class _Pkg:
-        DOCS_DIR = str(extra)
-
-    _with_entry_points(monkeypatch, [
-        _FakeEntryPoint("broken", ImportError("no such module")),
-        _FakeEntryPoint("substrate", _Pkg),
-    ])
-    assert docs._entry_point_doc_roots() == [("substrate", extra)]
+    assert [label for label, _root, _ref in docs._substrate_doc_roots()] == ["roqsim"]

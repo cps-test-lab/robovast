@@ -296,27 +296,29 @@ weigh it rather than reading the hint as an instruction.
 What the documentation corpus covers
 ------------------------------------
 
-``search_docs`` serves RoboVAST's own pages, plus the pages of any installed package that
-publishes its own. A campaign is authored against more than RoboVAST -- the simulator's world
-format, its plugin reference, the scenario DSL -- and all of that is documented in the
-repositories that own it. Serving only this one meant a search for a world's ``components:``
-list returned nothing, which reads as "no such thing" rather than "not indexed here".
+``search_docs`` serves RoboVAST's own pages and the substrate's. A campaign is authored
+against more than RoboVAST -- the simulator's world format, its plugin reference, the
+scenario DSL -- and all of that is documented in the repository that owns it. Serving only
+this one meant a search for a world's ``components:`` list returned nothing, which reads as
+"no such thing" rather than "not indexed here".
 
-A package publishes its docs by registering a ``robovast.docs`` entry point that resolves to
-an object carrying a ``DOCS_DIR``::
+**The build puts them there, not the runtime.** This repository already pins the simulator's
+commit for the simulator image (``container/robovast/Dockerfile.roqsim``) and clones it at
+that commit; the service image clones the same commit's ``docs/`` into
+``/opt/robovast/substrate-docs``, one directory per corpus. Nothing is imported and no
+sibling repository is named by path at run time -- the service image carries no roqsim, by
+design, so an entry point could not have answered this.
 
-   [project.entry-points."robovast.docs"]
-   roqsim = "roqsim.docs"
-
-The entry-point **name** becomes the prefix its pages are served under, so the substrate's
+Each directory's **name** is the prefix its pages are served under, so the substrate's
 ``architecture`` page is ``roqsim-architecture`` and cannot shadow RoboVAST's own. Every row
-of the page listing carries a ``source`` saying which corpus it came from.
+of the page listing carries a ``source`` saying which corpus it came from, and a ``ref`` --
+the commit the pages were taken at, written beside them by the build. A release that builds
+the simulator from a moving branch can ship an image newer than the pages, and the ``ref`` is
+what makes that visible rather than silent.
 
-The direction is deliberate: a package says it wants its documentation served, rather than
-RoboVAST naming a repository it must not depend on. For a deployment whose packages predate
-the entry point, ``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path
-separator -- configuration, which is where cross-repository wiring belongs when it cannot be
-a published name.
+``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path separator, for a
+checkout with no image behind it. ``ROBOVAST_SUBSTRATE_DOCS`` overrides where the corpora are
+read from.
 
 Only RoboVAST's own pages have their Sphinx directives expanded. Another repository's
 extensions are its own, so its pages are served as written rather than half-rendered.

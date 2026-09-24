@@ -324,57 +324,43 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     return sources
 
 
-#: Entry-point group a package uses to publish its own documentation to this corpus. Each entry
-#: resolves to an object carrying a ``DOCS_DIR`` (the convention ``roqsim.models`` already uses for
-#: ``MODELS_DIR``), and the entry-point NAME becomes the prefix its pages are served under.
+#: Where the image build leaves the documentation of the substrate a campaign runs on. One
+#: directory per corpus, named after it; a ``.ref`` beside the pages records the commit it was
+#: taken at.
 #:
-#: The substrate a campaign runs on is documented in its own repository, and robovast cannot reach
-#: that by path without naming a sibling component -- which is exactly what a component that must
-#: stay publishable on its own may not do. So the direction is inverted: a package that wants its
-#: documentation served says so, and robovast names nobody.
-DOCS_GROUP = "robovast.docs"
+#: The build is what knows this, not the runtime: robovast pins the simulator's commit in
+#: ``container/robovast/Dockerfile.roqsim`` and clones it there, so the same pin puts the pages
+#: in the service image. Nothing is imported and no sibling repository is named by path at
+#: runtime -- which a component that must stay publishable on its own may not do.
+SUBSTRATE_DOCS_DIR = "/opt/robovast/substrate-docs"
+SUBSTRATE_DOCS_ENV = "ROBOVAST_SUBSTRATE_DOCS"
 
-#: Additional corpora for a deployment whose packages predate the entry point, as
-#: ``label=/path`` pairs separated by the platform path separator. A bare path takes its label
-#: from the directory's parent. This is where cross-repository wiring belongs when it cannot be
-#: a published name: in the configuration, not in either repository.
+#: Additional corpora for a checkout with no image behind it, as ``label=/path`` pairs separated
+#: by the platform path separator. A bare path takes its label from the directory's parent.
 DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
 
 
-def _entry_point_doc_roots() -> list[tuple[str, Path]]:
-    """``(label, docs_dir)`` for every package publishing docs through :data:`DOCS_GROUP`."""
-    from importlib.metadata import entry_points
-
-    roots: list[tuple[str, Path]] = []
-    try:
-        found = list(entry_points(group=DOCS_GROUP))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("could not read the %s entry points: %s", DOCS_GROUP, e)
-        return roots
-    for ep in found:
-        try:
-            target = ep.load()
-        except Exception as e:  # noqa: BLE001
-            # One package's broken entry point must not cost every other package its docs.
-            logger.warning("%s entry point %r could not be loaded: %s", DOCS_GROUP, ep.name, e)
+def _substrate_doc_roots() -> list[tuple[str, Path, str]]:
+    """``(label, docs_dir, ref)`` for each corpus the image build left behind."""
+    root = Path(os.environ.get(SUBSTRATE_DOCS_ENV) or SUBSTRATE_DOCS_DIR)
+    if not root.is_dir():
+        return []
+    roots: list[tuple[str, Path, str]] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
             continue
-        docs_dir = getattr(target, "DOCS_DIR", None)
-        if docs_dir is None:
-            logger.warning("%s entry point %r exposes no DOCS_DIR", DOCS_GROUP, ep.name)
-            continue
-        path = Path(docs_dir)
-        if not path.is_dir():
-            logger.warning("%s entry point %r points at %s, which is not a directory",
-                           DOCS_GROUP, ep.name, path)
-            continue
-        roots.append((ep.name, path))
+        ref = ""
+        marker = child / ".ref"
+        if marker.is_file():
+            ref = marker.read_text(encoding="utf-8", errors="replace").strip()
+        roots.append((child.name, child, ref))
     return roots
 
 
-def _env_doc_roots() -> list[tuple[str, Path]]:
-    """``(label, docs_dir)`` for each entry of :data:`DOCS_EXTRA_ENV`."""
+def _env_doc_roots() -> list[tuple[str, Path, str]]:
+    """``(label, docs_dir, ref)`` for each entry of :data:`DOCS_EXTRA_ENV`; the ref is unknown."""
     raw = os.environ.get(DOCS_EXTRA_ENV, "")
-    roots: list[tuple[str, Path]] = []
+    roots: list[tuple[str, Path, str]] = []
     for chunk in raw.split(os.pathsep):
         chunk = chunk.strip()
         if not chunk:
@@ -389,7 +375,7 @@ def _env_doc_roots() -> list[tuple[str, Path]]:
             logger.warning("%s names %s, which is not a directory; skipping it",
                            DOCS_EXTRA_ENV, path)
             continue
-        roots.append((label or path.parent.name, path))
+        roots.append((label or path.parent.name, path, ""))
     return roots
 
 
@@ -417,13 +403,17 @@ _doc_content: dict[str, str] = {}
 _doc_source: dict[str, str] = {}
 
 _sources: dict[str, tuple[Path, str, str]] = {}
+#: corpus label -> the commit its pages were taken at, where the build recorded one.
+_corpus_ref: dict[str, str] = {}
 if _docs_dir is not None:
     _sources.update(_load_corpus(_docs_dir))
-for _label, _root in _entry_point_doc_roots() + _env_doc_roots():
-    # setdefault: robovast's own pages keep their unprefixed names, and the first registration
-    # of a label wins, so a package registered twice cannot half-replace itself.
+for _label, _root, _ref in _substrate_doc_roots() + _env_doc_roots():
+    # setdefault: robovast's own pages keep their unprefixed names, and the first corpus under
+    # a label wins, so one registered twice cannot half-replace itself.
     for _key, _value in _load_corpus(_root, prefix=_label).items():
         _sources.setdefault(_key, _value)
+    if _ref:
+        _corpus_ref.setdefault(_label, _ref)
 
 for _name, (_path, _kind, _from) in _sources.items():
     _text = _path.read_text(encoding="utf-8", errors="replace")
@@ -439,6 +429,21 @@ for _name, (_path, _kind, _from) in _sources.items():
     else:
         _doc_meta[_name] = _extract_md_title(_text) or _name
         _doc_content[_name] = _text
+
+
+def _listing_row(name: str) -> dict:
+    """One page as a listing shows it: its name, title, corpus, and that corpus's commit.
+
+    The ref is what keeps a substrate page honest: these pages describe the simulator this
+    image was built against, and a campaign pinning another image can be told so rather than
+    reading them as universal.
+    """
+    source = _doc_source.get(name, "robovast")
+    row = {"name": name, "title": _doc_meta[name], "source": source}
+    ref = _corpus_ref.get(source)
+    if ref:
+        row["ref"] = ref
+    return row
 
 
 # -- Tool functions ----------------------------------------------------------
@@ -528,9 +533,7 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
         return {"page": page, "title": _doc_meta[page], "content": _doc_content[page]}
 
     if not query:
-        pages = [{"name": name, "title": _doc_meta[name],
-                  "source": _doc_source.get(name, "robovast")}
-                 for name in sorted(_doc_files)]
+        pages = [_listing_row(name) for name in sorted(_doc_files)]
         return {"pages": pages, "total": len(pages)}
 
     results = []
