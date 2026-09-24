@@ -28,6 +28,11 @@ class FakeProvider:
     ``cpu``/``memory`` describe ONE node by default, which is what most of these tests want:
     they are about the ledger and the ordering, not about placement. Pass ``per_node`` for a
     cluster of several.
+
+    A ``per_node`` entry is ``(node_id, cpu, memory, gpu)`` or, for a node that cannot be
+    named in a selector, ``(node_id, cpu, memory, gpu, pinnable)``. Every node still gets a
+    DISTINCT id: an id is what the controller keys its accounting on, so sharing one is
+    telling it two machines are one -- see :class:`NodeBudget`.
     """
 
     def __init__(self, cpu=10.0, memory=10240 * MIB, gpu=0, nodes=None, per_node=None,
@@ -41,8 +46,12 @@ class FakeProvider:
         self.reads = 0
 
     def _budget(self, counted):
-        return Budget(nodes=tuple(NodeBudget(node_id=i, free_cpu=c, free_memory=m, free_gpu=g)
-                                  for i, c, m, g in self._per_node),
+        # Read here rather than in __init__ so a test may swap ``_per_node`` mid-flight to
+        # make the cluster change under the controller.
+        return Budget(nodes=tuple(NodeBudget(node_id=n[0], free_cpu=n[1], free_memory=n[2],
+                                             free_gpu=n[3],
+                                             pinnable=n[4] if len(n) > 4 else True)
+                                  for n in self._per_node),
                       counted_jobs=counted, growable=self.growable)
 
     def budget(self):
@@ -491,7 +500,8 @@ def test_a_node_without_an_identity_label_takes_work_unpinned():
     label costs the pin, never the run.
     """
     c = _controller(FakeProvider(
-        per_node=[(None, 100.0, 10240 * MIB, 0), ("named", 5.0, 10240 * MIB, 0)]))
+        per_node=[("unlabelled", 100.0, 10240 * MIB, 0, False),
+                  ("named", 5.0, 10240 * MIB, 0)]))
     seen = []
     c.submit("a", [("a-0", JobSizing(4.0, MIB), lambda n=None: seen.append(n))],
              started_at=0.0)
@@ -503,11 +513,64 @@ def test_a_cluster_with_no_labels_at_all_still_runs():
     """The regression that took a live deployment down to zero throughput: upgrading the
     service does not re-run setup, so no node had the identity label, and per-node admission
     silently had nothing it was willing to place on."""
-    p = FakeProvider(per_node=[(None, 96.0, 10240 * MIB, 0), (None, 32.0, 10240 * MIB, 0)])
+    p = FakeProvider(per_node=[("a", 96.0, 10240 * MIB, 0, False),
+                               ("b", 32.0, 10240 * MIB, 0, False)])
     c = _controller(p)
     made = _items(c, "a", 5, cpu=4.0)
     assert c.drain() == 5, "an unlabelled cluster must still admit work"
     assert len(made) == 5
+
+
+def test_unlabelled_nodes_are_counted_one_by_one():
+    """Two nodes that cannot be pinned to are still two nodes' worth of room.
+
+    The identity is what every dict in the controller keys on, and it used to be ``None`` for
+    every node the last ``setup`` had not labelled -- so a cluster of them collapsed into a
+    single slot and only the last one's free capacity was ever offered. Nothing said so: the
+    campaign simply ran at a fraction of the cluster's throughput, and the fraction got worse
+    the more nodes there were. Ten 2-cpu jobs fit two 10-cpu nodes exactly; before the split
+    between "which node is this" and "can I name it", five were admitted and the other node
+    sat idle.
+    """
+    p = FakeProvider(per_node=[("a", 10.0, 10240 * MIB, 0, False),
+                               ("b", 10.0, 10240 * MIB, 0, False)])
+    c = _controller(p)
+    made = _items(c, "a", 10, cpu=2.0)
+    assert c.drain() == 10, "the second unlabelled node's capacity must be offered too"
+    assert len(made) == 10
+
+
+def test_an_unpinnable_placement_is_charged_to_the_node_it_was_granted_on():
+    """The pod is created unpinned, but the reservation still lands on a node.
+
+    Both used to ride on ``node_id is None``. There is no selector for an unlabelled node, so
+    kube-scheduler makes the final placement -- but the pass still decided WHICH node had the
+    room, and charging that decision nowhere would let the same cores be handed out again to
+    every later item in the same pass.
+    """
+    p = FakeProvider(per_node=[("a", 10.0, 10240 * MIB, 0, False)])
+    c = _controller(p)
+    seen = []
+    c.submit("a", [(f"a-{i}", JobSizing(4.0, MIB), lambda n=None: seen.append(n))
+                   for i in range(3)], started_at=0.0)
+    assert c.drain() == 2, "10 cores hold two 4-core jobs, not three"
+    assert seen == [None] * 2, "no selector exists for an unpinnable node"
+
+
+def test_work_on_an_unpinnable_node_is_not_counted_as_waiting_for_the_autoscaler():
+    """``node_id is None`` on a reservation means one thing now: a node that does not exist.
+
+    :data:`GROWTH_UNPINNED_LIMIT` bounds work in flight towards a machine the autoscaler has
+    yet to produce. A job placed on a node that is merely unlabelled is not that -- the node
+    is right there holding it -- and counting it there stops an unlabelled cluster with an
+    autoscaler from admitting anything past the limit.
+    """
+    p = FakeProvider(per_node=[("a", 10.0, 10240 * MIB, 0, False)], growable=True)
+    c = _controller(p)
+    _items(c, "a", 5, cpu=2.0)
+    assert c.drain() == 5
+    assert c._unpinned_outstanding_locked() == 0, (  # noqa: SLF001 - the fact under test
+        "a job on a real node is not waiting for one the autoscaler has not made")
 
 
 def test_a_growable_cluster_may_create_unpinned_when_no_node_fits():
@@ -750,9 +813,9 @@ def test_a_probe_with_no_gate_goes_to_its_node():
 
 def test_a_pinned_item_never_takes_an_unlabelled_node():
     """An unlabelled node takes unpinned work, so a cluster predating the identity label still
-    runs. A pinned item names a node id, and a node with none is not that node -- however much
-    room it has."""
-    p = FakeProvider(per_node=[(None, 64.0, 10240 * MIB, 0)])
+    runs. A pin is a selector value, so it cannot be honoured where the label is not -- however
+    much room the node has."""
+    p = FakeProvider(per_node=[("unlabelled", 64.0, 10240 * MIB, 0, False)])
     c = _controller(p)
     seen = []
     c.submit("pinned", [("p-0", JobSizing(2.0, MIB), lambda n=None: seen.append(("p", n)))],
@@ -762,6 +825,7 @@ def test_a_pinned_item_never_takes_an_unlabelled_node():
 
     c.submit("free", [("f-0", JobSizing(2.0, MIB), lambda n=None: seen.append(("f", n)))],
              started_at=1.0, accepts_node=lambda node: False)
+    # Created unpinned -- no label to select -- though the node is still charged.
     assert c.drain() == 1 and seen == [("f", None)], "unpinned work still takes it"
 
 
@@ -771,13 +835,19 @@ def test_may_use_composes_pin_and_gate():
     def item(**kw):
         return WorkItem(key="k", sizing=JobSizing(1.0, MIB), create=lambda n=None: None, **kw)
 
-    assert item().may_use(None) is True
-    assert item(accepts_node=lambda n: False).may_use(None) is True, \
+    def node(node_id, pinnable=True):
+        return NodeBudget(node_id=node_id, free_cpu=1.0, free_memory=MIB, free_gpu=0,
+                          pinnable=pinnable)
+
+    # Nothing measures an unpinnable node, so the gate has nothing to wait for.
+    unpinnable = node("hash-of-n9", pinnable=False)
+    assert item().may_use(unpinnable) is True
+    assert item(accepts_node=lambda n: False).may_use(unpinnable) is True, \
         "an unpinned item still takes an unlabelled node"
-    assert item(pin="n1").may_use(None) is False
-    assert item(pin="n1").may_use("n2") is False
-    assert item(pin="n1", accepts_node=lambda n: False).may_use("n1") is False
-    assert item(pin="n1", accepts_node=lambda n: True).may_use("n1") is True
+    assert item(pin="hash-of-n9").may_use(unpinnable) is False, "the selector names nothing"
+    assert item(pin="n1").may_use(node("n2")) is False
+    assert item(pin="n1", accepts_node=lambda n: False).may_use(node("n1")) is False
+    assert item(pin="n1", accepts_node=lambda n: True).may_use(node("n1")) is True
 
 
 def test_a_confined_campaign_does_not_hold_its_node_against_other_campaigns():
@@ -840,7 +910,7 @@ def test_node_ids_lists_only_what_can_be_pinned_to():
     """An unlabelled node holds work but cannot be selected, so probing it would produce a
     figure nothing could ever be pinned to."""
     p = FakeProvider(per_node=[("named", 8.0, 10240 * MIB, 0),
-                               (None, 8.0, 10240 * MIB, 0)])
+                               ("unlabelled", 8.0, 10240 * MIB, 0, False)])
     assert _controller(p).node_ids() == ["named"]
 
 
