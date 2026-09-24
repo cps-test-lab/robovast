@@ -10,6 +10,7 @@ record of that decision.
     python3 tools/refresh_source_pins.py            # report what would change
     python3 tools/refresh_source_pins.py --ask      # report, then offer to apply it
     python3 tools/refresh_source_pins.py --write    # rewrite the Dockerfile ARGs, no question asked
+    python3 tools/refresh_source_pins.py --check    # fail if one source is pinned twice, differently
 
 ``--ask`` is what the Makefile uses, because the decision needs the diff in front of it: the report
 IS the question, and answering it from a flag means committing to the answer before seeing what it
@@ -76,13 +77,55 @@ def _resolve_head(url: str, branch: str) -> "str | None":
     return None
 
 
+def _disagreements() -> "list[str]":
+    """One source pinned at two commits, as lines to report.
+
+    A source can be pinned in more than one Dockerfile -- each must build on its own, and
+    ``Dockerfile.roqsim`` is built with an empty context, so there is no shared file to read a
+    pin from. Two copies that disagree bake two commits of one source into one image family,
+    which is what this refuses. ``--write`` cannot produce it (one resolve per repo), but an
+    edit by hand can.
+    """
+    seen: "dict[str, dict[str, list[str]]]" = {}
+    for rel in _DOCKERFILES:
+        path = _REPO / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in _REF_PIN.finditer(text):
+            name, sha = match.group("name"), match.group("sha")
+            url = _repo_url(text, name)
+            if url is not None:
+                seen.setdefault(url, {}).setdefault(sha, []).append(f"{rel} ({name}_REF)")
+    problems = []
+    for url, by_sha in sorted(seen.items()):
+        if len(by_sha) > 1:
+            where = "\n".join(f"    {sha}  {', '.join(sorted(files))}"
+                               for sha, files in sorted(by_sha.items()))
+            problems.append(f"{url} is pinned at {len(by_sha)} different commits:\n{where}")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     pin_prompt.add_arguments(parser)
     parser.add_argument("--branch", default="main",
                         help="Branch to resolve in every source repo (default: main).")
+    parser.add_argument("--check", action="store_true",
+                        help="Fail if one source is pinned at two different commits. "
+                             "Offline: it reads the committed pins and asks no remote.")
     args = parser.parse_args()
+
+    if args.check:
+        problems = _disagreements()
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        if problems:
+            print("\nRun: python3 tools/refresh_source_pins.py --write", file=sys.stderr)
+            return 1
+        print("every source is pinned at one commit")
+        return 0
 
     changes, current, unresolved = [], [], []
     # path -> rewritten text, held back until the decision below: with --ask the report has to be

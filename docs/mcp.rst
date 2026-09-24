@@ -296,7 +296,7 @@ weigh it rather than reading the hint as an instruction.
 What the documentation corpus covers
 ------------------------------------
 
-``search_docs`` serves RoboVAST's own pages and the substrate's. A campaign is authored
+``search_docs`` serves RoboVAST's own pages and those of the repositories it is built on. A campaign is authored
 against more than RoboVAST -- the simulator's world format, its plugin reference, the
 scenario DSL -- and all of that is documented in the repository that owns it. Serving only
 this one meant a search for a world's ``components:`` list returned nothing, which reads as
@@ -305,11 +305,11 @@ this one meant a search for a world's ``components:`` list returned nothing, whi
 **The build puts them there, not the runtime.** This repository already pins the simulator's
 commit for the simulator image (``container/robovast/Dockerfile.roqsim``) and clones it at
 that commit; the service image clones the same commit's ``docs/`` into
-``/opt/robovast/substrate-docs``, one directory per corpus. Nothing is imported and no
+``/opt/robovast/upstream-docs``, one directory per corpus. Nothing is imported and no
 sibling repository is named by path at run time -- the service image carries no roqsim, by
 design, so an entry point could not have answered this.
 
-Each directory's **name** is the prefix its pages are served under, so the substrate's
+Each directory's **name** is the prefix its pages are served under, so the upstream repositories'
 ``architecture`` page is ``roqsim-architecture`` and cannot shadow RoboVAST's own. Every row
 of the page listing carries a ``source`` saying which corpus it came from, and a ``ref`` --
 the commit the pages were taken at, written beside them by the build. A release that builds
@@ -317,7 +317,7 @@ the simulator from a moving branch can ship an image newer than the pages, and t
 what makes that visible rather than silent.
 
 ``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path separator, for a
-checkout with no image behind it. ``ROBOVAST_SUBSTRATE_DOCS`` overrides where the corpora are
+checkout with no image behind it. ``ROBOVAST_UPSTREAM_DOCS`` overrides where the corpora are
 read from.
 
 Only RoboVAST's own pages have their Sphinx directives expanded. Another repository's

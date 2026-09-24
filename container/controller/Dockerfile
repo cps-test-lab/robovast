@@ -39,7 +39,7 @@
 # the base image itself baked in, which no amount of pinning *our* apt calls can reach.
 # The tag is kept beside the digest because a bare digest tells a reader nothing about what
 # it is. Refresh both with: make refresh-build-pins
-# The substrate's own documentation, cloned at the commit this repository already pins for the
+# The upstream repositories' own documentation, cloned at the commit this repository already pins for the
 # simulator image (container/robovast/Dockerfile.roqsim). `search_docs` serves only robovast's
 # pages otherwise, and a search for the world format or the plugin reference returns zero --
 # which reads as "there is no such thing" rather than "not indexed here".
@@ -51,7 +51,7 @@
 # editing one. A release that builds the simulator from a moving branch can therefore ship an
 # image newer than these pages; every listing row carries the corpus's `.ref` so that gap is
 # visible rather than silent.
-FROM alpine/git:latest AS substrate-docs
+FROM alpine/git:latest AS upstream-docs
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
 ARG ROQSIM_REF=f08dda192aab4fdd3b68d23e540d2db0cf5f69ca
 RUN set -eu; \
@@ -204,8 +204,8 @@ COPY docs /opt/robovast/docs
 ENV ROBOVAST_DOCS_DIR=/opt/robovast/docs
 # Beside robovast's own pages, not merged into them: each corpus keeps its own prefix, so both
 # repositories' `architecture` page survives and a listing says which one an answer came from.
-COPY --from=substrate-docs /out /opt/robovast/substrate-docs
-ENV ROBOVAST_SUBSTRATE_DOCS=/opt/robovast/substrate-docs
+COPY --from=upstream-docs /out /opt/robovast/upstream-docs
+ENV ROBOVAST_UPSTREAM_DOCS=/opt/robovast/upstream-docs
 # The `.. literalinclude::` targets in docs/example.rst, which are repository paths
 # outside docs/; and, under examples/, what `get_example` serves. Without the first that
 # page renders as unreadable-file placeholders; without the second the tool has no

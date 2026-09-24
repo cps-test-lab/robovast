@@ -125,7 +125,7 @@ def test_a_source_checkout_needs_no_env(monkeypatch):
 
 # -- a corpus that reaches past this repository ----------------------------------
 
-# The substrate a campaign runs on is documented in its own repository. Serving only
+# The upstream repositories a campaign runs on is documented in its own repository. Serving only
 # robovast's pages meant an agent on the MCP path could not reach the world format, the
 # plugin reference, or the scenario DSL at all -- and a search for them returned zero, which
 # reads as "no such thing" rather than "not indexed here".
@@ -139,9 +139,9 @@ def _corpus_dir(tmp_path, name, pages):
     return d
 
 
-def _substrate_root(tmp_path, monkeypatch, corpora):
+def _upstream_root(tmp_path, monkeypatch, corpora):
     """``corpora`` is ``{label: ({stem: text}, ref)}``, laid out as the image build leaves it."""
-    root = tmp_path / "substrate-docs"
+    root = tmp_path / "upstream-docs"
     for label, (pages, ref) in corpora.items():
         d = root / label
         d.mkdir(parents=True)
@@ -149,18 +149,18 @@ def _substrate_root(tmp_path, monkeypatch, corpora):
             (d / f"{stem}.rst").write_text(text, encoding="utf-8")
         if ref:
             (d / ".ref").write_text(ref + "\n", encoding="utf-8")
-    monkeypatch.setenv(docs.SUBSTRATE_DOCS_ENV, str(root))
+    monkeypatch.setenv(docs.UPSTREAM_DOCS_ENV, str(root))
     return root
 
 
 def test_the_image_build_leaves_a_corpus_served_under_its_own_prefix(tmp_path, monkeypatch):
     """The build clones the simulator at the commit this repository pins, so the pages arrive
     with the image rather than through an import or a path into a sibling checkout."""
-    _substrate_root(tmp_path, monkeypatch, {
+    _upstream_root(tmp_path, monkeypatch, {
         "roqsim": ({"interfaces": "World YAML\n==========\n\nThe components list.\n"},
                    "f08dda192aab4fdd3b68d23e540d2db0cf5f69ca")})
 
-    [(label, root, ref)] = docs._substrate_doc_roots()
+    [(label, root, ref)] = docs._upstream_doc_roots()
 
     assert label == "roqsim"
     assert ref == "f08dda192aab4fdd3b68d23e540d2db0cf5f69ca"
@@ -172,40 +172,40 @@ def test_the_image_build_leaves_a_corpus_served_under_its_own_prefix(tmp_path, m
 def test_a_corpus_the_build_recorded_no_commit_for_is_still_served(tmp_path, monkeypatch):
     """A ref is what keeps the pages honest about which simulator they describe, but its
     absence is not a reason to answer nothing."""
-    _substrate_root(tmp_path, monkeypatch, {"roqsim": ({"worlds": "Worlds\n======\n"}, "")})
+    _upstream_root(tmp_path, monkeypatch, {"roqsim": ({"worlds": "Worlds\n======\n"}, "")})
 
-    assert docs._substrate_doc_roots()[0][2] == ""
+    assert docs._upstream_doc_roots()[0][2] == ""
 
 
-def test_no_substrate_corpus_is_not_an_error(tmp_path, monkeypatch):
+def test_no_upstream_corpus_is_not_an_error(tmp_path, monkeypatch):
     """A checkout has no image behind it, and robovast's own pages are the whole corpus."""
-    monkeypatch.setenv(docs.SUBSTRATE_DOCS_ENV, str(tmp_path / "absent"))
-    assert docs._substrate_doc_roots() == []
+    monkeypatch.setenv(docs.UPSTREAM_DOCS_ENV, str(tmp_path / "absent"))
+    assert docs._upstream_doc_roots() == []
 
 
 def test_a_page_name_both_repositories_use_does_not_shadow(tmp_path):
     """Both carry an `architecture` page. Letting one win answers a question about the
-    substrate with robovast's own page, which is worse than not answering it."""
-    extra = _corpus_dir(tmp_path, "substrate", {"architecture": "A\n=\n\nsubstrate\n"})
-    loaded = docs._load_corpus(extra, prefix="substrate")
-    assert set(loaded) == {"substrate-architecture"}
+    upstream with robovast's own page, which is worse than not answering it."""
+    extra = _corpus_dir(tmp_path, "upstream", {"architecture": "A\n=\n\nupstream\n"})
+    loaded = docs._load_corpus(extra, prefix="upstream")
+    assert set(loaded) == {"upstream-architecture"}
 
 
 def test_an_extra_corpus_is_read_from_the_environment(tmp_path, monkeypatch):
-    extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
-    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"substrate={extra}")
-    assert docs._env_doc_roots() == [("substrate", extra, "")]
+    extra = _corpus_dir(tmp_path, "upstream", {"plugins": "P\n=\n\nkeys\n"})
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"upstream={extra}")
+    assert docs._env_doc_roots() == [("upstream", extra, "")]
 
 
 def test_a_bare_path_takes_its_label_from_the_directory_it_is_in(tmp_path, monkeypatch):
-    extra = _corpus_dir(tmp_path, "substrate", {"plugins": "P\n=\n\nkeys\n"})
+    extra = _corpus_dir(tmp_path, "upstream", {"plugins": "P\n=\n\nkeys\n"})
     monkeypatch.setenv(docs.DOCS_EXTRA_ENV, str(extra))
-    assert docs._env_doc_roots() == [("substrate", extra, "")]
+    assert docs._env_doc_roots() == [("upstream", extra, "")]
 
 
 def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeypatch, caplog):
     """Set-but-wrong is a misconfiguration, as it is for ROBOVAST_DOCS_DIR."""
-    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"substrate={tmp_path / 'nope'}")
+    monkeypatch.setenv(docs.DOCS_EXTRA_ENV, f"upstream={tmp_path / 'nope'}")
     with caplog.at_level("WARNING"):
         assert docs._env_doc_roots() == []
     assert "not a directory" in caplog.text
@@ -214,10 +214,10 @@ def test_a_corpus_that_is_not_there_is_reported_not_guessed_at(tmp_path, monkeyp
 def test_a_stray_file_beside_the_corpora_is_not_one(tmp_path, monkeypatch):
     """The root holds one directory per corpus; anything else the build left there is not a
     corpus, and reading it as one would serve a label nothing is under."""
-    root = tmp_path / "substrate-docs"
+    root = tmp_path / "upstream-docs"
     (root / "roqsim").mkdir(parents=True)
     (root / "roqsim" / "worlds.rst").write_text("Worlds\n======\n", encoding="utf-8")
     (root / "BUILD-INFO").write_text("built at ...\n", encoding="utf-8")
-    monkeypatch.setenv(docs.SUBSTRATE_DOCS_ENV, str(root))
+    monkeypatch.setenv(docs.UPSTREAM_DOCS_ENV, str(root))
 
-    assert [label for label, _root, _ref in docs._substrate_doc_roots()] == ["roqsim"]
+    assert [label for label, _root, _ref in docs._upstream_doc_roots()] == ["roqsim"]

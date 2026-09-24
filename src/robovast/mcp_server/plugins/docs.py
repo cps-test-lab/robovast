@@ -324,25 +324,25 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     return sources
 
 
-#: Where the image build leaves the documentation of the substrate a campaign runs on. One
-#: directory per corpus, named after it; a ``.ref`` beside the pages records the commit it was
+#: Where the image build leaves the upstream repositories' documentation. One directory per
+#: corpus, named after it; a ``.ref`` beside the pages records the commit it was
 #: taken at.
 #:
 #: The build is what knows this, not the runtime: robovast pins the simulator's commit in
 #: ``container/robovast/Dockerfile.roqsim`` and clones it there, so the same pin puts the pages
 #: in the service image. Nothing is imported and no sibling repository is named by path at
 #: runtime -- which a component that must stay publishable on its own may not do.
-SUBSTRATE_DOCS_DIR = "/opt/robovast/substrate-docs"
-SUBSTRATE_DOCS_ENV = "ROBOVAST_SUBSTRATE_DOCS"
+UPSTREAM_DOCS_DIR = "/opt/robovast/upstream-docs"
+UPSTREAM_DOCS_ENV = "ROBOVAST_UPSTREAM_DOCS"
 
 #: Additional corpora for a checkout with no image behind it, as ``label=/path`` pairs separated
 #: by the platform path separator. A bare path takes its label from the directory's parent.
 DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
 
 
-def _substrate_doc_roots() -> list[tuple[str, Path, str]]:
+def _upstream_doc_roots() -> list[tuple[str, Path, str]]:
     """``(label, docs_dir, ref)`` for each corpus the image build left behind."""
-    root = Path(os.environ.get(SUBSTRATE_DOCS_ENV) or SUBSTRATE_DOCS_DIR)
+    root = Path(os.environ.get(UPSTREAM_DOCS_ENV) or UPSTREAM_DOCS_DIR)
     if not root.is_dir():
         return []
     roots: list[tuple[str, Path, str]] = []
@@ -382,7 +382,7 @@ def _env_doc_roots() -> list[tuple[str, Path, str]]:
 def _load_corpus(docs_dir: Path, prefix: str = "") -> dict[str, tuple[Path, str, str]]:
     """``name -> (path, kind, label)`` for one documentation root.
 
-    *prefix* namespaces a secondary corpus, so ``architecture`` from the substrate is served as
+    *prefix* namespaces a secondary corpus, so ``architecture`` from upstream is served as
     ``roqsim-architecture`` beside robovast's own -- both repositories have a page by that name,
     and silently letting one shadow the other would answer a question about one with the other.
     """
@@ -407,7 +407,7 @@ _sources: dict[str, tuple[Path, str, str]] = {}
 _corpus_ref: dict[str, str] = {}
 if _docs_dir is not None:
     _sources.update(_load_corpus(_docs_dir))
-for _label, _root, _ref in _substrate_doc_roots() + _env_doc_roots():
+for _label, _root, _ref in _upstream_doc_roots() + _env_doc_roots():
     # setdefault: robovast's own pages keep their unprefixed names, and the first corpus under
     # a label wins, so one registered twice cannot half-replace itself.
     for _key, _value in _load_corpus(_root, prefix=_label).items():
@@ -434,7 +434,7 @@ for _name, (_path, _kind, _from) in _sources.items():
 def _listing_row(name: str) -> dict:
     """One page as a listing shows it: its name, title, corpus, and that corpus's commit.
 
-    The ref is what keeps a substrate page honest: these pages describe the simulator this
+    The ref is what keeps an upstream page honest: these pages describe the simulator this
     image was built against, and a campaign pinning another image can be told so rather than
     reading them as universal.
     """
@@ -505,7 +505,7 @@ def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict]
 
 
 def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS) -> dict:
-    """Documentation, ours and the substrate's: list, search, or read one page.
+    """Documentation, ours and upstream's: list, search, or read one page.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of

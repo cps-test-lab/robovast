@@ -170,6 +170,10 @@ examples-manifest: ## Regenerate configs/examples/MANIFEST from the git index
 check-examples-manifest: ## Fail if configs/examples/MANIFEST is out of date
 	@python3 tools/examples_manifest.py --check
 
+.PHONY: check-source-pins
+check-source-pins: ## Fail if one source repo is pinned at two different commits
+	@python3 tools/refresh_source_pins.py --check
+
 .PHONY: check-config-version
 check-config-version: ## Fail if a config version bump is missing, unnecessary, or left a sample behind
 	@python3 tools/check_config_version.py $(if $(BASE),--base $(BASE),)

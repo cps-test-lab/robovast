@@ -66,6 +66,13 @@ jobs:
         run: |
           . venv/bin/activate && make check-examples-manifest
 
+      # A source pinned in two Dockerfiles must name one commit: each builds on its own, so
+      # the pin is repeated, and two that disagree bake two commits of one source into one
+      # image family. Offline -- it reads what is committed and asks no remote.
+      - name: Check every source is pinned at one commit
+        run: |
+          . venv/bin/activate && make check-source-pins
+
       - name: Check the config version bump matches the schema change
         run: |
           . venv/bin/activate && make check-config-version BASE=origin/${{ github.base_ref || github.event.repository.default_branch }}
