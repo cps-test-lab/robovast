@@ -32,6 +32,9 @@ tried in this order, and the order is the design:
 
 A type none of the three cover is not skipped quietly: :meth:`TypeCatalog.missing` names it,
 and the topics that carry it are reported as recorded and not tabulated, with that reason.
+
+A channel whose message encoding is ``json`` (:data:`JSON_ENCODING`, what roqsim's own
+recording uses) needs no definition at all: its message is the parsed JSON document.
 """
 
 from __future__ import annotations
@@ -47,6 +50,12 @@ SIDECAR_NAME = "message_definitions.json"
 
 #: The distro whose standard types back the recording's own. Jazzy is what campaigns run.
 DEFAULT_STORE = Stores.ROS2_JAZZY
+
+#: The message encoding of a channel whose payload is a JSON document rather than CDR bytes.
+JSON_ENCODING = "json"
+
+#: The message encoding of ROS 2 channels: CDR bytes, decoded with the type's definition.
+CDR_ENCODING = "cdr"
 
 
 class TypeCatalog:
@@ -97,15 +106,16 @@ class TypeCatalog:
             self._distro_store = get_typestore(DEFAULT_STORE)
         return self._distro_store
 
-    def ensure(self, typename: str) -> bool:
+    def ensure(self, typename: str, encoding: str = CDR_ENCODING) -> bool:
         """Whether *typename* can be decoded, filling it in from the distro if need be.
 
         Called when a message of the type is about to be decoded, not up front: in a file
         that is still being written, a topic's schema record arrives with its first message,
         and a definition the recording carries must win over the distro's -- a stack built
         against a different revision of a standard message recorded *that* revision.
+        *encoding* is the channel's message encoding: a JSON channel needs no definition.
         """
-        if typename in self.store.fielddefs:
+        if encoding == JSON_ENCODING or typename in self.store.fielddefs:
             return True
         distro = self._distro()
         if typename not in distro.fielddefs:
@@ -132,7 +142,10 @@ class TypeCatalog:
                     name, "no definition in the recording, its sidecar or the distro's types")
         return out
 
-    def deserialize(self, data: bytes, typename: str):
+    def deserialize(self, data: bytes, typename: str, encoding: str = CDR_ENCODING):
+        """The message *data* holds: a ``rosbags`` message, or the document of a JSON channel."""
+        if encoding == JSON_ENCODING:
+            return json.loads(data)
         return self.store.deserialize_cdr(data, typename)
 
     def fields(self, typename: str) -> list:
@@ -165,4 +178,5 @@ def _referenced_types(fielddef) -> list:
     return out
 
 
-__all__ = ["DEFAULT_STORE", "SIDECAR_NAME", "TypeCatalog", "catalog_for"]
+__all__ = ["CDR_ENCODING", "DEFAULT_STORE", "JSON_ENCODING", "SIDECAR_NAME", "TypeCatalog",
+           "catalog_for"]

@@ -134,6 +134,12 @@ execution:
 #
 # `require:` makes a missing frame a loud failure instead of an empty table. The box is the frame
 # the verdict is built from, so a run that recorded no box pose measured nothing at all.
+# What every run's bag holds. Everything, by default; use_sim_time stamps each message with
+# the simulator's clock, which is the one move_group plans on.
+recording:
+  ros2:
+    use_sim_time: true
+
 results_processing:
   postprocessing:
   - rosbags_tf_to_csv:

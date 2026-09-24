@@ -107,6 +107,12 @@ def run_view_sql(have: set, unit_columns: set) -> Optional[str]:
 
     A missing ``job`` or ``batch`` table, or a store without ``unit.channels_json``, gives NULL
     columns rather than a different column set, so one query reads every campaign.
+
+    The run arm is driven by the ``runs`` table (:mod:`robovast_decode.runs`), which lists
+    every run directory on disk as well as every run the store recorded, so a run still
+    going -- one with a directory and no verdict row yet -- is a row with ``live`` true and
+    NULL outcome columns. ``runs`` must be defined before this view. A run-less unit is the
+    second arm, with ``live`` false.
     """
     if not {"run", "unit"} <= have:
         return None
@@ -120,19 +126,25 @@ def run_view_sql(have: set, unit_columns: set) -> Optional[str]:
     channels = "u.channels_json" if "channels_json" in unit_columns else "NULL AS channels_json"
     runless = ", ".join(f"'{status}'" for status in RUNLESS_UNIT_STATUSES)
     return f"""
-        SELECT r.campaign_id, u.config_name, r.run_id, r.status, r.passed, r.duration_s,
+        SELECT l.campaign_id, l.config_name, l.run_id, r.status, r.passed, r.duration_s,
                r.errors, r.failures, r.tests, r.start_time, r.failure_message,
-               u.params_json, {channels}, u.objective, u.paramset_id, {batch}, {host}
-        FROM campaign.run r
-        JOIN campaign.unit u ON r.unit_id = u.id AND u.campaign_id = r.campaign_id
+               u.params_json, {channels}, u.objective, u.paramset_id, {batch}, {host},
+               l.live
+        FROM runs l
+        LEFT JOIN campaign.unit u ON u.campaign_id = l.campaign_id
+                                  AND u.config_name = l.config_name
+        LEFT JOIN campaign.run r ON r.unit_id = u.id AND r.run_id = l.run_id
+                                 AND r.campaign_id = l.campaign_id
         {bjoin}
         {join}
+        WHERE l.run_id IS NOT NULL
         UNION ALL
         SELECT u.campaign_id, COALESCE(NULLIF(u.config_name, ''), u.paramset_id) AS config_name,
                NULL AS run_id, u.status, 0 AS passed, NULL AS duration_s, NULL AS errors,
                NULL AS failures, NULL AS tests, NULL AS start_time, NULL AS failure_message,
                u.params_json, {channels}, u.objective, u.paramset_id, {batch},
-               NULL AS job_dir, NULL AS sysinfo_json
+               NULL AS job_dir, NULL AS sysinfo_json,
+               false AS live
         FROM campaign.unit u
         {bjoin}
         WHERE u.status IN ({runless})

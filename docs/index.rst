@@ -68,6 +68,5 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    http_api
    deployment
    web_ui
-   run_capture
    developer_guide
    future_work

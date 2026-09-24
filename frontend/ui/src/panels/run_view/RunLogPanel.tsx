@@ -14,22 +14,23 @@
 //   max_rows: cap on the initial load (default 20000; hitting it is reported in the footer)
 //   severities: push a severity floor into the query, e.g. [warn, error]
 //
-// While the campaign is still running there is no `run_log` table to read, and the panel streams
+// While the run is still recording there is no `run_log` table to read, and the panel streams
 // the run's job log instead (`LiveRunLog`): the same view, wall-time only and not cursor-synced,
 // because sim time comes from the clock map postprocessing builds.
 
 import { useMemo } from 'react'
 import { registerPanel } from '@/lib/panels/registry'
+import { isLiveProvider } from '@/lib/panels/dataProvider'
 import { RunLogView } from '@/components/runLog/RunLogView'
 import { useRunLog } from '@/components/runLog/useRunLog'
 import { LiveRunLog } from '@/components/runLog/LiveJobLog'
 import { useClock, type PanelProps } from '@robovast/panel-kit'
 
 function RunLogPanel({ spec, clock, data }: PanelProps) {
-  // Set by the run view when the campaign is still running: there is no `run_log` table yet, so the
-  // panel streams the run's job log instead. Not a binding a campaign declares -- the
-  // host knows which mode it is drawing, and a campaign cannot.
-  if (spec.config.preview)
+  // A run still recording (`run_view.live`, carried by the host's provider) has no `run_log` table
+  // yet, so the panel streams the run's job log instead. Not a binding a campaign declares -- the
+  // host knows which run it is drawing, and a campaign cannot.
+  if (isLiveProvider(data) && data.live)
     return (
       <LiveRunLog
         campaignId={data.campaignId}

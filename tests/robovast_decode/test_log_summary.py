@@ -107,7 +107,7 @@ def test_a_relayed_line_without_its_own_level_keeps_the_relays():
     assert severity_of(line) == "warn"
 
 
-#: A real line from ``basic-nav-gazebo-2026-08-08-23475581``'s ``system.log``: nav2's
+#: A real line from a Gazebo nav campaign's ``system.log``: nav2's
 #: nodes run inside a launch container, so their output reaches the log wearing the
 #: scenario's relay stamp *and* the container's process tag before their own stamp.
 _NAV2_ERROR = (

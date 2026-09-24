@@ -1528,12 +1528,13 @@ A campaign's finished runs can be replayed **while the rest of it is still runni
 list is live-only, so a run leaves it the moment it completes, and the other Results views wait for
 postprocessing.
 
-Only the **3D replay** is mounted. ``scene3d`` reads a run's own ``capture/capture.json`` and a
-scene descriptor compiled on demand, neither of which needs postprocessing; the preview mounts the
-3D scene and the playback transport and leaves the other panels out.
+Only the **3D replay** is mounted. ``scene3d`` reads a run's own recording -- the ``sim_poses``
+and ``joint_states`` tables, built from it as it grows -- and a scene descriptor compiled on
+demand, neither of which needs postprocessing; the preview mounts the 3D scene and the playback
+transport and leaves the other panels out.
 
 That is also why a campaign is offered as a preview **only if it has a scene to replay**. A
-simulator that records no capture contributes no ``scene3d``, so there would be nothing at all to
+simulator that records no scene state contributes no ``scene3d``, so there would be nothing at all to
 show; such a campaign simply does not appear — in the run picker or in its card's menu — until it
 has finished, when its real results exist. Both surfaces ask the campaign's served panel list, so
 neither can offer what the other refuses.
@@ -1653,7 +1654,7 @@ on its own is a complete panel.
 **Two panels are there without being declared.** The ``playback`` transport bar always: a run
 view without it has no clock to scrub and every other panel nothing to follow, so it is not a
 decision a ``.vast`` gets to make or a line it should have to copy. And a ``scene3d`` for a
-simulator that records a run capture (roqsim does; Gazebo has no scene export and so offers
+simulator that records its scene state (roqsim does; Gazebo has no scene export and so offers
 none) — the panel that replays what those runs always write. Declare either one explicitly only
 to change it: an entry of your own keeps its position and its fields, exactly as an authored
 ``execution.env`` wins over a backend's. A campaign with no ``visualization`` block at all still
@@ -1715,8 +1716,8 @@ Only one panel per view may declare it; a second would occupy the same rectangle
 and is refused at validation.
 
 **Some panels are contributed by the simulator backend and need no entry at all.** A backend
-whose runs always record the capture the ``scene3d`` panel replays supplies that panel the same
-way it supplies the environment that produces the capture — there is nothing to decide, so
+whose runs always record the state the ``scene3d`` panel replays supplies that panel the same
+way it supplies the environment that produces the recording — there is nothing to decide, so
 there is nothing to declare. Declaring it yourself still wins, which is how you place it
 somewhere other than the base layer.
 
@@ -1751,8 +1752,8 @@ progress bar, an icon play/pause, a fast-forward button, and a ``current / total
 time label. Fast-forward steps the playback speed through 1×, 2×, 4× and 8× and back to 1×,
 with the active speed shown beside it; pressed while paused, it also starts playback, so the
 button never pauses. The bar owns the clock; every other panel follows it, which is why it is
-contributed to every campaign rather than declared — see above. The timeline range comes from the run
-capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
+contributed to every campaign rather than declared — see above. The timeline range comes from the run's
+own recording when a ``scene3d`` panel declares one (the run's ground truth, and available
 before any postprocessing), else from an explicit ``visualization.results.run_view.timeline``, else from the union of the
 ``poses`` / ``behaviors`` / ``scenario_timestamps`` tables' timestamps.
 
@@ -1790,8 +1791,8 @@ the run (:ref:`the costmap video overlay <costmap-video-overlay>`).
 .. _camera-panel:
 
 **Camera** (``camera``) — a camera that was **recorded during the run**, played on the
-playback clock. This is what a simulator with no 3D scene has instead of one: Gazebo writes
-no run capture and has no scene exporter, so a :ref:`scene3d <scene3d-panel>` panel has
+playback clock. This is what a simulator with no 3D scene has instead of one: Gazebo records
+no scene state and has no scene exporter, so a :ref:`scene3d <scene3d-panel>` panel has
 nothing to replay there, while a monitor camera spawned into the world gives that run view a
 picture of the trial.
 
@@ -1923,8 +1924,8 @@ the header gear's :ref:`Reset 3D view <reset-3d-view>` entry, which re-frames th
 the world was authored with.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
-**capture** names the world it used and the service builds the matching **geometry** on demand. Both
-artifacts are specified in :ref:`run-capture`.
+**recording** names the world it used (its ``sim_recording`` row) and the service builds the
+matching **geometry** on demand. The descriptor is specified in :ref:`scene-descriptor`.
 
 *Geometry is compiled when somebody looks, not when a campaign runs.* A descriptor is 13–31 MB and takes
 5–9 s to compile, for an artifact whose only consumer is this panel — so a campaign does not ship one.
@@ -1948,23 +1949,23 @@ wait that will never end, and it is the case to know about for a campaign **impo
 cluster**: geometry is compiled in the image that campaign *recorded*, which is a reference into the
 registry it ran against. Where this host cannot pull that image there is no 3D view for that campaign,
 and the panel says so in seconds rather than at the build's deadline. Nothing else about the campaign
-is affected — its logs, tables, plots and capture playback need no image.
+is affected — its logs, tables, plots and recording playback need no image.
 
-The rest of the run view stays usable meanwhile — the capture, the timeline and the
+The rest of the run view stays usable meanwhile — the recording, the timeline and the
 table-fed panels need no geometry, so playback and the costmap keep working — and a failure stops polling
 and shows its reason.
 
-Nothing is listed under the panel. A capture's tracks name the joints and bodies they drive exactly as
-the descriptor spells them, so what gets animated is discovered from the artifact pair; a track matching
-nothing is reported, with the capture's own ``world`` and ``producer``, rather than leaving a silently
-static world.
+Nothing is listed under the panel. A recording's pose and joint rows name the bodies and joints they
+drive exactly as the descriptor spells them, so what gets animated is discovered from the artifact
+pair; a name matching nothing is reported, with the recording's own ``world``, rather than leaving a
+silently static world.
 
 .. note::
 
    The panel does not animate from the ``poses`` table built from ``/tf``: that
    would need a rosbag before anything moved, impose a naming contract on the simulator plus a
    ``bind`` list for its exceptions, and could only place bodies parented to the world — so an
-   articulated robot would replay rigid. Nor is there a ``scene.scope``/``capture.scope`` to declare:
+   articulated robot would replay rigid. Nor is there a ``scene.scope`` to declare:
    geometry is resolved by content key, so there is nothing to declare, and nothing to declare
    *wrongly* (a campaign-scope descriptor aimed at a world that varies per configuration renders
    confidently wrong geometry, and no validation could catch it). The ``poses`` table itself serves
@@ -2156,7 +2157,7 @@ campaign shares, as the ``scene3d`` panel does.) See the developer guide for the
 
 **3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** — ``scene.json`` +
 ``scene.bin`` + one PNG per texture, a compact browser-renderable export of the simulated world, defined
-in :ref:`run-capture` and produced for roqsim by ``roqsim/export_web.py``. It is a *directory*, not a file: the
+in :ref:`scene-descriptor` and produced for roqsim by ``roqsim/export_web.py``. It is a *directory*, not a file: the
 loader fetches ``scene.bin`` and the textures as **relative siblings** of ``scene.json``.
 
 A campaign does not deliver it. The service resolves it per view:
@@ -2180,7 +2181,7 @@ immutable``, and the run view keeps the last parsed scene when the panel is torn
 the next run of the same world is seated in that model — back at rest — with no fetch and no rebuild. Its
 status ``GET`` is still asked on every switch, since another run may name another world; for a campaign
 at rest the service answers it from a memo kept against the campaign's record files and the run's
-capture. Files under ``/results`` carry no such header: their paths name a location, not the bytes in it.
+recording. Files under ``/results`` carry no such header: their paths name a location, not the bytes in it.
 
 The cache is **shared across campaigns** and durable (``~/.robovast/cache/scenes``, overridable with
 ``ROBOVAST_SCENE_CACHE``; size-capped by ``ROBOVAST_SCENE_CACHE_BYTES``, evicted whole-entry
@@ -2227,8 +2228,8 @@ inset in a corner, in step with the picture because both sides carry simulated s
 
 .. code-block:: bash
 
-   roqsim render --state run.npz --from onset --overlay costmap --out clip.mp4
-   roqsim render --state run.npz --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
+   roqsim render --state roqsim_bag/roqsim.mcap --from onset --overlay costmap --out clip.mp4
+   roqsim render --state roqsim_bag/roqsim.mcap --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
        "layers": {"map": {"topic": "/map"}, "local": {"topic": "/local_costmap/costmap"},
                   "poses": {"table": "poses"}}}}' --out clip.mp4
 

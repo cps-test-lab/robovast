@@ -16,8 +16,11 @@ import shlex
 import pytest
 import yaml
 
-from robovast.common import run_capture
 from robovast.service import scene_cache
+
+#: The recording format version the fixtures declare -- roqsim's own number, read back from
+#: the ``sim_recording`` row; nothing in RoboVAST defines it.
+RECORDING_VERSION = 3
 
 
 def _set_values(command: str) -> list:
@@ -60,23 +63,40 @@ def _backend_named(name, backend):
         simulators.resolve_backend = real
 
 
-def _manifest(**over):
-    base = {"producer": "roqsim", "world": "pkg:depot", "overrides": {},
-            "version": run_capture.FORMAT_VERSION}
+def _recording(**over):
+    """A ``sim_recording`` row as the service reads it: ``overrides`` given as a mapping (or
+    ``None`` for a recording that carries none) is stored the way the decoder stores it."""
+    base = {"world": "pkg:depot", "overrides": {}, "format_version": RECORDING_VERSION}
     base.update(over)
+    overrides = base.pop("overrides")
+    base["overrides_json"] = json.dumps(overrides)
     return base
 
 
-def test_identity_comes_from_the_capture_and_the_pinned_image(tmp_path):
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
+def test_identity_comes_from_the_recording_and_the_pinned_image(tmp_path):
+    ident = scene_cache.world_identity(_campaign(tmp_path), _recording())
     assert ident["world"] == "pkg:depot"
     assert ident["image"].startswith("harbor/x@sha256:")
     assert ident["overrides_known"] is True
+    assert ident["recording_version"] == RECORDING_VERSION
+    assert ident["producer"] == "roqsim"
 
 
 def test_a_run_that_does_not_name_its_world_is_refused(tmp_path):
     with pytest.raises(scene_cache.SceneUnavailable, match="does not name the world"):
-        scene_cache.world_identity(_campaign(tmp_path), _manifest(world=None))
+        scene_cache.world_identity(_campaign(tmp_path), _recording(world=None))
+
+
+def test_recorded_overrides_that_cannot_be_read_are_refused(tmp_path):
+    """A world identity guessed from a broken document would compile confidently wrong geometry."""
+    campaign = _campaign(tmp_path)
+    row = _recording()
+    row["overrides_json"] = "{not json"
+    with pytest.raises(scene_cache.SceneUnavailable, match="could not be read"):
+        scene_cache.world_identity(campaign, row)
+    row["overrides_json"] = "[1, 2]"
+    with pytest.raises(scene_cache.SceneUnavailable, match="not a mapping"):
+        scene_cache.world_identity(campaign, row)
 
 
 def test_a_mutable_tag_refuses_to_cache(tmp_path):
@@ -86,30 +106,33 @@ def test_a_mutable_tag_refuses_to_cache(tmp_path):
     matching on the tag itself keeps this pinned to the behaviour rather than the wording.
     """
     with pytest.raises(scene_cache.SceneUnavailable, match="harbor/x:latest"):
-        scene_cache.world_identity(_campaign(tmp_path, image="harbor/x:latest"), _manifest())
+        scene_cache.world_identity(_campaign(tmp_path, image="harbor/x:latest"), _recording())
 
 
 def test_a_local_image_id_is_accepted(tmp_path):
     """A campaign recorded by a Docker run carries `docker inspect .Id`: immutable, though not a
     registry digest."""
     ident = scene_cache.world_identity(
-        _campaign(tmp_path, image="sha256:" + "b" * 64), _manifest())
+        _campaign(tmp_path, image="sha256:" + "b" * 64), _recording())
     assert ident["image"].startswith("sha256:")
 
 
-def test_missing_overrides_is_unknown_not_empty(tmp_path):
-    """Absent must not be read as `{}` -- that compiles the *unoverridden* world for a run that varied it."""
-    manifest = _manifest()
-    del manifest["overrides"]
-    ident = scene_cache.world_identity(_campaign(tmp_path), manifest)
+@pytest.mark.parametrize("overrides_json", [None, "null"])
+def test_missing_overrides_is_unknown_not_empty(tmp_path, overrides_json):
+    """Absent must not be read as `{}` -- that compiles the *unoverridden* world for a run that varied
+    it. Two spellings of absent: a NULL column, and the decoder's ``null`` text for a recording
+    whose provenance carried no ``overrides``."""
+    row = _recording()
+    row["overrides_json"] = overrides_json
+    ident = scene_cache.world_identity(_campaign(tmp_path), row)
     assert ident["overrides_known"] is False
     assert ident["overrides"] == {}, "we still have to compile something, but the caller must be told"
 
 
 def test_the_key_is_the_world_and_not_the_campaign(tmp_path):
     """Two campaigns, same image and world -> one cache entry. This is the whole dedup claim."""
-    a = scene_cache.world_identity(_campaign(tmp_path / "a"), _manifest())
-    b = scene_cache.world_identity(_campaign(tmp_path / "b"), _manifest())
+    a = scene_cache.world_identity(_campaign(tmp_path / "a"), _recording())
+    b = scene_cache.world_identity(_campaign(tmp_path / "b"), _recording())
     assert scene_cache.cache_key(a) == scene_cache.cache_key(b)
 
 
@@ -118,64 +141,55 @@ def test_the_key_is_the_world_and_not_the_campaign(tmp_path):
     ("overrides", {"components": {"floorplan": {"size": 4.0}}}),
 ])
 def test_the_key_separates_worlds_and_overrides(tmp_path, field, value):
-    base = scene_cache.world_identity(_campaign(tmp_path / "a"), _manifest())
-    other = scene_cache.world_identity(_campaign(tmp_path / "b"), _manifest(**{field: value}))
+    base = scene_cache.world_identity(_campaign(tmp_path / "a"), _recording())
+    other = scene_cache.world_identity(_campaign(tmp_path / "b"), _recording(**{field: value}))
     assert scene_cache.cache_key(base) != scene_cache.cache_key(other)
 
 
-def test_the_key_separates_capture_format_versions(tmp_path):
-    """The same override document, two versions -> two entries. Nothing else can tell them apart.
+def test_the_recording_format_version_is_reported_but_not_keyed(tmp_path):
+    """The same override document under two format versions is one entry.
 
-    v2 changed what ``overrides`` MEANS without changing its shape: ``components.robot.lidar``
-    addressed the config of the component named ``robot`` under v1 and the child component
-    ``robot.lidar`` under v2. Both hash identically as data, so a key that ignored the version would
-    serve one run geometry compiled for the other's world -- and it would look perfectly fine.
+    Which convention an ``overrides`` document follows is a property of the simulator that
+    wrote it, and that simulator lives in the image the key already carries -- the same image
+    that compiles the geometry. So the version separates nothing the digest does not, and
+    keying on it would only split a workspace (which has no recording) from a campaign.
     """
     overrides = {"components": {"robot": {"lidar": {"rays": 4}}}}
-    v1 = scene_cache.world_identity(_campaign(tmp_path / "a"),
-                                    _manifest(version=1, overrides=overrides))
-    v2 = scene_cache.world_identity(_campaign(tmp_path / "b"),
-                                    _manifest(version=2, overrides=overrides))
-    assert scene_cache.cache_key(v1) != scene_cache.cache_key(v2)
+    older = scene_cache.world_identity(_campaign(tmp_path / "a"),
+                                       _recording(format_version=2, overrides=overrides))
+    newer = scene_cache.world_identity(_campaign(tmp_path / "b"),
+                                       _recording(format_version=3, overrides=overrides))
+    assert (older["recording_version"], newer["recording_version"]) == (2, 3)
+    assert scene_cache.cache_key(older) == scene_cache.cache_key(newer)
 
 
-def test_a_capture_newer_than_this_code_is_refused(tmp_path):
-    """The refusal that matters most is HERE, not in the viewer.
-
-    A viewer that cannot read a capture simply fails to animate. This side reads the manifest's
-    ``overrides`` to decide which geometry the run gets, so a version whose fields mean something
-    this code has not seen would be keyed and compiled anyway, and the picture would look right.
-    """
-    newer = run_capture.FORMAT_VERSION + 1
-    with pytest.raises(scene_cache.SceneUnavailable, match=f"format version {newer}"):
-        scene_cache.world_identity(_campaign(tmp_path), _manifest(version=newer))
+def test_a_recording_without_a_format_version_reports_none(tmp_path):
+    """A row that states no version reports its absence, not a guessed number: the simulator's
+    format is its own to number, and RoboVAST implements no version of it."""
+    campaign = _campaign(tmp_path)
+    ident = scene_cache.world_identity(campaign, _recording(format_version=None))
+    assert ident["recording_version"] is None
+    with pytest.raises(scene_cache.SceneUnavailable, match="not a number"):
+        scene_cache.world_identity(campaign, _recording(format_version="three"))
 
 
-def test_a_manifest_without_a_version_reads_as_the_oldest_format(tmp_path):
-    """Absent is v1, not a refusal: the oldest format is the only safe assumption about a manifest
-    that does not declare one, and refusing would strand a capture this code can in fact read."""
-    manifest = _manifest()
-    del manifest["version"]
-    ident = scene_cache.world_identity(_campaign(tmp_path), manifest)
-    assert ident["capture_version"] == 1
-
-
-def test_a_workspace_and_a_campaign_naming_one_world_still_share_an_entry(tmp_path):
+def test_a_workspace_and_a_campaign_naming_one_world_share_an_entry(tmp_path):
     """The warm-share the docstring promises: open the Config tab, then a run view, and the second
-    is already built. A `.vast`'s `sim:` block has no capture to read a version from and is written
-    against TODAY's override grammar, so it is keyed at the current version -- which is what keeps
-    this true rather than splitting the two apart the moment a version entered the key.
-    """
+    is already built. A ``.vast``'s ``sim:`` block has no recording to read a format version
+    from, which is exactly why the version stays out of the key. The ``.vast`` names its
+    backend, as one with a simulation container does: the backend is the producer the key
+    carries, on both sides."""
     image = "harbor/x@sha256:" + "a" * 64
-    raw = {"execution": {"containers": {"simulation": {"image": image, "config": "pkg:depot"}}}}
+    raw = {"execution": {"containers": {"simulation": {
+        "backend": "roqsim", "image": image, "config": "pkg:depot"}}}}
     workspace = scene_cache.workspace_world_identity(str(tmp_path / "ws"), raw)
-    campaign = scene_cache.world_identity(_campaign(tmp_path, image=image), _manifest())
-    assert workspace["capture_version"] == run_capture.FORMAT_VERSION
+    campaign = scene_cache.world_identity(_campaign(tmp_path, image=image), _recording())
+    assert workspace["recording_version"] is None
     assert scene_cache.cache_key(workspace) == scene_cache.cache_key(campaign)
 
 
 def test_the_key_separates_exporter_options(tmp_path):
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
+    ident = scene_cache.world_identity(_campaign(tmp_path), _recording())
     assert scene_cache.cache_key(ident, 1024) != scene_cache.cache_key(ident, 2048)
 
 
@@ -187,7 +201,7 @@ def test_overrides_travel_as_a_file_not_as_argv(tmp_path):
     """
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
-        _manifest(overrides={"components": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
+        _recording(overrides={"components": {"floorplan": {"size": 4.0}}, "sim": {"pacing": "asap"}}))
     # The real mount, not a literal: the cluster only mounts AUX_MOUNTABLE_PATHS, so a test
     # carrying its own path would hide a mismatch.
     cmd = scene_cache._command_for(ident, 1024, scene_cache._OVERRIDES_MOUNT)
@@ -209,7 +223,7 @@ def test_a_structured_override_survives(tmp_path):
     instances = [{"name": "dynamic_0", "pos": [1.03, 0.55], "size": [0.5, 0.5, 1.0]}]
     ident = scene_cache.world_identity(
         _campaign(tmp_path),
-        _manifest(overrides={"components": {"dynamic_obstacles": {"instances": instances}}}))
+        _recording(overrides={"components": {"dynamic_obstacles": {"instances": instances}}}))
     path = scene_cache._overrides_file(ident, "somekey")
     assert path, "overrides present means a document to hand the exporter"
     with open(path, encoding="utf-8") as handle:
@@ -219,7 +233,7 @@ def test_a_structured_override_survives(tmp_path):
 @pytest.mark.requires_simulator
 def test_no_overrides_means_no_file_and_no_flag(tmp_path):
     """A world compiled as declared needs neither, and must not be handed an empty document."""
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest(overrides={}))
+    ident = scene_cache.world_identity(_campaign(tmp_path), _recording(overrides={}))
     assert scene_cache._overrides_file(ident, "somekey") is None
     assert "--override" not in shlex.split(scene_cache._command_for(ident, 1024, None))
 
@@ -231,7 +245,7 @@ def test_the_command_is_the_backends_to_give(tmp_path):
     Asked of the backend the campaign already names, so a second simulator needs no table
     here -- only the descriptor format stays RoboVAST's.
     """
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
+    ident = scene_cache.world_identity(_campaign(tmp_path), _recording())
     assert ident["backend"] == "roqsim"
     assert "roqsim-export-web" in scene_cache._command_for(ident, 1024)
 
@@ -245,14 +259,14 @@ def test_a_simulator_that_exports_no_geometry_says_so(tmp_path):
         def scene_export(self, cfg, execution, **kw):
             return None
 
-    ident = scene_cache.world_identity(_campaign(tmp_path, backend="mute"), _manifest())
+    ident = scene_cache.world_identity(_campaign(tmp_path, backend="mute"), _recording())
     with pytest.raises(scene_cache.SceneUnavailable, match="exports no scene descriptor"):
         with _backend_named("mute", _Mute()):
             scene_cache._command_for(ident, 1024)
 
 
 def test_a_campaign_naming_no_simulator_is_named_not_guessed(tmp_path):
-    ident = scene_cache.world_identity(_campaign(tmp_path, backend=None), _manifest())
+    ident = scene_cache.world_identity(_campaign(tmp_path, backend=None), _recording())
     with pytest.raises(scene_cache.SceneUnavailable, match="none declared"):
         scene_cache._command_for(ident, 1024)
 
@@ -273,7 +287,7 @@ def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypa
     Exercises the real ``run_input_generators`` -> ``shell`` generator -> atomic swap chain; only the
     *command* is faked, because a real one needs the campaign's image.
     """
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
+    ident = scene_cache.world_identity(_campaign(tmp_path), _recording())
     key = scene_cache.cache_key(ident)
     assert not scene_cache.is_cached(key)
 
@@ -305,7 +319,7 @@ def test_a_generator_that_writes_nothing_is_not_cached(tmp_path, monkeypatch):
     wrote no files"), and this asserts that it reaches the viewer as a reason rather than as a traceback
     -- and that nothing was left behind to be served later as a hit.
     """
-    ident = scene_cache.world_identity(_campaign(tmp_path), _manifest())
+    ident = scene_cache.world_identity(_campaign(tmp_path), _recording())
     key = scene_cache.cache_key(ident)
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": "true"}})

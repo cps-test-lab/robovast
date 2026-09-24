@@ -16,9 +16,9 @@
 
 """Wall time → sim time, for a single run.
 
-The samples come from the ``clock_map`` table (the decimated ``/clock`` of the job's wall-time
-recording, :class:`robovast_decode.handlers.Clock`) or, for a run whose simulator records its
-own map, from the file it writes beside its recording (:func:`find_run_clock_map`).
+The samples come from the ``clock_map`` table: the decimated ``/clock`` of the job's wall-time
+recording (:class:`robovast_decode.handlers.Clock`) or, for a run whose simulator records its
+own map, the ``clock`` channel of roqsim's recording (:class:`robovast_decode.handlers.SimClock`).
 
 Everything a run *logs* is stamped in wall time: rosout's receive time, and whatever
 each container printed. Everything a run is *analyzed* on is sim seconds — the rosbag's
@@ -49,7 +49,9 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 #: log lines are wall-time only, and every surface that shows them has to say so.
 SOURCE_NONE = "none"
 SOURCE_ROS_CLOCK_BAG = "ros_clock_bag"
-SOURCE_ROQSIM_RUN_NPZ = "roqsim_run_npz"
+#: The ``clock`` channel of roqsim's own recording.
+SOURCE_ROQSIM = "roqsim"
+#: A clock-map CSV a simulator wrote beside its recording.
 
 
 class ClockMapInfo(NamedTuple):
@@ -127,30 +129,6 @@ class ClockMap:
 #: The empty map, for a run with no ``/clock`` and no roqsim samples. Returned rather than
 #: ``None`` so callers do not each re-invent "what if there is no map".
 NO_CLOCK_MAP = ClockMap([], SOURCE_NONE)
-
-
-#: What roqsim names its streamed clock record: ``run.npz`` -> ``run.clock_map.csv``. Same two
-#: columns as the ROS one, and epoch on the wall axis for the same reason — a reader outside the
-#: simulator's process has calendar stamps, not that process's monotonic origin.
-ROQSIM_SUFFIX = ".clock_map.csv"
-
-
-def find_run_clock_map(run_dir: str) -> ClockMap:
-    """The clock map a **non-ROS** run left beside its recording, or :data:`NO_CLOCK_MAP`.
-
-    Written line by line as the run proceeds (``roqsim.capture``), so unlike the ``.npz`` it
-    survives a run killed by a timeout — which is the run whose log most needs placing in time.
-    """
-    try:
-        names = sorted(os.listdir(run_dir))
-    except OSError:
-        return NO_CLOCK_MAP
-    for name in names:
-        if name.endswith(ROQSIM_SUFFIX):
-            found = load_clock_map(os.path.join(run_dir, name), SOURCE_ROQSIM_RUN_NPZ)
-            if found:
-                return found
-    return NO_CLOCK_MAP
 
 
 def from_rows(rows, source: str = SOURCE_ROS_CLOCK_BAG) -> ClockMap:

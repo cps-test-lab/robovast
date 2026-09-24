@@ -231,12 +231,12 @@ number, plus a ``job`` symlink to that run's job-level artifacts:
    <run-number>/
    ├── test.xml                              # JUnit test result (pass/fail, duration)
    ├── behaviors.jsonl                       # scenario-execution's behaviour-tree log
-   ├── rosbag2/                              # the scenario's own recording [when it records one]
+   ├── rosbag2/                              # the run's bag, recorded by RoboVAST [ROS mode]
    ├── job -> ../../_jobs/job-N              # symlink to this run's job artifacts (see below)
    └── <test-specific files>                 # Domain-specific output, e.g. out.csv
 
-Anything the *scenario* itself produces (``test.xml``, ``behaviors.jsonl``, a scenario-recorded
-``rosbag2/``, domain output) stays in the run directory. Infrastructure and monitoring artifacts
+Anything the *scenario* itself produces (``test.xml``, ``behaviors.jsonl``, domain output) and
+the run's own ``rosbag2/`` stay in the run directory. Infrastructure and monitoring artifacts
 (``sysinfo.yaml``, ``resource_usage_*.csv``, the containers' logs, and the entrypoint's
 ``/rosout`` + ``/clock`` recording) belong to the **job** and live under ``_jobs/job-N/`` —
 reachable via the ``job`` link, e.g. ``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`). The
@@ -250,10 +250,21 @@ from a run's recording live in the campaign's ``.cache/``. The one exception is 
 the decoder encodes into the run directory because a browser plays it from there (see
 :ref:`the videos table <videos-table>`).
 
-A scenario-recorded ``rosbag2/`` directory is a standard ROS 2 bag in MCAP storage, with a
-``metadata.yaml`` listing recorded topics and message counts. It is present only when the
-scenario records a bag, and is distinct from the job-level ``/rosout`` recording under
+``rosbag2/`` is the run's bag, and RoboVAST records it: the job's entrypoint starts
+``ros2 bag record`` before the scenario and stops it after, holding what the ``.vast``'s
+:ref:`recording: <recording-config>` block says (everything, by default). It is a standard
+ROS 2 bag in MCAP storage, written **through** rather than cached and split into a new segment
+every 10 s, so a running run's bag is readable as it grows: a closed segment is read whole, the
+open one up to its last complete record. The storage plugin flushes in 4 KiB steps, so the newest messages
+of a quiet topic wait at most until the split closes the segment. ``metadata.yaml``, listing the
+recorded topics and message counts, appears only when the recorder stops -- a bag is complete
+exactly when it is closed. It is distinct from the job-level ``/rosout`` recording under
 ``_jobs/job-N/logs/``.
+
+A write-through recorder's I/O pattern differs from a cached one's -- more, smaller writes
+while the run is going instead of a burst at the end. A metric sensitive to the recorder's
+own load (a control-loop rate, a latency measured on the recording host) is therefore not
+compared across that boundary without saying so.
 
 Every bag directory also holds ``message_definitions.json``: the full definition of each type
 it recorded, written by the run's own container at its end, where the types are installed.
@@ -326,17 +337,20 @@ Where the tables come from
    * - **Bag tables**
      - ``poses``, ``nav2_behavior_tree``, ``costmaps``, ``action_<name>_feedback`` /
        ``_status``, ``rosbag2_<topic>``, ``videos``
-     - a run's scenario recording, ``<run>/rosbag2/``
+     - a run's own recording, ``<run>/rosbag2/``
    * - Infrastructure recording
      - ``rosout``, ``clock_map``
      - the job's wall-time recording, ``_jobs/…/logs/rosout_bag/``
+   * - Simulator recording
+     - ``sim_poses``, ``joint_states``, ``clock_map``, ``sim_recording``, ``sim_entities``
+     - roqsim's own recording, ``<run>/roqsim_bag/roqsim.mcap``, beside the scenario recording
+       or, for a stepped run, instead of it
    * - **Derived tables**
      - ``run_log``, ``scenario_timestamps``, ``resource_usage``, ``system_usage``,
        ``run_clock``
      - a job's container logs, resource samples and infrastructure recording, cut to each run
    * - **Authored files**
-     - one per file stem: ``behaviors``, ``sim_poses``, ``nav2_behaviors``, a scenario's
-       ``out``, …
+     - one per file stem: ``behaviors``, ``nav2_behaviors``, a scenario's ``out``, …
      - every ``*.csv`` and ``*.jsonl`` below a run directory
    * - ``_recording``
      - one
@@ -377,6 +391,30 @@ than tabulating it.
 A recording is read once per build, and only the messages some requested table needs are
 deserialized; custom message types decode from the definitions embedded in the bag and its
 ``message_definitions.json``, so no ROS installation is involved.
+
+**Simulator recording.** roqsim records a run as one mcap, ``<run>/roqsim_bag/roqsim.mcap``,
+whose channels are JSON documents sampled at the capture rate and whose provenance travels as
+mcap metadata. It is decoded like a bag, and is the only recording a **stepped** (ROS-less)
+run has:
+
+* ``poses`` → ``sim_poses``, one row per named body per sample, in the :ref:`pose contract
+  <pose-contract>`'s simulator shape: ``timestamp`` (exact sim seconds), ``wall_time``,
+  ``frame``, position, quaternion ``(x, y, z, w)`` and world-frame twist;
+* ``joints`` → ``joint_states``: ``timestamp``, ``wall_time``, ``joint``, ``position``, one row
+  per hinge or slide joint per sample;
+* ``clock`` → ``clock_map``, the same ``(wall_ts, sim_ts)`` samples the infrastructure recording
+  gives, so ``run_clock`` and the derived tables work unchanged for a stepped run. A run whose
+  job also has the infrastructure recording's ``/clock`` keeps that one, and the channel is
+  listed in ``_recording`` with that reason;
+* the ``roqsim.recording`` metadata → ``sim_recording``, one row per run: ``format_version``,
+  ``world``, ``overrides_json``, ``seed``, ``packages_json``, ``capture_fps`` (``num/den``),
+  ``timestep``, ``model_json`` -- the last record of the name wins;
+* the ``roqsim.entities`` metadata → ``sim_entities``: ``name``, ``kind``, ``body``,
+  ``present``, the rows of the last roster the run wrote.
+
+The ``state`` channel, the raw simulator state roqsim itself reads back, is not a table and says
+so in ``_recording``. The recording is closed once its writer wrote the footer -- a killed run's
+file ends where its last chunk did, and is decoded to there.
 
 **Authored files.** A run's own data file is a table with no registration: a scenario's metrics
 file, a simulator's pose stream, a postprocessing step's output, scenario-execution's
@@ -421,6 +459,14 @@ asked for, a run whose records have grown, or anything a different decoder versi
 that has not finished — no ``test.xml`` yet, or a recording still open — is looked at again on
 the next request, so **SQL works while a campaign is running** and follows it as it goes.
 
+A run being followed *as it records* (:mod:`robovast_decode.live`) is the exception: a session
+reads each new record of the growing bag, flushes the handlers' rows in batches, and writes them
+as parquet **parts** the manifest names under the run's entry with a ``live`` stamp. A query reads
+every part written so far and leaves the entry to the session while the stamp is fresh; once the
+run has its verdict and the recorder closed the bag, the parts are merged into the run's one
+file and the entry is complete. A stamp that has gone stale belongs to a session that died, and
+the table is built whole from the recording like any other.
+
 **The cache is disposable.** Clearing it (:ref:`results-tables-ahead`) loses nothing but the time
 to rebuild; archives and downloads leave it out, and an imported or downloaded campaign builds its
 tables from its records the first time they are named.
@@ -431,7 +477,7 @@ One clock per run
 ^^^^^^^^^^^^^^^^^
 
 **Every table built from a recording timestamps its rows with the bag's receive time.** Under
-``bag_record(use_sim_time: true)`` that is the *simulator's* clock, and it is the right one to key
+``recording.ros2.use_sim_time: true`` that is the *simulator's* clock, and it is the right one to key
 on: it is what the simulator actually stepped, so it is identical across simulators and independent
 of how fast the machine ran — the same trial can take very different wall times on two backends
 and still span the same sim seconds.
@@ -446,9 +492,9 @@ and carries nav2's stamp as ``event_timestamp``.
 Seconds everywhere, except in a topic's own ``rosbag2_<topic>`` table, whose ``timestamp`` is in
 nanoseconds.
 
-Recording ``/clock`` in the scenario's ``bag_record(...)`` is worth the negligible space: it makes
-the sim↔wall mapping recoverable, so a foreign-clock topic can be *related* to sim time afterwards
-instead of guessed at.
+Keeping ``/clock`` in the run's bag -- it is there unless ``recording.ros2`` leaves it out -- is
+worth the negligible space: it makes the sim↔wall mapping recoverable, so a foreign-clock topic can
+be *related* to sim time afterwards instead of guessed at.
 
 .. _pose-contract:
 
@@ -456,11 +502,12 @@ The pose contract
 ^^^^^^^^^^^^^^^^^
 
 A pose table answers one question — *where was this thing, and when* — and more than one producer
-can answer it. ``poses`` comes from ``/tf`` in a rosbag; ``sim_poses`` is written by the simulator
-itself, during the run, and is the only pose data a **stepped** (non-ROS) run has, since there is
-no bag to derive anything from. A stack on some other middleware, a motion-capture ingest, or a
-real-robot log joins them by writing a file with the same columns into the run directory; nothing
-has to be registered, because every data file of a run is a table named after the file.
+can answer it. ``poses`` comes from ``/tf`` in a rosbag; ``sim_poses`` is decoded from the
+simulator's own recording, taken inside the simulator during the run, and is the only pose data a
+**stepped** (non-ROS) run has, since there is no bag to derive anything from. A stack on some
+other middleware, a motion-capture ingest, or a real-robot log joins them by writing a file with
+the same columns into the run directory; nothing has to be registered, because every data file
+of a run is a table named after the file.
 
 One table per producer, sharing the schema. That keeps provenance 1:1 and stops a panel
 filtering ``frame: base_link`` from silently plotting two interleaved series; a query that wants
@@ -561,11 +608,12 @@ Two producers, one format:
 
 * **ROS** — the *entrypoint's own* recorder (``/rosout`` and ``/clock``) writes a bag in **wall**
   time for the whole container's life, so each ``/clock`` message is an exact (wall receive, sim
-  content) pair; its ``clock_map`` table holds the samples. Deliberately not the scenario's
-  ``bag_record``: that one is sim-time on both axes, so it cannot carry the mapping, and it starts
-  mid-run where the interesting failures are already over.
-* **roqsim (non-ROS)** — ``roqsim.capture`` streams ``<recording>.clock_map.csv`` beside the
-  ``.npz``, flushed per sample so a run killed by a timeout still has one.
+  content) pair; its ``clock_map`` table holds the samples. Deliberately not the run's own bag:
+  under ``use_sim_time`` that one is sim-time on both axes, so it cannot carry the mapping, and it
+  is recorded for single-run jobs only.
+* **roqsim (non-ROS)** — the ``clock`` channel of its own recording, one sample per capture
+  step, in a file that is flushed at least once a second so a run killed by a timeout still has
+  its map up to the last closed chunk.
 
 The samples are **decimated**: one is dropped only when linear interpolation reproduces it within
 5 ms, so a steady stretch costs two rows while a pause or a change of real-time factor keeps
@@ -575,7 +623,7 @@ exactly the samples that describe it.
 simulator started publishing its clock, typically well after the container did, so a line logged
 during image boot has no sim time — a different statement from "we could not compute it". The
 ``run_clock`` table says, per run, which producer answered (``clock_map_source``:
-``ros_clock_bag`` / ``roqsim_run_npz`` / ``none``), how many samples it has and the wall and sim
+``ros_clock_bag`` / ``roqsim`` / ``none``), how many samples it has and the wall and sim
 spans they cover, so a reader can tell a *missing* map from a *quiet* one;
 ``clock_map_sim_span_s / clock_map_wall_span_s`` is the run's realtime factor.
 
@@ -1007,7 +1055,7 @@ tables anywhere:
      - {type: action_to_csv, action: navigate_to_pose}
    containers: [robovast, simulation, sut]
 
-``groups`` is the entries grouped by recording (``rosbag2`` for the scenario's, ``logs/rosout_bag``
+``groups`` is the entries grouped by recording (``rosbag2`` for the run's own, ``logs/rosout_bag``
 for the job's); ``containers`` names the containers the campaign runs, which is how a container
 that recorded nothing is reported rather than silently absent from ``run_log`` and
 ``resource_usage``. A configured handler replaces the default for its topics, and the rest of the

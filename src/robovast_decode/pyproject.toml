@@ -22,6 +22,8 @@ rosbags = "^0.11"
 pyarrow = ">=17"
 numpy = ">=1.26"
 pyyaml = "^6.0"
+# A camera frame is served as JPEG no wider than the viewer needs: decoded and encoded here.
+pillow = ">=10"
 
 [tool.poetry.scripts]
 robovast-decode = "robovast_decode.cli:main"

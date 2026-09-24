@@ -118,7 +118,7 @@ def run_dir(tmp_path):
 
 def _overlay(run_dir, **options):
     overlay = vo.CostmapOverlay.from_spec(options, Placement())
-    overlay.prepare(640, 360, state=run_dir / "run.npz")
+    overlay.prepare(640, 360, state=run_dir / "roqsim_bag" / "roqsim.mcap")
     return overlay
 
 

@@ -32,17 +32,29 @@ handler                table                             rows
 :class:`Clock`         ``clock_map``                     the decimated wall -> sim samples
 :class:`Costmaps`      ``costmaps``                      one per occupancy grid, cells compressed
 :class:`Videos`        ``videos``                        one per encoded camera topic
+:class:`SimPoses`      ``sim_poses``                     one per body per sample of roqsim's own
+                                                         recording
+:class:`SimJoints`     ``joint_states``                  one per joint per sample of it
+:class:`SimClock`      ``clock_map``                     its wall -> sim samples, decimated
+:class:`SimRecording`  ``sim_recording``                 one: the run's provenance
+:class:`SimEntities`   ``sim_entities``                  one per entity of the final roster
 =====================  ===============================  ==========================================
 
 **One clock per run.** ``timestamp`` is the bag's receive time -- in seconds, except in a
 topic's own table, which has always carried it in nanoseconds -- and every table is joinable
 on it. A topic's own stamp, where it has one, is kept beside it under its own name.
+
+The ``Sim*`` handlers read roqsim's own recording (``roqsim_bag/``), whose channels are JSON
+documents and whose provenance and entity roster travel as mcap metadata records. There the
+receive time *is* the simulated time, taken inside the simulator: ``timestamp`` is exact, and
+``wall_time`` beside it is the epoch second of the same sample.
 """
 
 from __future__ import annotations
 
 import base64
 import contextlib
+import json
 import math
 import os
 import re
@@ -53,9 +65,11 @@ import zlib
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pyarrow as pa
 
 from .tables import TableBuffer, fixed, leading_then_sorted
 from .tf import TransformBuffer, TransformError
+from .types import json_text
 from .values import (DEFAULT_CLOCK_TOLERANCE_S, ClockDecimator, column_values, flatten,
                      message_to_dict)
 
@@ -82,11 +96,34 @@ class Handler:
     def message(self, topic: str, msg, typename: str, log_time: int) -> None:
         raise NotImplementedError
 
+    def metadata(self, name: str, data: Dict[str, str]) -> None:
+        """A metadata record of the recording, as it is met: its name and its string map.
+
+        Nothing by default; a handler whose table comes from metadata rather than from
+        messages overrides it.
+        """
+
     def end(self, recorded: Dict[str, str]) -> None:
         """Called after the last message with ``{topic: type}`` of everything recorded.
 
         Raise :class:`HandlerError` for a table that would not be truthful.
         """
+
+    def flush(self, context: Optional[dict] = None) -> Dict[str, pa.Table]:
+        """The rows buffered since the last flush, per table, and the buffers emptied.
+
+        Nothing is finalised: what a handler keeps *beside* its rows -- a transform buffer, a
+        decimator's state -- carries on, so a session that follows a growing recording gets
+        the same rows in batches that one pass over the whole recording gets at once. A table
+        the handler has declared and has no new rows for is returned empty, so a writer learns
+        the table exists. *context* is the run's context columns, as for
+        :meth:`TableBuffer.to_arrow`.
+        """
+        out = {}
+        for table, buf in self.buffers.items():
+            out[table] = buf.to_arrow(self.orders.get(table), context=context)
+            self.buffers[table] = TableBuffer(table)
+        return out
 
     def _buffer(self, table: str, order: Optional[Callable] = None) -> TableBuffer:
         buf = self.buffers.get(table)
@@ -459,6 +496,7 @@ class Videos(Handler):
         self.output_dir: Optional[str] = None
         self.bag_name = "rosbag2"
         self._spools: Dict[str, tuple] = {}
+        self._ended = False
 
     def topics(self):
         return list(self._fps)
@@ -479,8 +517,16 @@ class Videos(Handler):
         spool[1].append(len(data))
         spool[2].append(log_time)
 
+    def flush(self, context=None):
+        # A video is an end-only table: its rate is known once the last frame is, and a
+        # WebM cannot be appended to, so nothing is flushed before ``end`` has encoded.
+        if not self._ended:
+            return {}
+        return super().flush(context)
+
     def end(self, recorded):
         buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
+        self._ended = True
         try:
             # A named topic that gave no frame fails the table, as a required TF frame does:
             # a camera panel would otherwise say "no video" for a topic that was never there.
@@ -530,5 +576,212 @@ class Videos(Handler):
                 "t_end": stamps[-1] / 1e9, "fps": round(fps, 6), "frames": n}
 
 
+# -- roqsim's own recording ------------------------------------------------------------------
+
+def _sample_times(msg: dict) -> Tuple[float, float]:
+    """``(sim s, wall epoch s)`` of one sample document, both required."""
+    return float(msg["t"]), float(msg["w"])
+
+
+#: The pose contract as the simulator writes it: one exact clock, its wall-time bridge, and no
+#: ``stamp``, since ``timestamp`` is already the measurement.
+SIM_POSE_FIELDNAMES = [
+    "timestamp", "wall_time", "frame",
+    "position.x", "position.y", "position.z",
+    "orientation.x", "orientation.y", "orientation.z", "orientation.w",
+    "twist.linear.x", "twist.linear.y", "twist.linear.z",
+    "twist.angular.x", "twist.angular.y", "twist.angular.z",
+]
+
+
+class SimPoses(Handler):
+    """The ``poses`` channel of roqsim's recording: one row per named body per sample.
+
+    The pose contract's columns (:data:`SIM_POSE_FIELDNAMES`): ``timestamp`` is the simulated
+    second the pose was true, ``wall_time`` the epoch second of the same sample, ``frame`` the
+    body's name, the quaternion in ``(x, y, z, w)`` order and a world-frame twist. A body
+    whose vector is not the thirteen values the contract states fails the table.
+    """
+
+    TOPIC = "poses"
+    TABLE = "sim_poses"
+
+    def topics(self):
+        return [self.TOPIC]
+
+    def tables(self):
+        return [self.TABLE]
+
+    def message(self, topic, msg, typename, log_time):
+        sim, wall = _sample_times(msg)
+        buf = self._buffer(self.TABLE, fixed(SIM_POSE_FIELDNAMES))
+        for frame, values in msg["bodies"].items():
+            if len(values) != 13:
+                raise HandlerError(f"sim_poses: body {frame!r} has {len(values)} values at "
+                                   f"t={sim}, not the 13 of the pose contract")
+            x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz = (float(v) for v in values)
+            buf.add({
+                "timestamp": sim, "wall_time": wall, "frame": frame,
+                "position.x": x, "position.y": y, "position.z": z,
+                "orientation.x": qx, "orientation.y": qy, "orientation.z": qz,
+                "orientation.w": qw,
+                "twist.linear.x": vx, "twist.linear.y": vy, "twist.linear.z": vz,
+                "twist.angular.x": wx, "twist.angular.y": wy, "twist.angular.z": wz,
+            })
+
+    def end(self, recorded):
+        if self.TOPIC in recorded:
+            self._buffer(self.TABLE, fixed(SIM_POSE_FIELDNAMES))
+
+
+class SimJoints(Handler):
+    """The ``joints`` channel: one row per hinge or slide joint per sample, its position."""
+
+    TOPIC = "joints"
+    TABLE = "joint_states"
+    FIELDNAMES = ["timestamp", "wall_time", "joint", "position"]
+
+    def topics(self):
+        return [self.TOPIC]
+
+    def tables(self):
+        return [self.TABLE]
+
+    def message(self, topic, msg, typename, log_time):
+        sim, wall = _sample_times(msg)
+        buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
+        for joint, position in msg["q"].items():
+            buf.add({"timestamp": sim, "wall_time": wall, "joint": joint,
+                     "position": float(position)})
+
+    def end(self, recorded):
+        if self.TOPIC in recorded:
+            self._buffer(self.TABLE, fixed(self.FIELDNAMES))
+
+
+class SimClock(Clock):
+    """The ``clock`` channel: the simulator's own wall -> sim samples, decimated like
+    :class:`Clock`'s, into the same ``clock_map`` table.
+
+    Each message is ``{"wall_ts": epoch s, "sim_ts": sim s}``, taken inside the simulator at
+    a capture step, so a stepped run with no ROS recording at all gets the clock map its
+    derived tables need.
+    """
+
+    TOPIC = "clock"
+
+    def message(self, topic, msg, typename, log_time):
+        keep = self._decimator.offer(float(msg["wall_ts"]), float(msg["sim_ts"]))
+        if keep is not None:
+            self._buffer(self.TABLE, fixed(["wall_ts", "sim_ts"])).add(
+                {"wall_ts": keep[0], "sim_ts": keep[1]})
+
+
+class _LastMetadata(Handler):
+    """A table from the last metadata record of one name: the row is known at the end.
+
+    The recording writes the record at start and again whenever what it describes changes,
+    and the reader takes the last; so nothing is flushed before ``end``, as with
+    :class:`Videos`, and a session following the run gives the table when the run closes.
+    """
+
+    NAME = ""
+
+    def __init__(self):
+        super().__init__()
+        self._last: Optional[dict] = None
+        self._ended = False
+
+    def topics(self):
+        return []
+
+    def metadata(self, name, data):
+        if name != self.NAME:
+            return
+        try:
+            self._last = json.loads(data["json"])
+        except KeyError as exc:
+            raise HandlerError(f"{self.NAME}: the metadata record carries no 'json' key "
+                               f"(keys: {', '.join(sorted(data)) or 'none'})") from exc
+
+    def flush(self, context=None):
+        if not self._ended:
+            return {}
+        return super().flush(context)
+
+    def end(self, recorded):
+        self._ended = True
+        if self._last is not None:
+            self._rows(self._last)
+
+    def _rows(self, record: dict) -> None:
+        raise NotImplementedError
+
+
+def _fraction_text(value) -> Optional[str]:
+    """A rate as ``num/den`` text: the recording states it as a ``[num, den]`` pair."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return f"{int(value[0])}/{int(value[1])}"
+    raise HandlerError(f"sim_recording: capture_fps is {value!r}, not a [num, den] pair")
+
+
+class SimRecording(_LastMetadata):
+    """``roqsim.recording`` metadata -> ``sim_recording``: one row, the run's provenance.
+
+    ``world`` is the world as the record names it; ``overrides_json``, ``packages_json`` and
+    ``model_json`` are JSON text of the record's ``overrides``, ``packages`` and ``model``;
+    ``capture_fps`` is ``num/den`` text and ``timestep`` the physics step in seconds.
+    """
+
+    NAME = "roqsim.recording"
+    TABLE = "sim_recording"
+    FIELDNAMES = ["format_version", "world", "overrides_json", "seed", "packages_json",
+                  "capture_fps", "timestep", "model_json"]
+
+    def tables(self):
+        return [self.TABLE]
+
+    def _rows(self, record):
+        world = record.get("world")
+        seed = record.get("seed")
+        self._buffer(self.TABLE, fixed(self.FIELDNAMES)).add({
+            "format_version": record.get("format_version"),
+            "world": world if world is None or isinstance(world, str) else json_text(world),
+            "overrides_json": json_text(record.get("overrides")),
+            "seed": None if seed is None else int(seed),
+            "packages_json": json_text(record.get("packages")),
+            "capture_fps": _fraction_text(record.get("capture_fps")),
+            "timestep": None if record.get("timestep") is None else float(record["timestep"]),
+            "model_json": json_text(record.get("model")),
+        })
+
+
+class SimEntities(_LastMetadata):
+    """``roqsim.entities`` metadata -> ``sim_entities``: the final roster, one row each.
+
+    The roster is written again whenever it changes, and the last one is the run's: an
+    entity despawned mid-run is a row with ``present`` 0, not a missing row.
+    """
+
+    NAME = "roqsim.entities"
+    TABLE = "sim_entities"
+    FIELDNAMES = ["name", "kind", "body", "present"]
+
+    def tables(self):
+        return [self.TABLE]
+
+    def _rows(self, record):
+        buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
+        for entity in record["entities"]:
+            present = entity.get("present")
+            buf.add({"name": entity["name"], "kind": entity.get("kind"),
+                     "body": entity.get("body"),
+                     "present": None if present is None else int(bool(present))})
+
+
 __all__ = ["ActionTopics", "Clock", "Costmaps", "Handler", "HandlerError", "LEVEL_BY_NAME",
-           "Nav2BtLog", "POSE_FIELDNAMES", "Rosout", "TfPoses", "TopicTable", "Videos"]
+           "Nav2BtLog", "POSE_FIELDNAMES", "Rosout", "SIM_POSE_FIELDNAMES", "SimClock",
+           "SimEntities", "SimJoints", "SimPoses", "SimRecording", "TfPoses", "TopicTable",
+           "Videos"]

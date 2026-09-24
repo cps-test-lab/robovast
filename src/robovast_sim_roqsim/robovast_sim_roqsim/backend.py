@@ -25,10 +25,12 @@ ADAPTER = "roqsim.scenario_adapter:MujocoSim"
 #: address.
 _WORLD_ROOTS = ("sim", "components")
 
-#: The MuJoCo state recording each run writes, relative to its output directory. Named once
-#: and read twice — :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the
-#: service where to find it — so the request and the lookup cannot drift apart.
-_RECORD_FILE = "run.npz"
+#: The simulator's recording of each run, relative to the run's output directory: one MCAP
+#: file holding the clock, the poses and the joint tracks, in its own directory so the files
+#: that appear beside it (its message definitions) stay with it. Named once and read twice --
+#: :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the service where to
+#: find it -- so the request and the lookup cannot drift apart.
+_RECORD_FILE = "roqsim_bag/roqsim.mcap"
 
 
 def _is_package_ref(config: str) -> bool:
@@ -116,7 +118,7 @@ class RoqsimBackend(SimulatorBackend):
 
     Stepped (``mode: base``) and ROS (``mode: ros2``) differ in exactly two ways: where
     the simulator runs, and how it is told which config to load. Everything else --
-    headless, the GL backend, the run capture -- is the same because it has one correct
+    headless, the GL backend, the recording -- is the same because it has one correct
     value for any campaign.
     """
 
@@ -170,33 +172,30 @@ class RoqsimBackend(SimulatorBackend):
     def simulation_ref(self, cfg, execution: dict) -> Optional[str]:
         return cfg.adapter or ADAPTER
 
-    def env(self, cfg, execution: dict) -> dict:
-        """What has one correct value for any campaign, so nobody should have to write it.
+    def env(self, cfg, execution: dict, recording) -> dict:
+        """What has one correct value for any campaign, plus what ``recording.roqsim`` asks.
 
         Not a "session" block in the world YAML and not keys in the ``.vast``: a campaign
-        is always headless, always wants the capture its 3D run view replays, and always
+        is always headless, always wants the recording its 3D run view replays, and always
         wants a GL backend that works on the node it landed on. There is nothing to
-        decide, so there is nothing to declare.
+        decide, so there is nothing to declare. What a campaign *may* decide -- the sample
+        rate and which tracks the recording holds -- comes from the ``.vast``'s
+        ``recording.roqsim`` block, and only the keys it sets are passed on, so the
+        simulator's own defaults stay the simulator's.
         """
         env = {
             # An in-container Xvfb would shadow a bind-mounted host X socket, and a
             # campaign has no window either way.
             "ENABLE_X11": "false",
-            # The run's ground truth, and the capture the scene3d panel replays. Both
-            # are written on a clean stop only; a run killed by a timeout leaves neither.
+            # The run's ground truth -- the clock, every pose, every joint -- and the
+            # state the scene3d panel replays, as one MCAP the simulator writes as it
+            # goes. It is the only pose data a STEPPED run produces at all: with no ROS
+            # there is no rosbag, so nothing derives a `poses` table afterwards. And where
+            # there IS a rosbag it is the honest one -- world-frame poses on exact sim
+            # time, with velocities read from the solver instead of differenced over
+            # rosbag arrival times, which are quantized by the /clock grid and jittered
+            # by delivery.
             "ROQSIM_RECORD": _RECORD_FILE,
-            "ROQSIM_CAPTURE_EXPORT_DIR": "capture",
-            # The pose series, streamed per sample beside the recording as
-            # `sim_poses.csv` -> the `sim_poses` table. Unlike the two above it
-            # survives a kill, because every row is flushed as it is taken.
-            #
-            # Always on, for two reasons a campaign never has to weigh. It is the only
-            # pose data a STEPPED run produces at all: with no ROS there is no rosbag, so
-            # nothing derives a `poses` table afterwards. And where there IS a rosbag it
-            # is the honest one — world-frame poses on exact sim time, with velocities
-            # read from the solver instead of differenced over rosbag arrival times,
-            # which are quantized by the /clock grid and jittered by delivery.
-            "ROQSIM_SIM_POSES": "1",
             # Timestamp roqsim's own log lines, so they can be placed on the run's clock like
             # every other producer's. roqsim defaults to `INFO roqsim.engine: msg` because that is
             # what belongs in a terminal, where `roqsim sim` is one command a person is
@@ -209,6 +208,16 @@ class RoqsimBackend(SimulatorBackend):
             # above them instead of standing as their own events.
             "ROQSIM_LOG_FORMAT": "stamped",
         }
+        roqsim = recording.roqsim if recording is not None else None
+        if roqsim is not None:
+            if roqsim.rate_hz is not None:
+                env["ROQSIM_CAPTURE_FPS"] = f"{roqsim.rate_hz:g}"
+            # Comma-separated: a pattern is `<entity>/<body-or-joint>` and the model refuses
+            # one carrying a comma, so the list survives the one variable it travels in.
+            if roqsim.tracks != "all":
+                env["ROQSIM_RECORD_TRACKS"] = ",".join(roqsim.tracks)
+            if roqsim.exclude:
+                env["ROQSIM_RECORD_EXCLUDE"] = ",".join(roqsim.exclude)
         # MUJOCO_GL is deliberately absent. Which backend works is a property of the
         # machine the simulator lands on, and this code runs on the *service host* -- a
         # different machine whenever a campaign is dispatched. roqsim picks it at
@@ -241,20 +250,20 @@ class RoqsimBackend(SimulatorBackend):
         del execution
         return cfg.overrides or None
 
-    def produces_run_capture(self, cfg, execution: dict) -> bool:
+    def records_scene_state(self, cfg, execution: dict) -> bool:
         return True
 
     def default_panels(self, cfg, execution: dict) -> list:
-        """The 3D scene, always -- for the same reason :meth:`env` supplies the capture.
+        """The 3D scene, always -- for the same reason :meth:`env` asks for the recording.
 
         Two artifacts drive the panel and both resolve themselves: the *scene* (geometry) is
         compiled by the service on first open, inside the simulator's own pinned image, and
-        cached by world identity; the *run capture* (motion) records the world reference and
-        its overrides and addresses that geometry by name, so a world that later gains an arm
-        or a walker replays without anyone editing a ``.vast``. The capture path defaults to
-        ``capture/capture.json``.
+        cached by world identity; the *recording* (motion) carries the world reference and
+        its overrides in its ``sim_recording`` row and addresses that geometry by body and
+        joint name, so a world that later gains an arm or a walker replays without anyone
+        editing a ``.vast``.
 
-        Since a roqsim campaign always records that capture (:meth:`produces_run_capture`),
+        Since a roqsim campaign always records that state (:meth:`records_scene_state`),
         every such campaign can replay its runs in 3D -- so the panel is contributed rather
         than declared, and a campaign that wants it elsewhere on screen still says so itself.
         """
@@ -341,7 +350,7 @@ class RoqsimBackend(SimulatorBackend):
                      overrides: dict, overrides_file: Optional[str] = None) -> str:
         """``roqsim-export-web``, roqsim's own exporter, run in roqsim's own image.
 
-        *world* is passed through as the capture recorded it -- a package ref, or the
+        *world* is passed through as the recording names it -- a package ref, or the
         ``/config/...`` path a campaign file had in the job, which RoboVAST reproduces for
         the build so the world resolves what it references.
 

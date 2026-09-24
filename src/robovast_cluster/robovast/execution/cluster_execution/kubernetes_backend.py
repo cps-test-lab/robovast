@@ -68,7 +68,7 @@ from robovast.common import (get_execution_env_variables, plan_containers,
 from robovast.common.campaign_data import (KIND_INVALID, KIND_SIZING, PROBE_DIR,
                                            record_container_failures, record_intervention)
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
+from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds, recording_config
 from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter_documents,
                                        create_job_links, dump_multi_document_yaml,
                                        job_artifact_rel, node_label, read_job_links,
@@ -1118,7 +1118,7 @@ class BatchJobRunner:
                 {'name': 'ipc', 'mountPath': '/ipc'},
             ],
         })
-        # The file agent: ships the growth of the run's log and line files to the campaign
+        # The file agent: ships the growth of the run's log and line files and bags to the campaign
         # while the run runs, and signs `done.agent` after its final drain, which the
         # uploader waits for. See `robovast/execution/data/file_agent.py`.
         spec['containers'].append({
@@ -1217,7 +1217,8 @@ class BatchJobRunner:
         """
         return sim_job_overlay(self.campaign_data.get("execution") or {},
                                job.config.get("sim") or {},
-                               os.path.dirname(self.campaign_data.get("vast") or ""))
+                               os.path.dirname(self.campaign_data.get("vast") or ""),
+                               recording=recording_config(self.campaign_data.get("recording")))
 
     def _build_jobs(self):
         """One job per (config, run).
@@ -2690,7 +2691,7 @@ class BatchJobRunner:
         "use the GPU if there is one" needs no ``.vast`` edit -- buys nothing measurable. On a
         headless nav2 campaign that device does nothing: with ``gpu: 0`` the simulator's CPU is
         unchanged (mean 0.34 cores either way), trials take the same time (33.8 s against
-        33.5 s), and the ``capture/`` the 3D run view replays is still written -- it is pose and
+        33.5 s), and the recording the 3D run view replays is still written -- it is pose and
         geometry, not rendered frames. Nothing in such a world draws anything: no camera, and a
         lidar is a raycaster on the CPU. roqsim selects ``osmesa`` over ``egl`` by itself when no
         device is present (``roqsim.gl.select_offscreen_gl``), so there is nothing to fall back
@@ -2819,7 +2820,7 @@ class BatchJobRunner:
             # One digest per container, so a consumer can ask for the image a PARTICULAR
             # role ran. The single `image_revision` is the scenario container's, which is
             # the wrong answer for anything the simulator produced: the run view compiles
-            # a run's geometry from the world the capture names, and that world and its
+            # a run's geometry from the world the recording names, and that world and its
             # exporter live in the simulation image. Keyed on the container's own digest,
             # it was compiled -- or rather, failed to compile -- in the scenario image.
             # The pod read OVERRIDES the seed rather than merely filling gaps: it reports what

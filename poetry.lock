@@ -3136,7 +3136,7 @@ ptyprocess = ">=0.5"
 name = "pillow"
 version = "12.3.0"
 description = "Python Imaging Library (fork)"
-optional = true
+optional = false
 python-versions = ">=3.10"
 files = [
     {file = "pillow-12.3.0-cp310-cp310-macosx_10_10_x86_64.whl", hash = "sha256:6c0016e7b354317c4e9e525b937ac8596c38d2d232b419529b9cd7a1cd46e39a"},
@@ -4238,6 +4238,7 @@ develop = false
 [package.dependencies]
 mcap = "^1.2"
 numpy = ">=1.26"
+pillow = ">=10"
 pyarrow = ">=17"
 pyyaml = "^6.0"
 rosbags = "^0.11"

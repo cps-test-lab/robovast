@@ -26,11 +26,15 @@ nothing gets:
   ``action_<name>_status``;
 * every other topic -> ``<bag>_<topic>``, one row per message;
 * in the wall-time infrastructure recording, ``/rosout`` -> ``rosout`` and ``/clock`` ->
-  ``clock_map``.
+  ``clock_map``;
+* in roqsim's own recording (:data:`ROQSIM_BAG`), ``poses`` -> ``sim_poses``, ``joints`` ->
+  ``joint_states``, ``clock`` -> ``clock_map``, and its metadata -> ``sim_recording`` and
+  ``sim_entities``.
 
 What is recorded and *not* tabulated is said, per topic, with the reason
-(:data:`BULK_TYPES`, :data:`NOT_TABULATED`): a camera image or a point cloud is read from the
-recording itself, never copied into rows.
+(:data:`BULK_TYPES`, :data:`NOT_TABULATED`, :data:`ROQSIM_NOT_TABULATED`): a camera image or a
+point cloud is read from the recording itself, never copied into rows, and roqsim's raw
+``state`` is read by roqsim.
 
 **A campaign's own configuration refines the defaults**, in the shape the ``.vast`` has always
 written it -- ``{"groups": [{"bag_dir": ..., "plugins": [{"type": ..., ...}]}]}``: a configured
@@ -45,12 +49,16 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .handlers import (LEVEL_BY_NAME, ActionTopics, Clock, Costmaps, Handler, Nav2BtLog, Rosout,
-                       TfPoses, TopicTable, Videos)
+                       SimClock, SimEntities, SimJoints, SimPoses, SimRecording, TfPoses,
+                       TopicTable, Videos)
 from .values import DEFAULT_CLOCK_TOLERANCE_S
 
 #: The scenario recording, below a run, and the infrastructure recording, below a job.
 SCENARIO_BAG = "rosbag2"
 INFRA_BAG = "logs/rosout_bag"
+#: roqsim's own recording, below a run: one mcap the simulator writes, beside or instead of
+#: the scenario recording.
+ROQSIM_BAG = "roqsim_bag"
 
 #: Types whose payload is bulk: read from the recording where they are wanted, never rows.
 BULK_TYPES = frozenset({
@@ -64,6 +72,15 @@ NOT_TABULATED = {
     "/rosout": "log lines come from the infrastructure recording and the containers' output",
     "/parameter_events": "parameter changes are not a measurement",
 }
+
+#: Channels of roqsim's recording that are not tables.
+ROQSIM_NOT_TABULATED = {
+    "state": "raw simulator state, read by roqsim itself",
+}
+
+#: The reason a channel that would fill a table another recording of the run already gives
+#: is not tabulated a second time.
+_TAKEN = "the run's {table} table comes from its {role} recording"
 
 _ACTION_TOPIC = re.compile(r"^/(?P<name>.+)/_action/(?P<kind>feedback|status)$")
 
@@ -119,8 +136,14 @@ def _stem(filename: Optional[str], default: str) -> str:
 
 
 def plan_for(bag_dir_name: str, recorded: Dict[str, str],
-             plugins: Optional[Iterable[dict]] = None) -> Plan:
-    """The handlers for a recording named *bag_dir_name* that carries *recorded* topics."""
+             plugins: Optional[Iterable[dict]] = None,
+             taken: Optional[Dict[str, str]] = None) -> Plan:
+    """The handlers for a recording named *bag_dir_name* that carries *recorded* topics.
+
+    *taken* is ``{table: role}`` for the tables another recording of the same run already
+    gives: a channel here that would fill one of them is reported as not tabulated, for that
+    reason, rather than filling the table twice.
+    """
     plan = Plan()
     configured = _configured(plugins or ())
     covered = set()
@@ -134,6 +157,8 @@ def plan_for(bag_dir_name: str, recorded: Dict[str, str],
             plan.handlers.append(Rosout())
         if "/clock" in recorded and "/clock" not in covered:
             plan.handlers.append(Clock())
+    elif bag_dir_name == ROQSIM_BAG:
+        _plan_roqsim(plan, recorded, taken or {})
     else:
         if ({"/tf", "/tf_static"} & set(recorded)) and not ({"/tf", "/tf_static"} & covered):
             plan.handlers.append(TfPoses(frames="all"))
@@ -180,6 +205,25 @@ def plan_for(bag_dir_name: str, recorded: Dict[str, str],
     return plan
 
 
+def _plan_roqsim(plan: Plan, recorded: Dict[str, str], taken: Dict[str, str]) -> None:
+    """roqsim's recording: its channels and metadata, less what another recording gives."""
+    for handler in (SimPoses(), SimJoints(), SimClock()):
+        (table,) = handler.tables()
+        if handler.TOPIC not in recorded:
+            continue
+        if table in taken:
+            plan.untabulated[handler.TOPIC] = _TAKEN.format(table=table, role=taken[table])
+            continue
+        plan.handlers.append(handler)
+    plan.handlers += [SimRecording(), SimEntities()]
+    handled = {t for h in plan.handlers for t in h.topics()}
+    for topic in sorted(recorded):
+        if topic in handled or topic in plan.untabulated:
+            continue
+        plan.untabulated[topic] = ROQSIM_NOT_TABULATED.get(
+            topic, "no table is defined for this channel of roqsim's recording")
+
+
 def narrow(plan: Plan, tables: Optional[Iterable[str]]) -> Tuple[List[Handler], List[str]]:
     """The handlers needed for *tables* (all of them for ``None``), and the tables unknown."""
     if tables is None:
@@ -201,5 +245,5 @@ def narrow(plan: Plan, tables: Optional[Iterable[str]]) -> Tuple[List[Handler], 
     return handlers, unknown
 
 
-__all__ = ["BULK_TYPES", "INFRA_BAG", "NOT_TABULATED", "Plan", "SCENARIO_BAG", "narrow",
-           "plan_for"]
+__all__ = ["BULK_TYPES", "INFRA_BAG", "NOT_TABULATED", "Plan", "ROQSIM_BAG",
+           "ROQSIM_NOT_TABULATED", "SCENARIO_BAG", "narrow", "plan_for"]

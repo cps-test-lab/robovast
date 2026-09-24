@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The file agent of a cluster pod: line files reach the campaign as they grow.
+"""The file agent of a cluster pod: line files and bags reach the campaign as they grow.
 
 The agent core runs against the real data plane (``build_data_app``), a FastAPI TestClient
 standing in for the pod's HTTP transport; the HTTP transport and the whole script run
@@ -25,7 +25,8 @@ from fastapi.testclient import TestClient
 from robovast.common import execution
 from robovast.execution.cluster_execution import pod_access, pod_upload
 from robovast.execution.data import file_agent
-from robovast.execution.data.file_agent import Agent, Inotify, is_line_file
+from robovast.execution.data.file_agent import (BYTES, LINES, WHOLE, Agent, Inotify,
+                                                is_line_file, shipped_as)
 from robovast.service import tar_io
 from robovast.service.data_app import build_data_app
 from robovast.service.interface import Routes
@@ -84,7 +85,6 @@ def test_the_names_the_script_states_are_the_ones_the_service_defines():
     assert file_agent.AGENT_CONTAINER == pod_upload.AGENT_CONTAINER
     assert file_agent.OFFSET_HEADER == tar_io.OFFSET_HEADER
     assert file_agent.INCOMING_SUFFIX == tar_io.INCOMING_SUFFIX
-    assert file_agent.IN_PROGRESS_SUFFIX == pod_upload.IN_PROGRESS_SUFFIX
 
 
 def test_the_script_is_standard_library_only():
@@ -132,12 +132,44 @@ def test_line_files_are_shipped(rel):
 @pytest.mark.parametrize("rel", [
     "cfg/0/rosbag2/metadata.csv", "cfg/0/rosbag2/rosbag2_0.log",
     "cfg/0/logs/rosout_bag/x.log", "cfg/0/logs/rosout_bag/metadata.jsonl",
-    "cfg/0/samples.csv.part", "cfg/0/logs/system.log.part",
-    "cfg/0/logs/system.log.robovast-incoming", "cfg/0/run.log", "cfg/0/run.npz",
+    "cfg/0/logs/system.log.robovast-incoming", "cfg/0/run.log", "cfg/0/frame.png",
     "cfg/0/logs/trace.bin",
 ])
 def test_everything_else_is_not(rel):
     assert not is_line_file(rel)
+
+
+@pytest.mark.parametrize("rel", [
+    "cfg/0/rosbag2/rosbag2_0.mcap", "cfg/0/rosbag2/rosbag2_17.mcap",
+    "_jobs/job-1/logs/rosout_bag/rosout_bag_0.mcap", "cfg/0/roqsim_bag/roqsim.mcap",
+])
+def test_a_bag_is_shipped_as_bytes(rel):
+    """Every new byte, no line rule: a write-through bag is readable up to its last complete
+    record, and a record has no newline to wait for."""
+    assert shipped_as(rel) == BYTES
+    assert not is_line_file(rel)
+
+
+@pytest.mark.parametrize("rel", [
+    "cfg/0/rosbag2/metadata.yaml", "cfg/0/rosbag2/message_definitions.json",
+    "_jobs/job-1/logs/rosout_bag/metadata.yaml", "cfg/0/roqsim_bag/message_definitions.json",
+])
+def test_what_appears_beside_a_bag_is_shipped_whole(rel):
+    assert shipped_as(rel) == WHOLE
+
+
+@pytest.mark.parametrize("rel", [
+    "cfg/0/rosbag2/rosbag2_0.mcap.robovast-incoming",
+    "cfg/0/rosout_bag/x.mcap", "cfg/0/other/x.mcap", "cfg/0/x.mcap",
+    "cfg/0/rosbag2/notes.yaml", "cfg/0/metadata.yaml",
+])
+def test_a_bag_elsewhere_or_in_progress_is_not(rel):
+    assert shipped_as(rel) is None
+
+
+def test_line_files_are_still_lines():
+    assert shipped_as("cfg/0/logs/system.log") == LINES
+    assert shipped_as("cfg/0/resource_usage_main.csv") == LINES
 
 
 # -- the agent against the data plane ---------------------------------------------------------
@@ -274,6 +306,68 @@ def test_a_failed_delivery_changes_nothing(tmp_path, plane):
     agent.transport = transport
     assert agent.deliver()
     assert (campaign / "cfg/0/logs/system.log").read_text() == "one\n"
+
+
+def test_a_bag_grows_in_the_campaign_byte_for_byte(tmp_path, plane):
+    """No newline anywhere, and every byte lands: the line rule does not apply to a bag."""
+    campaign, transport, calls = plane
+    agent, out = _agent(tmp_path, transport)
+    bag = out / "cfg" / "0" / "rosbag2" / "rosbag2_0.mcap"
+    bag.parent.mkdir(parents=True)
+    bag.write_bytes(b"\x89MCAP0\r\n" + bytes(range(256)))
+    agent.notice([str(bag)])
+    assert agent.deliver()
+    assert (campaign / "cfg/0/rosbag2/rosbag2_0.mcap").read_bytes() == bag.read_bytes()
+
+    with open(bag, "ab") as fh:
+        fh.write(bytes(range(256)) * 3)
+    agent.notice([str(bag)])
+    assert agent.deliver()
+    assert (campaign / "cfg/0/rosbag2/rosbag2_0.mcap").read_bytes() == bag.read_bytes()
+    with tarfile.open(fileobj=io.BytesIO(calls[-1]), mode="r|") as tar:
+        members = [(m.name, m.pax_headers.get(tar_io.OFFSET_HEADER)) for m in tar]
+    assert members == [("cfg/0/rosbag2/rosbag2_0.mcap", str(8 + 256))], "a range, not a copy"
+    assert not agent.pending
+
+
+def test_a_bag_larger_than_the_budget_arrives_in_pieces(tmp_path, plane):
+    campaign, transport, calls = plane
+    agent, out = _agent(tmp_path, transport, max_bytes=100)
+    bag = out / "cfg" / "0" / "roqsim_bag" / "roqsim.mcap"
+    bag.parent.mkdir(parents=True)
+    bag.write_bytes(os.urandom(1000))
+    agent.scan()
+    rounds = 0
+    while agent.pending and rounds < 20:
+        assert agent.deliver()
+        rounds += 1
+    assert len(calls) == 10
+    assert (campaign / "cfg/0/roqsim_bag/roqsim.mcap").read_bytes() == bag.read_bytes()
+
+
+def test_metadata_arrives_whole_when_it_appears_and_again_when_rewritten(tmp_path, plane):
+    campaign, transport, calls = plane
+    agent, out = _agent(tmp_path, transport)
+    meta = out / "cfg" / "0" / "rosbag2" / "metadata.yaml"
+    meta.parent.mkdir(parents=True)
+    meta.write_text("rosbag2_bagfile_information:\n  files: [a]\n")
+    agent.notice([str(meta)])
+    assert agent.deliver()
+    assert (campaign / "cfg/0/rosbag2/metadata.yaml").read_text() == meta.read_text()
+    with tarfile.open(fileobj=io.BytesIO(calls[-1]), mode="r|") as tar:
+        members = [(m.name, m.pax_headers.get(tar_io.OFFSET_HEADER)) for m in tar]
+    assert members == [("cfg/0/rosbag2/metadata.yaml", None)], "whole, not a range"
+
+    # Rewritten with the same length: a range would see nothing to send.
+    meta.write_text("rosbag2_bagfile_information:\n  files: [b]\n")
+    agent.notice([str(meta)])
+    assert agent.deliver()
+    assert (campaign / "cfg/0/rosbag2/metadata.yaml").read_text() == meta.read_text()
+    assert not agent.pending
+
+
+def test_the_delivery_cap_holds_a_bags_growth():
+    assert file_agent.MAX_DELIVERY_BYTES == 8 * 1024 * 1024
 
 
 # -- inotify ----------------------------------------------------------------------------------

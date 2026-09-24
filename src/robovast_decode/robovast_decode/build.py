@@ -25,6 +25,8 @@ Where recordings live, relative to the campaign directory:
 
 * a run's scenario recording: ``<config>/<run>/rosbag2/`` (the last attempt, when a recorder
   that restarted left several ``rosbag2*`` directories);
+* a run's simulator recording: ``<config>/<run>/roqsim_bag/``, the one mcap roqsim writes,
+  beside the scenario recording or -- for a stepped run with no ROS at all -- instead of it;
 * a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, the job
   found through ``_transient/job_links.yaml``, which is written before a job starts (the
   ``job`` symlink beside a run appears only once it ends). A job runs one run and gives its
@@ -36,6 +38,10 @@ A run's own ``*.csv`` and ``*.jsonl`` files are tables too, named after the file
 
 Every table carries ``campaign_id``, ``config_name`` and ``run_id`` in its own rows, so a set of
 parquet files is a table without anything else to join it to.
+
+A table a live session (:mod:`robovast_decode.live`) is writing in parts for a run that is
+still recording is left to that session while its ``live`` stamp is fresh; once the stamp is
+stale the session is gone, and the table is built here whole, replacing its parts.
 """
 
 from __future__ import annotations
@@ -43,20 +49,21 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
-from . import __version__, clock_map, run_slices
+from . import __version__, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
-from .decode import decode_bag, segments
+from .decode import channel_type, decode_bag, segments
 from .derived import DERIVED, INPUTS, JobRun, derive_job
-from .framing import Channel, McapTail
+from .framing import Channel, McapTail, has_footer
 from .handlers import Videos
 from .layout import job_links, run_dirs
-from .registry import INFRA_BAG, SCENARIO_BAG, narrow, plan_for
-from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_run_absent,
-                     record_run_table, run_table_path, write_manifest, write_table)
+from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
+from .tables import (TableBuffer, fixed, live_owned, manifest_lock, read_manifest,
+                     record_run_absent, record_run_table, remove_files, run_table_path,
+                     write_manifest, write_table)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
@@ -71,6 +78,9 @@ DERIVED_TABLES = frozenset({RECORDING_TABLE, "runs", *CAMPAIGN_TABLES, *DERIVED}
 RECORDING_FIELDS = ["recording", "topic", "type", "messages", "bytes", "table", "reason"]
 
 _ATTEMPT = re.compile(r"^rosbag2(?:_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})?$")
+
+#: The file a closed rosbag2 recording has and an open one has not.
+BAG_METADATA = "metadata.yaml"
 
 
 class SharedJobError(ValueError):
@@ -146,9 +156,27 @@ def scenario_recording(run: Run) -> Optional[str]:
     return sorted(attempts, key=start)[-1]
 
 
+def roqsim_recording(run: Run) -> Optional[str]:
+    """The run's simulator recording, ``<run>/roqsim_bag/``, when it has one."""
+    path = os.path.join(run.path, ROQSIM_BAG)
+    return path if os.path.isdir(path) else None
+
+
+def recording_closed(role: str, bag_dir: str) -> bool:
+    """Whether the recorder closed the recording and it will not grow.
+
+    rosbag2 writes ``metadata.yaml`` when it closes a bag; roqsim's writer ends its one mcap
+    with the footer and the closing magic, so the file's tail says whether it finished.
+    """
+    if role == ROQSIM_BAG:
+        files = segments(bag_dir)
+        return bool(files) and all(has_footer(p) for p in files)
+    return os.path.isfile(os.path.join(bag_dir, BAG_METADATA))
+
+
 def recorded_topics(bag_dir: str) -> Dict[str, str]:
     """``{topic: type}`` of a recording, from its ``metadata.yaml`` or its channel records."""
-    meta = os.path.join(bag_dir, "metadata.yaml")
+    meta = os.path.join(bag_dir, BAG_METADATA)
     if os.path.isfile(meta):
         try:
             with open(meta, encoding="utf-8") as fh:
@@ -162,8 +190,7 @@ def recorded_topics(bag_dir: str) -> Dict[str, str]:
         tail = McapTail(path)
         for record in tail.read():
             if isinstance(record, Channel):
-                schema = tail.schemas.get(record.schema_id)
-                topics.setdefault(record.topic, schema.name if schema else "")
+                topics.setdefault(record.topic, channel_type(record, tail.schemas))
     return topics
 
 
@@ -171,13 +198,13 @@ def _source_size(bag_dir: str) -> int:
     return sum(os.path.getsize(p) for p in segments(bag_dir))
 
 
-def _complete(run: Run, bag_dir: str) -> bool:
+def _complete(run: Run, role: str, bag_dir: str) -> bool:
     """A run's table is final once the run wrote its verdict and the recorder closed the bag."""
     return (os.path.isfile(os.path.join(run.path, "test.xml"))
-            and os.path.isfile(os.path.join(bag_dir, "metadata.yaml")))
+            and recording_closed(role, bag_dir))
 
 
-def _groups(config: Optional[dict]) -> Dict[str, list]:
+def plugin_groups(config: Optional[dict]) -> Dict[str, list]:
     return {g["bag_dir"]: list(g.get("plugins") or []) for g in (config or {}).get("groups", [])}
 
 
@@ -200,7 +227,7 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
         wanted_tables = [t for t in tables if t not in DERIVED]
         if derived_wanted:
             wanted_tables += [t for t in INPUTS if t not in wanted_tables]
-    groups = _groups(config)
+    groups = plugin_groups(config)
     report = BuildReport()
     all_runs = find_runs(campaign_dir)
     selected = [r for r in all_runs if wanted_runs is None or r.key in wanted_runs]
@@ -211,29 +238,29 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
 
     known_tables: set = set()
     for run in selected:
-        sources = [(SCENARIO_BAG, scenario_recording(run), run)]
-        if run.job_dir:
-            infra = os.path.join(run.job_dir, INFRA_BAG)
-            sources.append((INFRA_BAG, infra if os.path.isdir(infra) else None, run))
-        sources = [(role, bag_dir, owner) for role, bag_dir, owner in sources if bag_dir]
+        sources = _sources(run)
         manifest = read_manifest(campaign_dir)
-        sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b, _ in sources}
+        sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b in sources}
         report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
                                                    sum(sizes.values()))
         recording_rows = TableBuffer(RECORDING_TABLE)
         run_bag_tables: set = set()
-        for role, bag_dir, owner in sources:
+        run_key = run.key
+        # {table: role} of what an earlier recording of the run already gives, so a later one
+        # does not fill the same table.
+        claimed: Dict[str, str] = {}
+        for role, bag_dir in sources:
             recorded = recorded_topics(bag_dir)
-            plan = plan_for(role, recorded, groups.get(role))
+            plan = plan_for(role, recorded, groups.get(role), taken=claimed)
+            claimed.update({t: role for t in plan.tables})
             known_tables.update(plan.tables)
             run_bag_tables.update(plan.tables)
             handlers, _unknown = narrow(plan, wanted_tables)
             for handler in handlers:
                 if isinstance(handler, Videos):
-                    handler.output_dir = owner.path
+                    handler.output_dir = run.path
                     handler.bag_name = os.path.basename(bag_dir)
             size = sizes[os.path.relpath(bag_dir, campaign_dir)]
-            run_key = owner.key
             todo = []
             for handler in handlers:
                 current = [t for t in handler.tables()
@@ -245,7 +272,7 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
             # The recording report covers every topic, so a recording whose tables are all
             # current is still framed -- cheaply, nothing is deserialized -- when it is stale.
             decoded = decode_bag(bag_dir, todo) if (todo or not report_current) else None
-            complete = _complete(owner, bag_dir)
+            complete = _complete(run, role, bag_dir)
             written = []
             for handler in todo:
                 name = type(handler).__name__
@@ -258,22 +285,26 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
                     if wanted_tables is not None and table not in wanted_tables:
                         continue
                     arrow = with_yaw(buf.to_arrow(handler.orders.get(table), context={
-                        "campaign_id": campaign_id, "config_name": owner.config_name,
-                        "run_id": owner.run_id}))
-                    rel = run_table_path(campaign_dir, table, owner.config_name, owner.run_id)
+                        "campaign_id": campaign_id, "config_name": run.config_name,
+                        "run_id": run.run_id}))
+                    rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
                     write_table(campaign_dir, rel, arrow)
                     written.append((table, rel, arrow))
             if decoded and not report_current:
                 _recording_rows(recording_rows, role, decoded, plan)
             with manifest_lock(campaign_dir):
                 fresh = read_manifest(campaign_dir)
+                superseded = []
                 for table, rel, arrow in written:
-                    record_run_table(fresh, table, run_key, files=[rel], rows=arrow.num_rows,
-                                     schema=arrow.schema,
-                                     sources={os.path.relpath(bag_dir, campaign_dir): size},
-                                     complete=complete)
+                    superseded += record_run_table(
+                        fresh, table, run_key, files=[rel], rows=arrow.num_rows,
+                        schema=arrow.schema,
+                        sources={os.path.relpath(bag_dir, campaign_dir): size},
+                        complete=complete)
                     report.built.setdefault(table, []).append(run_key)
                 write_manifest(campaign_dir, fresh)
+                # The parts an abandoned live session left: named by no manifest now.
+                remove_files(campaign_dir, superseded)
         if not report_current and sources:
             _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
             report.built.setdefault(RECORDING_TABLE, []).append(run.key)
@@ -293,6 +324,19 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     return report
 
 
+def _sources(run: Run) -> List[Tuple[str, str]]:
+    """``[(role, bag_dir)]`` of the recordings *run*'s tables are built from, in the order
+    they are planned: the scenario recording, the infrastructure recording of the job that
+    ran it, then the simulator's own recording, which fills only the tables the earlier ones
+    do not."""
+    sources = [(SCENARIO_BAG, scenario_recording(run))]
+    if run.job_dir:
+        infra = os.path.join(run.job_dir, INFRA_BAG)
+        sources.append((INFRA_BAG, infra if os.path.isdir(infra) else None))
+    sources.append((ROQSIM_BAG, roqsim_recording(run)))
+    return [(role, bag_dir) for role, bag_dir in sources if bag_dir]
+
+
 def _derived_sources(campaign_dir: str, run: Run, manifest: dict) -> Dict[str, int]:
     """What a run's derived tables are built from, as ``{source: size or rows}``."""
     sources: Dict[str, int] = {}
@@ -305,10 +349,11 @@ def _derived_sources(campaign_dir: str, run: Run, manifest: dict) -> Dict[str, i
         if os.path.isdir(logs):
             paths += [os.path.join(logs, n) for n in os.listdir(logs)
                       if run_slices.container_of(n) is not None and n.endswith(".log")]
-    paths += [os.path.join(run.path, n) for n in os.listdir(run.path)
-              if n == "test.xml" or n.endswith(clock_map.ROQSIM_SUFFIX)]
+    paths += [os.path.join(run.path, n) for n in os.listdir(run.path) if n == "test.xml"]
     for path in sorted(paths):
         sources[os.path.relpath(path, campaign_dir)] = os.path.getsize(path)
+    # The run's input rows, whichever of its recordings gave them: a clock map from its
+    # simulator's own recording is filed under the run's key as the job's /clock is.
     for table in INPUTS:
         entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(run.key) or {}
         sources[f"table:{table}"] = entry.get("rows", 0)
@@ -427,9 +472,12 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
 
 
 def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
+    """Whether the entry needs no build: same bytes by this decoder, or a live session's."""
     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(run_key)
     if not entry or entry.get("decoder") != __version__:
         return False
+    if live_owned(entry):
+        return True
     return sum(entry.get("sources", {}).values()) == size
 
 
@@ -464,7 +512,7 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     for. *runs* limits both to those ``config/run`` keys.
     """
     campaign_dir = os.path.abspath(campaign_dir)
-    groups = _groups(config)
+    groups = plugin_groups(config)
     manifest = read_manifest(campaign_dir)
     wanted = set(runs) if runs is not None else None
     all_runs = find_runs(campaign_dir)
@@ -472,19 +520,11 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     for run in all_runs:
         if wanted is not None and run.key not in wanted:
             continue
-        sources = [(SCENARIO_BAG, scenario_recording(run))]
-        if run.job_dir:
-            infra = os.path.join(run.job_dir, INFRA_BAG)
-            if os.path.isdir(infra):
-                sources.append((INFRA_BAG, infra))
         bag_tables = set()
-        for role, bag_dir in sources:
-            if bag_dir is None:
-                continue
-            key = run.key
+        for role, bag_dir in _sources(run):
             for table in plan_for(role, recorded_topics(bag_dir), groups.get(role)).tables:
                 bag_tables.add(table)
-                keys.setdefault(table, set()).add(key)
+                keys.setdefault(table, set()).add(run.key)
         for table in run_files(run.path, reserved=bag_tables | DERIVED_TABLES).tables:
             keys.setdefault(table, set()).add(run.key)
         for table in DERIVED:
@@ -499,6 +539,6 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     return out
 
 
-__all__ = ["BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE", "Run",
-           "SharedJobError", "available_tables", "build", "find_runs", "recorded_topics",
-           "scenario_recording"]
+__all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
+           "Run", "SharedJobError", "available_tables", "build", "find_runs", "recorded_topics",
+           "recording_closed", "roqsim_recording", "scenario_recording"]

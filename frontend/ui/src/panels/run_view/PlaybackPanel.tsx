@@ -2,7 +2,7 @@
 // shared PlaybackClock -- a click on the progress bar seeks, play/pause toggles playback, and the
 // fast-forward button steps through the speeds, starting playback when it is paused. Every other
 // panel just reads the clock, so scrubbing here moves them all. The timeline range is set on the
-// clock by the RunView (from the run's rosbag timestamps); this panel is pure UI over the clock and
+// clock by the RunView (from the run's tables, growing while the run records); this panel is pure UI over the clock and
 // holds no data of its own.
 
 import { useRef } from 'react'

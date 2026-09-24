@@ -36,10 +36,14 @@ class StubBackend(SimulatorBackend):
     def simulation_ref(self, cfg, execution):
         return "stub.adapter:StubSim"
 
-    def env(self, cfg, execution):
-        return {"STUB_STAGE": cfg.stage, "STUB_FIDELITY": cfg.fidelity}
+    def env(self, cfg, execution, recording):
+        env = {"STUB_STAGE": cfg.stage, "STUB_FIDELITY": cfg.fidelity}
+        if recording is not None and recording.roqsim is not None:
+            # Any backend may read the block; what it reads is its own section of it.
+            env["STUB_RATE"] = str(recording.roqsim.rate_hz)
+        return env
 
-    def produces_run_capture(self, cfg, execution):
+    def records_scene_state(self, cfg, execution):
         return True
 
     def input_files(self, cfg, execution, vast_dir):
@@ -307,9 +311,9 @@ def test_backend_env_reaches_the_simulation_sidecar():
 
     scenario_env emits the backend's contribution into the main container, which is only
     correct when the simulator IS the main container. In the ROS shape that sent
-    roqsim's ROQSIM_RECORD / ROQSIM_CAPTURE_EXPORT_DIR to the scenario container and
-    nowhere else, so the run produced no capture at all -- while produces_run_capture()
-    still said True and validation accepted a scene3d panel with nothing to replay.
+    roqsim's ROQSIM_RECORD to the scenario container and nowhere else, so the run
+    produced no recording at all -- while records_scene_state() still said True and
+    validation accepted a scene3d panel with nothing to replay.
     """
     from robovast.common.execution import sidecar_backend_env
 
@@ -469,3 +473,22 @@ def test_a_declared_transport_keeps_its_position_among_the_contributed_panels():
     merged = merge_default_panels(declared, _execution("ros2", stage="s", backend="panels"))
     assert _panel_types(merged) == ["scene3d", "playback"]
     assert merged[-1] == declared[0]
+
+
+# -- the recording block reaches the backend ------------------------------------------
+
+def test_the_recording_block_reaches_the_backend_on_every_route():
+    """apply_backend, the per-job overlay and the sidecar all hand the backend the same
+    block, so what the simulator is asked to record cannot differ by route."""
+    from robovast.common.config import RecordingConfig
+    from robovast.common.execution import sidecar_backend_env
+    from robovast.common.simulators import sim_job_overlay
+
+    recording = RecordingConfig.model_validate({"roqsim": {"rate_hz": 25}})
+    ex = apply_backend(_execution("ros2", stage="s"), recording=recording)
+    assert ex["_backend_env"]["STUB_RATE"] == "25.0"
+    assert sidecar_backend_env(ex, "simulation")["STUB_RATE"] == "25.0"
+    overlay = sim_job_overlay(ex, {"backend": "stub", "stage": "s"}, recording=recording)
+    assert overlay["env"]["STUB_RATE"] == "25.0"
+    # And its absence is a block, not an error: the backend is told there is none.
+    assert "STUB_RATE" not in apply_backend(_execution("ros2", stage="s"))["_backend_env"]

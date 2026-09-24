@@ -159,14 +159,13 @@ def run_slice(job_dir: str, config_name: str, run_dir, clock: clock_map.ClockMap
               stats: SliceStats) -> RunSlice:
     """The run of one job, with its clock and its trial window.
 
-    *clock* is the job's map; a run whose simulator recorded its own map beside its output
-    uses that instead.
+    *clock* is the run's map, from its ``clock_map`` rows: the job's wall-time recording's
+    ``/clock``, or its simulator's own recording's where that is what gave them.
     """
     run_dir = Path(run_dir)
     start_epoch, end_epoch = _read_window(run_dir)
-    run_clock = clock if clock else clock_map.find_run_clock_map(str(run_dir))
-    if not run_clock:
+    if not clock:
         stats.without_clock.append(f"{config_name}/{run_dir.name}")
-        run_clock = clock_map.NO_CLOCK_MAP
+        clock = clock_map.NO_CLOCK_MAP
     return RunSlice(config_name=config_name, run_dir=run_dir, job_dir=job_dir,
-                    clock=run_clock, start_epoch=start_epoch, end_epoch=end_epoch)
+                    clock=clock, start_epoch=start_epoch, end_epoch=end_epoch)

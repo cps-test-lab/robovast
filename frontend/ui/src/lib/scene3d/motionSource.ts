@@ -1,27 +1,23 @@
 // MotionSource: what a run's *motion* looks like to a viewer, independent of where it comes from.
 //
 // The Run view's 3D panel consumes this and nothing else, so the same panel replays a finished run
-// from a `capture.json`/`capture.bin` pair (see runCapture.ts) and -- later, unchanged -- follows a
-// live simulation over whatever transport is chosen. That is the point of the seam: the *data model*
-// is a time base plus named tracks, and a file is only one serialization of it.
+// and follows one still recording from the same source (rowMotion.ts, over the run's pose and
+// joint tables). That is the point of the seam: the *data model* is a time base plus named tracks,
+// and where the samples come from is the source's business.
 //
-// Five properties make the model live-ready rather than file-shaped. Each is cheap here and expensive
-// to retrofit once panels depend on the other behaviour:
+// Five properties make the model live-ready rather than file-shaped:
 //
 //  1. `range().complete` is false when the upper bound can still move, and a consumer re-reads the
-//     range instead of caching it. A file is complete by construction; a stream never is.
+//     range instead of caching it. A finished run is complete; one still recording is not.
 //  2. `tracks()` may grow between calls -- a live source gains a track when a robot spawns or a
-//     pedestrian appears. A file's never does, but a consumer that assumed otherwise would have to
-//     be rewritten rather than extended.
+//     pedestrian appears.
 //  3. Samples are addressed by TIME, never by array index, and `indexAt` is nearest-sample with ties
 //     to the earlier one -- never interpolated, because blending two states produces a pose the
-//     simulation never had. For a live source "nearest" is simply "latest".
-//  4. `subscribe` is the only way data arrival is announced, and the file source fires it once on
-//     load. An interface method nothing calls is a guess; one the only shipping implementation uses
-//     is a contract.
-//  5. `fetch(t0, t1)` asks for a window rather than everything. The file source loads the whole
-//     buffer today (a 30 s capture of a mobile manipulator is a few hundred KiB), but tracks are
-//     time-contiguous by specification, so windowing is a change of implementation, not of API.
+//     simulation never had. For a live source at its edge "nearest" is simply "latest".
+//  4. `subscribe` is the only way data arrival is announced: once per loaded window, and per batch
+//     of a run still recording.
+//  5. `fetch(t0, t1)` asks for a window rather than everything: a run's poses are every body at
+//     every tick, far past what one query returns, so the viewer asks around where it is looking.
 //
 // Values are pushed into a MotionSink rather than returned, so a 60 Hz redraw of a few dozen tracks
 // allocates nothing. The scene model is the sink: `joint` is its jointMap and `pose` its basePose.
@@ -43,7 +39,7 @@ export interface MotionTrack {
   unit?: string
 }
 
-/** Provenance a viewer shows, and checks a capture against the scene it is animating. */
+/** Provenance a viewer shows, and checks a recording against the scene it is animating. */
 export interface MotionMeta {
   producer?: string
   producerVersion?: string
@@ -54,7 +50,7 @@ export interface MotionMeta {
    *  else (a `map` frame, say) can be metres away and is indistinguishable from the numbers alone. */
   frame?: string
   /** `sim` = seconds of simulated time from the run's start; `wall` = wall-clock. Declared so a
-   *  capture-driven panel and a rosbag-driven one can be told whether they share a clock. */
+   *  simulator-driven panel and a rosbag-driven one can be told whether they share a clock. */
   timeBase?: string
 }
 

@@ -9,17 +9,15 @@
 // would say nothing, and its tree keeps the shape it always had.
 
 import { CAMPAIGN_SEL, type ResultsSel } from './hashNav'
-import { isFailed, isPreviewable, isRunning, type CampaignSummary } from './robovastClient'
+import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 
 // The tree's one query, shared by the Explorer and the Run view's picker (see `runsQuery`).
 //
 // `run_view` is a view over the campaign record in `campaign.db`, so a campaign whose runs recorded
 // nothing still lists them, and its batch and host columns come with each run. It also means both
-// surfaces build the same tree from the same rows.
-//
-// For a campaign still running, the Run view's preview picker builds the same rows from the
-// campaign's output directories instead, listing only runs that wrote a recording to replay -- see
-// `previewRuns.ts`.
+// surfaces build the same tree from the same rows. It answers while the campaign runs, and `live`
+// says which runs are still recording: no verdict yet, campaign still running. The Run view reads
+// such a run live rather than once.
 //
 // `batch` is the ask/tell round that proposed the configuration, and `objective` its score --
 // the two things that make a search's history readable. `objective_direction` comes from the
@@ -33,7 +31,7 @@ import { isFailed, isPreviewable, isRunning, type CampaignSummary } from './robo
 // against 'minimize'/'maximize'. A campaign without a search block yields NULL rather than an error
 // at every step.
 export const CAMPAIGN_RUNS_SQL =
-  'SELECT config_name, run_id, status, passed, objective, batch, ' +
+  'SELECT config_name, run_id, status, passed, objective, batch, live, ' +
   "(SELECT config_json::JSON -> 'search' -> 'objectives' -> 0 ->> 'direction' " +
   'FROM campaign.campaign LIMIT 1) AS objective_direction ' +
   'FROM run_view ORDER BY batch, config_name, run_id'
@@ -69,11 +67,11 @@ export interface ResultsTreeItem {
   objective?: number | null
   /** e.g. "5/5" (passed/total) shown as a trailing chip; omitted for leaves/placeholders. */
   count?: string
-  /** No verdict is knowable for this node — it belongs to a campaign being previewed, whose
-   *  pass/fail is not readable until it is postprocessed. Distinct from `status: 'unknown'`,
-   *  which means a verdict was looked for and not found: the renderer draws no verdict marker
-   *  at all here, because a row of neutral dots on every run of every configuration is a
-   *  statement about nothing, read as a statement about each of them. */
+  /** No verdict is knowable for this node yet — the run is still recording (`run_view.live`),
+   *  or every run of the configuration is. Distinct from `status: 'unknown'`, which means a
+   *  verdict was looked for and not found: the renderer draws no verdict marker at all here,
+   *  because a row of neutral dots on every run still going is a statement about nothing, read
+   *  as a statement about each of them. */
   noVerdict?: boolean
   disabled?: boolean
   children?: ResultsTreeItem[]
@@ -308,16 +306,13 @@ export function campaignItem(c: CampaignSummary): ResultsTreeItem {
   // while dropping them entirely makes a half-uncomposable search look complete.
   const runs = c.num_runs > 0 ? `${c.num_passed}/${c.num_runs}` : undefined
   const count = skipped > 0 ? [runs, `${skipped} skipped`].filter(Boolean).join(' · ') : runs
-  // Named in the picker, not only over the scene: this is where the campaign is CHOSEN, so it is
-  // where "what you are about to open is a preview" is still useful. A running campaign's runs are
-  // listed from its directories and only the 3D replay works — see `previewRuns.ts`.
   return {
     id: c.campaign_id,
     label: c.campaign_id,
     kind: 'campaign',
     campaignId: c.campaign_id,
     status: campaignStatus(c),
-    count: isPreviewable(c) ? [count, 'preview'].filter(Boolean).join(' · ') : count,
+    count,
   }
 }
 
@@ -427,7 +422,7 @@ function configNodes(
       configName,
       ...(batch == null ? {} : { batch }),
       objective,
-      ...(configRows.every((r) => r.preview) ? { noVerdict: true } : {}),
+      ...(configRows.every((r) => isLiveRow(r)) ? { noVerdict: true } : {}),
       status,
       // "0/0 passed" would be a misleading verdict on something that never ran, and so would
       // "0/3" on runs whose verdicts are simply not readable yet: that is what a *failed* config
@@ -475,9 +470,16 @@ function runNode(
     configName,
     runId,
     ...(batch == null ? {} : { batch }),
-    ...(row.preview ? { noVerdict: true } : {}),
+    ...(isLiveRow(row) ? { noVerdict: true } : {}),
     status,
   }
+}
+
+/** Whether a `run_view` row is a run still recording. The column is a boolean, but a TEXT
+ *  projection of one reads as 'true'/'1'; both count. */
+export function isLiveRow(row: Record<string, unknown>): boolean {
+  const v = row.live
+  return v === true || v === 1 || v === 'true' || v === '1'
 }
 
 // A single non-selectable child shown under a campaign that has no queryable data yet.

@@ -488,7 +488,7 @@ _TABLE_DESCRIPTIONS = {
     ("main", "run_clock"): (
         "One row per run: what relates its wall-stamped log to sim time, and how well. "
         "clock_map_source names the producer ('ros_clock_bag' from /clock, "
-        "'roqsim_run_npz' from the simulator's own record); 'none' means the run's log lines "
+        "'roqsim' from the simulator's own recording); 'none' means the run's log lines "
         "have no sim_time at all. clock_map_samples is how many decimated samples the map "
         "holds. clock_map_sim_span_s / clock_map_wall_span_s is the run's realtime factor -- "
         "simulated seconds bought per wall second -- over the window the map covers; GROUP "

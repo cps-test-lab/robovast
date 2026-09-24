@@ -20,9 +20,19 @@ from fastapi.testclient import TestClient
 
 from robovast.service import scene_cache
 from robovast.service.app import build_app
+from tests.robovast_data.conftest import write_store
+from tests.robovast_decode.conftest import write_roqsim_mcap
 from tests.service.null_service import NullService
 CAMPAIGN = "demo-2026-08-06-000000"
 QUERY = {"config_name": "goal-1", "run_id": "0"}
+RECORDING = Path("roqsim_bag") / "roqsim.mcap"
+
+
+def _record(run_dir: Path, world="pkg:depot", overrides=None):
+    """The run's recording, whose provenance names *world* and the *overrides* it was built with
+    (``None``: a recording that carries none)."""
+    return write_roqsim_mcap(run_dir / RECORDING, samples=4,
+                             meta={"world": world, "overrides": overrides})
 
 
 @pytest.fixture
@@ -42,13 +52,14 @@ def client(tmp_path, monkeypatch):
     scene_cache._stages.clear()
 
     results = tmp_path / "results"
-    run_dir = results / CAMPAIGN / "goal-1" / "0" / "capture"
-    run_dir.mkdir(parents=True)
+    run_dir = results / CAMPAIGN / "goal-1" / "0"
+    _record(run_dir, overrides={})
     (results / CAMPAIGN / "_execution").mkdir(parents=True)
     (results / CAMPAIGN / "_execution" / "execution.yaml").write_text(
         "image: build:x\nimage_revision: harbor/x@sha256:" + "a" * 64 + "\n", encoding="utf-8")
-    (run_dir / "capture.json").write_text(
-        json.dumps({"producer": "roqsim", "world": "pkg:depot", "overrides": {}}), encoding="utf-8")
+    # The campaign's record: what makes its tables -- the recording's ``sim_recording`` row
+    # among them -- queryable at all.
+    write_store(results / CAMPAIGN, {"goal-1": {"runs": {0: "passed"}}})
 
     fake = tmp_path / "fake.sh"
     fake.write_text('#!/bin/sh\nmkdir -p "$1"\n'
@@ -114,21 +125,21 @@ def test_assets_cannot_escape_their_entry(client):
         assert client.get(prefix + bad).status_code == 404
 
 
-def test_a_run_without_a_capture_reports_a_reason(client):
+def test_a_run_without_a_recording_reports_a_reason(client):
+    """No ``sim_recording`` row: nothing to replay, and no world to build geometry from."""
     body = client.get(f"/campaigns/{CAMPAIGN}/scene",
                       params={"config_name": "goal-9", "run_id": "0"}).json()
     assert body["cached"] is False
-    assert "no capture" in body["error"]
+    assert "no sim_recording row" in body["error"]
     assert body["error"] == body["note"], "the reason is what a viewer shows"
 
 
 def test_an_unrecorded_override_set_is_flagged_not_assumed(client, tmp_path):
-    """A capture predating override recording must not be silently treated as 'no overrides'."""
-    manifest = tmp_path / "results" / CAMPAIGN / "goal-1" / "0" / "capture" / "capture.json"
-    manifest.write_text(json.dumps({"producer": "roqsim", "world": "pkg:depot"}), encoding="utf-8")
+    """A recording that carries no overrides must not be silently treated as 'no overrides'."""
+    _record(tmp_path / "results" / CAMPAIGN / "goal-1" / "0", overrides=None)
     body = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
     assert body["overrides_known"] is False
-    assert "predates override recording" in body["note"]
+    assert "carries no overrides" in body["note"]
 
 
 def test_the_scene_names_are_reserved_against_plugin_endpoints():
@@ -203,9 +214,9 @@ def test_scene_assets_are_cached_for_good_and_results_files_are_not(client):
         assert response.status_code == 200
         assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
 
-    capture = client.get(f"/results/{CAMPAIGN}/goal-1/0/capture/capture.json")
-    assert capture.status_code == 200
-    assert "immutable" not in capture.headers.get("cache-control", "")
+    recording = client.get(f"/results/{CAMPAIGN}/goal-1/0/{RECORDING.as_posix()}")
+    assert recording.status_code == 200
+    assert "immutable" not in recording.headers.get("cache-control", "")
 
 
 def _count_identity_reads(monkeypatch):
@@ -223,11 +234,11 @@ def test_a_campaign_at_rest_resolves_a_runs_scene_identity_once(client, monkeypa
     """A run switch asks the status again; for a campaign at rest the identity is memoised.
 
     ``world_identity`` is the expensive part -- the campaign-file tree hashes and, for a tag-only
-    campaign, a Docker lookup -- so it must not run on every switch. The capture is the one input
-    the campaign's record files do not cover, so rewriting it must be seen.
+    campaign, a Docker lookup -- so it must not run on every switch. The recording is the one
+    input the campaign's record files do not cover, so rewriting it must be seen.
     """
     campaign = tmp_path / "results" / CAMPAIGN
-    (campaign / "campaign.db").write_bytes(b"")  # a record: the campaign is at rest
+    _freeze_backend(campaign)  # which file the recording is, so the memo can watch it
     calls = _count_identity_reads(monkeypatch)
 
     first = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
@@ -235,17 +246,26 @@ def test_a_campaign_at_rest_resolves_a_runs_scene_identity_once(client, monkeypa
     assert first["world"] == second["world"] == "pkg:depot"
     assert len(calls) == 1
 
-    manifest = campaign / "goal-1" / "0" / "capture" / "capture.json"
-    manifest.write_text(json.dumps({"producer": "roqsim", "world": "pkg:warehouse", "overrides": {}}),
-                        encoding="utf-8")
+    _record(campaign / "goal-1" / "0", world="pkg:warehouse", overrides={})
     third = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
     assert third["world"] == "pkg:warehouse"
     assert len(calls) == 2
 
 
-def test_a_campaign_without_a_record_is_not_memoised(client, monkeypatch):
-    """No ``campaign.db`` means nothing to key on -- the rest key's own rule -- so every ask reads."""
+def test_a_campaign_without_a_record_cannot_name_its_runs_world(client, monkeypatch, tmp_path):
+    """No ``campaign.db`` means no tables, and the world identity is a row of one -- so the
+    status says which file is missing rather than guessing at the recording."""
+    (tmp_path / "results" / CAMPAIGN / "campaign.db").unlink()
     calls = _count_identity_reads(monkeypatch)
-    client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY)
-    client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY)
-    assert len(calls) == 2
+    body = client.get(f"/campaigns/{CAMPAIGN}/scene", params=QUERY).json()
+    assert "campaign.db" in body["error"]
+    assert calls == []
+
+
+def _freeze_backend(campaign: Path) -> None:
+    """The frozen ``.vast`` naming the simulator, which is what says where a run's recording sits."""
+    (campaign / "_config").mkdir(exist_ok=True)
+    (campaign / "_config" / "p.vast").write_text(
+        "version: 5\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+        "      backend: roqsim\n      config: pkg:depot\n      image: harbor/x@sha256:"
+        + "a" * 64 + "\n", encoding="utf-8")

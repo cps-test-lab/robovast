@@ -40,7 +40,7 @@ from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
 from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config import SIMULATION_CONTAINER
+from .config import SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config
 from .config_identifier import compute_config_identifier, hash_file_content, hash_run_files
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
@@ -1053,15 +1053,29 @@ def scenario_env(campaign_data):
     # produces no behaviors.jsonl.
     env['BT_LOG'] = 'true'
 
-    # What the entrypoint's own (wall-time) recorder captures, in WALL time and for the
-    # whole container's life -- distinct from the scenario's ``bag_record``, which is
-    # sim-time and starts mid-run. Exactly what the ``run_log`` table needs and no more:
-    # ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line on the playback
-    # clock. Stated for the same reason BT_LOG is.
-    #
-    # Not configurable from ``execution:``. What a run records *beyond* this is the
-    # scenario's ``bag_record`` to say, where it sits beside the behaviour that produces it.
+    # What the entrypoint's infrastructure recorder captures, in WALL time and for the
+    # whole container's life -- distinct from the run's own bag below, which is sim-time
+    # when the campaign says so and spans the scenario. Exactly what the ``run_log`` table
+    # needs and no more: ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line
+    # on the playback clock. Stated for the same reason BT_LOG is, and not configurable:
+    # what a run records beyond this is the ``recording:`` block's to say.
     env['LOG_TOPICS'] = '/rosout /clock'
+
+    # The run's own bag (``<run>/rosbag2``), which the entrypoint records for a single-run
+    # job from before the scenario starts. Derived from the ``.vast``'s ``recording.ros2``
+    # block and always stated, defaults included, so the compose file / pod spec says
+    # outright what the run recorded: an absent block records every topic.
+    #
+    # One variable per ``ros2 bag record`` option. Topics are space-separated because a
+    # topic name carries no whitespace (the model refuses one that does) and the shell
+    # splits them back for free; the excludes are joined into one regex because that is the
+    # one argument ``--exclude-regex`` takes.
+    recording = recording_config(campaign_data.get("recording"))
+    ros2 = (recording.ros2 if recording is not None else None) or Ros2RecordingConfig()
+    env['RECORD_TOPICS'] = 'all' if ros2.topics == 'all' else ' '.join(ros2.topics)
+    env['RECORD_EXCLUDE'] = '|'.join(ros2.exclude)
+    env['RECORD_EXCLUDE_TYPES'] = ' '.join(ros2.exclude_types)
+    env['RECORD_USE_SIM_TIME'] = 'true' if ros2.use_sim_time else 'false'
 
     # A simulator backend's environment, resolved *here* rather than by each emitter, so
     # every emitter applies one rule: the campaign's own execution.env wins, because a
@@ -1088,11 +1102,15 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     right in the stepped shape: there the simulator runs in the scenario's own process, so
     the main container IS the simulator. In the ROS shape the simulator is a sidecar, and
     the same variables have to arrive there instead -- otherwise the simulator never sees
-    them. That is not hypothetical: roqsim's ``ROQSIM_RECORD`` /
-    ``ROQSIM_CAPTURE_EXPORT_DIR`` went only to the scenario container, so a ROS campaign
-    produced no ``run.npz`` and no ``capture/`` while ``produces_run_capture()`` still
-    reported True and validation happily accepted a ``scene3d`` panel with nothing to
-    replay. The stepped shape hid it, because there the two containers are one.
+    them. That is not hypothetical: roqsim's ``ROQSIM_RECORD`` went only to the scenario
+    container, so a ROS campaign produced no simulator recording at all while
+    ``records_scene_state()`` still reported True and validation happily accepted a
+    ``scene3d`` panel with nothing to replay. The stepped shape hid it, because there the
+    two containers are one.
+
+    The ``recording:`` block's knobs arrive by the same route: :func:`apply_backend` hands
+    the block to the backend's ``env`` hook, so what is stored on ``execution`` already
+    says what the simulator was asked to record.
 
     Only the ``simulation`` container: a backend describes its own simulator, and handing
     ``ROQSIM_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
@@ -1248,8 +1266,13 @@ log() {
 DEFINITIONS_SCRIPT = "dump_message_definitions.py"
 
 #: The script a cluster pod's file agent container runs: it ships the growth of the run's
-#: line files while the run runs (:mod:`robovast.execution.data.file_agent`).
+#: line files and bags while the run runs (:mod:`robovast.execution.data.file_agent`).
 FILE_AGENT_SCRIPT = "file_agent.py"
+
+#: The rosbag2 storage preset both recorders of a run are started with: ``noChunking``, so
+#: each message reaches the bag file as it is written and a bag is readable while it records.
+#: Shipped in ``_transient/`` with the scripts above and mounted at ``/config``.
+MCAP_STORAGE_CONFIG = "mcap_writethrough.yaml"
 
 #: The emptyDir every container of a cluster pod shares, mounted at this path in each of
 #: them: the sockets the scenario drives its sidecars over, and the done markers below.
@@ -1272,20 +1295,27 @@ def done_marker(container: str) -> str:
 
 
 _LOCAL_POST_RUN_BLOCK = """\
-    # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
+    # Build built-in cleanup script (stop the recorders and resource monitor gracefully)
     BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
     cat > "${BUILTIN_CLEANUP_SCRIPT}" << 'CLEANUP_EOF'
 #!/bin/bash
-if [ -f /tmp/rosbag.pid ]; then
-    if start-stop-daemon --stop --signal INT --pidfile /tmp/rosbag.pid >/dev/null 2>&1; then
-        _t=0
-        while kill -0 $(cat /tmp/rosbag.pid) 2>/dev/null && [ $_t -lt 50 ]; do
-            sleep 0.1; _t=$((_t + 1))
-        done
-        kill -KILL $(cat /tmp/rosbag.pid) 2>/dev/null || true
+# A recorder closes its bag on INT and on nothing else, and a bag it never closed has no
+# metadata.yaml: so INT, a bounded wait for the close, and KILL only then.
+_stop_recorder() {
+    local _name="$1" _pidfile="$2"
+    if [ -f "${_pidfile}" ]; then
+        if start-stop-daemon --stop --signal INT --pidfile "${_pidfile}" >/dev/null 2>&1; then
+            _t=0
+            while kill -0 $(cat "${_pidfile}") 2>/dev/null && [ $_t -lt 300 ]; do
+                sleep 0.1; _t=$((_t + 1))
+            done
+            kill -KILL $(cat "${_pidfile}") 2>/dev/null || true
+        fi
+        echo "ROS bag process stopped (${_name})."
     fi
-    echo "ROS bag process stopped."
-fi
+}
+_stop_recorder "scenario_bag" /tmp/scenario_bag.pid
+_stop_recorder "rosbag" /tmp/rosbag.pid
 # The recordings' message definitions, beside each bag, while the types are installed here.
 if [ -f /config/dump_message_definitions.py ]; then
     python3 /config/dump_message_definitions.py "${1:-${SCENARIO_OUTPUT_DIR:-/out}}" || true
@@ -1372,6 +1402,9 @@ _stop_daemon() {
     fi
 }
 
+# Both recorders close their bag on INT and on nothing else; the definitions are dumped once
+# both are closed.
+_stop_daemon "scenario_bag" "/tmp/scenario_bag.pid" "INT" "INT/30/KILL/5"
 _stop_daemon "rosbag" "/tmp/rosbag.pid" "INT" "INT/30/KILL/5"
 # The recordings' message definitions, beside each bag, while the types are installed here.
 if [ -f /config/dump_message_definitions.py ]; then
@@ -1697,6 +1730,11 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     definitions_src = str(files('robovast.execution.data').joinpath(DEFINITIONS_SCRIPT))
     shutil.copy2(definitions_src, os.path.join(campaign_transient_dir, DEFINITIONS_SCRIPT))
 
+    # The storage preset both recorders read (see MCAP_STORAGE_CONFIG): mounted at /config
+    # like the scripts above.
+    storage_src = str(files('robovast.execution.data').joinpath(MCAP_STORAGE_CONFIG))
+    shutil.copy2(storage_src, os.path.join(campaign_transient_dir, MCAP_STORAGE_CONFIG))
+
     vast_file_path = os.path.dirname(campaign_data["vast"])
 
     # Prepare campaign_data for configurations.yaml (strip internal keys)
@@ -1973,6 +2011,7 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
     "collect_sysinfo.py", "monitor_resources.py", DEFINITIONS_SCRIPT, FILE_AGENT_SCRIPT,
+    MCAP_STORAGE_CONFIG,
     "configurations.yaml", JOB_LINKS_MANIFEST,
     "scenario.config", "scenario.params.yaml",
     os.path.basename(SIM_OVERRIDES_MOUNT),
@@ -2265,7 +2304,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     # One digest per container, because "the campaign's image" stopped being a single
     # fact. `image_revision` is the scenario container's; anything asking which bytes
     # produced a particular artifact has to name the role. The run view's geometry is the
-    # case in hand: it is compiled from the world the capture names, and that world and
+    # case in hand: it is compiled from the world the recording names, and that world and
     # its exporter live in the SIMULATION image, not the scenario one.
     if image_digests:
         execution_data['image_revisions'] = dict(image_digests)

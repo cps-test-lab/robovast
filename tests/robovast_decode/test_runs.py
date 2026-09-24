@@ -236,3 +236,26 @@ def test_a_run_directory_the_store_has_not_recorded_is_a_run_still_going(tmp_pat
 def test_building_twice_gives_the_same_table(tmp_path):
     tree = _campaign(tmp_path)
     assert build_runs(str(tree)).equals(build_runs(str(tree)))
+
+
+def test_live_is_true_only_while_the_run_and_its_campaign_are_unfinished(tmp_path):
+    tree = _campaign(tmp_path)
+    assert _types(tree)["live"] == pa.bool_()
+    assert [r["live"] for r in _rows(tree)] == [True, True]
+    (tree / "goal-1" / "0" / "test.xml").write_text("<testsuite/>")
+    assert [r["live"] for r in _rows(tree)] == [False, True], "a verdict ends the run"
+    (tree / "_execution" / "outcome.json").write_text("{}")
+    assert [r["live"] for r in _rows(tree)] == [False, False], "a terminal record ends all"
+    (tree / "goal-1" / "0" / "test.xml").unlink()
+    assert [r["live"] for r in _rows(tree)] == [False, False]
+
+
+def test_a_run_less_row_and_a_run_with_no_directory_are_not_live(tmp_path):
+    import shutil
+    tree = _campaign(tmp_path,
+                     units=[("goal-1", {"speed": 0.5}, 1.0, "ok", "ps-1"),
+                            (None, {"speed": 99.0}, None, "composition_failed", "ps-2")],
+                     runs=[(1, 0, "passed", 1, 0, 0, 1.0, None)])
+    shutil.rmtree(tree / "goal-1" / "0")
+    assert [(r["config_name"], r["live"]) for r in _rows(tree)] == [
+        ("goal-1", False), ("ps-2", False)]

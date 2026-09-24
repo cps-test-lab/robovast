@@ -21,8 +21,9 @@ code rather than data. Which notes a table earns is decided from its columns:
 
 * a pose-contract table (:func:`robovast_data.views.pose_clock`) gets the notes of its clock
   shape -- a table converted from a transport has an arrival ``timestamp`` that must not be
-  differenced and a ``stamp`` that must, while a table the simulator wrote has one exact clock
-  and no ``stamp`` -- and the orientation note;
+  differenced and a ``stamp`` that must, while a table the simulator wrote (``sim_poses``,
+  decoded from roqsim's own recording) has one exact clock and no ``stamp`` -- and the
+  orientation note;
 * ``runs`` and the derived tables get the notes their builders declare
   (:data:`robovast_decode.runs.NOTES`, :data:`robovast_decode.derived.NOTES`);
 * a few columns are noted by name (:data:`STATIC_NOTES`).
@@ -90,8 +91,39 @@ STATIC_NOTES: dict = {
     ("resource_usage", "memory_rss_bytes"): (
         "summed RSS, so pages shared between a process and its forks are counted more than "
         "once. An upper bound -- read it as a trend, not as an absolute footprint."),
+    ("joint_states", "timestamp"): (
+        "SIMULATED seconds, taken inside the simulator at the sample: the exact clock, safe "
+        "to difference for a joint velocity. One row per joint per sample, so pivot on "
+        "`joint` before differencing."),
+    ("joint_states", "wall_time"): (
+        "Unix epoch seconds of the same sample, the bridge to run_log and resource_usage on "
+        "a run with no rosbag. Not the run's clock: use `timestamp`."),
+    ("joint_states", "position"): (
+        "the joint's generalised coordinate: radians for a hinge, meters for a slide. Which "
+        "it is follows from the joint's name and the model (sim_recording.model_json)."),
+    ("sim_recording", "capture_fps"): (
+        "the recording's sample rate as exact `num/den` text, snapped to a whole number of "
+        "physics steps: 1/(rate) is the interval between consecutive sim_poses samples."),
+    ("sim_recording", "timestep"): (
+        "the physics step in simulated seconds; capture_fps is a multiple of it."),
+    ("sim_recording", "overrides_json"): (
+        "JSON: the world overrides this run was started with, the varied factors among "
+        "them. Parse with json_extract; the run's param_ columns in `runs` are the same "
+        "facts as the campaign declared them."),
+    ("sim_recording", "packages_json"): (
+        "JSON {package: version} of the simulator and its plugins as installed in the "
+        "run's image: the provenance of the physics, beside the campaign's own manifest."),
+    ("sim_recording", "model_json"): (
+        "JSON: the compiled model's summary (body, joint and actuator counts and names). "
+        "One row per run, so a query over the campaign compares what each run simulated."),
+    ("sim_entities", "present"): (
+        "1 while the entity is in the scene at the end of the run, 0 once despawned. The "
+        "roster is the LAST one the recording carries: an entity spawned and removed during "
+        "the run is a row with present 0, not a missing row."),
+    ("sim_entities", "body"): (
+        "the MuJoCo body the entity is rooted at: the `frame` its poses are filed under in "
+        "sim_poses, which is how the two tables join."),
 }
-
 
 
 

@@ -176,13 +176,19 @@ else
         --startas /usr/bin/python3 -- /config/monitor_resources.py "${OUTPUT_DIR}/resource_usage_main.csv"
     log "Started resource monitor (PID=$(cat /tmp/monitor.pid)) -> ${OUTPUT_DIR}/resource_usage_main.csv"
 
+    # Both recorders below write through and split every 10 s (RECORD_OPTIONS): each message
+    # reaches the bag file as it is written, a closed segment is complete, and the open one is
+    # readable up to its last complete record -- so a bag is readable while the run runs.
+    # The preset is shipped with the run scripts (robovast.common.execution.MCAP_STORAGE_CONFIG).
+    RECORD_OPTIONS="--storage mcap --max-cache-size 0 --storage-config-file /config/mcap_writethrough.yaml -d 10"
+
     # The infrastructure recording (/rosout and /clock), deliberately
-    # separate from the scenario's own bag_record: this one runs in WALL time for the
+    # separate from the scenario's recording below: this one runs in WALL time for the
     # whole container's life, so it captures the stack coming up before any scenario
     # starts, and /clock recorded here is what relates the two clocks afterwards. Each
     # message's receive time is wall and its content is sim, so postprocessing gets the
     # mapping sampled at clock rate -- including a real-time factor that is not 1, and
-    # pauses. The scenario's bag is recorded with use_sim_time, so it cannot carry this.
+    # pauses. The scenario's bag may be recorded with use_sim_time, so it cannot carry this.
     #
     # The directory keeps its historical name: `logs/rosout_bag` is the address
     # _ROSBAG_BATCH_MAP, the docs and every existing campaign already use, and renaming
@@ -190,8 +196,83 @@ else
     LOG_TOPICS="${LOG_TOPICS:-/rosout /clock}"
     if command -v ros2 > /dev/null 2>&1 && [ -n "${LOG_TOPICS}" ]; then
         start-stop-daemon --start --background --make-pidfile --pidfile /tmp/rosbag.pid \
-            --startas /bin/bash -- -c "exec ros2 bag record -o ${OUTPUT_DIR}/logs/rosout_bag --storage mcap --topics ${LOG_TOPICS}"
+            --startas /bin/bash -- -c "exec ros2 bag record -o ${OUTPUT_DIR}/logs/rosout_bag ${RECORD_OPTIONS} --topics ${LOG_TOPICS}"
         log "Started rosbag recording ${LOG_TOPICS} (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
+    fi
+
+    # The scenario's recording, <run>/rosbag2: started here, before the runner, rather than
+    # by a bag_record action in the scenario, so that what a run records is a property of
+    # the campaign (its `recording:` block, arriving as the RECORD_* variables) and not of
+    # the scenario text. The bag goes into the run's directory, which a campaign job names
+    # (RUN_OUTPUT_DIR); a container started outside a campaign -- a scenario tried in an
+    # image -- has no run directory and records the infrastructure bag alone.
+    #
+    # RECORD_TOPICS is `all` or space-separated entries, a regex when it starts with `^`:
+    # names go to --topics, regexes joined to one -e pattern. RECORD_EXCLUDE is one regex,
+    # RECORD_EXCLUDE_TYPES space-separated type names, RECORD_USE_SIM_TIME true or false.
+    # Absent, everything is recorded in wall time.
+    scenario_record_args() {
+        SCENARIO_RECORD_ARGS=(bag record -o "${RUN_OUTPUT_DIR}/rosbag2" ${RECORD_OPTIONS})
+        if [ "${RECORD_USE_SIM_TIME:-false}" = "true" ]; then
+            SCENARIO_RECORD_ARGS+=(--use-sim-time)
+        fi
+        local _topics="${RECORD_TOPICS:-all}" _names="" _regex="" _entry
+        if [ "${_topics}" = "all" ]; then
+            SCENARIO_RECORD_ARGS+=(-a)
+        else
+            for _entry in ${_topics}; do
+                case "${_entry}" in
+                    ^*) _regex="${_regex:+${_regex}|}${_entry}" ;;
+                    *)  _names="${_names} ${_entry}" ;;
+                esac
+            done
+            if [ -n "${_names}" ]; then
+                SCENARIO_RECORD_ARGS+=(--topics ${_names})
+            fi
+            if [ -n "${_regex}" ]; then
+                SCENARIO_RECORD_ARGS+=(-e "${_regex}")
+            fi
+        fi
+        if [ -n "${RECORD_EXCLUDE:-}" ]; then
+            SCENARIO_RECORD_ARGS+=(--exclude-regex "${RECORD_EXCLUDE}")
+        fi
+        if [ -n "${RECORD_EXCLUDE_TYPES:-}" ]; then
+            SCENARIO_RECORD_ARGS+=(--exclude-topic-types ${RECORD_EXCLUDE_TYPES})
+        fi
+    }
+    start_scenario_recorder() {
+        scenario_record_args
+        mkdir -p "${RUN_OUTPUT_DIR}"
+        # --no-close: the recorder's own output (the topics it subscribed, or why it refused
+        # its arguments) belongs in the run log, not in /dev/null.
+        log "Starting scenario recording: ros2 ${SCENARIO_RECORD_ARGS[*]}"
+        start-stop-daemon --start --background --no-close --make-pidfile --pidfile /tmp/scenario_bag.pid \
+            --startas "$(command -v ros2)" -- "${SCENARIO_RECORD_ARGS[@]}"
+        # A recorder that refuses its arguments exits at once, and a daemon that died leaves
+        # the run looking fine with no bag. So wait for the bag to open, and fail the run if
+        # the recorder is gone before it did. The daemon writes its own pidfile after the
+        # fork, so the pid is read once it is there rather than assumed to be.
+        local _t=0 _pid=""
+        while [ ! -d "${RUN_OUTPUT_DIR}/rosbag2" ]; do
+            [ -n "${_pid}" ] || _pid="$(cat /tmp/scenario_bag.pid 2>/dev/null)"
+            if [ -n "${_pid}" ] && ! kill -0 "${_pid}" 2>/dev/null; then
+                log "ERROR: The scenario recorder (PID=${_pid}) exited before it opened ${RUN_OUTPUT_DIR}/rosbag2; its output is above."
+                exit 1
+            fi
+            if [ ${_t} -ge 300 ]; then
+                log "WARNING: The scenario recorder has not opened ${RUN_OUTPUT_DIR}/rosbag2 after 30 s; continuing."
+                break
+            fi
+            sleep 0.1; _t=$((_t + 1))
+        done
+        log "Scenario recording -> ${RUN_OUTPUT_DIR}/rosbag2 (PID=$(cat /tmp/scenario_bag.pid 2>/dev/null))"
+    }
+    if [ -z "${RUN_OUTPUT_DIR:-}" ]; then
+        log "No scenario recording: no run directory (RUN_OUTPUT_DIR) outside a campaign job."
+    elif ! command -v ros2 > /dev/null 2>&1; then
+        log "No scenario recording: no ros2 in this image."
+    else
+        start_scenario_recorder
     fi
 
     # The post-run block: the cleanup hooks the runner is handed, and `run_scenario`,

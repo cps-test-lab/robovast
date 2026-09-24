@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { RichTreeView } from '@mui/x-tree-view/RichTreeView'
-import {
-  isPreviewable, robovast, RobovastError, type CampaignSummary,
-} from '@/lib/robovastClient'
-import { configDirs, previewRunRows, replayableRunIds } from '@/lib/previewRuns'
+import { robovast, type CampaignSummary } from '@/lib/robovastClient'
 import {
   ancestorIds,
   buildCampaignChildren,
@@ -22,72 +19,23 @@ import { StatusTreeItem } from './StatusTreeItem'
 // renders this same tree -- reuses it verbatim: same key, so react-query serves both from one
 // fetch, and the two surfaces cannot drift onto different rows for the same tree.
 //
-// Takes the campaign rather than its id because the rows of a campaign that is still RUNNING are
-// derived from its output directories instead (`previewRuns.ts`), which say which runs have written
-// a recording to replay. Both branches yield the same row shape, so everything downstream is unaware
-// of which one answered.
-//
-// The mode is part of the KEY, which is what makes the transition safe in both directions: when the
-// campaign finishes, the key changes and react-query fetches the queried rows by itself. Sharing one
-// key would instead serve the Explorer 60 s of verdict-less preview rows for a campaign that now has
-// real verdicts, and require an invalidation somewhere that someone has to remember.
+// `run_view` answers while the campaign runs, so a running campaign's rows come the same way as
+// a finished one's, with `live` marking the runs still recording.
 //
 // Takes `undefined` for a campaign the caller does not have — a URL naming one this page never
 // listed — because that is a real state at two of the three call sites and the query is disabled
 // there anyway. The queryFn refuses rather than inventing an id: a disabled query never runs it, so
 // reaching it means the `enabled` guard was dropped, and an empty result would hide that.
 export function runsQuery(c: CampaignSummary | undefined) {
-  const preview = !!c && isPreviewable(c)
   return {
-    queryKey: ['runs', c?.campaign_id ?? '', preview ? 'preview' : 'indexed'],
+    queryKey: ['runs', c?.campaign_id ?? ''],
     queryFn: () => {
       if (!c) throw new Error('runsQuery: no campaign to read runs for')
-      return preview
-        ? previewRows(c.campaign_id)
-        : robovast.queryCampaignDataSql(
-            c.campaign_id, CAMPAIGN_RUNS_SQL, CAMPAIGN_RUNS_MAX_ROWS)
+      return robovast.queryCampaignDataSql(c.campaign_id, CAMPAIGN_RUNS_SQL, CAMPAIGN_RUNS_MAX_ROWS)
     },
     retry: false,
     staleTime: 60_000,
   }
-}
-
-/** A directory that may not exist yet, listed. `null` for "not there", and only for that.
- *
- *  A campaign writes its configuration and run directories as it reaches them, so an address that
- *  is absent now is the ordinary first seconds of one -- and on the cluster, where a directory is a
- *  key prefix, absent means a 404 rather than an empty listing. Every OTHER failure is raised: an
- *  unreachable service and a campaign that has produced nothing look identical once both are an
- *  empty tree, and the one that needs saying is the one that would then never be said. */
-async function listedOrAbsent(
-  campaignId: string, path: string, opts: { recursive?: boolean } = {},
-): Promise<string[] | null> {
-  try {
-    return (await robovast.listResultsDir(campaignId, path, opts)).entries
-  } catch (err) {
-    if (err instanceof RobovastError && err.status === 404) return null
-    throw err
-  }
-}
-
-/** A running campaign's REPLAYABLE runs, from its output tree, in `queryCampaignDataSql`'s shape.
- *
- *  One listing for the configurations, then one per configuration for its runs — so the cost is a
- *  request per configuration, not per run, and never the whole campaign's tree at once.
- *
- *  Only runs that have written a recording are listed, and a configuration with none of them
- *  contributes no rows and so gets no node. What is offered is what can be opened: a picker that
- *  listed every run directory would fill up with runs that are still going, indistinguishable from
- *  the ones worth clicking — and on a campaign of five configurations that is most of the tree. */
-async function previewRows(campaignId: string): Promise<{ rows: Record<string, unknown>[] }> {
-  const configs = configDirs((await listedOrAbsent(campaignId, '')) ?? [])
-  const runs = new Map<string, number[]>()
-  await Promise.all(configs.map(async (name) => {
-    const paths = await listedOrAbsent(campaignId, name, { recursive: true })
-    const replayable = replayableRunIds(paths ?? [])
-    if (replayable.length) runs.set(name, replayable)
-  }))
-  return { rows: previewRunRows(runs) }
 }
 
 // The shared campaign → [batch →] config → run status tree (green/red, all from the DB). It is the
@@ -118,9 +66,7 @@ export function ResultsTree({
   }, [selectedId])
 
   // Lazy-load each expanded campaign's runs (config ids also land in expandedItems, so filter to
-  // real campaigns). A single query per campaign feeds its whole subtree; `runsQuery` decides for
-  // itself whether that campaign's rows come from the index or, while it is still running, from its
-  // output directories.
+  // real campaigns). A single query per campaign feeds its whole subtree.
   const expandedCampaigns = expandedItems.filter((id) => byId.has(id))
   const runQueries = useQueries({
     queries: expandedCampaigns.map((id) => runsQuery(byId.get(id))),
@@ -131,20 +77,17 @@ export function ResultsTree({
   // once loaded, otherwise a single placeholder (loading / no-data hint).
   const items: ResultsTreeItem[] = campaigns.map((c) => {
     const base = campaignItem(c)
-    // Every campaign here either is finished+postprocessed, so it has a queryable store, or is
-    // being previewed while it runs, where the listing stands in for one. Either way there is a
-    // source to load from; go straight to the loading / real-subtree path.
+    // Every campaign here has recorded runs, so it has a store to read; go straight to the
+    // loading / real-subtree path.
     let children: ResultsTreeItem[]
     const q = runByCampaign.get(c.campaign_id)
     if (!q || q.isPending) {
       children = [placeholderChild(c.campaign_id, 'Loading…')]
     } else if (q.isError) {
       const msg = (q.error as Error).message
-      // `run_view` needs no measurements, only the ingested campaign record, so this is a campaign
-      // with no store to read at all (a deleted result dir) — not one
-      // whose metrics are merely absent, which is how a tree built from the postprocessed `runs`
-      // table would read it. A campaign still running never reaches here: its rows come from the
-      // listing, which answers an empty tree rather than failing.
+      // `run_view` needs no measurements, only the campaign record, so this is a campaign with no
+      // store to read at all (a deleted result dir) — not one whose metrics are merely absent,
+      // which is how a tree built from the postprocessed `runs` table would read it.
       children = [
         placeholderChild(
           c.campaign_id,

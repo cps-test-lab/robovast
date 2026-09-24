@@ -132,9 +132,9 @@ log "Started resource monitor (PID=${_monitor_pid}) -> ${OUTPUT_DIR}/resource_us
 # with the pod. The pod's uploader container delivers it once every container has said it
 # is finished writing, and this container says so with its done marker: after its workload
 # has exited and its resource monitor has stopped, so the CSV is complete before anything
-# reads it. The simulator's run.npz and capture/ exist only at shutdown (an .npz writes its
-# zip index at close), which is why the workload is stopped, and reaped, before the marker
-# is written rather than left running until the kubelet's TERM.
+# reads it. The simulator's recording is complete only once its writer closes (an MCAP
+# writes its index at close), which is why the workload is stopped, and reaped, before the
+# marker is written rather than left running until the kubelet's TERM.
 #
 # The workload is stopped when the SCENARIO says it is finished, by the main container's
 # own marker; where it is never written (a bind-mounted /out), a sidecar simply holds.
@@ -152,7 +152,7 @@ _post_run() {
 
 # Run the workload as a child and forward SIGTERM, so it shuts down the way it would have
 # as PID 1 -- `roqsim sim` traps it to flush its recording, and a hard kill would leave the
-# .npz without its index. `wait` returns >128 when a trapped signal interrupts it, hence
+# recording without its index. `wait` returns >128 when a trapped signal interrupts it, hence
 # the loop: the second wait is the one that reaps.
 _child=""
 _sleeper=""

@@ -25,7 +25,7 @@ happens to finish. The protocol is three parties and one directory:
 * each sidecar stops its workload on seeing that and writes ``/ipc/done.<name>`` once its
   own monitor has stopped (``secondary_entrypoint.sh``);
 * the file agent (``robovast/execution/data/file_agent.py``, container
-  :data:`AGENT_CONTAINER`) ships the growth of the run's line files while it runs, and
+  :data:`AGENT_CONTAINER`) ships the growth of the run's line files and bags while it runs, and
   writes ``/ipc/done.agent`` after its final drain once the others have finished;
 * this container waits for every marker it was told to, then streams ``/out`` as one tar
   into ``PUT /campaigns/<id>/outputs`` (:func:`~.pod_access.deliver_command`). Waiting for
@@ -98,14 +98,6 @@ AGENT_RESOURCES = {
 #: best effort -- a tree larger than the window allows is lost with the pod, and a
 #: longer window holds every stopped pod's resources for that much longer.
 UPLOAD_TERMINATION_GRACE = 120
-
-#: roqsim's live sample stream, packed into ``run.npz`` at close and unlinked. Excluded
-#: only from the upload a TERM forces: a run whose recorder is still writing has no archive
-#: to keep beside the stream, and roqsim documents the stream a hard kill leaves as
-#: forensics whose signal is the archive's absence. Once every marker exists nothing is
-#: still being written, so the ordinary upload excludes nothing.
-IN_PROGRESS_SUFFIX = ".part"
-
 
 _SCRIPT = r'''#!/bin/sh
 # The uploader of one scenario pod: see robovast.execution.cluster_execution.pod_upload.
@@ -181,10 +173,6 @@ deliver() {
     ( cd "${OUT_DIR}" && @@DELIVER@@ ) 2>"${IPC_DIR}/.upload.err"
 }
 
-deliver_in_progress() {
-    ( cd "${OUT_DIR}" && @@DELIVER_IN_PROGRESS@@ ) 2>"${IPC_DIR}/.upload.err"
-}
-
 # The HTTP status behind a curl exit 22, or nothing when the failure was not an HTTP one.
 http_status() {
     sed -n 's/.*returned error: \([0-9][0-9][0-9]\).*/\1/p' "${IPC_DIR}/.upload.err" | head -n 1
@@ -234,11 +222,12 @@ upload_with_retries() {
 
 # A TERM before the result was delivered: the pod is being torn down -- a stop, a restart
 # the runner acted on, a deadline -- and whatever /out holds is the evidence of why. One
-# attempt, with the streams still being written left out.
+# attempt, of everything there: a recording cut short is readable up to its last complete
+# chunk, and is the forensics of the kill.
 upload_on_term() {
     log "WARNING: terminated before the result was delivered; uploading what ${OUT_DIR} holds"
     rc=0
-    deliver_in_progress || rc=$?
+    deliver || rc=$?
     if [ "${rc}" -eq 0 ]; then
         log "delivered on termination"
         return 0
@@ -286,9 +275,7 @@ def uploader_script(campaign_id: str, wait_for: "list[str]", grace_s: int = UPLO
             .replace("@@GRACE_S@@", str(int(grace_s)))
             .replace("@@ATTEMPTS@@", str(int(attempts)))
             .replace("@@BACKOFF_S@@", str(int(backoff_s)))
-            .replace("@@DELIVER@@", deliver_command(".", route))
-            .replace("@@DELIVER_IN_PROGRESS@@",
-                     deliver_command(".", route, exclude=(f"*{IN_PROGRESS_SUFFIX}",))))
+            .replace("@@DELIVER@@", deliver_command(".", route)))
 
 
 def uploader_command(campaign_id: str, wait_for: "list[str]",
@@ -314,6 +301,6 @@ def agent_command(wait_for: "list[str]", grace_s: int = AGENT_GRACE_SECONDS) -> 
 
 
 __all__ = ["AGENT_CONTAINER", "AGENT_GRACE_SECONDS", "AGENT_RESOURCES", "AGENT_SCRIPT",
-           "IN_PROGRESS_SUFFIX", "IPC_DIR_ENV", "OUT_DIR", "OUT_DIR_ENV", "UPLOADER_CONTAINER",
+           "IPC_DIR_ENV", "OUT_DIR", "OUT_DIR_ENV", "UPLOADER_CONTAINER",
            "UPLOADER_RESOURCES", "UPLOAD_GRACE_SECONDS", "UPLOAD_TERMINATION_GRACE", "agent_command",
            "done_marker", "uploader_command", "uploader_script"]

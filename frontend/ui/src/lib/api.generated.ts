@@ -1170,6 +1170,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/data/campaigns/{campaign_id}/frame": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Campaign Frame
+         * @description One camera frame of a run as ``image/jpeg``, no wider than 640 px.
+         *
+         *     The last frame at or before ``t``, the first when none is; the newest without
+         *     ``t``. Its stamp, in the seconds every table of the run uses, is the
+         *     ``X-Frame-Time`` header. A live run's frame comes from the watcher following its
+         *     recording, a finished run's from an index built on first request. ``404`` for a
+         *     run without the topic or with no frame of it yet, with the reason.
+         */
+        get: operations["get_campaign_frame_data_campaigns__campaign_id__frame_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/frame-index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Campaign Frame Index
+         * @description The stamp of every frame of a run's image topic, in recording order.
+         *
+         *     What a scrubber steps through: the moments ``GET .../frame?t=`` answers exactly.
+         *     The same sources as the frame route; ``404`` for a run without the topic.
+         */
+        get: operations["get_campaign_frame_index_data_campaigns__campaign_id__frame_index_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/data/campaigns/{campaign_id}/inputs": {
         parameters: {
             query?: never;
@@ -1187,6 +1236,41 @@ export interface paths {
          *     the campaign's copy.
          */
         get: operations["download_campaign_inputs_data_campaigns__campaign_id__inputs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Campaign Live
+         * @description Stream a run's tables as they are decoded while it records, as server-sent events.
+         *
+         *     A ``batch`` event carries ``{"table": name, "rows": [...]}`` -- at most
+         *     :data:`LIVE_FRAME_ROWS` rows, so one decoded batch may be several events -- and
+         *     a table's batches add up to what a query of the finished run gives. A table the
+         *     run's recordings do not carry yet is followed from the moment a topic that gives it
+         *     appears. With ``frames``, a ``frame`` event per named image topic carries
+         *     ``{"topic", "t", "jpeg_base64"}``, the newest frame, at most every
+         *     :data:`LIVE_FRAME_S` seconds and only while it changes. ``heartbeat`` after
+         *     :data:`LIVE_HEARTBEAT_S` seconds of silence. ``eof`` once the run has its verdict
+         *     and its recordings are closed and read to their end; at once for a run that is not
+         *     live, since its rows are all there for a query. ``streamerror`` then ``eof`` for a
+         *     campaign or run that is not here, a run key or table list that is not one, and a
+         *     client that fell :data:`~robovast.service.live.QUEUE_MAX` batches behind, which is
+         *     dropped rather than buffered without bound. A non-finite float is ``null`` in a
+         *     row, a timestamp its ISO text, and bytes base64.
+         */
+        get: operations["stream_campaign_live_data_campaigns__campaign_id__live_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2143,7 +2227,7 @@ export interface components {
          * @description The run-view panels for a campaign: the ones its snapshot ``.vast``
          *     declares under ``visualization.results.run_view.panels``, plus the
          *     contributed ones no ``.vast`` has to write (the ``playback`` transport
-         *     always, a ``scene3d`` for a simulator that records a capture). Each entry
+         *     always, a ``scene3d`` for a simulator that records its scene state). Each entry
          *     is the flattened panel dict (``type`` + ``position`` + panel-specific data
          *     bindings), rendered by the web run-view against the campaign's results tables.
          *     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
@@ -2730,6 +2814,16 @@ export interface components {
              * @default
              */
             sha256: string;
+        };
+        /**
+         * FrameTimes
+         * @description The stamps of every frame of one image topic of a run, in seconds of the run's clock.
+         */
+        FrameTimes: {
+            /** Times */
+            times: number[];
+            /** Topic */
+            topic: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -6778,11 +6872,130 @@ export interface operations {
             };
         };
     };
+    get_campaign_frame_data_campaigns__campaign_id__frame_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the image topic */
+                topic: string;
+                /** @description a moment in seconds of the run's clock; the newest frame without it */
+                t?: number | null;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": unknown;
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_frame_index_data_campaigns__campaign_id__frame_index_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the image topic */
+                topic: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FrameTimes"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_campaign_inputs_data_campaigns__campaign_id__inputs_get: {
         parameters: {
             query: {
                 job: string[];
                 config_file?: string[];
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_campaign_live_data_campaigns__campaign_id__live_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the tables to follow, comma-separated */
+                tables: string;
+                /** @description image topics whose newest frame to send as it changes, comma-separated */
+                frames?: string;
             };
             header?: never;
             path: {

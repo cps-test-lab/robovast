@@ -180,6 +180,11 @@
       "Union[list[str], NoneType]"
     ],
     [
+      "recording",
+      false,
+      "Union[RecordingConfig, NoneType]"
+    ],
+    [
       "results_processing",
       false,
       "Union[ResultsConfig, NoneType]"
@@ -692,6 +697,23 @@
       "ignore"
     ]
   ],
+  "RecordingConfig": [
+    [
+      "roqsim",
+      false,
+      "Union[RoqsimRecordingConfig, NoneType]"
+    ],
+    [
+      "ros2",
+      false,
+      "Union[Ros2RecordingConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "RepetitionsConfig": [
     [
       "max",
@@ -803,6 +825,55 @@
       "run_view",
       false,
       "Union[RunViewConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "RoqsimRecordingConfig": [
+    [
+      "exclude",
+      false,
+      "list[str]"
+    ],
+    [
+      "rate_hz",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "tracks",
+      false,
+      "Union[Literal[all], list[str]]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "Ros2RecordingConfig": [
+    [
+      "exclude",
+      false,
+      "list[str]"
+    ],
+    [
+      "exclude_types",
+      false,
+      "list[str]"
+    ],
+    [
+      "topics",
+      false,
+      "Union[Literal[all], list[str]]"
+    ],
+    [
+      "use_sim_time",
+      false,
+      "bool"
     ],
     [
       "<extra>",

@@ -126,6 +126,7 @@ def campaign_container_plan(campaign_dir: Path):
         plan_containers  # pylint: disable=import-outside-toplevel
     from robovast.common.results_utils import \
         campaign_vast  # pylint: disable=import-outside-toplevel
+    from robovast.common.config import recording_config  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
 
     try:
@@ -138,7 +139,8 @@ def campaign_container_plan(campaign_dir: Path):
     if not isinstance(execution, dict):
         return None
     try:
-        execution = apply_backend(dict(execution), str(Path(vast_path).parent))
+        execution = apply_backend(dict(execution), str(Path(vast_path).parent),
+                                  recording=recording_config(raw.get("recording")))
     except Exception:  # noqa: BLE001 - a missing/incompatible backend must not hide the plan
         pass
     try:

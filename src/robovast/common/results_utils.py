@@ -169,10 +169,13 @@ def campaign_execution(campaign_dir) -> dict:
     against the tree the campaign actually ran with rather than against whatever is on disk now.
     """
     from robovast.common.common import load_config
+    from robovast.common.config import recording_config
     from robovast.common.simulators import apply_backend
     vast = campaign_vast(campaign_dir)
     execution = load_config(str(vast), subsection="execution", allow_missing=True) or {}
-    return apply_backend(execution, base_dir=str(vast.parent))
+    recording = load_config(str(vast), subsection="recording", allow_missing=True)
+    return apply_backend(execution, base_dir=str(vast.parent),
+                         recording=recording_config(recording or None))
 
 
 def find_campaign_vast_file(results_dir: str) -> tuple[Optional[str], Optional[str]]:
