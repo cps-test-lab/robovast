@@ -38,7 +38,7 @@ components:
   # sharing the default empty prefix collide on that name and MuJoCo refuses the model.
   - box:
       prefix: "pad_"
-      pos: [0.0, 0.0, 0.002]
+      pose: {position: {x: 0.0, y: 0.0, z: 0.002}}
       size: [0.5, 0.5, 0.004]
       color: [0.16, 0.42, 0.72, 1.0]
       collide: false
@@ -46,11 +46,11 @@ components:
 
   # Waypoint markers, so the commanded course is visible in the scene rather than only in the
   # config. Same reason as the pad: visual only.
-  - box: {prefix: "wp1_", pos: [1.2, 1.2, 0.002], size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+  - box: {prefix: "wp1_", pose: {position: {x: 1.2, y: 1.2, z: 0.002}}, size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp1
-  - box: {prefix: "wp2_", pos: [-1.2, 1.2, 0.002], size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+  - box: {prefix: "wp2_", pose: {position: {x: -1.2, y: 1.2, z: 0.002}}, size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp2
-  - box: {prefix: "wp3_", pos: [-1.2, -1.2, 0.002], size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
+  - box: {prefix: "wp3_", pose: {position: {x: -1.2, y: -1.2, z: 0.002}}, size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp3
 
   # Furniture: a fixed scale reference to judge drift against, and something real to hit when the
@@ -58,11 +58,11 @@ components:
   # `workbench` ones -- those resolve their meshes from the private asset package, and an example
   # that anyone can clone must not depend on assets they cannot get. The whole room is therefore
   # readable in this file.
-  - box: {prefix: "pillar_e_", pos: [2.2, 0.0, 0.9], size: [0.35, 1.4, 1.8], color: [0.62, 0.64, 0.67, 1.0]}
+  - box: {prefix: "pillar_e_", pose: {position: {x: 2.2, y: 0.0, z: 0.9}}, size: [0.35, 1.4, 1.8], color: [0.62, 0.64, 0.67, 1.0]}
     name: pillar_east
-  - box: {prefix: "bench_w_", pos: [-2.2, 0.6, 0.45], size: [0.7, 1.6, 0.9], color: [0.55, 0.42, 0.30, 1.0]}
+  - box: {prefix: "bench_w_", pose: {position: {x: -2.2, y: 0.6, z: 0.45}}, size: [0.7, 1.6, 0.9], color: [0.55, 0.42, 0.30, 1.0]}
     name: bench_west
-  - box: {prefix: "crate_", pos: [0.9, -2.0, 0.35], size: [0.6, 0.4, 0.7], color: [0.72, 0.60, 0.44, 1.0]}
+  - box: {prefix: "crate_", pose: {position: {x: 0.9, y: -2.0, z: 0.35}}, size: [0.6, 0.4, 0.7], color: [0.72, 0.60, 0.44, 1.0]}
     name: crate
 
   # -- the drone --------------------------------------------------------------------------------
@@ -71,7 +71,8 @@ components:
   - spawn_robot:
       model: crazyflie_2
       prefix: "cf2_"
-      pos: [0.0, 0.0]           # on the pad; the drone takes off from the floor
+      pose:
+        position: {x: 0.0, y: 0.0}   # on the pad; the drone takes off from the floor
       # Endpoint-producing plugins under this entity inherit the namespace, so the controller's
       # `cmd_pos` / `odom` land on /drone/... rather than bare /cmd_pos. Without it a second drone
       # would collide on the topic names.
