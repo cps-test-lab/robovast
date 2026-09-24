@@ -150,8 +150,10 @@ class _FakeCatalogClient:
         self._exit_code = exit_code
         self.commands = []
 
+    image = "ghcr.io/example/robovast-roqsim:2.1.0"
+
     def resolve_image(self, request):
-        return types.SimpleNamespace(image="ghcr.io/example/robovast-roqsim:2.1.0")
+        return types.SimpleNamespace(image=self.image)
 
     def exec_in_container(self, request):
         self.commands.append((request.container, request.command))
@@ -175,14 +177,29 @@ def test_the_image_answers_for_its_own_pages(tmp_path, monkeypatch):
     client = _FakeCatalogClient({"interfaces": "World YAML\n==========\n\ncomponents list\n"})
     _with_image(monkeypatch, client)
 
-    pages, error = docs._upstream_pages("/sources/ws-1/w.vast")
+    pages, image, error = docs._upstream_pages("/sources/ws-1/w.vast")
 
     assert not error
+    assert image == client.image, "the corpus is identified by the image, not by the address"
     assert "roqsim-interfaces" in pages, "served under the corpus's own prefix"
     assert pages["roqsim-interfaces"][0] == "World YAML"
     container, command = client.commands[0]
     assert container == "simulation", "roqsim lives in the simulator's image"
     assert "/opt/roqsim/docs" in command, "the source tree the image already carries"
+
+
+def test_the_ranking_follows_the_image_an_address_now_resolves_to(monkeypatch):
+    """One address outlives the image behind it. The pages are refetched when it moves, so the
+    ranking has to move with them rather than answer from the ones it was first built over."""
+    client = _FakeCatalogClient({"interfaces": "Old\n===\n\nzebra\n"})
+    _with_image(monkeypatch, client)
+    docs.search_docs(query="zebra", address="/sources/ws-1/w.vast")
+
+    client.image = "ghcr.io/example/robovast-roqsim:2.2.0"
+    client._pages = {"interfaces": "New\n===\n\nquagga\n"}
+
+    assert docs.search_docs(query="quagga", address="/sources/ws-1/w.vast")["total"] == 1
+    assert docs.search_docs(query="zebra", address="/sources/ws-1/w.vast")["total"] == 0
 
 
 def test_a_search_without_an_address_stays_cheap_and_says_where_else_to_look(monkeypatch):
