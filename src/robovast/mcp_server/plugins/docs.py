@@ -512,9 +512,14 @@ def _warm() -> None:
         logger.debug("could not warm the upstream documentation: %s", e)
 
 
-def _listing_row(name: str, source: str = "") -> dict:
-    """One page as a listing shows it."""
-    return {"name": name, "title": _doc_meta[name] if not source else name,
+def _listing_row(name: str, title: str, source: str = "") -> dict:
+    """One page as a listing shows it.
+
+    The title is passed in rather than looked up here: ``_doc_meta`` holds only the pages this
+    process loaded at import, and half a corpus now comes from an image. A listing is what a
+    page is chosen from, so a row whose title restates its name spends a column saying nothing.
+    """
+    return {"name": name, "title": title,
             "source": source or _doc_source.get(name, "robovast")}
 
 
@@ -626,7 +631,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         return {"page": page, "title": titles[page], "content": texts[page]}
 
     if not query:
-        pages = [_listing_row(name, _upstream_label(name) if name in upstream else "")
+        pages = [_listing_row(name, titles[name],
+                              _upstream_label(name) if name in upstream else "")
                  for name in sorted(texts)]
         out = {"pages": pages, "total": len(pages)}
         if upstream_error:

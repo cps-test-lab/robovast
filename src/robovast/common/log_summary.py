@@ -68,6 +68,37 @@ _RELAY_RE = re.compile(rf"^(?P<container>[\w.-]+\s+\|\s+)?(?P<stamp>{_STAMP})")
 #: A line's own stamp, anchored at the start (after any relay prefix is gone).
 _STAMP_RE = re.compile(rf"^{_STAMP}")
 
+#: The stamp RoboVAST's OWN logging writes, which is what a campaign's infrastructure log
+#: is made of: ``2026-01-02 03:04:05 INFO robovast.service.app: message``, with the logger
+#: name absent in the one configuration that omits it. Recognizing only the ROS shape above
+#: left every line of that log unmarked, so its ERROR lines classified as ``warn`` -- a
+#: ``min_severity="error"`` read of a campaign that failed returned nothing at all -- while
+#: its INFO lines that merely mention "error" classified as ``warn`` too, which is the
+#: false positive :func:`severity_of` says a level marker exists to prevent.
+_PY_STAMP = (r"(?P<pyt>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\s+"
+             rf"(?P<pylevel>{_LEVELS})\s+"
+             r"(?:(?P<pyname>[\w.]+):\s+)?")
+
+_PY_STAMP_RE = re.compile(rf"^{_PY_STAMP}")
+
+
+def _py_wall_ts(stamp: str) -> "float | None":
+    """*stamp* as an epoch, or ``None`` if it will not parse.
+
+    ``asctime`` is local time with no zone in it, so this reads it as local -- the only
+    reading that recovers the moment the producer meant. A stamp that does not parse yields
+    no timestamp rather than a wrong one.
+    """
+    from datetime import datetime  # noqa: PLC0415
+    text = stamp.replace("T", " ").replace(",", ".")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 #: A launch-style ``[node-3] `` tag — the other way a line names its producer.
 _LAUNCH_TAG_RE = re.compile(r"^\[(?P<node>[\w.-]+?)-\d+\]\s+")
 
@@ -145,6 +176,14 @@ def peel_prefixes(line: str) -> LogLine:
         if m:
             node, level = m.group("node"), m.group("level")
             wall_ts = float(m.group("t"))
+            rest = rest[m.end():]
+            continue
+        m = _PY_STAMP_RE.match(rest)
+        if m:
+            level = m.group("pylevel")
+            if m.group("pyname"):
+                node = m.group("pyname")
+            wall_ts = _py_wall_ts(m.group("pyt"))
             rest = rest[m.end():]
             continue
         m = _LAUNCH_TAG_RE.match(rest)

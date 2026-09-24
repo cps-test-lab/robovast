@@ -318,9 +318,12 @@ an ``architecture`` page and neither shadows the other, and every listing row ca
 ``source``. The image says which corpus each page belongs to; a reader deriving it from the
 path would be a second answer to that question.
 
-The corpus is fetched once per resolved image, and warmed when the server starts so the first
-question does not pay for it. The resolution runs on every search -- it costs no container --
-so a redeployed image is picked up by the next one.
+The corpus is fetched once per resolved image, however many callers ask at once: a fetch costs
+a container and a whole corpus over the wire, so a caller arriving while one is running waits
+for it rather than starting a second. Warming begins when the server is constructed, which is
+what makes the fetch already done by the time most questions arrive -- a question asked inside
+that window waits for it, and pays what it would have paid anyway. The resolution runs on every
+search -- it costs no container -- so a redeployed image is picked up by the next one.
 
 **When the upstream half is missing** -- the service unreachable, or an image that carries no
 pages -- RoboVAST's own pages still answer and the reply carries an ``incomplete`` field
