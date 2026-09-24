@@ -170,6 +170,11 @@ examples-manifest: ## Regenerate configs/examples/MANIFEST from the git index
 check-examples-manifest: ## Fail if configs/examples/MANIFEST is out of date
 	@python3 tools/examples_manifest.py --check
 
+.PHONY: source-pin
+source-pin: ## Set one source pin everywhere it appears, e.g. `make source-pin PIN=ROQSIM_REF=main`
+	@test -n "$(PIN)" || { echo "usage: make source-pin PIN=<NAME>_REF=<sha|branch|tag>"; exit 2; }
+	@python3 tools/refresh_source_pins.py --set "$(PIN)"
+
 .PHONY: check-source-pins
 check-source-pins: ## Fail if one source repo is pinned at two different commits
 	@python3 tools/refresh_source_pins.py --check

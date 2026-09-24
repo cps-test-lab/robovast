@@ -11,6 +11,7 @@ record of that decision.
     python3 tools/refresh_source_pins.py --ask      # report, then offer to apply it
     python3 tools/refresh_source_pins.py --write    # rewrite the Dockerfile ARGs, no question asked
     python3 tools/refresh_source_pins.py --check    # fail if one source is pinned twice, differently
+    python3 tools/refresh_source_pins.py --set ROQSIM_REF=<sha|branch|tag>   # one pin, everywhere
 
 ``--ask`` is what the Makefile uses, because the decision needs the diff in front of it: the report
 IS the question, and answering it from a flag means committing to the answer before seeing what it
@@ -77,6 +78,77 @@ def _resolve_head(url: str, branch: str) -> "str | None":
     return None
 
 
+def _resolve_any(url: str, ref: str) -> "str | None":
+    """The commit *ref* names in *url*: a sha as given, otherwise a branch or tag resolved."""
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        return ref
+    try:
+        result = subprocess.run(["git", "ls-remote", url, ref, f"refs/heads/{ref}",
+                                 f"refs/tags/{ref}"],
+                                capture_output=True, text=True, check=False, timeout=_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    # A tag can resolve to the tag object and to what it points at; the dereferenced line
+    # (`^{}`) is the commit, so it wins where both are listed.
+    best = None
+    for line in result.stdout.splitlines():
+        sha, _, name = line.partition("\t")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            continue
+        if name.strip().endswith("^{}"):
+            return sha
+        best = best or sha
+    return best
+
+
+def _set_pin(spec: str) -> int:
+    """Write one ``<NAME>_REF`` to every Dockerfile that pins it. ``NAME_REF=<sha|branch|tag>``.
+
+    The pin is repeated because each Dockerfile has to build on its own, so changing it by hand
+    means changing every copy and remembering which files those are. This is that edit as one
+    command: the copies are an implementation detail of the build, not something to maintain.
+    """
+    name, _, ref = spec.partition("=")
+    name = name.removesuffix("_REF")
+    if not name or not ref:
+        print(f"--set takes NAME_REF=<sha|branch|tag>, got {spec!r}", file=sys.stderr)
+        return 2
+
+    targets, url = [], None
+    for rel in _DOCKERFILES:
+        path = _REPO / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in _REF_PIN.finditer(text):
+            if match.group("name") == name:
+                targets.append((path, rel, match.group("sha")))
+                url = url or _repo_url(text, name)
+    if not targets:
+        print(f"no {name}_REF pin in any of: {', '.join(_DOCKERFILES)}", file=sys.stderr)
+        return 1
+    if url is None:
+        print(f"{name}_REF has no {name}_REPO beside it, so {ref!r} cannot be resolved",
+              file=sys.stderr)
+        return 1
+
+    sha = _resolve_any(url, ref)
+    if sha is None:
+        print(f"cannot resolve {ref!r} in {url}", file=sys.stderr)
+        return 1
+
+    for path, rel, old in targets:
+        if old == sha:
+            print(f"{rel}: {name}_REF already {sha}")
+            continue
+        path.write_text(path.read_text(encoding="utf-8").replace(
+            f"ARG {name}_REF={old}", f"ARG {name}_REF={sha}"), encoding="utf-8")
+        print(f"{rel}: {name}_REF {old} -> {sha}")
+    return 0
+
+
 def _disagreements() -> "list[str]":
     """One source pinned at two commits, as lines to report.
 
@@ -112,10 +184,16 @@ def main() -> int:
     pin_prompt.add_arguments(parser)
     parser.add_argument("--branch", default="main",
                         help="Branch to resolve in every source repo (default: main).")
+    parser.add_argument("--set", dest="set_pin", metavar="NAME_REF=REF",
+                        help="Set one pin in every Dockerfile that carries it. REF is a sha, "
+                             "a branch or a tag; everything else is left alone.")
     parser.add_argument("--check", action="store_true",
                         help="Fail if one source is pinned at two different commits. "
                              "Offline: it reads the committed pins and asks no remote.")
     args = parser.parse_args()
+
+    if args.set_pin:
+        return _set_pin(args.set_pin)
 
     if args.check:
         problems = _disagreements()
