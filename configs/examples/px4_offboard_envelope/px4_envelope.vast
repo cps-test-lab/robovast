@@ -1,4 +1,4 @@
-version: 3
+version: 4
 
 metadata:
   name: px4_offboard_envelope
