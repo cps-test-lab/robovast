@@ -29,9 +29,12 @@ The docs directory is resolved in this order:
 
 import importlib
 import inspect
+import json as _json
 import logging
 import os
 import re
+import sqlite3
+import threading
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -420,6 +423,56 @@ for _name, (_path, _kind, _from) in _sources.items():
         _doc_content[_name] = _text
 
 
+#: Replies above this are a sample rather than an answer, so the excerpts are dropped and the
+#: pages are named instead. Measured, not guessed: a term as common as "campaign" matches 27 of
+#: 27 pages, and five excerpts from each is ~15k tokens of arbitrary sample.
+_REPLY_BUDGET_CHARS = 16_000
+
+#: How many pages a digest names. Ranked by score, so this is the head of a ranking rather than
+#: the front of an alphabet.
+_DIGEST_PAGES = 12
+
+_index_lock = threading.Lock()
+#: corpus key -> an FTS5 index over it. Built once; the corpus is fixed per key.
+_indexes: "dict[str, sqlite3.Connection]" = {}
+
+
+def _match_expression(query: str) -> str:
+    """*query* as FTS5 MATCH: each word a quoted prefix term, ANDed.
+
+    Quoted because a word may carry punctuation an operator would claim (``sim:``, ``--push``),
+    and a search is for what was typed rather than for a query language nobody was offered. The
+    ``*`` keeps a stem finding its plural, which substring matching gave for free.
+    """
+    words = [w for w in re.split(r"\s+", query.strip()) if w]
+    return " ".join('"' + w.replace('"', '""') + '"*' for w in words)
+
+
+def _index(pages: "dict[str, str]", key: str) -> "sqlite3.Connection":
+    """An FTS5 index over *pages*, built once per *key*."""
+    with _index_lock:
+        conn = _indexes.get(key)
+        if conn is None:
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
+            conn.execute("CREATE VIRTUAL TABLE pages USING fts5(name UNINDEXED, body)")
+            conn.executemany("INSERT INTO pages VALUES (?, ?)", pages.items())
+            _indexes[key] = conn
+        return conn
+
+
+def _ranked(pages: "dict[str, str]", key: str, query: str) -> "list[str]":
+    """Page names matching *query*, best first. Empty for a query FTS5 cannot parse."""
+    match = _match_expression(query)
+    if not match:
+        return []
+    try:
+        rows = _index(pages, key).execute(
+            "SELECT name FROM pages WHERE pages MATCH ? ORDER BY bm25(pages)", (match,))
+        return [name for (name,) in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
 def _listing_row(name: str, source: str = "") -> dict:
     """One page as a listing shows it."""
     return {"name": name, "title": _doc_meta[name] if not source else name,
@@ -534,13 +587,19 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                  for name in sorted(texts)]
         return {"pages": pages, "total": len(pages)}
 
+    # Which pages, and in what order: BM25 over the corpus, so the first result is the best one
+    # rather than the first alphabetically.
+    key = f"{UPSTREAM_LABEL}:{address}" if upstream else "robovast"
+    ranked = _ranked(texts, key, query)
+    words = [w.lower() for w in query.split() if w]
+
     results = []
     matching_lines_total = 0
     truncated = False
-    query_lower = query.lower()
-    for name in sorted(texts):
+    for name in ranked:
         lines = texts[name].splitlines()
-        hits = [i for i, line in enumerate(lines) if query_lower in line.lower()]
+        hits = [i for i, line in enumerate(lines)
+                if any(w in line.lower() for w in words)]
         if not hits:
             continue
         matches, excerpts_total = _excerpts(lines, hits, limit)
@@ -552,6 +611,20 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                         "truncated": cut})
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if len(_json.dumps(out)) > _REPLY_BUDGET_CHARS:
+        # Excerpts from every page that matched a common term are a sample, not an answer, and
+        # the sample costs more than the pages it samples. Named instead, best first, so the
+        # next call is a read rather than another guess.
+        named = [{"page": r["page"], "title": r["title"],
+                  "matching_lines": r["matching_lines"]} for r in results[:_DIGEST_PAGES]]
+        return {"results": named, "total": len(results), "digest": True,
+                "matching_lines_total": matching_lines_total,
+                "note": (f"{query!r} matches {matching_lines_total} lines across "
+                         f"{len(results)} pages, so excerpts of it would be a sample. These "
+                         f"are the best-matching pages, in order. Read one with "
+                         f"search_docs(page=\"{named[0]['page']}\"" +
+                         (f", address=...)" if upstream else ")") +
+                         ", or narrow the term.")}
     if not results and not address:
         # Zero reads as "no such thing". These are RoboVAST's pages only, and the world
         # format and plugin reference live with the simulator.
