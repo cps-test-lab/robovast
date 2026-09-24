@@ -195,7 +195,7 @@ world/flight_room.xml          the room itself: 20 x 20 m, floor, walls, lightin
 files/px4_start.sh             the px4 container's command: install airframe, start SITL
 files/10020_none_x500          the airframe PX4 does not ship (see the finding above)
 files/offboard_stream.py       the 20 Hz OffboardControlMode + TrajectorySetpoint stream
-files/metrics.py               odometry + PX4 estimate -> trajectory.csv + metrics.csv
+files/metrics.py               sim_poses.csv + PX4 estimate -> trajectory.csv + metrics.csv
 ```
 
 ## Three things worth knowing before you copy it
@@ -251,9 +251,12 @@ sources, and the primary one is PX4's estimate:
 - `/fmu/out/vehicle_local_position_v1` — what EKF2 believed, and therefore what PX4 actually flew
   on. The tracking metrics are computed against it, because that is what a real flight test
   measures: a field test has no ground truth, only an autopilot log.
-- `/drone/odom` — ground truth from the roqsim bridge, which the field cannot have. Kept because
-  the *difference* between the two is a first-class observable that did not exist in the other
-  example: with a controller reading ground truth, belief and truth were the same object.
+- `sim_poses.csv` — ground truth from the simulator's own pose table, which the field cannot
+  have. Not a topic: in roqsim odometry is published by a controller or a drive, and this airframe
+  has neither, so the truth is read from the record roqsim writes for every named body of every
+  run. Kept because the *difference* between the two is a first-class observable that did not
+  exist in the other example: with a controller reading ground truth, belief and truth were the
+  same object.
 
 The outcome label stays three-valued in spirit and gains a fourth, because a real flight stack has
 one more way to fail than a PD loop does:

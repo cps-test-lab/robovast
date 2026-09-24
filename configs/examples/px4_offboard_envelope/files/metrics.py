@@ -19,12 +19,17 @@ in a way worth understanding before copying either file.
     vehicle held the course *it thought it was holding*. Measuring against simulator ground truth
     would answer a question no field test can ask.
 
-``/drone/odom``
-    Ground truth, from the roqsim bridge, in ENU. Kept because the simulator can answer the
-    question the field cannot, and the difference between the two is itself an observable:
-    ``mean_estimator_error`` is how far EKF2's belief drifted from reality. In the Crazyflie
-    example there was no such quantity to have -- the controller read ground truth directly, so
-    belief and truth were the same object.
+``sim_poses.csv``
+    Ground truth, from the simulator's own pose table, in ENU. roqsim writes it for every named
+    body of every run, which is why the truth comes from here and not from a ROS topic: in roqsim
+    odometry is what a controller or a drive publishes, and this airframe deliberately has neither
+    -- its stabiliser is PX4. Kept because the simulator can answer the question the field cannot,
+    and the difference between the two is itself an observable: ``mean_estimator_error`` is how
+    far EKF2's belief drifted from reality. In the Crazyflie example there was no such quantity to
+    have -- the controller read ground truth directly, so belief and truth were the same object.
+
+    Both sources are on the SIMULATED clock -- the pose table by construction, the bag because the
+    scenario records with ``use_sim_time`` -- so they pair without rebasing either.
 
 **NED vs ENU is reconciled exactly once, here.** PX4 is [north, east, DOWN]; roqsim is [east,
 north, up]. The conversion is
@@ -55,14 +60,15 @@ from robovast.results_processing.postprocessing_plugins import \
 CRUISE_Z = 3.0
 COURSE = [(5.0, 5.0), (-5.0, 5.0), (-5.0, -5.0), (0.0, 0.0)]
 
-#: The cruise window, in seconds from the first sample: after the climb has settled and **before**
-#: the landing is commanded. Both ends matter. Without the lower bound the climb counts as failure
-#: to hold altitude; without the upper bound the commanded landing does, and since every run lands,
-#: the hold fraction then reads the same in every cell no matter what was varied -- a metric that
-#: looks like a measurement and discriminates nothing.
+#: The cruise window, in simulated seconds from the start of the run: after the climb has settled
+#: and **before** the landing is commanded. Both ends matter. Without the lower bound the climb
+#: counts as failure to hold altitude; without the upper bound the commanded landing does, and
+#: since every run lands, the hold fraction then reads the same in every cell no matter what was
+#: varied -- a metric that looks like a measurement and discriminates nothing.
 #:
 #: The window is later and longer than the Crazyflie example's because PX4 has to converge EKF2 and
-#: arm before anything flies: the bag starts at bringup, not at takeoff.
+#: arm before anything flies: the run starts at bringup, not at takeoff. How long EKF2 takes to
+#: converge is not fixed, so the window is a coarse cut, not a phase boundary.
 CRUISE_START_S = 20.0
 CRUISE_END_S = 80.0
 
@@ -82,6 +88,13 @@ HOLD_TOLERANCE_M = 0.5
 #: and the two failure modes are no longer separable by the tracking metrics.
 ESTIMATOR_DIVERGED_M = 1.0
 
+#: A timestamp above this is a Unix epoch, not a simulated second: no trial here runs for a year.
+WALL_CLOCK_SUSPECT_S = 3.0e7
+
+#: The MuJoCo body whose rows in ``sim_poses.csv`` are the flown airframe: the model's root body
+#: under the ``spawn_robot`` prefix the world declares (``x500_`` + ``x500``).
+TRUTH_FRAME = "x500_x500"
+
 
 def _quat_tilt_deg(x: float, y: float, z: float, w: float) -> float:
     """Angle between the body z axis and vertical, in degrees.
@@ -95,15 +108,6 @@ def _quat_tilt_deg(x: float, y: float, z: float, w: float) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, body_z))))
 
 
-def _rebase(rows: list[dict]) -> list[dict]:
-    if not rows:
-        return []
-    t0 = rows[0]["t"]
-    for row in rows:
-        row["t"] -= t0
-    return rows
-
-
 def _read_px4(path: Path) -> list[dict]:
     """VehicleLocalPosition as ENU samples: PX4's belief, converted once and here only.
 
@@ -111,9 +115,14 @@ def _read_px4(path: Path) -> list[dict]:
     solution the message is still published with zeros in the position fields, and taking those at
     face value puts the aircraft at the origin for the first seconds of every run -- which reads as
     a drone that sat on the pad, i.e. exactly the failure this campaign is trying to detect.
+
+    ``t`` is the bag's receive time on the SIMULATED clock (the scenario records with
+    ``use_sim_time``), in seconds, so it is directly comparable with the simulator's pose table. A
+    bag recorded on wall time would put every estimate decades away from every truth sample and
+    silently pair nothing, so that is refused by name rather than scored as "no estimate".
     """
     rows = []
-    with open(path, newline="") as handle:
+    with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             try:
                 if row.get("xy_valid", "True") in ("False", "false", "0"):
@@ -137,33 +146,45 @@ def _read_px4(path: Path) -> list[dict]:
                 # A malformed row is skipped rather than failing the run: one bad sample must not
                 # discard an otherwise complete flight.
                 continue
-    return _rebase(rows)
+    if rows and rows[0]["t"] > WALL_CLOCK_SUSPECT_S:
+        raise ValueError(
+            f"{path}: the first estimate is stamped {rows[0]['t']:.0f} s, which is a wall-clock "
+            f"epoch, not the simulated clock. The bag must be recorded with use_sim_time, or the "
+            f"estimate can never be paired with the simulator's pose table."
+        )
+    return rows
 
 
-def _read_odom(path: Path) -> list[dict]:
-    """Ground truth from the roqsim bridge, already ENU. Returns [] when the bag had no messages."""
+def _read_sim_poses(path: Path, frame: str) -> list[dict]:
+    """Ground truth from the simulator's own pose table, already ENU and on the simulated clock.
+
+    One body's rows are the trajectory. ``frame`` is the MuJoCo body name, which carries the
+    ``spawn_robot`` prefix. Returns [] when the table has no rows for it, which the caller counts.
+    """
     rows = []
-    with open(path, newline="") as handle:
+    with open(path, newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
+            if row.get("frame") != frame:
+                continue
             try:
                 rows.append(
                     {
-                        "t": float(row["timestamp"]) * 1e-9,
-                        "x": float(row["pose.pose.position.x"]),
-                        "y": float(row["pose.pose.position.y"]),
-                        "z": float(row["pose.pose.position.z"]),
-                        "qx": float(row["pose.pose.orientation.x"]),
-                        "qy": float(row["pose.pose.orientation.y"]),
-                        "qz": float(row["pose.pose.orientation.z"]),
-                        "qw": float(row["pose.pose.orientation.w"]),
-                        "vx": float(row["twist.twist.linear.x"]),
-                        "vy": float(row["twist.twist.linear.y"]),
-                        "vz": float(row["twist.twist.linear.z"]),
+                        "t": float(row["timestamp"]),
+                        "x": float(row["position.x"]),
+                        "y": float(row["position.y"]),
+                        "z": float(row["position.z"]),
+                        "qx": float(row["orientation.x"]),
+                        "qy": float(row["orientation.y"]),
+                        "qz": float(row["orientation.z"]),
+                        "qw": float(row["orientation.w"]),
+                        "vx": float(row["twist.linear.x"]),
+                        "vy": float(row["twist.linear.y"]),
+                        "vz": float(row["twist.linear.z"]),
                     }
                 )
             except (KeyError, ValueError, TypeError):
                 continue
-    return _rebase(rows)
+    return rows
 
 
 def _pair(truth: list[dict], est: list[dict]) -> list[Optional[dict]]:
@@ -303,7 +324,7 @@ def _metrics(traj: list[dict]) -> dict:
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
-    with open(path, "w", newline="") as handle:
+    with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
@@ -312,23 +333,24 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 class EnvelopeMetrics(BasePostprocessingPlugin):
 
     def __call__(self, results_dir: str, config_dir: str,
-                 odom_glob: str = "*drone_odom.csv",
+                 truth_glob: str = "sim_poses.csv",
+                 truth_frame: str = TRUTH_FRAME,
                  px4_glob: str = "*vehicle_local_position*.csv",
                  trajectory: str = "trajectory.csv",
                  file: str = "metrics.csv", force: bool = False, **kwargs) -> Tuple[bool, str]:
         written = skipped = empty = no_estimate = 0
-        for odom in sorted(Path(results_dir).rglob(odom_glob)):
-            run_dir = odom.parent
+        for poses in sorted(Path(results_dir).rglob(truth_glob)):
+            run_dir = poses.parent
             out = run_dir / file
             # Incremental: a re-run over the whole campaign only touches new runs. `force` redoes all.
-            if not force and out.exists() and out.stat().st_mtime >= odom.stat().st_mtime:
+            if not force and out.exists() and out.stat().st_mtime >= poses.stat().st_mtime:
                 skipped += 1
                 continue
-            truth = _read_odom(odom)
+            truth = _read_sim_poses(poses, truth_frame)
             if not truth:
-                # A run that produced no odometry is reported, not silently skipped: it means the
-                # simulator or the bridge never came up, which is a different problem from a drone
-                # that flew badly.
+                # A run with no rows for the airframe in its pose table is reported, not silently
+                # skipped: the simulator never came up, or the world spawned the body under another
+                # name (`truth_frame`), which is a different problem from a drone that flew badly.
                 empty += 1
                 continue
 
@@ -351,7 +373,7 @@ class EnvelopeMetrics(BasePostprocessingPlugin):
         if skipped:
             notes.append(f"{skipped} up-to-date")
         if empty:
-            notes.append(f"{empty} with no odometry")
+            notes.append(f"{empty} with no pose rows for {truth_frame!r}")
         if no_estimate:
             notes.append(f"{no_estimate} with NO PX4 position estimate")
         suffix = f" ({', '.join(notes)})" if notes else ""

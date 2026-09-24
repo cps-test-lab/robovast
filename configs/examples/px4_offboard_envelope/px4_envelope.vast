@@ -205,9 +205,10 @@ execution:
 
 results_processing:
   postprocessing:
-  # The bag -> CSV step must come first: EnvelopeMetrics reads what it writes. Both position
-  # sources, because the estimator error between them is itself a metric.
-  - rosbags_to_csv: {topics: [/fmu/out/vehicle_local_position_v1, /drone/odom]}
+  # The bag -> CSV step must come first: EnvelopeMetrics reads what it writes. PX4's belief comes
+  # from the bag; the ground truth it is compared against is the simulator's own sim_poses.csv,
+  # which every roqsim run already writes, so the estimator error needs no second topic.
+  - rosbags_to_csv: {topics: [/fmu/out/vehicle_local_position_v1]}
   - files/metrics.py:EnvelopeMetrics
 
 # --------------------------------------------------------------------------------------------
@@ -242,7 +243,7 @@ visualization:
       # would then show the first ten seconds and nothing after. 50 Hz keeps the tilt and speed
       # transients and lands well under the cap.
       #
-      # ENU, not NED: this plots the ground truth from /drone/odom, which is the simulator's frame.
+      # ENU, not NED: this plots the ground truth from sim_poses.csv, which is the simulator's frame.
       # The NED numbers live in the scenario and in PX4; they are converted once, in metrics.py.
       - scene:
           title: Ground track
