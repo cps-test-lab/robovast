@@ -352,7 +352,11 @@ pick up; the page waits for the running digest to change rather than trusting th
 it just made.
 
 Where a deployment cannot roll itself — a local ``vast serve``, or a service driving the
-cluster from outside it — there is no button, just the reason. The chart and the log work
+cluster from outside it — there is no button, just the reason. The same holds for a
+deployment set up with a fixed version (``ROBOVAST_PROJECT_TAG``, see :doc:`images`): the
+button only ever re-pulls the tag the deployment already runs, so it is offered on the
+floating ``latest`` alone. Moving a pinned deployment to another version is
+``vast service upgrade`` with the new tag in its environment. The chart and the log work
 on both lanes unchanged.
 
 **What it is configured with.** RoboVAST is configured entirely through environment

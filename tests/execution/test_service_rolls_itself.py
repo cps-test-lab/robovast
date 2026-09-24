@@ -165,6 +165,29 @@ def test_a_403_on_the_deployment_read_names_the_no_restart_fix(svc):
         s.upgrade_service()
 
 
+@pytest.mark.parametrize("image", [
+    "repo/robovast-controller:2.1.0",
+    "repo/robovast-controller:2026-08-17",
+    "repo/robovast-controller@sha256:aaa",
+])
+def test_a_deployment_pinned_to_a_version_is_not_rolled(svc, image):
+    """A chosen version is changed through the operator's environment, never by a roll.
+
+    Rolling re-pulls the same reference: on an immutable tag it changes nothing, and on a
+    re-pushed one it lands on bytes the pin was chosen to keep out.
+    """
+    s = svc(image=image, running="sha256:old", published="repo/robovast-controller@sha256:new")
+    info = s.upgrade_info()
+    assert info.supported is False
+    assert "ROBOVAST_PROJECT_TAG" in info.unsupported_reason, (
+        "the refusal has to name the way to move the pin")
+    assert info.image_ref == image and info.running_digest == "sha256:old", (
+        "what is running is still reported beside the refusal")
+    with pytest.raises(ValueError):
+        s.upgrade_service(force=True)
+    assert not s.patched
+
+
 def test_a_service_outside_the_cluster_has_no_deployment_of_its_own(svc):
     info = svc(in_pod=False).upgrade_info()
     assert info.supported is False
