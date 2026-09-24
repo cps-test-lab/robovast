@@ -146,7 +146,7 @@ def test_editing_a_workspace_is_a_different_container(local, monkeypatch):
                         lambda self, request: "x.vast")
     monkeypatch.setattr(
         LocalTransport, "_resolve_exec_image",
-        lambda self, vast, container=None, campaign_id="": ImageRef(
+        lambda self, vast, container=None, campaign_id="", image_family="": ImageRef(
             ref="img", identity="img", build_id=""))
     monkeypatch.setattr("robovast.service.container_exec.validate", lambda request: None)
     monkeypatch.setattr("robovast.service.container_exec.stage",
@@ -186,7 +186,7 @@ def test_an_untouched_workspace_still_reuses_its_container(local, monkeypatch):
                         lambda self, request: "x.vast")
     monkeypatch.setattr(
         LocalTransport, "_resolve_exec_image",
-        lambda self, vast, container=None, campaign_id="": ImageRef(
+        lambda self, vast, container=None, campaign_id="", image_family="": ImageRef(
             ref="img", identity="img", build_id=""))
     monkeypatch.setattr("robovast.service.container_exec.validate", lambda request: None)
     monkeypatch.setattr("robovast.service.container_exec.stage",

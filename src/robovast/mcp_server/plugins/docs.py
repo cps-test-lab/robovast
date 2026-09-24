@@ -327,8 +327,13 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     return sources
 
 
-#: The label an image's own pages are served under, prefixing every one of them so both
-#: repositories keep an ``architecture`` page and neither shadows the other.
+#: The image family member whose pages answer when no address narrows the question. The
+#: simulator image carries both upstream source trees, so one image serves both corpora.
+UPSTREAM_FAMILY = "family:robovast-roqsim"
+
+#: The label to serve a page under when the image does not say which corpus it came from.
+#: Every page is prefixed with one, because the corpora collide on names and neither may
+#: shadow the other.
 UPSTREAM_LABEL = "roqsim"
 
 #: Extra corpora from the filesystem, as ``label=/path`` pairs separated by the platform path
@@ -336,26 +341,32 @@ UPSTREAM_LABEL = "roqsim"
 DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
 
 
-def _upstream_pages(address: str) -> tuple[dict, str, str]:
-    """``({name: (title, text)}, image, error)`` for the simulator image *address* resolves to.
+def _upstream_pages(address: str = "") -> tuple[dict, str, str]:
+    """``({name: (title, text)}, image, error)`` for the pages an image carries.
 
-    Read from the image rather than baked in beside this code: the pages that answer a question
-    about a world's format have to be the ones belonging to the simulator that campaign runs,
-    and only the image knows which that is. One exec per image, cached with the catalogs.
+    Read from the image rather than baked in beside this code: a page about a world's format
+    has to be the one belonging to the simulator that runs it, and only the image knows which
+    that is. Deriving the same pages from a source ref instead would put a second pin beside
+    the one the image was built from, free to name a different commit.
+
+    With no *address* this is the deployment's own simulator image, which is what a question
+    asked before there is a project to name is about. An *address* narrows it to the image that
+    project resolves to. One exec per image either way, cached with the catalogs.
 
     The resolved image is returned because it, not the address, is what identifies this corpus:
     an address outlives the image behind it.
     """
     from robovast.mcp_server.plugins.image_catalog import _fetch_catalog
 
-    fetched = _fetch_catalog("docs", address)
+    fetched = _fetch_catalog("docs", address, UPSTREAM_FAMILY)
     if "error" in fetched:
         return {}, "", fetched["error"]
     pages = {}
     for item in fetched.get("items", []):
         name, text = item.get("name"), item.get("text")
         if name and text:
-            pages[f"{UPSTREAM_LABEL}-{name}"] = (_extract_title(text) or name, text)
+            label = item.get("source") or UPSTREAM_LABEL
+            pages[f"{label}-{name}"] = (_extract_title(text) or name, text)
     return pages, fetched.get("image", ""), ""
 
 
@@ -476,6 +487,25 @@ def _ranked(pages: "dict[str, str]", key: str, query: str) -> "list[str]":
         return []
 
 
+def _upstream_label(name: str) -> str:
+    """The corpus an upstream page name is prefixed with."""
+    return name.partition("-")[0]
+
+
+def _warm() -> None:
+    """Fetch the upstream corpus once, off the first caller's path.
+
+    A first search otherwise pays the container start, and the answer it is waiting for is
+    the one an agent asks before it has written anything. Failure is left to the search to
+    report: there is nobody to tell here, and a service that is not up yet at start is up by
+    the time a question arrives.
+    """
+    try:
+        _upstream_pages()
+    except Exception as e:  # noqa: BLE001 - a warm-up may never take the server down
+        logger.debug("could not warm the upstream documentation: %s", e)
+
+
 def _listing_row(name: str, source: str = "") -> dict:
     """One page as a listing shows it."""
     return {"name": name, "title": _doc_meta[name] if not source else name,
@@ -542,7 +572,7 @@ def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict]
 
 def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                 address: str = "") -> dict:
-    """RoboVAST's documentation, and the simulator's when an *address* names an image.
+    """RoboVAST's documentation, and the simulator's and OpenSCENARIO DSL's alongside it.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of
@@ -550,9 +580,10 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         page: Read this page in full (a ``name`` from the listing).
         limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
             is megabytes). Narrow the term or read the page instead of raising this.
-        address: ``/sources/<workspace_id>/<path>`` -- also search the simulator pages of the
-            image that ``.vast`` runs, served under a ``roqsim-`` prefix. The world format
-            and the plugin reference are documented there, not here.
+        address: ``/sources/<workspace_id>/<path>`` -- read the upstream pages from the image
+            that ``.vast`` runs instead of from the deployment's own. Only for a project
+            pinning a different simulator than the service does; the default already
+            carries them.
 
     Returns:
         Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
@@ -566,37 +597,42 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     if not _doc_files:
         return _no_docs()
 
-    # The image's own pages, when one is named. Fetched per call and cached per image beside
-    # the catalogs, so a second question about the same image costs nothing.
-    upstream, upstream_image, upstream_error = (
-        _upstream_pages(address) if address else ({}, "", ""))
-    if upstream_error:
+    # The image's pages: the deployment's simulator, or the one an address names. Resolved on
+    # every call -- that is the check for a moved deployment, and it costs no container -- and
+    # cached per resolved image beside the catalogs, so only a changed image pays an exec.
+    upstream, upstream_image, upstream_error = _upstream_pages(address)
+    if upstream_error and address:
+        # An address is a caller naming one image. Answering from a different corpus than the
+        # one they named would answer a question they did not ask.
         return {"error": upstream_error}
     titles = {**{n: _doc_meta[n] for n in _doc_files}, **{n: t for n, (t, _x) in upstream.items()}}
     texts = {**_doc_content, **{n: x for n, (_t, x) in upstream.items()}}
 
     if page:
         if page not in texts:
-            if not address and page.startswith(f"{UPSTREAM_LABEL}-"):
-                # A name from an address-scoped listing, read without the address. Listing our
-                # pages here would say it does not exist, which is the answer this avoids.
-                return {"error": f"{page!r} is a page of the simulator image; pass the same "
-                                 "address= the listing was made with to read it."}
+            if upstream_error:
+                # The upstream corpus is the missing half, so "no such page" would be the
+                # wrong answer: name what is unreachable instead of denying the page exists.
+                return {"error": f"{page!r} is not one of RoboVAST's own pages, and the "
+                                 f"image's could not be read: {upstream_error}"}
             return {"error": f"unknown documentation page {page!r}; available: "
                              f"{', '.join(sorted(texts))}"}
         return {"page": page, "title": titles[page], "content": texts[page]}
 
     if not query:
-        pages = [_listing_row(name, UPSTREAM_LABEL if name in upstream else "")
+        pages = [_listing_row(name, _upstream_label(name) if name in upstream else "")
                  for name in sorted(texts)]
-        return {"pages": pages, "total": len(pages)}
+        out = {"pages": pages, "total": len(pages)}
+        if upstream_error:
+            out["incomplete"] = upstream_error
+        return out
 
     # Which pages, and in what order: BM25 over the corpus, so the first result is the best one
     # rather than the first alphabetically.
     # By the resolved image, not by the address: the pages behind an address change when the
     # image does, and an index built once per address would keep ranking the ones it was built
     # from -- against page text the fetch beneath it has already replaced.
-    key = f"{UPSTREAM_LABEL}:{upstream_image}" if upstream else "robovast"
+    key = f"upstream:{upstream_image}" if upstream else "robovast"
     ranked = _ranked(texts, key, query)
     words = [w.lower() for w in query.split() if w]
 
@@ -629,15 +665,12 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                 "note": (f"{query!r} matches {matching_lines_total} lines across "
                          f"{len(results)} pages, so excerpts of it would be a sample. These "
                          f"are the best-matching pages, in order. Read one with "
-                         f"search_docs(page=\"{named[0]['page']}\"" +
-                         (f", address=...)" if upstream else ")") +
-                         ", or narrow the term.")}
-    if not results and not address:
-        # Zero reads as "no such thing". These are RoboVAST's pages only, and the world
-        # format and plugin reference live with the simulator.
-        out["note"] = ("no match in RoboVAST's own pages. The simulator's -- the world "
-                       "format, its plugins, the scene catalog -- are served with "
-                       "address=/sources/<workspace_id>/<path>.")
+                         f"search_docs(page=\"{named[0]['page']}\"), or narrow the "
+                         f"term.")}
+    if upstream_error:
+        # Loudly, in the reply: a search that quietly dropped the world format and the plugin
+        # reference still returns results, and "no match" would read as "no such thing".
+        out["incomplete"] = upstream_error
     if matching_lines_total > _COMMON_TERM_LINES:
         # A term this common is not answered by more excerpts of it. Say so, since the
         # reply otherwise reads as "here is what the docs say about X" when it is a
@@ -665,6 +698,12 @@ class DocsPlugin:
         """Register all tool functions and the docs resource with the MCP server."""
         for fn in _TOOLS:
             mcp.tool()(fn)
+
+        # In a thread: registration is on the startup path, and the fetch reaches the service
+        # and through it a container. Refreshing on a schedule is not needed on top -- the
+        # corpus is keyed by the resolved image, so a redeployed one is picked up by the next
+        # search, and a restarted server starts from nothing anyway.
+        threading.Thread(target=_warm, name="docs-warm", daemon=True).start()
 
         @mcp.resource("docs://{name}")
         def get_doc(name: str) -> str:

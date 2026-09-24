@@ -251,3 +251,31 @@ def test_a_stepped_campaign_keeps_the_simulator_in_the_scenario_container(tmp_pa
     scenario = transport._resolve_exec_image(str(vast), "scenario")
     simulation = transport._resolve_exec_image(str(vast), "simulation")
     assert simulation.identity == scenario.identity
+
+
+def test_an_image_family_source_resolves_without_a_project(monkeypatch):
+    """The question is about the software, not about a campaign. Requiring a project to ask
+    it means every caller inventing one, and each invented project is a different answer.
+
+    No build and no store either: a family image is pulled, not built here, so the lane's
+    "is it built?" probe has nothing to say about it.
+    """
+    monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example/team")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2.1.0")
+    transport = LocalTransport.__new__(LocalTransport)
+
+    found = transport._resolve_exec_image("", None, image_family="family:robovast-roqsim")
+
+    assert found.ref == "registry.example/team/robovast-roqsim:2.1.0"
+    assert found.identity == found.ref, "a pulled image is its own client-facing name"
+    assert found.build_id == ""
+
+
+def test_an_unknown_family_member_is_refused_by_name(monkeypatch):
+    """A typo resolves to a registry ref that pulls nothing, and the failure would arrive as
+    a pull error naming an image nobody wrote down."""
+    from robovast.common.errors import CampaignConfigError
+    transport = LocalTransport.__new__(LocalTransport)
+
+    with pytest.raises(CampaignConfigError, match="robovast-roqsym"):
+        transport._resolve_exec_image("", None, image_family="family:robovast-roqsym")

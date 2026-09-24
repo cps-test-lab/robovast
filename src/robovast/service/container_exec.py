@@ -317,19 +317,30 @@ def validate(request: ExecRequest) -> None:
     held container was specifically avoided: the same fallback elsewhere in this service
     once ran a different ``.vast`` than the caller named.
     """
+    # pylint: disable=too-many-branches
     has_workspace = bool(request.workspace_id)
     has_campaign = bool(request.campaign_id)
-    if has_workspace and has_campaign:
-        raise ValueError(
-            "name one source, not both: workspace_id (+config_path) or campaign_id")
-    if not has_workspace and not has_campaign:
+    has_family = bool(getattr(request, "image_family", ""))
+    named = [name for name, given in (("workspace_id", has_workspace),
+                                      ("campaign_id", has_campaign),
+                                      ("image_family", has_family)) if given]
+    if len(named) > 1:
+        raise ValueError(f"name one source, not {len(named)}: {', '.join(named)}")
+    if not named:
         raise ValueError(
             "no source named: pass workspace_id (+config_path) for a workspace project, "
-            "or campaign_id to use an existing campaign's _config/ as the project. "
+            "campaign_id to use an existing campaign's _config/ as the project, or "
+            "image_family for a question about the image itself. "
             "A source is required on every call, including follow-ups against a held "
             "container")
     if request.config_path and not has_workspace:
         raise ValueError("config_path names a .vast inside a workspace; it needs workspace_id")
+    if has_family and request.config_name:
+        raise ValueError(
+            "image_family names an image, not a project: there is no configuration to stage, "
+            "so config_name has nothing to select")
+    if has_family and not request.command.strip():
+        raise ValueError("image_family runs a command; there is no staged scenario to run instead")
     if not request.command.strip() and not request.config_name:
         raise ValueError(
             "nothing to run: an empty command means 'run the staged config's scenario' "
@@ -414,6 +425,10 @@ def stage(vast_file: str, config_name: str, *,
     a path and take one code path from here. Returns the spec, the campaign data (for
     the caller's image resolution), and the derived limit.
 
+    An empty *vast_file* is the image-family source: no project exists, so only the
+    entrypoint is staged. It implies an empty *config_name*, which is the same branch a
+    bare-image exec of a project already takes.
+
     The entrypoint is always rendered **for the lane this exec runs on** — never copied
     from a campaign. ``prepare_campaign_configs`` substitutes lane-specific init and
     post-run blocks, so a cluster campaign's entrypoint carries cluster init and the
@@ -430,7 +445,10 @@ def stage(vast_file: str, config_name: str, *,
             # That keeps a "does this import?" check off the variation-plugin path, and
             # avoids failing input checks (a missing .osc) that the question does not
             # depend on.
-            execution = (load_config(vast_file) or {}).get("execution") or {}
+            # An image-family exec has no project, so there is nothing to read a lane
+            # timeout or an env override out of -- the bare image and its command.
+            execution = ((load_config(vast_file) or {}).get("execution") or {}
+                         if vast_file else {})
             campaign_data = {"configs": [], "execution": execution}
             os.makedirs(os.path.join(generated, "_transient"), exist_ok=True)
             with open(os.path.join(generated, "_transient", "entrypoint.sh"),
