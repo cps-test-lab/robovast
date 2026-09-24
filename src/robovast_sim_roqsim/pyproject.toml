@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-sim-roqsim"
-version = "2.1.0"
+version = "2.2.0"
 description = "The roqsim simulator backend for RoboVAST"
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"

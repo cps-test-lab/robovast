@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-cluster"
-version = "2.1.0"
+version = "2.2.0"
 description = "Kubernetes execution for RoboVAST: cluster campaigns, deployment, and the operator commands."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
