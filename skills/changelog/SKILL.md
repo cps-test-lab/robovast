@@ -27,7 +27,8 @@ with no pull request number is keyed by its short sha and is cited as that.
 ## Write the section
 
 A new `## X.Y.Z` section at the top of `CHANGELOG.md` (create the file with its two-line
-header if it does not exist). Headings, in this order, empty ones left out:
+header if it does not exist). Its parts are `### ` headings, in this order, empty ones left
+out — Markdown headings rather than bold lines, which the linter refuses as headings:
 
 | heading | holds |
 |---|---|
@@ -36,9 +37,9 @@ header if it does not exist). Headings, in this order, empty ones left out:
 | **Changed** | behaviour that differs for the same input |
 | **Fixed** | behaviour that was wrong and is right |
 | **Images and packaging** | what the images carry, how the distributions install |
-| **Internal** | one line: the numbers of the merges a user cannot see — refactors, CI, lint, pin bumps |
+| **Internal** | one sentence naming the merges a user cannot see — refactors, CI, lint, pin bumps — that starts with words, since a line starting with `#` reads as a heading |
 
-An entry is one line, present tense, the way the pull request titles are written: the class
+An entry is one list item, present tense, the way the pull request titles are written: the class
 of the change and its mechanism, ending in the merge(s) it cites, as `(#640)` or
 `(#638, #639)` when several merges make one change. **Minimal**: an entry per change a
 user notices, not per merge; a change that took four pull requests is one entry citing four.
