@@ -50,6 +50,31 @@ pod, and would tie two independent release cadences together.
 ``robovast-roqsim`` is ``FROM robovast``, so the pair is one layer chain rather than a
 duplicate: pulling both costs the base plus the delta.
 
+ROS middleware settings the framework image carries
+```````````````````````````````````````````````````
+
+The image leaves ROS 2's default RMW, Fast DDS, in place and changes one thing about it:
+``FASTRTPS_DEFAULT_PROFILES_FILE`` points at ``/etc/robovast/fastdds_profiles.xml``, which
+raises the reliability ``max_blocking_time`` of the ``service`` DataWriter profile — the
+profile ``rmw_fastrtps`` reads for a service's response writer and for nothing else.
+
+That value is how long a service server waits for a new client's reply reader to be matched
+before it drops the reply with ``failed to send response ... client will not receive
+response``. Fast DDS's default is 100 ms, and discovery takes longer than that while a run
+starts dozens of nodes on shared CPUs. Most callers retry a lost reply; ``launch_ros`` does
+not: a dropped reply to a component container's ``load_node`` leaves it waiting forever, and
+every composable node queued behind that one is never loaded. A composed nav2 bringup then
+stays up with its lifecycle manager missing, and the run fails on a timeout that names a
+node's lifecycle state rather than the lost reply.
+
+The wait blocks the server's executor, and lasts only until the reader matches or the limit
+passes. Topics, clients and participants keep Fast DDS's defaults.
+
+A campaign that brings its own Fast DDS profile sets ``FASTRTPS_DEFAULT_PROFILES_FILE`` in
+:ref:`execution.env <config-env>` and replaces this one; carry the ``service`` profile over
+if the stack loads composable nodes from a launch file. A campaign on another RMW
+(``RMW_IMPLEMENTATION``) is unaffected.
+
 How a container's image is decided
 ----------------------------------
 

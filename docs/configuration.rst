@@ -1390,6 +1390,8 @@ previous contents of ``out`` are left untouched rather than half-overwritten, an
 ``robovast.input_generators`` entry-point group) or from a ``./path.py:Class`` file
 reference next to the ``.vast`` — see :ref:`extending-input-generation` for writing one.
 
+.. _config-env:
+
 env
 ^^^
 
