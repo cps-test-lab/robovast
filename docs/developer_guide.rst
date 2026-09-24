@@ -259,10 +259,10 @@ nothing depends on. The two triggers of the workflow are the two halves of that 
    Something wrong is a fix on ``main`` and ``rc2``; nothing has been consumed.
 
 a ``v*`` tag → PyPI
-   ``git tag v2.1.0 && git push origin v2.1.0``, on the commit the rc was built from. The
-   same workflow, the same wheels, the real index. The tag also produces the versioned
-   container images (``image.yml``), so the wheels and the images a deployment runs carry
-   the same number.
+   ``git tag v2.1.0 && git push origin v2.1.0``, on the commit the release candidate was
+   built from. The same workflow, the same wheels, the real index. The tag also produces the
+   versioned container images (``image.yml``), so the wheels and the images a deployment
+   runs carry the same number.
 
 **What the workflow does, and why in that order.** One ``build`` job makes and checks all
 five wheels before anything is uploaded: it verifies the lock against the manifest, builds
@@ -1908,9 +1908,9 @@ local files — no fetch, no per-row round trip on a listing, and nothing that c
 reachable for one reader and not another.
 
 The order is computed over every id **before** the page is cut, so each sort key has to be
-answerable without building a summary per campaign: the recency keys come from the memoised
+answerable without building a summary per campaign: the recency keys come from the memoized
 ``_started_at_for`` / ``_finished_at_for``, and ``sort="size"`` from ``_results_bytes_for``,
-which reads the same ``outcome.json`` figure the row shows and memoises it — ``None``
+which reads the same ``outcome.json`` figure the row shows and memoizes it — ``None``
 included — once a terminal record says it. Only the page's own campaigns get a
 ``_summary_for``.
 

@@ -685,7 +685,7 @@ def _postprocess_split(cluster_config, campaign_id: str, campaign_root: str, nam
         convert_resources=convert_resources, admission=admission, should_stop=should_stop)
     map_log = delivered_map_log(campaign_root, parts)
     if not ok:
-        write_phase_log(campaign_root, map_log + f"{message}\n")
+        write_phase_log(campaign_root, map_log + stamped("ERROR", message))
         return record_job_outputs(campaign_id, campaign_root, ok, message,
                                   should_stop=should_stop)
     config_dir = os.path.dirname(campaign_vast(campaign_root))
@@ -1400,6 +1400,16 @@ def read_job_log(core, namespace: str, job_name: str) -> str:
     except Exception as e:  # noqa: BLE001 - a read for a watcher may not fail the work
         logger.debug("could not read the log of postprocessing job %s: %s", job_name, e)
         return ""
+
+
+def stamped(level: str, message: str) -> str:
+    """*message* as a line of the campaign log, wearing the stamp our logging writes.
+
+    The phase log is assembled rather than logged, so a verdict written into it plainly
+    carries no level at all, and an unmarked line can only be classified by keyword --
+    by which there is no telling an error from a warning.
+    """
+    return f"{time.strftime('%Y-%m-%d %H:%M:%S')} {level} {__name__}: {message}\n"
 
 
 def write_phase_log(campaign_root, text: str) -> bool:

@@ -47,6 +47,7 @@ starts no container, so a cache hit costs one cheap round trip, not zero.
 """
 
 import logging
+import threading
 import time
 
 from fastmcp import FastMCP
@@ -58,6 +59,11 @@ from robovast.mcp_server.service_access import NO_SERVICE
 from robovast.service.image_catalog import (CACHE_LOCK, CATALOG_COMMANDS, CATALOG_CONTAINERS,
                                             DETAIL_COMMANDS, LIST_CACHE, CatalogUnavailable,
                                             catalog_json, fetch_details)
+
+_FETCH_LOCKS_GUARD = threading.Lock()
+#: (image, group) -> the lock callers fetching that catalog queue on. Process-lifetime and
+#: bounded by the images this server has been asked about, as the cache beside it is.
+_FETCH_LOCKS: "dict[tuple, threading.Lock]" = {}
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +139,34 @@ def _fetch(group: str, address: str, family: str = "") -> dict:
     if cached is not None:
         return {"items": cached, "image": image, "cache": {"hit": True, "seconds": 0.0}}
 
+    # One fetch per image, not one per caller. Everything below costs a container and a whole
+    # catalog over the wire, and the miss that matters is the one at startup: the warm-up and
+    # the first question want the same corpus at the same moment, and both would fetch it.
+    # Waiting for the one already running is never slower than starting a second.
+    with _fetch_lock(key):
+        with CACHE_LOCK:
+            cached = LIST_CACHE.get(key)
+        if cached is not None:
+            # Filled while this call waited. Reported as a hit because it is one: no container
+            # ran for this caller, which is what the field is read for.
+            return {"items": cached, "image": image, "cache": {"hit": True, "seconds": 0.0}}
+        return _fetch_uncached(group, image, request_kwargs, client)
+
+
+def _fetch_lock(key: tuple) -> threading.Lock:
+    """The lock that serialises callers fetching *key*.
+
+    One per key rather than one for all of them: two different images have nothing to wait
+    for from each other, and a catalog fetch is seconds long.
+    """
+    with _FETCH_LOCKS_GUARD:
+        return _FETCH_LOCKS.setdefault(key, threading.Lock())
+
+
+def _fetch_uncached(group: str, image: str, request_kwargs: dict, client) -> dict:
+    """Ask *image* for the whole catalog and cache it. Caller holds this key's fetch lock."""
+    from robovast.service.interface import ExecRequest
+
     started = time.monotonic()
     try:
         result = client.exec_in_container(ExecRequest(
@@ -168,7 +202,7 @@ def _fetch(group: str, address: str, family: str = "") -> dict:
 
     items = _flatten(group, payload)
     with CACHE_LOCK:
-        LIST_CACHE[key] = items
+        LIST_CACHE[(image, group)] = items
     return {"items": items, "image": image, "cache": {"hit": False, "seconds": elapsed}}
 
 

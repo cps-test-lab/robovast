@@ -261,7 +261,7 @@ one lock every campaign needs. Every campaign thread does this every two seconds
 jobs a large campaign submits, on four nodes, that is roughly 5700 manifest renders per drain.
 It is invisible on a small bare-metal cluster and will not be on a large or managed one, where
 listing every pod in every namespace at that cadence also meets the client's own QPS throttle
-and reads as a campaign stalling. In order of value: memoise the per-node sizing for the life
+and reads as a campaign stalling. In order of value: memoize the per-node sizing for the life
 of a calibration; let ``drain`` honour the budget TTL, or share one reading across the drains
 in a tick; move ``create()`` outside the lock, recording the reservation under it.
 

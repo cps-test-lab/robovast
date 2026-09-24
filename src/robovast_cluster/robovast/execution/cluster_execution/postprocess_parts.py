@@ -393,11 +393,49 @@ class _MapPhase:
                            + (f": {reason}" if reason else ""))
         failed = [n for n in self.names if self.outcome.get(n) == "failed"]
         if failed:
+            self._keep_logs_of(failed)
             why = "; ".join(f"{n}: {pj.pod_failure_reason(self.core, self.namespace, n)}"
                             for n in failed)
             return False, (f"{len(failed)} of {len(self.names)} postprocessing part(s) "
                            f"failed -- {why}")
         return True, f"{len(self.names)} postprocessing part(s) complete"
+
+    def _keep_logs_of(self, failed) -> None:
+        """Write the pods' own output for parts that delivered none.
+
+        A part delivers its log from the container that runs the steps, so a part whose
+        EARLIER container failed -- the converter, which is an init container -- delivers
+        nothing at all. The campaign's section is rebuilt from what the parts delivered once
+        they are done, so the one part whose output is needed is the one part missing from
+        it, and the live output that explained it is overwritten by the rebuild.
+
+        Called from :meth:`verdict`, which is where the pods are known to still exist: this
+        is the last moment their logs can be read at all.
+
+        A part that did deliver a log keeps it -- that file is the part's own account of
+        itself, and this one is a pod read taken after the fact.
+        """
+        from robovast.execution.campaign_archive import part_file  # noqa: PLC0415
+
+        from . import postprocess_job as pj  # noqa: PLC0415
+
+        for part, name in zip(self.parts, self.names):
+            if name not in failed:
+                continue
+            path = os.path.join(self.campaign_root,
+                                *part_file(part.name, "postprocessing.log").split("/"))
+            if os.path.exists(path):
+                continue
+            try:
+                text = pj.read_job_log(self.core, self.namespace, name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text or "")
+            except OSError as e:
+                # Reported rather than raised: the verdict this decorates is about the
+                # postprocessing, and losing one log must not replace it.
+                logger.warning("could not keep the log of failed postprocessing part %s: %s",
+                               name, e)
 
     def cancel(self) -> None:
         """Delete every part Job of this campaign."""
@@ -519,8 +557,11 @@ def delivered_map_log(campaign_root: str, parts) -> str:
         try:
             with open(path, encoding="utf-8") as f:
                 text = f.read()
-        except OSError:
-            continue
+        except OSError as e:
+            # A block saying so, rather than no block: a part silently absent from the
+            # campaign's section reads as a part that never existed, and the part with no
+            # log is the one whose log is being looked for.
+            text = f"this part delivered no log, and none could be kept for it ({e})\n"
         blocks.append(_block(part.name, index, len(parts), len(part.runs), text))
     return "".join(blocks)
 
