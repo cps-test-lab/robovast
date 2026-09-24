@@ -2,14 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A local variation plugin: physical weather -> the simulator's wind field.
-
-The search proposes a **wind speed** (m/s), a **heading** (degrees) and a **turbulence intensity**;
-this turns them into the two config values ``roqsim_aerial``'s ``wind_field`` plugin actually reads.
-That conversion is the point of the ``variations:`` template: the searched space stays in units a
-drone engineer reasons about, while the simulator gets the shape it needs.
-
-Referenced from a ``.vast`` as a local file plugin::
+"""Wind speed, heading and turbulence -> the `steady` vector and `turbulence` block of the
+`wind_field` plugin. Two slots, because a list or mapping destination is replaced wholesale::
 
     - variations/wind.py:WindVariation:
         wind_speed: $wind_speed
@@ -18,13 +12,6 @@ Referenced from a ``.vast`` as a local file plugin::
         sim:
           steady:     components.wind_field.steady
           turbulence: components.wind_field.turbulence
-
-Two outputs, so the plugin declares :attr:`SLOTS` and the ``.vast`` binds each by name. They cannot
-be one value: ``steady`` is a 3-vector and ``turbulence`` is a mapping, and there is no list- or
-partial-mapping addressing in the override path -- a mapping destination is replaced wholesale.
-
-Deterministic, and exactly one output config per input, which is the contract a search variation
-must satisfy.
 """
 
 from __future__ import annotations
@@ -36,30 +23,21 @@ from robovast.common.variation.base_variation import Variation
 
 
 class WindVariationConfig(VariationConfig):
-    #: Mean wind speed [m/s]. Normally bound to a search_space variable with ``$name``.
-    wind_speed: float
-    #: Where the wind blows *towards*, in degrees CCW from +x. 0 pushes the drone east.
-    heading_deg: float = 0.0
-    #: Dryden turbulence sigma [m/s]. 0 disables turbulence entirely.
-    turbulence: float = 0.0
-    #: Dryden length scale [m]. Larger is slower, more correlated gusting.
-    length_scale: float = 4.0
-    #: Sigma scale on the vertical axis, as Dryden's low-altitude form has it.
-    vertical: float = 0.5
+    wind_speed: float          # m/s
+    heading_deg: float = 0.0   # direction the wind blows towards, CCW from +x
+    turbulence: float = 0.0    # Dryden sigma, m/s
+    length_scale: float = 4.0  # m
+    vertical: float = 0.5      # sigma scale on the vertical axis
 
 
 class WindVariation(Variation):
-    """Turn (speed, heading, turbulence) into a ``wind_field`` steady vector and turbulence block."""
-
     CONFIG_CLASS = WindVariationConfig
     SLOTS = ("steady", "turbulence")
 
     def variation(self, in_configs):
         p = self.parameters
         heading = math.radians(p.heading_deg)
-        # Horizontal only: a mean vertical wind is a draught, not weather, and it would trade
-        # against the thrust margin -- the very thing the payload factor is there to vary. Keeping
-        # it at zero stops the two factors from confounding each other.
+        # Horizontal only: a mean vertical wind would confound the payload factor.
         steady = [
             round(p.wind_speed * math.cos(heading), 4),
             round(p.wind_speed * math.sin(heading), 4),

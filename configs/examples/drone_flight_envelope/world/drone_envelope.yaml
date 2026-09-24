@@ -1,28 +1,14 @@
-# Drone flight envelope -- a Crazyflie 2 flying a waypoint course in a small indoor room.
-#
-# Standalone (no campaign):
-#   roqsim sim world/drone_envelope.yaml
-#
-# The room is deliberately small. The Crazyflie is ~0.1 m across, so in a warehouse it is a dot;
-# here the course spans ~2.4 m against props of a known size, which is what makes "held station",
-# "drifted" and "fell out of the sky" tell themselves apart on sight in the run view.
+# A Crazyflie 2 flying a waypoint course in a 6 x 6 m room. Standalone: roqsim sim world/drone_envelope.yaml
 
 sim:
   name: Drone flight envelope
-  world: room.xml       # the 6 x 6 m flight room, beside this file
+  world: room.xml
   pacing: realtime
-
-  # NOT optional for an aerial world, and both fail silently. MuJoCo defaults density and viscosity
-  # to 0 -- a vacuum: the drone still hovers, but nothing damps it, so a lateral step rings forever
-  # and wind does nothing at all. rk4 because a quadrotor's attitude loop is stiff relative to the
-  # timestep. These are world-scoped, which is why they live here and not in the model.
   integrator: rk4
-  density: 1.225        # kg/m^3, air at sea level -- a campaign factor
-  viscosity: 1.8e-5     # Pa*s, air
-  seed: 0               # governs wind_field's turbulence, via ctx.rng_for
-
-  # Framed on the drone, because at this scale a fixed room shot loses it. `distance` is close
-  # enough that a 0.3 m drift is obvious; `lookat` is ignored while tracking.
+  # MuJoCo defaults both to 0, a vacuum: nothing damps the drone and wind does nothing.
+  density: 1.225        # kg/m^3, a campaign factor
+  viscosity: 1.8e-5     # Pa*s
+  seed: 0               # wind_field's turbulence draws from it
   view:
     track: drone
     follow_heading: false
@@ -31,11 +17,8 @@ sim:
     elevation: -32
 
 components:
-  # -- the room ---------------------------------------------------------------------------------
-  # A landing pad the drone starts and finishes on. Visual only: it is a marking on the floor, and
-  # giving it collision would make the drone bounce off a 5 mm lip on touchdown.
-  # Each box needs its own `prefix`: the plugin names its material `box_surface`, so two boxes
-  # sharing the default empty prefix collide on that name and MuJoCo refuses the model.
+  # Every box needs its own prefix: the plugin names its material `box_surface`, and two boxes
+  # sharing a prefix collide on it. Pad and markers are visual only.
   - box:
       prefix: "pad_"
       pose: {position: {x: 0.0, y: 0.0, z: 0.002}}
@@ -43,9 +26,6 @@ components:
       color: [0.16, 0.42, 0.72, 1.0]
       collide: false
     name: landing_pad
-
-  # Waypoint markers, so the commanded course is visible in the scene rather than only in the
-  # config. Same reason as the pad: visual only.
   - box: {prefix: "wp1_", pose: {position: {x: 1.2, y: 1.2, z: 0.002}}, size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp1
   - box: {prefix: "wp2_", pose: {position: {x: -1.2, y: 1.2, z: 0.002}}, size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
@@ -53,11 +33,7 @@ components:
   - box: {prefix: "wp3_", pose: {position: {x: -1.2, y: -1.2, z: 0.002}}, size: [0.25, 0.25, 0.004], color: [0.85, 0.85, 0.30, 1.0], collide: false}
     name: marker_wp3
 
-  # Furniture: a fixed scale reference to judge drift against, and something real to hit when the
-  # wind wins. Deliberately built from the parametric `box` prop rather than the modelled `shelf` /
-  # `workbench` ones -- those resolve their meshes from the private asset package, and an example
-  # that anyone can clone must not depend on assets they cannot get. The whole room is therefore
-  # readable in this file.
+  # Primitive furniture rather than the modelled props: those need the private asset package.
   - box: {prefix: "pillar_e_", pose: {position: {x: 2.2, y: 0.0, z: 0.9}}, size: [0.35, 1.4, 1.8], color: [0.62, 0.64, 0.67, 1.0]}
     name: pillar_east
   - box: {prefix: "bench_w_", pose: {position: {x: -2.2, y: 0.6, z: 0.45}}, size: [0.7, 1.6, 0.9], color: [0.55, 0.42, 0.30, 1.0]}
@@ -65,38 +41,27 @@ components:
   - box: {prefix: "crate_", pose: {position: {x: 0.9, y: -2.0, z: 0.35}}, size: [0.6, 0.4, 0.7], color: [0.72, 0.60, 0.44, 1.0]}
     name: crate
 
-  # -- the drone --------------------------------------------------------------------------------
-  # quadrotor_controller comes from the crazyflie_2 manifest; it is restated here only because the
-  # campaign varies its limits, and a factor should be visible in the world it acts on.
   - spawn_robot:
       model: crazyflie_2
       prefix: "cf2_"
       pose:
-        position: {x: 0.0, y: 0.0}   # on the pad; the drone takes off from the floor
-      # Endpoint-producing plugins under this entity inherit the namespace, so the controller's
-      # `cmd_pos` / `odom` land on /drone/... rather than bare /cmd_pos. Without it a second drone
-      # would collide on the topic names.
-      namespace: drone
+        position: {x: 0.0, y: 0.0}
+      namespace: drone        # endpoints land on /drone/...
     name: drone
-
     components:
+      # From the manifest; restated because the campaign varies its limits.
       - quadrotor_controller:
-          target: [0.0, 0.0, 1.2]   # the scenario flies the course from here
+          target: [0.0, 0.0, 1.2]
           max_tilt: 0.5
           max_accel: 4.0
           max_vel: 1.5
-      # The thrust-margin factor. 0 g is the unloaded baseline and leaves the model untouched.
       - payload:
           mass: 0.0
 
-  # -- the weather ------------------------------------------------------------------------------
-  # Owns opt.wind outright, so this world must NOT also set `sim.wind` (it is refused). Calm by
-  # default: the campaign varies these.
+  # Owns opt.wind; `sim.wind` must not also be set.
   - wind_field:
       steady: [0.0, 0.0, 0.0]
       turbulence: {intensity: 0.0, length_scale: 4.0}
 
-  # -- transport --------------------------------------------------------------------------------
-  # Must come after every plugin that declares an endpoint: the bridge publishes what the interface
-  # registry holds when it is configured, and adding to that registry afterwards is an error.
+  # Last: the bridge publishes what the interface registry holds when it is configured.
   - ros2_bridge: {}
