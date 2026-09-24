@@ -65,7 +65,7 @@ def test_a_side_projection_is_declined_not_drawn_wrong():
 def test_an_image_named_by_a_host_path_is_refused():
     fig, ax = _axes()
     files = _files()
-    files["_config/maps/room.yaml"] = b"image: /home/someone/room.pgm\nresolution: 0.1\n"
+    files["_config/maps/room.yaml"] = b"image: /home/user/room.pgm\nresolution: 0.1\n"
     with pytest.raises(ValueError, match="absolute"):
         Map2DPanelType.plot(ax, "_config/maps/room.yaml", "xy", files.__getitem__)
     fig.clf()
