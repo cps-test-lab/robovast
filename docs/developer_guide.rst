@@ -242,8 +242,10 @@ manifest from the git tag.
 
 **The version's section of ``CHANGELOG.md`` comes first**, written with the ``changelog``
 skill (``skills/changelog/SKILL.md``) from the merges since the previous tag and reviewed
-before it is committed; ``skills/changelog/changelog.py check`` refuses a section that leaves
-a merge uncited. That section is the release's notes.
+before it is committed: a few short entries, never more than fifteen, on what a user of the
+previous version would want to hear about, each citing its pull requests as links.
+``skills/changelog/changelog.py check`` holds it to that shape. That section is the release's
+notes; the rest is in the git history.
 
 **Every release goes to TestPyPI first, and is tested by hand there.** An upload cannot be
 taken back — a version can be yanked, never replaced, and ``pip`` still installs a yanked
