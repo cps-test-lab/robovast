@@ -12,10 +12,13 @@ aspirational
 auditable
 auth
 authorizer
+autocommitted
 autosave
 autosaves
+autoscale
 autoscaler
 autoscaling
+autovacuum
 backend
 backends
 backfill
@@ -76,7 +79,9 @@ debuggable
 declaratively
 deduplicates
 deserialize
+deserialized
 deserializes
+deserializing
 dev
 diagnosable
 dialled
@@ -96,6 +101,7 @@ dropdown
 DSL
 durations
 emptyDir
+emptyDirs
 entrypoint
 entrypoints
 env
@@ -199,7 +205,8 @@ mcap
 MCP
 mcp
 mebibytes
-memoise
+memoize
+memoized
 memoizes
 Memoizing
 memoryless
@@ -280,6 +287,7 @@ preprocess
 prewarm
 prewarmed
 prober
+proxying
 pullable
 pushdown
 px
@@ -301,6 +309,7 @@ rdflib
 reachability
 realtime
 rebuildable
+recency
 recognised
 recognises
 reconfigures
@@ -370,8 +379,9 @@ stderr
 stdin
 stdlib
 stdout
+streamable
 struct
-Subclasses
+subclasses
 subcommand
 subdirectories
 subdirectory
@@ -407,8 +417,10 @@ TTL
 tz
 ubuntu
 un
+unbuffered
 unbuilt
 uncached
+unconfigured
 uncontended
 undeletable
 undiscoverable
@@ -426,10 +438,12 @@ unoverridden
 unparseable
 unplaceable
 unpullable
+unpushed
 unrealizable
 unreferenced
 unresolvable
 unschedulable
+unscoped
 untimed
 untolerated
 untracked
@@ -438,6 +452,8 @@ untrusted
 untyped
 unvalidated
 unwatched
+uploader
+uploaders
 upserted
 userspace
 vconcat
@@ -454,6 +470,7 @@ webhook
 WebM
 webm
 webui
+widenings
 workspaces
 xacro
 Xeon

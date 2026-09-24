@@ -261,7 +261,7 @@ reason: "nothing was called" and "the record cannot be read" are different answe
 
 A page of ``/admin/mcp-calls`` reports the same way. It carries ``total``, ``truncated`` and the
 ``limit``/``offset`` it was actually read with, because a page that reported none of them read as
-the whole record — and beside a ranking summarising a month, a page holding an afternoon is a
+the whole record — and beside a ranking summarizing a month, a page holding an afternoon is a
 disagreement nothing announced. ``offset`` walks the rest. The CSV export is bounded only by what
 is retained, since it streams rather than being held in one response; a download has no field to
 report a bound in, so an export that did not reach the end of the record says so in the filename
