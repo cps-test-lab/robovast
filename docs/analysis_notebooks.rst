@@ -109,7 +109,10 @@ Recommended first-cell pattern
 Reading results
 ---------------
 
-A notebook reads a campaign through the ``robovast-data`` package. ``open_data(DATA_DIR)``
+A notebook reads a campaign through the ``robovast-data`` package: ``pip install
+robovast-data`` from PyPI alone, on any machine with Python -- it needs no ROS installation,
+no service and no container image, because the decoder it builds tables with reads a
+recording's message definitions from the recording itself. ``open_data(DATA_DIR)``
 walks up from the path to the campaign (the directory holding ``campaign.db``) and **scopes
 everything to the node the path names** — a run directory gives that run's rows, a
 configuration directory that configuration's, the campaign root everything. The same cell
