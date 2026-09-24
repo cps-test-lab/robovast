@@ -323,19 +323,15 @@ def test_pinned_dir_cannot_be_deleted_through_service(pinned):
     assert src.is_dir()
 
 
-def test_pinned_dir_serves_the_cluster_lane_too(pinned):
-    """A pinned dir is usable by ``--backend cluster`` running off-cluster.
+def test_pinned_dir_serves_an_off_cluster_service(pinned):
+    """A pinned dir is usable by a service running off-cluster on the host holding it.
 
-    Pinning only requires the service to run on the host holding the directory --
-    which an off-cluster cluster driver does, reading project inputs from this
-    filesystem exactly as the local lane does. It is refused in-pod (no such
-    directory) and by ``--attach`` (runs no service of its own), both enforced in
-    the CLI. Without this, removing the CWD-project fallback would have forced
-    cluster users through an upload for a directory sitting right there.
+    It is refused in-pod (no such directory) and by ``--attach`` (runs no service of its
+    own), both enforced in the CLI.
     """
     store, wid, src = pinned
     # ClusterService inherits _resolve_project/_project_for_workspace unchanged, so
-    # exercise the resolution the cluster lane would use, with the same store.
+    # exercise that resolution through NullService, with the same store.
     transport = NullService(store=store)
     project = transport._resolve_project(wid, "demo.vast")
     assert project.config_path == str(src / "demo.vast")

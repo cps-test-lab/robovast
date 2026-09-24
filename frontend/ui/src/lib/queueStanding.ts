@@ -22,8 +22,8 @@ export function priorityInputError(typed: string): string | null {
 
 /** Whether to offer the priority and pause entries on a running campaign.
  *
- * Only on a service that says its lane queues campaigns against each other (`can_schedule`); a
- * lane that runs one campaign at a time refuses both, and an entry that can only be refused is a
+ * Only on a service that says it queues campaigns against each other (`can_schedule`); a
+ * service that does not refuses both, and an entry that can only be refused is a
  * capability advertised that the caller cannot use. Not offered while the answer is unknown --
  * the version not read yet, or a service with no verdict -- for the same reason. */
 export function offersQueueControls(

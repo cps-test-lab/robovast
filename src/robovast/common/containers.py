@@ -136,7 +136,7 @@ def plan_containers(execution: dict, *, images: Optional[dict] = None,
                     main_image_fallback: Optional[str] = None) -> ContainerPlan:
     """Build the plan from a campaign's ``execution`` section.
 
-    *execution* is the raw mapping the lane carries (``campaign_data["execution"]``),
+    *execution* is the raw mapping the backend carries (``campaign_data["execution"]``),
     not the pydantic model, because that is what it has in hand.
 
     Image resolution, highest precedence first, per container:

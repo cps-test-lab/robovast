@@ -215,8 +215,8 @@ def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_p
                              description_limit=DESCRIPTION_MAX_LEN,
                              request_model=CreateCampaignRequestStub)
     try:
-        # Whatever version was uploaded, what a re-run launches is a current config: the lane
-        # that runs it reads only the current shape.
+        # Whatever version was uploaded, what a re-run launches is a current config: the
+        # service reads only the current shape.
         staged = yaml.safe_load(Path(plan.config_path).read_text(encoding="utf-8"))
         assert staged["version"] == SUPPORTED_CONFIG_VERSION
     finally:

@@ -172,7 +172,7 @@ def test_a_campaign_with_no_launch_record_does_not_gain_a_bare_one(tmp_path):
 
 
 def test_recording_nothing_leaves_the_record_alone(tmp_path):
-    """A lane that resolved no images must not blank the ones already there."""
+    """A launch that resolved no images must not blank the ones already there."""
     write_launch_record(tmp_path, _request(), images={"sut": "reg.example.com/sut:abc"})
 
     update_launch_images(tmp_path, {})

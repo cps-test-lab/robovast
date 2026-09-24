@@ -70,8 +70,8 @@ def test_a_cluster_build_reports_the_wait_for_its_pod_apart_from_the_compile(sta
 
 
 def test_a_local_build_claims_no_pull_it_cannot_see(stages):
-    """There is no separable pull on the local lane: ``docker run`` pulls inside the run itself, so
-    naming a stage for it would be a guess a viewer cannot check."""
+    """Without a runner context there is no separable pull: ``docker run`` pulls inside the run
+    itself, so naming a stage for it would be a guess a viewer cannot check."""
     scene_cache.generate({"image": "x"}, KEY)
 
     assert stages == [scene_cache.STAGE_COMPILING]

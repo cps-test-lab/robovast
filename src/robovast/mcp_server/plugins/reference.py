@@ -165,7 +165,7 @@ def get_cli_help(command: str = "", search: str = "") -> dict:
 
 
 def get_service_info() -> dict:
-    """Which robovast-service is answering, which code it runs, and which lanes it offers.
+    """Which robovast-service is answering, which code it runs, and which backend it drives.
 
     Call this first when something behaves unexpectedly: a service loads robovast **once,
     at startup**, so after an edit a reachable service may still be running the old code.
@@ -179,7 +179,8 @@ def get_service_info() -> dict:
     ``build_unavailable`` then carries the reason. Absent is not ``false``, and it reports
     the infrastructure a build needs rather than that a given build will be published.
 
-    ``backend`` is the lane, fixed at startup; ``get_resource_usage()`` actually touches it.
+    ``backend`` is the execution backend, fixed at startup; ``get_resource_usage()``
+    actually touches it.
     On a cluster, ``in_pod: false`` means campaigns are driven from outside it: fine for a
     pilot, fragile for a large campaign's result transfers. ``results_root`` and
     ``sources_root`` appear only when **you** can open them, and then reading files directly
@@ -231,7 +232,7 @@ def get_service_info() -> dict:
     # bound to a wildcard), not an origin that happens to be unknown.
     if v.web_base:
         info["web_base"] = v.web_base
-    # Only from a lane that has them: on any other these would all be None, and five
+    # Only from a backend that has them: on any other these would all be None, and five
     # null fields read as "unknown" rather than "not applicable".
     if v.backend == "kubernetes":
         info.update({

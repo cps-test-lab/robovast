@@ -9,9 +9,9 @@ retriggered. What keeps a rebuild possible is a dated archive, and what keeps *t
 that no rolling source survives beside it -- apt prefers whichever version is higher, so one
 leftover source silently undoes the pin.
 
-Deliberately textual, for the reason `test_controller_image_installs_every_lane` gives: building
-these images needs Docker, a registry and minutes, while reading their pins needs neither and
-catches a regression where it is introduced. The build-time counterpart -- asserting on apt's own
+Deliberately textual, for the reason `test_controller_image_installs_the_cluster_package` gives:
+building these images needs Docker, a registry and minutes, while reading their pins needs
+neither and catches a regression where it is introduced. The build-time counterpart -- asserting on apt's own
 view of its sources -- lives in the Dockerfile itself, because only a real build can check it.
 """
 

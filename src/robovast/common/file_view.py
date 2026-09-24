@@ -42,7 +42,7 @@ def is_binary_bytes(data: bytes) -> bool:
     samples avoid ``0x00`` carries none -- a grayscale occupancy map of open floor is
     every byte ``0xfe`` -- so a NUL-only rule renders it as text, and the caller gets
     replacement characters instead of the byte URL that exists for this case. The text
-    lane decodes as UTF-8, so "does this decode" is the question that matches what the
+    view decodes as UTF-8, so "does this decode" is the question that matches what the
     page will actually do with the bytes.
 
     The decode is incremental so a multi-byte character straddling the end of the
@@ -50,7 +50,7 @@ def is_binary_bytes(data: bytes) -> bool:
     depending on where its characters happened to fall.
 
     Text in a non-UTF-8 encoding therefore reads as binary. That is the intended
-    trade: such a file renders as replacement characters in the text lane, and an
+    trade: such a file renders as replacement characters in the text view, and an
     address the caller can fetch the real bytes from is worth more than a mangled page.
     """
     sample = data[:_SNIFF_BYTES]
@@ -74,8 +74,8 @@ def is_binary(path: Path) -> bool:
 
 
 def binary_refused(name: str) -> ValueError:
-    """The one refusal both substrates raise, so the advice does not depend on which
-    lane answered."""
+    """The one refusal every file reader raises, so the advice does not depend on which
+    one answered."""
     return ValueError(
         f"{name} is a binary file — read it as bytes (GET the address without "
         "'as=text', or 'vast files get'), or download the campaign archive.")
@@ -85,9 +85,8 @@ def split_lines(text: str) -> list[str]:
     """Split *text* the way iterating an opened text file does.
 
     Deliberately **not** ``str.splitlines()``: that also breaks on form feed, NEL and
-    the Unicode separators, so a lane using it reported a different ``total_lines``
-    than the lane that iterated an open file — same file, same call, two answers
-    depending on which backend served it. Universal-newline translation is applied
+    the Unicode separators, so a reader using it would report a different
+    ``total_lines`` than one that iterates an open file. Universal-newline translation is applied
     here so a ``\\r\\n`` object reads like the same file on disk, and a trailing
     newline does not invent a final empty line.
     """

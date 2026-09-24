@@ -1,16 +1,14 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for the in-cluster exec lane.
+"""Tests for ``KubeExecRunner``, the in-cluster exec runner.
 
-The first group pins bugs found by running the lane against a live cluster, all of which
-were invisible to the local lane:
+The first group pins what only a live cluster shows:
 
-- the kube context was ignored, so exec talked to whichever cluster the *kubeconfig*
-  pointed at rather than the one the service runs campaigns on;
-- ``stop_held`` returned while the pod was still ``Terminating``, so the next start hit
+- exec talks to the service's kube context, not the kubeconfig's current one;
+- ``stop_held`` returns only once the pod is gone, so the next start does not hit
   ``AlreadyExists``;
-- the "is anything running?" probe counted its own helper processes, so a pod was never
-  idle and never idle-reaped.
+- the "is anything running?" probe does not count its own helper processes, so an idle
+  pod is idle-reaped.
 
 The second group covers staging. ``/config`` arrives the way a campaign Job's does:
 staged by the service on its own disk, fetched from its data plane by an init container.
@@ -75,9 +73,9 @@ def _staged_fixture(tmp_path):
     return _Staged(tmp_path / "_staged")
 
 
-def _lane(staged, namespace="ns", **kwargs):
+def _runner(staged, namespace="ns", **kwargs):
     return KubeExecRunner(namespace, stage_dir=staged.stage_dir, discard_staged=staged.discard,
-                        token_for=staged.token_for, **kwargs)
+                          token_for=staged.token_for, **kwargs)
 
 
 def _manifest(spec, deadline=300, namespace="ns", owner=None, token="tok",
@@ -104,7 +102,7 @@ def test_the_service_kube_context_is_honoured(monkeypatch, staged):
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kube_client.load_kube_config", fake_load)
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: object())
-    _lane(staged, kube_context="local")._client()
+    _runner(staged, kube_context="local")._client()
     assert seen["context"] == "local"
 
 
@@ -119,8 +117,8 @@ def test_the_cluster_service_passes_its_own_context():
 def test_stopping_waits_for_the_pod_to_actually_be_gone():
     """A Kubernetes delete returns while the pod is still terminating.
 
-    ``stop_held`` must offer the local lane's contract — ``docker rm -f`` is synchronous —
-    or the single-container rule breaks: the next start collides with the corpse.
+    ``stop_held`` is synchronous, or the single-container rule breaks: the next start
+    collides with the corpse.
     """
     import inspect
     source = inspect.getsource(KubeExecRunner.stop_held)
@@ -158,10 +156,10 @@ def test_the_whole_config_tree_is_staged_without_rewriting_names(tmp_path, stage
     """The ConfigMap had to flatten ``files/node.py`` to ``files__node.py`` and restore it.
 
     A staged tree has no such restriction, so the tree goes in as-is, under the slot's
-    ``config`` subtree. This asserts the lane hands the directory over whole rather than
+    ``config`` subtree. This asserts the runner hands the directory over whole rather than
     reintroducing per-key encoding.
     """
-    root = _lane(staged)._stage(_spec(tmp_path))
+    root = _runner(staged)._stage(_spec(tmp_path))
     assert root == staged.stage_dir(exec_slot("ns"))
     assert (root / "config" / "files" / "node.py").read_text() == "print(1)\n"
     assert (root / "config" / "entrypoint.sh").is_file()
@@ -175,24 +173,20 @@ def test_a_config_larger_than_a_configmap_now_stages_fine(tmp_path, staged):
     """
     spec = _spec(tmp_path)
     (tmp_path / "config" / "huge.bin").write_text("x" * (2 * 1024 * 1024))
-    root = _lane(staged)._stage(spec)   # must not raise
+    root = _runner(staged)._stage(spec)   # must not raise
     assert (root / "config" / "huge.bin").stat().st_size == 2 * 1024 * 1024
 
 
-def test_a_lane_without_the_data_plane_wiring_is_refused_at_construction():
+def test_a_runner_without_the_data_plane_wiring_is_refused_at_construction():
     """No silent fallback: an unstaged /config answers a different question and looks OK,
-    so a lane that cannot stage is not built at all."""
+    so a runner that cannot stage is not built at all."""
     with pytest.raises(TypeError, match="stage_dir"):
         KubeExecRunner("ns")  # pylint: disable=missing-kwoa
 
 
 def test_the_workspace_is_staged_under_its_own_subtree(tmp_path, staged):
-    """Parity with the local lane, which bind-mounts it at ``/sources/<id>``.
-
-    A cluster lane ignoring ``workspace_dir`` answers the same call differently from the
-    local one — locally the files are there, in-cluster they are not.
-    """
-    root = _lane(staged)._stage(_spec(tmp_path, workspace=True))
+    """A named ``workspace_dir`` is staged, so the exec pod can mount it at ``/sources/<id>``."""
+    root = _runner(staged)._stage(_spec(tmp_path, workspace=True))
     assert sorted(p.name for p in root.iterdir()) == ["config", "workspace"]
     assert (root / "workspace" / "world.yaml").is_file()
 
@@ -200,18 +194,18 @@ def test_the_workspace_is_staged_under_its_own_subtree(tmp_path, staged):
 def test_staging_replaces_what_a_previous_hold_left(tmp_path, staged):
     """The slot is per pod name, and the previous holder's tree would otherwise be fetched
     as part of this one."""
-    lane = _lane(staged)
+    runner = _runner(staged)
     stale = staged.stage_dir(exec_slot("ns")) / "config" / "stale.txt"
     stale.parent.mkdir(parents=True)
     stale.write_text("old")
-    lane._stage(_spec(tmp_path))
+    runner._stage(_spec(tmp_path))
     assert not stale.exists()
 
 
 def test_stopping_discards_the_staged_tree(tmp_path, staged):
     """A tree nothing reaps is a leak, and the pod's owner reference cannot collect it."""
-    lane = _lane(staged)
-    lane._discard_staged()
+    runner = _runner(staged)
+    runner._discard_staged()
     assert staged.discarded == [exec_slot("ns")]
 
 
@@ -219,9 +213,9 @@ def test_the_sweep_discards_every_slot_of_the_namespace(staged, monkeypatch):
     """After a restart the query slots' keys are gone, so the sweep drops the namespace's
     whole exec tree rather than the slots it can still name."""
     from robovast.execution.cluster_execution import kube_exec_runner as kel
-    monkeypatch.setattr(kel, "_sweep_held_pods", lambda lane: [])
-    lane = _lane(staged)
-    lane.sweep_held()
+    monkeypatch.setattr(kel, "_sweep_held_pods", lambda runner: [])
+    runner = _runner(staged)
+    runner.sweep_held()
     assert staged.discarded == [f"{kel.EXEC_PREFIX}/ns"]
 
 
@@ -262,10 +256,10 @@ def test_the_init_container_carries_the_slots_access_and_nothing_else(tmp_path):
     assert not main_env & {DATA_URL_ENV, TOKEN_ENV}
 
 
-def test_the_lane_mints_the_token_for_the_slot_it_staged(tmp_path, staged):
+def test_the_runner_mints_the_token_for_the_slot_it_staged(tmp_path, staged):
     """The scope has to be the slot the tree was written to, or the fetch is refused."""
-    lane = _lane(staged)
-    manifest = lane._held_manifest(_spec(tmp_path), 300, "qabc")
+    runner = _runner(staged)
+    manifest = runner._held_manifest(_spec(tmp_path), 300, "qabc")
     init, = manifest["spec"]["initContainers"]
     env = {e["name"]: e["value"] for e in init["env"]}
     assert env[TOKEN_ENV] == staged.token_for("staged:" + exec_slot("ns", "qabc"))
@@ -304,7 +298,7 @@ def test_the_pod_carries_no_configmap_volume(tmp_path):
 
 
 def test_a_named_workspace_is_mounted_read_only_at_its_own_address(tmp_path):
-    """Same address as the local lane, so a path from ``write_file`` works verbatim.
+    """The address the workspace has in the service, so a path from ``write_file`` works verbatim.
 
     Read-only in the container under test: campaign inputs are not a diagnostic's to
     rewrite. The init container mounts it writable, because it is what fills it.
@@ -322,7 +316,7 @@ def test_a_named_workspace_is_mounted_read_only_at_its_own_address(tmp_path):
 
 
 def test_no_workspace_means_no_sources_mount(tmp_path):
-    """Matching the local lane, which adds the ``-v`` only when one was named."""
+    """The sources mount exists only when a workspace was named."""
     manifest = _manifest(_spec(tmp_path))["spec"]
     paths = [m["mountPath"] for c in manifest["containers"] + manifest["initContainers"]
              for m in c.get("volumeMounts", [])]
@@ -332,10 +326,9 @@ def test_no_workspace_means_no_sources_mount(tmp_path):
 
 # -- pulling a private experiment image ---------------------------------------
 #
-# The exec pod runs the experiment image, which on this lane lives in the deployment's own
-# registry and may be private. The scene aux pod had exactly this omission and its fix
-# records why it is easy to miss: `imagePullPolicy: IfNotPresent` means a node that already
-# cached the image succeeds without a credential, so the failure waits for a fresh node.
+# The exec pod runs the experiment image, which lives in the deployment's own registry and
+# may be private. `imagePullPolicy: IfNotPresent` means a node that already cached the image
+# succeeds without a credential, so a missing secret only fails on a fresh node.
 
 
 def test_the_pod_can_pull_a_private_image(tmp_path):
@@ -349,17 +342,17 @@ def test_no_secret_means_no_pull_secrets_key(tmp_path):
     assert "imagePullSecrets" not in _manifest(_spec(tmp_path))["spec"]
 
 
-def test_the_lane_passes_the_secret_it_was_built_with(tmp_path, monkeypatch, staged):
-    """The manifest is only right if the lane actually hands it over."""
+def test_the_runner_passes_the_secret_it_was_built_with(tmp_path, monkeypatch, staged):
+    """The manifest is only right if the runner actually hands it over."""
     from robovast.execution.cluster_execution import kube_exec_runner as kel
     seen = {}
     monkeypatch.setattr(kel, "_pod_manifest",
                         lambda *a, **kw: seen.update(kw) or {"metadata": {"name": "p"}})
     # Patched where it is defined: start_held imports it inside the function, so replacing
-    # a name on the lane's module would not reach it.
+    # a name on the runner's module would not reach it.
     from robovast.execution.cluster_execution import kube_client
     monkeypatch.setattr(kube_client, "wait_pod_ready", lambda *a, **kw: None)
-    lane = _lane(staged, pull_secret="robovast-registry")
+    runner = _runner(staged, pull_secret="robovast-registry")
 
 
     class _Core:
@@ -370,15 +363,14 @@ def test_the_lane_passes_the_secret_it_was_built_with(tmp_path, monkeypatch, sta
             from kubernetes.client.exceptions import ApiException
             raise ApiException(status=404, reason="Not Found")
 
-    lane._core = _Core()
-    lane.start_held(_spec(tmp_path), 300)
+    runner._core = _Core()
+    runner.start_held(_spec(tmp_path), 300)
     assert seen["pull_secret"] == "robovast-registry"
 
 
-def test_the_cluster_service_gives_its_exec_lane_the_pull_secret():
-    """Source-inspection, as with the kube context above: constructing a real lane needs a
-    cluster. What matters is that the wiring exists at all -- it did not, and the image the
-    exec pod runs is precisely the private one."""
+def test_the_cluster_service_gives_its_exec_runner_the_pull_secret():
+    """Source-inspection, as with the kube context above: constructing a real
+    ClusterService needs a cluster."""
     import inspect
 
     from robovast.execution.cluster_execution.cluster_service import ClusterService
@@ -397,7 +389,7 @@ def _aux_held_spec(tmp_path, image="ghcr.io/example/builder"):
 
 
 def test_a_held_aux_pod_is_the_one_an_aux_runner_knows_how_to_use(tmp_path, staged):
-    """Built by the campaign path's builder, not this lane's.
+    """Built by the campaign path's builder, not the exec pod's own.
 
     The runner that will compose against it stages inputs into ``AUX_MOUNTABLE_PATHS`` and
     moves its workspace through the transfer container. A pod from ``_pod_manifest`` has
@@ -406,8 +398,8 @@ def test_a_held_aux_pod_is_the_one_an_aux_runner_knows_how_to_use(tmp_path, stag
     """
     from robovast.execution.cluster_execution.container_runner import (AUX_MOUNTABLE_PATHS,
                                                                        TRANSFER_CONTAINER)
-    lane = _lane(staged)
-    manifest = lane._held_manifest(_aux_held_spec(tmp_path), 300, "qabc")
+    runner = _runner(staged)
+    manifest = runner._held_manifest(_aux_held_spec(tmp_path), 300, "qabc")
 
     spec = manifest["spec"]
     mounted = {m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
@@ -419,15 +411,15 @@ def test_a_held_aux_pod_is_the_one_an_aux_runner_knows_how_to_use(tmp_path, stag
 
 
 def test_a_held_aux_pod_is_addressed_and_swept_like_every_other_held_one(tmp_path, staged):
-    """Its name, its container's name and its label are this lane's, whatever is inside it.
+    """Its name, its container's name and its label are the exec runner's, whatever is inside it.
 
     Otherwise the probes, the execs and the post-restart stray sweep would each need to know
     which kind of pod they were looking at.
     """
     from robovast.execution.cluster_execution.container_runner import TRANSFER_CONTAINER
     from robovast.execution.cluster_execution.kube_exec_runner import HELD_CONTAINER, _pod_name
-    lane = _lane(staged)
-    manifest = lane._held_manifest(_aux_held_spec(tmp_path), 300, "qabc")
+    runner = _runner(staged)
+    manifest = runner._held_manifest(_aux_held_spec(tmp_path), 300, "qabc")
 
     assert manifest["metadata"]["name"] == _pod_name("qabc")
     assert [c["name"] for c in manifest["spec"]["containers"]] == [HELD_CONTAINER,
@@ -439,14 +431,14 @@ def test_a_held_aux_pod_is_addressed_and_swept_like_every_other_held_one(tmp_pat
 def test_holding_an_aux_container_stages_nothing(tmp_path, monkeypatch, staged):
     """Its runner moves its own workspace around each command, so there is no /config
     tree to put there — and staging one would write a directory nothing reads."""
-    lane = _lane(staged)
-    monkeypatch.setattr(lane, "stop_held", lambda slot=ce.SLOT_USER: False)
-    monkeypatch.setattr(lane, "_client", lambda: _CreateRecorder())
+    runner = _runner(staged)
+    monkeypatch.setattr(runner, "stop_held", lambda slot=ce.SLOT_USER: False)
+    monkeypatch.setattr(runner, "_client", lambda: _CreateRecorder())
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kube_client.wait_pod_ready",
         lambda *a, **k: None)
 
-    lane.start_held(_aux_held_spec(tmp_path), 300, "qabc")
+    runner.start_held(_aux_held_spec(tmp_path), 300, "qabc")
     assert not staged.stage_dir(exec_slot("ns", "qabc")).exists()
 
 
@@ -461,16 +453,15 @@ class _CreateRecorder:
 def test_a_held_exec_addresses_the_slots_pod_and_its_container(tmp_path, monkeypatch, staged):
     """Pins the ``(pod, container)`` pair every held exec goes to.
 
-    Nothing covered this, and a stale name in it survived a full green suite: the pair is
-    built once per call and only a *live* exec would have raised. It is the address every
-    other operation on a held container agrees on, so it is worth one cheap assertion.
+    It is built once per call and only a *live* exec would raise on a wrong one, and it is
+    the address every other operation on a held container agrees on.
     """
     from robovast.execution.cluster_execution.kube_exec_runner import HELD_CONTAINER, _pod_name
-    lane = _lane(staged)
+    runner = _runner(staged)
     seen = {}
-    monkeypatch.setattr(lane, "exec_in",
+    monkeypatch.setattr(runner, "exec_in",
                         lambda target, argv, limit_s: seen.update(target=target) or
                         (0, "", "", False))
 
-    lane.exec_in_held(_spec(tmp_path), 30, detach=False, slot="qabc")
+    runner.exec_in_held(_spec(tmp_path), 30, detach=False, slot="qabc")
     assert seen["target"] == (_pod_name("qabc"), HELD_CONTAINER)

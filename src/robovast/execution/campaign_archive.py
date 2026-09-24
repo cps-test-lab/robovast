@@ -32,8 +32,8 @@ compress, so gzip there buys almost no size and costs a core per stream -- a sin
 ``gzip`` caps a transfer near 70 MB/s where the plain tar runs at disk speed, and on the
 pod side that core is taken from the scenario it belongs to.
 
-All of them read a **local directory** -- the campaign's home on every lane is the
-service's results tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
+All of them read a **local directory** -- the campaign's home is the service's results
+tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
 symlink members (``dereference=False``) and not recursed into, so the archive is
 navigable without duplicating ``_jobs/`` under every run.
 
@@ -79,7 +79,7 @@ def snapshot_marker(campaign_id: str, **facts) -> bytes:
     *facts* are whatever the caller knows about the moment of capture (run tallies, the
     phase). Kept open rather than typed: this file is read by a human deciding whether to
     trust the archive at least as often as by :mod:`~robovast.service.ingest`, and the
-    fields worth having differ per lane.
+    fields worth having differ per caller.
     """
     from datetime import datetime, timezone
     return json.dumps({
@@ -304,10 +304,10 @@ def make_campaign_tarball(campaign_root: str, archive_dir: str,
                           on_member=None) -> str:
     """Write the campaign at *campaign_root* into *archive_dir*; return its path.
 
-    *name* is the file name to write, defaulting to ``<campaign>.tar.gz``. The local
-    lane passes the variant-carrying name a share uses
-    (:func:`~robovast.execution.share_providers.naming.archive_name`) so its
-    ``_archives/`` dir and a real share are readable by the same parser.
+    *name* is the file name to write, defaulting to ``<campaign>.tar.gz``. Passing the
+    variant-carrying name a share uses
+    (:func:`~robovast.execution.share_providers.naming.archive_name`) keeps an
+    ``_archives/`` dir readable by the same parser as a real share.
 
     Uses Python's built-in gzip (no ``pigz`` dependency) since this runs on the
     local host where ``pigz`` may be absent; the stream variants use ``pigz`` on the

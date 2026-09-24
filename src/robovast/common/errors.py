@@ -182,7 +182,7 @@ class ActionableError(Exception):
 
 
 class ImageNotBuilt(ActionableError):
-    """Raised when a container's ``build:`` image is not on the lane's own image store.
+    """Raised when a container's ``build:`` image is not in the deployment's own image store.
 
     Never built implicitly: a diagnostic exec that quietly became a multi-minute image
     build would answer a question nobody asked. What separates this from a dead end is the
@@ -207,7 +207,7 @@ class AuxContainerUnavailable(ActionableError):
     reading
     it as a rule is what left ``preview_configurations`` refusing a perfectly good sweep.
 
-    What this does *not* extend to is the exec lane's **query slot**: that runs a read-only
+    What this does *not* extend to is the exec manager's **query slot**: that runs a read-only
     question in a campaign's own image with nothing written back, so it is not a substitute
     for a helper image a variation writes into. A held *aux* slot in the same manager is,
     and is how a preview gets one.

@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The container-level counter lane, end to end: sampler -> per-job CSV -> per-run table.
+"""The container-level counter path, end to end: sampler -> per-job CSV -> per-run table.
 
 Two properties carry this feature and are pinned here rather than left to inspection. The
 first is that it is **column-generic**: nothing between the sampler and ``data.db`` names a
@@ -168,7 +168,7 @@ def test_a_record_with_other_columns_is_replaced_and_said_so(tmp_path, capsys):
 # -- the slicer -------------------------------------------------------------------------
 
 def test_columns_are_carried_through_without_being_named(tmp_path):
-    """The point of the lane: a metric the sampler invents appears downstream untouched."""
+    """The point of the path: a metric the sampler invents appears downstream untouched."""
     job = tmp_path / "_jobs" / "job-0"
     job.mkdir(parents=True)
     (job / "system_usage_sut.csv").write_text(

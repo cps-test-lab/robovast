@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Rendering rules that must not depend on which substrate answered.
 
-The local lane iterates an open file; the object-store lane has only bytes. Both go
-through the helpers here, because when they did not, the same file reported a
-different line count depending on the backend.
+A file on disk is iterated; an object-store file has only bytes. Both go through the
+helpers here, so the same file reports the same line count whichever backend served it.
 """
 
 import pytest
@@ -17,13 +16,13 @@ from robovast.common import file_view
     "a\nb\nc",
     "",
     "\n",
-    # The characters that made the two lanes disagree: str.splitlines() breaks on form
+    # The characters where the two readings can disagree: str.splitlines() breaks on form
     # feed, NEL and the Unicode separators; iterating a file does not.
     "a\x0cb\nc\xc2\x85d\n",
     "a b\nc d\n",
     "crlf\r\nlines\r\n",
 ])
-def test_both_lanes_count_the_same_lines(tmp_path, raw):
+def test_a_file_and_its_bytes_count_the_same_lines(tmp_path, raw):
     path = tmp_path / "log.txt"
     path.write_bytes(raw.encode())
     from_disk = file_view.read_text_page(path, lines=0)
@@ -91,7 +90,7 @@ _PGM_OPEN_FLOOR = b"P5\n8 8\n255\n" + b"\xfe" * 64
 
 
 def test_a_raster_with_no_nul_byte_is_binary(tmp_path):
-    """Binary is what the text lane cannot decode, not only what holds a NUL.
+    """Binary is what the text path cannot decode, not only what holds a NUL.
 
     Rendering such a file as text turns every sample into a replacement character and
     hides the byte URL that serves it properly, so the refusal is the useful answer.

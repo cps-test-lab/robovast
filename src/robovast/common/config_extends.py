@@ -51,7 +51,7 @@ def _resolve_base(raw, config_path, project_dir):
 
     Refused rather than advised when it escapes the project directory: only the project
     directory reaches a service workspace, so a base outside it composes from the tree in
-    place and is simply absent on the cluster lane. A generator input that escapes is an
+    place and is simply absent on the cluster. A generator input that escapes is an
     advisory because the campaign merely reads it; a base *is* the campaign.
     """
     ext = raw.get(EXTENDS_KEY)

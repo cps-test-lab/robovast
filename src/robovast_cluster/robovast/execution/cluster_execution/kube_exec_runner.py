@@ -1,6 +1,6 @@
 """The Kubernetes half of container exec: one aux pod, exec'd into.
 
-The :class:`~robovast.service.container_exec.ExecRunner` of the cluster lane, built on the
+The :class:`~robovast.service.container_exec.ExecRunner` of the cluster, built on the
 same two primitives the aux-pod container runner already uses — a kept-alive pod and
 ``pods/exec``, which its docstring calls "the in-cluster equivalent of ``docker exec``".
 
@@ -63,8 +63,7 @@ SOURCES_ROOT = "/sources"
 
 
 def _pod_name(slot: str = SLOT_USER) -> str:
-    # Same name as the local container, so a slot's container reads identically on both
-    # lanes and a stray is found the same way. Every slot keeps POD_LABEL, so the stray
+    # The slot's container name. Every slot keeps POD_LABEL, so the stray
     # sweep finds a query pod too — its slot key is derived from an identity no restarted
     # service still remembers.
     return container_name(slot)
@@ -86,9 +85,9 @@ class KubeExecRunner:
     """Runs exec commands in a single aux pod, staged through the service's data plane.
 
     *stage_dir*, *discard_staged* and *token_for* are the service's own
-    ``staged_dir(slot)``, ``discard_staged(slot)`` and ``scoped_token(scope)``: the lane
+    ``staged_dir(slot)``, ``discard_staged(slot)`` and ``scoped_token(scope)``: the service
     writes the tree the pod will fetch, mints the token that reaches it, and drops it
-    with the pod. All three are required -- a lane that cannot stage would answer a
+    with the pod. All three are required -- a runner that cannot stage would answer a
     different question than the caller asked, against an unstaged ``/config``, and look
     like a pass.
     """
@@ -121,7 +120,7 @@ class KubeExecRunner:
     def run_once(self, spec: ExecSpec, limit_s: int) -> tuple[int, str, str, bool]:
         """No throwaway-pod path: create, exec, delete — the pod *is* the container.
 
-        A one-shot on this lane is a held pod that is torn down immediately, because a
+        A one-shot here is a held pod that is torn down immediately, because a
         pod cannot both run a command and hand back its output the way ``docker run``
         does without polling logs to completion.
         """
@@ -165,7 +164,7 @@ class KubeExecRunner:
         rather than from :func:`_pod_manifest`, so the pod is the one an aux runner already
         knows how to use: the transfer container that moves its workspace, and an emptyDir
         at each of ``AUX_MOUNTABLE_PATHS`` that ``expose()`` stages into. Only the pod's
-        name, its single container's name and its label are this lane's, so every held pod
+        name, its single container's name and its label are this runner's, so every held pod
         is addressed, probed and swept identically whatever is inside it. Reusing that
         builder is also what keeps the data-plane wiring and the pull secret in one place
         instead of two.
@@ -216,9 +215,8 @@ class KubeExecRunner:
                 env: dict | None = None) -> tuple[int, str, str, bool]:
         """Exec into *target*, a ``(pod, container)`` pair.
 
-        *env* is accepted for one signature across lanes and ignored here: a pod bakes its
-        environment at creation, so there is nothing per-exec to carry — unlike ``docker
-        exec``, where each call carries it.
+        *env* is accepted for the ``ExecRunner`` signature and ignored here: a pod bakes its
+        environment at creation, so there is nothing per-exec to carry.
         """
         from .kube_client import exec_stream
         pod, container = target
@@ -227,9 +225,8 @@ class KubeExecRunner:
 
     def exec_in_held(self, spec: ExecSpec, limit_s: int, detach: bool,
                      slot: str = SLOT_USER) -> tuple[int, str, str, bool]:
-        # Both forms come from the spec, so the liveness check a detached start needs
-        # cannot be present on one lane and missing on the other — which is exactly how
-        # it was, until a scenario silently failed to start.
+        # Both forms come from the spec, which carries the liveness check a detached
+        # start needs.
         if detach:
             argv = ["/bin/bash", "-c", spec.detached_start_script()]
         else:
@@ -278,7 +275,7 @@ class KubeExecRunner:
         'n=$((n+1)); done; echo $n')
 
     def sweep_held(self) -> list:
-        """Delete every exec pod this lane owns, and the trees they staged.
+        """Delete every exec pod this runner owns, and the trees they staged.
 
         See :func:`_sweep_held_pods`: after a restart the query slots' keys are gone, so
         the label is the only handle left on the pods they made.
@@ -343,7 +340,7 @@ class KubeExecRunner:
         return count > 0
 
 
-def _sweep_held_pods(lane) -> list:
+def _sweep_held_pods(runner) -> list:
     """Delete every exec pod in the namespace, by label. Returns the names deleted.
 
     By label and not by name because a query pod's name carries a hash of the identity it
@@ -353,9 +350,9 @@ def _sweep_held_pods(lane) -> list:
     from kubernetes.client.rest import ApiException
 
     from .kube_client import api_error_reason, wait_pod_gone
-    core = lane._client()  # noqa: SLF001 - the lane's own helper, called from its module
+    core = runner._client()  # noqa: SLF001 - the runner's own helper, called from its module
     try:
-        found = core.list_namespaced_pod(lane._namespace,  # noqa: SLF001
+        found = core.list_namespaced_pod(runner._namespace,  # noqa: SLF001
                                          label_selector=POD_LABEL)
     except ApiException as e:
         logger.warning("could not list stray exec pods: %s", api_error_reason(e))
@@ -364,13 +361,13 @@ def _sweep_held_pods(lane) -> list:
     for pod in found.items:
         name = pod.metadata.name
         try:
-            core.delete_namespaced_pod(name, lane._namespace,  # noqa: SLF001
+            core.delete_namespaced_pod(name, runner._namespace,  # noqa: SLF001
                                        grace_period_seconds=0)
         except ApiException as e:
             if e.status != 404:
                 logger.warning("deleting %s failed: %s", name, api_error_reason(e))
             continue
-        wait_pod_gone(core, lane._namespace, name)  # noqa: SLF001
+        wait_pod_gone(core, runner._namespace, name)  # noqa: SLF001
         deleted.append(name)
     return deleted
 

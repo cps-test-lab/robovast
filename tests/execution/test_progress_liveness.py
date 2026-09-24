@@ -64,9 +64,9 @@ def test_a_missing_campaign_dir_counts_zero_rather_than_raising(tmp_path):
 
 def test_the_cluster_backend_counts_the_same_files(tmp_path):
     """A cluster job's uploader delivers its results under the campaign root before the
-    Job is complete, so the cluster lane counts the files under the root. It inherits the
-    count rather than restating it: the lane that answered ``None`` here ran every
-    campaign with no batch total and a progress that never moved."""
+    Job is complete, so the backend counts the files under the root. It inherits the
+    count rather than restating it: a backend answering ``None`` here runs every campaign
+    with no batch total and a progress that never moves."""
     backend = KubernetesBackend.__new__(KubernetesBackend)
     assert backend.count_run_artifacts("camp", str(tmp_path)) == 0
     _finish_run(tmp_path, "cfg-a", "0")
@@ -181,8 +181,8 @@ def test_the_job_budget_has_exactly_one_definition():
 
 
 def test_a_declared_budget_is_the_jobs_and_is_not_scaled():
-    """v3 semantics. Both lanes enforce at job granularity -- a Job's
-    activeDeadlineSeconds, a compose step -- so the declared number is used as written."""
+    """v3 semantics. The deadline is enforced at job granularity -- a Job's
+    activeDeadlineSeconds -- so the declared number is used as written."""
     packed = {"timeout": 600, "runs_per_job": 100}
     assert declared_job_seconds(packed) == job_deadline_seconds(packed) == 600
 

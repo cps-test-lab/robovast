@@ -121,8 +121,8 @@ It provides four views:
   actions menu — **Set queue priority…** (the field starts at the current value, and only a
   whole number is accepted) and **Pause admitting new runs** / **Resume admitting runs** —
   the same operation as ``vast campaign priority|pause|resume``
-  (:ref:`cluster-admission`). The entries appear only on a lane with a queue, which the
-  service reports as ``can_schedule`` in ``/version``. A change is confirmed by a
+  (:ref:`cluster-admission`). The entries appear only on a service with a queue, which it
+  reports as ``can_schedule`` in ``/version``. A change is confirmed by a
   notice carrying the service's own answer, the priority the campaign now has and that runs
   already started are unaffected.
   The phase reflects the whole lifecycle, including its two pre-run steps:
@@ -267,7 +267,7 @@ It provides four views:
   :ref:`web-ui-campaign-config`.
 * **Results** — browse a campaign's data: an Explorer over its analysis notebooks, a
   panel-based replay of one run, and read-only SQL with charts.
-* **Admin** — the *service* rather than the work: how loaded the lane has been, which
+* **Admin** — the *service* rather than the work: how loaded the cluster has been, which
   version is running, and what the service has been doing. Pinned to the foot of the
   sidebar beside the usage meters, which report the same service. See `The Admin page`_.
 
@@ -279,11 +279,11 @@ The Admin page
 Every other page is about a campaign. This one is about the service running them, and it
 answers the questions no other page does.
 
-**How loaded has the lane been.** The sidebar meters say *now*; "is the cluster busy?" is a
+**How loaded has the cluster been.** The sidebar meters say *now*; "is the cluster busy?" is a
 question about a period. The service samples its own ``/usage`` every 30 seconds and keeps
 24 hours of readings, plotted as CPU and memory against capacity over the last hour or day.
 
-One chart for the whole lane — every node summed, one colour per resource — and **two
+One chart for the whole cluster — every node summed, one colour per resource — and **two
 readings per resource**: a filled area for what is actually being **consumed**, under a
 dashed line for what has been **reserved**. The gap between them is the number that sizes
 the next sweep: a campaign reserving nine cores per pod and using two draws a chart that
@@ -1264,7 +1264,7 @@ hover tooltip spelling the numbers out:
   pending, not as CPU in use). So on a cluster these meters are what is **reserved**;
   what is actually being consumed is on the Admin page's chart, beside it (see
   `The Admin page`_). ``get_resource_usage`` reports both readings as
-  ``cpu_reserved`` / ``cpu_measured``, either of which is null on a lane that has no
+  ``cpu_reserved`` / ``cpu_measured``, either of which is null where the service has no
   such reading.
 * **Jobs** — only while there is scenario work, since a permanent ``0/0`` on an
   empty track was indistinguishable from a dead widget. Its total is the
@@ -1278,7 +1278,7 @@ hover tooltip spelling the numbers out:
   pod requests — nothing reserves disk, so a request sum would read near-empty on
   a full disk.
 * **Results** — the results volume, where the backend can measure one separately. This is
-  where every campaign lives, so a full one is not merely a slow lane. It appears only where
+  where every campaign lives, so a full one is not merely a slow cluster. It appears only where
   the volume is a thing of its own — a provisioned claim on the service pod; where the volume
   is a directory on the service's node there is no separate figure to report and **Disk** is
   already that filesystem.
@@ -1948,7 +1948,7 @@ a node to build on*, *Fetching the simulation image onto the node*, *Starting th
 a pod on the campaign's own image, and the pod is the only thing that knows which of those it is on — so
 the stage is read rather than assumed.
 
-Under the stage, when the lane has one, comes **its own words for the wait**: the pod's
+Under the stage, when the cluster has one, comes **its own words for the wait**: the pod's
 ``ImagePullBackOff`` and the registry's message, say. That is the difference between a cold start and a
 wait that will never end, and it is the case to know about for a campaign **imported from another
 cluster**: geometry is compiled in the image that campaign *recorded*, which is a reference into the

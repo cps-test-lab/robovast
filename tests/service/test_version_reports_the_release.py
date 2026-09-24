@@ -46,8 +46,8 @@ def _reported(monkeypatch, revision: str = BAKED):
         _declared_web_base=lambda: "",
         _queues_campaigns=lambda: NullService._queues_campaigns(None),  # noqa: SLF001
     )
-    fake_self._version_info = lambda **lane: ServiceBase._version_info(  # pylint: disable=no-member
-        fake_self, **lane)
+    fake_self._version_info = lambda **fields: ServiceBase._version_info(  # pylint: disable=no-member
+        fake_self, **fields)
     return NullService.version(fake_self)
 
 

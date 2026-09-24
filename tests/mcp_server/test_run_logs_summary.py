@@ -61,7 +61,7 @@ def _write_campaign(cdir, rows: int) -> None:
 
 @pytest.fixture
 def campaigns(tmp_path, monkeypatch):
-    """Two campaigns' logs in one index, reached over the local lane.
+    """Two campaigns' logs in one index, reached through a service stand-in.
 
     They share ``cfg-a``/run 0 on purpose: those are the keys that collide once the logs
     are one table, so a query that forgot ``campaign_id`` reads both and nothing about the
@@ -84,8 +84,8 @@ def campaigns(tmp_path, monkeypatch):
         _write_campaign(tmp_path / "results" / name, _ROWS_PER_CAMPAIGN)
         _ingest(tmp_path / "results" / name)
     from tests.service.null_service import serving
-    lane = serving(tmp_path / "results", tmp_path / "workspaces")
-    monkeypatch.setattr(service_access, "service_client", lambda: lane)
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
     monkeypatch.setattr(run_logs, "_SUMMARY_SCAN", _SCAN_CAP)
     yield tmp_path
     with psycopg.connect(DSN, autocommit=True) as teardown:

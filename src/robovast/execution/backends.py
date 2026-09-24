@@ -22,7 +22,7 @@ lifecycle (campaign id, results layout, store, the batch loop and scoring); a
 backend only dispatches a batch's jobs so results land at
 ``<campaign_root>/<config>/<run>/``.
 
-The cluster lane's ``KubernetesBackend`` runs each batch as Kubernetes Jobs into a
+The ``KubernetesBackend`` runs each batch as Kubernetes Jobs into a
 fixed campaign root (no per-batch campaign-id nesting); the test suite's null backend
 runs nothing. Both drive batch and search through the same controller.
 """
@@ -100,7 +100,7 @@ class RunOptions:
     # -- who ends the campaign ------------------------------------------------
     # True when the builders' finish tail is the campaign's **outermost** scope and
     # must therefore publish the terminal phase, stop the heartbeat and send the one
-    # notification (see controller.end_campaign). A lane that ran work *after* the
+    # notification (see controller.end_campaign). A caller that runs work *after* the
     # builder returned would set it False, since the builder ending the campaign would
     # then report "finished" with no metrics yet. A per-campaign option rather than an
     # env var for the same reason as ``postprocess``: the service drives many campaigns
@@ -183,10 +183,10 @@ class ExecutionBackend(ABC):
         cluster held for the campaign -- its node calibration and its place in the queue.
         """
 
-    def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - lane-specific
-        """The build lock inside *image*, for a lane that can read one without a runtime.
+    def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - backend-specific
+        """The build lock inside *image*, for a backend that can read one without a runtime.
 
-        ``{}`` by default. The cluster lane overrides it because its controller has no
+        ``{}`` by default. The :class:`KubernetesBackend` overrides it because its controller has no
         container runtime, so the only way to reach the lock is the registry.
 
         ``{}`` means "could not be read here", never "the image installed nothing" -- see
@@ -200,7 +200,7 @@ class ExecutionBackend(ABC):
         Measured once, in the run tail, so that reading the figure later is a field lookup
         rather than a walk of the results: a campaign is displayed far more often than it
         finishes, and enumerating storage per view scales with the campaign while telling
-        every viewer the same thing. ``campaign_root`` is the campaign on every lane.
+        every viewer the same thing. ``campaign_root`` is the campaign's local results tree.
 
         ``None`` means the size could not be established, which a reader must render as
         "not recorded" rather than as zero. Best-effort by contract: a campaign's results
@@ -236,8 +236,7 @@ class ExecutionBackend(ABC):
         campaign_variant` reads it off the directory, so the two cannot disagree.
 
         *progress_callback* is driven off the bytes read from the campaign, the
-        source-side counter every lane can report, which is what lets one reader render
-        any of them. A lane refuses an archive that no deployment could import back
+        source-side counter. A backend refuses an archive that no deployment could import back
         (``robovast.service.ingest.missing_for_import_in``) before a byte crosses the
         network: such an archive uploads, lists and downloads exactly like a good one
         and fails only at the far end (:func:`refuse_unimportable`).
@@ -251,7 +250,7 @@ class ExecutionBackend(ABC):
     def discard_partial_share(self, object_name: str) -> str:
         """Remove what a cancelled or failed upload left; return a note, or ``""``.
 
-        ``""`` by default, for a lane whose writer leaves nothing behind. The
+        ``""`` by default, for a backend whose writer leaves nothing behind. The
         :class:`KubernetesBackend` overrides this, having put its partial object on
         somebody else's storage.
         """

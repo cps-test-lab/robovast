@@ -1,4 +1,4 @@
-"""Run one command in an experiment image — the lane-agnostic half.
+"""Run one command in an experiment image — the runner-agnostic half.
 
 This is a **diagnostic**: it answers "is this container set up correctly?" and "does
 this one config run?" without producing a campaign. Nothing it does is durable, and
@@ -124,9 +124,9 @@ LIMIT_SOURCE_DEFAULT = "default"
 
 
 class ExecRunner(Protocol):
-    """The lane-specific half: a *named* held container, started and exec'd into.
+    """The runner half: a *named* held container, started and exec'd into.
 
-    Implemented by the cluster lane's ``KubeExecRunner`` (an aux pod).
+    Implemented by ``KubeExecRunner`` (an aux pod).
 
     Every held operation takes a *slot*, and the container it addresses is
     :func:`container_name` of it. The slot was a constant until the read-only
@@ -144,26 +144,19 @@ class ExecRunner(Protocol):
         """Start *slot*'s container, idle, so commands can be exec'd into it.
 
         With :attr:`ExecSpec.aux_spec` set the container is a variation's helper image:
-        nothing is staged into it and it is created however that lane already creates an
-        aux container. A lane with no separate aux mechanism may ignore the field.
+        nothing is staged into it and it is created from the aux manifest.
         """
 
     def exec_in(self, target, argv: list, limit_s: int,
                 env: dict | None = None) -> tuple[int, str, str, bool]:
         """Run *argv* in an **already-running** container named by *target*.
 
-        The lane-specific half of every exec, with the container to enter as a parameter
-        rather than a constant. *target* is opaque and lane-shaped -- a container name on
-        docker, a ``(pod, container)`` pair on Kubernetes -- so a caller obtains one from
-        the lane rather than constructing it.
+        The runner half of every exec, with the container to enter as a parameter rather
+        than a constant. *target* is opaque -- a ``(pod, container)`` pair -- so a caller
+        obtains one from the runner rather than constructing it. That is what lets one
+        primitive serve the held diagnostic container *and* a live job's.
 
-        Both docker and the Kubernetes API require that argument regardless, so naming it
-        is not a new capability: it is the same call with the constant lifted out. That is
-        what lets one primitive serve the held diagnostic container *and* a live job's,
-        instead of a second exec path growing beside this one.
-
-        *env* is applied where the lane can: ``docker exec`` carries it per call, while a
-        pod bakes its environment at creation and ignores it here.
+        *env* is ignored: a pod bakes its environment at creation.
         """
 
     def exec_in_held(self, spec: "ExecSpec", limit_s: int, detach: bool,
@@ -189,7 +182,7 @@ class ExecRunner(Protocol):
         """
 
     def sweep_held(self) -> list:
-        """Remove **every** exec container this lane owns; return what went.
+        """Remove **every** exec container this runner owns; return what went.
 
         Not ``stop_held`` per slot: after a restart the query slots' keys are gone (they
         are derived from an identity nothing persists), so a sweep has to find containers
@@ -200,7 +193,7 @@ class ExecRunner(Protocol):
 
 
 class ExecSpec:
-    """Everything a lane needs to run one command: image, mounts, env, argv.
+    """Everything a runner needs to run one command: image, mounts, env, argv.
 
     ``config_dir`` is a staging directory this object owns — the caller must
     :meth:`close` it (or use it as a context manager) so a failed exec does not leak a
@@ -214,7 +207,7 @@ class ExecSpec:
         self.image = image
         #: The :class:`~robovast.common.variation.container_runner.ContainerSpec` this
         #: container exists to *be*, when it is a variation's helper image rather than a
-        #: campaign's. Set only by :meth:`ExecManager.hold`, and what tells a lane to
+        #: campaign's. Set only by :meth:`ExecManager.hold`, and what tells the runner to
         #: create the container from the aux manifest and stage nothing into it: an aux
         #: runner mirrors its own workspace around each command, so there is no ``/config``
         #: tree to put there and no command to run at creation. ``None`` is every other
@@ -258,9 +251,8 @@ class ExecSpec:
     def detached_start_script(self) -> str:
         """Shell that starts this spec's scenario in the background and proves it lives.
 
-        On the spec rather than in a lane, and that is the point: a lane with its own copy
-        can miss the fix for a silent failure — a scenario that died on launch while the
-        exec reported success.
+        On the spec rather than in the runner, so the check against a silent failure — a
+        scenario that died on launch while the exec reported success — has one copy.
 
         Three things it must do:
 
@@ -409,10 +401,9 @@ def stage(vast_file: str, config_name: str, *,
     entrypoint is staged. It implies an empty *config_name*, which is the same branch a
     bare-image exec of a project already takes.
 
-    The entrypoint is always rendered **for the lane this exec runs on** — never copied
-    from a campaign. ``prepare_campaign_configs`` substitutes lane-specific init and
-    post-run blocks, so a cluster campaign's entrypoint carries cluster init and the
-    done-marker hand-off to the pod's uploader.
+    The entrypoint is always rendered **for this exec** — never copied from a campaign,
+    whose entrypoint carries cluster init and the done-marker hand-off to the pod's
+    uploader.
     """
     from robovast.common import load_config
     from robovast.execution.controller import build_campaign_data, filter_configs_by_name
@@ -425,7 +416,7 @@ def stage(vast_file: str, config_name: str, *,
             # That keeps a "does this import?" check off the variation-plugin path, and
             # avoids failing input checks (a missing .osc) that the question does not
             # depend on.
-            # An image-family exec has no project, so there is nothing to read a lane
+            # An image-family exec has no project, so there is nothing to read a
             # timeout or an env override out of -- the bare image and its command.
             execution = ((load_config(vast_file) or {}).get("execution") or {}
                          if vast_file else {})
@@ -583,10 +574,10 @@ class ContainerExecManager:
                 deadline_in_s=max(0, int(held["deadline"] - time.monotonic())))
 
     def states(self) -> dict:
-        """Every held container, by slot — what a lane's occupancy actually is.
+        """Every held container, by slot — what the service's exec occupancy actually is.
 
-        ``get_resource_usage`` reports this so a caller that finds the lane full can
-        attribute the shortfall. Reporting only the user slot would show a lane holding
+        ``get_resource_usage`` reports this so a caller that finds the cluster full can
+        attribute the shortfall. Reporting only the user slot would show a service holding
         containers as holding none.
         """
         with self._lock:
@@ -615,7 +606,7 @@ class ContainerExecManager:
         :data:`SLOT_USER`'s container.
 
         *fresh* stops this call joining a container that is already held, so one is
-        created and the image is fetched under the lane's pull policy. It is deliberately
+        created and the image is fetched under the cluster's pull policy. It is deliberately
         not part of *identity*: the caller is replacing what that identity addresses, not
         addressing something else, so the next ordinary call reuses what this one made.
         """
@@ -670,7 +661,7 @@ class ContainerExecManager:
         only latency and the windows are far longer" — because an aux runner mirrors its
         workspace around each command and leaves nothing in the container between them. It
         shares :data:`QUERY_POOL_MAX` with the introspection containers for the same
-        reason: they are the same kind of thing competing for one lane.
+        reason: they are the same kind of thing competing for one cluster.
         """
         slot = query_slot(identity)
         self._evict_query_over_cap(keep=slot)
@@ -705,7 +696,7 @@ class ContainerExecManager:
     def stop(self, slot: str = SLOT_USER) -> ExecStopResult:
         """Stop *slot*'s container. Nothing held is an empty result, not a failure.
 
-        The lane's answer counts even when this manager has no record: a container can
+        The runner's answer counts even when this manager has no record: a container can
         outlive the record (a service restart), and reaping that stray is the point of
         giving it a fixed name.
         """
@@ -856,7 +847,7 @@ class ContainerExecManager:
         """Whether *slot*'s container is still up; ``True`` when the probe cannot say.
 
         Unanswerable reads as alive for the same reason an unanswerable busyness probe
-        reads as busy: this decides whether to tear a container down, and a lane that
+        reads as busy: this decides whether to tear a container down, and a runner that
         cannot answer is not evidence that there is nothing there.
         """
         try:
@@ -892,7 +883,7 @@ class ContainerExecManager:
                             and not self._workload_running_locked(slot)
                             and now >= held["idle_deadline"]):
                         due.append((slot, "idle"))
-            # Outside the lock: stop() takes it, and a lane teardown is slow enough that
+            # Outside the lock: stop() takes it, and a pod teardown is slow enough that
             # holding it across one would stall every call for the duration.
             for slot, reason in due:
                 logger.info("reaping exec container %s (%s)",

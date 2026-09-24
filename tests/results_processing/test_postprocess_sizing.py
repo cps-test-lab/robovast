@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""What a campaign may say about how much its postprocessing gets, on either lane.
+"""What a campaign may say about how much its postprocessing gets.
 
 The figure also decides how many bags convert at once; that half is
 ``test_conversion_cpu_budget``, which tests the container-side reading it comes from.
@@ -42,8 +42,8 @@ def test_each_resource_defaults_independently(tmp_path):
     assert sized == {"cpu": POSTPROCESS_CONVERT_DEFAULTS["cpu"], "memory": "32Gi"}
 
 
-def test_a_per_cluster_list_needs_a_lane_that_can_choose(tmp_path):
-    """The local lane has no cluster context, so there is no entry to pick.
+def test_a_per_cluster_list_needs_a_resolver_that_can_choose(tmp_path):
+    """Without a cluster context there is no entry to pick.
 
     Refused by name rather than guessed at: taking the first entry would run the
     conversion at another cluster's figure, and taking the default would ignore a
@@ -54,20 +54,19 @@ def test_a_per_cluster_list_needs_a_lane_that_can_choose(tmp_path):
         postprocess_convert_resources(path)
 
 
-def test_a_lane_with_a_context_resolves_the_list(tmp_path):
+def test_a_resolver_with_a_context_resolves_the_list(tmp_path):
     path = _vast(tmp_path, "results_processing:\n  resources:\n    cpu:\n    - ctx-a: 4\n")
     assert postprocess_convert_resources(path, resolver=lambda d: {"cpu": 4})["cpu"] == 4
 
 
-# -- the local lane ---------------------------------------------------------------
+# -- through docker_exec.sh -------------------------------------------------------
 
 
-def test_the_local_lane_caps_the_container_it_runs(tmp_path, monkeypatch):
-    """A conversion on the local lane is held to the same figure the cluster reserves.
+def test_docker_exec_caps_the_container_it_runs(tmp_path, monkeypatch):
+    """A conversion through ``docker_exec.sh`` is held to the figure the cluster reserves.
 
     Without the cap the container sees every core of the workstation, so one ``.vast``
-    meant two different things depending on which lane ran it -- and the machine's other
-    work paid for the difference.
+    would mean two different things depending on where it ran.
     """
     from robovast.results_processing import postprocessing_plugins as plugins
 
@@ -110,8 +109,8 @@ def test_the_config_dir_answers_when_the_tree_holds_no_frozen_config(tmp_path):
 
     Results are projected into it by a step that may not have run, and the plugin is also
     called against a directory that is no campaign tree at all -- which is why the caller
-    passes the config's directory separately. Preferring the frozen copy keeps both lanes
-    answering from one file; falling back to this one keeps the knob working where that
+    passes the config's directory separately. Preferring the frozen copy keeps every
+    reader answering from one file; falling back to this one keeps the knob working where that
     copy does not exist.
     """
     from robovast.results_processing.postprocessing_plugins import _campaign_config_path

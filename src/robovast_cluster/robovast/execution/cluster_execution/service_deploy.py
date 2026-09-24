@@ -759,7 +759,7 @@ def _rollout_pod_state(core, namespace):
     the caller decides what an unreadable cluster means.
     """
     # Deferred: this module is imported by the client-side CLI, and cluster_execution
-    # pulls in the batch lane.
+    # pulls in the batch backend.
     from .cluster_execution import (  # pylint: disable=import-outside-toplevel
         mount_failure_events, pod_awaiting_setup, pod_block_reason, pod_restarted_containers,
         pod_volume_reason)

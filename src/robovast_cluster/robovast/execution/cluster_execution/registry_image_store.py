@@ -14,9 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The cluster lane's image store: experiment images in a container registry.
+"""The cluster's image store: experiment images in a container registry.
 
-The lane's :class:`~robovast.service.image_store.ImageBuildStore`, so that every caller
+The :class:`~robovast.service.image_store.ImageBuildStore` of the cluster, so that every caller
 asks the store by name rather than assuming where an image is.
 
 Registry knowledge stops here: the concrete ``<prefix>/<tag>:<hash>`` ref, the credentials
@@ -75,14 +75,14 @@ class RegistryImageStore(ImageBuildStore):
     def ref_for(self, spec, project_dir) -> ImageRef:
         registry = self.registry()
         # The registry may supply the base every experiment image builds on, so it is part
-        # of what the hash covers -- which is also why this lane's hash is not the local
-        # lane's for the same spec, and why re-deriving it anywhere else would drift.
+        # of what the hash covers -- which is also why re-deriving it anywhere else would
+        # drift.
         base_ref = (spec.base_image or registry.base_experiment_image
                     or resolve_build_base_image())
         # The DIGEST that ref points at, not the ref: `build_hash` asks for the base's identity
         # rather than its tag. A tag names different
         # bytes before and after the base is republished, so hashing the tag makes every rebuild
-        # of the base invisible here -- and on this lane that is the lane campaigns run on: a
+        # of the base invisible here -- and here is where campaigns run: a
         # freshly published simulator or a refreshed apt snapshot would be silently ignored and
         # the store would keep serving an experiment image built on the base of some earlier day.
         # Falls back to the ref when the registry cannot answer, which is what this computed
@@ -129,7 +129,7 @@ class RegistryImageStore(ImageBuildStore):
         as False here, so a build goes ahead exactly as it did before. Only a registry
         that answered, and refused, stops one. Refusing a build over a registry that did
         not answer would trade a late failure for an early one that is sometimes wrong,
-        and the campaign lane already survives an unreachable registry by rebuilding.
+        and a campaign already survives an unreachable registry by rebuilding.
         """
         registry = self.registry(require=False)
         state = push_state(

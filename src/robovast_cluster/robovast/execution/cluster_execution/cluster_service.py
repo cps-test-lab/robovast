@@ -284,7 +284,7 @@ class ClusterService(ServiceBase):
             kube_context_source=self._kube_context_source, namespace=self.namespace,
             in_pod=bool(os.environ.get("KUBERNETES_SERVICE_HOST")),
             api_server=self._api_server_url())
-        # No filesystem roots on this lane: the campaigns and the workspaces are on this
+        # No filesystem roots: the campaigns and the workspaces are on this
         # service's volumes, and that disk is the cluster's, not the caller's.
         v.results_root = None
         v.sources_root = None
@@ -310,9 +310,9 @@ class ClusterService(ServiceBase):
         """What is running here, what is published, and whether this pod can roll itself.
 
         Starts from a refusal and replaces it only once every precondition actually holds,
-        so a lane that cannot roll always carries a *reason*, and never an empty
-        ``supported=False`` a reader has to interpret. The live campaign list is the
-        lane-neutral part, from :meth:`_active_campaigns`.
+        so a deployment that cannot roll always carries a *reason*, and never an empty
+        ``supported=False`` a reader has to interpret. The live campaign list
+        comes from :meth:`_active_campaigns`.
         """
         info = UpgradeInfo(supported=False, active_campaigns=self._active_campaigns())
         if not os.environ.get("KUBERNETES_SERVICE_HOST"):
@@ -367,7 +367,7 @@ class ClusterService(ServiceBase):
         """Roll this service's own Deployment. See :meth:`upgrade_info` for what it is not.
 
         The live-campaign refusal is a ``RuntimeError`` (409, a conflict the caller can
-        resolve) rather than the ``ValueError`` (400) an unsupported lane raises: one is
+        resolve) rather than the ``ValueError`` (400) an unsupported deployment raises: one is
         "not now", the other is "not here".
 
         It refuses only for the campaigns that would actually be lost. A live campaign is not
@@ -400,7 +400,7 @@ class ClusterService(ServiceBase):
             f"reconciled -- 'vast service upgrade' is what does that."))
 
     def _api_server_url(self) -> "str | None":
-        """The API server this lane targets, read from config only — never dialled.
+        """The API server this service targets, read from config only — never dialled.
 
         ``version()`` is the call a client makes to find out *where* it is pointed,
         including when the cluster is unreachable; a probe here would make it hang
@@ -951,7 +951,7 @@ class ClusterService(ServiceBase):
         a held one is released to the exec manager's reaper.
 
         *should_stop* ends the pod's ready wait for a campaign that was stopped while it
-        was waiting. That wait is the longest thing composition does on this lane — a
+        was waiting. That wait is the longest thing composition does — a
         helper image is pulled inside it — so without it a stop is not seen until the pull
         either finishes or times out, minutes later. A held span has no campaign to stop.
         """
@@ -1025,7 +1025,7 @@ class ClusterService(ServiceBase):
                 return slots[name]
 
         def rehold(spec):
-            """``AuxPodSession.replace`` for this lane: drop the dead slot, hold again.
+            """``AuxPodSession.replace`` for this service: drop the dead slot, hold again.
 
             Stopped rather than released, because release starts an idle window and the
             next hold of the same identity would reuse the record — which names the
@@ -1313,7 +1313,7 @@ class ClusterService(ServiceBase):
         return full
 
     def _new_job_log_tail(self, campaign_id: str, job_name: str):
-        """This lane's tail reads a pod's containers, not a job dir's files."""
+        """The tail reads a pod's containers, not a job dir's files."""
         from .cluster_execution import PodLogTail
         return PodLogTail()
 
@@ -1479,12 +1479,10 @@ class ClusterService(ServiceBase):
 
     @property
     def _images(self):
-        """This lane's image store: the registry this deployment pushes to.
+        """The image store: the registry this deployment pushes to.
 
-        Overriding this one factory is what makes every image question on this lane correct,
-        including the ones nobody remembered to override before — ``_exec_image`` asked the
-        *local* docker daemon from inside a service pod that has none, and reported every
-        built image as unbuilt.
+        Every image question goes through this one factory, so none of them asks a docker
+        daemon the service pod does not have.
         """
         store = getattr(self, "_image_store", None)
         if store is None:
@@ -2163,10 +2161,10 @@ class ClusterService(ServiceBase):
         """Submit (or join) an in-cluster BuildKit Job per image this campaign builds.
 
         Returns as soon as each build has a handle; ``ServiceBase._await_build_image``
-        waits on them over the interface, so any lane shares one wait loop.
+        waits on them over the interface, so there is one wait loop.
 
         *should_stop* lands between resolving the build context and submitting anything,
-        which is where this lane's time goes -- the registry reads that resolve a
+        which is where the time goes -- the registry reads that resolve a
         ``family:`` base and the store's own checks -- and is the last moment at which a
         stopped campaign can still avoid queueing a build Job.
         """
@@ -2321,7 +2319,7 @@ class ClusterService(ServiceBase):
         :class:`ServiceBase`'s and shared. Only the target differs, which is the whole reason
         ``exec_in`` takes one.
 
-        Two lane facts shape it. ``job_name`` here is the **Kubernetes Job** name rather than a run
+        Two facts shape it. ``job_name`` here is the **Kubernetes Job** name rather than a run
         key, so it cannot be turned into ``/out/<config>/<run>``; and a Job may pack several runs,
         so there is no single run dir to name even in principle. But ``/out`` is *this pod's own*
         emptyDir, holding only this job's runs -- so naming it is exact rather than vague, and every
@@ -2569,7 +2567,7 @@ class ClusterService(ServiceBase):
                                  context=self.kube_context, aux=False)
 
     def _shutdown_running_campaigns(self, running) -> None:
-        """Leave *running* alone: this lane's campaigns outlive the process, and the next
+        """Leave *running* alone: the campaigns outlive the process, and the next
         one adopts them.
 
         A cluster campaign's compute is its scenario Jobs. They are not children of this
@@ -2594,7 +2592,7 @@ class ClusterService(ServiceBase):
     # -- container exec -----------------------------------------------------
 
     def _exec_runner(self):
-        """The in-cluster exec lane: one aux pod, driven through ``pods/exec``.
+        """The in-cluster exec runner: one aux pod, driven through ``pods/exec``.
 
         Staging goes through the data plane, exactly as an image build's context does
         (see ``_start_cluster_build``): the tree is written on this disk, the pod fetches
@@ -2609,7 +2607,7 @@ class ClusterService(ServiceBase):
             logger.debug("no service-pod owner reference for the exec pod: %s", e)
         return KubeExecRunner(self.namespace, owner_ref=owner,
                             kube_context=self.kube_context,
-                            # The exec pod runs the experiment image, which on this lane is
+                            # The exec pod runs the experiment image, which is
                             # in our own registry and may be private. Without this the pull
                             # succeeds only on a node that already cached it.
                             pull_secret=self._registry_pull_secret(),
@@ -2742,7 +2740,7 @@ class ClusterService(ServiceBase):
         """No tag→digest resolution here: a campaign that recorded no per-role digest is refused
         with the resolver's message rather than run on bytes nobody pinned."""
         del ref
-        # Explicit, not incidental: None *is* the answer on this lane, and the
+        # Explicit, not incidental: None *is* the answer here, and the
         # docstring above is about that. Falling off the end would read as an
         # unfinished function.
         return None
@@ -2757,7 +2755,7 @@ class ClusterService(ServiceBase):
         ``activeDeadlineSeconds``.
 
         The pod is also the only thing that knows why a build has not started yet, so *on_wait*
-        is reported from it: on this lane the wait before the exporter runs is a scheduling
+        is reported from it: the wait before the exporter runs is a scheduling
         decision and an image pull, and an image this cluster cannot pull never gets past it.
         Created on entry rather than at the first command, unlike a composition's: this
         caller knows the one image it needs, so it can pay the pull where it is able to
@@ -2807,17 +2805,12 @@ class ClusterService(ServiceBase):
 
     def _postprocess_campaign(self, campaign_id: str, campaign_dir, *,
                               force: bool = False, skip=(), state=None) -> tuple:
-        """Postprocess through the Job, as this lane does everywhere else.
+        """Postprocess through the Job, as every campaign here is.
 
-        The inherited version runs the whole pipeline in-process, which is right on a
-        machine with Docker and wrong in a pod: the rosbag steps shell out to
-        ``docker_exec.sh``, find no daemon, and fail against an image nobody chose.
-
-        Overriding the seam rather than its callers is what makes the base docstring's
-        promise true -- "one call for both callers, so a raw archive taken in is
-        postprocessed exactly the way asking for it later would be". It was not: the
-        retrigger went through ``postprocess_campaign`` and the import chain did not, so an
-        imported raw campaign was the one case that took the local path on a cluster.
+        The inherited version runs the whole pipeline in-process, where the rosbag steps
+        shell out to ``docker_exec.sh`` and a pod has no daemon. Overriding the seam rather
+        than its callers sends both -- a retrigger and an imported raw campaign -- through
+        the Job.
         """
         from robovast.execution.control_server import stop_checker  # noqa: PLC0415
 
@@ -2884,8 +2877,8 @@ class ClusterService(ServiceBase):
         # campaign ended, and a live entry that disagreed with it would answer
         # differently until the next restart.
         state.set_phase(status.phase)
-        # The one-shot notifier: this is the detached lane the push notifications exist
-        # for.
+        # The one-shot notifier: a detached cluster campaign is what the push
+        # notifications exist for.
         notifier = self._notifier(campaign_id)
         if ok:
             notifier.postprocessed()

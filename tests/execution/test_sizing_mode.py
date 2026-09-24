@@ -718,7 +718,7 @@ def test_headroom_below_one_is_refused():
                                        "calibration": {"headroom": {"cpu": 0.9}}}})
 
 
-# -- the inferred mode has to reach the lane that acts on it -----------------------------
+# -- the inferred mode has to reach the backend that acts on it --------------------------
 
 
 def test_a_campaign_that_declares_nothing_reaches_the_backend_as_calibrated():
@@ -743,7 +743,7 @@ def test_a_campaign_that_declares_a_figure_still_reaches_it_as_fixed():
     assert not r._sizing_is_calibrated()
 
 
-def test_the_model_and_the_lane_cannot_answer_differently():
+def test_the_model_and_the_backend_cannot_answer_differently():
     """Two readings of one rule is how they drift. Pinned against the model's own result so
     a change to either has to change both."""
     from robovast.common.config import ExecutionConfig, infer_sizing

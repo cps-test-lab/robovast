@@ -25,7 +25,7 @@ Share credentials come from the service's own environment (its Deployment env), 
 they are already present in ``os.environ`` here. :func:`load_provider_from_env` reads
 them, with optional *overrides* supplied per call -- it lives in core
 (:mod:`robovast.execution.share_providers`) and is re-exported here, because the service
-resolves the same provider for an import and cannot import this lane.
+resolves the same provider for an import and cannot import this package.
 """
 
 import logging
@@ -33,8 +33,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# Both re-exported from core rather than implemented here: the *service* now talks to the
-# share too (importing a campaign, listing it for the web UI), and it cannot import a lane.
+# Both re-exported from core rather than implemented here: the *service* talks to the
+# share too (importing a campaign, listing it for the web UI), and it cannot import this
+# package.
 # One factory, wherever the caller runs.
 from robovast.execution.share_providers import (  # noqa: E402  pylint: disable=wrong-import-position
     load_provider_from_env, share_type_configured)

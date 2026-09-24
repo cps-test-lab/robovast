@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Deleting a campaign removes everything it owns on the service host, or says what it left.
 
-A campaign's bytes are not only its directory: the local lane writes each archive it shares
-beside the campaign dirs, and a failed import keeps the copy it fetched from the share. A
-delete that left those behind, or that swallowed a path it could not remove, would answer
-"deleted" while the space stayed taken.
+A campaign's bytes are not only its directory: a failed import keeps the copy it fetched from
+the share. A delete that left it behind, or that swallowed a path it could not remove, would
+answer "deleted" while the space stayed taken.
 """
 
 import os
@@ -197,8 +196,8 @@ def test_the_single_delete_still_raises_where_the_batch_reports(env, monkeypatch
         transport.delete_campaign(CID)
 
 
-def test_the_cluster_lane_reaps_jobs_for_every_id_of_a_batch(env, monkeypatch):
-    """Its extra cleanup hangs off the removal both deletes share, not off the single one."""
+def test_the_cluster_service_reaps_jobs_for_every_id_of_a_batch(env, monkeypatch):
+    """ClusterService's job and secret cleanup runs for every id a batch delete removes."""
     from robovast.execution.cluster_execution import cluster_execution, pod_access
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     from robovast.service.interface import DeleteCampaignsRequest

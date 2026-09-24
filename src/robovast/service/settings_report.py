@@ -38,9 +38,10 @@ something added later.
 
 **Nothing here reaches into another distribution.** Defaults are imported from the constant
 the reading code already uses, never restated — but only where that constant is in this
-distribution. The cluster lane's settings live in ``robovast-cluster``, which a local install
-does not have, so they are described without a default rather than by an optional import that
-would silently report "no default" on exactly the deployment where they matter.
+distribution. The cluster settings live in ``robovast-cluster``, which an install of
+``robovast`` alone does not have, so they are described without a default rather than by
+an optional import that would silently report "no default" on exactly the deployment where
+they matter.
 """
 
 import os
@@ -112,7 +113,7 @@ class Known:
 
 
 _IMAGES = "Container images"
-_CLUSTER = "Cluster lane"
+_CLUSTER = "Cluster"
 _REGISTRY = "Experiment image registry"
 _SHARE = "Result share"
 _NOTIFY = "Notifications"
@@ -136,7 +137,7 @@ KNOWN: dict[str, Known] = {
         _IMAGES, "Tag the image family is pulled at; the default floats.",
         default=FLOATING_IMAGE_TAG),
 
-    # -- cluster lane ---------------------------------------------------------
+    # -- cluster --------------------------------------------------------------
     # No defaults: these are read in `robovast-cluster`, which this distribution does not
     # import. Stating a literal here would be the restatement this module exists to avoid.
     "ROBOVAST_NAMESPACE": Known(

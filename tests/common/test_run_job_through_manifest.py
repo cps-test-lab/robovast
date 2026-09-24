@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A run's job is found through the campaign's job-link manifest, not its ``job`` symlink.
 
-Both lanes write ``_transient/job_links.yaml`` before the first job starts, and it names
+The backend writes ``_transient/job_links.yaml`` before the first job starts, and it names
 every run's job. The ``<config>/<run>/job`` symlinks are made from it only once a batch
 ends, so a batch that was stopped leaves its finished runs -- complete, with a verdict and
 a host record in their job's directory -- without one. Every reader of a run's job has to

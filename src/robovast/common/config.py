@@ -215,12 +215,12 @@ class ResourcesConfig(BaseModel):
             - minikube: 20Gi
 
     ``cpu`` takes fractional cores (``0.5``) and the millicore spelling Kubernetes uses
-    (``"500m"``), not only whole cores. On the cluster lane a campaign's throughput is
+    (``"500m"``), not only whole cores. On the cluster a campaign's throughput is
     ``quota // pod_request``, so rounding a measured 0.3-core sidecar up to a whole core is
     paid on **every job of the sweep** — and the Kubernetes manifest takes ``str(cpu)``, so
     the integer-only annotation was the only thing rejecting a fractional value.
     """
-    # ``int`` first so a whole-core declaration stays an int: the lanes render the value with
+    # ``int`` first so a whole-core declaration stays an int: the manifest renders it with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
     # "4" to "4.0" for no reason.
     model_config = ConfigDict(extra='forbid')
@@ -262,7 +262,7 @@ class ResourcesConfig(BaseModel):
     #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
     #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
     #: because pydantic's default ``extra='ignore'`` was dropping it from the model, so the
-    #: documented option only worked where a lane happened to read the raw mapping.
+    #: documented option only worked where the raw mapping happened to be read.
     gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
     @field_validator('cpu', 'cpu_limit')
@@ -559,7 +559,7 @@ def infer_sizing(execution) -> str:
     """The sizing mode *execution* means, whether or not it says so.
 
     **One rule, reachable from both sides.** The model applies it in `resolve_sizing`; the
-    cluster lane needs the same answer from the RAW section, because what reaches a backend is
+    backend needs the same answer from the RAW section, because what reaches a backend is
     the parsed YAML rather than the validated model -- so an inferred mode was invisible there
     and every campaign that declared nothing silently ran as `fixed`, which is the opposite of
     what declaring nothing asks for. Written once so the two cannot answer differently.
@@ -872,8 +872,8 @@ DEFAULT_SHM_SIZE = "512Mi"
 #: cannot see. ``SCENARIO_PARAMETER_FILE`` is the sharpest case: repointing it changes which
 #: parameters the runner reads while every result still carries the configuration's name.
 #:
-#: **What deliberately does NOT belong here** is the handful of display and GPU hints a lane
-#: arranges -- ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*``, ``QT_X11_NO_MITSHM``.
+#: **What deliberately does NOT belong here** is the handful of display and GPU hints the
+#: backend arranges -- ``DISPLAY``, ``LIBGL_ALWAYS_SOFTWARE``, ``NVIDIA_*``, ``QT_X11_NO_MITSHM``.
 #: Those steer how a container renders, not whether its results mean what they say, and a
 #: campaign has legitimate reasons to set them.
 #:
@@ -883,7 +883,7 @@ DEFAULT_SHM_SIZE = "512Mi"
 #: validator would protect that field and silently not the other.
 #:
 #: This list is checked against the emitters by ``tests/common/test_reserved_env.py``, which
-#: fails when a lane starts injecting a name that is not registered here. A hand-maintained
+#: fails when the backend starts injecting a name that is not registered here. A hand-maintained
 #: denylist goes stale silently -- it passes while it protects nothing -- and that test is
 #: what stops this one from doing so.
 RESERVED_ENV_NAMES = frozenset({
@@ -1007,7 +1007,7 @@ def archived_kubernetes_drops(config: dict) -> list[tuple[str, ...]]:
 
     Serves :func:`validate_config`'s lenient mode and the retrigger's staged copy, which must
     agree. The rule is what the block did when the campaign ran. ``jobs.node`` is the only
-    key any lane reads, so a block without it changed nothing and is dropped whole when it
+    key the backend reads, so a block without it changed nothing and is dropped whole when it
     does not validate. A block with it ran pinned and keeps the pin; only the keys refused
     by name (``jobs.node_labels``, ``control``) go, and anything else in it is validated as
     usual.
@@ -1049,7 +1049,7 @@ def _drop_archived_kubernetes_keys(config: dict) -> dict:
 
 
 class ExecutionConfig(BaseModel):
-    #: Settings only the cluster lane reads. See :class:`KubernetesConfig`.
+    #: Settings for the Kubernetes backend. See :class:`KubernetesConfig`.
     kubernetes: Optional[KubernetesConfig] = None
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
     #: the schema, ``exec_in_container`` and a scenario's ``remote()`` endpoints. Three
@@ -1091,7 +1091,7 @@ class ExecutionConfig(BaseModel):
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
     # Maximum wall-clock time in seconds for one JOB -- one unit of work, which is one run
-    # unless ``runs_per_job`` packs several. A job is the granularity the lane can
+    # unless ``runs_per_job`` packs several. A job is the granularity the cluster can
     # actually enforce at (a Job's activeDeadlineSeconds), so the number is
     # used as declared rather than reconstructed from a per-run figure.
     timeout: Optional[int] = None
@@ -1221,9 +1221,9 @@ class ExecutionConfig(BaseModel):
     @field_validator('shm_size')
     @classmethod
     def validate_shm_size(cls, v: str) -> str:
-        """Reject a value that is not a memory quantity, here rather than at the lane.
+        """Reject a value that is not a memory quantity, here rather than at the backend.
 
-        The lane passes this string through to a manifest untouched, so an unparseable one
+        The backend passes this string through to a manifest untouched, so an unparseable one
         otherwise surfaces as a Kubernetes rejection, minutes
         into a campaign and nowhere near the line that caused it.
 
@@ -1242,8 +1242,8 @@ class ExecutionConfig(BaseModel):
     def validate_no_reserved_env_vars(cls, v: Optional[list[dict[str, str]]]) -> Optional[list[dict[str, str]]]:
         """Refuse an ``env`` entry naming something RoboVAST sets itself.
 
-        Refused at validation rather than left to the lanes, because whether a campaign's
-        value actually displaces RoboVAST's depends on emission order and on each lane's
+        Refused at validation rather than left to the backend, because whether a campaign's
+        value actually displaces RoboVAST's depends on emission order and on the manifest's
         duplicate-key semantics -- so "it happens not to win today" is not a property to
         rely on, and a campaign that quietly had no effect is indistinguishable from one
         that worked.
@@ -1349,8 +1349,8 @@ DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 def declared_job_seconds(execution_params: dict) -> Optional[int]:
     """``execution.timeout`` as declared: the budget for one **job**, or ``None``.
 
-    A job is what the lane can actually bound -- the cluster sets
-    ``activeDeadlineSeconds`` on the Job -- so this is the number it uses unchanged. It is deliberately not scaled by
+    A job is what the cluster can actually bound -- it sets ``activeDeadlineSeconds`` on the
+    Job -- so this is the number it uses unchanged. It is deliberately not scaled by
     ``runs_per_job``: a packed job's budget is the budget its author stated, not a per-run
     figure multiplied back up.
     """
@@ -1397,8 +1397,8 @@ def job_deadline_seconds(execution_params: dict) -> int:
     runs would be killed after the first few. A declared number is a statement about the
     job, and is taken at face value.
 
-    The backstop is the lane's: enforcing a value the author set is a different decision
-    from supplying one they did not, and only the lane knows what an unbounded run costs.
+    The backstop is the backend's: enforcing a value the author set is a different decision
+    from supplying one they did not, and only the backend knows what an unbounded run costs.
     """
     declared = declared_job_seconds(execution_params)
     if declared is not None:

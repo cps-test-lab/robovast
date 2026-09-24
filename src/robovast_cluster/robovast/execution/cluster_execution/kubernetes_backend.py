@@ -16,7 +16,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Kubernetes execution backend for the in-cluster campaign controller.
 
-:class:`KubernetesBackend` is the cluster lane's
+:class:`KubernetesBackend` is the
 :class:`~robovast.execution.backends.ExecutionBackend`: it runs **one batch** of a
 campaign as Kubernetes Jobs and leaves results at
 ``<campaign_root>/<config>/<run>/`` so the controller's scoring and store are
@@ -684,9 +684,7 @@ class BatchJobRunner:
         self = cls()
         self.on_configs_staged = on_configs_staged
         # The process-wide admission queue, or None. None means "create every job at once",
-        # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs
-        # and what the cluster lane did before the queue existed -- so this parameter arriving
-        # changes nothing until a caller actually passes one.
+        # which is what every offline caller (manifest emit, `vast prepare`, the tests) needs.
         self.admission = admission
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -1335,7 +1333,7 @@ class BatchJobRunner:
     def _poll_wait(self, seconds: float) -> None:
         """Wait *seconds* between polls of the batch, ending the batch if a stop lands.
 
-        The batch wait is this lane's longest -- hours, on the campaigns worth stopping --
+        The batch wait is the longest -- hours, on the campaigns worth stopping --
         and it is where the stop must be read rather than slept through: the service's own
         teardown deletes the Jobs, but it is this loop noticing that winds the campaign
         down.
@@ -2156,8 +2154,8 @@ class BatchJobRunner:
     def _publish_capacity_wait(self, waiting: bool) -> None:
         """Tell the status whether this batch is queued, if anyone is listening.
 
-        Best-effort and idempotent: a campaign driven without a control state (the local
-        lane, a unit test) simply has nobody to tell, and reporting a queue must never be
+        Best-effort and idempotent: a campaign driven without a control state (a unit
+        test) simply has nobody to tell, and reporting a queue must never be
         able to fail a batch.
         """
         if self._state is None:
@@ -3636,7 +3634,7 @@ class KubernetesBackend(ExecutionBackend):
     def read_build_lock(self, image: str) -> dict:
         """The build lock inside *image*, from what this campaign's runners read. See the base.
 
-        A lookup, not a read. The lock has to come from the registry on this lane, because the
+        A lookup, not a read. The lock has to come from the registry, because the
         controller pod has no container runtime to inspect a local image with -- but that pod
         has no Kubernetes client either, so it cannot resolve the pull Secret the registry read
         needs. A runner can, and does, into the cache this consults.

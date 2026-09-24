@@ -73,7 +73,7 @@ def _campaign_config_path(results_dir: str, config_dir: str):
     """The ``.vast`` describing *results_dir*, or ``None`` when there is none to read.
 
     The campaign's own frozen config comes first: it is the single source of truth for what
-    ran, it is the file the cluster lane reads, and it is what a re-run dialog edits -- so
+    ran, it is the file the cluster reads, and it is what a re-run dialog edits -- so
     preferring it keeps every reader answering from the same place. A campaign tree need not
     hold one, though. Results are projected into it by a step that may not have run, and this
     plugin is also called against a directory that is no campaign tree at all; then
@@ -252,12 +252,12 @@ class Command(BasePostprocessingPlugin):
         if not os.path.exists(script_path):
             return False, f"Script not found: {script_path}"
 
-        # The cluster lane's staging initContainer restores this bit for the `_config/`
+        # The cluster's staging initContainer restores this bit for the `_config/`
         # subtree a `command` step's script lives in (see `postprocess_stage.py`; the rest
         # of a campaign's tree -- bags and CSVs, orders of magnitude larger -- skips that
         # restoration on purpose, since nothing reads them as a program). This is a second,
         # narrower line of defence for every other way a staged script can still arrive
-        # non-executable: the local (non-cluster) lane never runs that initContainer at
+        # non-executable: a development machine never runs that initContainer at
         # all, and a workspace push from a filesystem or transport that does not preserve
         # POSIX modes would land here the same way. Cheap either way -- one stat/chmod pair
         # -- and this is the one caller that actually execve()s the file.
@@ -376,7 +376,7 @@ IMAGE_SCRIPTS_DIR = "/scripts"
 
 @dataclasses.dataclass(frozen=True)
 class ImageStep:
-    """One step as a lane runs it in the execution image: its command and its files."""
+    """One step as it runs in the execution image: its command and its files."""
 
     #: The postprocessing entry's plugin name, for the log and for errors.
     name: str
@@ -390,7 +390,7 @@ class ImageStep:
 class ImageContext:
     """What an image step is told about where it runs, as the container sees it.
 
-    The lane builds this; the plugin reads it to write its command, so one plugin runs on a
+    The runner builds this; the plugin reads it to write its command, so one plugin runs on a
     developer's Docker and in a cluster Job without knowing which.
     """
 
@@ -413,10 +413,10 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
     Some work can only happen there: deserializing a bag needs the message definitions the
     run recorded with, and a custom type exists only in the image that defined it. Such a
     step is not Python this package runs; it is a command this package runs *in* that
-    image. A subclass says which with :meth:`image_command`, and every lane runs exactly
+    image. A subclass says which with :meth:`image_command`, and every runner runs exactly
     that command:
 
-    * ``vast results postprocess`` on a development machine, through ``docker_exec.sh``
+    * ``vast results publish`` on a development machine, through ``docker_exec.sh``
       (this class's :meth:`__call__`);
     * a cluster postprocessing Job, directly in its execution-image container.
 
@@ -484,7 +484,7 @@ class ExecutionImagePlugin(BasePostprocessingPlugin):
             if provenance_file:
                 cmd.extend(["--provenance-file", provenance_file])
             # What the step may use, from the campaign's `results_processing.resources` over
-            # the shared defaults -- the same figure the cluster lane reserves for its image
+            # the shared defaults -- the same figure the cluster reserves for its image
             # container, so one block means one thing wherever it runs.
             from robovast.results_processing.postprocessing import (  # noqa: PLC0415
                 postprocess_convert_resources)
@@ -631,7 +631,8 @@ class RosbagsProcess(ExecutionImagePlugin):
     process, and how many run at once follows the CPU the conversion is allowed -- which is
     ``results_processing.resources`` (see
     :class:`~robovast.common.config.PostprocessResourcesConfig`), one block that sizes both
-    lanes. Left alone, a conversion takes the shared default rather than a worker per core of
+    the cluster Job and a development machine's Docker run. Left alone, a conversion takes
+    the shared default rather than a worker per core of
     whatever machine it landed on::
 
         results_processing:
@@ -728,7 +729,7 @@ class RunLog(BasePostprocessingPlugin):
                 everything, which is the default: a filter applied at *write* time cannot
                 be undone without re-running postprocessing, and the reading surfaces all
                 have their own severity control.
-            **kwargs: The runner injects lane-dependent extras — ``provenance_file``,
+            **kwargs: The runner injects runner-dependent extras — ``provenance_file``,
                 ``execution_image``, ``debug``, ``force`` — and only those it has
                 (``execution_image`` is set by the cluster Job and not by
                 ``docker_exec.sh``). Naming a subset therefore passes with one runner and
@@ -829,7 +830,7 @@ class ResourceUsage(BasePostprocessingPlugin):
 
     Auto-injected for every campaign (see
     :data:`~robovast.results_processing.postprocessing.AUTO_PLUGINS`), because what a run
-    cost is a competing explanation for what it did: a lane gives a job a fixed number of
+    cost is a competing explanation for what it did: the cluster gives a job a fixed number of
     cores, and a simulator that starves the stack changes the stack's behaviour. That can
     only be ruled out in the same query as the behaviour, which means a table.
 
@@ -863,7 +864,7 @@ class ResourceUsage(BasePostprocessingPlugin):
         Args:
             results_dir: The campaign directory to process.
             config_dir: Unused; the plugin reads only campaign output.
-            **kwargs: The runner injects lane-dependent extras — ``provenance_file``,
+            **kwargs: The runner injects runner-dependent extras — ``provenance_file``,
                 ``execution_image``, ``debug``, ``force`` — and only those it has
                 (``execution_image`` is set by the cluster Job and not by
                 ``docker_exec.sh``). Naming a subset therefore passes with one runner and

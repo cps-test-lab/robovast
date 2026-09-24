@@ -24,8 +24,8 @@ def no_project(monkeypatch, tmp_path):
     service answering from ``tmp_path/results``."""
     from tests.service.null_service import serving
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
-    lane = serving(tmp_path / "results", tmp_path / "workspaces")
-    monkeypatch.setattr(service_access, "service_client", lambda: lane)
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
     return tmp_path / "results"
 
 

@@ -101,7 +101,7 @@ def check_campaign_dir_structure(campaign_dir):  # pylint: disable=too-many-retu
     print("  ✓ execution.yaml file exists in _execution/")
 
     # What postprocessing leaves behind: the example's postprocessing step writes this
-    # marker into the campaign root, and the cluster lane's postprocessing pod delivers it
+    # marker into the campaign root, and the postprocessing pod delivers it
     # back to the results volume with everything else it changed. Its absence means the
     # step never ran, whatever phase the campaign reports.
     if not (first_run / '.postprocessed').exists():
@@ -282,12 +282,11 @@ def refuse_a_foreign_service():
 class ClusterSession:
     """A ``robovast-service`` deployed into a Kubernetes cluster, for the length of the script.
 
-    The cluster lane runs only inside a cluster -- a campaign's pods deliver their outputs
-    to the service over the cluster network -- so the service is deployed *into* the
+    The service runs only inside a cluster -- a campaign's pods deliver their outputs
+    to the service over the cluster network -- so it is deployed *into* the
     cluster the caller names (``--context``) with ``vast cluster setup``, and reached from
     here through a ``kubectl port-forward`` on the conventional port, which every client
-    finds. One deployment serves every workflow of a run: unlike a local service, which
-    each workflow started afresh with its own results directory, every campaign lands
+    finds. One deployment serves every workflow of a run: every campaign lands
     under the service's one results volume, so a workflow is told its campaign's directory
     rather than left to find "the" campaign under a root.
 
@@ -450,9 +449,7 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
     """Test the complete workflow: serve -> workspace init -> workspace run -> postprocess.
 
     This is the only end-to-end test of the whole stack, so it drives the real path a user
-    takes: a campaign runs a *workspace's* project through a service. It used to call
-    ``vast exec local run``, an in-process Docker lane with no service and no workspace,
-    which no longer exists -- and which tested a path the documentation did not describe.
+    takes: a campaign runs a *workspace's* project through a service.
 
     Returns the campaign's directory on success, ``None`` on failure: on a cluster every
     workflow's campaign lands under one results root, so the caller comparing two of them
@@ -553,8 +550,8 @@ def test_vast_workflow(vast_file_path, test_directory, config=None, runs=None): 
             print("✓ campaign finished, postprocessing included")
 
             # Step 5: re-run postprocessing through the service. Inside the service
-            # block, because postprocessing acts on a campaign, on whichever lane its runs
-            # executed. Running it as `vast results postprocess` against the results tree
+            # block, because postprocessing acts on a campaign, in the cluster its runs
+            # executed in. Running it as `vast results postprocess` against the results tree
             # instead would force this step after the shutdown.
             #
             # Dispatched, not awaited, exactly like a launch: the campaign re-enters its
@@ -667,7 +664,7 @@ def _collect_non_job_files(campaign_dir):
     - the ``_jobs/`` artifact tree,
     - the per-run ``job`` symlinks,
     - the ``_transient/`` job bookkeeping: ``job_links.yaml`` and each job's
-      ``params.yaml``, which the cluster lane namespaces by batch
+      ``params.yaml``, which the backend namespaces by batch
       (``batch-0-job-N.params.yaml``) and so is matched by shape, not prefix.
     """
     result = set()
@@ -681,7 +678,7 @@ def _collect_non_job_files(campaign_dir):
             rel = os.path.relpath(os.path.join(root, fn), campaign_dir)
             parts = rel.split(os.sep)
             # Skip per-job transient bookkeeping: job_links.yaml, and a job's params
-            # file under whichever batch prefix the lane gives it.
+            # file under whichever batch prefix the backend gives it.
             if parts[0] == '_transient' and (
                     fn == 'job_links.yaml' or _JOB_PARAMS.fullmatch(fn)):
                 continue

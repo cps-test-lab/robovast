@@ -5,8 +5,8 @@
 
 A configuration's own copy of a file is staged where the campaign's copy would have been,
 so a path a scenario writes relative to itself -- ``get_scenario_file_directory() +
-'/files/nav2_params.yaml'`` -- names the file belonging to the cell. These pin that on both
-lanes, and pin the two things that make it unambiguous: one file per path, and one
+'/files/nav2_params.yaml'`` -- names the file belonging to the cell. These pin that, and
+the two things that make it unambiguous: one file per path, and one
 file-owning configuration per job.
 """
 
@@ -28,7 +28,7 @@ def _item(name, run=0, files=(DEPLOY_REL,)):
         run_number=run)
 
 
-# -- the local lane --------------------------------------------------------------------
+# -- the job parameter documents -------------------------------------------------------
 
 
 def _plan(with_sut=False):
@@ -47,9 +47,9 @@ def test_a_file_valued_parameter_is_carried_as_the_campaign_wrote_it():
     assert document["_output_dir"] == "cfg-a/0"
 
 
-# -- the cluster lane ------------------------------------------------------------------
+# -- the init container ----------------------------------------------------------------
 #
-# The cluster lane names the cell's inputs on the request it fetches `/config` with; the
+# The init container names the cell's inputs on the request it fetches `/config` with; the
 # data plane emits each one after the campaign's copy, so the cell's file lands on it
 # (`tests/service/test_data_app.py`). What the init container decides is therefore WHICH
 # paths are asked for.
@@ -99,7 +99,7 @@ _ASKED_FOR = "config_file=cfg-a%3Afiles%2Fnav2_params.yaml"
 
 
 def test_the_init_container_asks_for_a_path_once_for_a_packed_job(monkeypatch):
-    """The cluster twin of the local dedupe: several runs of one cell ask once."""
+    """Several runs of one cell in a packed job ask for its file once."""
     command = _init_command(monkeypatch, _CLUSTER_CONFIGS, runs=3, runs_per_job=3)
     assert command.count(_ASKED_FOR) == 1, command
 

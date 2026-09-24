@@ -154,7 +154,7 @@ def scenario_problems(exec_call, *, workspace_id: str, config_path: str,
     survives that and kills every trial instead.
 
     *scenario_path* is the scenario file's path relative to the workspace root, which is
-    where the exec lane mounts the project (``/sources/<workspace_id>``) -- the same
+    where the exec container mounts the project (``/sources/<workspace_id>``) -- the same
     rewrite ``world_query`` performs, done here by construction because this module builds
     the whole command rather than adapting a backend's.
 

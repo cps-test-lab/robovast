@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``ServiceBase`` — what the two execution lanes share, and nothing either owns.
+"""``ServiceBase`` — the in-process core every service implementation shares.
 
 The in-process half of the :class:`~robovast.service.interface.RobovastInterface`: hosting
 a campaign's driver (:func:`robovast.execution.controller.run_batch_campaign`) on a
@@ -22,16 +22,17 @@ background thread, serving live status from its
 :class:`~robovast.execution.control_server.ControllerState`, the workspace store, the
 campaign registry, the service's caches and event log, and every reader that resolves a
 campaign under the results root. What depends on where the runs happen is an abstract
-hook here and a body in the lane: the cluster lane's service is the one production
-implementer, and the test suite's null lane (``tests/service/null_service.py``) the other,
-so the code here is exercised without a cluster.
+hook here and a body in the implementation: ``ClusterService`` is the one production
+implementer, and the test suite's ``NullService`` (``tests/service/null_service.py``) the
+other, so the code here is exercised without a cluster.
 
-Two rules follow. A body here is correct for *any* lane, or it is a hook. And a lane that
-does not offer an operation refuses it in its own class with
+Two rules follow. A body here is correct for *any* implementation, or it is a hook. And an
+implementation that does not offer an operation refuses it in its own class with
 :class:`~robovast.service.interface.UnsupportedOperation`, never through a default left here.
 
-This module imports no Kubernetes: a lane reaches its driver inside the hook that needs it
-(``tests/service/test_serve_backends.py`` pins that importing the base loads no lane).
+This module imports no Kubernetes: an implementation reaches its driver inside the hook
+that needs it (``tests/service/test_serve_backends.py`` pins that importing the base loads
+no implementation).
 """
 
 from abc import abstractmethod
@@ -565,8 +566,8 @@ def _throttled_transfer_log(log, every: float = 0.10):
 #: string, because the launch path and the set-scheduling operation refuse the same thing
 #: and must not describe it differently.
 NO_CAMPAIGN_QUEUE = (
-    "this lane executes one campaign at a time, so there is no queue to order -- stop the "
-    "running campaign to start another, or use a cluster service")
+    "this service executes one campaign at a time, so there is no queue to order -- stop "
+    "the running campaign to start another")
 
 
 def require_scheduling_change(priority, paused) -> None:
@@ -582,7 +583,7 @@ def require_scheduling_change(priority, paused) -> None:
 
 
 class ServiceBase(RobovastInterface):
-    """The in-process half of the interface, over the lane's hooks.
+    """The in-process half of the interface, over the implementation's hooks.
 
     A campaign always runs a **workspace's** ``.vast``: ``workspace_id`` is the only
     project binding this service accepts (see :meth:`_resolve_project`), and
@@ -698,7 +699,7 @@ class ServiceBase(RobovastInterface):
     def _notifier(self, campaign_id: str):
         """A campaign's notifier, wired to both sinks.
 
-        The one place the service builds one, so no lane can announce a campaign's life to
+        The one place the service builds one, so no path can announce a campaign's life to
         a phone and leave nothing behind on the machine that ran it.
         """
         from robovast.execution.notify import Notifier
@@ -1105,9 +1106,9 @@ class ServiceBase(RobovastInterface):
         ``.webm`` rather than download it before playing.
 
         **Every transport implements this**, which is why callers must not test for its
-        presence: every lane subclasses this one, so the attribute is never absent and a
-        ``getattr(impl, "local_file", None) is None`` check can only ever be False. A
-        lane does not differ here either: it holds a campaign's results under the service's
+        presence: every implementation subclasses this one, so the attribute is never absent
+        and a ``getattr(impl, "local_file", None) is None`` check can only ever be False. The
+        service holds a campaign's results under its
         own results root (:meth:`campaign_dir`), so the path returned is a file already on
         this host's disk and nothing is fetched to answer.
         """
@@ -1177,9 +1178,9 @@ class ServiceBase(RobovastInterface):
     def campaign_is_live(self, campaign_id: str) -> bool:
         """Whether work is still happening on *campaign_id* as far as this service knows.
 
-        The registry, plus the lanes a multi-lane service does not itself drive. A campaign
-        it has never heard of is not live: what a download of it produces is whatever is on
-        disk, which for a finished campaign of a previous service life is all of it.
+        What the registry says. A campaign it has never heard of is not live: what a
+        download of it produces is whatever is on disk, which for a finished campaign of a
+        previous service life is all of it.
         """
         with self._lock:
             entry = self._campaigns.get(campaign_id)
@@ -1727,8 +1728,8 @@ class ServiceBase(RobovastInterface):
 
         One call for both callers -- the ``run_postprocessing`` retrigger and the
         chain an import starts -- so a raw archive taken in is postprocessed exactly
-        the way asking for it later would be. Where it runs is the lane's: in this
-        process, or as a workload of its own.
+        the way asking for it later would be. Where it runs is the implementation's: in
+        this process, or as a workload of its own.
         """
 
     def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
@@ -1736,8 +1737,8 @@ class ServiceBase(RobovastInterface):
 
         Asked of postprocessing's provenance record, which is what says a campaign has
         derived data now that the rows go to the central index. An archive that arrived
-        complete must not be recomputed: its rows were just ingested, and on a lane with no
-        Docker the rosbag steps have nothing to run in.
+        complete must not be recomputed: its rows were just ingested, and in a process with
+        no Docker the rosbag steps have nothing to run in.
         """
         from robovast.execution.status_recovery import (  # pylint: disable=import-outside-toplevel
             record_step_outcome, reconstruct_status_from_disk)
@@ -1774,12 +1775,11 @@ class ServiceBase(RobovastInterface):
     # -- interface ----------------------------------------------------------
 
     def _version_info(self, **implementation_fields) -> VersionInfo:
-        """The handshake's lane-neutral half: what code this is, and where it says it is.
+        """The handshake's shared half: what code this is, and where it says it is.
 
-        Each lane composes its :meth:`version` from this and the fields only it knows,
-        rather than one lane answering and the other correcting the answer -- a field a
-        lane must *un-say* (a filesystem root that is not the caller's, a build capability
-        it cannot vouch for) is a field it should never have been handed.
+        Each implementation composes its :meth:`version` from this and the fields only it
+        knows, so no field here is one an implementation would have to *un-say* (a
+        filesystem root that is not the caller's, a build capability it cannot vouch for).
         """
         return VersionInfo(robovast_version=_robovast_version(),
                            code_revision=_code_revision(),
@@ -1789,7 +1789,7 @@ class ServiceBase(RobovastInterface):
                            **implementation_fields)
 
     def _active_campaigns(self) -> list:
-        """The campaigns not yet over -- what an upgrade would interrupt, on any lane."""
+        """The campaigns not yet over -- what an upgrade would interrupt."""
         listed = self.list_campaigns(ListCampaignsRequest(limit=100, offset=0)).campaigns
         return [c for c in listed if not is_terminal(c.phase)]
 
@@ -1799,30 +1799,26 @@ class ServiceBase(RobovastInterface):
         One input, from whoever knows: ``setup`` bakes it from the Ingress for a deployed
         service (which is given no RBAC to read its own), and ``serve`` fills it in from
         the address it bound for a service started by hand. Both arrive the same way, so
-        there is nothing to reconcile here and no lane needs an override -- the cluster
-        lane runs both in-pod and off-cluster through a port-forward, and a per-lane
-        version of this would have had to remember not to blank the second case.
+        there is nothing to reconcile here and no override is needed -- the cluster
+        service runs both in-pod and off-cluster through a port-forward.
 
         ``""`` when nobody named one: unpublished, or bound to a wildcard where which
         address a caller used is not knowable from here.
 
         The literal rather than an import, like ``default_workspaces_root`` reads
         ``ROBOVAST_WORKSPACES_ROOT``: the writers name it
-        (``robovast.service.app.PUBLIC_URL_ENV`` and the cluster lane's constant of the
-        same name), and importing either from here would drag a serving layer, or a lane,
-        into the cheapest call in the interface.
+        (``robovast.service.app.PUBLIC_URL_ENV`` and the cluster service's constant of the
+        same name), and importing either from here would drag a serving layer, or the
+        cluster service, into the cheapest call in the interface.
         """
         return os.environ.get("ROBOVAST_PUBLIC_URL", "").strip()
 
     def resource_usage(self) -> ResourceUsage:
         """Backend capacity/usage, cached for ``_USAGE_CACHE_TTL`` seconds.
 
-        The cache (and its lock) live here so both the local and cluster services
-        share one memoisation path; subclasses supply the actual reading by
+        The cache (and its lock) live here; subclasses supply the actual reading by
         overriding :meth:`_compute_resource_usage`. Computing under the lock means
-        concurrent polls collapse to a single sampling per window. ``backend`` is a
-        no-op here (this is a single-lane service); a multi-backend service uses it
-        to pick the lane.
+        concurrent polls collapse to a single sampling per window.
         """
         with self._usage_lock:
             cached = self._usage_cache
@@ -1830,7 +1826,7 @@ class ServiceBase(RobovastInterface):
                 usage = cached[1]
             else:
                 usage = self._compute_resource_usage()
-                # Judged here, once for every lane, on the readings just taken -- which is
+                # Judged here, once, on the readings just taken -- which is
                 # what makes the refusal and the meters one measurement.
                 usage = usage.model_copy(update={"storage_refusal": storage_refusal(usage)})
                 self._usage_cache = (time.monotonic(), usage)
@@ -1848,7 +1844,7 @@ class ServiceBase(RobovastInterface):
         return self._sweep_caches(clear=True)
 
     def _sweep_caches(self, clear: bool) -> ServiceCache:
-        """Report every cache this lane keeps, removing what may go when *clear*.
+        """Report every cache this service keeps, removing what may go when *clear*.
 
         The scene cache is the only one: the results directory is the campaigns' durable
         home, not a copy of one, so nothing under it is ever offered.
@@ -1896,7 +1892,7 @@ class ServiceBase(RobovastInterface):
     def _query_container_states(self) -> dict:
         """The held query containers by slot, ``{}`` when there are none.
 
-        Separate from the one above because they are separate occupancy: a lane holding
+        Separate from the one above because they are separate occupancy: a service holding
         three query containers while reporting only the caller's would look like it had
         capacity it does not have. Same no-side-effects rule.
         """
@@ -1912,28 +1908,27 @@ class ServiceBase(RobovastInterface):
 
     @abstractmethod
     def _compute_resource_usage(self) -> ResourceUsage:
-        """One reading of this lane's capacity and load, uncached; see :meth:`resource_usage`
+        """One reading of the service's capacity and load, uncached; see :meth:`resource_usage`
         for the TTL cache over it.
         """
 
     @abstractmethod
     def _scenario_job_tally(self) -> "tuple[int, int]":
-        """``(running, pending)`` scenario jobs over this lane's live campaigns, for
+        """``(running, pending)`` scenario jobs over this service's live campaigns, for
         :meth:`resource_usage`.
         """
 
-    # -- launch hooks (each lane answers these for itself) -------------------
+    # -- launch hooks (each implementation answers these for itself) ---------
     #
-    # create_campaign below is shared by every lane. They differ only in these hooks — the driver loop, its
-    # worker thread, the status/outcome bookkeeping and the postprocess tail are
-    # identical, which is the whole point of running the controller in-process on
-    # both sides.
+    # create_campaign below is shared by every implementation. They differ only in these
+    # hooks — the driver loop, its worker thread, the status/outcome bookkeeping and the
+    # postprocess tail are identical.
 
     @abstractmethod
     def _guard_new_campaign(self) -> None:
-        """Refuse a launch this lane cannot admit right now, as a ``RuntimeError`` (409).
+        """Refuse a launch this service cannot admit right now, as a ``RuntimeError`` (409).
 
-        A single-flight lane refuses a second campaign; a lane with a queue admits.
+        A single-flight implementation refuses a second campaign; one with a queue admits.
         """
 
     def _admit_storage(self, action: str) -> None:
@@ -1986,45 +1981,46 @@ class ServiceBase(RobovastInterface):
 
     @abstractmethod
     def _build_backend(self, state):
-        """The :class:`~robovast.execution.backends.ExecutionBackend` that runs this lane's
-        jobs, over *state*.
+        """The :class:`~robovast.execution.backends.ExecutionBackend` that runs this
+        service's jobs, over *state*.
         """
 
     def _register_scheduling(self, campaign_id: str, request) -> None:
         """Tell the queue how to treat this campaign. Nothing to do where there is no queue.
 
-        An addition rather than a policy, which is why it is concrete here: a lane that
-        queues campaigns seeds its queue, and a lane that runs one at a time has nothing to
-        seed -- :meth:`_admit_scheduling` has already refused anything but the default by
-        the time a launch reaches here, so there is nothing for such a lane to lose.
+        An addition rather than a policy, which is why it is concrete here: an
+        implementation that queues campaigns seeds its queue, and one that runs one at a time
+        has nothing to seed -- :meth:`_admit_scheduling` has already refused anything but the
+        default by the time a launch reaches here.
         """
 
     @abstractmethod
     def _queues_campaigns(self) -> bool:
-        """Whether this lane queues campaigns against each other, so a rank and a hold mean
-        something.
+        """Whether this implementation queues campaigns against each other, so a rank and a
+        hold mean something.
 
-        One declaration per lane, read by both :meth:`version` (as ``can_schedule``) and the
-        lane's own :meth:`_admit_scheduling`, so what a client is *offered* and what the
-        service *accepts* cannot disagree -- a second answer to this question would sooner
-        or later offer an entry the service then refuses, or hide one it would accept. A
-        property of the lane, fixed when the service starts, not of how busy it is.
+        One declaration per implementation, read by both :meth:`version` (as
+        ``can_schedule``) and its own :meth:`_admit_scheduling`, so what a client is
+        *offered* and what the service *accepts* cannot disagree -- a second answer to this
+        question would sooner or later offer an entry the service then refuses, or hide one
+        it would accept. A property of the implementation, fixed when the service starts,
+        not of how busy it is.
         """
 
     @abstractmethod
     def _admit_scheduling(self, request) -> None:
-        """Admit or refuse a rank or a hold at launch, for this lane.
+        """Admit or refuse a rank or a hold at launch, for this implementation.
 
-        The default asks for nothing and is admitted everywhere, which is what keeps
-        a launch that never mentions scheduling working on any lane. A lane with no
-        queue raises :class:`UnsupportedOperation` for anything else, before a campaign
-        directory exists.
+        The default asks for nothing and is always admitted, which is what keeps a launch
+        that never mentions scheduling working. An implementation with no queue raises
+        :class:`UnsupportedOperation` for anything else, before a campaign directory
+        exists.
         """
 
     @abstractmethod
     def _run_options(self, request) -> "RunOptions":  # noqa: F821
-        """The :class:`~robovast.execution.backends.RunOptions` a launch *request* means on
-        this lane.
+        """The :class:`~robovast.execution.backends.RunOptions` a launch *request* means for
+        this service.
         """
 
     def _campaign_context(self, campaign_id: str, project, should_stop=None):
@@ -2033,7 +2029,7 @@ class ServiceBase(RobovastInterface):
         A context manager, so anything thread-scoped is established where the composition
         that reads it runs, and torn down when the campaign ends. Today that is only the
         aux-container runner, which is why this delegates: a campaign is one *span* over
-        which a lane provides one, not the only span. Anything genuinely per-campaign
+        which the implementation provides one, not the only span. Anything genuinely per-campaign
         belongs here rather than in :meth:`_aux_runner_context`, which preview also enters.
 
         *should_stop* is the campaign's own stop flag as a predicate, for the waits inside
@@ -2116,7 +2112,7 @@ class ServiceBase(RobovastInterface):
         """See the interface. A thin adapter over :func:`robovast.service.retrigger.check`.
 
         Same split as :meth:`retrigger_campaign`: the module decides everything about the
-        source, and what belongs here is only which directory this lane reads it from.
+        source, and what belongs here is only which directory the service reads it from.
         """
         from robovast.service import retrigger
 
@@ -2173,7 +2169,7 @@ class ServiceBase(RobovastInterface):
 
         A thin orchestrator: :mod:`robovast.service.retrigger` decides everything about the
         source, and :meth:`_launch_campaign` runs it. What belongs here is only the ordering
-        that needs the transport — which directory this lane reads the source from, the
+        that needs the transport — which directory the service reads the source from, the
         single-flight guard, and making sure a refusal leaves nothing staged behind.
         """
         from robovast.service import retrigger
@@ -2349,8 +2345,8 @@ class ServiceBase(RobovastInterface):
         self._register_scheduling(campaign_id, request)
         options = self._run_options(request)
         # Who ends the campaign: the builders' finish tail, which is outermost because
-        # nothing of the campaign happens in this process after it returns -- the lane's
-        # driver chains postprocessing inside it.
+        # nothing of the campaign happens in this process after it returns -- the
+        # implementation's driver chains postprocessing inside it.
         options.finalize_phase = True
 
         # Register the instant the campaign is accepted — before the (possibly slow)
@@ -2404,7 +2400,7 @@ class ServiceBase(RobovastInterface):
             from robovast.execution.backends import CampaignStopped
             from robovast.execution.controller import end_campaign
             backend = None
-            # Built here, not left to the builder, because on this lane the worker is
+            # Built here, not left to the builder, because the worker is
             # the campaign's outermost scope (see options.finalize_phase): the builder
             # returns while postprocessing is still to come, so the one notification
             # that says "this campaign is over" has to be sent from out here.
@@ -2425,7 +2421,7 @@ class ServiceBase(RobovastInterface):
                 Skipped while shutting down, for that same tunnel reason; skipped for a
                 campaign that asked for no postprocessing; and skipped for one that was
                 stopped before any run existed, which has nothing to derive -- on the
-                cluster lane the pass is a Job of its own, a pod scheduled to read an
+                cluster the pass is a Job of its own, a pod scheduled to read an
                 empty campaign.
                 """
                 logger.info("Campaign %s stopped by request", campaign_id)
@@ -2460,7 +2456,7 @@ class ServiceBase(RobovastInterface):
                     state.raise_if_stopped("stopped while staging the project")
                 if target.pinned_images is not None:
                     # Not a build, but still ``_build_specs_for``: it is what installs the
-                    # campaign's ``plugins:`` into the project dir, which the cluster lane's
+                    # campaign's ``plugins:`` into the project dir, which the cluster service's
                     # _campaign_context reads before anything else. (``_install_plugins`` in
                     # run_batch_campaign runs later, too late for that.) Cheap and pure — it
                     # never touches the build context, which is absent here by definition.
@@ -2498,7 +2494,7 @@ class ServiceBase(RobovastInterface):
                 self._record_launch(campaign_id, results_dir, request,
                                     images=options.images)
                 state.set_phase(Phase.STARTING)
-                # The last boundary before the lane's own pre-flight -- a project push, a
+                # The last boundary before the backend's own pre-flight -- a project push, a
                 # registry read, the object-store tunnel -- none of which reads the flag.
                 state.raise_if_stopped("stopped before the campaign's runs began")
                 with self._campaign_context(campaign_id, target,
@@ -2531,7 +2527,7 @@ class ServiceBase(RobovastInterface):
                 if state.stop_requested and not self._shutting_down:
                     # A stop whose first visible effect was something else failing: a
                     # composition worker killed mid-line, an auxiliary container removed
-                    # under the command it was running, a lane pre-flight whose connection
+                    # under the command it was running, a backend pre-flight whose connection
                     # went with them. The exception describes the consequence and the flag
                     # describes the cause, and filing this as a failure would send whoever
                     # reads it after a bug in a step that was working. The same rule
@@ -2559,7 +2555,7 @@ class ServiceBase(RobovastInterface):
                 return
             else:
                 # Analysis postprocessing — what the eval viewer and
-                # `query_campaign_data_sql` read — is chained by the lane's driver. This
+                # `query_campaign_data_sql` read — is chained by the backend's driver. This
                 # covers a stop that landed BETWEEN batches, where the loop ends cleanly
                 # rather than raising: the controller's own chain skips itself whenever a
                 # stop was requested, so nothing would postprocess at all and a search
@@ -2573,7 +2569,7 @@ class ServiceBase(RobovastInterface):
                 if request.postprocess and stopped_runs:
                     self._postprocess(campaign_id, results_dir, state, entry)
             finally:
-                # This lane's outermost scope, so the campaign ends here — on every
+                # The campaign's outermost scope, so the campaign ends here — on every
                 # path, including the `return`s above and a campaign that asked for no
                 # postprocessing at all. Without this the run leaves the phase at
                 # `finishing` and every waiter blocks until its timeout.
@@ -2594,7 +2590,7 @@ class ServiceBase(RobovastInterface):
     @property
     @abstractmethod
     def _images(self):
-        """The :class:`~robovast.service.image_store.ImageBuildStore` this lane builds into
+        """The :class:`~robovast.service.image_store.ImageBuildStore` this service builds into
         and resolves from.
         """
 
@@ -2636,7 +2632,7 @@ class ServiceBase(RobovastInterface):
     @abstractmethod
     def _start_build_images(self, project, campaign_config, image_project=None,
                             image_project_tag=None, should_stop=None) -> list:
-        """Submit (or join) this lane's build of every image the campaign needs; return their
+        """Submit (or join) this service's build of every image the campaign needs; return their
         refs, without waiting. :meth:`_await_build_image` does the waiting.
         """
 
@@ -2654,10 +2650,8 @@ class ServiceBase(RobovastInterface):
                            campaign_root: str) -> None:
         """Wait for *build_id*, teeing its log into the campaign's ``_execution/build.log``.
 
-        One implementation for any lane: ``get_image_build_status`` and
-        ``get_image_build_log`` are interface operations each transport already provides,
-        so the in-cluster BuildKit Job is waited on by the base's loop rather than by one
-        of the lane's own.
+        ``get_image_build_status`` and ``get_image_build_log`` are interface operations,
+        so the in-cluster BuildKit Job is waited on by the base's loop.
 
         The log is copied into the campaign because it is the campaign's only durable
         record of the image it ran on: the live source dies with the build (a build Job is
@@ -2762,12 +2756,9 @@ class ServiceBase(RobovastInterface):
     def _reap_stray_exec_container(self) -> None:
         """Remove every exec workload left behind by a previous service process.
 
-        Through the lane's own sweep rather than removing one fixed name: the user slot
-        has a fixed name, but a query workload's carries a hash of the identity it was
-        started for, and nothing persists those across a restart. Removing only the fixed
-        one left those holding memory with nothing able to name them. The sweep is the
-        lane's (:meth:`_exec_runner`); what it removes is a container beside this process or
-        a pod, and this does not need to know which.
+        Through the runner's own sweep (:meth:`_exec_runner`) rather than removing one fixed
+        name: the user slot has a fixed name, but a query workload's carries a hash of the
+        identity it was started for, and nothing persists those across a restart.
         """
         try:
             removed = self._exec_runner().sweep_held()
@@ -2802,8 +2793,8 @@ class ServiceBase(RobovastInterface):
         validate(request)
         vast_file = self._exec_vast_file(request)
         spec, _campaign_data, limit_s, limit_source = stage(
-            # The staged entrypoint carries the init and post-run blocks of the lane the
-            # exec actually runs on; a campaign's rendered entrypoint is never copied across.
+            # The staged entrypoint is rendered for this exec; a campaign's rendered
+            # entrypoint is never copied across.
             vast_file, request.config_name,
             cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
             command=request.command)
@@ -2816,8 +2807,8 @@ class ServiceBase(RobovastInterface):
                 campaign_id=request.campaign_id or "",
                 image_family=getattr(request, "image_family", ""))
             spec.image = found.ref
-            # What the caller is told the container is. Never `found.ref`: on the cluster
-            # lane that is registry-qualified, and this value is reported back.
+            # What the caller is told the container is. Never `found.ref`: that is
+            # registry-qualified, and this value is reported back.
             spec.image_identity = found.identity
             if is_build_image_ref(spec.image):
                 # Defensive: _exec_image resolves build: refs, and handing docker a
@@ -2866,7 +2857,7 @@ class ServiceBase(RobovastInterface):
         a campaign with no simulator is the only one — so an unqualified call answers
         the same question it always did.
 
-        A built image must already exist on this lane's store: building implicitly would
+        A built image must already exist on the service's store: building implicitly would
         turn a seconds-long check into a multi-minute one the caller never asked for.
         """
         return self._resolve_exec_image(vast_file, container, campaign_id).ref
@@ -2881,7 +2872,7 @@ class ServiceBase(RobovastInterface):
         ``.identity`` to a client and must not leak the concrete form. Resolving twice to
         get the two would be two chances to disagree.
 
-        The branch is on the **config source**, not on the lane:
+        The branch is on the **config source**:
 
         * a *campaign* has already run, and recorded which image each role ran on, so the
           diagnostic runs those exact bytes — see :func:`campaign_role_image`. Re-deriving
@@ -2889,7 +2880,7 @@ class ServiceBase(RobovastInterface):
           snapshot holds the ``.vast``, the scenario and the run files, not the build
           inputs, so every source dir and workspace wheel hashes as a bare requirement and
           the hash differs from the one the build produced.
-        * a *workspace* project is asked of the image store, which is the lane's own
+        * a *workspace* project is asked of the image store, which is the service's own
           answer to "what is this called here, and is it here".
         * an *image family* member skips all of it: the ref names the image directly.
         """
@@ -2950,7 +2941,7 @@ class ServiceBase(RobovastInterface):
         for a role that owns a container. A digest is its own identity — it names bytes and
         no registry we picked — so both fields carry it.
 
-        :meth:`_resolve_image_digest` is the existing per-lane hook for the tag-only
+        :meth:`_resolve_image_digest` is the hook for the tag-only
         campaigns that predate per-role digests: a deliberate refusal on the cluster
         (guessing there would name bytes no node can pull).
         """
@@ -2963,11 +2954,10 @@ class ServiceBase(RobovastInterface):
     def _refuse_unbuilt(self, container_name: str, build_id: str) -> "NoReturn":  # noqa: F821
         """Refuse an exec whose image is not on the store, saying which state it is in.
 
-        Shared by every lane and never overridden: ``get_image_build_status`` is an
-        interface operation both of them implement (the cluster's even recovers an
-        untracked build from its Job), so the classification has one implementation rather
-        than two that drift — the same argument ``_await_build_image`` already makes for
-        the build wait loop.
+        Never overridden: ``get_image_build_status`` is an interface operation (the
+        cluster's even recovers an untracked build from its Job), so the classification has
+        one implementation rather than several that drift — the same argument
+        ``_await_build_image`` already makes for the build wait loop.
         """
         from robovast.common.errors import ImageNotBuilt
         from robovast.service.image_build import not_built_message
@@ -3000,8 +2990,8 @@ class ServiceBase(RobovastInterface):
         a real exec would use. No container starts either way.
 
         Hands back the ``identity``, never the concrete ref: this value crosses the API
-        boundary (it keys the per-image catalog cache and is reported to the caller), and on
-        the cluster lane the concrete form is registry-qualified.
+        boundary (it keys the per-image catalog cache and is reported to the caller), and
+        the concrete form is registry-qualified.
         """
         from robovast.service.interface import ImageResolution
         vast_file = self._exec_vast_file(request)
@@ -3040,10 +3030,9 @@ class ServiceBase(RobovastInterface):
                            exc_info=True)
         try:
             state.set_phase(Phase.POSTPROCESSING)
-            # Through the seam every other caller uses, so the lane decides HOW to
-            # postprocess. Running the pipeline here instead reads the service's own results
-            # directory directly, which would run the pipeline in this process on a lane
-            # that postprocesses in a pod of its own.
+            # Through the seam every other caller uses, so the implementation decides HOW
+            # to postprocess. Running the pipeline here instead would run it in this process
+            # where the cluster postprocesses in a pod of its own.
             ok, message = self._postprocess_campaign(
                 campaign_id, Path(results_dir) / campaign_id, state=state)
             if ok:
@@ -3116,10 +3105,10 @@ class ServiceBase(RobovastInterface):
 
     @abstractmethod
     def _scheduling_for(self, campaign_id: str, *, live: bool) -> dict:
-        """``{"priority", "paused"}`` for a listing row, as this lane answers it.
+        """``{"priority", "paused"}`` for a listing row, as this implementation answers it.
 
         Reported as a pair so a row that admits nothing says which of the two reasons
-        it is. A lane with no queue has one answer for every campaign.
+        it is. An implementation with no queue has one answer for every campaign.
         """
 
     def _record_campaign_stopped(self, campaign_id, results_dir, state, backend) -> None:
@@ -3177,7 +3166,7 @@ class ServiceBase(RobovastInterface):
         Only ever promotes ``False`` → ``True``, and only on the evidence the recovery path
         uses — :func:`~robovast.common.campaign_data.campaign_has_derived_data`, which both
         call so they cannot disagree; what ``_postprocess`` records is untouched, and so is
-        the archive decision that reads it. Best-effort on the cluster lane in exactly the
+        the archive decision that reads it. Best-effort on the cluster in exactly the
         way the recovery path already is: ``data.db`` is not among ``_RECORD_OBJECTS``, so a
         campaign whose derived data was never fetched here answers the same as before.
 
@@ -3280,8 +3269,8 @@ class ServiceBase(RobovastInterface):
         simulator with a container of its own answers only there. Sending both to one target sent
         ``roqsim health`` into a container with no roqsim in it for every ROS-shape campaign.
 
-        Lane-independent by construction: everything that decides *what* is asked is here, and only
-        :meth:`_job_state_target` differs between a local container and a job's pod.
+        Everything that decides *what* is asked is here, and only :meth:`_job_state_target`
+        knows how to address the job's pod.
         """
         from robovast.service.interface import JobState
 
@@ -3324,7 +3313,7 @@ class ServiceBase(RobovastInterface):
 
     @abstractmethod
     def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:
-        """``(target, run_dir)`` for a fixed read inside a running job: what the exec lane
+        """``(target, run_dir)`` for a fixed read inside a running job: what the exec runner
         addresses, and the run directory inside it.
         """
 
@@ -3378,7 +3367,7 @@ class ServiceBase(RobovastInterface):
         run is live its clock record sits in the job's own output dir, and only results collection
         puts it beside the run. This read is only ever asked about a *running* job, so the job dir
         is the answer -- but the run dir is tried after it rather than assumed away, since where a
-        backend writes is the backend's business and one lane's layout is not the other's. Only a
+        backend writes is the backend's business. Only a
         read that found nothing pays for the second exec.
 
         Exactly one of the two returns is set. ``reason`` is never left empty for a read that
@@ -3398,7 +3387,7 @@ class ServiceBase(RobovastInterface):
                 campaign_id, job_name,
                 (None, f"could not read this campaign's configuration: {err}"))
         try:
-            # Through the lane hook, not :meth:`_job_container`: on the cluster a target is a
+            # Through the hook, not :meth:`_job_container`: on the cluster a target is a
             # ``(pod, container)`` pair, and only the hook knows that.
             target, _run_dir = self._job_state_target(
                 campaign_id, job_name, SIMULATION_CONTAINER)
@@ -3444,8 +3433,8 @@ class ServiceBase(RobovastInterface):
                             timed_out: bool) -> tuple:
         """One health command's result as ``(document, reason)``.
 
-        On the base deliberately: what the reply *means* is not lane-specific, and a lane
-        interpreting the output for itself is how lanes drift.
+        On the base deliberately: what the reply *means* does not depend on where the job
+        runs, so it has one interpretation.
         """
         if timed_out:
             return None, (
@@ -3817,9 +3806,9 @@ class ServiceBase(RobovastInterface):
         return roles.get(role, role)
 
     def _require_running_job(self, campaign_id: str, job_name: str):
-        """The named job, or raise — the precondition of every lane's :meth:`stop_job`.
+        """The named job, or raise — the precondition of :meth:`stop_job`.
 
-        Resolved through :meth:`list_jobs` rather than a lane-specific probe so the
+        Resolved through :meth:`list_jobs` rather than a backend-specific probe so the
         precondition is checked against the very status the caller was shown. ``KeyError``
         for a job that does not exist, ``RuntimeError`` naming the phase for one that
         exists but is not running: only a job that is *underway* has something to kill.
@@ -3829,8 +3818,8 @@ class ServiceBase(RobovastInterface):
         records a ``killed`` intervention against the runs it was carrying, and neither
         carries any -- they are not the campaign's runs, and are deliberately absent from the
         job-links manifest that resolves them -- so the record would name runs that do not
-        exist. Refused here rather than in the cluster lane's ``stop_job`` because this is
-        the precondition every lane shares and the one the web UI mirrors when it decides
+        exist. Refused here rather than in the cluster service's ``stop_job`` because this is
+        the shared precondition and the one the web UI mirrors when it decides
         whether to offer the button.
         """
         jobs = self.list_jobs(campaign_id).jobs
@@ -3862,17 +3851,17 @@ class ServiceBase(RobovastInterface):
     def _shutdown_running_campaigns(self, running) -> None:
         """What exiting this process does to *running* campaigns: end them, because nothing
         comes back for their compute, or leave them for a successor to adopt. A
-        property of the lane, and never inherited.
+        property of the implementation, and never inherited.
         """
 
     def shutdown(self) -> None:
         """Stop any in-flight campaign so Ctrl+C on ``vast serve`` tears it down.
 
         Campaigns run on daemon worker threads, so a bare process exit would kill
-        the worker mid-run and orphan its ``docker compose`` containers. What is done
-        about the campaigns still running is the lane's decision
-        (:meth:`_shutdown_running_campaigns`); what happens here is the part every lane
-        shares: the flag, the held exec containers, and finding out what is running.
+        the worker mid-run and orphan its workloads. What is done about the campaigns
+        still running is the implementation's decision
+        (:meth:`_shutdown_running_campaigns`); what happens here is the shared part: the
+        flag, the held exec containers, and finding out what is running.
         """
         # Set before anything is torn down, so a worker reaching its own tail during the
         # teardown sees it and does not start work this process cannot finish.
@@ -4008,7 +3997,7 @@ class ServiceBase(RobovastInterface):
                 f"Campaign {campaign_id!r} is still running; stop it before deleting.")
 
     def _forget_in_index(self, campaign_id: str) -> None:
-        """Drop the campaign's rows from the central index. Shared by every lane.
+        """Drop the campaign's rows from the central index.
 
         Deleting a campaign has to reach the index, or the index outlives what it
         describes: rows are derived, and a derived copy that survives its source is worse
@@ -4092,8 +4081,8 @@ class ServiceBase(RobovastInterface):
 
     def _delete_deletable(self, campaign_id: str) -> CampaignDeletion:
         """Remove a campaign :meth:`_ensure_deletable` has passed: its directory and its
-        sibling files. A lane that owns more than files extends this, so the single and the
-        multi-campaign delete both reach it.
+        sibling files. An implementation that owns more than files extends this, so the
+        single and the multi-campaign delete both reach it.
 
         Everything that can go is removed before anything is reported, so a second delete
         retries only what is left. Anything left behind makes the outcome ``partial``, whose
@@ -4248,7 +4237,7 @@ class ServiceBase(RobovastInterface):
         # `_derive_postprocessed` -- whose only guard against promoting `postprocessed`
         # over a failure is that error field -- then promotes it, so the web UI offers
         # Results views over a build that did not finish. Read before the lock: it is disk
-        # (and on the cluster lane, store) I/O, and nothing about it needs the map held.
+        # (and on the cluster, store) I/O, and nothing about it needs the map held.
         prior = self._prior_outcome(campaign_id)
         # ...except the verdict this operation is here to REPLACE, which is both fields and
         # only for a postprocess. That message describes an attempt that has ended, and
@@ -4294,9 +4283,6 @@ class ServiceBase(RobovastInterface):
                          results_bytes=prior.results_bytes)
             state.set_phase(phase)
             entry = _TrackedCampaign(campaign_id, str(self._campaigns_root()), state)
-            # A lane whose operation works against a fetched root, not the tracked one,
-            # says so here -- see the attribute. Default empty: this lane's own operations
-            # write where they are tracked, so the local copy is the live one.
             # The store's recorded start time, not now: re-running postprocessing or
             # sharing must not restamp (and so re-order) a finished campaign. Read
             # directly rather than via _started_at_for — we already hold self._lock,
@@ -4400,11 +4386,11 @@ class ServiceBase(RobovastInterface):
                          check_scenario: bool = True) -> ValidationReport:
         """See the interface.
 
-        Composed inside the lane's aux-runner context, and *held*, exactly as
+        Composed inside the service's aux-runner context, and *held*, exactly as
         :meth:`preview_configurations` is: validation composes the file to count its cells, so
         it reaches whatever that composition asks for a container -- a variation's helper
-        image, a generator's, the simulator's query for what a world is made of. A lane that
-        composes without arranging one refuses the campaign for a property of where it ran.
+        image, a generator's, the simulator's query for what a world is made of. Composing
+        without one would refuse the campaign for a property of where it ran.
         Held rather than per-call because validating is an authoring loop, and it shares the
         tag with preview so the two reuse one warm container.
         """
@@ -4463,7 +4449,7 @@ class ServiceBase(RobovastInterface):
         try:
             declared = ((load_config(project.config_path) or {})
                         .get("execution") or {}).get("scenario_file")
-            # Relative to the workspace ROOT, which is what the exec lane mounts; the
+            # Relative to the workspace ROOT, which is what the exec container mounts; the
             # .vast declares it relative to itself.
             scenario_path = os.path.normpath(
                 os.path.join(os.path.dirname(path), str(declared))) if declared else ""
@@ -4543,7 +4529,7 @@ class ServiceBase(RobovastInterface):
         from robovast.common.config_generation import generate_scenario_variations
         project = self._resolve_project(workspace_id, path)
         aux_containers: list = []
-        # Both branches compose, so both need whatever this lane uses to reach a variation's
+        # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
         # Held rather than span-scoped: this is the authoring loop, previewed repeatedly.
         with self._aux_runner_context(_preview_tag(workspace_id, path), project, hold=True):
@@ -4600,7 +4586,7 @@ class ServiceBase(RobovastInterface):
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False, backend: str = "") -> WorldDescription:
-        del backend  # one lane here; a multi-backend service overrides this to select
+        del backend  # one simulator backend here; a multi-backend service overrides this
         import yaml
 
         from robovast.common.config_generation import WorldQueryUnavailable, describe_world_payload
@@ -4614,12 +4600,11 @@ class ServiceBase(RobovastInterface):
         # several; the answer names the world it described, so a caller can see which.
         block = campaign_sim_block(execution)
         started = time.monotonic()
-        # Through the exec lane's held query container, never a `docker run` on the
+        # Through the exec runner's held query container, never a `docker run` on the
         # service host: in a controller pod that would run on whatever host the service
         # happens to sit on -- a different image cache, or no docker at all -- with nothing
-        # in the reply to say the answer did not come from the cluster. This is also what
-        # lets the cluster lane answer at all, which otherwise has no runner
-        # outside a campaign's composition.
+        # in the reply to say the answer did not come from the cluster. Outside a campaign's
+        # composition the cluster has no other runner.
         from robovast.common.config_generation import set_container_runner_factory
         from robovast.service.world_query import ExecSlotContainerRunner, _reset_factory
         runner = ExecSlotContainerRunner(
@@ -4869,7 +4854,7 @@ class ServiceBase(RobovastInterface):
 
     @abstractmethod
     def _resolve_image_digest(self, ref: str):
-        """The digest an image reference resolves to on this lane, or ``""``.
+        """The digest an image reference resolves to on this service, or ``""``.
         """
 
     def _scene_identity(self, campaign_id, config_name, run_id):
@@ -4959,7 +4944,7 @@ class ServiceBase(RobovastInterface):
     def _scene_stage(key: str) -> "tuple[str, str]":
         """``(stage, detail)`` for a build in flight, as the build itself reported it.
 
-        A read rather than a lane-specific guess: whoever performs a step names it (see
+        A read rather than a guess: whoever performs a step names it (see
         ``scene_cache.set_stage``), which is the only place that can tell a pull from a compile.
         The default covers the moment between a build taking the key's lock and naming its first
         step, where compiling is what is about to happen anyway.
@@ -4980,8 +4965,8 @@ class ServiceBase(RobovastInterface):
         if scene_cache.is_generating(key):
             return ActionResult(ok=True, message="this world's geometry is already being built")
 
-        # ``None`` where a lane starts an ephemeral container per capture, which makes the
-        # generator fall back to one; a lane that holds a runner yields it instead.
+        # ``None`` where the implementation starts an ephemeral container per capture,
+        # which makes the generator fall back to one; one that holds a runner yields it.
         runner_context = self._scene_runner_context(  # pylint: disable=assignment-from-none
             campaign_id, identity,
             on_wait=lambda stage, detail: scene_cache.set_stage(key, stage, detail))
@@ -5238,8 +5223,8 @@ class ServiceBase(RobovastInterface):
 
         A seam, not a feature, at this level: the data is already under the results root,
         so the only cost is the cells themselves and there is nowhere to
-        publish counts to. A lane that reaches this render at the tail of a longer wait
-        yields a reporter instead.
+        publish counts to. An implementation that reaches this render at the tail of a
+        longer wait yields a reporter instead.
         """
         del campaign_id, workload
         yield None

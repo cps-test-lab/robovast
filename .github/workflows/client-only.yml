@@ -50,7 +50,7 @@ jobs:
           "$CLIENT_VENV/bin/pip" list
 
       # The named packages are the ones whose absence *is* the distribution: the core and
-      # the cluster lane it must not drag in, and the four heavyweights that make a full
+      # robovast-cluster it must not drag in, and the four heavyweights that make a full
       # install 290 MB. The count and the size catch the case nobody thought to name --
       # both are loose enough to survive a dependency that pydantic or requests grows on
       # its own, and far tighter than any of the forbidden packages would leave them
@@ -134,7 +134,7 @@ jobs:
       # the step above stops exactly where this distribution's leaks have always been: a
       # verb that imports cleanly and dies the moment somebody runs it. The functions whose
       # bodies reach across the boundary are therefore CALLED. `vast doctor` is the widest
-      # of them -- the cluster lane, the core's version helpers and `kubernetes` -- and the
+      # of them -- robovast-cluster, the core's version helpers and `kubernetes` -- and the
       # only one that reaches them without a service to talk to.
       - name: Verbs that defer imports run, not just import
         run: |
@@ -148,14 +148,14 @@ jobs:
           # Doctor's own verdict is not the subject -- this job has no service, so failing
           # checks are correct. Only that it produced checks instead of a traceback.
           checks = {c.name: c for c in run_checks()}
-          lane = checks.get("cluster support")
-          assert lane is not None, (
+          cluster = checks.get("cluster support")
+          assert cluster is not None, (
               f"no 'cluster support' verdict in {sorted(checks)}; check_cluster's "
               "ImportError guard did not fire, so this is not the client-only install "
               "it claims to be")
-          assert not lane.ok and lane.optional, (
-              "a missing cluster lane must be advisory: a client-only install is a "
-              f"complete install, not a broken one (ok={lane.ok}, optional={lane.optional})")
+          assert not cluster.ok and cluster.optional, (
+              "missing cluster support must be advisory: a client-only install is a "
+              f"complete install, not a broken one (ok={cluster.ok}, optional={cluster.optional})")
 
           # The metadata fallback, which is the only version this install can report.
           version = running_version()
@@ -190,7 +190,7 @@ jobs:
           "$CLIENT_VENV/bin/vast" doctor > doctor.log 2>&1 || true
           cat doctor.log
           grep -q 'cluster support' doctor.log \
-            || { echo '::error::doctor never reached the cluster-lane check'; exit 1; }
+            || { echo '::error::doctor never reached the cluster-support check'; exit 1; }
           if grep -qE 'Traceback|ModuleNotFoundError|ImportError' doctor.log; then
             echo '::error::doctor crashed instead of reporting'
             exit 1

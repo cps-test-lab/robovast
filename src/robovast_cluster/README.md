@@ -15,7 +15,7 @@ pip install robovast robovast-cluster
 
 ## What it adds
 
-The Kubernetes execution lane, the commands that deploy the RoboVAST service onto a cluster
+Kubernetes campaign execution, the commands that deploy the RoboVAST service onto a cluster
 with its ingress and certificate and keep it running, and ready-made configurations for the
 clusters people have: a laptop's minikube, your own machines under RKE2, Google Cloud, Azure.
 Object storage, registry and node shapes are settings, not code, and another cluster flavour is

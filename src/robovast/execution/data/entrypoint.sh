@@ -195,7 +195,7 @@ else
         log "Started rosbag recording ${LOG_TOPICS} (PID=$(cat /tmp/rosbag.pid)) -> ${OUTPUT_DIR}/logs/rosout_bag"
     fi
 
-    # The lane's post-run block: the cleanup hooks the runner is handed, and `run_scenario`,
+    # The post-run block: the cleanup hooks the runner is handed, and `run_scenario`,
     # which is how the runner is started -- a child of this shell on the cluster, where
     # something has to run after the runner is gone; an exec over it otherwise.
     # @@POST_RUN_BLOCK@@

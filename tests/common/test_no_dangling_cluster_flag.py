@@ -9,12 +9,11 @@ failure is loud in the right way:
 * ``vast workspace world`` raises ``NameError`` on **every** invocation — the name is
   simply absent from that module.
 * ``vast exec command`` and ``vast exec stop-container`` resolve ``cluster`` to the
-  module-level click ``Group`` of the same name, which is always truthy, so both silently
-  pin the request to the cluster lane with no way to select another.
+  module-level click ``Group`` of the same name, which is always truthy, so it silently
+  ends up in the request.
 
-The second is the one worth a test: it never raised, so nothing pointed at it. These
-assert the *request* each command builds, because that — not the exit code — is where the
-wrong lane was chosen.
+These assert the *request* each command builds, because that — not the exit code — is
+where a leftover selector shows.
 """
 
 import contextlib
@@ -72,23 +71,17 @@ def test_workspace_world_does_not_raise_name_error(recorder):
     assert "describe_world" in recorder.calls
 
 
-def test_exec_command_does_not_pin_the_cluster_lane(recorder):
-    """The request carries no lane at all now, so it cannot carry the wrong one.
-
-    Originally this asserted ``backend is None``: the leftover ``cluster`` name was
-    always truthy and pinned every call to the cluster. The field itself has since gone
-    with the dual-lane service, which resolves the bug structurally -- so what is worth
-    holding is that it does not come back.
-    """
+def test_exec_command_carries_no_backend_selector(recorder):
+    """The exec request carries no backend selector: the service has one backend."""
     CliRunner().invoke(container_cli.container, ["exec", "true"])
     request = recorder.calls.get("exec_in_container")
     assert request is not None, "the command never reached the client"
     assert not hasattr(request, "backend"), (
-        "ExecRequest grew a lane selector again; a service runs one lane, chosen at "
-        "`vast serve` time, so a per-request one can only ever be wrong or ignored")
+        "ExecRequest grew a backend selector; a service runs one backend, so a "
+        "per-request one can only ever be wrong or ignored")
 
 
-def test_stop_container_does_not_pin_the_cluster_lane(recorder):
+def test_stop_container_takes_no_backend_selector(recorder):
     CliRunner().invoke(container_cli.container, ["stop"])
     assert recorder.calls.get("stop_exec_container"), (
-        "never reached the client -- or was called with a lane it does not take")
+        "never reached the client -- or was called with an argument it does not take")

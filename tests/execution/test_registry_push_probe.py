@@ -67,7 +67,7 @@ def test_a_refused_credential_is_a_refusal_and_not_an_unknown(monkeypatch):
 
 def test_a_registry_that_did_not_answer_is_unknown_not_refused(monkeypatch):
     """``None`` is "could not ask". Reading it as a refusal would block a build over a
-    registry that is merely unreachable -- which the lane already survives."""
+    registry that is merely unreachable -- which a campaign already survives."""
     _registry(monkeypatch, lambda path, **kw: None)
     assert push_state(_REF) == PUSH_UNKNOWN
 

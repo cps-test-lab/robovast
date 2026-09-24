@@ -14,20 +14,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where a lane's experiment images live: the image store.
+"""Where the service's experiment images live: the image store.
 
 ``image_build`` holds the **recipe** -- which containers build, what their content hash
 is, what Dockerfile that renders. This module holds the **store**: given a recipe, what
-is the image called here, and is it actually here. That is the only part that differs
-between a local ``vast serve`` (the docker daemon) and a cluster deployment (a registry),
-and it is the part that must be asked rather than assumed.
+is the image called here (the deployment's registry), and is it actually here. That is
+the part that must be asked rather than assumed.
 
-It exists so that the store is *named*. Left unnamed -- the responsibilities spread
-across methods of ``ClusterService`` -- every caller asks its own question its own way,
-and one that asks the wrong place (a docker daemon inside a pod that has none) reports
-every built image as unbuilt. A lane that forgets to implement
-:class:`ImageBuildStore` cannot be constructed at all, which is the difference between a
-checklist and a convention.
+The store is *named* so that every caller asks the same question the same way, instead
+of each method of ``ClusterService`` asking its own. A store that forgets to implement a
+method of :class:`ImageBuildStore` cannot be constructed at all.
 """
 
 import logging
@@ -62,7 +58,7 @@ class ImageRef:
     """
 
     #: The concrete reference a container runs FROM -- a registry-qualified ref.
-    #: Lane-internal: this one must never reach a client (the
+    #: Service-internal: this one must never reach a client (the
     #: zero-registry-knowledge invariant, see ``image_build``'s module docstring).
     ref: str
     #: ``build:<tag>@<hash>`` -- the registry-free form, and the ONLY one that may cross the
@@ -79,16 +75,17 @@ class ImageRef:
 def build_identity(tag: str, image_hash: str) -> str:
     """The registry-free identity of a built image: ``build:<tag>@<hash>``.
 
-    Shared by every store so one image has one identity whatever lane produced it -- the
-    hash differs per lane (a cluster folds its own base image into it), the *shape* must not.
+    Shared by every store so one image has one identity whatever store produced it -- the
+    hash may differ per store (a cluster folds its own base image into it), the *shape*
+    must not.
     """
     return f"{BUILD_IMAGE_PREFIX}{tag}@{image_hash}"
 
 
 class ImageBuildStore(ABC):
-    """Where one lane's built experiment images live.
+    """Where the service's built experiment images live.
 
-    An ABC and deliberately not a ``Protocol``: a structural check lets a lane that forgets
+    An ABC and deliberately not a ``Protocol``: a structural check lets a store that forgets
     a method fail at whichever call site happens to reach it first, at runtime, which is the
     exact failure this abstraction exists to remove. An ABC refuses to construct the store
     at all and names the missing method.
@@ -122,13 +119,12 @@ class ImageBuildStore(ABC):
         forever. See :func:`resolve_floating_vcs_specs` for why falling back to the bare ref is
         refused rather than tolerated.
 
-        Concrete and defined HERE rather than per lane, because "which commit does this ref
-        name?" has nothing to do with where an image is stored -- and because a lane that
-        simply never called it lost the whole feature silently. The cluster lane did: it hashed
-        and rendered without the resolution, so `@main` stayed cache-stable, the Dockerfile
-        installed the branch rather than the commit, and no vcs.txt was written. Nothing failed;
-        the record was just empty. Both callers a lane must not forget are the ones that take
-        ``resolved_vcs``: :func:`build_hash` and :func:`generate_dockerfile`.
+        Concrete and defined HERE rather than per store, because "which commit does this ref
+        name?" has nothing to do with where an image is stored. A store that skipped it would
+        fail silently: `@main` would stay cache-stable, the Dockerfile would install the branch
+        rather than the commit, and no vcs.txt would be written. Both callers a store must not
+        forget are the ones that take ``resolved_vcs``: :func:`build_hash` and
+        :func:`generate_dockerfile`.
 
         A resolution failure is reported as an unavailable store rather than raised as a build
         error: the question "which image would this be?" genuinely cannot be answered without

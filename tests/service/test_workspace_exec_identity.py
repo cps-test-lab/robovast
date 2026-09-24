@@ -6,7 +6,7 @@
 
 The failure these guard against is a *stale answer*: a query container is held so the
 next call is warm, and the project reaches it exactly once, when the container is created
--- the cluster lane mirrors it in with an init container, the local lane bind-mounts it.
+-- the cluster mirrors it in with an init container.
 A campaign may be identified by its id alone because it is frozen once it starts, but a
 workspace is editable by definition, so its id names a tree whose contents change under
 it. Reuse keyed on the id alone answers an edited workspace from the bytes it no longer

@@ -8,8 +8,8 @@ The point of the feature is to get a short campaign through while a long one is 
 without touching the long one's results. So the checks here are the ways that could go
 wrong quietly:
 
-- a lane with no queue accepting a rank it cannot act on, leaving the campaign to run at
-  the ordinary time with nothing saying the rank did nothing;
+- a service with no queue accepting a rank it cannot act on, leaving the campaign to run
+  at the ordinary time with nothing saying the rank did nothing;
 - a call that asked for nothing being answered "done";
 - setting one half of the pair silently resetting the other;
 - the change reaching the queue but not the launch record, so the next service restart
@@ -53,7 +53,7 @@ def cluster(_store):
     return service
 
 
-def test_the_cluster_lane_admits_a_rank(cluster):
+def test_the_cluster_service_admits_a_rank(cluster):
     cluster._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=5))
 
 
@@ -72,7 +72,7 @@ def test_a_rank_outside_the_range_is_refused_where_it_is_typed():
         CreateCampaignRequest(workspace_id="ws-x", priority=PRIORITY_LIMIT + 1)
 
 
-# -- the cluster lane, which has a queue --------------------------------------------------
+# -- ClusterService, which has a queue ---------------------------------------------------
 
 def test_an_unknown_campaign_is_reported_not_raised(cluster):
     result = cluster.set_campaign_scheduling("camp-nope", priority=1)

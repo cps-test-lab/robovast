@@ -145,7 +145,7 @@ def create_upload(address: str, executable: bool = False) -> dict:
 #: choice, and stating it twice is how the two halves drift apart — and every tool
 #: description is sent on every request, so a duplicated paragraph is paid for twice.
 #:
-#: The lane matters beyond tidiness. Against a cluster or ``--attach`` service the
+#: The route matters beyond tidiness. Against a cluster or ``--attach`` service the
 #: workspace is not on this host at all, so a filesystem read would check a different
 #: file, or none, and report the verdict as if it were about the one the campaign runs.
 #:
@@ -156,7 +156,7 @@ def create_upload(address: str, executable: bool = False) -> dict:
 _ADDRESS_ROUTE = """
     A ``/sources/<workspace_id>/<path>`` address is checked **through the service**, so
     this is the file the campaign will actually run. Anything else is read as a path on
-    the MCP-server host — for authoring before a workspace exists, and the only lane with
+    the MCP-server host — for authoring before a workspace exists, and the only route with
     no service running. ``source`` says which answered.
 """
 
@@ -183,7 +183,7 @@ def _address_route(address: str):
 
 
 def _unchecked_world_advisory(config_path: str) -> list:
-    """Advisory for the local-file lane, which has no service to run a simulator in.
+    """Advisory for a plain-file address, which has no service to run a simulator in.
 
     Only when the project actually declares a simulator backend: a campaign without one has
     no world, and an advisory on every reply is a line callers learn to skip.
@@ -202,11 +202,12 @@ def _unchecked_world_advisory(config_path: str) -> list:
                         "that runs the simulator, and this address was read as a plain file "
                         "with no service to run one. Validate through a workspace address "
                         "(/sources/<workspace_id>/<path>) to have it checked, or pass "
-                        "check_world=False for the narrower verdict this lane can give."}]
+                        "check_world=False for the narrower verdict a plain file can "
+                        "give."}]
 
 
 def _unchecked_scenario_advisory() -> list:
-    """Advisory for the local-file lane, which has no scenario image to parse in.
+    """Advisory for a plain-file address, which has no scenario image to parse in.
 
     Unconditional where the world advisory is not: every campaign has a scenario, so
     there is always something that went unparsed.
@@ -218,7 +219,7 @@ def _unchecked_scenario_advisory() -> list:
                         "what is installed there, and this address was read as a plain "
                         "file with no image to ask. Validate through a workspace address "
                         "(/sources/<workspace_id>/<path>) to have it checked, or pass "
-                        "check_scenario=False for the narrower verdict this lane can "
+                        "check_scenario=False for the narrower verdict a plain file can "
                         "give."}]
 
 
@@ -260,7 +261,7 @@ def validate_project(address: str, check_world: bool = True,
 
     Returns:
         ``{valid, world_checked, scenario_checked, configs, runs_per_config,
-        total_trials, problems, lane}``, each problem ``{stage, config, field, message,
+        total_trials, problems, source}``, each problem ``{stage, config, field, message,
         severity}`` with ``severity`` one of ``error`` / ``advice`` / ``unchecked``. A
         clean campaign returns no world or scenario entry.
     """
@@ -270,11 +271,11 @@ def validate_project(address: str, check_world: bool = True,
     try:
         target = _address_route(address)
         if target is None:
-            # No service, so no lane that can run a simulator: say the world went
+            # No service, so nothing that can run a simulator: say the world went
             # unchecked rather than letting a clean reply read as a checked one.
             report = validate_project_file(address)
             if check_world:
-                # Same rule as the service lane, because the answer is the same one: a
+                # Same rule as the service, because the answer is the same one: a
                 # world nobody could look at is not a world that passed. Empty when the
                 # campaign declares no simulator -- then there is no world to check, and
                 # `world_checked` stays null rather than claiming a verdict.
@@ -324,7 +325,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
 
     Returns:
         ``{configs, runs_per_config, total_trials, configurations, truncated,
-        aux_containers, lane}``, each configuration ``{name, parameters}``; or ``{error}``.
+        aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``.
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
@@ -395,8 +396,7 @@ def describe_world(address: str, targets: str = "", entities: bool = False,
         targets: Glob over object names, e.g. ``'gripper_right*'``. Empty reports the
             overridable *fields* only and builds no model; a glob builds one, as does
             *entities*.
-        backend: Which lane answers, on a service that offers several; the one lane here
-            ignores it.
+        backend: Accepted and ignored: the service has one backend.
 
     Returns:
         ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
@@ -446,10 +446,10 @@ def _resolved_request(address: str):
 
 
 def _exec_json(client, request, command: str, container: str = "") -> dict:
-    """*request* run with *command*, via ``exec_in_container``'s own lane-agnostic
-    plumbing -- not ``describe_world``'s ``_make_container_runner`` path, which only
-    gets a cluster-capable runner inside a live campaign's composition and is refused
-    standalone on the cluster lane. Returns the command's parsed stdout, or raises
+    """*request* run with *command*, via ``exec_in_container``'s own plumbing -- not
+    ``describe_world``'s ``_make_container_runner`` path, which only gets a
+    cluster-capable runner inside a live campaign's composition and is refused
+    standalone. Returns the command's parsed stdout, or raises
     ``ValueError`` naming why (a non-zero exit, unparseable output).
 
     Always ``query=True``: these are read-only questions put to an image, so they run in
@@ -457,7 +457,7 @@ def _exec_json(client, request, command: str, container: str = "") -> dict:
     design, so a call here would destroy the container its caller is debugging in. And the
     pool *holds* the container, so a second
     question about the same project costs an exec rather than a container start -- measured
-    at ~0.5 s against 6-15 s on the cluster lane.
+    at ~0.5 s against 6-15 s on the cluster.
 
     *container* names which one answers, because they are different images: ``roqsim``
     lives in the simulator's and ``scenario_execution`` in the scenario's.

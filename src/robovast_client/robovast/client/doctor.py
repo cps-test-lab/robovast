@@ -117,24 +117,24 @@ def check_tools(flavor: str = "") -> list[Check]:
 
 
 def cluster_installed() -> bool:
-    """Whether this install owns a cluster lane at all.
+    """Whether this install has ``robovast-cluster`` at all.
 
     A predicate rather than a string match on :func:`check_cluster`'s verdict, because two
     callers need the answer and must not disagree about it: that function, to *report* the
-    lane as missing, and :func:`run_checks`, to decide whether the operator half is worth
+    package as missing, and :func:`run_checks`, to decide whether the operator half is worth
     reporting in the first place.
 
     It asks by running the *same import* :func:`check_cluster` goes on to need, which is
     what makes agreement structural rather than a promise. ``from cluster_execution import
     kube_client`` would not do: once anything has imported that submodule, the parent
     package keeps it as an attribute, and the ``from`` succeeds off that attribute without
-    ever consulting the import machinery -- so a genuinely absent lane reads as present and
+    ever consulting the import machinery -- so a genuinely absent package reads as present and
     the real ImportError resurfaces below as a *kubeconfig* fault, which is a lie about
     which thing is missing.
 
     Deferred, like every other reach across the boundary here: ``robovast-client`` depends
-    on neither the core nor the lane, so on a client-only install this module is all there
-    is and a module-level import would break the install the distribution exists for.
+    on neither the core nor ``robovast-cluster``, so on a client-only install this module is
+    all there is and a module-level import would break the install the distribution exists for.
     """
     try:
         from robovast.execution.cluster_execution.kube_client import \
@@ -153,12 +153,10 @@ def check_cluster(context: str | None = None) -> list[Check]:
     failure it cannot have.
     """
     if not cluster_installed():
-        # Not "to deploy or drive a cluster" any more: driving one is `vast cluster
-        # run`, which this distribution ships. What needs the lane is OWNING a cluster --
-        # deploying the service into it and operating it. Saying otherwise sent exactly
-        # the audience this install is for after 290 MB they do not need.
+        # Driving a cluster needs only this distribution; what needs the cluster package
+        # is OWNING one -- deploying the service into it and operating it.
         return [Check("cluster support", False, "not installed",
-                      "This install has no cluster lane, and does not need one to run "
+                      "This install has no cluster package, and does not need one to run "
                       "campaigns ('vast workspace run' works). Install it to deploy "
                       "or operate a cluster of your own.", optional=True)]
 
@@ -281,12 +279,12 @@ def check_deployment(namespace: str = "default",
     green — "the route is broken" is noise when there is no registry to route to.
 
     **The cluster import is deferred, and its absence is not an error.** This module ships
-    in ``robovast-client``, which depends on neither the cluster lane nor the core, so on a
+    in ``robovast-client``, which depends on neither the cluster package nor the core, so on a
     client-only install ``robovast.execution`` does not exist in any form. A module-level
-    import here would pass every core-without-lane test and break the install the
+    import here would pass every core-only test and break the install the
     distribution exists for. ``[]`` on ImportError, exactly as :func:`check_cluster` does.
 
-    Silent when the lane is absent or the cluster unusable: :func:`check_cluster` has
+    Silent when the cluster package is absent or the cluster unusable: :func:`check_cluster` has
     already said so, and saying it twice makes a reader look for two problems.
 
     All Checks are optional. A deployment that cannot build is not a broken install, and
@@ -759,7 +757,7 @@ def run_checks(flavor: str = "", context: str | None = None,
     nothing left to do that four things were wrong, and exited non-zero saying so.
 
     When the client half is not working, they stay fatal: then deploying is the likely
-    intent, and a missing ``helm`` really does stop it -- *unless* there is no cluster lane
+    intent, and a missing ``helm`` really does stop it -- *unless* there is no cluster package
     installed, in which case deploying cannot be the intent at all. See below.
     """
     client = check_client()
@@ -770,18 +768,18 @@ def run_checks(flavor: str = "", context: str | None = None,
     # need -- the exact confusion the client/operator split exists to prevent.
     usable = all(c.ok for c in client if not c.optional)
     cluster = check_cluster(context)
-    lane = cluster_installed()
-    # With no lane, the binaries it shells out to are moot rather than merely advisory:
+    has_cluster = cluster_installed()
+    # Without the cluster package, the binaries it shells out to are moot, not merely advisory:
     # `kubectl` and `helm` are what `vast cluster setup` runs, and there is no `setup`
     # in this install to run them -- so "Install helm: setup uses it" answers
-    # a question this user cannot ask, one line under a check that just said the lane is
-    # missing. Fatal, it was worse: a client user whose only real problem was that they had
-    # not run `vast login` yet got told, in red, to install two cluster binaries.
+    # a question this user cannot ask, one line under a check that just said the package is
+    # missing. Fatal would be worse: a client user whose only real problem is that they have
+    # not run `vast login` yet would be told, in red, to install two cluster binaries.
     #
     # Dropped rather than demoted, for the reason `check_deployment` is silent here too:
     # `check_cluster` has already said it, and saying it twice makes a reader look for two
     # problems. Python stays either way -- needing 3.12 is not the cluster's business.
-    operator = [check_python(), *(check_tools(flavor) if lane else []), *cluster]
+    operator = [check_python(), *(check_tools(flavor) if has_cluster else []), *cluster]
     # Only when the cluster is actually usable. Asking a deployment about itself over an
     # unreachable API server produces a second way of saying "no cluster", and a reader
     # then has two problems to chase where there is one.

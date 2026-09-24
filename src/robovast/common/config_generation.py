@@ -636,10 +636,10 @@ _IMAGE_STEP = ("the simulator in {image} answered the query itself, so that imag
 
 #: What settles a world query that nothing ran. Kept apart from _IMAGE_STEP because the two
 #: send a caller to opposite places, and the reply is the only thing that can tell them
-#: apart -- a lane that cannot start a container says nothing about the .vast.
+#: apart -- a cluster that cannot start a container says nothing about the .vast.
 _CONTAINER_STEP = ("nothing ran the query, so this says nothing about the .vast: check that the "
-              "execution lane can start a container (get_resource_usage, or `vast service "
-              "resources`) and validate again.")
+                   "cluster can start a container (get_resource_usage, or `vast service "
+                   "resources`) and validate again.")
 
 
 class WorldQueryUnavailable(RuntimeError):
@@ -732,7 +732,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         # Passed through for the same reason, and for one more: this refusal already names
         # the single command that would move the caller forward -- an image that has to be
         # built before anything can run in it. Folded into the verdict below it loses that,
-        # and the lane advice that replaces it sends a caller to check a lane that works.
+        # and the cluster advice that replaces it sends a caller to check a cluster that works.
         raise
     except Exception as exc:  # noqa: BLE001 - a failed container is a reason, not a traceback
         # A non-zero exit that nonetheless PRINTED a payload is a partial answer, not a failure: a
@@ -949,7 +949,7 @@ def _resolve_config_sut_blocks(configs, parameters, vast_dir, output_dir):
 
     Each cell gets its own rewritten copy of every source it touched, staged through
     ``_config_files`` -- machinery that is already per configuration, which is why this
-    half needs nothing from either execution lane.
+    half needs nothing from the backend.
     """
     from robovast.common.sut_channel import (  # pylint: disable=import-outside-toplevel
         ENV_SOURCE, SutChannelError, check_destinations, declared_sources, materialize,
@@ -1006,7 +1006,7 @@ def _check_config_file_paths(configs, scenario_file):
     entrypoint, the parameter documents, the scripts every container sources. A deploy path
     equal to one of those would replace it.
 
-    Refused here because the lane discovers it late and unhelpfully: as a pod whose
+    Refused here because the cluster discovers it late and unhelpfully: as a pod whose
     entrypoint is a campaign's YAML file, after the image pull, at the cost of a cell.
     """
     from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
@@ -1056,7 +1056,7 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     the default, and a variation writing ``sim_values`` overlays it per cell.
 
     Two things come out of it. Each configuration carries its resolved block (recorded in
-    ``configurations.yaml``, written to ``sim.config``, and read by the lane at dispatch),
+    ``configurations.yaml``, written to ``sim.config``, and read by the backend at dispatch),
     and the **union** of the worlds those blocks name joins ``run_files``, once per distinct
     block, since a campaign varying its world has several and each has to be mounted for the
     simulator to open it.
@@ -1554,12 +1554,12 @@ def _collect_analysis_input_files(parameters, base_dir=None):
 
 
 #: Keys of ``execution:`` that composition consumes itself, and therefore does not hand to
-#: the lanes. Each re-surfaces under its own top-level key of the composed campaign data --
+#: the backend. Each re-surfaces under its own top-level key of the composed campaign data --
 #: ``scenario_file`` as ``scenario_file``, ``run_files`` as ``_run_files``, ``generate`` as
 #: ``_generated`` -- so passing them on as well would be a second, staler copy.
 #:
 #: This is the whole exception list. Anything else a campaign states under ``execution:``
-#: reaches the lane, including a field added after this comment was written.
+#: reaches the backend, including a field added after this comment was written.
 COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "generate"})
 
 
@@ -2302,7 +2302,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                                         project=image_project, tag=image_project_tag)
     execution_params = {
         # A COPY minus what composition consumes itself -- deliberately not a whitelist.
-        # The lane reads this dict and nothing else, so a key missing here is a key the
+        # The backend reads this dict and nothing else, so a key missing here is a key the
         # run behaves as if nobody had declared: silently, and indistinguishably from a
         # typo. Listing what to carry made that the default failure, and four fields lived
         # outside the list for their whole lives -- declared, documented, validated, and
@@ -2319,7 +2319,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # Defaulted here as well as on the model, because the two are reached by different
         # routes: `load_config` validates against the model and then hands composition the
         # RAW yaml, so a model default cannot arrive here on its own. Same constant, so the
-        # size a campaign is recorded with is the size its lane is given.
+        # size a campaign is recorded with is the size its pods are given.
         "shm_size": execution_section.get('shm_size') or DEFAULT_SHM_SIZE,
     }
 

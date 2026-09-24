@@ -64,11 +64,11 @@ def test_a_query_never_runs_in_the_callers_container():
     assert request.container == "simulation", "roqsim lives in the simulator's image"
 
 
-def test_the_project_is_addressed_where_this_lane_actually_mounts_it(tmp_path):
+def test_the_project_is_addressed_where_the_exec_container_mounts_it(tmp_path):
     """``expose`` of a directory is a path rewrite, not a mount.
 
     A backend writes its command against ``CONFIG_MOUNT`` because that is where a *campaign*
-    mounts the project. The exec lane already carries the same tree, at
+    mounts the project. The exec container carries the same tree, at
     ``/sources/<workspace_id>`` — so the file is there, spelled differently, and rewriting
     is what lets one command address it in both places.
     """
@@ -320,9 +320,8 @@ def test_a_world_that_could_not_be_asked_is_an_advisory_not_a_pass(tmp_path, mon
 
 def test_a_deployment_that_cannot_exec_is_not_reported_as_an_image_problem(
         tmp_path, monkeypatch):
-    """The other lane's advisories name the image or the lane as what would settle it, and
-    neither is what is wrong here: nothing on this deployment can run a command in a
-    container, so the world was not checked and the campaign is not the reason."""
+    """Nothing on this deployment can run a command in a container, so the world was not
+    checked, and neither the image nor the campaign is named as the reason."""
     from robovast.common import config_generation
     from robovast.common.errors import ExecPathUnavailable
     from robovast.service.world_query import world_problems
@@ -388,24 +387,22 @@ def test_the_reason_a_query_could_not_run_names_what_would_settle_it(tmp_path, m
 
     def _refuse(*a, **k):
         raise config_generation.WorldQueryUnavailable(
-            "roqsim could not describe this world", next_step="check the lane")
+            "roqsim could not describe this world", next_step="check the service")
 
     monkeypatch.setattr(config_generation, "describe_world_payload", _refuse)
     problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
-    assert "Next: check the lane" in problems[0]["message"]
+    assert "Next: check the service" in problems[0]["message"]
 
 
-def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_lane(tmp_path):
-    """The advisory a caller acts on. Nothing ran, but not because the lane cannot run
-    anything -- the image the query needs does not exist yet, and the refusal already knows
-    the call that creates it. Sending the caller to the lane instead costs them the check
-    and a detour through a lane that is working."""
+def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_service(tmp_path):
+    """An unbuilt image is reported with the call that builds it, not as a service that
+    cannot run anything."""
     from robovast.common.errors import ImageNotBuilt
     from robovast.service.world_query import world_problems
 
     # The exec refuses, and nothing between it and the reply is stubbed: what is under test
-    # is the chain that used to replace this refusal with one about the lane.
+    # is that the chain keeps this refusal as it is.
     def _refuse(_request):
         raise ImageNotBuilt("the image for container 'simulation' is not built.",
                             next_step="build_experiment_image(container='simulation')")
@@ -415,7 +412,7 @@ def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_lane(tmp_path):
     assert [p["severity"] for p in problems] == ["unchecked"]
     message = problems[0]["message"]
     assert "Next: build_experiment_image(container='simulation')" in message
-    assert "execution lane" not in message, "the lane is fine; the image is what is missing"
+    assert "can start a container" not in message, "the image is what is missing"
     assert ".." not in message, "the reason already ended in a full stop"
 
 
@@ -431,9 +428,9 @@ def _two_worlds(monkeypatch):
                                          ("other", {"config": "other-world.yaml"})])
 
 
-def test_one_lane_failure_is_reported_once_not_once_per_world(tmp_path, monkeypatch):
-    """A lane that cannot start a container fails every block for the same reason, and
-    saying so once per block is a reply that scales with the campaign, not the problem."""
+def test_one_exec_failure_is_reported_once_not_once_per_world(tmp_path, monkeypatch):
+    """A service that cannot start a container fails every block for the same reason, and
+    it is reported once, not once per block."""
     from robovast.common import config_generation
     from robovast.service.world_query import world_problems
 

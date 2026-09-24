@@ -77,7 +77,7 @@ execution:
       config: world/ur5e_pick_place.yaml
       # Measured over a full sweep, with headroom left above the measurement. An example's
       # reservations get copied, so they should be the ones a reader ought to copy: over-reserving
-      # costs nothing on an idle lane and a multiple of the throughput on a busy one, on every job
+      # costs nothing on an idle cluster and a multiple of the throughput on a busy one, on every job
       # of every sweep.
       resources:
         cpu: 1

@@ -79,7 +79,7 @@ class Notifier:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
         # A campaign announces its end once. More than one scope may legitimately try:
-        # the builders' finish tail ends the campaign on the lanes it is outermost for,
+        # the builders' finish tail ends the campaign when it is the outermost scope,
         # while the service worker ends it unconditionally because a campaign that failed
         # before the builder ran (an image build that could not resolve) would otherwise
         # never end at all. Both are correct; two "Campaign finished" pushes are not.

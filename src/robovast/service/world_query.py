@@ -14,13 +14,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Asking the simulator about a campaign's world, on the exec lane's query pool.
+"""Asking the simulator about a campaign's world, on the exec query pool.
 
-Why this exists at all: only the simulator can say whether a world loads and whether its
-model compiles, so the question needs a container. ``describe_world_payload`` already
-knows how to ask it and how to read a partial answer; what it needs is a *runner*, and
-outside a campaign's composition there was none on the cluster lane — which is why
-``describe_world`` was refused there outright.
+Only the simulator can say whether a world loads and whether its model compiles, so the
+question needs a container. ``describe_world_payload`` knows how to ask it and how to read
+a partial answer; what it needs is a *runner*, and outside a campaign's composition the
+cluster has none of its own.
 
 :class:`ExecSlotContainerRunner` is that runner, backed by the same held query container
 the read-only introspection tools use. It satisfies the existing ``ContainerRunner``
@@ -28,9 +27,10 @@ protocol, so nothing in ``describe_world_payload`` changes: the query constructi
 one-JSON-line reply, ``_command_failure`` and the partial-answer contract all keep
 working, and a second simulator backend is served by the same path.
 
-Two lane facts it reconciles, and both are the whole substance of the class:
+Two facts of the exec container it reconciles, and both are the whole substance of the
+class:
 
-* **The project is already in the container, at a different address.** The exec lane
+* **The project is already in the container, at a different address.** The exec container
   mounts the workspace read-only at ``/sources/<workspace_id>`` (``kube_exec_runner``
   mirrors it in via an init container), while a backend's
   command names the campaign directory at ``CONFIG_MOUNT``. ``expose`` of a *directory*
@@ -41,9 +41,8 @@ Two lane facts it reconciles, and both are the whole substance of the class:
   of a *file* — which in practice is the ``sim`` override document, the one thing argv
   cannot carry — is honoured by writing it in ahead of the command with a heredoc, into
   a writable directory rather than at the path the caller named. That path is an aux
-  Pod's declared ``emptyDir``, which this lane's container does not have and, running
-  unprivileged, cannot create: staging it verbatim failed on ``mkdir`` before the
-  simulator was ever asked, and reported it as a world that does not load.
+  Pod's declared ``emptyDir``, which the query container does not have and, running
+  unprivileged, cannot create.
 """
 
 import logging
@@ -82,7 +81,7 @@ class ExecSlotContainerRunner:
 
     *exec_call* is a one-argument callable taking an ``ExecRequest`` and returning an
     ``ExecResult`` — the transport's own ``exec_in_container``, passed in rather than
-    imported so this stays usable from any lane and testable without one.
+    imported so this stays testable without a service.
     """
 
     def __init__(self, exec_call, *, workspace_id: str, config_path: str,
@@ -115,7 +114,7 @@ class ExecSlotContainerRunner:
     def expose(self, host_path: str, container_path: str) -> None:
         """Make *host_path* reachable at *container_path*, without a mount.
 
-        A **directory** becomes a path rewrite: the exec lane already carries the whole
+        A **directory** becomes a path rewrite: the exec container already carries the whole
         project, so the tree the caller wants at ``container_path`` is present — under
         ``/sources/<workspace_id>`` instead. Rewriting is what makes a backend's
         ``/config/...`` command address the same file here as it does in a campaign, with
@@ -123,8 +122,8 @@ class ExecSlotContainerRunner:
 
         A **file** is written in with the command (see :meth:`run`), because a held
         container's mounts were fixed when it was created and this one is meant to outlive
-        the call. It lands in :data:`_STAGE_DIR` rather than at *container_path*, which on
-        this lane is an aux Pod's mount point that an unprivileged query container may
+        the call. It lands in :data:`_STAGE_DIR` rather than at *container_path*, which is
+        an aux Pod's mount point that an unprivileged query container may
         neither find nor create; argv is rewritten to the staged path, exactly as it is
         for a directory.
         """
@@ -199,14 +198,13 @@ class ExecSlotContainerRunner:
         return "\n".join(parts)
 
     def _rewrite_text(self, text: str) -> str:
-        """*text* with every exposed directory's container path swapped for this lane's.
+        """*text* with every exposed directory's container path swapped for the exec one.
 
         A staged document carries paths the same way argv does, and they need the same
         rewrite -- the override tree is exactly where a campaign names a file that argv
-        cannot carry, which is why the document exists at all. Without this the check
-        reported a mesh the campaign really does mount as missing, on every configuration
-        whose ``sim:`` block names one: the path was correct, and this lane simply spells
-        its directory differently.
+        cannot carry, which is why the document exists at all. Without this the check would
+        report a mesh the campaign really does mount as missing: the path is correct, and the
+        exec container simply spells its directory differently.
 
         Rewritten on a path boundary rather than as a bare substring, so ``/config`` does
         not match inside ``/configuration``.
@@ -216,7 +214,7 @@ class ExecSlotContainerRunner:
         return text
 
     def _rewrite(self, arg: str) -> str:
-        """*arg* with an exposed directory's container path swapped for this lane's."""
+        """*arg* with an exposed directory's container path swapped for the exec one."""
         for mount, actual in self._rewrites.items():
             if arg == mount:
                 return actual
@@ -241,8 +239,8 @@ def _problem(message: str, config=None, field: str = "",
 def _collapse_identical(problems: list, blocks: int) -> list:
     """One problem for a failure that was not about any one configuration.
 
-    A lane that cannot start a container fails every block for the same reason, and the
-    loop cannot know that while it runs. Left per block, one unreachable lane becomes as
+    A service that cannot start a container fails every block for the same reason, and the
+    loop cannot know that while it runs. Left per block, one unreachable cluster becomes as
     many copies of one message as the campaign has distinct worlds: a reply that grows
     with the sweep and says a single thing.
 
@@ -396,7 +394,7 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
             payload, image = describe_world_payload(
                 execution, block, vast_dir, entities=True)
         except ExecPathUnavailable as exc:
-            # Before the arms below, and its own answer: they name the image or the lane as
+            # Before the arms below, and its own answer: they name the image or the backend as
             # what would settle it, and neither is what is wrong. Unchecked rather than an
             # error, by the same rule -- a check that could not run is never a verdict about
             # the world.
@@ -420,10 +418,10 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
             # be built first. An advisory, naming what would settle it.
             #
             # One known over-refusal rides in here: describe_world_payload refuses a
-            # `build:` image outright, while this lane resolves and would happily run an
+            # `build:` image outright, while the service resolves and would happily run an
             # already-built one. It errs towards "not checked" rather than a wrong pass,
             # so it is left as it is -- lifting it means teaching that function which
-            # images this lane can reach.
+            # images the service can reach.
             problems.append(_problem(
                 _unchecked(exc, getattr(exc, "next_step", "")),
                 config=config_name, severity="unchecked"))
@@ -431,7 +429,7 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
         except ActionableError as exc:
             # Its own arm, and not folded into the one above: this is a refusal that knows
             # the command that settles it -- an image that is not built names the build --
-            # so the advisory carries that rather than the lane advice a wrapped one gets.
+            # so the advisory carries that rather than the generic advice a wrapped one gets.
             problems.append(_problem(
                 _unchecked(exc, exc.next_step),
                 config=config_name, severity="unchecked"))
@@ -451,7 +449,7 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
             payload or {}, image=image, exec_call=exec_call, resolve_call=resolve_call,
             request_kwargs={"workspace_id": workspace_id, "config_path": config_path},
             config=config_name)
-    # Advice is kept out of the collapse: that folds one lane failure repeated per world, and an
+    # Advice is kept out of the collapse: that folds one exec failure repeated per world, and an
     # advisory about a checked world is neither.
     return _collapse_identical(problems, len(blocks)) + _merge_repeated(advice)
 

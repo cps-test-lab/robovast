@@ -120,9 +120,8 @@ def _real_command_paths() -> set:
         if not isinstance(group, click.Group):
             return
         ctx = click.Context(group)
-        # `list_commands`/`get_command`, not `.commands`: the exec group registers its
-        # lane subgroups lazily, so the dict is empty until something asks. Reading it
-        # directly reported `vast exec cluster` as non-existent.
+        # `list_commands`/`get_command`, not `.commands`: a `LazyPluginGroup` registers
+        # its subcommands lazily, so the dict is empty until something asks.
         for name in group.list_commands(ctx):
             sub = group.get_command(ctx, name)
             if sub is not None:
@@ -711,8 +710,8 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #: round number above it.
 #:
 #: Raised 13_900 → 15_000 for the ``disk``/``store``/``disk_unavailable`` fields on
-#: ``get_resource_usage`` (~59 tokens: what the lane's runs write into, the results store, and
-#: why either is absent -- a null one means "the lane does not report it", and an agent told
+#: ``get_resource_usage`` (~59 tokens: what the runs write into, the results store, and
+#: why either is absent -- a null one means "the backend does not report it", and an agent told
 #: only the key names would read it as an empty disk).
 #:
 #: **Not paid for by compression, and not sized to that change either** -- both worth recording

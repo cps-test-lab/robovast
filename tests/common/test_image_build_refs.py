@@ -7,11 +7,8 @@ Dockerfile already pins everything a rebuild needs -- the base by digest, both a
 dated snapshot so a rebuild resolves the same versions rather than whatever is current -- but
 those are build ARGs, invisible from outside the build. The labels are what carry them out.
 
-This block was written by nobody and read by nobody on the cluster lane: it reads labels with
-`docker inspect`, and the controller pod that writes execution.yaml ships no docker CLI, so
-every lookup returned "". Its docstring said absent means "not knowable here", which was true
-and useless -- the answer was one registry read away, and the protocol check was already making
-that read.
+The controller pod that writes execution.yaml ships no docker CLI, so the labels are supplied
+from the registry read the protocol check already makes, rather than from `docker inspect`.
 """
 
 from robovast.common.execution import _BUILD_REF_LABELS, image_build_refs
@@ -32,7 +29,7 @@ def _labels(**over):
 
 
 def test_supplied_labels_are_used_where_no_docker_exists():
-    """The cluster lane's whole problem: the answer exists, the probe cannot reach it."""
+    """In the cluster the answer exists but `docker inspect` cannot reach it."""
     refs = image_build_refs({"sut": {"image": BASE}},
                             labels_by_role={"sut": _labels()})
     assert refs["sut"]["base_image"] == BASE

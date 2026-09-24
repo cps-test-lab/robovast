@@ -63,7 +63,7 @@ CONFIG_MOUNT = "/config"
 
 #: Where RoboVAST mounts the job's resolved simulator overrides, in every container of the
 #: job. A constant rather than a per-backend choice for the same reason ``/ipc`` is one: a
-#: backend building a command has to name it, and a lane writing the file has to agree.
+#: backend building a command has to name it, and the code writing the file has to agree.
 SIM_OVERRIDES_MOUNT = f"{CONFIG_MOUNT}/sim.overrides.yaml"
 
 #: Where a *query's* overrides document is mounted -- a describe question, not a run. Outside
@@ -532,8 +532,8 @@ def backend_name(execution: dict) -> Optional[str]:
 def apply_backend(execution: dict, base_dir: str = "") -> dict:
     """Return *execution* with its backend's contributions merged in.
 
-    Called once, where the raw ``execution`` mapping is turned into what the lanes read,
-    so every consumer downstream -- the container plan, the image builds, the env --
+    Called once, where the raw ``execution`` mapping is turned into what the execution
+    backend reads, so every consumer downstream -- the container plan, the image builds, the env --
     sees one already-complete picture rather than each re-asking the backend.
 
     The campaign always wins: a backend supplies defaults for keys the author left out,
@@ -906,7 +906,7 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     :meth:`~SimulatorBackend.env` invoked with this job's block, so a backend cannot answer
     one thing at composition and another at dispatch.
 
-    ``document`` is what the lane writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
+    ``document`` is what the execution backend writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
     """
     empty = {"command": None, "env": {}, "document": None}
     name = backend_name(execution or {})

@@ -231,10 +231,10 @@ def test_sweep_survives_an_unreachable_cluster(cs, monkeypatch):
 def _submit_stubs(cs, monkeypatch):
     """Stub a submit down to its context handling (no registry, no kube, no docker)."""
     from robovast.execution.cluster_execution import cluster_image_build
-    # The ref comes from the lane's image store -- one resolution shared by the submit
+    # The ref comes from the service's image store -- one resolution shared by the submit
     # and by every later "is it there?", so the two cannot disagree about this image's name.
     from robovast.service.image_store import ImageRef
-    # Installing a store is how a lane supplies one, so a test supplies one the same way.
+    # Installing a store is how the service supplies one, so a test supplies one the same way.
     monkeypatch.setattr(
         cs, "_image_store",
         types.SimpleNamespace(
@@ -392,7 +392,7 @@ def test_a_registry_that_did_not_answer_does_not_stop_a_submit(cs, monkeypatch):
     """The asymmetry. Only a registry that answered *and* refused blocks a build.
 
     Turning "could not ask" into a refusal would trade a late failure for an early one
-    that is sometimes wrong, and the lane already survives an unreachable registry.
+    that is sometimes wrong, and the service already survives an unreachable registry.
     """
     from robovast.execution.cluster_execution import cluster_image_build
 

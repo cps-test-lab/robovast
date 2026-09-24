@@ -67,8 +67,8 @@ def test_complete_artifacts_without_outcome_are_finished(tmp_path):
 
 
 def test_a_non_terminal_record_is_crashed(tmp_path):
-    """The finish tail journals a record *before* the campaign ends on the lane whose
-    worker owns the ending. Reconstruction only runs when nothing is driving the
+    """The finish tail journals a record *before* the worker that owns the ending ends
+    the campaign. Reconstruction only runs when nothing is driving the
     campaign, so such a record means the driver died mid-flight — reporting its phase
     verbatim would block every waiter on a campaign nobody will advance."""
     campaign = tmp_path / "camp-2026-01-01-000006"
@@ -232,7 +232,7 @@ def test_a_failure_after_an_earlier_success_keeps_the_data_it_has(tmp_path):
 def test_an_unestablished_outcome_leaves_the_record_alone(tmp_path):
     """``ok is None`` is an unanswered question, and a record answers only what it knows.
 
-    The cluster lane returns it when the driver can no longer read the Job that is doing
+    The backend returns it when the driver can no longer read the Job that is doing
     the work -- so the conversion may well be finishing. Writing the reason onto
     ``postprocessing_error`` would turn "I stopped looking" into "it failed", and mark a
     campaign whose derived data is complete as carrying none.
@@ -275,8 +275,8 @@ def test_a_re_trigger_does_not_rewrite_how_the_campaign_ended(tmp_path):
     ``record_step_outcome`` reconstructs, edits one step's field and writes back, so it
     passes over ``phase`` on the way. Normalising that to ``finished`` unconditionally
     falsifies the only record that the campaign did not run to completion -- durably, and
-    on the cluster lane published back to the object store with the rest of
-    ``_execution``. Stopping a sweep and then uploading what it produced is ordinary.
+    published back to the object store with the rest of ``_execution``. Stopping a sweep and
+    then uploading what it produced is ordinary.
     """
     from robovast.execution.status_recovery import record_step_outcome
 

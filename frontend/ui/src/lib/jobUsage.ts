@@ -77,7 +77,7 @@ function meter(
 }
 
 /** The two meters for a job row. Both `null` on anything the service did not measure — which is
- * every job that is not running, and every lane that measures nothing. */
+ * every job that is not running, and every backend that measures nothing. */
 export function jobMeters(job: JobSummary): JobMeters {
   const u = job.usage
   if (!u) return { cpu: null, memory: null }

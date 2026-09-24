@@ -2,12 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The controller image must install every distribution the in-pod service needs.
 
-This is the one packaging mistake that cannot fail in CI. The lanes are separate
-distributions that *depend on* robovast rather than being extras of it, so they cannot
-ride the ``--extras`` string and are easy to leave out of a Dockerfile that looks
-complete. A pod built that way starts, serves the API and the UI, answers ``/healthz`` --
-and then fails every ``create_campaign`` for want of an execution lane. Healthy-looking
-and able to run nothing.
+``robovast_cluster`` is a separate distribution that *depends on* robovast rather than
+being an extra of it, so it cannot ride the ``--extras`` string. A pod built without it
+starts, serves the API and the UI, answers ``/healthz`` -- and fails every
+``create_campaign``, because ``ClusterService`` is not installed.
 
 The check is deliberately textual. Building the image needs Docker, a registry and
 minutes; reading its install steps needs neither and catches the same omission at the
@@ -42,19 +40,17 @@ def test_the_image_installs_the_package(dockerfile, package):
         rf"(pip|poetry) install[^\n]*\b{re.escape(package)}\b", dockerfile)
     assert installed, (
         f"{package} is never installed in the controller image. The pod would come up "
-        f"with no execution lane and fail every create_campaign.")
+        f"without ClusterService and fail every create_campaign.")
 
 
-def test_the_lane_is_not_smuggled_in_as_an_extra(dockerfile):
-    """`--extras "... cluster"` would silently do nothing: extras name optional
-    dependencies of robovast, and the lane is not one of them. It would read as
-    installed while the pod had no lane at all -- worse than omitting it, because the
-    Dockerfile would look correct."""
+def test_the_cluster_package_is_not_named_as_an_extra(dockerfile):
+    """`--extras "... cluster"` installs nothing: extras name optional dependencies of
+    robovast, and ``robovast_cluster`` is not one of them."""
     for line in dockerfile.splitlines():
         match = re.search(r'--extras\s+"([^"]*)"', line)
         if match:
             assert "cluster" not in match.group(1).split(), (
-                "the cluster lane is a distribution, not an extra of robovast; "
+                "robovast_cluster is a distribution, not an extra of robovast; "
                 "--extras cannot install it")
 
 

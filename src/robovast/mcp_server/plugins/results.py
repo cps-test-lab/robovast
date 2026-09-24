@@ -126,7 +126,7 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     Args:
         limit: Maximum campaigns to return.
         offset: Campaigns to skip (campaign index).
-        running_only: Only live campaigns, on all lanes and however old; ``total`` counts
+        running_only: Only live campaigns, however old; ``total`` counts
             them.
         sort: ``size`` orders by ``results_bytes``, unknown last; live ones lead.
 
@@ -190,7 +190,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, num_configs, num_runs, num_success, num_failed, num_unknown,
         num_killed, worst_configs, advice}`` plus the execution provenance (which
-        robovast, image, lane) once the campaign has produced it; or ``{error}``.
+        robovast, image, backend) once the campaign has produced it; or ``{error}``.
 
         ``retrigger`` says whether this campaign can be re-run, per axis (config version,
         container protocol, images, plugins, providers). Read it before
@@ -363,7 +363,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
     # ignores the key loses nothing, and one that reads it can decide whether to call
     # start_campaign(from_campaign=...) instead of burning a launch to find out. Extended
     # here rather than added as a tool because this is already the campaign-provenance
-    # surface -- it answers "which robovast, which image, which lane" three lines up.
+    # surface -- it answers "which robovast, which image, which backend" three lines up.
     result.update(_retrigger_view(campaign_id))
     return result
 
@@ -652,7 +652,7 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
     Returns:
         ``{cached, in_progress, stage, stage_detail, error, note, world, overrides_known,
         bytes}``, or ``{error}``. ``error`` carries the build's own reason. ``stage`` says which
-        step a build in flight is on and ``stage_detail`` the lane's own words for it — a pod's
+        step a build in flight is on and ``stage_detail`` the cluster's own words for it — a pod's
         ``ImagePullBackOff``, which is how a build waiting on an image this host cannot pull is
         told apart from an ordinary cold start before it times out. ``overrides_known: false``
         means the capture predates override recording, so geometry may miss per-config overrides.
@@ -834,8 +834,8 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     try:
         return Image(data=path.read_bytes(), format="png")
     finally:
-        # Ours to remove whichever lane produced it: the local service rendered into a temp
-        # dir and the HTTP client wrote the bytes into the same shape for exactly this.
+        # Ours to remove whichever client produced it: an in-process service renders into a
+        # temp dir and the HTTP client writes the bytes into the same shape for exactly this.
         screenshot.discard(path)
 
 

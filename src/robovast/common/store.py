@@ -1292,7 +1292,7 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     against a store the controller is writing right now — which is the point. A batch's
     objectives are committed per unit as the batch is evaluated, so this is readable the
     instant a round finishes rather than after postprocessing, and it is the only path to
-    that data on the cluster lane (a SQL query there reads a snapshot from the object
+    that data on the cluster (a SQL query there reads a snapshot from the object
     store, which the campaign publishes only once, at the end).
 
     ``status = 'evaluated'`` is required, not tidiness: a ``no_sample`` unit ran but

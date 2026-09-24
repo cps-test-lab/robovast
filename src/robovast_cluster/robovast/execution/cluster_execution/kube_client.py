@@ -28,10 +28,9 @@ host instead of a urllib3 retry traceback.
 
 Finally it holds the **kept-alive pod** primitives — :func:`wait_pod_ready`,
 :func:`wait_pod_gone` and :func:`exec_stream`. Two subsystems run a pod and exec into it
-(the per-campaign aux pod for variation plugins, and the diagnostic container-exec lane),
-they had a copy each, and the copies were not equally correct: only one reported *why* a
-pod was not starting, only one waited for a delete to finish, and only one bounded an
-exec. Sharing them is what makes those three properties true in both places at once.
+(the per-campaign aux pod for variation plugins, and the diagnostic container-exec runner),
+and sharing these is what makes both report *why* a pod is not starting, wait for a
+delete to finish, and bound an exec.
 They live here rather than beside either caller because
 ``tests/execution/test_layering.py`` forbids the execution engine from importing
 ``robovast.service``, and ``common`` is the only place both sides may depend on.

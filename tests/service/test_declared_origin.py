@@ -64,13 +64,9 @@ def test_a_baked_origin_is_not_overwritten_by_the_bound_one(tmp_path, monkeypatc
     assert _impl(tmp_path).version().web_base == "https://robovast.example.org"
 
 
-def test_the_cluster_lane_needs_no_override_of_its_own():
-    """Resolved once in the base class, on purpose.
-
-    The cluster lane runs both in-pod (env) and off-cluster through a port-forward (bound
-    address). A lane-local assignment would have had to remember not to blank the second
-    case, which is exactly the bug that shape invites -- so it inherits instead.
-    """
+def test_the_cluster_service_needs_no_override_of_its_own():
+    """The web base is resolved once, in the base class: ClusterService inherits it, and so
+    covers both in-pod (env) and off-cluster through a port-forward (bound address)."""
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     assert ClusterService._declared_web_base is NullService._declared_web_base
 

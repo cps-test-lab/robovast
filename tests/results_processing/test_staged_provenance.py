@@ -2,17 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Provenance survives postprocessing that ran somewhere else.
 
-On the cluster lane a campaign's postprocessing happens in two stages: the rosbag
-conversions run in a Kubernetes Job, and everything after them runs as a normal host
-pass **with the rosbag steps skipped**. Neither half recorded the conversions -- the Job
-was never given a ``--provenance-file``, and the host pass had skipped the steps -- so a
-cluster campaign's ``postprocessing_steps`` table held exactly one row while four steps
-had demonstrably run and populated their tables.
-
-Observed on campaign basic-nav-gazebo-2026-08-16-20153470: ``_transient/postprocessing.yaml``
-listed only ``resource_usage``. The local lane, which passes a provenance file for every
-step, was unaffected -- so what a campaign could tell you about its own derivation
-depended on which lane it ran on, which is exactly what provenance must not do.
+A campaign's postprocessing happens in two stages: the rosbag conversions run in a
+Kubernetes Job, and everything after them runs as a host pass **with the rosbag steps
+skipped**. The Job stages the provenance of the conversions it ran, and the host pass reads
+it back, so ``postprocessing_steps`` lists every step that populated a table.
 """
 
 # pylint: disable=redefined-outer-name  # the pytest fixture idiom
@@ -50,7 +43,7 @@ def test_entries_written_by_another_stage_are_read(campaign):
 
 
 def test_no_staged_file_is_the_normal_case(campaign):
-    """The local lane records everything inline, so absence is not a problem."""
+    """A pass that ran every step itself stages nothing, so absence is not a problem."""
     assert _staged_provenance_entries(str(campaign)) == []
 
 

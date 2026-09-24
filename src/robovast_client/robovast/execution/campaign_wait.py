@@ -16,13 +16,10 @@
 
 """The one way to block until a campaign is over.
 
-Polling the service's ``get_status`` until :func:`~robovast.client.status.is_terminal`
-is not lane-specific: the service drives every campaign, so its phase *is* the
-campaign's, wherever the runs execute. Under a
-cluster-flavoured name it is not found, and every other surface grows its own hand-rolled
-poll loop beside it. :data:`~robovast.client.status.TERMINAL_PHASES` records what that
-costs: a re-inlined terminal test, with divergent membership, across the CLI, the service
-and the MCP plugins.
+The service drives every campaign, so its phase *is* the campaign's: polling its
+``get_status`` until :func:`~robovast.client.status.is_terminal` is the whole wait, and
+the CLI, the service and the MCP plugins all use this one rather than a poll loop of
+their own.
 
 Two properties every caller depends on and none should re-implement:
 
@@ -94,9 +91,9 @@ def wait_for_campaign_status(campaign_id: str, *, client=None, service_url: str 
         try:
             status = client.get_status(campaign_id)
         except Exception as e:  # noqa: BLE001 - transient service/network hiccup
-            # Deliberately not fatal: a service restart mid-wait is an expected event
-            # on the attach lane, and treating it as the end of the wait would report a
-            # live campaign as unreachable for the price of one dropped read.
+            # Deliberately not fatal: a service restart mid-wait is an expected event,
+            # and treating it as the end of the wait would report a live campaign
+            # as unreachable for the price of one dropped read.
             logger.debug("status poll for %s failed: %s", campaign_id, e)
             polls.failed(e)
         else:
@@ -128,11 +125,6 @@ def wait_for_campaign_outcome(campaign_id: str, *, client=None, service_url: str
     rather than inspect -- ``vast workspace run --wait-and-download`` is the one that
     exists. It also echoes the failure reason, which is on the Status and would otherwise
     be dropped by the reduction.
-
-    This was ``execution_utils.cluster_run.wait_for_cluster_campaign``, in the core, under
-    a cluster-flavoured name its own docstring called a mistake: nothing about waiting on
-    the service's status contract is lane-specific, and leaving it there made the launch
-    verb -- otherwise pure client code -- unable to move out of ``robovast-cluster``.
     """
     from robovast.client.status import Phase
     say = feedback or (lambda _msg: None)

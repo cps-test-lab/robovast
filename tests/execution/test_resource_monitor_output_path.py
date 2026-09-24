@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Where the resource monitor writes, on both lanes, is a contract.
+"""Where the resource monitor writes is a contract.
 
 ``ResourceUsage`` reads ``_jobs/[<batch>/]job-N/resource_usage_<container>.csv`` and maps
 each filename back to a container name. Nothing in the running system checks that the
@@ -8,9 +8,9 @@ monitor still writes there under that name: the postprocessing step just finds n
 reports a campaign that recorded nothing, which is indistinguishable from a fleet of
 sidecars without psutil.
 
-So this reads the shipped scripts and the two lane builders and pins the three facts the
+So this reads the shipped scripts and the Kubernetes backend and pins the three facts the
 plugin depends on: the filename pattern, that it is written under ``$OUTPUT_DIR``, and that
-both lanes point ``OUTPUT_DIR`` at the job's artifact directory.
+the backend points ``OUTPUT_DIR`` at the job's artifact directory.
 """
 
 from importlib.resources import files
@@ -55,14 +55,14 @@ def test_every_name_the_scripts_can_produce_maps_back_to_a_container(name, conta
     assert run_slices.container_of(name) == container
 
 
-def test_the_lane_points_output_dir_at_the_job_artifact_path():
+def test_the_backend_points_output_dir_at_the_job_artifact_path():
     """``job_artifact_rel`` is the one definition of the ``_jobs/`` layout, and the plugin
-    resolves through it. A lane that computed its own path would put a whole campaign's
+    resolves through it. A backend that computed its own path would put a whole campaign's
     samples somewhere the manifest does not point."""
     from robovast.execution.cluster_execution import kubernetes_backend
 
     source = _source(kubernetes_backend)
-    assert "job_artifact_rel(" in source, "the lane derives its own _jobs path"
+    assert "job_artifact_rel(" in source, "the backend derives its own _jobs path"
     assert "OUTPUT_DIR" in source
 
     # And that definition is what the reader inverts.

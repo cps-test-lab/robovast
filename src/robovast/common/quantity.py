@@ -20,7 +20,7 @@ A run's recorded ``available_mem`` does not arrive in one unit. Three producers 
 
 * a run with no configured limit — ``MemTotal * 1024`` from ``/proc/meminfo``, a plain
   integer of bytes;
-* an archived run whose lane passed ``execution.resources.memory`` through — whatever the
+* an archived run whose runtime passed ``execution.resources.memory`` through — whatever the
   ``.vast`` author wrote, in Kubernetes quantity syntax (``16Gi``, ``2048Mi``, ``512M``);
 * the cluster — the downward API's ``limits.memory``, again a plain integer of bytes.
 

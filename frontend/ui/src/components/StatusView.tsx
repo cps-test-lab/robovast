@@ -54,7 +54,7 @@ import { MeterBar } from './MeterBar'
 // text, which is also why the two numbers disagree — that difference is the compression
 // ratio, not an error.
 //
-// With no total (a provider or lane that cannot say), the bar goes indeterminate rather
+// With no total (a provider that cannot say), the bar goes indeterminate rather
 // than showing a made-up 0%: a bar pinned at zero through a multi-hour upload is the
 // exact failure this replaced.
 function UploadSection({ upload }: { upload: UploadProgress }) {
@@ -521,7 +521,7 @@ export function StatusView({
   // The top card in Monitor's newest-first campaign list — see FailureBox. Defaults to
   // true so the Launcher and other single-campaign callers keep the box open.
   newest?: boolean
-  // Lane CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
+  // Cluster CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
   quotaCpu?: number | null
   // Whether the metric tables exist yet -- the Details panel re-queries when this flips, since a
   // campaign is postprocessed a few minutes after it finishes.
@@ -949,8 +949,7 @@ function JobsSection({
   // doing. There is at most one probe per node and one conversion, so the runs lose nothing.
   const shown = nonRunsFirst(jobs).slice(0, JOBS_RENDER_CAP)
   // The empty state is the reason this renders at all now. As a foldable section it simply
-  // vanished when the live set emptied -- which happens between every pair of runs on the local
-  // lane, where runs are sequential. A TAB that vanished would take the tab bar's shape with it,
+  // vanished when the live set emptied -- which happens whenever no job is running. A TAB that vanished would take the tab bar's shape with it,
   // and the selected tab out from under the reader, so the tab stays and says why it is empty.
   if (!shown.length) {
     return (

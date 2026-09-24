@@ -124,13 +124,8 @@ def test_a_kill_with_no_reason_still_names_the_surface(campaign):
     assert outcome["failure_message"] == "manually stopped via cli"
 
 
-def test_the_local_lanes_run_hint_resolves_without_a_manifest(campaign):
-    """The local lane records the run key itself, so resolution survives a missing manifest.
-
-    The manifest is written before the first job starts, but a kill in that startup window
-    would otherwise have nothing to resolve through — and the local lane's ``job_name``
-    already *is* the run key, so it passes it as a hint.
-    """
+def test_a_run_key_hint_resolves_without_a_manifest(campaign):
+    """Run keys passed as ``runs`` resolve the intervention even with no job-link manifest."""
     (campaign / "cfgA" / "0").mkdir(parents=True)
     record_intervention(campaign, kind=KIND_KILLED, job_dir="", job_name="cfgA/0", source="webui",
                       detail="never started properly", runs=("cfgA/0",))

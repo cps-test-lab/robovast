@@ -90,7 +90,7 @@ def campaign_start_key(campaign_id: str) -> float:
     """A sortable campaign start time, read out of the campaign id.
 
     The id carries it already (``<name>-YYYY-MM-DD-HHMMSScc``), which is why nothing has to
-    be looked up: a batch runner deep in the cluster lane can order itself against campaigns
+    be looked up: a batch runner deep in the controller can order itself against campaigns
     it has never heard of.
 
     Parsed **naively**, never through an epoch conversion: this only has to be monotone in

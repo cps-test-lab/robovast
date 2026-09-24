@@ -600,7 +600,7 @@ def postprocess_campaign(cluster_config, campaign_id: str, campaign_root: str,  
     ``None`` means the active kubeconfig context, which is only correct when the caller
     has none of its own.
 
-    *state* is accepted for the caller's call shape and stays empty on this lane: every
+    *state* is accepted for the caller's call shape and stays empty: every
     step runs in a pod, so a step's line reaches this process through the pod's log
     (:func:`publish_live_log`) rather than a live ``stage`` marker fed from here.
 
@@ -2195,8 +2195,8 @@ def run_conversion_job(cluster_config, campaign_id: str, campaign_root: str,
 
     *admission* is the deployment's queue. Given, this pod waits for room like every other
     pod on the cluster rather than being created against a cluster that has none -- see
-    :func:`await_admission`. ``None`` creates it directly, which is what a lane with no queue
-    (a local service, an off-cluster driver) must do.
+    :func:`await_admission`. ``None`` creates it directly, which is what a caller with no
+    queue (an off-cluster driver) must do.
 
     *should_stop* ends the wait early for a campaign that was stopped, deleting the Job --
     see :func:`await_job`, which polls it.

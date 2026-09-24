@@ -53,7 +53,7 @@ that matters — can decline what it does not.
        controller
      - no Kubernetes client
    * - ``robovast-cluster``
-     - the Kubernetes execution lane, its cluster-config plugins, the deploy and operator
+     - the service implementation (Kubernetes), its cluster-config plugins, the deploy and operator
        commands
      - ``kubernetes``, ``boto3``, ``google-cloud-storage``
    * - ``robovast-nav`` / ``robovast-sim-roqsim``
@@ -61,15 +61,16 @@ that matters — can decline what it does not.
      - per package
 
 **The dependency direction is the design.** ``robovast-client`` depends on nothing of
-ours, ``robovast`` depends on it, and the lanes depend on ``robovast``. ``robovast`` must
-never depend on a lane — that edge back is what would make the graph cyclic, and it is why
-a lane cannot be offered as an extra. Anywhere that installs one needs its own step.
+ours, ``robovast`` depends on it, and ``robovast-cluster`` depends on ``robovast``.
+``robovast`` must never depend on ``robovast-cluster`` — that edge back is what would make
+the graph cyclic, and it is why it cannot be offered as an extra. Anywhere that installs it
+needs its own step.
 
 They share **one import namespace**: ``robovast/``, ``robovast/service/`` and
 ``robovast/execution/`` carry no ``__init__.py`` in any distribution, so they are PEP 420
 namespace packages and the trees merge at import time. No import path depends on which
 distribution a module ships in. In a deployed pod the core is installed editable from
-``/opt/robovast/src`` while the cluster lane's files land in ``site-packages`` — one
+``/opt/robovast/src`` while ``robovast-cluster``'s files land in ``site-packages`` — one
 namespace, two origins, no shadowing.
 
 The practical consequence, and the reason it is worth the packaging: ``pip install
@@ -147,7 +148,7 @@ Which work a stop lands on, and what it leaves:
        therefore shared, so a sibling campaign may be waiting on it
    * - ``running``
      - runs
-     - the lane's teardown (this campaign's Jobs), which the batch loop then sees
+     - the service's teardown (this campaign's Jobs), which the batch loop then sees
      - ``stopped``, plus the analysis the batches that finished are owed — none when no
        run existed yet
    * - ``finishing``, ``importing``, ``postprocessing``
@@ -164,8 +165,8 @@ Which work a stop lands on, and what it leaves:
      - the stop is refused rather than answered with a flag nothing will read
 
 **Service shutdown** is deliberately *not* the same thing. What exiting does to a
-running campaign is a property of the lane, answered in its own
-``_shutdown_running_campaigns``: the cluster lane leaves its Jobs running, because they
+running campaign is a property of the implementation, answered in its own
+``_shutdown_running_campaigns``: ``ClusterService`` leaves its Jobs running, because they
 outlive any one service process and the next one adopts them
 (:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
 is not, and it never was a good way to say it — the cooperative stop persists a
@@ -183,7 +184,7 @@ the phase survives a service restart instead of reconstructing as an ambiguous
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
 
 A stop that arrives once the runs are **over** — during postprocessing — ends differently,
-and both halves of the difference matter. It is not reached by the lane's teardown (which
+and both halves of the difference matter. It is not reached by the service's teardown (which
 is label-scoped to ``jobgroup=scenario-runs`` so that it cannot cancel a shared image
 build, and the postprocessing Job is ``jobgroup=postprocessing``), so the wait polls the
 flag itself: ``await_job`` deletes the Job — which makes a Job this process only
@@ -233,7 +234,7 @@ application" traceback with the server already gone.
                                           results volume)
 
 The service core is **backend-agnostic**: it dispatches execution to an
-``ExecutionBackend``, which the cluster lane answers with ``KubernetesBackend``. See
+``ExecutionBackend``, which ``ClusterService`` answers with ``KubernetesBackend``. See
 :ref:`deployment` for how a client reaches the service.
 
 One container plan, built once
@@ -241,7 +242,7 @@ One container plan, built once
 
 A campaign declares its containers by name (:ref:`execution.containers <config-containers>`)
 and :func:`robovast.common.containers.plan_containers` turns that into the containers a run
-actually starts. **The lane, the image builds, ``exec_in_container`` and the docs read that
+actually starts. **The backend, the image builds, ``exec_in_container`` and the docs read that
 one map.** A second lookup anywhere would be free to disagree with what the pod started, and
 the disagreement would be silent -- a diagnostic entering one container while the campaign
 ran another.
@@ -268,7 +269,7 @@ a configuration, so each one resolves its own ``sim`` block over the campaign's 
 images, resources and package lists stay campaign-level, and every consumer of
 ``plan_containers`` is untouched. What varies is the simulator's *command* (one argv token:
 the world) and the overrides document mounted beside the scenario channel's parameter file.
-Both are produced where each lane already renders a per-job manifest, by the same backend
+Both are produced where the backend already renders a per-job manifest, by the same backend
 hooks ``apply_backend`` calls -- so a backend cannot answer one thing at composition and
 another at dispatch.
 
@@ -305,10 +306,9 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
-* **The lane is not implied.** The query runs a container, so a service offering several
-  lanes routes it like ``exec_in_container`` does. In-cluster a container runner exists only *inside*
-  a composition, which creates the aux pod it asks for, so the cluster lane refuses this query with
-  that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
+* **A container runner is not implied.** The query runs a container, and in-cluster a container
+  runner exists only *inside* a composition, which creates the aux pod it asks for, so outside one
+  the query is refused with that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
   one-shot queries is the follow-up that would lift it.
 
 ``validate_project``'s world check reads one more thing off the same answer: whether the image's
@@ -396,97 +396,94 @@ workspace init``, and edits need a re-push. The option exists for a ``vast serve
 hand on the host that holds the directory (``mirrord exec``, :doc:`deployment`), and is
 refused in a pod.
 
-Execution lanes are resolved, not imported
-------------------------------------------
+The service implementation is resolved, not imported
+----------------------------------------------------
 
-``vast serve`` runs one lane, fixed when it starts, and finds it through the
+``vast serve`` runs the one service implementation installed, and finds it through the
 ``robovast.execution_backends`` entry-point group — the same mechanism as simulators,
 variation types and panel types, through the same resolver
 (``robovast.common.plugin_ref.load_ref``). The core registers none; ``robovast-cluster``
 registers ``cluster``, a class with a ``build()``, and the core never names
-``ClusterService``. With exactly one lane installed the service runs it; with none it
-refuses to start, naming the distribution that ships one.
+``ClusterService``. With none installed the service refuses to start, naming the
+distribution that ships one.
 
-Listing the lanes must not import them, so that refusal can be a sentence rather than a
-``ModuleNotFoundError`` from a module nobody asked for; and importing the base loads no
-lane. Both are pinned by ``tests/service/test_serve_backends.py``.
+Listing the entry points must not import them, so that refusal can be a sentence rather
+than a ``ModuleNotFoundError`` from a module nobody asked for; and importing the base loads
+no implementation. Both are pinned by ``tests/service/test_serve_backends.py``.
 
-As with simulators, **a lane must import without the thing it drives** — it is imported
-in a process that may have no kubeconfig. Reaching for one belongs inside ``build()``.
+As with simulators, **an implementation must import without the thing it drives** — it is
+imported in a process that may have no kubeconfig. Reaching for one belongs inside
+``build()``.
 
-That indirection is what lets the Kubernetes lane ship as its own distribution,
+That indirection is what lets the cluster implementation ship as its own distribution,
 ``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
 install without it carries no ``kubernetes``, ``boto3`` or ``google-cloud-storage`` at
 all, and still validates, composes, stores workspaces and processes results. Declining
-the lane is a supported configuration for everything but running a service — and where
-an agent is involved, it is the strongest available guard: a lane that is not installed
-cannot be silently substituted for a service you asked for.
+it is a supported configuration for everything but running a service.
 
-.. _lanes-refuse-by-name:
+.. _refuse-by-name:
 
-A lane refuses by name
-----------------------
+An implementation refuses by name
+---------------------------------
 
-A lane is allowed to offer less than the interface describes: the interface carries every
-operation any lane answers, and a lane with no queue has no rank or hold to act on. What
-a lane may not do is answer such a request with anything but a refusal that says so: an
-operation a lane accepts and quietly does nothing with looks, to every client, exactly
-like one that worked.
+An implementation is allowed to offer less than the interface describes. What it may not
+do is answer such a request with anything but a refusal that says so: an operation it
+accepts and quietly does nothing with looks, to every client, exactly like one that worked.
 
 So there is one exception for it, ``UnsupportedOperation``, and one sentence:
-``<operation> is not supported on the <lane> lane``, with a hint where there is somewhere
-else to go. Every ``RobovastInterface`` implementation declares its ``LANE``
-(``cluster``, ``http``, and the test suite's ``null``), and a lane raises the refusal **in
-its own class**, never as a default on the base. The exception is a ``ServiceError``: the
-app maps it to ``501`` with the sentence as ``detail`` and ``unsupported_operation`` in the
-error header, the HTTP transport hands the caller the same status, code and sentence, and
-in process it is the very same object, so the CLI, the MCP tools, the web UI and a raw
-HTTP client all show one line (:doc:`http_api`, "Status codes";
-``tests/service/test_unsupported_on_lane.py``).
+``<operation> is not supported by the <implementation> implementation``, with a hint where
+there is somewhere else to go. Every ``RobovastInterface`` implementation declares its
+``IMPLEMENTATION`` (``cluster``, ``http``, and the test suite's ``null``), and raises the
+refusal **in its own class**, never as a default on the base. The exception is a
+``ServiceError``: the app maps it to ``501`` with the sentence as ``detail`` and
+``unsupported_operation`` in the error header, the HTTP transport hands the caller the same
+status, code and sentence, and in process it is the very same object, so the CLI, the MCP
+tools, the web UI and a raw HTTP client all show one line (:doc:`http_api`, "Status codes";
+``tests/service/test_unsupported_operation.py``).
 
 That is also the line between "not supported" and the refusals that keep their own status:
 a launch refused for *now* is a ``409``, and a request the environment cannot honour is a
 ``400``. A bare ``NotImplementedError`` reaching a route is still a ``500``, because it
 still means a bug.
 
-.. _two-lanes-one-base:
+.. _one-base-hooks:
 
-One base, the lane's hooks
---------------------------
+One base, the implementation's hooks
+------------------------------------
 
-``ClusterService`` (``robovast-cluster``) subclasses ``ServiceBase``
-(``robovast.service.service_base``). The base is the in-process half of the interface
-that is correct for any lane: hosting a campaign's driver on a worker thread, the registry
-of what is being driven, the workspace store, the caches and the event log, every reader
-that resolves a campaign under the results root, and every operation whose body reaches
-the lane only through a hook. What depends on where the runs happen is an
-``@abstractmethod`` on the base — which backend runs a job, which exec lane a diagnostic
-runs on, what a job's log and state are read from, what exiting does to a running
-campaign — and a body in the lane's own class. A lane missing one cannot be constructed,
-and the error names it.
+``ServiceBase`` (``robovast.service.service_base``) is the abstract, in-process half of the
+interface; ``ClusterService`` (``robovast-cluster``) is its one production implementation.
+The base holds what is correct wherever the runs happen: hosting a campaign's driver on a
+worker thread, the registry of what is being driven, the workspace store, the caches and
+the event log, every reader that resolves a campaign under the results root, and every
+operation whose body reaches the cluster only through a hook. What depends on where the
+runs happen is an ``@abstractmethod`` on the base — which backend runs a job, which exec
+runner a diagnostic uses, what a job's log and state are read from, what exiting does to a
+running campaign — and a body in ``ClusterService``. A subclass missing one cannot be
+constructed, and the error names it.
 
-The split is kept for the sake of the second implementer: ``tests/service/null_service.py``
-is a ``ServiceBase`` that runs nothing and refuses every driver-needing operation by
-name, so the base's own code — workspaces, files, records, listings, the routes over
-them — is tested without a Kubernetes-shaped fake. Two things follow. The base imports
-no Kubernetes and names no driver in a body (``tests/service/test_lane_ledger.py`` pins
-that, and ``tests/service/test_serve_backends.py`` pins that importing it loads no lane).
-And a body on the base is one that is correct for any lane, or it is a hook.
+``tests/service/null_service.py`` is a second subclass, ``NullService``, that runs nothing
+and refuses every driver-needing operation by name, so the base's own code — workspaces,
+files, records, listings, the routes over them — is tested without a Kubernetes-shaped
+fake. Two things follow. The base imports no Kubernetes and names no driver in a body
+(``tests/service/test_service_base_hooks.py`` pins that, and ``tests/service/test_serve_backends.py``
+pins that importing it loads no implementation). And a body on the base is one that is
+correct for any implementation, or it is a hook.
 
-The lane ships into the **same import namespace** as the core rather than under a name of
-its own, so no import path changes: ``robovast/`` and ``robovast/execution/`` carry no
-``__init__.py`` in either distribution, making them PEP 420 namespace packages whose two
-source trees merge at import time. In a deployed pod the core is installed editable from
-``/opt/robovast/src`` while the lane's files land in ``site-packages`` — one namespace,
-two origins, no shadowing. Adding an ``__init__.py`` to either directory would break the
-merge silently, so neither has one.
+``robovast-cluster`` ships into the **same import namespace** as the core rather than under
+a name of its own, so no import path changes: ``robovast/`` and ``robovast/execution/``
+carry no ``__init__.py`` in either distribution, making them PEP 420 namespace packages
+whose two source trees merge at import time. In a deployed pod the core is installed
+editable from ``/opt/robovast/src`` while the cluster distribution's files land in
+``site-packages`` — one namespace, two origins, no shadowing. Adding an ``__init__.py`` to
+either directory would break the merge silently, so neither has one.
 
 The direction of the dependency is load-bearing: ``robovast-cluster`` depends on
-``robovast``, never the reverse. That is why a lane is **not installable as an extra** — a
-``robovast[cluster]`` extra is the edge back, and closes the cycle. Every place that installs
-a lane does so as its own step: the controller Dockerfile, ``make venv`` and ``make build``
-each name it, and a test guards the Dockerfile, because an omission there cannot fail before
-deployment.
+``robovast``, never the reverse. That is why it is **not installable as an extra** — a
+``robovast[cluster]`` extra is the edge back, and closes the cycle. Every place that
+installs it does so as its own step: the controller Dockerfile, ``make venv`` and ``make
+build`` each name it, and a test guards the Dockerfile, because an omission there cannot
+fail before deployment.
 
 .. _container-exec-architecture:
 
@@ -513,7 +510,7 @@ the image resolves from that project's ``.vast`` exactly as a run resolves it.
 **The entrypoint is rendered, never inherited.** ``prepare_campaign_configs`` substitutes
 the init and post-run blocks a pod needs into ``entrypoint.sh`` (the hand-off that tells
 the pod's uploader this container has finished writing), so a campaign's staged
-entrypoint carries what its lane asked for. ``render_entrypoint`` exists so the
+entrypoint carries what its backend asked for. ``render_entrypoint`` exists so the
 bare-image case can have that script without expanding a config tree it does not need.
 
 **Why reuse the entrypoint at all**, rather than building an environment: the environment a
@@ -533,7 +530,7 @@ stack, the caller starts that stack in its own exec container.
 fixed name (``robovast-exec``). That removes
 session ids, a listing operation, and the leak class: a stray container is found and reaped
 by name at service start. Its cost is reported instead of hidden — ``ResourceUsage`` carries
-``exec_container``, so a lane with no room can be attributed to the caller's own container.
+``exec_container``, so a cluster with no room can be attributed to the caller's own container.
 
 Two clocks bound it, and keeping them apart is load-bearing: an **idle** reap that runs
 only while nothing the tool started is alive (otherwise a running scenario would be killed
@@ -542,7 +539,7 @@ declaring ``timeout: 900`` is not truncated at the idle cap. Limits are derived 
 passed — ``ExecRequest`` has no timeout field — and the result reports which rule applied,
 so a ``timed_out`` result names its own remedy.
 
-The lane-specific half is a small protocol (``ExecRunner``): ``KubeExecRunner`` runs an aux
+The cluster-specific half is a small protocol (``ExecRunner``): ``KubeExecRunner`` runs an aux
 pod plus ``pods/exec``. Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
@@ -564,7 +561,7 @@ is torn down with its pod; a tree left by a dead service process is reaped at th
 stop, since nothing else would.
 
 **A composition's aux pod moves its workspace the same way**, so there is one in-cluster
-transport rather than three. Its contract is harder than the exec lane's — a
+transport rather than three. Its contract is harder than the exec runner's — a
 *bidirectional* transfer around every ``run()`` on a kept-alive pod, which an init
 container running once before the pod starts cannot serve — so the pod carries a
 ``transfer`` container from the sidecar image that idles beside the aux container, sharing
@@ -642,7 +639,7 @@ side** — reading 100 lines of a cluster log transfers 100 lines.
 
 The service serves ``/results`` from that directory, with ``FileResponse``: ``Range`` and
 ``ETag`` come free, a byte range is a seek rather than a transfer, and a listing is a
-``scandir``. That is what the cluster lane's campaigns being *on the service's own volume*
+``scandir``. That is what a campaign being *on the service's own volume*
 buys, and it is why there is no "which part of the campaign do you need?" seam anywhere in
 the read path: every part of it is a file the service can open.
 
@@ -842,7 +839,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - DB — one row per container per process name per ~1 s tick, with ``timestamp``,
        ``in_window``, ``cpu_percent``, ``memory_rss_bytes``. Built by postprocessing from the
        job's ``resource_usage_<container>.csv``, which stay the record of what was sampled.
-       In the DB because it answers a question about a *result*: a lane gives a job fixed
+       In the DB because it answers a question about a *result*: the backend gives a job fixed
        cores, so a stack held at that ceiling is a competing explanation for what a run did,
        and ruling that out means joining it to ``runs.available_cpus`` and to the behaviour
        itself (``run_validity_view`` answers the ceiling half directly).
@@ -1043,10 +1040,10 @@ clock like every other, which is why it shows no controls of its own — two thi
 
 That path is also why the route asks the transport for a path outright rather than probing for
 the method. ``FileResponse`` is what carries ``Range``, and every transport has ``local_file``
-— the interface defines a refusal and the lane subclasses ``ServiceBase`` — so a presence check
-can only ever succeed, and treating it as meaningful is how a caller ends up believing a lane
-cannot serve a path when it can. It answers or it refuses by name; there is nothing to probe.
-The lane answers, because a campaign's results are under the service's own results root.
+— the interface defines a refusal and the service subclasses ``ServiceBase`` — so a presence
+check can only ever succeed, and treating it as meaningful is how a caller ends up believing the
+service cannot serve a path when it can. It answers or it refuses by name; there is nothing to
+probe. The service answers, because a campaign's results are under its own results root.
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
 descriptor per *world*, so one build serves every run that used it — worth a background thread,
@@ -1121,9 +1118,9 @@ lives in the ``run_data`` MCP plugin):
   ``upload_to_share`` is a per-campaign launch flag on the request, not a separate
   operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``
   / ``stop`` / the ``/archive`` stream. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
-  (the current batch's execution units and a single running job's log); the lane
-  implements them over the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``
-  (``ClusterService``), merging **every** container the job runs into one append-only
+  (the current batch's execution units and a single running job's log); ``ClusterService``
+  implements them over the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``,
+  merging **every** container the job runs into one append-only
   stream through the shared ``common.log_tail.MergedLogBuffer``, since a job is not one
   container: the ROS shape gives the simulator and the system under test their own, and
   on the cluster those are *native sidecars*, which live in ``spec.initContainers`` and
@@ -1156,7 +1153,7 @@ lives in the ``run_data`` MCP plugin):
 
 **New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
 ``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
-``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (the cluster lane's
+``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (``ClusterService``'s
 own ``build_image`` and ``run_postprocessing`` call it too). It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
@@ -1244,11 +1241,11 @@ Resolving into the campaign data — rather than at each point of use — is wha
 choose the image it deserializes rosbags in, so a symbolic ref surviving there would be a
 ``family:`` string handed to Kubernetes as an image name.
 
-**Where an image lives is a lane's answer, not a caller's.** Everything above is about the
-*recipe* — which containers build and what their inputs hash to, one derivation for any
-lane. Where the resulting image ends up is the other half:
-:class:`~robovast.service.image_store.ImageBuildStore`, which the cluster lane answers
-with the deployment's registry. A lane overrides exactly one factory (``_images``); every
+**Where an image lives is the implementation's answer, not a caller's.** Everything above is
+about the *recipe* — which containers build and what their inputs hash to. Where the resulting
+image ends up is the other half: :class:`~robovast.service.image_store.ImageBuildStore`, which
+``ClusterService`` answers with the deployment's registry. An implementation overrides exactly
+one factory (``_images``); every
 question asked of a store — what is this image called here, is it actually here — is then
 written once, and asked of the store rather than assumed. Two rules the ABC carries:
 
@@ -1257,9 +1254,8 @@ written once, and asked of the store rather than assumed. Two rules the ABC carr
   missing *artifact*, three layers from the cause. The build path wants the opposite trade
   and says so explicitly (``_registry_has_image``): uncertainty means rebuild, because a
   redundant push is cheap and a wrong cache hit leaves pods in ``ImagePullBackOff``.
-* only ``ImageRef.identity`` may cross the API boundary. The concrete ref is a docker tag on
-  one lane and a registry-qualified ref on the other, and the second would carry registry
-  knowledge to a client that must not have it — so there is exactly one field that is
+* only ``ImageRef.identity`` may cross the API boundary. The concrete ref is registry-qualified,
+  and would carry registry knowledge to a client that must not have it — so there is exactly one field that is
   allowed out, rather than a rule to remember at each return.
 
 **One reader, several policies.** Four things ask a campaign's records which image it ran, and
@@ -1288,7 +1284,7 @@ runs it first pays the whole multi-GB pull. That is usually ``exec_in_container`
 justification is answering "is the package installed?" in seconds; the web UI's 3D panel even
 names the wait out loud (*Fetching the simulation image onto the node*).
 
-So the cluster lane pulls the image onto a node as soon as it knows the image exists, with a
+So the service pulls the image onto a node as soon as it knows the image exists, with a
 throwaway Job whose one container *is* that image running ``/bin/true``
 (:mod:`~robovast.execution.cluster_execution.image_warm`). **The pull is the work** — nothing
 reads the Job's result, so a broken entrypoint or a nonzero exit warms the node just as well,

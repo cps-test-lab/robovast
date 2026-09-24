@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A digest-pinned ref is read from the registry, not mistaken for a tagged one.
 
-Every ref this lane asks the registry about has just been pinned to a digest -- that is what
+Every ref the backend asks the registry about has just been pinned to a digest -- that is what
 makes a probe bind to the bytes the pods will run rather than to whatever a tag points at
 next. So ``repo@sha256:...`` is the *normal* input here, not an exotic one, and a parser that
 only understands ``repo:tag`` splits it on the colon inside the digest: the request then goes

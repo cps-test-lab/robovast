@@ -137,7 +137,7 @@ def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
         return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         url = service_access.web_url(client, Routes.file(address))
-        # A binary read is a refusal only in the text lane; over HTTP it is an ordinary
+        # A binary read is a refusal only as text; over HTTP it is an ordinary
         # GET. Answering with the URL turns "you cannot have this" into "here is where it
         # is" — the caller wanted the bytes, and they are one request away.
         if "binary" in str(e).lower() and url:

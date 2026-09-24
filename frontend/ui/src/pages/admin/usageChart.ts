@@ -10,7 +10,7 @@ import type { UsageSample } from '@/lib/robovastClient'
 export type UsageKind = 'reserved' | 'measured'
 
 /** One point of one series. Long format: a row per (sample × resource × kind) that HAS a value,
- *  which is what lets a lane reporting only one of the two simply draw one line — no `backend`
+ *  which is what lets a service reporting only one of the two simply draw one line — no `backend`
  *  branch anywhere in the chart. */
 export interface UsageRow {
   // `VegaLiteChart` takes rows as `Record<string, unknown>[]` (a Vega datum is a record), which an
@@ -28,7 +28,7 @@ export interface UsageRow {
 
 /** Rows for one resource of one sample, dropping what cannot be drawn.
  *
- *  A missing value is a **gap**, never a zero: a window whose measurement failed, or a lane with
+ *  A missing value is a **gap**, never a zero: a window whose measurement failed, or a service with
  *  no such reading at all, must not be drawn as an idle cluster. Same for a zero capacity — a
  *  sample recorded while the node list was momentarily empty would otherwise put a NaN (0/0)
  *  through the line. */

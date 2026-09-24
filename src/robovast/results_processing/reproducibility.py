@@ -136,7 +136,7 @@ def _classify_images(record) -> list:
     for name in roles:
         role = record.roles[name]
         label = f"image[{name}]"
-        # Either field may hold the digest. Records differ by the lane that wrote them -- an
+        # Either field may hold the digest. Records differ by where they were written -- an
         # archived one may hold a plan-resolved ref under `images` and an image id under
         # `image_revisions`, the cluster the reverse -- so reading only one reported a campaign whose other field
         # was already `repo@sha256:...` as having no digest at all, while quoting that very

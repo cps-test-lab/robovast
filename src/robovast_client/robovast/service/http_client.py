@@ -77,8 +77,8 @@ class HTTPTransport(RobovastInterface):
     """
 
     #: What this transport declines, it declines as the caller's side of the wire: the
-    #: service it forwards to has its own lane, and a refusal from there arrives with that
-    #: lane's name in it.
+    #: service it forwards to has its own ``IMPLEMENTATION``, and a refusal from there arrives
+    #: with that name in it.
     IMPLEMENTATION = "http"
 
     def __init__(self, base_url: str, timeout: float = 30.0,
@@ -617,7 +617,7 @@ class HTTPTransport(RobovastInterface):
         The interface returns a *path* because the service builds one, and a path means
         nothing across HTTP — so the bytes are written into the same directory shape
         ``screenshot.render`` produces, and ``screenshot.discard`` removes it either way. One
-        cleanup rule for both, rather than a caller that has to know which lane answered.
+        cleanup rule for both, rather than a caller that has to know which implementation answered.
 
         **A long timeout, deliberately.** This is the one call that may pull a 2 GB image
         before it can start, inside the request; the default would give up on a cold node and

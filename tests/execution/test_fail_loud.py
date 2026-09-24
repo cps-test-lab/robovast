@@ -54,10 +54,9 @@ def test_an_unanswerable_input_files_query_is_not_swallowed_into_an_empty_list()
 
 
 def test_a_query_that_could_not_be_asked_at_all_is_not_swallowed_either():
-    """Not having a runner is one way of failing to ask; it stopped being the likely one.
+    """Not having a runner is one way of failing to ask, and not the likely one.
 
-    On the cluster lane a runner factory is now installed unconditionally, so
-    ``AuxContainerUnavailable`` cannot be raised there at all -- what happens instead is that
+    The service installs a runner factory unconditionally, so the likely failures are that
     the factory builds the aux pod and the pod does not come up, or the query runs and prints
     nothing a caller can read. Those must propagate for exactly the reason the missing runner
     does: the difference between "this world is one file" and "nobody could ask" is invisible

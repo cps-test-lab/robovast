@@ -42,9 +42,8 @@ export interface paths {
          * @description What this service is configured with, read back out of its own environment.
          *
          *     Not a ``RobovastInterface`` operation, for the reason ``/admin/log`` is not one: it
-         *     describes the process that is serving rather than the campaigns it drives, and both
-         *     lanes answer it identically -- the pod and a `vast serve` both hold their settings
-         *     in the environment.
+         *     describes the process that is serving rather than the campaigns it drives, and the
+         *     process holds its settings in the environment.
          *
          *     Host paths are blanked for a non-loopback caller, the same rule ``/version``
          *     applies to ``results_root`` -- so the two admin surfaces do not disagree about
@@ -2475,7 +2474,7 @@ export interface components {
          * ExecContainerState
          * @description State of the single exec container, as of one call.
          *
-         *     Also embedded in :class:`ResourceUsage`, so a caller that finds the lane full can
+         *     Also embedded in :class:`ResourceUsage`, so a caller that finds the cluster full can
          *     attribute the shortfall to its own held container instead of guessing.
          */
         ExecContainerState: {
@@ -2832,7 +2831,7 @@ export interface components {
          *     the concrete ref the container runs FROM: the concrete form is a registry-qualified
          *     ref, and that must never reach a client
          *     (the zero-registry-knowledge invariant). The identity still changes exactly when the
-         *     image changes, which is all a cache key needs, and it reads the same on every lane.
+         *     image changes, which is all a cache key needs.
          */
         ImageResolution: {
             /**
@@ -3011,8 +3010,8 @@ export interface components {
          *     measured-against-limit answers "is this about to be throttled or OOM-killed?". A container
          *     may legitimately sit anywhere between the two.
          *
-         *     Every field is optional, and absent means *not known* -- never zero. A lane that sets no
-         *     container limits has no ceiling to state; a container whose cpu limit was left open may use
+         *     Every field is optional, and absent means *not known* -- never zero. A container with no
+         *     limits has no ceiling to state; a container whose cpu limit was left open may use
          *     the whole node, so no finite number is the truth; a cluster with no metrics API measures
          *     nothing. A reader draws nothing rather than a zero, which would read as an idle job. Why the
          *     numbers are missing, when there is a reason worth reporting, is on
@@ -3417,8 +3416,8 @@ export interface components {
          * ResourceUsage
          * @description Live compute capacity and current usage of the service's execution backend.
          *
-         *     Backend-neutral by design: how the lane measures is resolved inside the service
-         *     (the cluster lane reads the Kubernetes nodes), so a consumer — the UI chip or the
+         *     Backend-neutral by design: how the backend measures is resolved inside the service
+         *     (it reads the Kubernetes nodes), so a consumer — the UI chip or the
          *     MCP tool — reads the same fields regardless of where it runs and never branches on
          *     ``backend``.
          *
@@ -3426,11 +3425,12 @@ export interface components {
          *     ``*_reserved`` is what the scheduler has committed; ``*_measured`` is what is actually
          *     being consumed. A cluster campaign that reserves nine cores per pod and uses two
          *     reports 9 and 2, and the gap between them is the number that sizes the next sweep.
-         *     Either can be ``None``, meaning **this lane has no such reading** rather than zero:
+         *     Either can be ``None``, meaning **this backend has no such reading** rather than zero:
          *     a cluster without metrics-server cannot measure — see ``metrics_unavailable`` — and
-         *     a lane that sets no container limits reserves nothing. ``cpu_*`` are CPU cores; ``memory_*`` are bytes.
+         *     a pod that sets no container limits reserves nothing. ``cpu_*`` are CPU cores;
+         *     ``memory_*`` are bytes.
          *
-         *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the lane leads with**
+         *     ``cpu_used`` / ``memory_used_bytes`` **alias whichever of the two the backend leads with**
          *     — the request sum on the cluster — and exist because every
          *     consumer already reads them. They are the headline "how much is currently claimed", so
          *     they are never null; a consumer that must distinguish the two readings reads the pair
@@ -3457,7 +3457,7 @@ export interface components {
          *     reservation — the service does not.
          *
          *     ``jobs_running`` / ``jobs_pending`` are scenario-run counts across every campaign
-         *     this backend is driving, not one. One definition, every lane: ``running`` is what is
+         *     this backend is driving, not one. One definition: ``running`` is what is
          *     **executing right now**, ``pending`` is work the backend has **accepted but is not
          *     executing**. On the cluster that means planned + pod-pending + blocked Jobs. So the
          *     pair can be read — and summed into an "outstanding work" total — without branching
@@ -4335,7 +4335,7 @@ export interface components {
          *
          *     Persisting it was considered and refused. A durable metrics store is a real dependency
          *     -- retention, a disk budget, a rotation policy -- and this answers "how busy has the
-         *     lane been lately", which a volatile 24 h window answers.
+         *     cluster been lately", which a volatile 24 h window answers.
          */
         UsageHistory: {
             /**

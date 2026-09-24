@@ -421,8 +421,8 @@ def test_an_explicit_count_wins_over_the_default(monkeypatch):
 
 def test_nvidia_visible_devices_is_never_set(monkeypatch):
     """The device plugin injects the UUID it allocated into exactly the requesting
-    container. Setting this to `all` ourselves -- as the Compose lane correctly does, where
-    nothing allocates -- would hand every container every GPU regardless of quota."""
+    container. Setting this to `all` ourselves would hand every container every GPU
+    regardless of quota."""
     r = _runner(monkeypatch, execution=_ROS_SHAPE, cluster_gpus=16, runtime_class="nvidia")
     m = _job_manifest(r)
     for container in (_main_of(m), _sidecar(m, "simulation")):
@@ -519,12 +519,10 @@ def _dshm(manifest):
 
 
 def test_dev_shm_is_unbounded_when_the_execution_block_names_no_size(monkeypatch):
-    """The lane stays honest about an absent key rather than inventing a size of its own.
+    """The manifest leaves an absent key unbounded rather than inventing a size of its own.
 
-    A *composed* campaign does not reach this state -- composition settles `shm_size`
-    for every campaign, declared or not (see
-    tests/execution/test_shm_size_reaches_both_lanes.py). This pins the lane's own
-    behaviour, which is what keeps the default in one place instead of two.
+    Composition settles `shm_size` for every campaign
+    (tests/execution/test_shm_size_is_settled_by_composition.py), so the default lives there.
     """
     r = _runner(monkeypatch)
     volume = _dshm(r.create_job_manifest(r._build_jobs()[0], total_jobs=1))
@@ -727,8 +725,7 @@ def test_the_stepped_worlds_env_is_stated_once_per_name(monkeypatch):
 
     The campaign-level contribution names ``ROQSIM_WORLD`` too, with the campaign's default.
     Appending the cell's value would leave two entries and let ordering decide, which is
-    fragile and unreadable in `kubectl get job -o yaml` -- and this lane has emitted
-    duplicate keys before (see ``scenario_env``).
+    fragile and unreadable in `kubectl get job -o yaml` (see also ``scenario_env``).
     """
     configs = [{"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}}]
     r = _runner(monkeypatch, execution=_stepped_with_baked_default(), configs=configs)

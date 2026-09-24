@@ -8,11 +8,9 @@ going and the campaign succeeds* — a reported failure for work that worked —
 campaign created only after the build, nothing about that work is observable while it
 runs.
 
-The wait now happens on the campaign's own worker, through
-``NullService._await_build_image``. That loop is **shared by both lanes** (it drives
-``get_image_build_status`` / ``get_image_build_log``, which each transport implements), so
-these tests exercise it once and it holds for the local Docker build and the in-cluster
-BuildKit Job alike.
+The wait happens on the campaign's own worker, through ``_await_build_image``, which is on
+``ServiceBase`` (it drives ``get_image_build_status`` / ``get_image_build_log``, which the
+implementation supplies), so these tests exercise it through ``NullService``.
 """
 
 import threading

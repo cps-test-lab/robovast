@@ -22,7 +22,7 @@ into the structured :class:`~robovast.service.interface.ImageBuildError`. It is 
 **recipe**: nothing here knows where an image ends up. That is the *store*
 (:mod:`robovast.service.image_store`) -- the deployment's registry -- which reuses these
 pure helpers (``build_hash``, ``generate_dockerfile``,
-``classify_build_error``) rather than restating them per lane.
+``classify_build_error``) rather than restating them.
 
 Registry invariant: nothing here emits or accepts a registry endpoint, credential,
 or registry-qualified ref. The agent-facing image is always the symbolic
@@ -101,7 +101,7 @@ _PIP_INSTALL = ("RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked "
                 f"pip --python {_VENV}/bin/python3 install")
 
 #: Re-exported: the id itself lives in ``robovast.common.execution`` because it is a contract
-#: shared with the execution lane, which must not import this module (see the note there).
+#: shared with the execution layer, which must not import this module (see the note there).
 GIT_TOKEN_SECRET_ID = _GIT_TOKEN_SECRET_ID
 _GIT_TOKEN_SECRET_PATH = f"/run/secrets/{GIT_TOKEN_SECRET_ID}"
 
@@ -1254,7 +1254,7 @@ def validate_build_spec(spec: BuildSpec, project_dir: Path) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Answers about a build that no lane should phrase for itself
+# Answers about a build, phrased once
 # ---------------------------------------------------------------------------
 
 #: Phases in which a build is under way rather than finished, either way -- ``blocked``
@@ -1269,13 +1269,12 @@ def not_built_message(container: str, build_id: str,
                       status: "Optional[ImageBuildStatus]") -> "tuple[str, str]":
     """``(message, next_step)`` for "this container's image is not on the store".
 
-    Pure, so it is testable without a service, and one function so every lane phrases the
+    Pure, so it is testable without a service, and one function so every caller phrases the
     refusal identically.
 
-    The old message said only "call build_experiment_image first", which is a dead end for
-    the caller who *did* call it -- the reported bug this replaces. Four states need four
-    different actions, and the service already knows which one it is in, so *status* (the
-    build's, or ``None`` when no build is known) picks the wording and the next step:
+    Four states need four different actions, and the service already knows which one it
+    is in, so *status* (the build's, or ``None`` when no build is known) picks the wording
+    and the next step:
 
     ``None``
         nothing was ever started for these inputs.
@@ -1329,7 +1328,7 @@ def not_built_message(container: str, build_id: str,
                 f"get_image_build_log(build_id='{build_id}', summarize=True)")
     if status is not None and phase in ("succeeded", "cached"):
         return (f"the image for container '{container}' was built (build {build_id}) and "
-                f"is no longer on this lane's image store -- deleted from the registry. "
+                f"is no longer on the service's image store -- deleted from the registry. "
                 f"It has to be built again. {tail}",
                 f"build_experiment_image(container='{container}')")
     return (f"the image for container '{container}' is not built, and no build is "

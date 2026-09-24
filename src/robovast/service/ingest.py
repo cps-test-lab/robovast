@@ -232,11 +232,9 @@ def blocking_summary(report: dict) -> str:
     The stage *names* are an index, not a diagnosis: ``config, layout`` is what every
     incomplete archive says, and it says the same whether the ``.vast`` is missing,
     unparseable, or from a robovast that does not exist yet. Each stage already
-    composed the sentence that distinguishes them -- and until this existed that sentence
-    reached only ``import.log`` and ``import.json``, both of which live *inside* the
-    campaign and are therefore unreadable on a lane that publishes a campaign only once
-    the import succeeds. So the one place the reason was guaranteed to be visible carried
-    the one form of it that says nothing.
+    composed the sentence that distinguishes them. ``import.log`` and ``import.json`` also
+    carry it, but both live *inside* the campaign, which is published only once the import
+    succeeds -- so the refusal itself must carry the sentence.
     """
     return " ".join(f"{name}: {report['stages'][name]['detail']}"
                     for name in report["blocking"])

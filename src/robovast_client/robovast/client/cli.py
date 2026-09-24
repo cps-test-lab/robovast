@@ -19,8 +19,8 @@
 
 The root group lives in the client distribution because every audience has one. A
 service user installs ``robovast-client`` and gets ``vast login``, ``vast workspace``,
-``vast files`` and ``vast campaign wait``; the core, the execution lanes and the operator
-commands each attach their own verbs to this same group through the
+``vast files`` and ``vast campaign wait``; the core and ``robovast-cluster``
+each attach their own verbs to this same group through the
 ``robovast.cli_plugins`` entry point. One command name for everybody, and the surface
 grows with what is installed rather than listing verbs that cannot run.
 
@@ -117,7 +117,7 @@ def cli(ctx):
     # value *before* calling it) silently ignored a configured .env line.
     #
     # Contributed rather than imported. Everything a `.env` carries -- share credentials,
-    # ntfy, the registry, the image pins -- is consumed by the core and the lanes; a
+    # ntfy, the registry, the image pins -- is consumed by the core and the cluster package; a
     # client reads none of it, and making the root group import the reader would put
     # python-dotenv into a distribution whose whole point is three dependencies.
     run_startup_hooks()
@@ -625,8 +625,8 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
 @click.option('--priority', type=int, default=None, metavar='N',
               help='Which campaign the cluster queue admits first: higher goes first, '
                    '0 is normal, negative waits behind everything else. Ordering only — '
-                   'it never stops a run that has started. Refused by a service whose '
-                   'lane has no queue.')
+                   'it never stops a run that has started. Refused by a service that '
+                   'has no queue.')
 @click.option('--upload-to-share', 'upload_to_share', is_flag=True,
               help='Stream a raw (pre-postprocess) archive to the configured share '
                    'when the campaign finishes.')

@@ -228,13 +228,10 @@ def test_every_stage_carries_an_actionable_detail(campaign):
 def test_a_refusal_reports_the_reason_and_not_only_which_check_failed(tmp_path):
     """The stage names are an index, not a diagnosis.
 
-    ``config, layout`` is what *every* incomplete archive says -- the same three words
-    whether the ``.vast`` is missing, unparseable, or from a robovast that does not exist
-    yet. The sentence that distinguishes them is already written by each stage, and until
-    ``blocking_summary`` existed it reached only ``import.log``/``import.json``, which live
-    inside the campaign and are therefore unreadable on a lane that publishes a campaign
-    only once its import succeeded. The one message guaranteed to be seen carried the one
-    form of the answer that says nothing.
+    ``config, layout`` is what *every* incomplete archive says, whether the ``.vast`` is
+    missing, unparseable, or from a newer robovast. The sentence that distinguishes them is
+    carried in the error, because ``import.log``/``import.json`` live inside a campaign that is
+    published only once its import succeeded.
     """
     bare = tmp_path / "c-2026-01-01-000000"
     (bare / "_execution").mkdir(parents=True)
@@ -345,9 +342,8 @@ def test_deleting_a_campaign_reaches_the_index(tmp_path, monkeypatch):
     """A delete that removed the files and left the rows is a half-delete.
 
     The index would then answer questions about a campaign nobody can reach, re-import or
-    check -- confidently, and with nothing left to compare against. Both lanes go through
-    one helper for exactly this reason: the cluster deletes more places than the local
-    transport, but it is the same index.
+    check -- confidently, and with nothing left to compare against. Every delete goes through
+    one helper that reaches the index.
     """
     from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore

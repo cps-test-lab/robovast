@@ -1,9 +1,9 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""A service says in the handshake whether its lane queues campaigns (``can_schedule``).
+"""A service says in the handshake whether it queues campaigns (``can_schedule``).
 
 The web UI offers priority and pause only where this is true, so it has to be the same flag
-the service refuses on -- a second answer to "does this lane have a queue" would sooner or
+the service refuses on -- a second answer to "does this service have a queue" would sooner or
 later offer an entry the service then refuses, or hide one it would accept.
 """
 
@@ -17,27 +17,27 @@ from click.testing import CliRunner
 from robovast.service.interface import VersionInfo
 
 
-def _lane():
+def _null_service():
     from tests.service.null_service import NullService
 
-    lane = object.__new__(NullService)
-    lane.store = types.SimpleNamespace(registry=types.SimpleNamespace(root="/tmp/w"))
-    return lane
+    service = object.__new__(NullService)
+    service.store = types.SimpleNamespace(registry=types.SimpleNamespace(root="/tmp/w"))
+    return service
 
 
 def test_a_service_that_did_not_say_has_no_verdict():
     assert VersionInfo.model_validate({"robovast_version": "2.0.0"}).can_schedule is None
 
 
-def test_a_lane_without_a_queue_says_it_has_none():
+def test_a_service_without_a_queue_says_it_has_none():
     from tests.service.null_service import NullService
 
     with patch.object(NullService, "_campaigns_root", return_value="/tmp/c"):
-        assert _lane().version().can_schedule is False
+        assert _null_service().version().can_schedule is False
 
 
 def test_the_answer_is_the_predicate_the_service_refuses_on():
-    """One source of truth: flip the lane's own answer and both follow it.
+    """One source of truth: flip the implementation's own answer and both follow it.
 
     The handshake and the admission read the same ``_queues_campaigns``, so a client is
     never offered an entry the service would refuse, nor denied one it would accept.
@@ -47,24 +47,24 @@ def test_the_answer_is_the_predicate_the_service_refuses_on():
 
     with patch.object(NullService, "_campaigns_root", return_value="/tmp/c"), \
             patch.object(NullService, "_queues_campaigns", return_value=True):
-        lane = _lane()
-        assert lane.version().can_schedule is True
+        service = _null_service()
+        assert service.version().can_schedule is True
         # and the refusal is gone with it, rather than left saying the opposite
-        lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
+        service._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
 
 
-def test_a_lane_without_a_queue_says_so_and_refuses_in_the_same_breath():
+def test_a_service_without_a_queue_says_so_and_refuses_in_the_same_breath():
     from robovast.service.interface import CreateCampaignRequest, UnsupportedOperation
     from tests.service.null_service import NullService
 
     with patch.object(NullService, "_campaigns_root", return_value="/tmp/c"):
-        lane = _lane()
-        assert lane.version().can_schedule is False
+        service = _null_service()
+        assert service.version().can_schedule is False
         with pytest.raises(UnsupportedOperation):
-            lane._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
+            service._admit_scheduling(CreateCampaignRequest(workspace_id="ws-x", priority=3))
 
 
-def test_the_cluster_lane_says_it_has_one():
+def test_the_cluster_service_says_it_has_one():
     from robovast.execution.cluster_execution.cluster_service import ClusterService
     from robovast.execution.cluster_config.base_config import RegistryConfig
 

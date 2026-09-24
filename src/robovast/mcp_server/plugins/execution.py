@@ -17,8 +17,7 @@
 """MCP plugin: running a campaign, and watching it run.
 
 A strict client of a running ``robovast-service`` — the single execution authority. There
-is no local subprocess path: when no service answers these tools fail loudly rather than
-silently running a divergent lane.
+is no local subprocess path: when no service answers these tools fail loudly.
 
 Building derived images lives here too. A build is part of a campaign's driven work
 (``start_campaign`` performs one when a container in ``execution.containers`` adds
@@ -284,7 +283,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
     The only way an experiment is executed: a ``docker compose`` produces no pinned image,
-    no provenance and no repetitions, so its output compares with nothing. Size the lane
+    no provenance and no repetitions, so its output compares with nothing. Size the run
     with ``get_resource_usage`` first, and pilot one configuration before the full sweep
     (``config_filter`` + ``runs=1``).
 
@@ -447,8 +446,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
     ``false``: inside the declared budget. ``null``: **no verdict is possible** — not
     "healthy"; ``stall_verdict`` says why (no declared timeout, a phase that executes no
-    runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself. The local
-    lane never kills an undeclared one, so a stalled local run stays alive to inspect.
+    runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
     itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
@@ -466,7 +464,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     counts the rounds since the best last moved. Read the SPREAD, not just the best: a flat
     best-so-far with a wide range means the search is still exploring, while a range that has
     collapsed onto the best value means it is re-sampling one region and further batches will buy
-    little. Live during the run — the only route on the cluster lane, where SQL reads a
+    little. Live during the run — the only route on the cluster, where SQL reads a
     snapshot published only when the campaign ends.
 
     Weigh it against ``budget`` before acting: a ``no_improvement`` or ``target_objective``
@@ -741,10 +739,10 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         run.
 
         An absent ``usage`` -- or an absent field within it -- means **not measured**, never
-        zero: the job is not running, the lane sets no container limits, or the container left
+        zero: the job is not running, the cluster sets no container limits, or the container left
         a limit open (which means the whole node, so no ceiling is true). When the cause is
         worth acting on, the response carries ``metrics_unavailable`` saying so; without that
-        key, missing numbers are simply numbers this lane does not produce. Do not read a
+        key, missing numbers are simply numbers this deployment does not produce. Do not read a
         listing with no usage anywhere as an idle cluster.
 
         ``blocked`` cannot start and will not recover on its own (an unpullable image,
@@ -968,10 +966,10 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
 
 
 def get_resource_usage() -> dict:
-    """Can this lane run my sweep, and how long will it take? Capacity, usage, parallelism.
+    """Can the cluster run my sweep, and how long will it take? Capacity, usage, parallelism.
 
     Capacity **now**; what a finished run consumed is in its campaign's data
-    (``describe_campaign_data``). Reading the nodes also confirms the lane is reachable,
+    (``describe_campaign_data``). Reading the nodes also confirms the cluster is reachable,
     which ``get_service_info`` cannot.
 
     Size a run: ``free = capacity - used``; concurrency is ``1`` when ``parallel_runs``
@@ -980,13 +978,13 @@ def get_resource_usage() -> dict:
 
     **Size a sweep against ``*_reserved``, judge a finished one against ``*_measured``**:
     reserved is what the scheduler committed, measured is what was consumed, and
-    ``cpu_used`` aliases whichever the lane leads with. A ``null`` is "no such reading",
+    ``cpu_used`` aliases whichever the backend leads with. A ``null`` is "no such reading",
     **never zero**; ``metrics_unavailable`` says why.
 
     ``disk`` is what runs write into, ``results`` the volume campaigns live on. On a cluster
     ``disk`` is ONE node's filesystem (``disk_node``), not a sum, and ``results`` is reported
     only where that volume is separately measurable. ``storage_refusal``, when set, says why
-    new work is refused for space. ``jobs_running``/``jobs_pending`` count what the lane is
+    new work is refused for space. ``jobs_running``/``jobs_pending`` count what the cluster is
     already busy with across every campaign, so free cores behind a long queue are not as
     free as they look.
     """

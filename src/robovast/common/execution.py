@@ -117,8 +117,8 @@ FAMILY_IMAGE_PREFIX = "family:"
 
 
 #: Where a built image records what it actually contains. Baked into the image rather than
-#: written beside the campaign, because that is the only form that survives every path: both
-#: lanes get it without extra plumbing, it travels with the image if the image is copied or
+#: written beside the campaign, because that is the only form that survives every path: every
+#: pod gets it without extra plumbing, it travels with the image if the image is copied or
 #: retagged, and a rebuild a year from now can read what the original installed and install
 #: exactly that.
 #:
@@ -488,7 +488,7 @@ def resolve_controller_image(explicit: str | None = None,
 
 
 #: BuildKit secret id for the git token, and the one name both sides of a build agree on: the
-#: service renders ``--mount=type=secret,id=...`` into the Dockerfile, and the execution lane
+#: service renders ``--mount=type=secret,id=...`` into the Dockerfile, and the image build
 #: passes the matching ``--secret id=...`` to the builder. The same id
 #: ``container/robovast/Dockerfile.roqsim`` and ``build.sh`` use for their own clone -- one
 #: convention, so an operator configures a token once.
@@ -748,7 +748,7 @@ def image_build_refs(containers: dict, labels_by_role: "dict | None" = None) -> 
 def campaign_code_provenance() -> dict:
     """:func:`code_provenance` for a campaign about to run, warning when it is not reproducible.
 
-    The warning belongs here rather than at each call site so every lane reports it
+    The warning belongs here rather than at each call site so it is reported
     identically and exactly once per campaign. It is a warning and not a refusal on purpose:
     running from a dirty tree is the normal research loop, and blocking it would only teach
     people to bypass the check. What must not happen is the campaign *looking* reproducible
@@ -1013,21 +1013,17 @@ def get_execution_env_variables(run_num, config_name, additional_env=None):
 def scenario_env(campaign_data):
     """The scenario-shaping env vars a run's config implies, for ``entrypoint.sh``.
 
-    Covers only what is derived from the ``.vast`` and is therefore identical on every
-    lane: which scenario file to run, the simulation backend, the runner selection, and
-    whether the behaviour tree status log is recorded.
-    Both execution backends built these separately (compose YAML lines vs a Kubernetes
-    ``env`` list) from the same config keys, so the two could drift while looking
-    correct; container-exec would have been a third copy.
+    Covers only what is derived from the ``.vast``: which scenario file to run, the
+    simulation backend, the runner selection, and whether the behaviour tree status log is
+    recorded. Shared by the Kubernetes backend and container-exec, so the two cannot drift.
 
     Deliberately *not* here:
 
     - **Path-valued vars** (``SCENARIO_PARAMETER_FILE``, ``OUTPUT_DIR``,
-      ``SCENARIO_OUTPUT_DIR``). Those genuinely differ by lane, because the mount
-      layout and job packing do — the caller owns them.
-    - **``SCENARIO_EXECUTION_PARAMETERS``**. The cluster lane derives it from
-      ``log_tree``; a lane with more switches would derive it differently, and sharing
-      it would freeze one lane's choice into the contract.
+      ``SCENARIO_OUTPUT_DIR``). Those depend on the mount layout and job packing — the
+      caller owns them.
+    - **``SCENARIO_EXECUTION_PARAMETERS``**. The Kubernetes backend derives it from
+      ``log_tree``.
     """
     execution = campaign_data.get("execution") or {}
     env = {
@@ -1048,8 +1044,8 @@ def scenario_env(campaign_data):
     # ~100 KB beside a multi-MB rosbag -- there is no campaign worth turning it off for,
     # so there is no way to.
     #
-    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the cluster lane overwrites that
-    # whole variable with '-t', which would drop the flag on exactly the runs whose tree
+    # Not routed through SCENARIO_EXECUTION_PARAMETERS: the Kubernetes backend overwrites
+    # that whole variable with '-t', which would drop the flag on exactly the runs whose tree
     # state is hardest to inspect.
     #
     # An execution image whose scenario_execution predates --bt-log ignores the flag rather
@@ -1067,11 +1063,8 @@ def scenario_env(campaign_data):
     # scenario's ``bag_record`` to say, where it sits beside the behaviour that produces it.
     env['LOG_TOPICS'] = '/rosout /clock'
 
-    # A simulator backend's environment, resolved *here* rather than by each emitter.
-    # The three emitters disagreed about precedence -- compose let the later block win,
-    # the cluster emitted duplicate keys and left it to the runtime, and container-exec
-    # let the user win -- so a backend contribution would have meant something different
-    # on each lane. One dict, one rule: the campaign's own execution.env wins, because a
+    # A simulator backend's environment, resolved *here* rather than by each emitter, so
+    # every emitter applies one rule: the campaign's own execution.env wins, because a
     # backend supplies defaults it knows, not decisions it takes away.
     env.update(_backend_env_for(execution))
     return env
@@ -1104,8 +1097,8 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     Only the ``simulation`` container: a backend describes its own simulator, and handing
     ``ROQSIM_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
 
-    A relative path in those variables resolves against ``RUN_OUTPUT_DIR``, which both
-    lanes already give every sidecar -- so a per-run artifact lands in the run's own
+    A relative path in those variables resolves against ``RUN_OUTPUT_DIR``, which every
+    sidecar is already given -- so a per-run artifact lands in the run's own
     directory rather than at the campaign root where each run would overwrite the last.
     """
     if container_name != SIMULATION_CONTAINER:
@@ -1458,8 +1451,8 @@ def job_node_alias(campaign_data) -> str | None:
     """The node alias this campaign's cluster jobs are confined to, or ``None`` for the pool.
 
     The single reader of ``execution.kubernetes.jobs.node``. The alias narrows the cluster's
-    job pool to the one node registered under it; resolving it to that node is the cluster
-    lane's job.
+    job pool to the one node registered under it; resolving it to that node is the
+    Kubernetes backend's job.
 
     Accepts either the raw mapping or a validated model at each level, matching the two
     shapes callers already pass around.
@@ -1509,7 +1502,7 @@ def render_secondary_entrypoint(*, cluster=False) -> str:
 
 
 def render_entrypoint(*, cluster=False, instance_type_command=None):
-    """The container entrypoint script, with its lane-specific blocks substituted.
+    """The container entrypoint script, with its placement-specific blocks substituted.
 
     The template carries three markers whose content depends on *where* the container
     runs: the init block (``fixuid`` outside a pod, config fetch in-cluster), the post-run
@@ -1951,11 +1944,11 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 #: reaches the container at ``/config/<name>`` -- the entrypoint the container executes, the
 #: scripts it sources, the parameter documents it reads. A configuration's file is staged
 #: where the campaign's copy would have been, so a deploy path equal to one of these would
-#: land on it. Refused at composition rather than left to the lane, which discovers it as a
+#: land on it. Refused at composition rather than left to the cluster, which discovers it as a
 #: refused mount or a pod that dies in its entrypoint, after the image pull.
 #:
 #: An allowlist of what the run owns, not a guess at what a campaign might write: the set is
-#: exactly what :func:`prepare_campaign_configs` and the lane put there, and it lives
+#: exactly what :func:`prepare_campaign_configs` and the backend put there, and it lives
 #: beside the code that writes it so the two cannot drift.
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
@@ -2049,7 +2042,7 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
 
 
 #: The job-link manifest's location inside a campaign, as one path rather than two joins.
-#: A reader that has the campaign's bytes rather than its directory -- the cluster lane's
+#: A reader that has the campaign's bytes rather than its directory -- the cluster's
 #: object store -- needs the same address, and deriving it twice is how the two drift.
 JOB_LINKS_MANIFEST_REL = os.path.join("_transient", JOB_LINKS_MANIFEST)
 
@@ -2060,7 +2053,7 @@ def resolve_job_artifact_rel(links: dict, job_name: str) -> str:
     The path arithmetic of :func:`job_artifact_dir` without the filesystem: the manifest's
     target is relative to the link's own directory, so it only becomes a campaign-relative
     path after being joined with *job_name* and normalised. Split out because the cluster
-    lane resolves the same job against an object-store prefix, where there is no directory
+    resolves the same job against an object-store prefix, where there is no directory
     to join against and re-deriving the arithmetic would let two readers disagree about
     which job a run's artifacts are in.
 
@@ -2209,7 +2202,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         execution_params: Dictionary containing execution parameters (run_as_user, env, etc.)
         context: Kubernetes context name to use. ``None`` uses the active context.
         image_labels: ``{role: {label: value}}`` already read for each container's image, when
-            the caller has them. The cluster lane does -- it reads them from the registry to
+            the caller has them. The service does -- it reads them from the registry to
             check the container protocol -- and must pass them, because this function runs in
             the controller pod where the docker probes it would otherwise use cannot work.
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when

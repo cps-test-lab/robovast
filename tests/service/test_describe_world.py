@@ -170,9 +170,8 @@ def test_a_deployment_that_cannot_exec_is_passed_through_unwrapped(monkeypatch):
 
 
 def test_an_image_that_is_not_built_keeps_the_step_that_would_build_it(monkeypatch):
-    """Wrapped, it arrives as "could not describe this world in <image>" with the lane named
-    as the remedy -- and a caller then checks a lane that is working while the one command
-    that would settle it, building the image, has been thrown away."""
+    """An unbuilt image reaches the caller as ``ImageNotBuilt`` with its build step, not
+    wrapped as a failure to describe the world."""
     from robovast.common import config_generation
     from robovast.common.errors import ImageNotBuilt
 

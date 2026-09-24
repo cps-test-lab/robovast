@@ -78,7 +78,7 @@ export type CampaignPhase =
 // Results tree's verdict, and three separate lists of it had already drifted apart.
 //
 // `initializing` is the first: the service has accepted the campaign and it is listed and
-// addressable, but the lane's pre-flight (project push, image resolution) has not finished.
+// addressable, but the service's pre-flight (project push, image resolution) has not finished.
 //
 // `importing` is the one live phase a campaign can reach without ever having run here — a
 // campaign taken in from an archive or the share enters at it, and rolls on into
@@ -528,7 +528,7 @@ export const robovast = {
     request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
 
   // Direct URL of a campaign's tar.gz (a GET the browser downloads), on the data plane:
-  // the service tars its results directory into the response, on either lane.
+  // the service tars its results directory into the response.
   archiveUrl: (campaignId: string) =>
     `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
 

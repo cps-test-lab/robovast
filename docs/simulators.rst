@@ -81,14 +81,14 @@ a constant because the role name is:
        remote("ipc:///ipc/sut")
 
 ``/ipc`` is one address for every run — an ``emptyDir`` the pod's containers share — so
-a scenario needs no lane-dependent branch.
+a scenario needs no deployment-dependent branch.
 
 .. warning::
 
    **Do not reach for ``osc.docker``.** Its ``docker_exec`` / ``docker_put`` take a
    ``container:`` parameter and look like the right tool, but they drive the Docker
-   daemon: they need a socket mount and do not exist on the Kubernetes lane. A campaign
-   built on them works locally and fails in-cluster. Anything that must reach the SUT —
+   daemon: they need a socket mount, which a cluster pod does not have, so a campaign built on
+   them fails in-cluster. Anything that must reach the SUT —
    including writing a file inside it at run time — goes through ``remote()``.
 
 **Only node-free actions can be ``remote()``-modified.** The server passes exactly three
@@ -408,7 +408,7 @@ Asking every time rather than only when a cheap test suspects a chain: that test
 second copy of the simulator's rule, free to disagree with it, and wrong in the direction that
 stages too little -- which nothing notices until a run opens the file that never travelled. What
 it costs instead is an exec in a container the caller already holds, since ``validate_project``
-and ``preview_configurations`` compose inside the lane's aux-runner context and keep it warm
+and ``preview_configurations`` compose inside the service's aux-runner context and keep it warm
 across an authoring loop.
 
 Every world, and each question once: within one composition the answer is memoised on what

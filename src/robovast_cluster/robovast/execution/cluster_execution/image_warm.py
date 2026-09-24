@@ -18,10 +18,8 @@
 
 A built image lives in the registry and on **no node**, so the first pod to run it pays
 the whole multi-GB pull -- and that pod is usually the diagnostic ``exec_in_container``,
-whose entire justification is answering "is the package installed?" in seconds. The local
-lane does not have this problem: ``buildx --load`` puts the image straight into the daemon
-store the runner uses (see ``robovast.service.image_store``). This restores that property
-on the cluster lane.
+whose entire justification is answering "is the package installed?" in seconds. Warming
+puts the image on the nodes before that pod asks for it.
 
 The mechanism is a throwaway Job whose one container *is* the target image, running
 ``/bin/true``. **The pull is the work.** Nothing reads the Job's result, so a broken

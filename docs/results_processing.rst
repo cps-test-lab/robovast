@@ -497,7 +497,7 @@ Written by the auto-injected ``resource_usage`` plugin as ``<run>/resource_usage
 the job's ``resource_usage_<container>.csv`` files, and ingested as the ``resource_usage``
 table like any other per-run CSV.
 
-Why it is a table and not just those files: a lane gives a job a fixed number of cores, so a
+Why it is a table and not just those files: the cluster gives a job a fixed number of cores, so a
 simulator that starves the stack changes what the stack does. That is a competing
 explanation for any behavioral result, and it can only be ruled out in the same query as
 the behaviour.
@@ -550,7 +550,7 @@ summed RSS double-counts pages shared with forks.
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
 One row per postprocessing step -- ``stage``, ``convert``, ``host`` -- written to
-``_execution/postprocess_system_usage.csv`` on the cluster lane, beside the campaign it
+``_execution/postprocess_system_usage.csv``, beside the campaign it
 describes. The columns are the sampler's own (``memory_peak``, ``memory_max``,
 ``cpu_usage_usec``, ``nr_periods``, ``nr_throttled``, ``oom_kills``, ...), so a step's figures
 read the same way as a run's :ref:`system_usage <per-run-resource-usage>` rows and can be
@@ -729,7 +729,7 @@ A configuration that produced nothing: ``missing``
 
 Every status above belongs to a run. ``missing`` belongs to a *configuration*: the campaign
 was composed with it and its results never reached the tree -- never dispatched, or lost
-between the lane and the results root. It appears in ``run_view`` as one row with
+between the cluster and the results root. It appears in ``run_view`` as one row with
 ``run_id`` NULL, exactly as ``composition_failed`` does for a search draw that could not be
 built, because a join through ``run`` would otherwise drop it.
 
@@ -1303,9 +1303,8 @@ postprocessing script, or on a campaign imported raw — name the campaign:
 
    Skip a postprocessing plugin (repeatable), e.g. ``--skip rosbags_to_webm``.
 
-The campaign is the address and the service is the lane, so the rosbag→CSV step runs
-wherever that campaign's runs ran — in-cluster for a cluster campaign — and the campaign's
-derived data is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
+The campaign is the address, so the rosbag→CSV step runs in-cluster, where that campaign's
+runs ran, and the campaign's derived data is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
 so the campaign re-enters its ``postprocessing`` phase and the command returns. Follow it
 exactly as after a launch:
 
@@ -1375,7 +1374,7 @@ postprocess`` is the same dispatch from the CLI, so all three surfaces behave al
 there is no longer a local, synchronous path that behaves differently from the rest.
 
 Because it re-enters that phase as a tracked campaign, a re-trigger can also be **stopped**
-like one: ``stop`` cancels it — deleting the Job on the cluster lane — the campaign returns
+like one: ``stop`` cancels it — deleting its Job — the campaign returns
 to ``finished``, and ``postprocessing_error`` says it was cancelled rather than that it
 failed. Nothing that was already derived is lost, and nothing claims to be derived that is
 not: an interrupted bag is redone next time, a partial index load is replaced rather than

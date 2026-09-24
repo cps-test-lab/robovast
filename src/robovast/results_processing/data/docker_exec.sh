@@ -53,7 +53,7 @@ PROVENANCE_MOUNT=()
 EXPLICIT_INPUT=""
 # What the container may use. Unset runs it uncontained, which is what a direct caller of this
 # script gets; the postprocessing plugin always passes both, so that a conversion here is held
-# to the same figure the cluster lane reserves for it. The figure also reaches the
+# to the same figure the cluster reserves for it. The figure also reaches the
 # conversion's worker count on its own: rosbags_process reads its cgroup quota rather than the
 # machine's core count, so a capped container converts as many bags at once as it has cores.
 LIMITS=()
@@ -166,7 +166,7 @@ if ! docker info >/dev/null 2>&1; then
     echo "ERROR: this script needs a Docker daemon and cannot reach one."
     echo "  It runs a container directly, so it belongs on a machine with Docker -- not in"
     echo "  a cluster pod, where rosbag conversion runs as a Job instead."
-    echo "  Reaching this from a campaign means the step was dispatched to the wrong lane:"
+    echo "  Reaching this from a campaign means the step was dispatched to the wrong place:"
     echo "  the in-pod pass must skip the steps that need the execution image, which the"
     echo "  Job's image container already ran."
     exit 1

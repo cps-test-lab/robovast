@@ -256,12 +256,11 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
 
 # -- the container tier: preview is a place a runner is arranged ----------------------
 
-def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
-    """The bug this closes: preview never entered the hook that provides the runner.
+def test_preview_composes_inside_the_service_s_aux_runner_context(monkeypatch, tmp_path):
+    """Preview enters the hook that provides the runner, held and keyed on the project.
 
-    The hook existed and the cluster lane overrode it, but only ``start_campaign`` entered
-    it -- so in a service pod, where there is no ``docker`` to fall back on, a sweep whose
-    variation needs a helper image was refused and the refusal blamed the ``.vast``.
+    A service pod has no ``docker`` to fall back on, so a sweep whose variation needs a helper
+    image is composable only inside that hook.
     """
     from tests.service.null_service import NullService
 
@@ -294,14 +293,13 @@ def test_preview_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_
     assert response.aux_containers == ["aux-builder"]
 
 
-def test_validation_composes_inside_the_lane_s_aux_runner_context(monkeypatch, tmp_path):
+def test_validation_composes_inside_the_service_s_aux_runner_context(monkeypatch, tmp_path):
     """Validation composes too, so it is a place a runner has to be arranged.
 
     It counts a sweep's cells by composing the file, which reaches whatever that composition
-    asks for a container -- so on a lane with no ``docker`` to fall back on, a project whose
-    world only the simulator can enumerate was reported invalid for a property of where the
-    check ran. It shares preview's tag: the two are the same authoring loop over the same
-    file, and one warm container serves both.
+    asks for a container, and a service pod has no ``docker`` to fall back on. It shares
+    preview's tag: the two are the same authoring loop over the same file, and one warm
+    container serves both.
     """
     from tests.service.null_service import NullService
     from robovast.service.service_base import _preview_tag
@@ -351,8 +349,8 @@ def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
             object.__new__(NullService), "camp-7", None, should_stop=stop):
         pass
     # The campaign's own id, and *not* held: its span owns the container, which is what
-    # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits a
-    # lane's span makes that are long enough for an operator to give up on.
+    # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits the
+    # span makes that are long enough for an operator to give up on.
     assert seen == [("camp-7", False, stop)]
 
 

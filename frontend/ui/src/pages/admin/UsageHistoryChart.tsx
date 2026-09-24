@@ -38,17 +38,17 @@ function coverage(data: UsageHistory, window: Window): string {
   return `one point every ${Math.round(data.step_s)}s — ${volatile}`
 }
 
-// What the fill and the dashed line mean, and — when the lane cannot measure — why there is no
+// What the fill and the dashed line mean, and — when the service cannot measure — why there is no
 // fill at all. The reason comes from the live reading rather than the history, because a sample
 // carries no reason: a null there is a gap, and only `/usage` knows whether the cause is a missing
-// metrics-server, RBAC that was never reconciled, or a lane that simply reserves nothing.
+// metrics-server, RBAC that was never reconciled, or a backend that simply reserves nothing.
 function encodingNote(rows: { kind: string }[], metricsUnavailable?: string | null): string {
   const has = (kind: string) => rows.some((r) => r.kind === kind)
   if (has('measured') && has('reserved')) return 'filled = measured, dashed = reserved'
   if (has('reserved') && metricsUnavailable) return `reserved only — ${metricsUnavailable}`
   if (has('reserved')) return 'reserved only'
-  // A lane that reserves nothing: one fill is the whole truth.
-  if (has('measured')) return 'filled = measured; this lane reserves nothing'
+  // A backend that reserves nothing: one fill is the whole truth.
+  if (has('measured')) return 'filled = measured; this service reserves nothing'
   return ''
 }
 

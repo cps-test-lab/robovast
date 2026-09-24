@@ -66,8 +66,8 @@ def _ingested(monkeypatch, tmp_path):
     monkeypatch.setenv(index_db.DSN_ENV, f"{DSN} options=-csearch_path={SCHEMA}")
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
     from tests.service.null_service import serving
-    lane = serving(tmp_path / "results", tmp_path / "workspaces")
-    monkeypatch.setattr(service_access, "service_client", lambda: lane)
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
     root = _campaign(tmp_path / "results")
     with index_query.open_index(readonly=False) as conn:
         campaign_ingest.ingest_campaign(conn, str(root), CAMPAIGN)

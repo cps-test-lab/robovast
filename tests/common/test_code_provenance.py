@@ -99,8 +99,7 @@ def test_a_clean_checkout_says_nothing(monkeypatch, caplog):
 
 
 def test_provenance_yaml_round_trips():
-    """Both lanes write execution.yaml differently -- one dumps a dict, the other emits text
-    from a shell script -- so the text form has to parse back to the same record."""
+    """The text form of the provenance record parses back to the same record."""
     import yaml
 
     record = {"revision": "a" * 40, "revision_source": "git", "dirty": True,

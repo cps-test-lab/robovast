@@ -548,9 +548,9 @@ POSTPROCESS_CONVERT_DEFAULTS = {"cpu": 4, "memory": "4Gi"}
 def postprocess_convert_resources(config_path, resolver=None) -> dict:
     """``{"cpu": …, "memory": …}`` the conversion step runs at.
 
-    The single place the figure is decided: the Kubernetes lane renders it as a container's
-    requests and limits, ``vast results postprocess`` on a development machine as ``docker
-    run --cpus/--memory``, and both derive the worker count from the same ``cpu``. Keeping
+    The single place the figure is decided: the Kubernetes backend renders it as a container's
+    requests and limits, a development machine as ``docker run --cpus/--memory``, and both
+    derive the worker count from the same ``cpu``. Keeping
     the decision here is what stops two readers from meaning different things by one
     ``.vast`` block.
 
@@ -559,8 +559,8 @@ def postprocess_convert_resources(config_path, resolver=None) -> dict:
     an unreadable file mean the same thing as declaring nothing: the shared defaults. What
     would be wrong is refusing to convert over an optional block nobody wrote.
 
-    *resolver* resolves the per-cluster list form (``cpu: [{context: 4}, …]``) for a lane that
-    has a cluster context; it is handed the declared mapping and returns a mapping of scalars.
+    *resolver* resolves the per-cluster list form (``cpu: [{context: 4}, …]``) for a caller
+    that has a cluster context; it is handed the declared mapping and returns a mapping of scalars.
     A caller without one -- a development machine, where there is no context and so no
     entry to choose -- passes ``None``, and a list then raises rather than being guessed at.
     """
@@ -577,15 +577,15 @@ def postprocess_convert_resources(config_path, resolver=None) -> dict:
             continue
         if isinstance(value, list):
             raise ValueError(
-                f"results_processing.resources.{key} is declared per cluster, but this "
-                f"lane has no cluster context to choose an entry with. Give it a plain "
+                f"results_processing.resources.{key} is declared per cluster, but there "
+                f"is no cluster context here to choose an entry with. Give it a plain "
                 f"value, or run the postprocessing on a cluster.")
         resolved[key] = value
     return resolved
 
 
 #: Written by the execution-image steps that ran elsewhere -- the image container of the
-#: cluster lane's postprocessing Job -- and carried back with their outputs. Named here and
+#: cluster's postprocessing Job -- and carried back with their outputs. Named here and
 #: in ``cluster_execution/postprocess_job.py``; the two must agree, and this is the reading
 #: half.
 STAGED_PROVENANCE = "_execution/image_provenance.json"
@@ -816,12 +816,12 @@ def _scope(command, config_dir: str, plugins=None) -> str:
 
 
 def image_steps(commands, config_dir: str, ctx) -> list:
-    """The commands to run in the execution image for *commands*, as the lane in *ctx* sees it.
+    """The commands to run in the execution image for *commands*, as the runner in *ctx* sees it.
 
     Every entry must be a step that needs the image, and every such step must name its
     command (:meth:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin.image_command`).
     A plugin that declares ``needs_execution_image`` without one is refused here, before any
-    compute is spent: a lane without Docker has no other way to run it.
+    compute is spent: a cluster Job has no other way to run it.
     """
     from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
         ExecutionImagePlugin, ImageStep)
@@ -1088,7 +1088,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements
         output(f"⏹  {POSTPROCESSING_CANCELLED}")
         return False, POSTPROCESSING_CANCELLED
 
-    # Entries from work this process did not run. On the cluster lane the rosbag
+    # Entries from work this process did not run. On the cluster the rosbag
     # conversions happen in a Job, and this pass runs with those steps skipped -- so
     # without merging its record, a cluster campaign's provenance would describe only
     # the steps that happened to run here, and silently omit the rest.

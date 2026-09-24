@@ -1,12 +1,10 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""``/dev/shm`` sizing, from a real ``.vast`` to what each lane renders.
+"""``/dev/shm`` sizing, composed from a real ``.vast``.
 
-Deliberately composed rather than hand-fed. The lane tests beside this one build their
-``execution`` dict directly, which is why ``shm_size`` could be dropped in composition and
-still look covered: the manifest was right about a dict no campaign ever produced. These
-start from a file.
+Composed rather than hand-fed: the Job manifest tests build their ``execution`` dict
+directly, so only a test that starts from a file covers what composition hands the backend.
 """
 
 import textwrap
@@ -55,7 +53,6 @@ def _composed_execution(tmp_path, declared=None):
 def test_composition_settles_the_size(tmp_path, declared, expected):
     """Unset means the default; declared means what was declared. There is no third state.
 
-    The default is settled here, not in each lane, so the two cannot drift apart -- which is
-    the whole reason the field existed in every campaign file in the first place.
+    The default is settled in composition, not in the backend that renders the pod.
     """
     assert _composed_execution(tmp_path, declared)["shm_size"] == expected

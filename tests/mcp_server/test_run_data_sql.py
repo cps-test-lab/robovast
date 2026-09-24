@@ -216,8 +216,8 @@ def test_list_campaign_plots(campaign, monkeypatch, tmp_path):
     # visualization.results.data_browser.plots, which the service reads.
     from robovast.mcp_server import service_access
     from tests.service.null_service import serving
-    lane = serving(tmp_path, tmp_path / "workspaces")
-    monkeypatch.setattr(service_access, "service_client", lambda: lane)
+    service = serving(tmp_path, tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
     config_dir = Path(campaign) / "_config"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "demo.vast").write_text(

@@ -118,7 +118,7 @@ the meaning of a status is uniform across every route:
    * - Code
      - Meaning
    * - ``400``
-     - ``ValueError`` — a malformed or rejected argument (an unknown lane, a path
+     - ``ValueError`` — a malformed or rejected argument (an unknown backend, a path
        escaping its namespace, a non-``SELECT`` query).
    * - ``404``
      - ``KeyError`` — no such campaign, workspace, build or file.
@@ -129,11 +129,10 @@ the meaning of a status is uniform across every route:
    * - ``422``
      - A notebook or visualization failed to render.
    * - ``501``
-     - ``UnsupportedOperation`` — the operation exists and the lane answering does not offer
-       it: a rank or a hold on a lane with no queue. The ``detail`` is one sentence
-       naming the operation and the lane, so it cannot be mistaken for bad input, a
-       conflict, or a bug, and the same call on the other lane is the only thing that
-       changes it. Also: workspaces are not configured on this service.
+     - ``UnsupportedOperation`` — the operation exists and the implementation answering does
+       not offer it. The ``detail`` is one sentence naming the operation and the
+       implementation, so it cannot be mistaken for bad input, a conflict, or a bug. Also:
+       workspaces are not configured on this service.
    * - ``503``
      - A dependency did not answer, so the request could not be attempted: the object
        store, the index, or the exec path into a container. Worth retrying, unlike the
@@ -154,7 +153,7 @@ above: ``400`` for an id that is not a campaign id, ``409`` for a running campai
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class: ``exec_path_unavailable``, for a deployment
 where no command can be run in a container at all, and ``unsupported_operation``, for an
-operation this lane does not offer (a client neither retries it nor blames its input). The
+operation this service does not offer (a client neither retries it nor blames its input). The
 exception type is what an
 HTTP boundary drops, and a client that has to *behave* differently (report the deployment
 rather than the image, degrade a check to "unchecked") would otherwise have to match on the

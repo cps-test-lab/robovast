@@ -130,7 +130,7 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
                 budget = _MAX_CAMPAIGN_ID_LEN - (len(cid) - len(name))
                 raise CampaignConfigError(
                     f"Campaign id {cid!r} is {len(cid)} characters, past the "
-                    f"{_MAX_CAMPAIGN_ID_LEN}-character limit the cluster lane's storage "
+                    f"{_MAX_CAMPAIGN_ID_LEN}-character limit the cluster's storage "
                     f"backend puts on a bucket name. The timestamp suffix is fixed, so "
                     f"the campaign name/slug {name!r} ({len(name)} chars) is what has to "
                     f"shorten -- to {budget} characters or fewer.")
@@ -354,7 +354,7 @@ class CampaignController:
         campaign of stalling. Published on the status because only the controller can see
         the ``.vast``; readers just compare against it.
 
-        This is the same number the cluster lane puts on ``activeDeadlineSeconds``, which
+        This is the same number the cluster puts on ``activeDeadlineSeconds``, which
         is the point -- were the two to diverge, a Job could be force-killed while the
         status still called the run healthy.
 
@@ -442,7 +442,7 @@ class CampaignController:
                 if isinstance(refs, dict) and not refs.get("declared")}
         roles = sorted(ours | set(images))
         # The roles are the campaign's containers, but the REF has to be what actually ran.
-        # On the cluster lane ``images`` records what the .vast declared, and for a container
+        # ``images`` records what the .vast declared, and for a container
         # robovast builds that is its *base* -- whose lock describes different software than
         # the image the campaign ran. ``image_revisions`` is the digest of the built image.
         revisions = execution.get("image_revisions") or {}
@@ -1602,7 +1602,7 @@ def publish_terminal_phase(state) -> None:
 def end_campaign(campaign_id: str, state, notifier=None) -> None:
     """End a campaign exactly once: terminal phase, heartbeat off, one notification.
 
-    Called by whichever scope is **outermost** for the lane, and only by it — see
+    Called by whichever scope is **outermost** for the campaign, and only by it — see
     ``RunOptions.finalize_phase``. ``run()`` does not publish ``finished`` when it
     returns, because share and postprocessing still have to happen; the campaign is over
     when this runs and not before.
@@ -1641,8 +1641,8 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
     nothing was indistinguishable from a campaign still running.
 
     ``end_campaign`` runs from a ``finally`` and only when this tail is the campaign's
-    outermost scope (``RunOptions.finalize_phase``). A lane sets that false
-    and ends the campaign itself, after the postprocessing it runs once this returns.
+    outermost scope (``RunOptions.finalize_phase``). A caller that sets it false
+    ends the campaign itself, after the postprocessing it runs once this returns.
     """
     options = options or RunOptions()
     # Read the verdict *before* any step of this tail can move the phase: the share step
@@ -1696,7 +1696,7 @@ def _finish_campaign(backend: ExecutionBackend, campaign_root: str, campaign_id:
             if state is not None:
                 _record_controller_outcome(campaign_root, campaign_id, state, backend)
         _finalize(backend, campaign_root)
-        # After the finalize upload, not before: on a lane whose durable home is a store,
+        # After the finalize upload, not before: where the durable home is a store,
         # the data postprocessing derived reaches that home in the upload above, so a total
         # taken earlier would under-report exactly the artifacts the campaign was
         # postprocessed to produce. Skipped for a failed campaign, which never finished
@@ -1801,7 +1801,7 @@ def _required_backend(backend) -> ExecutionBackend:
     """The backend a campaign runs on, which every caller names.
 
     There is no default: a campaign's runs happen wherever its backend puts them, and
-    a driver that silently picked one would launch onto a lane nobody chose.
+    a driver that silently picked one would launch onto a backend nobody chose.
     """
     if backend is None:
         raise ValueError("a campaign needs an execution backend; none was given")
@@ -1812,7 +1812,7 @@ def _required_backend(backend) -> ExecutionBackend:
     """The backend a campaign runs on, which every caller names.
 
     There is no default: a campaign's runs happen wherever its backend puts them, and
-    a driver that silently picked one would launch onto a lane nobody chose.
+    a driver that silently picked one would launch onto a backend nobody chose.
     """
     if backend is None:
         raise ValueError("a campaign needs an execution backend; none was given")

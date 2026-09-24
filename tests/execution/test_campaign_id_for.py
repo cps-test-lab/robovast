@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""A campaign id must fit in the bucket name the cluster lane's embedded object store
+"""A campaign id must fit in the bucket name the cluster's embedded object store
 derives it into -- refused here, at mint time, rather than left to surface as a
 storage-layer error once a campaign has already been accepted and started.
 """

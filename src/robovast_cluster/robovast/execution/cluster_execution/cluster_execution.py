@@ -580,7 +580,7 @@ def pod_restarted_containers(pod) -> "tuple[str, str] | None":
 def pod_invalidating_restart(pod) -> "tuple[str, str] | None":
     """``(reason, message)`` if a restart of *pod* invalidated the trial, else ``None``.
 
-    The campaign lane's reading, and it turns on the exit code rather than on which
+    The reading for a campaign pod, and it turns on the exit code rather than on which
     container it was.
 
     A campaign pod runs ``restartPolicy: Never``, so its regular container and its one-shot
@@ -718,7 +718,7 @@ class PodLogTail:
 
         # Concurrently, because this runs every 0.5s per open panel and a three-container
         # job would otherwise cost three serial round-trips -- over a `kubectl
-        # port-forward` (a service driving the lane from off-cluster) that is enough to
+        # port-forward` (a service running off-cluster) that is enough to
         # make the panel visibly trail the run. The merge below sorts by timestamp, so
         # completion order does not affect the output.
         if len(names) > 1:

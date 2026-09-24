@@ -18,7 +18,7 @@
 """``vast`` verbs that need the core: running a service, and building for one.
 
 These attach to the root group (:mod:`robovast.client.cli`) through the
-``robovast.cli_plugins`` entry point, exactly as the execution lanes do. They live here
+``robovast.cli_plugins`` entry point. They live here
 rather than with the root group because each needs something a client install does not
 have -- a service implementation, a Docker daemon, the web UI build, the results reader.
 

@@ -21,9 +21,9 @@ landed the campaign (and after the optional conversion container has produced it
 
     python3 -m robovast.execution.cluster_execution.postprocess_host
 
-It runs beside the data instead of fetching it: the same
-:func:`postprocess_job.run_host_postprocessing` the off-cluster lane calls, so there is one
-implementation of the sequence, but with the campaign already on local disk. What it derives
+It runs beside the data instead of fetching it:
+:func:`postprocess_job.run_host_postprocessing`, the one implementation of the sequence,
+with the campaign already on local disk. What it derives
 then has to be sent back, because this pod's filesystem does not outlive it: one tar of what
 the Job produced, streamed as a ``PUT`` to the service's data plane, which writes it into
 the campaign's directory on the results volume.

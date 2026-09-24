@@ -461,11 +461,12 @@ Every remote operation is a method on
 
 #. **The interface** — the abstract method, its ``Routes`` entry and the request/response
    models. They live in ``robovast-client``, so a client install has them without the core.
-#. **The lane and the HTTP transport** — in
-   ``robovast.service.service_base.ServiceBase`` when the body is correct for any lane,
+#. **The service and the HTTP transport** — in
+   ``robovast.service.service_base.ServiceBase`` when the body is correct for any
+   implementation,
    otherwise an abstract hook there and a body in ``ClusterService`` and in the suite's
-   ``NullService`` (:ref:`two-lanes-one-base`); and ``HTTPTransport`` over the route. A lane
-   may decline an operation, and then it raises ``UnsupportedOperation`` naming the operation
+   ``NullService`` (:ref:`one-base-hooks`); and ``HTTPTransport`` over the route. An
+   implementation may decline an operation, and then it raises ``UnsupportedOperation`` naming the operation
    and itself, in its own class; never a default on the base, and never a ``ValueError``
    that reads as bad input. The refusal crosses HTTP as a ``501`` and reaches every client
    as the one sentence (:doc:`http_api`, "Status codes").
@@ -479,11 +480,12 @@ way to it. Putting it on the interface is what gives every client the same answe
 either transport.
 
 Anything the executing pod needs travels the same way: a value the controller reads must be
-passed through the lane (``cluster_service.py`` into the pod's environment), or the
-operation is accepted by the service and does nothing in the pod. The hooks are what keep
-that failure loud rather than silent: a hook the lane has not answered refuses to
-construct, and a body on the base is one that is correct for any lane, so the only way a
-cluster path can be missing is for the lane's own class to leave it out.
+passed through ``ClusterService`` (``cluster_service.py`` into the pod's environment), or
+the operation is accepted by the service and does nothing in the pod. The hooks are what
+keep that failure loud rather than silent: a hook ``ClusterService`` has not answered
+refuses to construct, and a body on the base is one that is correct for any
+implementation, so the only way a cluster path can be missing is for ``ClusterService``
+itself to leave it out.
 
 Keep disk and database I/O off the event loop
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1029,7 +1031,7 @@ generated files anywhere downstream. A *per-configuration* artifact — one a va
 produces per cell — is staged at that same ``/config/<path>`` instead of the campaign's copy,
 so a generator and a variation put a file in the same place and the campaign-wide one simply
 loses the path when a cell owns it. It also means generation is **host-side, before
-publication**, so the cluster lane gets the artifacts with no extra work.
+publication**, so the cluster gets the artifacts with no extra work.
 
 **Generation vs. variation.** Both can produce artifacts, and the test for which you want is:
 *does it produce configurations, or only files?* A generator produces files, once per
@@ -1823,7 +1825,7 @@ Status: phase and stage
    * - ``phase``
      - Meaning
    * - ``initializing``
-     - Accepted: registered, listed, and addressable by id, with the lane's pre-flight
+     - Accepted: registered, listed, and addressable by id, with the service's pre-flight
        (project push, registry/base-image resolution) still to do. The first phase every
        campaign has, and the one that guarantees a caller can always find what it just
        started — see :ref:`a-started-campaign-is-findable`.
@@ -1878,7 +1880,7 @@ actually true: retrying a start that in fact succeeded creates a second campaign
 only defense is that the first one can be found.
 
 Two things back it. Registration happens *before* the slow work — ``create_campaign``
-records the campaign in the lane's registry and returns, and the driver builds the image —
+records the campaign in the service's registry and returns, and the driver builds the image —
 so the campaign is live from ``t=0`` rather than from whenever its results directory
 appears (see :ref:`campaign-building-phase`). ``list_campaigns`` unions that registry into
 its id set beside the disk scan, so a campaign is listed for the whole length of its
@@ -1945,10 +1947,10 @@ two campaigns needing the same image both wait on one build. Two consequences:
   local ``docker rm -f robovast`` cannot reach a ``buildx`` thread — and it must stay that
   way.
 
-One wait loop serves any lane: ``_await_build_image`` drives ``get_image_build_status``
+One wait loop: ``_await_build_image`` drives ``get_image_build_status``
 and ``get_image_build_log``, which are interface operations each transport implements, so
-the in-cluster BuildKit Job is waited on by the base's code rather than by a loop of the
-lane's own.
+the in-cluster BuildKit Job is waited on by the base's code rather than by a loop of
+``ClusterService``'s own.
 
 The loop also **tees the build log into the campaign's own** ``_execution/build.log``,
 which ``INFRA_PHASES`` serves as a leading ``BUILD`` section (see :ref:`the MCP build workflow <mcp-build-phase>`). That
@@ -2337,7 +2339,7 @@ new interface op, then a page/tab that queries it.
 
 **Resource usage (``/usage``).** ``resource_usage`` is a backend-agnostic interface op
 returning :class:`~robovast.service.interface.ResourceUsage` (CPU cores + memory bytes,
-capacity vs. used, and a ``parallel_runs`` flag). How a lane measures lives entirely in
+capacity vs. used, and a ``parallel_runs`` flag). How the service measures lives entirely in
 its ``_compute_resource_usage``: ``ClusterService`` sums node ``allocatable`` (capacity,
 reusing ``kube_client.parse_resource``) and the requests of the non-terminal pods *bound
 to those same nodes* (used) — so callers (the top-bar chip, the ``resource_usage`` MCP
@@ -2689,7 +2691,7 @@ Two entry points share that one implementation (``postprocess_campaign``):
   flushed — the index's ``runs`` table is built from it) and **before ``_finalize``**, so the results ride
   the campaign's existing upload rather than needing one of their own.
 * **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
-  the lane's body for the interface operation: the service has no ROS runtime, so it
+  the cluster's body for the interface operation: the service has no ROS runtime, so it
   submits the Job, whose pod is what holds the campaign, and
   materialises only the few small status objects it edits and publishes back — before and again
   after the pod, since the pod is what wrote the provenance the reconstruction reads. This backs the web **Retrigger postprocessing** dialog, the MCP

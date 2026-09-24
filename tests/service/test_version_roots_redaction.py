@@ -26,7 +26,7 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
 class _LocalFilesystemService:
-    """A local-lane service: it has real roots and is willing to report them."""
+    """A service with real roots that is willing to report them."""
 
     def version(self):
         return VersionInfo(robovast_version="x", backend="docker",

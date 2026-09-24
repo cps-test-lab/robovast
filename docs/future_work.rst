@@ -153,8 +153,8 @@ written to the **job** directory, which the index ingest does not glob. That gap
   and a live campaign also published a ``progress`` that could not move.
   ``ExecutionBackend.count_run_artifacts`` now counts the per-run ``test.xml`` files under
   the campaign root, where a run's results land, and a backend that genuinely cannot
-  count is logged rather than passed over. What is still unverified is whether the *search*
-  lane's per-batch record and the campaign row's aggregate agree with those counters over
+  count is logged rather than passed over. What is still unverified is whether a search's
+  per-batch record and the campaign row's aggregate agree with those counters over
   a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
   from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``
   this used to name is gone; the per-batch record now lives in ``campaign.db``'s ``batch``
@@ -233,8 +233,8 @@ creates once. It is also a bearer credential with no expiry that any process rea
 Secret can replay. Kubernetes offers the honest version: a **projected service-account
 token** with an audience and a lifetime, which the service validates with a ``TokenReview``
 and maps to the pod's own identity. That removes the Secret, the mint and the campaign-id
-scope in one go, at the cost of an API-server call per verification and a lane that must
-work in-pod only.
+scope in one go, at the cost of an API-server call per verification and a verification
+that works in-pod only.
 
 **Every ``/results`` byte is copied through Python.** The file address space serves a run's
 artifacts through the control plane's ``FileResponse``, so a 2 GB rosbag is read and written
@@ -382,7 +382,7 @@ sixteenth.
   (:mod:`robovast.results_processing.advice`) as though it were one. A sibling
   ``system_usage`` table is the right shape, and the split should be structural so later
   metrics of either kind have an obvious home.
-* **Make the new lane column-generic.** CSV → index already is: any ``*.csv`` in a run
+* **Make the new table column-generic.** CSV → index already is: any ``*.csv`` in a run
   directory becomes a table, columns are the union of row keys and types are inferred
   (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
   :mod:`robovast.results_processing.csv_types`), including ``ALTER TABLE`` for a column that
@@ -395,7 +395,7 @@ sixteenth.
 * **Reuse the sampler and the slicing helpers.** One daemon should write both files:
   :mod:`robovast.execution.data.monitor_resources` can derive the sibling path from its
   ``argv[1]``, which leaves both entrypoint scripts — and the launch contract pinned by
-  ``tests/execution/test_resource_monitor_lanes.py`` — untouched. Per-run splitting,
+  ``tests/execution/test_resource_monitor_output_path.py`` — untouched. Per-run splitting,
   ``in_window`` and the clock conversion all come from
   :mod:`robovast.results_processing.run_slices`; its ``container_of`` is deliberately the one
   place per-container artifact names are inverted, so a new filename is registered there.

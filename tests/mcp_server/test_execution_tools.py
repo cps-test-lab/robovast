@@ -47,7 +47,7 @@ def test_preview_configurations_bad_path_returns_error():
     assert "error" in authoring.preview_configurations("/no/such/file.vast")
 
 
-# -- which lane answered: the workspace, or a file on this host ---------------
+# -- which source answered: the workspace, or a file on this host -------------
 #
 # An absolute filesystem path and a ``/sources`` address both start with ``/``. Telling
 # them apart by parsing, not by a prefix test, is what keeps ``/home/me/x.vast`` from
@@ -55,7 +55,7 @@ def test_preview_configurations_bad_path_returns_error():
 
 
 class _FakeAuthoringClient:
-    """A service stand-in for the workspace lane, recording what it was asked."""
+    """A service stand-in for the workspace source, recording what it was asked."""
 
     def __init__(self):
         self.calls = []
@@ -119,7 +119,7 @@ def test_validate_refuses_a_results_address(authoring_service):
     assert not authoring_service.calls
 
 
-def test_preview_strips_web_previews_and_reports_the_lane(authoring_service):
+def test_preview_strips_web_previews_and_reports_the_source(authoring_service):
     """``previews`` is Module-Federation asset data for the web UI, not for a caller."""
     result = authoring.preview_configurations("/sources/ws-ab12/demo.vast", limit=5)
     assert result["source"] == "workspace"
@@ -354,15 +354,14 @@ def test_stop_without_service_fails_loudly(no_service):
     assert "no robovast-service" in execution.stop_campaign("x")["error"]
 
 
-# -- the download link follows the campaign's lane, not the service's default ---------
+# -- the download link does not depend on where a campaign ran -------------------------
 
 
 @pytest.fixture
-def dual_lane(monkeypatch):
-    """A service whose reported default lane is not the lane a campaign ran on.
+def mismatched_backend(monkeypatch):
+    """A service whose reported backend is not the one a campaign's record names.
 
-    Kept after the lane branching was removed, because "the answer does not depend on the
-    lane" is only worth asserting against a service where the two disagree.
+    "The answer does not depend on the backend" is only worth asserting where the two disagree.
     """
     from robovast.mcp_server import data_access
 
@@ -385,21 +384,16 @@ def dual_lane(monkeypatch):
     return recorded
 
 
-@pytest.mark.parametrize("lane", ["cluster", "local", None])
-def test_download_offers_the_url_whatever_lane_the_campaign_ran_on(dual_lane, lane):
-    """Every lane serves the archive, so the tool does not ask which one ran it.
+@pytest.mark.parametrize("execution_type", ["cluster", "local", None])
+def test_download_offers_the_url_whatever_the_campaign_records(mismatched_backend,
+                                                               execution_type):
+    """The service serves every campaign's archive, so the tool never reads where it ran.
 
-    Two bugs live in that question, and this is here so neither can come back. Reading the
-    *service's* default backend tells every cluster campaign on a dev host that its results
-    are on the local filesystem — a real capability denied and a place to look that holds
-    nothing. Reading the campaign's own record instead, but keeping the branch, denies the
-    download to genuinely local campaigns; those are served too (the local lane tars its own
-    results directory), so the branch has nothing left to decide.
-
-    ``lane=None`` is a campaign with no execution record yet: not a question that gets asked.
+    Neither the service's backend nor the campaign's recorded ``execution_type`` decides the
+    answer; ``None`` is a campaign with no execution record yet.
     """
-    if lane:
-        dual_lane["camp-x"] = lane
+    if execution_type:
+        mismatched_backend["camp-x"] = execution_type
     result = results_lifecycle.get_campaign_download("camp-x")
     assert result["url"].endswith("/data/campaigns/camp-x/archive")
     assert "error" not in result
@@ -437,7 +431,7 @@ def test_get_campaign_download_cluster_returns_url(monkeypatch):
 
 
 def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
-    """A local service serves the archive too, so the two lanes answer identically."""
+    """The URL does not depend on the backend the service reports."""
     monkeypatch.setattr(service_access, "service_client",
                         lambda: _fake_download_client("docker"))
     res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000")
@@ -885,10 +879,10 @@ def test_a_progressing_campaign_still_gets_no_hint():
     assert _campaign_next_step({"status": "finished", "postprocessed": True}) == ""
 
 
-def test_the_local_file_lane_does_not_call_an_unchecked_world_a_pass(
+def test_a_local_file_check_does_not_call_an_unchecked_world_a_pass(
         tmp_path, monkeypatch, authoring_service):
-    """This lane has no service, so it can never run the simulator — and until the verdict
-    covered that, it answered ``valid: true`` for a world nothing had looked at."""
+    """A file on this host is checked without a service, so the simulator never runs: an
+    unchecked world is not ``valid: true``."""
     from robovast.common import config_validation
 
     monkeypatch.setattr(config_validation, "validate_project_file",
@@ -916,7 +910,7 @@ def test_a_campaign_with_no_world_is_not_marked_unchecked(
                                        "runs_per_config": 1, "total_trials": 1})
     monkeypatch.setattr(authoring, "_unchecked_world_advisory", lambda _path: [])
     # The scenario check is a separate question and this test is not about it; asked for,
-    # it would report its own unchecked problem on this lane (see the test below).
+    # it would report its own unchecked problem for a local file (see the test below).
     report = authoring.validate_project(str(tmp_path / "x.vast"), check_scenario=False)
     assert report["valid"] is True
     assert report["world_checked"] is None
@@ -924,11 +918,10 @@ def test_a_campaign_with_no_world_is_not_marked_unchecked(
 
 def test_a_scenario_nobody_could_parse_is_not_a_pass(tmp_path, monkeypatch,
                                                      authoring_service):
-    """The local-file lane has no image, so it cannot answer the question that matters.
+    """A local-file check has no image, so it cannot answer the question that matters.
 
-    Every campaign has a scenario, and whether it parses depends on what is installed
-    where it runs. Reporting a plain pass here would tell a caller the one thing this lane
-    cannot know -- and it is exactly the failure that otherwise survives to every trial.
+    Whether a scenario parses depends on what is installed where it runs; a plain pass here
+    would claim the one thing this check cannot know.
     """
     from robovast.common import config_validation
 

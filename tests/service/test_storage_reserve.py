@@ -199,8 +199,8 @@ def test_deleting_a_campaign_is_never_refused(transport, monkeypatch):
         pass
 
 
-def test_the_cluster_lane_refuses_its_own_builds_and_postprocessing(monkeypatch):
-    """Both are full overrides there, so each carries the admission itself."""
+def test_the_cluster_service_refuses_its_own_builds_and_postprocessing(monkeypatch):
+    """Both are full overrides in ClusterService, so each carries the admission itself."""
     from robovast.execution.cluster_execution.cluster_service import ClusterService
 
     monkeypatch.setenv(RESERVE_ENV, "150")

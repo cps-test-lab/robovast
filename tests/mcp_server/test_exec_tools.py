@@ -174,7 +174,7 @@ def test_stop_routes_and_reports(service):
 
 
 def test_resource_usage_names_a_held_container(service):
-    """A caller told only "the lane is full" cannot discover its own container is why."""
+    """A caller told only "the cluster is full" cannot discover its own container is why."""
     out = execution.get_resource_usage()
     assert out["exec_container"]["kept"] is True
     assert out["exec_container"]["image"] == "img:1"

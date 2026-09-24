@@ -1,13 +1,8 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The image store: the seam that decides where a lane's built images live.
+"""The image store: the one owner of where built images live, and whether they are there.
 
-These are the tests that would have caught the reported bug. Its cause was not a wrong
-line -- it was that "where does this image live, and is it there?" had no single owner, so
-the cluster lane inherited the local lane's answer (``docker image inspect``, inside a
-service pod with no docker) and reported every built image as unbuilt.
-
-So what is asserted here is the *contract*, against every implementation there is: nobody
+What is asserted here is the *contract*, against every implementation there is: nobody
 answers "not there" when it could not ask, and nobody hands a concrete registry ref to a
 client.
 """
@@ -84,8 +79,8 @@ def _stores(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_a_store_that_forgets_a_method_cannot_be_built():
-    """An ABC and not a Protocol, deliberately: a structural check would let an incomplete
-    lane fail at whichever call site reached it first, which is how this bug behaved."""
+    """An ABC and not a Protocol: an incomplete store fails at construction, not at whichever
+    call site reaches the missing method first."""
     class Forgetful(ImageBuildStore):
         def ref_for(self, spec, project_dir):
             return ImageRef(ref="x", identity="build:x@h", build_id="b")
@@ -109,10 +104,8 @@ def test_every_store_names_an_image_without_naming_a_registry(tmp_path):
 
 
 def test_every_store_hashes_its_own_base(tmp_path):
-    """The base image is part of the cache key, and each lane may supply a different one --
-    the cluster folds its registry's base in. That is why one store must own the derivation
-    rather than each caller repeating it: two derivations of "the same" hash disagreed, and a
-    built image came back unbuilt."""
+    """The base image is part of the cache key, and the store folds in its own (the cluster's
+    registry base), so one store owns the derivation rather than each caller repeating it."""
     spec_without_base = BuildSpec(tag="sut", python_packages=["shapely==2.0.1"])
     for store in _stores(tmp_path):
         assert (store.ref_for(SPEC, tmp_path).image_hash
@@ -142,14 +135,7 @@ def test_a_registry_that_did_not_answer_is_not_an_unbuilt_image(tmp_path, monkey
 
 
 def test_every_store_folds_the_vcs_resolution_into_its_hash(tmp_path, monkeypatch):
-    """A moving ref must change the key on EVERY lane, not just the one that remembered.
-
-    The cluster lane hashed without the resolution, so a spec naming a branch was
-    cache-stable there: the first build's commit was served for ever, and because the same
-    omission left the Dockerfile unpinned, the image installed whatever the branch pointed at
-    when the Job ran -- with nothing recording which commit that was. The local lane did it
-    correctly, which is precisely why nothing failed and nobody noticed.
-    """
+    """A moving ref changes the key: a spec naming a branch that moved is not a cache hit."""
     from robovast.service import image_build
 
     spec = BuildSpec(tag="sut", base_image="ghcr.io/x/robovast:latest",
@@ -168,15 +154,8 @@ def test_every_store_folds_the_vcs_resolution_into_its_hash(tmp_path, monkeypatc
 
 
 def test_every_store_folds_the_base_it_would_build_on_into_its_hash(tmp_path, monkeypatch):
-    """A republished base must change the key on EVERY lane, not just the one that remembered.
-
-    Same shape as the vcs omission above and the same lane: the cluster store hashed the base
-    *ref*, so republishing what a floating tag points at was invisible to it -- a new simulator
-    image, or a refreshed apt snapshot, and every derived experiment image stayed a cache hit,
-    built on the base of whichever day it was first built. On the lane campaigns actually run on,
-    that is the silent substitution :func:`build_hash` exists to prevent, and it looks exactly
-    like a run that did use the new base.
-    """
+    """A republished base changes the key: the store hashes the base's digest, not its ref,
+    so a floating tag that moved is not a cache hit."""
     pytest.importorskip("robovast.execution.cluster_execution.registry_image_store")
 
     def _hash_when_the_base_is(store, identity):
@@ -203,8 +182,8 @@ def test_a_base_the_registry_cannot_resolve_still_answers(tmp_path, monkeypatch)
     assert first and store.ref_for(SPEC, tmp_path).image_hash == first
 
 
-def test_the_resolution_is_shared_rather_than_reimplemented_per_lane():
+def test_the_resolution_is_shared_rather_than_reimplemented_per_store():
     """Concrete on the ABC, because "which commit does this ref name?" is not a property of
-    where images are stored. While it lived on one store, the other simply did without it."""
+    where images are stored."""
     for store_cls in ([RegistryImageStore] if RegistryImageStore else []):
         assert store_cls.resolve_vcs is ImageBuildStore.resolve_vcs

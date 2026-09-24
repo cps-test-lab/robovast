@@ -147,14 +147,13 @@ def test_a_shutting_down_service_does_not_start_it(svc, monkeypatch):
     assert done == []
 
 
-def test_a_stop_between_batches_is_postprocessed_on_a_chaining_lane(svc, monkeypatch):
+def test_a_stop_between_batches_is_postprocessed_when_the_controller_chains_it(svc, monkeypatch):
     """A search stopped at a batch boundary returns cleanly -- and must not fall through.
 
     The loop treats such a stop as an ordinary stopping criterion (``stop_kind="external"``)
-    and ends without raising, so the ``CampaignStopped`` path never sees it. On a lane whose
-    controller normally chains the analysis, that chain skips itself whenever a stop was
-    requested -- so nothing at all would postprocess, and a search stopped between batches
-    would lose the analysis of every batch it completed.
+    and ends without raising, so the ``CampaignStopped`` path never sees it. Where the
+    controller chains the analysis, that chain skips itself whenever a stop was requested,
+    so the service postprocesses the batches the search completed.
 
     It ends ``finished``, which is not this branch's choice: by the loop's own account the
     campaign finished.
@@ -280,7 +279,7 @@ def test_a_campaign_stopped_before_any_run_gets_no_postprocessing(svc, monkeypat
     """The batch began but the stop landed before any run existed -- jobs still queued.
 
     The owed pass reads run directories and nothing else, so it would derive nothing; on the
-    cluster lane it is a Job of its own, a pod scheduled to read an empty campaign. The
+    cluster it is a Job of its own, a pod scheduled to read an empty campaign. The
     campaign still ends ``stopped`` and says so.
     """
     done, status = _launch(svc, monkeypatch, ran=False)

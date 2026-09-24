@@ -89,7 +89,7 @@ _locks_guard = threading.Lock()
 _failures: "dict[str, str]" = {}
 _failures_guard = threading.Lock()
 
-#: The steps a build reports, in the order they happen. Only what a lane can actually observe is
+#: The steps a build reports, in the order they happen. Only what the service can observe is
 #: named: a stage no code can ever set is a promise to a client that nothing keeps, and a client
 #: written against it waits for a message that never comes.
 STAGE_QUEUED = "queued"        #: no node has taken the build yet
@@ -101,7 +101,7 @@ STAGES = (STAGE_QUEUED, STAGE_PULLING, STAGE_STARTING, STAGE_COMPILING)
 #: What each in-flight build is doing, as ``key -> (stage, detail)``. A 2 GB pull and a 9 s compile
 #: are indistinguishable from outside the service and differ by an order of magnitude, so naming one
 #: while the other is happening turns a slow pull -- or one that will never finish -- into what reads
-#: as a hang. Written by whoever performs the step: the lane owns everything up to the container
+#: as a hang. Written by whoever performs the step: the runner owns everything up to the container
 #: coming up, this module owns the compile.
 _stages: "dict[str, tuple[str, str]]" = {}
 _stages_guard = threading.Lock()
@@ -138,7 +138,7 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
         campaign_dir: the campaign root (already local — on the cluster the caller materialises the two
             small objects it needs first).
         capture_manifest: the parsed ``capture/capture.json`` of the run being viewed.
-        resolve_digest: ``ref -> digest | None``, from the lane that can answer it. Lets a
+        resolve_digest: ``ref -> digest | None``, from the registry that can answer it. Lets a
             campaign that recorded only a declared *tag* still be
             keyed on bytes; without it such a campaign is refused rather than guessed at.
         config_name: the configuration this run belongs to. Needed because a world may be a
@@ -315,7 +315,7 @@ def campaign_world_rel(world: str, config_name: str = "") -> str | None:
     """The campaign-relative path of a world that is a run file, else ``None``.
 
     One place knows how a recorded ``/config/...`` world maps back onto the results tree:
-    this. The cluster lane needs it to materialise the objects before resolving identity,
+    this. The cluster service needs it to materialise the objects before resolving identity,
     and :func:`_campaign_world` needs it to find the file.
 
     **Two tiers**, because a world can belong to the campaign or to one configuration:
@@ -565,7 +565,7 @@ def clear_failure(key: str) -> None:
 def set_stage(key: str, stage: str, detail: str = "") -> None:
     """Record which step this key's build is on, one of :data:`STAGES`.
 
-    *detail* is the lane's own words for it — a pod's ``ImagePullBackOff`` message, say. It is
+    *detail* is the runner's own words for it — a pod's ``ImagePullBackOff`` message, say. It is
     shown *beside* the stage and never in place of it: the stage is what a client can branch on,
     the detail is what only a human can read.
     """
@@ -721,7 +721,7 @@ def generate(identity: dict, key: str, max_tex_dim: int = DEFAULT_MAX_TEX_DIM,
             # Entering the context is where the cluster creates the pod that will run the build and
             # waits for the campaign's image to land on its node -- minutes on a cold node, and the
             # step that fails outright when that image cannot be pulled at all. So it is a stage of
-            # its own, refined from the pod itself by the lane's own callback; with no pod there
+            # its own, refined from the pod itself by the runner's own callback; with no pod there
             # is no separable pull to watch, and claiming one would be a guess.
             set_stage(key, STAGE_QUEUED if runner_context else STAGE_COMPILING)
             context = runner_context() if runner_context else contextlib.nullcontext(None)

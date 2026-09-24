@@ -1,11 +1,11 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""A postprocessing step that needs the execution image runs on every lane, whoever wrote it.
+"""A postprocessing step that needs the execution image runs, whoever wrote it.
 
 Such a step names the command to run in the image (``ExecutionImagePlugin.image_command``)
-and the files it ships beside the conversion scripts. The local lane runs that command
-through ``docker_exec.sh``; a cluster Job runs it in its image container. Nothing in either
-lane names the rosbag conversion.
+and the files it ships beside the conversion scripts. A cluster Job runs it in its image
+container; ``docker_exec.sh`` runs it on a development machine. Neither names the rosbag
+conversion.
 """
 
 import os
@@ -73,7 +73,7 @@ def test_a_local_image_step_is_one_of_the_campaigns_image_steps(campaign):
         "rosbags_process", "./plugin.py:Decode"]
 
 
-def test_each_step_renders_its_own_command_for_the_lane(campaign):
+def test_each_step_renders_its_own_command(campaign):
     ctx = pp.ImageContext(campaign_dir="/campaign/camp")
     steps = image_steps([{"./plugin.py:Decode": {"topic": "/camera"}}],
                         str(campaign / "_config"), ctx)
@@ -88,7 +88,7 @@ def test_a_parameter_the_step_does_not_take_is_refused(campaign):
 
 
 def test_a_step_that_claims_the_image_without_a_command_is_refused(campaign):
-    """No lane without Docker could run it, so it is refused before anything is spent."""
+    """Nothing could run it, so it is refused before anything is spent."""
     ctx = pp.ImageContext(campaign_dir="/campaign/camp")
     with pytest.raises(ValueError, match="ExecutionImagePlugin"):
         image_steps(["./plugin.py:Claims"], str(campaign / "_config"), ctx)
@@ -128,7 +128,7 @@ def test_the_host_pass_leaves_out_every_image_step(campaign):
     assert host == ["run_log", "resource_usage"]
 
 
-def test_the_local_lane_runs_the_steps_command_with_its_files_beside_the_scripts(
+def test_docker_exec_runs_the_steps_command_with_its_files_beside_the_scripts(
         campaign, monkeypatch):
     captured = {}
 

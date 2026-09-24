@@ -23,7 +23,7 @@ const GiB = 1024 ** 3
 
 describe('jobMeters', () => {
   it('draws nothing for a job the service did not measure', () => {
-    // Every job that is not running, and every lane that measures nothing per container.
+    // Every job that is not running, and every backend that measures nothing per container.
     expect(jobMeters(job())).toEqual({ cpu: null, memory: null })
   })
 

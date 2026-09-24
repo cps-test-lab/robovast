@@ -20,7 +20,7 @@ Every container runs ``monitor_resources.py``, which writes one row per process 
 to ``_jobs/[<batch>/]job-N/resource_usage_<container>.csv`` — a JOB artifact, so it spans
 bring-up, every run the job served, and teardown. This module cuts it to a run.
 
-Why this is worth a table rather than a file: a campaign's lane gives a job a fixed number
+Why this is worth a table rather than a file: the cluster gives a job a fixed number
 of cores, and a simulator that starves the stack changes what the stack does. That is a
 competing explanation for any behavioral difference, and it can only be ruled in or out in
 the same query as the behaviour — joined to ``runs`` for ``available_cpus``, to ``poses``

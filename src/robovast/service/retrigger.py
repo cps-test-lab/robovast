@@ -42,7 +42,7 @@ computed afresh, which is visible in one place: ``execution.generate`` generator
 cache is not archived), so a stochastic generator draws new samples.
 
 This module is the pure half -- it takes a source directory and returns data. Ordering,
-threads and lanes belong to the transport (``ServiceBase.retrigger_campaign``), which is a
+threads and storage belong to the transport (``ServiceBase.retrigger_campaign``), which is a
 thin orchestrator over :func:`prepare`. Same split as
 :mod:`robovast.service.postprocessing_edit`.
 """
@@ -405,7 +405,7 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     launching a campaign that will fail.
 
     Args:
-        source_dir: the source campaign's directory, already materialised for this lane.
+        source_dir: the source campaign's directory, already materialised locally.
         source_id: its campaign id -- used in the new campaign's description.
         workspaces_root: where :data:`STAGING_DIRNAME` is created.
         description_limit: ``DESCRIPTION_MAX_LEN``, passed in so this module needs no import
@@ -674,8 +674,8 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
 def stage_project(source_dir, staging_dir, campaign_config) -> None:
     """Copy the campaign's frozen config into *staging_dir* and check it is complete.
 
-    Runs on the campaign's worker thread: ``_config/`` is small but it is a per-object fetch on
-    the cluster lane, and a slow or failing read has to become an inspectable failed campaign
+    Runs on the campaign's worker thread: ``_config/`` is small but it is a per-object fetch from
+    the cluster's store, and a slow or failing read has to become an inspectable failed campaign
     rather than a hung request.
     """
     source_dir, staging_dir = Path(source_dir), Path(staging_dir)

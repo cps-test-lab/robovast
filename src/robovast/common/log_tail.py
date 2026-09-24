@@ -13,16 +13,13 @@ points into the middle of a line it has already seen. (The campaign log gets awa
 plain concatenation only because its phases are strictly sequential — see
 :mod:`robovast.common.campaign_logs`.)
 
-The fix is this class: a buffer that is only ever appended to. Each lane computes its own
+The fix is this class: a buffer that is only ever appended to. The caller computes the
 *delta* — the lines it has not yet consumed from each container — and hands them here; the
 buffer tags, orders and appends them, and the client's offset indexes it directly.
 
-The lanes differ only in how they get that delta, which is why the fetching is NOT here:
-
-* cluster — a trailing ``since_seconds`` window of the kube API, deduped against the last
-  line consumed per container, ordered by kubelet's per-line RFC3339 timestamp;
-* local — a byte offset per ``logs/system*.log`` file on disk, which has no timestamps at
-  all, so ordering is per-poll rather than per-line.
+The fetching is NOT here: on the cluster it is a trailing ``since_seconds`` window of the
+kube API, deduped against the last line consumed per container, ordered by kubelet's
+per-line RFC3339 timestamp.
 """
 
 from __future__ import annotations
@@ -37,11 +34,9 @@ MAIN_CONTAINER = "robovast"
 
 
 #: The main container's log file. Every reader of a job's log dir has to agree on which file is
-#: whose container, so the naming lives here with :data:`MAIN_CONTAINER` rather than in whichever
-#: lane needed it first -- the local tail reads these files directly, and the cluster lane reads
-#: the same names out of the campaign directory once a pod has delivered them. The names are
-#: written by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a
-#: property of the artifact rather than of a lane.
+#: whose container, so the naming lives here with :data:`MAIN_CONTAINER`. The names are written
+#: by the entrypoints (``system_${CONTAINER_NAME}`` for a sidecar), so they are a property of
+#: the artifact rather than of its reader.
 MAIN_LOG = "system.log"
 
 _SIDECAR_PREFIX = "system_"
@@ -75,8 +70,7 @@ def tag_line(name: str, message: str, width: int) -> str:
     """One log line prefixed with its container, as the web UI expects to parse it.
 
     The UI matches ``/^(\\[[^\\]]+\\]) ?/`` and colors the prefix by hashing the name, so
-    this format is a contract with ``StatusView.tsx`` and must stay identical on both
-    lanes — a local run and a cluster run of the same campaign should read the same.
+    this format is a contract with ``StatusView.tsx``.
     """
     return f"{f'[{name}]'.ljust(width + 2)} {message}"
 
@@ -98,7 +92,7 @@ class MergedLogBuffer:
         """Append *entries*, tagged with their container when there is more than one.
 
         *entries* is an iterable of ``(sort_key, container_name, message)``. It is sorted
-        by ``sort_key`` — a stable sort, so entries a lane cannot order (untimestamped
+        by ``sort_key`` — a stable sort, so entries the caller cannot order (untimestamped
         lines) keep the order they were produced in.
 
         ``multi`` is the caller's decision, not ``len(entries) > 1``: it must stay True

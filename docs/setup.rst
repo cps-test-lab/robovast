@@ -39,7 +39,7 @@ after everything that depends on it is what makes the editable install the one t
 
 The others go in the order shown because each depends on ``robovast`` and never the reverse —
 which is what keeps the dependency graph acyclic. ``poetry install`` at the root will **not**
-give you the lanes: they are separate distributions built on this one, not extras of it.
+give you ``robovast-cluster``: it is a separate distribution built on this one, not an extra of it.
 
 ``pip install -e src/robovast_client`` alone is a complete, supported install — a ``vast`` that
 can log in, push workspaces, have the service build their images, wait for campaigns and fetch
@@ -48,7 +48,7 @@ it can run needs a simulator, Docker or a kubeconfig.
 
 Adding ``pip install -e .`` gives you the core: configuration and variation, results
 processing, the MCP server and the service's own code, with no Kubernetes client anywhere
-in the environment. It runs no campaign by itself — the execution lane is
+in the environment. It runs no campaign by itself — the service implementation is
 ``robovast-cluster``, its own distribution, and a core without it says so when asked to
 serve. Declining it is a supported setup for everything that is not a service: ``vast
 doctor`` reports ``cluster support: not installed`` as a warning, and every verb that
@@ -75,7 +75,7 @@ carry the frontend, and each name adds exactly what its editable counterpart abo
 
    pip install robovast-client              # drive a service: the CLI alone
    pip install "robovast[nav,roqsim]"       # the core: config, results, the service's code
-   pip install robovast-cluster             # the execution lane: deploy and run a service
+   pip install robovast-cluster             # the service implementation: deploy and run it
 
 The ``vast`` command provides a unified interface to all RoboVAST functionality.
 

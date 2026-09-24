@@ -12,8 +12,7 @@ file in the wrong place, and the assertion that catches it is not "the file exis
 The tests drive the real derivation (``JobSpec``/``WorkItem`` →
 ``build_job_parameter_documents`` → ``dump_multi_document_yaml``) rather than a hand-written
 parameter file, so they break if that derivation changes rather than testing a copy of it.
-``build_job_parameter_documents`` decides the run directory for every run on both lanes and
-had no test before this one.
+``build_job_parameter_documents`` decides the run directory for every run.
 """
 
 import json

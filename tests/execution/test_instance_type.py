@@ -50,8 +50,8 @@ def test_provider_command_reaches_the_entrypoint(campaign_data, provider):
                                instance_type_command=command) == command
 
 
-def test_local_lane_records_no_instance_type(campaign_data):
-    """A local Docker run is not an instance of anything; empty ingests as NULL."""
+def test_a_campaign_staged_off_cluster_records_no_instance_type(campaign_data):
+    """Staged with ``cluster=False`` there is no instance to name; empty ingests as NULL."""
     assert _instance_type_line(campaign_data, cluster=False) == 'INSTANCE_TYPE=""'
 
 

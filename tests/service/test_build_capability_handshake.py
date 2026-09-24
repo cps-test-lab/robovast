@@ -2,20 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """A service says in the handshake whether it can build an experiment image.
 
-A campaign whose container adds packages needs somewhere to push the derived image. On the
-cluster lane that is the service's own in-pod registry, reached over its Ingress -- so a
-service that is unpublished, or whose registry prefix a ``setup`` re-run dropped, cannot
-build at all. Nothing said so until ``start_campaign``, after a project push, a workspace
-create and a launch.
+A campaign whose container adds packages needs somewhere to push the derived image: the
+service's own in-pod registry, reached over its Ingress. A service that is unpublished, or has
+no registry prefix configured, cannot build at all, and says so here.
 
-Two properties carry it, and both are easy to break in a way that makes things worse than
-saying nothing:
-
-* **``None`` means "no verdict".** A service older than the field leaves it absent. Reading
-  that as ``False`` would tell every healthy pre-field deployment to go and fix a registry.
-* **It is capability, not liveness.** The local lane answers ``True`` without touching
-  Docker. Probing would put a 15 s subprocess timeout in the one call whose job is to answer
-  instantly, and a dead daemon is a different question with three other answers.
+* **``None`` means "no verdict".** A service older than the field leaves it absent; reading
+  that as ``False`` would tell every such deployment to go and fix a registry.
+* **It is capability, not liveness.** The answer reads configuration and probes nothing, so
+  the handshake stays instant.
 """
 
 # pylint: disable=redefined-outer-name  # the pytest fixture idiom
@@ -43,7 +37,7 @@ def test_extra_keys_from_a_newer_service_do_not_break_an_older_client():
     assert v.robovast_version == "2.0.0"
 
 
-# -- the cluster lane --------------------------------------------------------
+# -- ClusterService --------------------------------------------------------------
 
 
 def _cluster_version(registry: RegistryConfig) -> VersionInfo:

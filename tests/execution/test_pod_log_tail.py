@@ -130,7 +130,7 @@ def test_an_unexpected_api_error_is_not_swallowed():
 
 def test_containers_are_fetched_concurrently_not_serially():
     """Three serial round-trips per 0.5s poll -- over a port-forward, when the service
-    drives the lane from off-cluster -- is enough to make the panel trail the run."""
+    drives the cluster from off-cluster -- is enough to make the panel trail the run."""
     import threading
 
     barrier = threading.Barrier(3, timeout=5)

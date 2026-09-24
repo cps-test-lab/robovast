@@ -169,7 +169,7 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
        containers at all has exactly one, so there the campaign-level image is this role's.
     3. What the campaign *declared* -- ``images``, else the frozen ``.vast`` -- which is a
        tag, so *resolve_digest* has to turn it into bytes. This is what rescues campaigns
-       recorded before (1) existed on their lane.
+       recorded before (1) existed.
 
     **The campaign-level image is never substituted for a role that owns a container.** That
     substitution is the bug this function exists to prevent. It is refused only on *positive*
@@ -180,8 +180,8 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
     Args:
         campaign_dir: the ``campaign-<id>`` directory.
         role: a container role, e.g. ``simulation``.
-        resolve_digest: ``ref -> digest | None``, supplied by the lane that can answer it.
-            Omitted when the lane cannot, which turns source
+        resolve_digest: ``ref -> digest | None``, supplied by the backend that can answer it.
+            Omitted when none can, which turns source
             (3) into an explicit refusal instead of a wrong answer.
 
     Raises:
@@ -213,8 +213,8 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
             tried.append(f"the campaign's .vast declares no {role!r} container or role")
     # The container whose image is wanted: the role's own, or the one it folds onto.
     target = backing.name if backing is not None else None
-    # `images` is keyed by declared role, `image_revisions` by container name on the cluster
-    # lane and by role in older records -- so look under both rather than assuming they agree.
+    # `images` is keyed by declared role, `image_revisions` by container name (by role in
+    # older records) -- so look under both rather than assuming they agree.
     keys = [role] if target in (None, role) else [role, target]
 
     # 1. what ran, per role.
@@ -258,7 +258,7 @@ def campaign_role_image(campaign_dir, role: str, *, resolve_digest=None) -> str:
             f"{source}={declared!r} is a mutable tag, and " + (
                 "it could not be resolved to a digest here"
                 if resolve_digest else
-                "this lane cannot resolve a tag to a digest"))
+                "no resolver was given to turn a tag into a digest"))
 
     raise RoleImageUnavailable(
         f"cannot tell which image holds this campaign's {role!r} container, so an "
@@ -308,7 +308,7 @@ class RoleImageRecord:
     role: str
     #: ``image_revisions[role]``, or the scenario container's pod-name alias.
     recorded: str
-    #: ``images[role]`` -- the declaration, as the cluster lane records it.
+    #: ``images[role]`` -- the declaration, as ``execution.yaml`` records it.
     declared: str
     #: ``launch.yaml``'s ``images[role]``: what the launch itself resolved, before any job.
     launched: str
@@ -366,8 +366,8 @@ def campaign_image_record(campaign_dir) -> CampaignImageRecord:
     try:
         meta = read_execution_metadata(root)
     except FileNotFoundError:
-        # A campaign that died before its first batch, which on the cluster lane is the usual
-        # shape of a failed one. "Recorded nothing" is one of the answers this returns.
+        # A campaign that died before its first batch, the usual shape of a failed one.
+        # "Recorded nothing" is one of the answers this returns.
         meta = {}
     revisions = meta.get("image_revisions") or {}
     declared = meta.get("images") or {}
@@ -440,10 +440,11 @@ def campaign_images(campaign_dir) -> CampaignImages:
       itself resolved, written before the first job existed and concrete by construction, so
       they answer earlier and better than ``execution.yaml`` -- which is only written once a
       batch has run. That earlier answer is what makes a campaign that died *before* its first
-      batch re-runnable at all, which on the cluster lane is the usual shape of a failure.
-    * a **digest** counts on any lane: it names the same bytes everywhere, which is the
+      batch re-runnable at all, which is the usual shape of a failure.
+    * a **digest** always counts: it names the same bytes everywhere, which is the
       property a tag lacks.
-    * a **tag** counts only on the lane that built it. On the cluster ``images`` holds
+    * a declared **tag** counts only for a campaign recorded with execution_type ``local``,
+      whose tags name images on the machine that ran it. Otherwise ``images`` holds
       whatever the ``.vast`` declared -- a base
       image, or the symbolic ``build:<tag>`` itself -- and starting that would run the base
       without the campaign's own code.
@@ -635,7 +636,7 @@ def read_campaign_finished_at(campaign_dir: Path) -> Optional[str]:
     gives about guessed start times.
 
     ``None`` when the record is absent, unreadable, or **not terminal**: a record written
-    mid-campaign (a lane whose tail does not own the ending writes one non-terminally --
+    mid-campaign (a run whose tail does not own the ending writes one non-terminally --
     see ``run_campaign``) describes a campaign that is not over, and reading its
     ``phase_since`` as a finish time would date the campaign to the middle of its own run.
     """
@@ -719,16 +720,16 @@ def record_intervention(campaign_root: Path, *, kind: str, job_dir: str, job_nam
         job_dir: The job's artifact dir, campaign-root-relative (``_jobs/batch-0/job-3``).
             The durable identity of what was touched, and what :func:`intervened_runs` resolves
             through the job-link manifest.
-        job_name: The job as the caller named it -- the Kubernetes Job name on the cluster.
-            Recorded for the audit trail; it is lane-specific, so it is not
-            what resolution keys on.
+        job_name: The job as the caller named it -- the Kubernetes Job name.
+            Recorded for the audit trail; it is not what resolution keys on.
         source: Which surface did it -- ``"webui"``, ``"mcp"``, ``"cli"``, or ``"runner"`` when
             the campaign invalidated its own trial. Not a user identity:
             the service is unauthenticated (see ``service/app.py``'s ``serve``), so a name here
             would be invented rather than known.
         detail: The operator's optional explanation, or what was run.
         runs: Run keys (``<config>/<run>``) the caller already knows this job was executing.
-            The cluster lane passes none and lets the manifest answer. A *hint*, never the only source -- see :func:`intervened_runs`.
+            The cluster passes none and lets the manifest answer. A *hint*, never the only
+            source -- see :func:`intervened_runs`.
 
     Appends rather than replaces: several things may be done to one campaign over its lifetime,
     and each is a separate event with its own reason.
@@ -774,7 +775,7 @@ def intervened_runs(campaign_dir: Path, kind: str = "") -> dict[str, dict[str, A
 
     Resolves each ledger entry to the runs it covers from **two** sources, unioned:
 
-    * the entry's own ``runs`` hint, for a lane whose ``job_name`` *is* the run key; and
+    * the entry's own ``runs`` hint, for a caller whose ``job_name`` *is* the run key; and
     * the job-link manifest, which maps every ``<config>/<run>`` to its job's artifact dir -- the
       only way to answer it for a cluster Job, and the way that also covers a packed job's
       remaining runs without the caller having to enumerate them.
@@ -1009,7 +1010,7 @@ def write_plugins_record(campaign_root, resolved: dict) -> None:
     time and by different code: plugins resolve while the campaign is being *composed*, where
     the ``.vast`` directory and its ``.robovast_plugins/`` install dir are in hand, whereas
     execution.yaml is written later, from a place that has neither. Threading the directory
-    through the lane to reach that file would
+    through the backend to reach that file would
     couple them to composition for one field. ``_execution/`` already holds several records
     for exactly this reason (launch, outcome, killed).
 
@@ -1553,7 +1554,7 @@ def run_job_dir(run_dir: Path, campaign_root: Path,
     """The job artifact directory *run_dir* ran in, or ``None`` when nothing names one.
 
     Resolved through the campaign's job-link manifest
-    (:func:`~robovast.common.execution.job_artifact_dir`), which the lane writes before the
+    (:func:`~robovast.common.execution.job_artifact_dir`), which the backend writes before the
     first job starts. Not through the run's ``job`` symlink: a batch creates those only once
     it ends, so the finished runs of a batch that was stopped have none, while the manifest
     already names their jobs. The symlink is read only for a campaign recorded before the

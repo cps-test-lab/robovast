@@ -84,7 +84,7 @@ _PLUGIN_GROUPS: dict[str, dict] = {
     },
     "robovast.simulators": {
         "description": (
-            "Simulator backends the execution lane can drive, named by "
+            "Simulator backends the execution backend can drive, named by "
             "``execution.containers.simulation.backend``."
         ),
         "loader_module": "robovast.common.simulators",

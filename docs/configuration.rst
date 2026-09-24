@@ -1099,7 +1099,7 @@ is not the same answer as "used none of it".
 the peak outgrew the size in force, ``shm_over_reserved`` when the reservation is paying for
 room nothing used), sized on the peak plus 25% headroom. A campaign that ran before
 ``shm_size`` had a default reports ``shm_not_declared`` instead, because it really was handed
-whichever default its lane applied.
+whichever default its runtime applied.
 
 .. note::
 
@@ -1121,7 +1121,7 @@ Maximum wall-clock time (in seconds) allowed for a single **job** — one unit o
 which is one run unless ``runs_per_job`` packs several into it. The number is used exactly
 as declared; it is not scaled.
 
-A job is the granularity the lane can actually enforce at, which is why the budget is
+A job is the granularity the cluster can actually enforce at, which is why the budget is
 stated in it: Kubernetes caps a Job, and cannot stop an individual run inside a packed
 one. The declaration sets ``activeDeadlineSeconds`` on the Job spec, so Kubernetes
 force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
@@ -1383,7 +1383,7 @@ previous contents of ``out`` are left untouched rather than half-overwritten, an
    the project directory is copied into a service workspace, so a generator reading a
    sibling checkout (``../other_repo/world.yaml``) composes fine when the campaign is run
    from the tree and fails when the same ``.vast`` is started from a workspace — which is
-   how the cluster lane runs it. Validation emits a warning naming the path. Keep generator
+   how the service runs it. Validation emits a warning naming the path. Keep generator
    inputs under the ``.vast``'s own directory unless the campaign is only ever run in place.
 
 ``shell`` is built in. Other generators come from installed packages (the
@@ -1414,8 +1414,8 @@ with which parameters (``SCENARIO_FILE``, ``SCENARIO_PARAMETER_FILE``,
 ``SCENARIO_EXECUTION_PARAMETERS``), and the credentials results are uploaded with
 (``S3_*``). Setting one of these is refused when the campaign is validated, naming it.
 
-The refusal is at validation and not left to the lanes on purpose. Whether a campaign's
-value would actually displace RoboVAST's depends on emission order and on each lane's
+The refusal is at validation and not left to the backend on purpose. Whether a campaign's
+value would actually displace RoboVAST's depends on emission order and on the backend's
 duplicate-key semantics, so "it happens not to win today" is not something to build on —
 and the failure it would cause is the quiet kind. Repointing ``SCENARIO_PARAMETER_FILE``
 gives a run that succeeds, reads parameters belonging to nothing, and reports its results

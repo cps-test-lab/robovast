@@ -53,7 +53,7 @@ _NSEC_PER_USEC = 1000
 
 #: Filename prefixes. The sibling is derived from the process file's own name (see
 #: :func:`system_usage_path`) so that the launch contract -- which entrypoint passes which
-#: path, pinned by ``tests/execution/test_resource_monitor_lanes.py`` -- needs no change, and
+#: path, pinned by ``tests/execution/test_resource_monitor_output_path.py`` -- needs no change, and
 #: neither entrypoint script has to learn about a second file.
 PROCESS_PREFIX = "resource_usage_"
 SYSTEM_PREFIX = "system_usage_"
@@ -219,7 +219,7 @@ def cpu_usage_probe():
 #: This is the counter ``cpu.stat`` cannot produce. Throttling records a container hitting its
 #: OWN ceiling and by construction says nothing about one that was crowded out by a neighbour
 #: -- the two even point opposite ways, since a container that cannot get CPU never reaches
-#: its quota and so throttles LESS while running worse. On a lane where a container may
+#: its quota and so throttles LESS while running worse. Where a container may
 #: reserve less than its limit, "was this run slow because of what it asked for, or because of
 #: what else was on the node?" is the question a reader actually has, and until this probe
 #: only the first half of it was measured.
@@ -515,7 +515,7 @@ def _shm_bytes():
     """``(used, total)`` of :data:`SHM_PATH`, or ``(None, None)`` if it cannot be read.
 
     ``total`` is the tmpfs's own size, which is the LIMIT actually in force -- what
-    ``execution.shm_size`` asked for, or whatever default the lane handed out when it asked
+    ``execution.shm_size`` asked for, or whatever default the runtime handed out when it asked
     for nothing. Recording it is what makes a declaration checkable rather than assumed.
 
     Absence is written as an absence, never as ``0``: a runtime without ``/dev/shm`` and a run

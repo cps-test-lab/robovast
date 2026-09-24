@@ -5,10 +5,9 @@
 Derived in postprocessing from what the containers recorded, and that is the whole point of
 this file. The question is "which installed distributions register a provider group", and only
 a container can answer it: the packages are in its image and nowhere else. Answering it by
-walking the interpreter of whatever process prepared the campaign is right on a local lane
-(roqsim is installed beside the service) and empty on a cluster one (the service pod carries no
-simulator) -- so a campaign using three private providers records none, and the publication
-gate certifies it as depending on nothing.
+walking the interpreter of whatever process prepared the campaign comes back empty in the
+cluster (the service pod carries no simulator), and the publication gate would certify a
+campaign using private providers as depending on nothing.
 
 The record has THREE states and the distinction is what makes it worth writing. Populated is
 "these providers"; empty is "asked, and there were none"; absent is "could not ask", which
@@ -124,10 +123,9 @@ execution:
 
 
 @pytest.mark.parametrize("batch", [True, False], ids=["cluster-layout", "local-layout"])
-def test_the_record_is_found_in_either_lane_s_job_layout(tmp_path, batch):
-    """``_jobs/[<batch>/]job-N/`` -- the batch level exists on the cluster lane and not on the
-    local one. A reader assuming either shape finds nothing on the other, which is the failure
-    mode this whole record was written to escape."""
+def test_the_record_is_found_in_either_job_layout(tmp_path, batch):
+    """``_jobs/[<batch>/]job-N/`` -- cluster records have the batch level, local records do
+    not, and the reader finds the record in both."""
     root = _campaign(tmp_path, records=[SIM_RECORD], vast=_VAST, batch=batch)
     lines, output = _sink()
     _record_campaign_providers(root, output)

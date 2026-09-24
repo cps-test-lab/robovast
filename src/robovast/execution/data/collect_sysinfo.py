@@ -242,8 +242,8 @@ def get_distributions() -> Dict[str, Any]:
     Runs HERE, in the container, because that is the only place the answer exists: the
     packages are installed in this image and in no other. A service that walked its own
     interpreter instead reported "no asset providers" for a campaign whose image had three
-    private ones -- the record was written by whichever process prepared the campaign, and on a
-    cluster lane that process carries no simulator at all.
+    private ones -- the record was written by whichever process prepared the campaign, and on
+    the cluster that process carries no simulator at all.
 
     Per distribution: ``version``, the entry-point ``groups`` it contributes to, and its
     ``direct_url`` -- which for a VCS install carries the commit, and is what turns "a private

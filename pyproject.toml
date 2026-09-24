@@ -73,8 +73,8 @@ ribs = {version = "^0.7", optional = true}
 shapely = {version = "^2.0", optional = true}
 optuna = {version = "^4.0", optional = true}
 # optuna offers a CMA-ES sampler but keeps the implementation out of tree and
-# imports it lazily, so without this a `sampler: cmaes` campaign starts, takes a
-# lane and dies on its first batch with "No module named 'cmaes'".
+# imports it lazily, so without this a `sampler: cmaes` campaign starts, takes
+# cluster capacity and dies on its first batch with "No module named 'cmaes'".
 cmaes = {version = "^0.11", optional = true}
 # Optional test dependencies (the tests/ suite)
 pytest = {version = "^8.0", optional = true}
@@ -149,7 +149,7 @@ test = ["pytest", "ribs", "shapely", "optuna", "cmaes", "rdflib", "pyld", "nbfor
 
 # Work the root command group must do before any command runs, but that belongs to this
 # distribution. The `.env` read is core's because everything a `.env` carries -- share
-# credentials, ntfy, registry, image pins -- is consumed here and by the lanes.
+# credentials, ntfy, registry, image pins -- is consumed here and by robovast-cluster.
 [tool.poetry.plugins."robovast.cli_startup"]
 env-file = "robovast.common.env_file:load_env_file"
 
@@ -171,7 +171,7 @@ share = "robovast.execution.share_cli:share"
 # contributes nothing to `robovast.exec_plugins`; `vast cluster` is the client's and
 # remains its only member.
 
-# The core registers no execution lane. `vast serve` resolves the lane it runs by name in
+# The core registers no service implementation. `vast serve` resolves the one it runs in
 # the `robovast.execution_backends` group (see service/serve_backends.py), which the
 # `robovast-cluster` distribution populates; the core alone serves nothing and says so.
 

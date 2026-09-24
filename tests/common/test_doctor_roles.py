@@ -2,19 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """``vast doctor`` answers for two roles, and must not fail one for the other's needs.
 
-It was written for the operator: python, kubectl, helm, a kubeconfig, RBAC, node
-capacity. All of those are what you need to *deploy* RoboVAST. A user with a URL and a
-token needs none of them — and got four FAILs and a non-zero exit telling them so, which
-is the opposite of useful for the one person who had nothing left to do.
+The operator needs python, kubectl, helm, a kubeconfig, RBAC and node capacity to *deploy*
+RoboVAST; a user with a URL and a token needs none of them.
 
-The client checks now come first, and when they all pass the operator prerequisites drop
-to advisory: still listed, still with their remedies, but not a failure. When the client
-half is *not* working, deploying is the likely intent and they stay fatal.
-
-Except when there is no cluster lane installed, which is the same bug one level down: that
-gate asked whether the client half worked, and a client-only user who had simply not run
-``vast login`` yet failed it -- and was told, fatally, to install kubectl and helm for a
-``setup`` command their install does not have.
+The client checks come first, and when they all pass the operator prerequisites drop to
+advisory: still listed, still with their remedies, but not a failure. When the client half
+is *not* working, deploying is the likely intent and they stay fatal -- unless cluster
+support is not installed, in which case the cluster binaries are not asked for at all.
 """
 
 import pytest
@@ -26,7 +20,7 @@ from robovast.client import doctor as doc
 def operator_checks(monkeypatch):
     """Pin the operator half so the tests are about fatality, not about this machine.
 
-    The lane is pinned installed along with the rest: `run_checks` consults it to decide
+    Cluster support is pinned installed along with the rest: `run_checks` consults it to decide
     whether the operator half applies, so leaving it to the real import would make these
     tests pass or fail on whether `robovast-cluster` happens to be in the environment.
     """
@@ -100,15 +94,10 @@ def no_cluster(monkeypatch):
         doc.Check("helm", False, "not on PATH", "Install helm")])
 
 
-def test_no_lane_and_no_login_does_not_demand_cluster_binaries(
+def test_no_cluster_support_and_no_login_does_not_demand_cluster_binaries(
         monkeypatch, no_cluster):
-    """The defect: the demotion gate asked the wrong question.
-
-    It asked whether the client half worked, so a client-only user who had simply not run
-    `vast login` yet fell through to the fatal branch -- and `helm`'s remedy names `setup`,
-    a verb their install does not have. Deploying cannot be the intent when there is
-    nothing installed to deploy with, whatever the login says.
-    """
+    """Without cluster support installed, deploying cannot be the intent, whatever the
+    login says, so kubectl and helm are not asked for."""
     _client(monkeypatch, False)
     checks = doc.run_checks()
 
@@ -120,20 +109,20 @@ def test_no_lane_and_no_login_does_not_demand_cluster_binaries(
         "only the client half may be fatal here -- that is the user's real problem")
 
 
-def test_the_missing_lane_is_still_reported(monkeypatch, no_cluster):
+def test_missing_cluster_support_is_still_reported(monkeypatch, no_cluster):
     """Dropping the binaries must not drop the verdict that explains why they are gone."""
     _client(monkeypatch, False)
-    lane = next(c for c in doc.run_checks() if c.name == "cluster support")
-    assert lane.status == "warn" and lane.fix, "advisory is not silent, and names a remedy"
+    support = next(c for c in doc.run_checks() if c.name == "cluster support")
+    assert support.status == "warn" and support.fix, "advisory is not silent, and names a remedy"
 
 
-def test_python_is_still_checked_without_a_lane(monkeypatch, no_cluster):
-    """Needing 3.12 is not the cluster's business, so it survives the lane being absent."""
+def test_python_is_still_checked_without_cluster_support(monkeypatch, no_cluster):
+    """Needing 3.12 is not the cluster's business, so it survives cluster support being absent."""
     _client(monkeypatch, True)
     assert "python" in {c.name for c in doc.run_checks()}
 
 
-def test_an_installed_lane_still_gets_the_full_operator_half(monkeypatch, operator_checks):
+def test_installed_cluster_support_still_gets_the_full_operator_half(monkeypatch, operator_checks):
     """The other direction: the fix must not silence an operator who *can* act on it."""
     _client(monkeypatch, False)
     assert {"kubectl", "kubeconfig"} <= {c.name for c in _fatal(doc.run_checks())}

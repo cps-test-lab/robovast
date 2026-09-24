@@ -1,16 +1,14 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The core has to work when the cluster lane is not installed.
+"""The core has to work when the cluster package is not installed.
 
-Every remaining core→cluster import is deferred and inside a ``try``, which looks
-sufficient and is not: what matters is whether the import is reached at all on a path
-that has nothing to do with a cluster, and what the ``except`` then says. Both failures
-here were of that shape — the code degraded, but degraded into a *lie*.
+Every core→cluster import is deferred and inside a ``try``, which is not sufficient on its
+own: what matters is whether the import is reached at all on a path that has nothing to do
+with a cluster, and that the ``except`` then says something true.
 
 These simulate a missing cluster package with an import hook rather than by uninstalling
-anything. Note the hook has to match dotted names: an earlier version of this test only
-matched top-level packages, so ``robovast.execution.cluster_execution`` sailed through
-and the tests passed against code that would have failed.
+anything. The hook matches dotted names, so ``robovast.execution.cluster_execution`` is
+blocked too, not only top-level packages.
 """
 
 import logging
@@ -31,7 +29,7 @@ class _MissingPackage:
     # None is how a MetaPathFinder declines a module
     def find_spec(self, name, path=None, target=None):  # pylint: disable=useless-return
         if any(name == n or name.startswith(n + ".") for n in self.names):
-            raise ImportError(f"{name}: cluster lane not installed")
+            raise ImportError(f"{name}: cluster package not installed")
         return None
 
 
@@ -73,11 +71,9 @@ def warnings_from():
 
 
 def test_a_local_teardown_does_not_claim_a_failed_upload(without, warnings_from):
-    """`_record_controller_outcome` uploads control-plane artifacts so a stateless
-    service can explain a campaign after its pod is gone — a cluster-lane concern,
-    correctly guarded by `cluster_config is None`. With that guard *after* the import,
-    a purely local run with no cluster package logs "Could not upload outcome record":
-    a warning about work that was never going to happen.
+    """`_record_controller_outcome` uploads control-plane artifacts only for a backend
+    with a cluster config; without one and without the cluster package, it warns about no
+    upload that was never going to happen.
     """
     without("robovast.execution.cluster_execution")
     messages, handler = warnings_from("robovast.execution.controller")
@@ -103,10 +99,9 @@ def test_a_local_teardown_does_not_claim_a_failed_upload(without, warnings_from)
         logging.getLogger("robovast.execution.controller").removeHandler(handler)
 
 
-def test_doctor_reports_a_missing_cluster_lane_instead_of_raising(without):
+def test_doctor_reports_a_missing_cluster_package_instead_of_raising(without):
     """`vast doctor` exists to say what is wrong. Dying while finding out is the one
-    failure it cannot have — and its `load_kube_config` import sat outside the `try`
-    that turns every other cluster problem into a reported Check."""
+    failure it cannot have, so a missing `load_kube_config` is a reported Check too."""
     without("robovast.execution.cluster_execution.kube_client")
     from robovast.client.doctor import check_cluster
 
@@ -116,7 +111,7 @@ def test_doctor_reports_a_missing_cluster_lane_instead_of_raising(without):
     assert "not installed" in checks[0].detail
 
 
-def test_the_whole_doctor_still_runs_without_the_cluster_lane(without):
+def test_the_whole_doctor_still_runs_without_the_cluster_package(without):
     without("robovast.execution.cluster_execution.kube_client")
     from robovast.client.doctor import run_checks
 

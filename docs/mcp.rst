@@ -196,7 +196,7 @@ than "the cluster".
 
 The world column is where ``validate_project`` runs a container, and it is a
 **different** container from the backend context in the last column: a held, read-only query
-container from the exec lane's pool (``ExecRequest.query``, ``service/world_query.py``), not a
+container from the exec runner's pool (``ExecRequest.query``, ``service/world_query.py``), not a
 variation's auxiliary one. That is why it can be the cheap tier and still settle the world —
 the container is reused across calls, so a repeat validation costs an exec rather than a
 start. ``check_world=False`` opts out and the world is then simply not checked.
@@ -280,13 +280,13 @@ remember and map onto their situation:
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
   container, rather than a ``docker run`` that dies with a bare ``FileNotFoundError``. It says
   where it ran, since that and not the ``.vast`` is what was missing.
-* The exec lane's **query slot** is not that runner and never was: it runs a read-only question
+* The exec runner's **query slot** is not that runner and never was: it runs a read-only question
   in a campaign's own image with nothing written back. A held **aux** slot in the same manager
   is, which is why the two live side by side under one reaper rather than one pretending to be
   the other.
 
 Each carries a ``next_step`` stating what closing the gap **costs** — seconds for a preview, one
-real trial and the lane for a campaign — so a caller who only needed the sweep's shape can
+real trial and cluster time for a campaign — so a caller who only needed the sweep's shape can
 weigh it rather than reading the hint as an instruction.
 
 
@@ -486,7 +486,7 @@ implemented over the same SQL — and ``list_campaigns``, which spans campaigns 
 querying one.
 
 **"What did this run cost?" is SQL too, and is not** ``get_resource_usage``. That tool
-reports a *lane's* free capacity now, which is a pre-flight question. What an executed run
+reports the cluster's free capacity now, which is a pre-flight question. What an executed run
 consumed is a table — :ref:`per-run resource usage <per-run-resource-usage>`, CPU and memory
 per container over the run, joinable to ``runs.available_cpus`` for the saturation ceiling
 and to ``poses`` for what the robot was doing at the time. The two read alike and answer
@@ -552,8 +552,7 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
 A query costs the rows it touches
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Results live in a central index, so a query is answered there for every campaign, on both
-lanes. Nothing is materialized in the service to answer one, and no per-campaign database
+Results live in a central index, so a query is answered there for every campaign. Nothing is materialized in the service to answer one, and no per-campaign database
 has to exist before a question can be asked — so ``describe_campaign_data`` takes a
 campaign id and returns the schema, and a query result says what it matched and nothing
 about where it came from.
@@ -743,10 +742,6 @@ results and is shown by ``list_campaigns`` and on the campaign card in the web
 UI — where it is the only thing telling two same-day ``campaign-<timestamp>``
 ids apart. The launcher in the web UI has the same field.
 
-**A service runs one lane.** Which one is fixed when it starts, so no tool takes a lane
-argument: the service resolves it, and every tool scoped to an existing ``campaign_id``
-or ``build_id`` gets the lane that campaign actually ran on.
-
 .. note::
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
@@ -756,12 +751,12 @@ or ``build_id`` gets the lane that campaign actually ran on.
    computed — re-run it), or the **share upload** (cancelled, partial archive removed).
    A campaign that is already over is refused rather than silently accepted.
    ``list_campaigns(running_only=True)`` reports the campaigns the service considers
-   live (all lanes).
+   live.
 
    ``stop_job`` is the narrow one beside it: it kills a **single running** job and lets
    the rest of the campaign finish. Reach for it only when ``list_campaign_jobs`` shows a
    job that is running and will not end on its own, and you still want the other runs —
-   a merely slow run finishes by itself, and the lane's deadline kills a genuinely hung
+   a merely slow run finishes by itself, and the Job's deadline kills a genuinely hung
    one without help, so check ``get_campaign_status``'s ``stalled`` before deciding. It
    refuses anything that is not ``running``, naming the phase. The kill is permanent and
    recorded: that run reports ``status='killed'`` with the reason in ``failure_message``
@@ -785,17 +780,16 @@ or ``build_id`` gets the lane that campaign actually ran on.
    without costing the run anything.
 
    An absent ``usage``, or an absent field inside it, means **not measured** — never zero.
-   The job is not running, the lane sets no container limits, or a container left a limit
+   The job is not running, the job sets no container limits, or a container left a limit
    open (which means the whole node, so no ceiling is true). When the cause is worth acting
    on, the response carries ``metrics_unavailable`` saying so. Do not read a listing with no
    usage anywhere as an idle cluster: check that field first.
 
 .. note::
 
-   ``get_resource_usage`` reports an execution lane's CPU/memory capacity and current
-   usage — plus, where the lane can report them, its ``disk`` and ``results``
-   filesystems — and a ``parallel_runs`` flag. The fields mean the same thing on any
-   lane, so an assistant reads them uniformly. Use it to size a ``.vast`` run
+   ``get_resource_usage`` reports the cluster's CPU/memory capacity and current
+   usage — plus, where the service can report them, its ``disk`` and ``results``
+   filesystems — and a ``parallel_runs`` flag. Use it to size a ``.vast`` run
    against free capacity: with ``free_cpu = cpu_capacity - cpu_used`` (and the same
    for memory), a run's concurrency is ``1`` when ``parallel_runs`` is false,
    otherwise ``min(⌊free_cpu / run_cpu⌋, ⌊free_mem / run_mem⌋)`` from the per-run
@@ -806,9 +800,9 @@ or ``build_id`` gets the lane that campaign actually ran on.
    one.** ``cpu_reserved`` / ``memory_reserved_bytes`` are what the scheduler has
    committed — the number that decides whether the next run fits — while ``cpu_measured``
    / ``memory_measured_bytes`` are what is actually being consumed, which answers whether
-   the last campaign needed what it asked for. ``cpu_used`` aliases whichever the lane
+   the last campaign needed what it asked for. ``cpu_used`` aliases whichever the service
    leads with (the request sum on a cluster), so it stays the right field when the
-   distinction does not matter. Either pair is ``null`` where the lane has no such reading
+   distinction does not matter. Either pair is ``null`` where the service has no such reading
    — a cluster without metrics-server cannot measure, saying which in
    ``metrics_unavailable`` — and ``null`` never means zero.
 
@@ -883,7 +877,7 @@ owns, with no log reading at all:
    ``vast campaign wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
    ``get_campaign_log`` for what the phase is doing.
 
-That backstop is not wasted — it is simply a different job. The lane *enforces* a per-job
+That backstop is not wasted — it is simply a different job. The cluster *enforces* a per-job
 limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds``), and falls back to an
 hour per packed run when none is declared. Killing late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
 figures are deliberately separate (``job_deadline_seconds``, which falls back, versus
@@ -1247,8 +1241,7 @@ legitimately absent, so an unlisted one is unverifiable rather than wrong; a *co
 address matching nothing is unambiguous, and is what the campaign pre-check refuses before any
 compute.
 
-``describe_world`` answers on **both** lanes. In-cluster it runs on the exec lane's held query
-pool, the same one ``validate_project``'s world check uses — so the two share a warm container
+``describe_world`` runs on the exec runner's held query pool, the same one ``validate_project``'s world check uses — so the two share a warm container
 rather than each paying a start.
 
 **It is asked in the image the campaign runs, and the reply says which.** Not a detail: which
@@ -1272,8 +1265,7 @@ Testing a container and its setup
 ``exec_in_container`` runs one command in an experiment image, and **which** image depends
 on the config source it is given — the two answer different questions. A ``workspace_id``
 runs what that project would build *now*: a container declaring ``system_packages`` /
-``python_packages`` must already have its image on the lane's own image store (the
-deployment's registry), because this never builds implicitly — a
+``python_packages`` must already have its image in the deployment's registry, because this never builds implicitly — a
 seconds-long check must not silently become a multi-minute build. A ``campaign_id`` runs the
 image that campaign *recorded*, so it is what you exec against to ask "what did that run
 actually see?", and it stays correct after the workspace has moved on.
@@ -1312,9 +1304,7 @@ rather than a historical digest. A ``build:<tag>`` must already exist: this neve
 implicitly, because a quick check silently becoming a full image build is the cost it was
 added to remove.
 
-``backend`` names a lane on a service offering several; omitting it uses the service's
-lane, the same rule ``start_campaign`` follows. The service stages the
-project's ``/config`` and, when ``workspace_id`` is given, mount that workspace read-only
+The service stages the project's ``/config`` and, when ``workspace_id`` is given, mounts that workspace read-only
 at ``/sources/<workspace_id>`` — the same address, so a path returned by ``write_file`` is
 usable verbatim in the command either way. In-cluster the staging is a tar stream from the
 service's data plane into the pod, exactly as a campaign job's inputs are, so anything a
@@ -1349,7 +1339,7 @@ finished run did, ``get_camera_frame`` or ``get_simulation_screenshot``.
 ids, a listing tool, and a leak class. ``keep_alive=True`` holds it open; every result
 reports ``container.reused``, and ``reused: false`` on a ``keep_alive`` call means a fresh
 container — anything the previous one was running is gone. ``stop_container`` ends it, and
-``get_resource_usage`` reports it while it lives, so a lane with no room for a campaign
+``get_resource_usage`` reports it while it lives, so a cluster with no room for a campaign
 can be traced to your own held container instead of guessed at.
 
 Asking for a different project while something is still running in the held container is
@@ -1359,7 +1349,7 @@ replaced freely.
 
 **Time limits are derived, not passed.** A command gets a fixed cap; a scenario gets the
 project's own ``execution.timeout``; a project that sets none gets the same fixed cap,
-reported as ``limit_source: "default"`` — never the campaign lane's one-hour fallback,
+reported as ``limit_source: "default"`` — never a campaign's one-hour fallback,
 which for a diagnostic container is a leak rather than a limit. Because the source is
 reported, a ``timed_out`` result names its own remedy.
 

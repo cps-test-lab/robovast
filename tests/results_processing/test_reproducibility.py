@@ -105,9 +105,7 @@ def test_a_local_image_id_is_opaque(tmp_path):
 
 
 def test_a_digest_in_either_field_counts(tmp_path):
-    """The two lanes fill `images` and `image_revisions` differently, so reading only one
-    reported a campaign whose digest was in the other as having none -- while quoting that very
-    digest back in the message."""
+    """A record may carry its digest in `images` or in `image_revisions`; either counts."""
     execution = {"robovast_revision": "a" * 40, "robovast_dirty": False,
                  "images": {"sut": "ghcr.io/org/img@sha256:" + "f" * 64},
                  "image_revisions": {}}

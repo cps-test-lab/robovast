@@ -4,8 +4,8 @@
 """The environment a campaign may not write, and why the list cannot go stale.
 
 ``RESERVED_ENV_NAMES`` is a denylist, and a hand-maintained denylist fails in one
-direction only: it keeps passing while it protects less and less. Someone adds a variable
-to a lane, nobody remembers this list, and a campaign can quietly repoint it.
+direction only: it keeps passing while it protects less and less. A variable added to the
+backend without this list lets a campaign quietly repoint it.
 
 So the list is checked against the code that actually injects. These tests read the
 emitters, extract every environment name they set, and fail when one is neither reserved
@@ -23,7 +23,7 @@ from robovast.common.execution import get_execution_env_variables
 
 _ROOT = Path(__file__).resolve().parents[2] / "src"
 
-#: Names a lane sets that a campaign may legitimately set too. Every one of these steers
+#: Names the backend sets that a campaign may legitimately set too. Every one of these steers
 #: how a container *renders*, not whether its results mean what they say -- and a campaign
 #: running headless, or on a machine whose display is not :0, has a real reason to.
 #: Listed explicitly so leaving a name unreserved is a decision someone made, not an
@@ -64,7 +64,7 @@ def _base_env_names() -> set:
 
 
 def _injected() -> set:
-    """Every environment name the lanes set, read out of the emitters themselves."""
+    """Every environment name the backend sets, read out of the emitters themselves."""
     names = _base_env_names()
     for rel, pattern in _EMITTERS:
         path = _ROOT / rel
@@ -76,14 +76,14 @@ def _injected() -> set:
 def test_every_injected_variable_is_reserved_or_deliberately_free():
     """The drift check.
 
-    If this fails, a lane gained a variable and this list did not. Decide which it is:
+    If this fails, the backend gained a variable and this list did not. Decide which it is:
     part of the run's protocol (add it to ``RESERVED_ENV_NAMES``) or a rendering hint a
     campaign may steer (add it to ``FREE_TO_OVERRIDE``, with the reason). What must not
     happen is neither, which is how the guard silently stops covering the run.
     """
     unaccounted = _injected() - RESERVED_ENV_NAMES - FREE_TO_OVERRIDE
     assert not unaccounted, (
-        "these variables are injected by a lane but are neither reserved nor listed as "
+        "these variables are injected by the backend but are neither reserved nor listed as "
         f"free to override: {', '.join(sorted(unaccounted))}")
 
 

@@ -375,8 +375,8 @@ STOP_ALREADY_OVER = (
 def stop_scope_for_phase(phase: str) -> "str | None":
     """Which unit of work a stop lands on for a campaign in *phase*, or ``None``.
 
-    The single place that decision is made, so a lane's ``stop`` cannot answer it
-    differently from the base's reply.
+    The single place that decision is made, so an implementation's ``stop`` cannot answer
+    it differently from the base's reply.
 
     ``None`` means nothing of this campaign is running: every terminal phase, and any
     phase this vocabulary does not know. Callers report that rather than setting a flag

@@ -1383,9 +1383,8 @@ stopping — the cluster is free for something else within one run's length, and
 to be re-run when you resume. It keeps the priority it will resume at. To end a campaign
 instead, that is ``vast campaign stop``.
 
-Both need a lane that queues campaigns against each other; a lane with no queue refuses
-rather than accepting a value it cannot act on. The service says which it is before
-anyone asks: ``can_schedule`` in
+Both act on the queue in which campaigns compete for the cluster. The service says that it
+has one before anyone asks: ``can_schedule`` in
 its version answer, printed by ``vast service info`` as its ``queue`` line and reported by the
 MCP ``get_service_info``; the web UI offers the entries only where it is true.
 
@@ -1494,7 +1493,7 @@ part that does not survive it; the campaigns do.
   are visible to it exactly like any other tenant's -- which is also what lets it adopt
   them without any bookkeeping of its own.
 
-This is what ``ClusterService._shutdown_running_campaigns`` says, and why this lane has no
+This is what ``ClusterService._shutdown_running_campaigns`` says, and why the service has no
 shutdown-time job teardown: stopping a campaign is ``vast campaign stop``, and exiting the
 service is not. The distinction matters more than it looks, because a cooperative stop
 persists a terminal ``outcome.json`` -- and a campaign that has recorded an ending is one
@@ -2482,8 +2481,8 @@ into its status (``extra.upload``), which the campaign view renders as a bar and
 ``vast cluster monitor`` prints. Because the archive is gzipped on the fly its
 compressed length is unknown until the last byte, so the **bar measures the campaign
 bytes going into the archive** (``source_done``/``source_total``) and the bytes actually
-sent are reported beside it — the two differ by the compression ratio. A provider or lane
-that can offer no total leaves ``percent`` null and the bar indeterminate.
+sent are reported beside it — the two differ by the compression ratio. A provider that can offer
+no total leaves ``percent`` null and the bar indeterminate.
 
 The destination is whatever ``ROBOVAST_SHARE_TYPE`` (and its variables) name in the
 service's ``.env`` — the launch flag is a pure on/off switch and carries no
