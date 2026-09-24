@@ -10,8 +10,8 @@ changelog is written from; nothing here needs a forge or a token.
     collect   one block per merge since the last ``v*`` tag: number, title, first paragraph
               of the description, and the areas of the tree the diff touched
     check     ``CHANGELOG.md`` has a section for the version: a flat list of at most
-              fifteen short entries, each a bold topic and a line on it, citing no merge
-              outside the range
+              fifteen short entries, each a bold topic and a line on it, citing merges in
+              the range only, each as a link to its pull request (or commit)
     section   the section's body, for the release notes
 
 A merge without a pull request number is keyed by its short sha instead, and is cited as
@@ -35,9 +35,15 @@ MAX_ENTRIES = 15
 #: An entry's text, citations aside: a topic and one line on it.
 MAX_ENTRY_CHARS = 160
 ENTRY = re.compile(r"^- \*\*[^*]+\*\* — \S")
-CITATIONS = re.compile(r"\s*\((?:#\d+|[0-9a-f]{8})(?:, (?:#\d+|[0-9a-f]{8}))*\)\s*$")
+#: A citation as the changelog writes it: ``[#123](<repo>/pull/123)``, or
+#: ``[abcdef12](<repo>/commit/<sha>)`` for a merge pushed without a pull request.
+LINK = re.compile(r"\[(?:#(\d+)|([0-9a-f]{8}))\]"
+                  r"\((https://github\.com/([^/\s()]+/[^/\s()]+)/(pull|commit)/([0-9a-f]+))\)")
+_LINK = LINK.pattern
+CITATIONS = re.compile(rf"\s*\((?:{_LINK})(?:, (?:{_LINK}))*\)\s*$")
 NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 CITATION = re.compile(r"#(\d+)\b|\b([0-9a-f]{8})\b")
+GITHUB_REMOTE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
 HEADING = re.compile(r"^## (\S+)\s*$")
 
 
@@ -62,6 +68,21 @@ def git(root: Path, *args: str) -> str:
 
 def repository_root(start: Path) -> Path:
     return Path(git(start, "rev-parse", "--show-toplevel").strip())
+
+
+def github_repository(root: Path) -> str | None:
+    """``owner/name`` of the GitHub repository ``origin`` points at, or None."""
+    remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root,
+                            capture_output=True, text=True, check=False).stdout.strip()
+    match = GITHUB_REMOTE.search(remote)
+    return match.group(1) if match else None
+
+
+def link(merge: "Merge", repository: str) -> str:
+    """The citation of one merge, as a link a reader of the rendered changelog can follow."""
+    if merge.number is not None:
+        return f"[#{merge.number}](https://github.com/{repository}/pull/{merge.number})"
+    return f"[{merge.sha[:8]}](https://github.com/{repository}/commit/{merge.sha})"
 
 
 def last_tag(root: Path, head: str) -> str:
@@ -141,11 +162,13 @@ def entries(section: str) -> tuple[list[str], list[str]]:
 
 # -- the commands -----------------------------------------------------------------------
 
-def command_collect(root: Path, since: str, head: str) -> int:
+def command_collect(root: Path, since: str, head: str, repository: str | None) -> int:
     found = merges(root, since, head)
     print(f"{since}..{head}: {len(found)} merges\n")
     for merge in found:
         print(f"{merge.key:>10}  {merge.subject}")
+        if repository:
+            print(f"{'':>10}  cite: {link(merge, repository)}")
         print(f"{'':>10}  areas: {', '.join(merge.areas) or '-'}")
         if merge.summary:
             print(f"{'':>10}  {merge.summary}")
@@ -153,7 +176,28 @@ def command_collect(root: Path, since: str, head: str) -> int:
     return 0
 
 
-def command_check(root: Path, version: str, since: str, head: str) -> int:
+def link_problems(section: str, repository: str) -> list[str]:
+    """Citations that are not a link, or a link that does not lead to what it names."""
+    problems = []
+    for number, sha, _, repo, kind, target in LINK.findall(section):
+        wanted = ("pull", number) if number else ("commit", None)
+        if repo != repository:
+            problems.append(f"links into {repo}, not {repository}: {number or sha}")
+        elif kind != wanted[0] or (number and target != number) or (
+                sha and not target.startswith(sha)):
+            problems.append(f"the link for {'#' + number if number else sha} leads to "
+                            f"{kind}/{target}")
+    bare = [f"#{n}" if n else s for n, s in CITATION.findall(LINK.sub("", section))]
+    if bare:
+        problems.append("cited without a link to it: " + ", ".join(bare))
+    return problems
+
+
+def command_check(root: Path, version: str, since: str, head: str,
+                  repository: str | None) -> int:
+    if not repository:
+        return fail("cannot tell which GitHub repository the links lead into: origin is not "
+                    "one; pass --repository owner/name")
     path = root / CHANGELOG
     if not path.exists():
         return fail(f"{CHANGELOG} does not exist")
@@ -166,8 +210,8 @@ def command_check(root: Path, version: str, since: str, head: str) -> int:
     if not found:
         problems.append("the section has no entries")
     if len(found) > MAX_ENTRIES:
-        problems.append(f"{len(found)} entries; at most {MAX_ENTRIES} -- keep the changes a "
-                        "user must know about, the rest is in git")
+        problems.append(f"{len(found)} entries; at most {MAX_ENTRIES}, and fewer where fewer "
+                        "matter -- keep the changes a user must know about, the rest is in git")
     if stray:
         problems.append("not an entry (the section is one flat list, no headings or prose): "
                         + "; ".join(stray))
@@ -177,6 +221,7 @@ def command_check(root: Path, version: str, since: str, head: str) -> int:
         text = CITATIONS.sub("", entry)
         if len(text) > MAX_ENTRY_CHARS:
             problems.append(f"{len(text)} characters; at most {MAX_ENTRY_CHARS}: {entry}")
+    problems += link_problems(section, repository)
     foreign = sorted(k for k in set(cited(section)) if k not in expected)
     if foreign:
         problems.append("cited but not merged in the range (an issue number, or a typo): "
@@ -212,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         sub = commands.add_parser(name)
         sub.add_argument("--since", help="the previous release tag (default: newest v* tag)")
         sub.add_argument("--head", default="origin/main")
+        sub.add_argument("--repository", help="owner/name the citations link into "
+                                              "(default: the GitHub repository origin names)")
     commands.choices["check"].add_argument("--version", required=True)
     commands.add_parser("section").add_argument("--version", required=True)
     args = parser.parse_args(argv)
@@ -220,9 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "section":
         return command_section(root, args.version)
     since = args.since or last_tag(root, args.head)
+    repository = args.repository or github_repository(root)
     if args.command == "collect":
-        return command_collect(root, since, args.head)
-    return command_check(root, args.version, since, args.head)
+        return command_collect(root, since, args.head, repository)
+    return command_check(root, args.version, since, args.head, repository)
 
 
 if __name__ == "__main__":

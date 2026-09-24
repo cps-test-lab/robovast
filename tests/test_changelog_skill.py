@@ -84,9 +84,17 @@ def _changelog(root: Path, section: str) -> None:
     (root / "CHANGELOG.md").write_text("# Changelog\n\n## 0.2.0\n\n" + section + "\n")
 
 
-def _check(tool, capsys, root):
-    return _run(tool, capsys, "--root", str(root), "check", "--version", "0.2.0",
-                "--head", "HEAD")
+#: The repository the citations link into; the fixture repository has no origin to read it from.
+REPO = "cps-test-lab/robovast"
+
+
+def _pr(number: int, repo: str = REPO, target: int | None = None) -> str:
+    return f"[#{number}](https://github.com/{repo}/pull/{target or number})"
+
+
+def _check(tool, capsys, root, version="0.2.0"):
+    return _run(tool, capsys, "--root", str(root), "check", "--version", version,
+                "--head", "HEAD", "--repository", REPO)
 
 
 def test_check_passes_a_short_flat_list(repo, capsys):
@@ -94,7 +102,7 @@ def test_check_passes_a_short_flat_list(repo, capsys):
     since git holds the rest."""
     tool = _load()
     root, _ = repo
-    _changelog(root, "- **Plugin removed** — its reads are answered by core (#13)\n"
+    _changelog(root, f"- **Plugin removed** — its reads are answered by core ({_pr(13)})\n"
                      "- **Archives** — a workspace travels as one, and a long line\n"
                      "  continues indented\n"
                      "- **Docs** — spelled consistently\n")
@@ -127,9 +135,9 @@ def test_check_refuses_a_long_entry_but_not_its_citations(repo, capsys):
     tool = _load()
     root, _ = repo
     fits = "x" * (tool.MAX_ENTRY_CHARS - len("- **T** — "))
-    _changelog(root, f"- **T** — {fits} (#12, #13)\n")
+    _changelog(root, f"- **T** — {fits} ({_pr(12)}, {_pr(13)})\n")
     assert _check(tool, capsys, root)[0] == 0, "citations do not count toward the length"
-    _changelog(root, f"- **T** — {fits}x (#12)\n")
+    _changelog(root, f"- **T** — {fits}x ({_pr(12)})\n")
     code, out = _check(tool, capsys, root)
     assert code == 1 and f"at most {tool.MAX_ENTRY_CHARS}" in out
 
@@ -137,7 +145,7 @@ def test_check_refuses_a_long_entry_but_not_its_citations(repo, capsys):
 def test_check_refuses_a_number_that_is_no_merge_in_the_range(repo, capsys):
     tool = _load()
     root, _ = repo
-    _changelog(root, "- **Thing** — served (#12)\n- **Other** — something (#99)\n")
+    _changelog(root, f"- **Thing** — served ({_pr(12)})\n- **Other** — something ({_pr(99)})\n")
     code, out = _check(tool, capsys, root)
     assert code == 1 and "cited but not merged" in out and "#99" in out
 
@@ -153,13 +161,52 @@ def test_check_refuses_an_empty_section(repo, capsys):
 def test_check_refuses_a_missing_file_or_section(repo, capsys):
     tool = _load()
     root, _ = repo
+    code, out = _check(tool, capsys, root)
+    assert code == 1 and "does not exist" in out
+    _changelog(root, f"- **x** — y ({_pr(12)})")
+    code, out = _check(tool, capsys, root, version="0.3.0")
+    assert code == 1 and "no '## 0.3.0' section" in out
+
+
+def test_every_citation_is_a_link_to_what_it_names(repo, capsys):
+    """A reader of the rendered changelog follows a citation; a bare number leads nowhere,
+    and a link to another pull request or repository leads to the wrong change."""
+    tool = _load()
+    root, _ = repo
+    _changelog(root, f"- **Bare** — no link (#12)\n"
+                     f"- **Wrong number** — ({_pr(13, target=12)})\n"
+                     f"- **Other repository** — ({_pr(12, repo='someone/else')})\n")
+    code, out = _check(tool, capsys, root)
+    assert code == 1
+    assert "cited without a link to it: #12" in out
+    assert "the link for #13 leads to pull/12" in out
+    assert "links into someone/else" in out
+
+
+def test_a_direct_push_is_cited_by_its_commit(repo, capsys):
+    tool = _load()
+    root, sha = repo
+    _changelog(root, f"- **Docs** — fixed ([{sha[:8]}](https://github.com/{REPO}/commit/{sha}))\n")
+    code, out = _check(tool, capsys, root)
+    assert code == 0, out
+
+
+def test_check_needs_to_know_the_repository(repo, capsys):
+    """The fixture has no origin: without one, which links are right cannot be told."""
+    tool = _load()
+    root, _ = repo
+    _changelog(root, f"- **x** — y ({_pr(12)})")
     code, out = _run(tool, capsys, "--root", str(root), "check", "--version", "0.2.0",
                      "--head", "HEAD")
-    assert code == 1 and "does not exist" in out
-    _changelog(root, "- x (#12) (#13)")
-    code, out = _run(tool, capsys, "--root", str(root), "check", "--version", "0.3.0",
-                     "--head", "HEAD")
-    assert code == 1 and "no '## 0.3.0' section" in out
+    assert code == 1 and "--repository" in out
+
+
+def test_collect_prints_the_link_to_cite(repo, capsys):
+    tool = _load()
+    root, _ = repo
+    code, out = _run(tool, capsys, "--root", str(root), "collect", "--head", "HEAD",
+                     "--repository", REPO)
+    assert code == 0 and f"cite: {_pr(12)}" in out
 
 
 def test_section_is_the_body_under_its_heading_only(repo, capsys):
