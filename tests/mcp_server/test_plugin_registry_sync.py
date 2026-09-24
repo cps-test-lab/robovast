@@ -664,13 +664,12 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #: a turn, it is not a tool** — and a cap on how long a tool may block does not make it one,
 #: it only moves the overrun to the caller.
 #:
-#: Raised 13_000 → 13_500 for the image catalog's four tools (``list_scenario_actions``,
-#: ``get_scenario_action_details``, ``list_roqsim_plugins``, ``get_roqsim_plugin_details``
-#: — 245 tokens together). Unlike the raise above, this one was **not** paid for by
-#: compressing anything, which is a deliberate exception and worth recording as such: the
-#: plugin had been written but never registered as an entry point, so its tools were
-#: absent from the surface while ``test_every_plugin_class_is_registered`` failed. Fixing
-#: that registration added all four at once and put the surface 240 over.
+#: Raised 13_000 → 13_500 for the image catalog's tools. Unlike the raise above, that one
+#: was **not** paid for by compressing anything, which was recorded as a deliberate
+#: exception: the plugin had been written but never registered as an entry point, so its
+#: tools were absent from the surface while ``test_every_plugin_class_is_registered``
+#: failed, and fixing that registration added them all at once. Those four have since
+#: become one pair over a ``catalog`` argument, and the budget has come back down.
 #:
 #: Where the fat is now: ``start_campaign`` (~696), ``get_campaign_log`` (~578) and
 #: ``get_service_info`` (~530).
@@ -762,28 +761,49 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #: on the *parameter that selects it* — ``summarize`` and ``group_by_run`` each name their
 #: shape in ``Args:``, which is sent. That is the cheap half of the same fix, and it is
 #: already done.
-_SURFACE_TOKEN_BUDGET = 15_500
+#: Lowered whenever the surface shrinks, never raised to fit a description. It is a
+#: ratchet, not a headroom figure: this budget is spent by every caller on every request
+#: before a single tool is chosen, so the only direction that helps them is down.
+#:
+#: 15_125 is where merging the four image-catalog tools into two lands against the surface
+#: as it now stands. This change was first measured against a smaller one and set 15_000;
+#: the figure is the *result* of the merge rather than a target it was written to, so it
+#: moves with the baseline. It is still a lowering -- the ratchet holds, and what the merge
+#: actually saves is unchanged.
+#: **Raised by 16, for capability rather than for prose.** ``models`` and ``worlds`` are two
+#: catalogs that had no tool at all: the robots and scenes an image can spawn, which are the
+#: first two decisions a world makes and the two nothing answered. They were added to the
+#: existing pair as ``catalog`` values rather than as tools of their own -- four new tools would
+#: have cost several hundred tokens, and this costs sixteen, so the rule that says merge before
+#: you spend is what was followed here.
+#:
+#: Still far below where it was: this sits on top of the merge above, which took the surface from
+#: ~15_490 to 15_125. The pair together is a net reduction of ~350.
+_SURFACE_TOKEN_BUDGET = 15_141
 
 
 def test_no_tool_description_carries_its_own_args_or_returns_section():
-    """Those belong to the parameter schema, which is sent alongside; in the description
-    they are a duplicate paid for on every request.
+    """Those belong to the parameter schema, sent alongside; in the description they are
+    prose paid for on every request.
 
-    They get there by accident, not by authorship: a shared paragraph spliced into several
-    docstrings at column 0 leaves the docstring with no common indent, and the parser then
-    stops recognising ``Args:``/``Returns:`` as sections and serves them as prose. The
-    tool still works and its description reads almost right, so nothing else notices.
+    They get there by accident: ``Args:`` is what anchors the split, so a ``Returns:``
+    with none before it is never claimed as a section and is served whole. Matched at any
+    indentation, because where the marker lands depends on what else the docstring holds
+    -- a guard that spells out the one shape it has seen passes the next one.
     """
     import asyncio
 
     async def _tools():
         return await create_server().list_tools()
 
-    leaked = [t.name for t in asyncio.run(_tools())
-              if any(marker in (t.description or "")
-                     for marker in ("\n    Args:", "\n    Returns:"))]
-    assert not leaked, (f"{leaked} serve their Args/Returns as description text -- check "
-                        "the indentation of anything spliced into their docstrings.")
+    marker = re.compile(r"^[ \t]*(?:Args|Returns):[ \t]*$", re.M)
+    leaked = sorted(t.name for t in asyncio.run(_tools())
+                    if marker.search(t.description or ""))
+    assert not leaked, (
+        f"{leaked} serve their Args/Returns as description text. A tool taking no "
+        "arguments serves its whole docstring, so what it returns belongs in prose (say "
+        "the fields that change what a caller does) or in the docs -- not in a Returns: "
+        "section, which is sent verbatim to every caller on every request.")
 
 
 def test_the_tool_surface_stays_within_its_token_budget():

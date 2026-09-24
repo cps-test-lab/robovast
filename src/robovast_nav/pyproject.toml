@@ -22,7 +22,7 @@ scipy = "^1.11"
 # Imported by the map visualizer (the map2d panel's plot, the notebooks). Declared here
 # because they are this package's imports, rather than left to robovast to carry.
 matplotlib = "^3.10"
-numpy = "^1.26"
+numpy = ">=1.26,<3"
 Pillow = "^12.0"
 pyyaml = "^6.0"
 # Not optional, unlike robovast's own `fair` extra: the three variation modules build their

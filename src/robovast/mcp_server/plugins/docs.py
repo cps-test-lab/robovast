@@ -29,9 +29,12 @@ The docs directory is resolved in this order:
 
 import importlib
 import inspect
+import json as _json
 import logging
 import os
 import re
+import sqlite3
+import threading
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -324,6 +327,70 @@ def _collect_doc_sources(docs_dir: Path) -> dict[str, tuple[Path, str]]:
     return sources
 
 
+#: The label an image's own pages are served under, prefixing every one of them so both
+#: repositories keep an ``architecture`` page and neither shadows the other.
+UPSTREAM_LABEL = "roqsim"
+
+#: Extra corpora from the filesystem, as ``label=/path`` pairs separated by the platform path
+#: separator. For a checkout with no image behind it.
+DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
+
+
+def _upstream_pages(address: str) -> tuple[dict, str]:
+    """``({name: (title, text)}, error)`` for the simulator image *address* resolves to.
+
+    Read from the image rather than baked in beside this code: the pages that answer a question
+    about a world's format have to be the ones belonging to the simulator that campaign runs,
+    and only the image knows which that is. One exec per image, cached with the catalogs.
+    """
+    from robovast.mcp_server.plugins.image_catalog import _fetch_catalog
+
+    fetched = _fetch_catalog("docs", address)
+    if "error" in fetched:
+        return {}, fetched["error"]
+    pages = {}
+    for item in fetched.get("items", []):
+        name, text = item.get("name"), item.get("text")
+        if name and text:
+            pages[f"{UPSTREAM_LABEL}-{name}"] = (_extract_title(text) or name, text)
+    return pages, ""
+
+
+def _env_doc_roots() -> list[tuple[str, Path]]:
+    """``(label, docs_dir)`` for each entry of :data:`DOCS_EXTRA_ENV`."""
+    raw = os.environ.get(DOCS_EXTRA_ENV, "")
+    roots: list[tuple[str, Path]] = []
+    for chunk in raw.split(os.pathsep):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        label, _, spec = chunk.partition("=")
+        if not spec:
+            label, spec = "", chunk
+        path = Path(spec)
+        if not path.is_dir():
+            # Set-but-wrong is a misconfiguration, as it is for ROBOVAST_DOCS_DIR: say so rather
+            # than serving nothing under a name the operator believes is theirs.
+            logger.warning("%s names %s, which is not a directory; skipping it",
+                           DOCS_EXTRA_ENV, path)
+            continue
+        roots.append((label or path.parent.name, path))
+    return roots
+
+
+def _load_corpus(docs_dir: Path, prefix: str = "") -> dict[str, tuple[Path, str, str]]:
+    """``name -> (path, kind, label)`` for one documentation root.
+
+    *prefix* namespaces a secondary corpus, so ``architecture`` from upstream is served as
+    ``roqsim-architecture`` beside robovast's own -- both repositories have a page by that name,
+    and silently letting one shadow the other would answer a question about one with the other.
+    """
+    out: dict[str, tuple[Path, str, str]] = {}
+    for name, (path, kind) in _collect_doc_sources(docs_dir).items():
+        out[f"{prefix}-{name}" if prefix else name] = (path, kind, prefix or "robovast")
+    return out
+
+
 # -- Module-level doc loading ------------------------------------------------
 
 _docs_dir: Path | None = _find_docs_dir()
@@ -331,17 +398,85 @@ _docs_dir: Path | None = _find_docs_dir()
 _doc_files: dict[str, Path] = {}
 _doc_meta: dict[str, str] = {}
 _doc_content: dict[str, str] = {}
+#: page name -> which corpus it came from, so a listing says where an answer is from.
+_doc_source: dict[str, str] = {}
 
+_sources: dict[str, tuple[Path, str, str]] = {}
 if _docs_dir is not None:
-    for _name, (_path, _kind) in _collect_doc_sources(_docs_dir).items():
-        _text = _path.read_text(encoding="utf-8", errors="replace")
-        _doc_files[_name] = _path
-        if _kind == "roqsim":
-            _doc_meta[_name] = _extract_title(_text) or _name
-            _doc_content[_name] = _resolve_directives(_text, _path.parent)
-        else:
-            _doc_meta[_name] = _extract_md_title(_text) or _name
-            _doc_content[_name] = _text
+    _sources.update(_load_corpus(_docs_dir))
+for _label, _root in _env_doc_roots():
+    # setdefault: robovast's own pages keep their unprefixed names.
+    for _key, _value in _load_corpus(_root, prefix=_label).items():
+        _sources.setdefault(_key, _value)
+
+for _name, (_path, _kind, _from) in _sources.items():
+    _text = _path.read_text(encoding="utf-8", errors="replace")
+    _doc_files[_name] = _path
+    _doc_source[_name] = _from
+    if _kind == "roqsim":
+        _doc_meta[_name] = _extract_title(_text) or _name
+        # Only robovast's own pages carry directives this resolver knows how to expand.
+        _doc_content[_name] = (
+            _resolve_directives(_text, _path.parent) if _from == "robovast" else _text)
+    else:
+        _doc_meta[_name] = _extract_md_title(_text) or _name
+        _doc_content[_name] = _text
+
+
+#: Replies above this are a sample rather than an answer, so the excerpts are dropped and the
+#: pages are named instead. Measured, not guessed: a term as common as "campaign" matches 27 of
+#: 27 pages, and five excerpts from each is ~15k tokens of arbitrary sample.
+_REPLY_BUDGET_CHARS = 16_000
+
+#: How many pages a digest names. Ranked by score, so this is the head of a ranking rather than
+#: the front of an alphabet.
+_DIGEST_PAGES = 12
+
+_index_lock = threading.Lock()
+#: corpus key -> an FTS5 index over it. Built once; the corpus is fixed per key.
+_indexes: "dict[str, sqlite3.Connection]" = {}
+
+
+def _match_expression(query: str) -> str:
+    """*query* as FTS5 MATCH: each word a quoted prefix term, ANDed.
+
+    Quoted because a word may carry punctuation an operator would claim (``sim:``, ``--push``),
+    and a search is for what was typed rather than for a query language nobody was offered. The
+    ``*`` keeps a stem finding its plural, which substring matching gave for free.
+    """
+    words = [w for w in re.split(r"\s+", query.strip()) if w]
+    return " ".join('"' + w.replace('"', '""') + '"*' for w in words)
+
+
+def _index(pages: "dict[str, str]", key: str) -> "sqlite3.Connection":
+    """An FTS5 index over *pages*, built once per *key*."""
+    with _index_lock:
+        conn = _indexes.get(key)
+        if conn is None:
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
+            conn.execute("CREATE VIRTUAL TABLE pages USING fts5(name UNINDEXED, body)")
+            conn.executemany("INSERT INTO pages VALUES (?, ?)", pages.items())
+            _indexes[key] = conn
+        return conn
+
+
+def _ranked(pages: "dict[str, str]", key: str, query: str) -> "list[str]":
+    """Page names matching *query*, best first. Empty for a query FTS5 cannot parse."""
+    match = _match_expression(query)
+    if not match:
+        return []
+    try:
+        rows = _index(pages, key).execute(
+            "SELECT name FROM pages WHERE pages MATCH ? ORDER BY bm25(pages)", (match,))
+        return [name for (name,) in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
+def _listing_row(name: str, source: str = "") -> dict:
+    """One page as a listing shows it."""
+    return {"name": name, "title": _doc_meta[name] if not source else name,
+            "source": source or _doc_source.get(name, "robovast")}
 
 
 # -- Tool functions ----------------------------------------------------------
@@ -402,8 +537,9 @@ def _excerpts(lines: list[str], hits: list[int], limit: int) -> tuple[list[dict]
              for start, end, count, first in kept], len(windows))
 
 
-def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS) -> dict:
-    """The RoboVAST documentation: list the pages, search them, or read one.
+def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
+                address: str = "") -> dict:
+    """RoboVAST's documentation, and the simulator's when an *address* names an image.
 
     Args:
         query: Case-insensitive search term. Returns matching excerpts with 2 lines of
@@ -411,6 +547,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
         page: Read this page in full (a ``name`` from the listing).
         limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
             is megabytes). Narrow the term or read the page instead of raising this.
+        address: ``/sources/<workspace_id>/<path>`` -- also search the simulator pages of the
+            image that ``.vast`` runs, served under a ``roqsim-`` prefix. The world format
+            and the plugin reference are documented there, not here.
 
     Returns:
         Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
@@ -424,34 +563,74 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS)
     if not _doc_files:
         return _no_docs()
 
+    # The image's own pages, when one is named. Fetched per call and cached per image beside
+    # the catalogs, so a second question about the same image costs nothing.
+    upstream, upstream_error = _upstream_pages(address) if address else ({}, "")
+    if upstream_error:
+        return {"error": upstream_error}
+    titles = {**{n: _doc_meta[n] for n in _doc_files}, **{n: t for n, (t, _x) in upstream.items()}}
+    texts = {**_doc_content, **{n: x for n, (_t, x) in upstream.items()}}
+
     if page:
-        if page not in _doc_files:
+        if page not in texts:
+            if not address and page.startswith(f"{UPSTREAM_LABEL}-"):
+                # A name from an address-scoped listing, read without the address. Listing our
+                # pages here would say it does not exist, which is the answer this avoids.
+                return {"error": f"{page!r} is a page of the simulator image; pass the same "
+                                 "address= the listing was made with to read it."}
             return {"error": f"unknown documentation page {page!r}; available: "
-                             f"{', '.join(sorted(_doc_files))}"}
-        return {"page": page, "title": _doc_meta[page], "content": _doc_content[page]}
+                             f"{', '.join(sorted(texts))}"}
+        return {"page": page, "title": titles[page], "content": texts[page]}
 
     if not query:
-        pages = [{"name": name, "title": _doc_meta[name]} for name in sorted(_doc_files)]
+        pages = [_listing_row(name, UPSTREAM_LABEL if name in upstream else "")
+                 for name in sorted(texts)]
         return {"pages": pages, "total": len(pages)}
+
+    # Which pages, and in what order: BM25 over the corpus, so the first result is the best one
+    # rather than the first alphabetically.
+    key = f"{UPSTREAM_LABEL}:{address}" if upstream else "robovast"
+    ranked = _ranked(texts, key, query)
+    words = [w.lower() for w in query.split() if w]
 
     results = []
     matching_lines_total = 0
     truncated = False
-    query_lower = query.lower()
-    for name in sorted(_doc_files):
-        lines = _doc_content[name].splitlines()
-        hits = [i for i, line in enumerate(lines) if query_lower in line.lower()]
+    for name in ranked:
+        lines = texts[name].splitlines()
+        hits = [i for i, line in enumerate(lines)
+                if any(w in line.lower() for w in words)]
         if not hits:
             continue
         matches, excerpts_total = _excerpts(lines, hits, limit)
         matching_lines_total += len(hits)
         cut = len(matches) < excerpts_total
         truncated = truncated or cut
-        results.append({"page": name, "title": _doc_meta[name], "matches": matches,
+        results.append({"page": name, "title": titles[name], "matches": matches,
                         "matching_lines": len(hits), "excerpts_total": excerpts_total,
                         "truncated": cut})
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if len(_json.dumps(out)) > _REPLY_BUDGET_CHARS:
+        # Excerpts from every page that matched a common term are a sample, not an answer, and
+        # the sample costs more than the pages it samples. Named instead, best first, so the
+        # next call is a read rather than another guess.
+        named = [{"page": r["page"], "title": r["title"],
+                  "matching_lines": r["matching_lines"]} for r in results[:_DIGEST_PAGES]]
+        return {"results": named, "total": len(results), "digest": True,
+                "matching_lines_total": matching_lines_total,
+                "note": (f"{query!r} matches {matching_lines_total} lines across "
+                         f"{len(results)} pages, so excerpts of it would be a sample. These "
+                         f"are the best-matching pages, in order. Read one with "
+                         f"search_docs(page=\"{named[0]['page']}\"" +
+                         (f", address=...)" if upstream else ")") +
+                         ", or narrow the term.")}
+    if not results and not address:
+        # Zero reads as "no such thing". These are RoboVAST's pages only, and the world
+        # format and plugin reference live with the simulator.
+        out["note"] = ("no match in RoboVAST's own pages. The simulator's -- the world "
+                       "format, its plugins, the scene catalog -- are served with "
+                       "address=/sources/<workspace_id>/<path>.")
     if matching_lines_total > _COMMON_TERM_LINES:
         # A term this common is not answered by more excerpts of it. Say so, since the
         # reply otherwise reads as "here is what the docs say about X" when it is a

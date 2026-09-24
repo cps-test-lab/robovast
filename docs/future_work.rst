@@ -164,12 +164,13 @@ way, which a grep for ``detected_service_url`` under ``mcp_server/`` now shows.
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
   every postprocessed artifact was present -- the campaign-level counters were never
-  populated. **Traced** for the local lane: ``DockerBackend.count_run_artifacts``
-  returned ``None`` ("results are already on disk"), which made
-  ``_start_progress_poller`` return early, so nothing ever wrote the counters and a live
-  local campaign also published a ``progress`` that could not move. It now counts the
-  per-run ``test.xml`` files, and a backend that genuinely cannot count is logged rather
-  than passed over. What is still unverified is whether the *search*
+  populated. **Traced** on both lanes to the same cause: the backend's
+  ``count_run_artifacts`` answered ``None``, which made ``_start_progress_poller``
+  return early, so nothing ever wrote the counters and a live campaign also published
+  a ``progress`` that could not move. ``ExecutionBackend.count_run_artifacts`` now
+  counts the per-run ``test.xml`` files under the campaign root, which is where a run's
+  results land on either lane, and a backend that genuinely cannot count is logged
+  rather than passed over. What is still unverified is whether the *search*
   lane's per-batch record and the campaign row's aggregate agree with those counters over
   a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
   from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``

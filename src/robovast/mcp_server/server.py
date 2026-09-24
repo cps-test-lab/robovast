@@ -250,8 +250,44 @@ def _install_argument_help(mcp: FastMCP) -> None:
     mcp.add_middleware(_ArgumentHelpMiddleware())
 
 
+def _caller(context) -> tuple:
+    """``(actor, session)`` for this call: who authenticated, and over which connection.
+
+    The two answer different questions. *actor* is the resolved
+    :class:`~robovast.service.auth.Principal`'s name and how it authenticated, which is
+    what the service knows about the caller; a caller that gave no name stays unnamed.
+    *session* is the client's name and its ``mcp-session-id``, which is what separates two
+    agents sharing one token -- the actor cannot.
+
+    Neither may fail: accounting that raises turns the record into a way to break the call
+    it records, so every lookup is guarded and an unavailable part is empty.
+    """
+    ctx = getattr(context, "fastmcp_context", None)
+    if ctx is None:
+        return "", ""
+    actor = session = client = ""
+    try:
+        request = ctx.request_context
+        principal = getattr(getattr(request, "request", None), "state", None)
+        principal = getattr(principal, "principal", None)
+        if principal is not None:
+            name = principal.display_name
+            actor = f"{name} ({principal.source})" if name else principal.source
+        info = getattr(getattr(request, "session", None), "client_params", None)
+        client = str(getattr(getattr(info, "clientInfo", None), "name", "") or "")
+    except Exception:  # noqa: BLE001 - an unnameable caller is still a call to record
+        pass
+    try:
+        session = str(ctx.session_id or "")
+    except Exception:  # noqa: BLE001 - outside a request context there is no session
+        session = ""
+    if client or session:
+        session = f"{client}/{session}" if client and session else (client or session)
+    return actor, session
+
+
 def _install_tool_stats(mcp: FastMCP) -> None:
-    """Record every tool call -- what was asked, what came back, how long it took.
+    """Record every tool call -- who asked, what was asked, what came back, how long it took.
 
     One middleware for all of them: no tool counts itself, and a tool added tomorrow is
     accounted for without knowing this exists. What it records and how much of a payload
@@ -274,6 +310,9 @@ def _install_tool_stats(mcp: FastMCP) -> None:
         async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
             started = time.perf_counter()
             answer, ok = "", False
+            # Read before the call: a middleware further in may close the request context,
+            # and the finally below runs on a worker thread where it is gone either way.
+            actor, session = _caller(context)
             try:
                 result = await call_next(context)
                 answer, ok = tool_stats.render(_extract_result(result)), True
@@ -289,6 +328,8 @@ def _install_tool_stats(mcp: FastMCP) -> None:
                     ok,
                     args=tool_stats.render(context.message.arguments or {}),
                     answer=answer,
+                    actor=actor,
+                    session=session,
                 ))
 
     mcp.add_middleware(_ToolStatsMiddleware())

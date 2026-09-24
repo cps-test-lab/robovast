@@ -103,8 +103,75 @@ def test_the_export_is_a_csv_download_of_the_log(client):
     assert response.headers["content-type"].startswith("text/csv")
     assert "attachment; filename=\"mcp-calls-" in response.headers["content-disposition"]
     lines = response.text.strip().splitlines()
-    assert lines[0] == "at,tool,duration_ms,ok,args,answer,actor"
+    assert lines[0] == "at,tool,duration_ms,ok,args,answer,actor,session"
     assert "search_docs" in lines[1]
+
+
+def test_a_page_says_how_much_of_the_record_it_is(client):
+    """A page that reported neither its total nor its bound read as the whole record.
+
+    That is the defect this replaces: the export clamped silently, so asking for more rows
+    than were served came back looking complete, while the ranking printed beside it
+    summarised a window many times larger. The two disagreed and nothing said so.
+    """
+    _record(*[(f"t{i}", 1.0, True) for i in range(5)])
+
+    page = client.get(Routes.ADMIN_MCP_CALLS, params={"limit": 2}).json()
+    assert len(page["calls"]) == 2
+    assert page["total"] == 5
+    assert page["truncated"] is True
+    assert (page["limit"], page["offset"]) == (2, 0)
+
+    rest = client.get(Routes.ADMIN_MCP_CALLS, params={"limit": 2, "offset": 2}).json()
+    assert [c["tool"] for c in rest["calls"]] == ["t2", "t1"]
+
+    whole = client.get(Routes.ADMIN_MCP_CALLS, params={"limit": 50}).json()
+    assert whole["truncated"] is False, "a page holding every match is not truncated"
+    assert len(whole["calls"]) == whole["total"] == 5
+
+
+def test_a_partial_export_says_so_in_the_only_place_a_download_has(client):
+    """A CSV has no field to carry a bound, so a cut export says it in its filename.
+
+    Whoever opens the saved file later has the name and the rows and nothing else; a
+    short file that claims nothing is read as the whole record.
+    """
+    _record(*[(f"t{i}", 1.0, True) for i in range(4)])
+
+    cut = client.get(Routes.ADMIN_MCP_CALLS_CSV, params={"limit": 2})
+    assert "-partial-of-4.csv" in cut.headers["content-disposition"]
+    assert len(cut.text.strip().splitlines()) == 3  # header + 2
+
+    whole = client.get(Routes.ADMIN_MCP_CALLS_CSV, params={"limit": 50})
+    assert "-partial-of-" not in whole.headers["content-disposition"]
+
+
+def test_the_export_reaches_past_the_page_ceiling(client):
+    """The panel's page bound is not the record's. The export streams, so it is not held
+    to a ceiling that exists to bound one JSON response."""
+    from robovast.service import app as app_module
+
+    assert app_module._MCP_CALLS_PAGE_MAX < tool_stats.MAX_ROWS
+    _record(*[(f"t{i}", 1.0, True) for i in range(3)])
+
+    asked = client.get(Routes.ADMIN_MCP_CALLS_CSV,
+                       params={"limit": app_module._MCP_CALLS_PAGE_MAX * 100})
+    assert asked.status_code == 200
+    assert "-partial-of-" not in asked.headers["content-disposition"]
+
+
+def test_the_record_says_who_called_and_over_which_session(client):
+    """Both reach a reader: the principal is who the service authenticated, and the session
+    is what separates two agents sharing one token."""
+    tool_stats.LOG.record("search_docs", 1.0, True, actor="ada (token)",
+                          session="an-editor/session-7")
+    tool_stats.LOG.flush()
+
+    row = client.get(Routes.ADMIN_MCP_CALLS).json()["calls"][0]
+    assert row["actor"] == "ada (token)"
+    assert row["session"] == "an-editor/session-7"
+    csv_text = client.get(Routes.ADMIN_MCP_CALLS_CSV).text
+    assert "ada (token)" in csv_text and "an-editor/session-7" in csv_text
 
 
 def test_an_unreachable_index_is_said_rather_than_drawn_as_zero(client, monkeypatch):

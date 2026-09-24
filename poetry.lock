@@ -4030,7 +4030,7 @@ develop = false
 
 [package.dependencies]
 matplotlib = "^3.10"
-numpy = "^1.26"
+numpy = ">=1.26,<3"
 Pillow = "^12.0"
 pyyaml = "^6.0"
 rdflib = "^7.0"
@@ -5363,4 +5363,4 @@ test = ["cmaes", "ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbfor
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "26665f549f0e6f0f8c5d920856888e626fca6c104b5e9785e44efbff178c1d0d"
+content-hash = "e7bc302dcb458f08670ebae675b6197d9e47241d4aa9a738907aee6f533db6b3"

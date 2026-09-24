@@ -93,8 +93,10 @@ function CallRow({ call }: { call: McpCall }) {
         <Typography variant="caption" color="text.secondary">
           {when(call.at)} · {formatDurationMs(call.duration_ms)}
         </Typography>
-        {call.actor ? (
-          <Typography variant="caption" color="text.secondary">· {call.actor}</Typography>
+        {call.actor || call.session ? (
+          <Typography variant="caption" color="text.secondary">
+            · {[call.actor, call.session].filter(Boolean).join(' · ')}
+          </Typography>
         ) : null}
       </Stack>
       {call.args ? payload('args', call.args) : null}
@@ -180,6 +182,7 @@ export function McpToolsPanel({ active }: { active: boolean }) {
       <Typography variant="caption" color="text.secondary">
         Kept in the central index: {retentionNote(stats.data.max_age_s, stats.data.max_rows)}.
         Arguments and answers are truncated to a few lines where they are recorded.
+        {calls.data ? ` Showing ${rows.length} of ${calls.data.total} matching calls.` : ''}
       </Typography>
 
       {calls.isPending ? <CircularProgress size={20} /> : null}
@@ -189,8 +192,10 @@ export function McpToolsPanel({ active }: { active: boolean }) {
       <Box>
         {rows.map((call, i) => <CallRow key={`${call.at}-${call.tool}-${i}`} call={call} />)}
       </Box>
-      {/* Only offered when the page is full: a shorter answer is the whole record. */}
-      {rows.length >= limit ? (
+      {/* Offered on what the reply says matched beyond this page, not on the page being
+          full: a page that ends exactly at the record's end is full and has nothing more
+          to fetch. */}
+      {calls.data?.truncated ? (
         <Button size="small" sx={{ alignSelf: 'flex-start' }}
                 onClick={() => setLimit((n) => n + 200)}>
           Show more

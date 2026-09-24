@@ -293,6 +293,79 @@ weigh it rather than reading the hint as an instruction.
 
 .. _mcp-one-tool-per-question:
 
+What the documentation corpus covers
+------------------------------------
+
+``search_docs`` serves RoboVAST's own pages, and with an ``address`` the simulator's too. A
+campaign is authored against more than RoboVAST -- the world format, the plugin reference,
+the scene catalog -- and that is documented in the repository that owns it. Searching only
+this one returns zero for a world's ``components:`` list, which reads as "no such thing"
+rather than "not indexed here", so a miss without an address says where the rest is.
+
+**The image answers for its own pages.** The simulator image already carries roqsim's source
+tree at ``/opt/roqsim``, so ``search_docs(address=...)`` reads ``docs/`` out of the image that
+``.vast`` runs -- the same held-container path and per-image cache the catalogs use. Nothing
+is added to an image and no commit is pinned twice, and the pages that answer a question
+about a world are the ones belonging to the simulator that campaign runs, not whichever
+version sits beside the service.
+
+They are served under a ``roqsim-`` prefix, so both repositories keep an ``architecture``
+page and neither shadows the other, and every listing row carries a ``source``.
+
+``ROBOVAST_DOCS_EXTRA`` takes ``label=/path`` pairs separated by the path separator, for a
+checkout with no image behind it.
+
+Only RoboVAST's own pages have their Sphinx directives expanded. Another repository's
+extensions are its own, so its pages are served as written rather than half-rendered.
+
+Using it: search an identifier, not a word
+------------------------------------------
+
+The search is a case-insensitive substring match over lines, and results are grouped by page
+in **name order, not relevance order** — so the first page returned is not the best one. That
+makes the query the thing that decides whether a reply is useful. Measured against the corpus
+as it stands, 50 pages:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 14 52
+
+   * - ``query``
+     - pages
+     - 
+   * - ``world``
+     - 31
+     - a prose word matches most of the corpus
+   * - ``osc``
+     - 25
+     - so does a short token that occurs inside other words
+   * - ``spawn_robot``
+     - 8
+     - an identifier narrows to the pages that define and use it
+   * - ``sensor_coverage_probe``
+     - 2
+     - the more exact the spelling, the closer to one answer
+   * - ``Config::``
+     - 1
+     - punctuation included, and it lands on the page that defines it
+
+**Search for the thing as a file spells it.** A plugin name, a YAML key with its colon, a
+declaration's header — those are what the pages contain verbatim, and they are what an author
+is looking for anyway. A word like ``world`` or ``scenario`` is in every page's prose.
+
+The three calls, in the order they are usually wanted::
+
+   search_docs()                          # the page list: name, title, source
+   search_docs(query="spawn_robot")       # matching excerpts, grouped by page
+   search_docs(page="roqsim-interfaces")  # that page in full, once you know which
+
+``limit`` caps excerpts **per page**, not the number of pages, so raising it on a broad query
+makes the reply bigger without making it narrower. Narrow the term instead.
+
+``source`` on each listing row says which corpus a page came from, which is also how to tell
+a simulator page from ours when both have one by the same name.
+
+
 One tool per question, not per shape of answer
 ----------------------------------------------
 
@@ -1339,6 +1412,18 @@ What it keeps, and does not:
   per call: a Postgres round-trip in front of every tool call would cost more than some of the
   tools. They therefore survive a service restart but not the results volume, which the index
   shares a lifetime with.
+* ``actor`` is the resolved principal -- the name the caller gave and the source it
+  authenticated by -- and ``session`` is ``"<client>/<session>"``: over streamable HTTP that
+  client's ``mcp-session-id``, the same for every call it makes. The principal is who the
+  service authenticated; the session is what separates two agents sharing one token. Without
+  the session the record can say a tool was called a thousand times but not whether that was a
+  thousand agents once or one agent in a loop, which are opposite findings.
+
+**A page of the record says how much of the record it is.** ``read_calls`` is one page; the total
+it was cut from is ``count_calls``, and the routes report both, so a reader can tell a record
+that ended from a page that did -- the ranking printed beside it summarises the full retained
+window. The panel's page ceiling bounds one JSON response the service holds in memory; the CSV
+export streams and so is bounded only by what is retained.
 
 **Recording never fails a tool call.** Every path in
 :mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unreachable index costs the

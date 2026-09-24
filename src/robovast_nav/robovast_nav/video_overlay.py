@@ -3,14 +3,16 @@
 ``roqsim render`` draws a recording one sample per frame and lets an installed package paint on
 each frame (its ``roqsim.render_overlays`` entry-point group). This is the navigation package's painter:
 the same picture the web run view's ``costmap`` panel shows -- the static map, the global and local
-costmaps nearest the frame's time, the driven trail up to it, the robot, and the configuration's
-planned path, goal and obstacles -- as an inset in a corner of the video, in step with the
-simulation because both sides carry simulated seconds.
+costmaps nearest the frame's time, the driven trail up to it, the robot, and what the config
+view draws for the configuration -- the planned path, goal and obstacles its variations contributed,
+and the markers the campaign's ``map2d`` panel declares -- as an inset in a corner of the video, in
+step with the simulation because both sides carry simulated seconds.
 
 It reads the files postprocessing wrote beside the recording rather than the service, so a run
 fetched to disk is enough::
 
     <campaign>/_transient/configurations.yaml     the planned path, goal and obstacles
+    <campaign>/_config/<campaign>.vast            the map2d panel's declared markers
     <campaign>/<config>/<run>/costmaps.csv        rosbags_costmap_to_csv: the grids, by topic
     <campaign>/<config>/<run>/poses.csv           rosbags_tf_to_csv: the robot, and any frame a grid is in
     <campaign>/<config>/<run>/run.npz             the recording being drawn
@@ -21,6 +23,11 @@ here::
     roqsim render --state run.npz --overlay costmap --out clip.mp4
     roqsim render --state run.npz --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
         "layers": {"map": {"topic": "/map"}, "local": {"topic": "/local_costmap/costmap"}}}}'
+
+``markers`` takes the same declarations the ``map2d`` panel does (``{kind: pose, pos: [x, y]}``,
+``{kind: pose, param: goal_pose}``), resolved against the configuration the same way. Unstated,
+the campaign's own ``map2d`` declaration is drawn beside the contributed markers, and goes with
+them when all three of ``planned_path``/``goal``/``obstacles`` are off.
 
 Nothing here imports roqsim: the overlay is found by name through the entry point and speaks the
 small duck-typed contract roqsim documents (``prepare(width, height, *, state)``, ``draw(frame,
@@ -45,6 +52,8 @@ from typing import Optional
 import numpy as np
 import yaml
 from PIL import Image, ImageDraw
+
+from robovast.common.panel_bindings import declared_markers
 
 from .config_view import GOAL_COLOR, obstacle_markers, path_markers
 
@@ -72,9 +81,10 @@ LOCAL_ALPHA = 210
 #: no longer is.
 STALE_PERIODS = 2
 
-OPTIONS = frozenset(
-    {"run", "layers", "robot_frame", "trail", "planned_path", "obstacles", "goal", "stale_after"}
-)
+OPTIONS = frozenset({
+    "run", "layers", "robot_frame", "trail", "planned_path", "obstacles", "goal", "markers",
+    "stale_after",
+})
 
 
 class NavVideoError(ValueError):
@@ -241,8 +251,8 @@ def read_poses(path: Path) -> dict[str, PoseTrack]:
     return out
 
 
-def configuration_entry(campaign_dir: Path, config_name: str) -> dict:
-    """The configuration's entry in the campaign's ``_transient/configurations.yaml``."""
+def configurations(campaign_dir: Path) -> dict:
+    """The campaign's ``_transient/configurations.yaml``."""
     path = campaign_dir / "_transient" / "configurations.yaml"
     if not path.is_file():
         raise NavVideoError(
@@ -250,7 +260,13 @@ def configuration_entry(campaign_dir: Path, config_name: str) -> dict:
             "with the run, or pass planned_path/goal/obstacles: false to draw without them."
         )
     with path.open(encoding="utf-8") as fh:
-        doc = yaml.safe_load(fh) or {}
+        return yaml.safe_load(fh) or {}
+
+
+def configuration_entry(campaign_dir: Path, config_name: str, doc: dict | None = None) -> dict:
+    """The configuration's entry in the campaign's ``_transient/configurations.yaml``."""
+    doc = configurations(campaign_dir) if doc is None else doc
+    path = campaign_dir / "_transient" / "configurations.yaml"
     for entry in doc.get("configs") or []:
         if entry.get("name") == config_name:
             return entry
@@ -259,6 +275,33 @@ def configuration_entry(campaign_dir: Path, config_name: str) -> dict:
         f"{path} has no configuration named {config_name!r} (it has: {have}); the run directory "
         "is expected to be <campaign>/<config>/<run>/."
     )
+
+
+def map2d_declaration(campaign_dir: Path, doc: dict | None = None) -> dict:
+    """The ``map2d`` config-view panel's bindings, from the campaign's frozen ``.vast``.
+
+    ``configurations.yaml`` names the file the campaign ran; the campaign keeps a copy under
+    ``_config/``. The map2d panel is the one whose markers are in the map frame -- the frame this
+    inset is -- so its declaration is what the inset draws; ``scene3d``'s are world-frame and
+    carry offsets a map cannot undo.
+    """
+    named = (configurations(campaign_dir) if doc is None else doc).get("vast")
+    if not named:
+        return {}
+    path = campaign_dir / "_config" / Path(str(named)).name
+    if not path.is_file():
+        raise NavVideoError(
+            f"{path} is missing: the markers the campaign declares on its map2d panel are read "
+            "from it. Fetch it with the run, or pass markers: [] to draw without them."
+        )
+    with path.open(encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    panels = ((doc.get("visualization") or {}).get("config") or {}).get("panels") or []
+    merged: dict = {"markers": []}
+    for panel in panels:
+        if isinstance(panel, dict) and isinstance(panel.get("map2d"), dict):
+            merged["markers"] += list(panel["map2d"].get("markers") or [])
+    return merged
 
 
 def map_from_file(path: Path) -> GridRow:
@@ -339,6 +382,7 @@ class CostmapOverlay:
         planned_path: bool = True,
         obstacles: bool = True,
         goal: bool = True,
+        markers: list | None = None,
         stale_after: float | None = None,
     ) -> None:
         self.placement = placement
@@ -348,6 +392,8 @@ class CostmapOverlay:
         self.layers = dict(layers) if layers is not None else None
         self.robot_frame = str(robot_frame)
         self.trail, self.planned_path, self.obstacles, self.goal = trail, planned_path, obstacles, goal
+        #: ``None`` until prepare(): unstated, the campaign's map2d declaration is drawn.
+        self.markers = list(markers) if markers is not None else None
         self.stale_after = None if stale_after is None else float(stale_after)
         self._grids: dict[str, GridTopic] = {}
         self._static: dict[str, GridRow] = {}
@@ -439,8 +485,10 @@ class CostmapOverlay:
                 "rosbags_tf_to_csv's frames."
             )
 
-        if self.planned_path or self.obstacles or self.goal:
-            entry = configuration_entry(run.parent.parent, run.parent.name)
+        if self.planned_path or self.obstacles or self.goal or self.markers:
+            campaign = run.parent.parent
+            doc = configurations(campaign)
+            entry = configuration_entry(campaign, run.parent.name, doc)
             markers = []
             if self.planned_path or self.goal:
                 for m in path_markers(entry):
@@ -451,6 +499,9 @@ class CostmapOverlay:
                     markers.append(m)
             if self.obstacles:
                 markers += obstacle_markers(entry)
+            declaration = ({"markers": self.markers} if self.markers is not None
+                           else map2d_declaration(campaign, doc))
+            markers += declared_markers(declaration, entry)
             self._markers = markers
 
         self._fit(width, height)
@@ -616,6 +667,8 @@ class CostmapOverlay:
                 draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
                 if m.yaw is not None:
                     draw.line((x, y, x + 10 * math.cos(m.yaw), y - 10 * math.sin(m.yaw)), fill=color, width=2)
+                if m.label:
+                    draw.text((x + r + 2, y - r - 8), m.label, fill=color)
             elif m.kind == "box" and m.pos and m.size:
                 hx, hy, yaw = m.size[0] / 2, m.size[1] / 2, m.yaw or 0.0
                 c, s = math.cos(yaw), math.sin(yaw)

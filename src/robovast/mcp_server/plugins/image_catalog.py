@@ -22,12 +22,16 @@ without touching those tools: this is a different question (what can *this speci
 offer, not what does robovast itself have), always needs an address, and can cost a
 container round trip — three reasons this is its own pair, not a mode of the existing one.
 
-* ``list_scenario_actions``/``get_scenario_action_details`` -- every action/modifier/
-  actor/struct a ``.osc`` file can reference in the image (``python3 -m
-  scenario_execution.introspection list-actions``, run inside it).
-* ``list_roqsim_plugins``/``get_roqsim_plugin_details`` -- every ``roqsim.plugins`` entry
-  a world YAML's ``components:`` list can add in the image (``python3 -m roqsim.introspection
-  list``, run inside it).
+One pair, ``list_image_catalog``/``get_image_catalog_entry``, over both catalogs a
+``catalog`` argument selects. They were four tools calling these same two helpers with a
+different constant, so the surface carried four descriptions of one question -- and the
+two that named their catalog in the tool name were the two callers most often got wrong,
+because nothing about them said they still needed an ``address``.
+
+* ``scenario_actions`` -- every action/modifier/actor/struct a ``.osc`` file can reference
+  in the image (``python3 -m scenario_execution.introspection list-actions``, run inside it).
+* ``roqsim_plugins`` -- every ``roqsim.plugins`` entry a world YAML's ``components:`` list
+  can add in the image (``python3 -m roqsim.introspection list``, run inside it).
 
 **Caching.** The catalog only changes when the image does, so a fetched catalog is kept in
 this process's memory, keyed by ``(resolved image, group)`` -- and, where a group's list is
@@ -163,6 +167,24 @@ def _fetch(group: str, address: str) -> dict:
     return {"items": items, "image": image, "cache": {"hit": False, "seconds": elapsed}}
 
 
+#: What one line of each catalog carries. A listing is read to CHOOSE, so the fields are the ones a
+#: choice turns on -- and they differ by catalog. A model's `components` is the capability answer
+#: (a `turtlebot4` carries `diff_drive`, `lidar`, `oakd_camera`; a `piracer` carries
+#: `ackermann_drive` and no lidar), and `ref` is what a world actually writes, so projecting a
+#: model onto `kind`/`doc` would return a name and two nulls.
+_SUMMARY_FIELDS = {
+    "models": ("name", "ref", "provider", "components"),
+    "worlds": ("name", "ref", "kind", "summary"),
+}
+#: For a catalog that declares none: the shape both introspection catalogs return.
+_DEFAULT_SUMMARY_FIELDS = ("name", "kind", "doc")
+
+
+def _fetch_catalog(group: str, address: str) -> dict:
+    """:func:`_fetch` for a reader outside this module -- the docs corpus is one."""
+    return _fetch(group, address)
+
+
 def _list(group: str, address: str, query: str) -> dict:
     fetched = _fetch(group, address)
     if "error" in fetched:
@@ -175,7 +197,8 @@ def _list(group: str, address: str, query: str) -> dict:
             items = [i for i in items if fnmatch.fnmatch(i["name"].lower(), needle)]
         else:
             items = [i for i in items if needle in i["name"].lower()]
-    summaries = [{"name": i["name"], "kind": i.get("kind"), "doc": i.get("doc")} for i in items]
+    fields = _SUMMARY_FIELDS.get(group, _DEFAULT_SUMMARY_FIELDS)
+    summaries = [{f: i.get(f) for f in fields} for i in items]
     return {"items": summaries, "total": len(summaries),
             "image": fetched["image"], "cache": fetched["cache"]}
 
@@ -187,10 +210,10 @@ def _fetch_detail(group: str, address: str, name: str) -> dict:
     name is asked for, which is what the alternative -- a list fat enough to carry every
     plugin's parameters -- would have charged every caller of the list instead.
     """
-    from robovast.service.image_catalog import ENTRY_NAME_RE
+    from robovast.service.image_catalog import DETAIL_NAME_RE, ENTRY_NAME_RE
     from robovast.service.interface import ExecRequest
 
-    if not ENTRY_NAME_RE.fullmatch(name):
+    if not DETAIL_NAME_RE.get(group, ENTRY_NAME_RE).fullmatch(name):
         return {"error": f"{name!r} is not an entry-point name"}
     try:
         request_kwargs = _address_to_request_kwargs(address)
@@ -234,36 +257,45 @@ def _details(group: str, address: str, name: str) -> dict:
     return {"error": f"no {group.replace('_', ' ')} entry named {name!r} in {fetched['image']}"}
 
 
-def list_scenario_actions(address: str, query: str = "") -> dict:
-    """`.osc` action/modifier/actor/struct catalog, one line each.
+#: The catalogs an experiment image carries. One vocabulary, so a caller learns the pair of
+#: calls once rather than a pair per catalog.
+CATALOGS = ("scenario_actions", "roqsim_plugins", "models", "worlds")
 
-    Returns `{items, total, image, cache}`.
+
+def _bad_catalog(catalog: str) -> dict:
+    return {"error": f"unknown catalog {catalog!r}; known catalogs: {', '.join(CATALOGS)}"}
+
+
+def list_image_catalog(address: str, catalog: str = "scenario_actions",
+                       query: str = "") -> dict:
+    """What an experiment image can express, one line per entry.
+
+    ``scenario_actions``: what a scenario may use. ``roqsim_plugins``: what a world may
+    declare. ``models``: what it can spawn, each with the components it carries.
+    ``worlds``: the scenes it ships. A catalog belongs to a built image, so *address*
+    (``/sources/<workspace_id>/<path>``) names which to read.
     """
-    return _list("scenario_actions", address, query)
+    if catalog not in CATALOGS:
+        return _bad_catalog(catalog)
+    return _list(catalog, address, query)
 
 
-def get_scenario_action_details(address: str, name: str) -> dict:
-    """One catalog entry's detail: parameters, source, doc, resolvability."""
-    return _details("scenario_actions", address, name)
+def get_image_catalog_entry(address: str, name: str,
+                            catalog: str = "scenario_actions") -> dict:
+    """One entry in full. Same *address* and *catalog* as ``list_image_catalog``.
 
-
-def list_roqsim_plugins(address: str, query: str = "") -> dict:
-    """`roqsim.plugins` catalog, one line each. Same shape as `list_scenario_actions`."""
-    return _list("roqsim_plugins", address, query)
-
-
-def get_roqsim_plugin_details(address: str, name: str) -> dict:
-    """One plugin's config keys -- name, example and doc each -- plus a typed schema where the
-    plugin declares one. What a world YAML `components:` entry accepts.
+    An action: parameters, source library, doc, resolvability. A plugin: its config keys and,
+    where it declares one, a typed schema -- what a world `components:` entry accepts. A model:
+    its components with their defaults. ``worlds`` has no detail; its list carries every field.
     """
-    return _details("roqsim_plugins", address, name)
+    if catalog not in CATALOGS:
+        return _bad_catalog(catalog)
+    return _details(catalog, address, name)
 
 
 _TOOLS = [
-    list_scenario_actions,
-    get_scenario_action_details,
-    list_roqsim_plugins,
-    get_roqsim_plugin_details,
+    list_image_catalog,
+    get_image_catalog_entry,
 ]
 
 
