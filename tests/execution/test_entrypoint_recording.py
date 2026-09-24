@@ -51,7 +51,8 @@ def _record_args(env: dict) -> list:
     return out.stdout.splitlines()
 
 
-HEAD = ["bag", "record", "-o", "/out/cell/0/rosbag2"] + WRITE_THROUGH
+# Hidden topics are always included: an action's feedback and status topics are hidden.
+HEAD = ["bag", "record", "-o", "/out/cell/0/rosbag2"] + WRITE_THROUGH + ["--include-hidden-topics"]
 
 
 # -- the recorder line ------------------------------------------------------------------------
@@ -172,7 +173,7 @@ def test_the_recorder_is_started_with_the_line_built_from_the_environment(tmp_pa
         argv = (tmp_path / "ros2.argv").read_text().splitlines()
         run_dir = str(tmp_path / "out" / "cell" / "0")
         assert argv == ["bag", "record", "-o", f"{run_dir}/rosbag2"] + WRITE_THROUGH + \
-            ["--use-sim-time", "--topics", "/odom", "-e", "^/tf.*"]
+            ["--include-hidden-topics", "--use-sim-time", "--topics", "/odom", "-e", "^/tf.*"]
         assert (tmp_path / "out" / "cell" / "0" / "rosbag2").is_dir()
         assert f"Scenario recording -> {run_dir}/rosbag2 (PID=" in out.stdout
         pid = int((tmp_path / "scenario_bag.pid").read_text())
