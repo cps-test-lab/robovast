@@ -1843,6 +1843,17 @@ sizing rather than being sized from a limit: throttled past what its own statist
 or OOM-killed at all — a memory ceiling that binds kills rather than slows, so one is enough.
 Both counters come from the same file the sizing is read from.
 
+**A probe is read over its trial, not over its containers' lives.** Its CPU figures and its
+throttle ratio come from the monitor ticks inside the window its ``test.xml`` records — the
+same window postprocessing marks ``in_window`` — so the containers' bring-up before the
+scenario starts and their teardown after the verdict neither enter the figure nor count
+against it. That matters most for a short trial: bring-up throttles for a roughly fixed number
+of enforcement periods, and judged against the whole life that fixed amount weighs more the
+shorter the trial, so a probe would be refused for how long its trial ran. Memory and OOM kills
+are still read over the whole life, because a memory limit has to clear bring-up too. A probe
+whose ``test.xml`` records no start time is read over the whole life, and the campaign log
+says so.
+
 **A probe that loses a workload container stops the campaign, naming that container.** Those
 containers are native sidecars, so one that dies is *restarted* rather than ending the job.
 The instance that comes back starts nothing — a workload brought back mid-trial would run a
@@ -1858,7 +1869,8 @@ on the crash itself, and what the container printed before it died is captured i
 
 How much throttling a container may survive depends on **which statistic its figure comes
 from**, because clipping removes the top of the distribution. A container sized on its peak is
-spoiled by the first clipped tick, so it keeps a strict allowance covering bring-up only. One
+spoiled by the first clipped tick, so it keeps a strict allowance, covering what the scenario
+itself brings up inside the trial — a stack it launches — and nothing more. One
 sized on its sustained figure — a percentile that already discards a tail — is unaffected
 while the clipped ticks stay inside that tail, and is judged against exactly what the
 percentile throws away. A single strict allowance for both refuses probes whose sustained
@@ -1868,7 +1880,8 @@ distortion it was guarding against.
 **Where calibration does not apply, the bootstrap stands and is checked.** A campaign with no
 more jobs than the cluster has nodes, or a cluster that can grow, never probes. Those runs use
 the bootstrap, and one that is OOM-killed or throttled hard against it **stops the campaign**
-with an error naming the container. Unlike a declared or measured allocation — where such a
+with an error naming the container. Its throttling is judged over the trials the job ran, as a
+probe's is. Unlike a declared or measured allocation — where such a
 run is recorded and kept — nobody chose the bootstrap for that workload, so a run that dies
 against it reports that the default does not fit rather than anything about the stack.
 

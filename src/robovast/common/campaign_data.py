@@ -1317,9 +1317,19 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
     path = run_dir / "test.xml"
     if not path.exists():
         raise FileNotFoundError(f"test.xml not found in {run_dir}")
+    return parse_test_result(path.read_bytes())
 
-    tree = ET.parse(path)
-    root = tree.getroot()
+
+def parse_test_result(content: bytes | str) -> dict[str, Any]:
+    """:func:`read_test_result` for a ``test.xml`` already read, from wherever it was read.
+
+    For a reader that does not hold a run directory -- a calibration probe is read through a
+    storage accessor -- so that every reader of the verdict parses it one way.
+
+    Raises:
+        ET.ParseError: If *content* is not XML.
+    """
+    root = ET.fromstring(content)
 
     errors = int(root.get("errors", "0"))
     failures = int(root.get("failures", "0"))
@@ -1362,6 +1372,20 @@ def read_test_result(run_dir: Path) -> dict[str, Any]:
         "tests": tests,
         "failure_message": failure_message,
     }
+
+
+def trial_window(result: dict[str, Any]) -> tuple[float | None, float | None]:
+    """A run's trial window ``(start, end)`` in wall epoch seconds, or ``(None, None)``.
+
+    *result* is what :func:`read_test_result` returns. The window runs from the scenario's
+    recorded start for the test case's duration: the stretch in which the run was executing
+    its scenario, as opposed to its container's bring-up before it and teardown after it.
+    ``(None, None)`` when ``test.xml`` recorded no start time.
+    """
+    start = result.get("start_epoch")
+    if start is None:
+        return None, None
+    return start, start + (result.get("duration_sec") or 0.0)
 
 
 def read_run_job(run_dir: Path, campaign_root: Path,

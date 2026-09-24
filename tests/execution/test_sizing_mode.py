@@ -189,6 +189,46 @@ def test_heavy_throttling_on_the_bootstrap_stops_the_campaign(monkeypatch):
         r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
+def test_the_bootstrap_is_judged_over_the_trials_the_job_ran(monkeypatch, tmp_path):
+    """As a probe is: the job's counters span its containers' bring-up and teardown too, and
+    only the trials are what the allocation was for."""
+    for run, start in (("cfg/0", 1004.0), ("cfg/1", 1200.0)):
+        (tmp_path / run).mkdir(parents=True)
+        (tmp_path / run / "test.xml").write_text(
+            f'<testsuite errors="0" failures="0" tests="1"><testcase name="t" time="89.0">'
+            f'<properties><property name="start_time" value="{start}"/></properties>'
+            f'</testcase></testsuite>')
+    r = _runner_on_bootstrap(None)
+    r._job_runs_by_name = {"j-0": ["cfg/0", "cfg/1"]}
+    seen = {}
+
+    def _read(*a, **k):
+        seen["windows"] = k.get("windows")
+        return {}
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.node_calibration.read_probe_measurement", _read)
+    r._refuse_a_bootstrap_that_did_not_hold(str(tmp_path), "j-0")
+    assert seen["windows"] == [(1004.0, 1093.0), (1200.0, 1289.0)]
+
+
+def test_a_run_with_no_window_leaves_the_bootstrap_on_the_whole_life(monkeypatch, tmp_path):
+    """The stricter reading, never a looser one: a run whose verdict records no window
+    cannot be cut to its trial."""
+    r = _runner_on_bootstrap(None)
+    r._job_runs_by_name = {"j-0": ["cfg/0"]}
+    seen = {}
+
+    def _read(*a, **k):
+        seen["windows"] = k.get("windows", "unset")
+        return {}
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.node_calibration.read_probe_measurement", _read)
+    r._refuse_a_bootstrap_that_did_not_hold(str(tmp_path), "j-0")
+    assert seen["windows"] is None
+
+
 def test_a_calibrated_campaign_is_not_second_guessed(monkeypatch):
     """Where the figure was MEASURED on the node, a run that hits it is reported and kept --
     `run_validity_view`'s job. Discarding it would be worse than labelling it."""

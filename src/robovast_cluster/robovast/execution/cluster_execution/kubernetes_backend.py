@@ -1550,18 +1550,29 @@ class BatchJobRunner:
         if calibration is not None and calibration.outcome().get("calibrated"):
             return
         from .node_calibration import (probe_refuse_ratio,  # noqa: PLC0415
-                                       read_probe_measurement)
+                                       read_probe_measurement, read_trial_window)
 
         index = getattr(self, "_job_index_by_name", {}).get(job_name)
         if index is None:
             return
         percentiles = self._container_percentiles()
         job_prefix = f"_jobs/{self._job_artifact_path(index)}/"
+        read = self._campaign_reader(campaign_root)
+        # Judged over the trials the job ran, as a probe is: the job's counters span every
+        # run it served plus its containers' bring-up and teardown, and only the trials are
+        # what the allocation was for. A run with no window leaves the whole life in.
+        runs = getattr(self, "_job_runs_by_name", {}).get(job_name) or []
+        windows = [read_trial_window(read, f"{run}/") for run in runs]
+        if not windows or any(w is None for w in windows):
+            logger.warning(
+                "%s: not every run recorded a trial window; its bootstrap check covers the "
+                "containers' whole lives, bring-up and teardown included", job_name)
+            windows = None
         try:
             measured = read_probe_measurement(
-                self._campaign_reader(campaign_root), job_prefix,
+                read, job_prefix,
                 self._probe_container_files(), limits=self._probe_container_limits(),
-                percentiles=percentiles)
+                percentiles=percentiles, windows=windows)
         except Exception as exc:  # noqa: BLE001 - a counter we cannot read is not a verdict
             logger.debug("could not read counters for %s: %s", job_name, exc)
             return
@@ -1666,7 +1677,8 @@ class BatchJobRunner:
         optimisation must never cost the campaign.
         """
         from .node_calibration import (probe_completed, probe_output_dir,  # noqa: PLC0415
-                                       read_probe_measurement, read_probe_tick_ratio)
+                                       read_probe_measurement, read_probe_tick_ratio,
+                                       read_trial_window)
 
         admission = self.admission
         if admission is None or not self._probes:
@@ -1697,19 +1709,25 @@ class BatchJobRunner:
                 continue
             prefix = f"{probe_output_dir(node_id)}/"
             read = self._campaign_reader(campaign_root)
+            # The scenario's own verdict, not "did we read a file": the monitor writes its
+            # CSVs whether or not the run got anywhere.
+            completed = probe_completed(read, prefix)
+            window = read_trial_window(read, prefix)
+            if completed and window is None:
+                logger.warning(
+                    "Batch %s: probe for node %s recorded no trial window; its figures and "
+                    "its throttle check cover the containers' whole lives, bring-up and "
+                    "teardown included", self._batch_tag, node_id)
             try:
                 measured = read_probe_measurement(
                     read, prefix,
                     self._probe_container_files(), limits=self._probe_container_limits(),
-                    percentiles=self._container_percentiles())
+                    percentiles=self._container_percentiles(),
+                    windows=None if window is None else [window])
             except Exception as exc:  # noqa: BLE001 - see docstring
                 logger.warning("Batch %s: could not read probe for node %s: %s",
                                self._batch_tag, node_id, exc)
                 measured = {}
-            # The scenario's own verdict, not "did we read a file". The gate was handed
-            # bool(measured) -- true of any probe that produced a CSV at all, which the
-            # monitor writes whether or not the run got anywhere -- so it caught nothing.
-            completed = probe_completed(read, prefix)
             tick = read_probe_tick_ratio(read, prefix)
             if not calibration.record(node_id, key, measured, completed=completed,
                                       percentiles=self._container_percentiles(),
@@ -3191,6 +3209,11 @@ class BatchJobRunner:
             # exists, rather than re-derived from position later -- creation order varies
             # under admission and an index recovered by counting would be wrong.
             self._job_index_by_name = {n: j.index for j, n in zip(jobs, job_names)}
+            # Name -> the runs it served, whose verdicts hold the trial windows its
+            # counters are judged over.
+            self._job_runs_by_name = {
+                n: [f"{item.config_name}/{item.run_number}" for item in j.items]
+                for j, n in zip(jobs, job_names)}
             calibration = self._start_probes(jobs, total_jobs)
             # A confined campaign is pinned to its node and does NOT reserve it: it always
             # has another job queued, so a claim would renew for its whole life and shut

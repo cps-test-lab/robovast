@@ -259,10 +259,9 @@ class NodeCalibration:
         **OOM-killed**.
 
         The last two are not the same shape. A CPU ceiling that binds slows the container
-        down, so what is refused is a *ratio* above a threshold with an allowance for
-        bring-up. A memory ceiling that binds KILLS it, so one kill is enough: the file
-        records a fragment of a run that died rather than a measurement of one that
-        finished.
+        down, so what is refused is a *ratio* over the probe's trial above a threshold. A
+        memory ceiling that binds KILLS it, so one kill is enough: the file records a
+        fragment of a run that died rather than a measurement of one that finished.
 
         A node where either counter cannot be read is calibrated without that check, because
         absent is not zero and refusing on absence would leave such a cluster permanently
@@ -638,8 +637,17 @@ def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
 #: from it would write the cap in as though it were what the container needed. Every later
 #: run on that node then gets a figure derived from a limit rather than from a workload.
 #:
-#: Zero is the wrong threshold: a container is briefly throttled during bring-up on any
-#: machine, and refusing every probe for that would leave a cluster permanently uncalibrated.
+#: **Judged over the probe's trial, the ticks its figure is read from** (see
+#: :func:`container_cpu_profile_from_billing`). The container's bring-up before the scenario
+#: starts and its teardown after the verdict are outside it, so they cannot refuse a probe,
+#: however short its trial.
+#:
+#: Zero is still the wrong threshold: what the scenario starts itself -- a stack it launches
+#: -- comes up inside the trial and is briefly throttled there on any machine, and refusing
+#: every probe for that would leave a cluster permanently uncalibrated. That throttling is a
+#: larger share of a shorter trial, and there it should weigh more: the fewer ticks a trial
+#: has, the nearer its percentile reads to its bring-up.
+#:
 #: This matches ``advice.THROTTLE_WARN_RATIO``, which was calibrated against a sweep in which
 #: the stack's own miss count was counted at each level, and carries the same caveat -- it is
 #: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
@@ -657,9 +665,13 @@ def probe_refuse_ratio(percentile: float) -> float:
     So the tolerance is *derived* from the percentile rather than being a second number
     beside it -- 5% at 95, 1% at 99 -- and a container read at the maximum falls back to the
     strict floor. That floor is not zero for the reason
-    :data:`PROBE_THROTTLE_REFUSE_RATIO` gives: bring-up briefly throttles a container on any
-    machine, and refusing every probe for that would leave a cluster permanently
-    uncalibrated.
+    :data:`PROBE_THROTTLE_REFUSE_RATIO` gives: a stack the scenario launches comes up inside
+    the trial and briefly throttles there on any machine, and refusing every probe for that
+    would leave a cluster permanently uncalibrated.
+
+    The ratio this is compared with covers the probe's trial and nothing else, the same
+    ticks the figure is read from -- so the container's own bring-up and teardown are not in
+    it.
 
     A single strict ratio for all of them refuses probes whose figure is perfectly good and
     leaves those nodes unmeasured -- a distortion that by construction cannot reach the
@@ -691,7 +703,22 @@ def percentile_of(sorted_or_not, percentile: float) -> float:
     return values[idx]
 
 
-def container_cpu_profile_from_billing(rows, percentile: float = 95.0) -> dict:
+def _in_trial(windows, *walls) -> bool:
+    """Whether every wall stamp in *walls* lies inside one and the same of *windows*.
+
+    *windows* is ``[(start, end), ...]`` in wall epoch seconds -- the trial windows of the runs
+    the samples came from -- or ``None``, which reads the container's whole life and admits
+    every stamp. Inside means what postprocessing's ``in_window`` column means, so a figure
+    calibration reads covers the stretch every other reader of these counters covers.
+    """
+    if windows is None:
+        return True
+    from robovast.results_processing.run_slices import in_window  # noqa: PLC0415
+
+    return any(all(in_window(wall, start, end) for wall in walls) for start, end in windows)
+
+
+def container_cpu_profile_from_billing(rows, percentile: float = 95.0, windows=None) -> dict:
     """``{"cores": ..., "memory_peak": ...}`` from one ``system_usage_<container>.csv``.
 
     *percentile* is the container's own, resolved before this is called, so the choice of
@@ -710,27 +737,38 @@ def container_cpu_profile_from_billing(rows, percentile: float = 95.0) -> dict:
     as idle: a counter that resets means the cgroup was replaced, and a zero delta across a
     restart is not a measurement of nothing.
 
+    **The CPU figure and the throttle ratio are read from the same ticks**, those inside
+    *windows* (see :func:`_in_trial`): the trial, without the container's bring-up before it
+    or its teardown after it. The ratio is evidence about the figure, so it has to judge the
+    stretch the figure was read from -- and a bring-up that throttles for a fixed handful of
+    periods would otherwise weigh more the shorter the trial, refusing a probe for how long
+    its trial ran rather than for what clipped its figure. ``samples`` counts those ticks.
+
+    Memory and OOM kills are read over the whole file whatever *windows* says: a memory
+    limit has to clear bring-up as well, since a container killed there loses its run, and a
+    kill at any moment means the file holds a fragment of one.
+
     Returns ``{}`` when the file carries no usable counter -- which the caller must treat as
     "not measured", exactly as it treats a missing file, and never as zero.
     """
     samples = []
-    periods, throttled, oom_kills, memory = [], [], [], []
+    oom_kills, memory = [], []
     for row in rows or []:
         try:
             ts = float(row["timestamp"])
             usec = float(row["cpu_usage_usec"])
         except (KeyError, TypeError, ValueError):
             continue
-        samples.append((ts, usec))
+        # Same file, same tick: whether the kernel stopped this container while it was
+        # being measured. Monotonic counters, taken as deltas over the same ticks as the
+        # cores.
+        try:
+            counters = (float(row["nr_periods"]), float(row["nr_throttled"]))
+        except (KeyError, TypeError, ValueError):
+            counters = None
+        samples.append((ts, usec, counters))
         try:
             oom_kills.append(float(row["memory_events_oom_kill"]))
-        except (KeyError, TypeError, ValueError):
-            pass
-        # Same file, same tick: whether the kernel stopped this container while it was
-        # being measured. Monotonic counters, so the span is last minus first.
-        try:
-            periods.append(float(row["nr_periods"]))
-            throttled.append(float(row["nr_throttled"]))
         except (KeyError, TypeError, ValueError):
             pass
         # Same file, same tick. `memory_peak` is the kernel's own high-water mark for the
@@ -742,13 +780,19 @@ def container_cpu_profile_from_billing(rows, percentile: float = 95.0) -> dict:
             pass
     if len(samples) < 2:
         return {}
-    samples.sort()
+    samples.sort(key=lambda sample: sample[0])
     totals = []
-    for (t0, u0), (t1, u1) in zip(samples, samples[1:]):
+    periods = throttled = 0.0
+    for (t0, u0, c0), (t1, u1, c1) in zip(samples, samples[1:]):
         dt, du = t1 - t0, u1 - u0
         if dt <= 0 or du < 0:
             continue          # a counter reset, or two rows at one instant
+        if not _in_trial(windows, t0, t1):
+            continue
         totals.append((du / 1e6) / dt)
+        if c0 is not None and c1 is not None and c1[0] >= c0[0] and c1[1] >= c0[1]:
+            periods += c1[0] - c0[0]
+            throttled += c1[1] - c0[1]
     if not totals:
         return {}
     out = {"cores": percentile_of(totals, percentile), "samples": len(totals)}
@@ -756,16 +800,16 @@ def container_cpu_profile_from_billing(rows, percentile: float = 95.0) -> dict:
         # The MAX, for every role alike: a CPU limit that binds slows a container, a memory
         # limit that binds kills it, so no role may be sized on a percentile here.
         out["memory_peak"] = max(memory)
-    span = (periods[-1] - periods[0]) if len(periods) >= 2 else 0
-    if span > 0:
+    if periods > 0:
         # Absent when the node cannot report it, and absent is NOT zero -- see `record`.
-        out["throttled_ratio"] = max(0.0, (throttled[-1] - throttled[0]) / span)
+        out["throttled_ratio"] = throttled / periods
     if len(oom_kills) >= 2:
         out["oom_kills"] = max(0, int(oom_kills[-1] - oom_kills[0]))
     return out
 
 
-def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> dict:
+def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0,
+                          windows=None) -> dict:
     """``{"cores": ...}`` from one ``resource_usage_<container>.csv``.
 
     The psutil-derived fallback, used only where the kernel's own billing is unavailable. It
@@ -781,6 +825,9 @@ def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> d
     impossible -- see below; pass it whenever it is known, because the peak is unusable
     without it.
 
+    *windows* keeps only the ticks inside the trial, as :func:`container_cpu_profile_from_billing`
+    does and for the same reason; ``None`` reads the container's whole life.
+
     ``sustained`` is the 95th percentile of the per-tick totals and ``peak`` the largest. The
     pair exists because one number cannot serve both roles -- measured on the shipped
     example, a simulator sustains 0.34 cores and peaks at 5.98, so sizing it at either figure
@@ -794,6 +841,8 @@ def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> d
         try:
             ts = row["timestamp"]
             cpu = float(row["cpu_percent"] or 0.0)
+            if windows is not None and not _in_trial(windows, float(ts)):
+                continue
         except (KeyError, TypeError, ValueError):
             continue
         per_tick[ts] = per_tick.get(ts, 0.0) + cpu
@@ -805,15 +854,12 @@ def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> d
         # measurement error -- not a peak.** CFS enforces the quota per ~100ms period, and
         # these are one-second samples, so the average over one cannot exceed the limit.
         #
-        # They are there, and they are large. The monitor's CSV covers the container's whole
-        # life including bring-up, where psutil reports a newly-seen process's average since
-        # it started rather than since the last sample -- and a ROS stack spawns dozens of
-        # processes at once. Measured on a 3-core container: 10.4 "cores" outside the trial
-        # window against 2.82 inside it. Every other consumer of this data filters on
-        # ``in_window``, which postprocessing adds later and the raw file does not carry, so
-        # calibration is the one reader that meets the artifact -- and it takes the MAX,
-        # which is the worst possible statistic to hand it. Sizing a node from that reserved
-        # 14.4 cores for a 3-core container, and 35 on another.
+        # They are there, and they are large. psutil reports a newly-seen process's average
+        # since it started rather than since the last sample, and a ROS stack spawns dozens
+        # of processes at once -- several times the container's quota on a 3-core container.
+        # Most of that is bring-up, which *windows* already leaves out; what the scenario
+        # itself launches starts inside the trial and meets the same artifact there. The MAX
+        # is the worst possible statistic to hand it, so the clamp stays whatever the window.
         totals = [t for t in totals if t <= limit_cores]
         if not totals:
             return {}
@@ -823,7 +869,7 @@ def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> d
 
 
 def read_probe_measurement(read, prefix: str, containers, limits=None,
-                           percentiles=None) -> dict:
+                           percentiles=None, windows=None) -> dict:
     """``{container: profile}`` from a finished probe's own CSVs.
 
     *read* is ``(key) -> bytes | None``, so this needs no storage client and can be tested
@@ -839,6 +885,11 @@ def read_probe_measurement(read, prefix: str, containers, limits=None,
     A container whose file is missing or unreadable is simply absent from the result, which
     the caller must read as "not measured" -- and, because a partial pod cannot be sized
     coherently, that is what makes the whole probe unusable rather than most of it.
+
+    *windows* is the trial windows of the runs these files recorded -- for a probe, the one
+    :func:`read_trial_window` returns -- and every figure and ratio is read inside them.
+    ``None`` reads the containers' whole lives: the caller passes it only where no window
+    could be recovered, and says so.
     """
     import csv  # noqa: PLC0415
     import io  # noqa: PLC0415
@@ -859,13 +910,14 @@ def read_probe_measurement(read, prefix: str, containers, limits=None,
             logger.debug("probe file %s unparseable: %s", filename, exc)
             continue
         pct = (percentiles or {}).get(name, 95.0)
-        profile = container_cpu_profile(rows, limit_cores=limit, percentile=pct)
+        profile = container_cpu_profile(rows, limit_cores=limit, percentile=pct,
+                                        windows=windows)
         # The kernel's own billing where the node could answer, and the per-process sum only
         # where it could not: `system_usage_` needs no ceiling to be read and no impossible
         # sample discarded, so where both exist the counter wins. Falling back rather than
         # requiring it keeps a cgroup v1 host, or a runtime that exposes no cpu.stat,
         # calibratable instead of silently uncalibrated.
-        billing = _billing_profile(read, prefix, filename, percentile=pct)
+        billing = _billing_profile(read, prefix, filename, percentile=pct, windows=windows)
         if billing:
             profile = billing
         if profile:
@@ -873,7 +925,8 @@ def read_probe_measurement(read, prefix: str, containers, limits=None,
     return out
 
 
-def _billing_profile(read, prefix: str, filename: str, percentile: float = 95.0) -> dict:
+def _billing_profile(read, prefix: str, filename: str, percentile: float = 95.0,
+                     windows=None) -> dict:
     """The ``system_usage_`` sibling of *filename*, read as a profile, or ``{}``.
 
     Best-effort by construction: every failure here means "fall back to the per-process
@@ -894,7 +947,7 @@ def _billing_profile(read, prefix: str, filename: str, percentile: float = 95.0)
     except Exception as exc:  # noqa: BLE001 - the per-process file still answers
         logger.debug("probe billing file %s unreadable: %s", sibling, exc)
         return {}
-    return container_cpu_profile_from_billing(rows, percentile=percentile)
+    return container_cpu_profile_from_billing(rows, percentile=percentile, windows=windows)
 
 
 #: Where a probe's output goes, under the campaign root. Reserved (see
@@ -997,6 +1050,31 @@ def read_probe_tick_ratio(read, prefix: str):
     if not ratios:
         return None
     return percentile_of(ratios, 50.0)
+
+
+def read_trial_window(read, prefix: str) -> "tuple[float, float] | None":
+    """The trial window ``(start, end)`` of the run whose ``test.xml`` is under *prefix*.
+
+    Wall epoch seconds, the same stamps the resource monitor writes, and the same window
+    postprocessing marks ``in_window`` from (:func:`robovast.common.campaign_data.trial_window`).
+
+    ``None`` where the file is absent, unreadable, or records no start time. That is not a
+    window of the whole life: the caller decides what to read instead, and says so.
+    """
+    from robovast.common.campaign_data import (parse_test_result,  # noqa: PLC0415
+                                               trial_window)
+
+    try:
+        raw = read(f"{prefix}{PROBE_VERDICT_FILE}")
+        if not raw:
+            return None
+        start, end = trial_window(parse_test_result(raw))
+    except Exception as exc:  # noqa: BLE001 - absent is not a window
+        logger.debug("trial window at %s unreadable: %s", prefix, exc)
+        return None
+    if start is None:
+        return None
+    return start, end
 
 
 def probe_completed(read, prefix: str) -> bool:
