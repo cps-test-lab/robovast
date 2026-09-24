@@ -50,6 +50,10 @@ import time
 CATALOG_COMMANDS = {
     "scenario_actions": "python3 -m scenario_execution.introspection list-actions",
     "roqsim_plugins": "python3 -m roqsim.introspection list",
+    # What the image can SPAWN, as against what it can configure: a campaign names a robot
+    # and a world by ref before it names anything else.
+    "models": "python3 -m roqsim.catalog models",
+    "worlds": "python3 -m roqsim.catalog worlds",
 }
 
 #: How a group answers a request for ONE entry's detail. ``scenario_execution``'s list already
@@ -58,6 +62,9 @@ CATALOG_COMMANDS = {
 #: package -- so a plugin's parameters exist only behind ``describe``.
 DETAIL_COMMANDS = {
     "roqsim_plugins": "python3 -m roqsim.introspection describe",
+    # A model's components, with their defaults. ``worlds`` has no detail command: its list
+    # already carries every field one would return.
+    "models": "python3 -m roqsim.catalog model",
 }
 
 #: Which container answers each group. ``roqsim`` lives in the *simulator's* image, not the
@@ -65,6 +72,8 @@ DETAIL_COMMANDS = {
 CATALOG_CONTAINERS = {
     "scenario_actions": "scenario",
     "roqsim_plugins": "simulation",
+    "models": "simulation",
+    "worlds": "simulation",
 }
 
 #: The keys roqsim lets any component carry without its own list naming them, because something
@@ -80,6 +89,14 @@ INJECTED_KEYS_COMMAND = (
 #: the container, so it is checked against this rather than quoted: a name outside it is a
 #: mistake in the call, and refusing is a better answer than escaping it and asking anyway.
 ENTRY_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+
+#: A model ref, ``<provider>:<name>``. Its own pattern rather than a widened
+#: :data:`ENTRY_NAME_RE`: one that admitted both would admit ``task.py:Task`` as well, which
+#: names a plugin the campaign carries and which ``world_keys`` asks no image about.
+MODEL_REF_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*")
+
+#: The name pattern each catalog's detail command accepts.
+DETAIL_NAME_RE = {"models": MODEL_REF_RE}
 
 #: Separates one entry's answer from the next when several are asked for in one exec. Long and
 #: specific because it is matched against the command's own output.
@@ -175,8 +192,9 @@ def fetch_details(exec_call, *, group: str, image: str, request_kwargs: dict,
     raises.
     """
     names = list(dict.fromkeys(names))
+    pattern = DETAIL_NAME_RE.get(group, ENTRY_NAME_RE)
     for name in names:
-        if not ENTRY_NAME_RE.fullmatch(name):
+        if not pattern.fullmatch(name):
             raise ValueError(f"{name!r} is not an entry-point name")
     items, missing = {}, []
     with CACHE_LOCK:
