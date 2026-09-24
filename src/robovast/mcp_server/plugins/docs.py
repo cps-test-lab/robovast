@@ -336,24 +336,27 @@ UPSTREAM_LABEL = "roqsim"
 DOCS_EXTRA_ENV = "ROBOVAST_DOCS_EXTRA"
 
 
-def _upstream_pages(address: str) -> tuple[dict, str]:
-    """``({name: (title, text)}, error)`` for the simulator image *address* resolves to.
+def _upstream_pages(address: str) -> tuple[dict, str, str]:
+    """``({name: (title, text)}, image, error)`` for the simulator image *address* resolves to.
 
     Read from the image rather than baked in beside this code: the pages that answer a question
     about a world's format have to be the ones belonging to the simulator that campaign runs,
     and only the image knows which that is. One exec per image, cached with the catalogs.
+
+    The resolved image is returned because it, not the address, is what identifies this corpus:
+    an address outlives the image behind it.
     """
     from robovast.mcp_server.plugins.image_catalog import _fetch_catalog
 
     fetched = _fetch_catalog("docs", address)
     if "error" in fetched:
-        return {}, fetched["error"]
+        return {}, "", fetched["error"]
     pages = {}
     for item in fetched.get("items", []):
         name, text = item.get("name"), item.get("text")
         if name and text:
             pages[f"{UPSTREAM_LABEL}-{name}"] = (_extract_title(text) or name, text)
-    return pages, ""
+    return pages, fetched.get("image", ""), ""
 
 
 def _env_doc_roots() -> list[tuple[str, Path]]:
@@ -565,7 +568,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
 
     # The image's own pages, when one is named. Fetched per call and cached per image beside
     # the catalogs, so a second question about the same image costs nothing.
-    upstream, upstream_error = _upstream_pages(address) if address else ({}, "")
+    upstream, upstream_image, upstream_error = (
+        _upstream_pages(address) if address else ({}, "", ""))
     if upstream_error:
         return {"error": upstream_error}
     titles = {**{n: _doc_meta[n] for n in _doc_files}, **{n: t for n, (t, _x) in upstream.items()}}
@@ -589,7 +593,10 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
 
     # Which pages, and in what order: BM25 over the corpus, so the first result is the best one
     # rather than the first alphabetically.
-    key = f"{UPSTREAM_LABEL}:{address}" if upstream else "robovast"
+    # By the resolved image, not by the address: the pages behind an address change when the
+    # image does, and an index built once per address would keep ranking the ones it was built
+    # from -- against page text the fetch beneath it has already replaced.
+    key = f"{UPSTREAM_LABEL}:{upstream_image}" if upstream else "robovast"
     ranked = _ranked(texts, key, query)
     words = [w.lower() for w in query.split() if w]
 
