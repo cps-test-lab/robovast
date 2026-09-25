@@ -2114,12 +2114,13 @@ rank it as their peer. It is a field on the one ``TOPICS`` declaration in ``App.
 rather than a second prop, so navigation still resolves from one source and ``hashNav``
 needs no change — a leaf topic already falls out of the existing grammar.
 
-``components/LogPanel.tsx`` is the one live-log renderer, for the campaign log, the job log
-and the service log alike. It is its own module rather than part of ``StatusView.tsx``:
-reaching it through there would drag ``BatchObjectiveChart``, ``DetailsBox`` and the ETA
-maths into a lazily-loaded page that needs none of them. That the same component fits all
-three is not a coincidence: every live log here is a ``fetch(offset) -> LogChunk`` behind
-one SSE loop.
+``components/LogPanel.tsx`` renders the two text logs, the campaign log and the service log.
+It is its own module rather than part of ``StatusView.tsx``: reaching it through there would
+drag ``BatchObjectiveChart``, ``DetailsBox`` and the ETA maths into a lazily-loaded page that
+needs none of them. Both are a ``fetch(offset) -> LogChunk`` behind one SSE loop. A job's log
+is rows, not text, and is rendered by ``components/runLog/RunLogView.tsx`` -- the viewer the
+``run_log`` table uses -- fed by ``useJobLogStream``, which follows the newest row as it
+arrives.
 
 **A log panel is a tail, and both ends of it are bounded.** A campaign's assembled
 infrastructure log reaches tens of megabytes, while the pane it is read through is a few

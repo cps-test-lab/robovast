@@ -1723,6 +1723,92 @@
         "title": "JobCounts",
         "type": "object"
       },
+      "JobLogChunk": {
+        "description": "The rows of a job's log that arrived after *cursor*.\n\nRead from the job's ``logs/system*.log`` files in the campaign directory, which grow\nwhile the job runs, so a running job and a finished one answer alike.\nRows within a chunk are in stamp order; across chunks, in the order they arrived. The\nfinished, deduplicated record of a run's log is the ``run_log`` table.",
+        "properties": {
+          "cursor": {
+            "default": "",
+            "title": "Cursor",
+            "type": "string"
+          },
+          "eof": {
+            "default": false,
+            "title": "Eof",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/JobLogRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "eof",
+          "rows"
+        ],
+        "title": "JobLogChunk",
+        "type": "object"
+      },
+      "JobLogRow": {
+        "description": "One record of a job's log: a stamped line and the unstamped lines that follow it.",
+        "properties": {
+          "container": {
+            "default": "",
+            "title": "Container",
+            "type": "string"
+          },
+          "level": {
+            "default": "",
+            "title": "Level",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "node": {
+            "default": "",
+            "title": "Node",
+            "type": "string"
+          },
+          "severity": {
+            "default": "",
+            "title": "Severity",
+            "type": "string"
+          },
+          "time_source": {
+            "default": "none",
+            "title": "Time Source",
+            "type": "string"
+          },
+          "wall_ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Ts"
+          }
+        },
+        "required": [
+          "container",
+          "level",
+          "message",
+          "node",
+          "severity",
+          "time_source",
+          "wall_ts"
+        ],
+        "title": "JobLogRow",
+        "type": "object"
+      },
       "JobState": {
         "description": "What one **running** job is doing right now, as opposed to what it has logged.\n\nThe sibling of :meth:`RobovastInterface.get_job_log`: that answers \"what did it say\",\nthis answers \"where is it\". A caller diagnosing a wedged campaign wants the second first\n-- a log tells you what is repeating, not what the simulator is doing while it repeats.\n\nEvery field beyond ``job_name`` is optional and **absent rather than empty** when it could\nnot be read, with :attr:`unavailable` saying which and why. That asymmetry is the point: an\nempty world and a world nobody could look at must not render the same, because the first\nreads as \"nothing is happening\" and would be believed.",
         "properties": {
@@ -2307,12 +2393,20 @@
             },
             "title": "Refused",
             "type": "array"
+          },
+          "resync": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resync",
+            "type": "array"
           }
         },
         "required": [
           "bytes",
           "files",
-          "refused"
+          "refused",
+          "resync"
         ],
         "title": "OutputsIngested",
         "type": "object"
@@ -5873,6 +5967,7 @@
     },
     "/campaigns/{campaign_id}/job-log": {
       "get": {
+        "description": "A job's log rows after *cursor*, running or finished.",
         "operationId": "get_job_log_campaigns__campaign_id__job_log_get",
         "parameters": [
           {
@@ -5895,12 +5990,12 @@
           },
           {
             "in": "query",
-            "name": "offset",
+            "name": "cursor",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Offset",
-              "type": "integer"
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
             }
           }
         ],
@@ -5909,7 +6004,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LogChunk"
+                  "$ref": "#/components/schemas/JobLogChunk"
                 }
               }
             },
@@ -5934,7 +6029,7 @@
     },
     "/campaigns/{campaign_id}/job-log/stream": {
       "get": {
-        "description": "Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).\n\nA **finished** job is served too, not only a running one. What the events mean,\nand which residual case is still an error, is ``_sse_log_stream``'s to say.",
+        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). A finished job is served too; see ``_sse_job_log_stream``.",
         "operationId": "stream_job_log_campaigns__campaign_id__job_log_stream_get",
         "parameters": [
           {

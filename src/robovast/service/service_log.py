@@ -35,11 +35,10 @@ container that has already died, and the only way: a ring inside a process canno
 the process it is inside.
 
 Not read from the pod log, though in the pod the two hold the same records. Kubernetes
-serves a pod log as a sliding ``since_seconds`` window rather than a stream, which is why
-:class:`~robovast.execution.cluster_execution.PodLogTail` needs per-container anchors, a
-re-anchor when the window slides, and a documented branch where lines are lost. All of that
-exists because a *job* log has no other source. A ring the process fills itself is honestly
-append-only, so ``next_offset`` means what it says, with one implementation.
+serves a pod log as a sliding ``since_seconds`` window rather than a stream, which would need
+per-container anchors, a re-anchor when the window slides, and a branch where lines are lost.
+A ring the process fills itself is honestly append-only, so ``next_offset`` means what it
+says, with one implementation.
 """
 
 import logging
@@ -92,9 +91,8 @@ class _Ring:
             end = self._base + len(self._buf)
             if offset < self._base:
                 # Resuming below the window: those bytes are gone. Serve from the window's
-                # start, so the reader sees a gap rather than a duplicate -- the same trade
-                # PodLogTail makes when kubelet rotates its anchor away, and for the same
-                # reason: a consistent stream beats a complete one.
+                # start, so the reader sees a gap rather than a duplicate: a consistent stream
+                # beats a complete one.
                 start = 0
             elif offset > end:
                 # Ahead of everything we have, which means this is not the stream that

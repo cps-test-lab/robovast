@@ -251,6 +251,11 @@ export type BatchObjective = Schemas['BatchObjective']
 // and append `text`; stop once `eof` is set (mirrors service/interface.py:LogChunk).
 export type LogChunk = Schemas['LogChunk']
 
+// A job's log as rows parsed from the log files its containers wrote. Pass `cursor` back to
+// continue after these rows; stop once `eof` is set (mirrors service/interface.py:JobLogChunk).
+export type JobLogRow = Schemas['JobLogRow']
+export type JobLogChunk = Schemas['JobLogChunk']
+
 // One execution unit of a campaign's current batch (a run locally, a k8s Job on
 // the cluster). Mirrors interface.py:JobSummary/JobCounts/ListJobsResponse.
 export type JobSummary = Schemas['JobSummary']
@@ -580,17 +585,18 @@ export const robovast = {
   listJobs: (campaignId: string) =>
     request<ListJobsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/jobs`),
 
-  getJobLog: (campaignId: string, jobName: string, offset = 0) =>
-    request<LogChunk>(
+  getJobLog: (campaignId: string, jobName: string, cursor = '') =>
+    request<JobLogChunk>(
       'GET',
       `/campaigns/${encodeURIComponent(campaignId)}/job-log?job_name=${encodeURIComponent(
         jobName,
-      )}&offset=${offset}`,
+      )}&cursor=${encodeURIComponent(cursor)}`,
     ),
 
   // SSE stream URLs for live logs. `new EventSource(url)` streams deltas, auto-reconnects,
-  // and resumes from the last byte offset via Last-Event-ID — see LogPanel. The pull methods
-  // above stay for MCP/CLI parity; the browser prefers these.
+  // and resumes from the last event id via Last-Event-ID: a byte offset for the campaign log
+  // (see LogPanel), a row cursor for a job log (see useJobLogStream). The pull methods above
+  // stay for MCP/CLI parity; the browser prefers these.
   campaignLogStreamUrl: (campaignId: string) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream`,
 
@@ -607,6 +613,7 @@ export const robovast = {
   // the serving process keeps. No id: there is one service, and it is the one answering.
   serviceLogStreamUrl: () => `${BASE}/admin/log/stream`,
 
+  // One job's log as rows: `data:` frames carry a JSON array of JobLogRow, `event: eof` ends it.
   jobLogStreamUrl: (campaignId: string, jobName: string) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-log/stream?job_name=${encodeURIComponent(
       jobName,

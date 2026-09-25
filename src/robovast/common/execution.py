@@ -1247,6 +1247,10 @@ log() {
 #: definitions beside it (:mod:`robovast.execution.data.dump_message_definitions`).
 DEFINITIONS_SCRIPT = "dump_message_definitions.py"
 
+#: The script a cluster pod's file agent container runs: it ships the growth of the run's
+#: line files while the run runs (:mod:`robovast.execution.data.file_agent`).
+FILE_AGENT_SCRIPT = "file_agent.py"
+
 #: The emptyDir every container of a cluster pod shares, mounted at this path in each of
 #: them: the sockets the scenario drives its sidecars over, and the done markers below.
 IPC_DIR = "/ipc"
@@ -1683,6 +1687,11 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     monitor_src = str(files('robovast.execution.data').joinpath('monitor_resources.py'))
     shutil.copy2(monitor_src, os.path.join(campaign_transient_dir, 'monitor_resources.py'))
 
+    # The file agent of a cluster pod (see its module docstring): mounted at /config like
+    # the monitor, from where the pod's agent container runs it.
+    agent_src = str(files('robovast.execution.data').joinpath(FILE_AGENT_SCRIPT))
+    shutil.copy2(agent_src, os.path.join(campaign_transient_dir, FILE_AGENT_SCRIPT))
+
     # The definitions writer the scenario container runs at the end of a run, beside each bag
     # (see its module docstring): mounted at /config like the monitor.
     definitions_src = str(files('robovast.execution.data').joinpath(DEFINITIONS_SCRIPT))
@@ -1969,7 +1978,7 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 #: beside the code that writes it so the two cannot drift.
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
-    "collect_sysinfo.py", "monitor_resources.py", DEFINITIONS_SCRIPT,
+    "collect_sysinfo.py", "monitor_resources.py", DEFINITIONS_SCRIPT, FILE_AGENT_SCRIPT,
     "configurations.yaml", JOB_LINKS_MANIFEST,
     "scenario.config", "scenario.params.yaml",
     os.path.basename(SIM_OVERRIDES_MOUNT),

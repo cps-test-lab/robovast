@@ -144,11 +144,14 @@ It provides four views:
   offered once it is over because there are no live jobs left. Only the selected tab is rendered,
   so an unwatched Log holds no stream open; a job whose log you expanded is still expanded when
   you come back to the Jobs tab. The **Jobs** tab lists
-  each execution unit of the current batch — a Kubernetes *Job* — with its status; expanding a running one streams that **job's own live log**:
-  every container it runs, merged into one stream, each line tagged ``[<container>]``
-  and colored per container when the job has more than one. That matters in the ROS
-  shape, where the simulator and the system under test have their own containers and a
-  failure is only legible when their output is read against the scenario's.
+  each execution unit of the current batch — a Kubernetes *Job* — with its status; expanding
+  one streams that **job's own live log**, rendered by the same log viewer as the run view's
+  (severity filter, per-container colours, search): every container it runs in one stream,
+  each row naming its container, following the newest row as it arrives -- scroll up to
+  pause, back to the bottom or **Follow** to resume. That matters in the ROS shape, where the
+  simulator and the system under test have their own containers and a failure is only legible
+  when their output is read against the scenario's. The rows come from the job's log files in
+  the campaign as they are written, so a finished job opens the same way.
   On the cluster, every placed row also names **the node its pod landed on**, as a coloured
   chip. The name is the information and the colour only a scanning aid -- one machine is one
   colour down the whole list, so a batch that has piled onto a single node is visible without

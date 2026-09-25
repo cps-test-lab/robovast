@@ -122,6 +122,114 @@ def test_a_stream_that_stops_mid_member_leaves_no_file_under_the_real_name(tmp_p
     assert sorted(p.name for p in tmp_path.iterdir()) in (["a.txt"], [])
 
 
+def _ranges(members):
+    """A plain pax tar of ``(name, payload, offset | None)`` -- an offset is sent as the
+    :data:`tar_io.OFFSET_HEADER` pax header, ``None`` sends the file whole."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, payload, offset in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            if offset is not None:
+                info.pax_headers = {tar_io.OFFSET_HEADER: str(offset)}
+            tar.addfile(info, io.BytesIO(payload))
+    return io.BytesIO(buf.getvalue())
+
+
+def test_a_range_at_the_files_end_is_appended(tmp_path):
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "system.log").write_bytes(b"one\n")
+    out = tar_io.extract_stream(_ranges([("logs/system.log", b"two\nthree\n", 4)]), tmp_path)
+    assert (tmp_path / "logs" / "system.log").read_bytes() == b"one\ntwo\nthree\n"
+    assert (out.files, out.bytes, out.refused, out.resync) == (1, 10, [], [])
+    assert not list(tmp_path.rglob(f"*{tar_io.INCOMING_SUFFIX}"))
+
+
+def test_offset_zero_creates_a_missing_file(tmp_path):
+    out = tar_io.extract_stream(_ranges([("a/b/data.csv", b"x,y\n", 0)]), tmp_path)
+    assert (tmp_path / "a" / "b" / "data.csv").read_bytes() == b"x,y\n"
+    assert out.files == 1 and out.resync == []
+
+
+def test_a_range_already_present_is_a_no_op(tmp_path):
+    (tmp_path / "data.jsonl").write_bytes(b"{}\n{}\n{}\n")
+    out = tar_io.extract_stream(_ranges([("data.jsonl", b"{}\n", 3),
+                                         ("data.jsonl", b"{}\n{}\n", 3)]), tmp_path)
+    assert (tmp_path / "data.jsonl").read_bytes() == b"{}\n{}\n{}\n"
+    assert (out.files, out.bytes, out.refused, out.resync) == (0, 0, [], [])
+
+
+@pytest.mark.parametrize("existing, offset", [
+    (None, 5),            # a gap before a file that is not here
+    (b"abc", 5),          # a gap after the file's end
+    (b"abcdef", 4),       # the file is longer than the offset but short of the range's end
+    (b"ab", 1),           # a range starting inside the file and running past it
+], ids=["missing", "gap", "longer", "overlap"])
+def test_a_range_that_does_not_continue_the_file_is_a_resync(tmp_path, existing, offset):
+    if existing is not None:
+        (tmp_path / "f.log").write_bytes(existing)
+    out = tar_io.extract_stream(_ranges([("f.log", b"0123456789", offset)]), tmp_path)
+    assert out.resync == ["f.log"]
+    assert (out.files, out.bytes, out.refused) == (0, 0, [])
+    if existing is None:
+        assert not (tmp_path / "f.log").exists()
+    else:
+        assert (tmp_path / "f.log").read_bytes() == existing
+
+
+def test_a_denied_or_escaping_range_is_refused(tmp_path):
+    out = tar_io.extract_stream(_ranges([
+        ("campaign.db", b"x", 0),
+        ("sub/campaign.db-wal", b"x", 0),
+        ("_execution/controller.log", b"x", 0),
+        ("../outside.log", b"x", 0),
+    ]), tmp_path, deny=("_execution/controller.log",))
+    assert sorted(out.refused) == ["../outside.log", "_execution/controller.log",
+                                   "campaign.db", "sub/campaign.db-wal"]
+    assert out.files == 0 and out.resync == []
+    assert not (tmp_path / "campaign.db").exists()
+    assert not (tmp_path.parent / "outside.log").exists()
+
+
+@pytest.mark.parametrize("value", ["-1", "abc", "", "1.5", " 3"])
+def test_an_offset_that_is_not_a_non_negative_integer_is_refused(tmp_path, value):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo("f.log")
+        info.size = 1
+        info.pax_headers = {tar_io.OFFSET_HEADER: value}
+        tar.addfile(info, io.BytesIO(b"x"))
+    out = tar_io.extract_stream(io.BytesIO(buf.getvalue()), tmp_path)
+    assert out.refused == ["f.log"]
+    assert not (tmp_path / "f.log").exists()
+
+
+def test_a_directory_at_the_path_wins_over_a_range(tmp_path):
+    (tmp_path / "f.log").mkdir()
+    out = tar_io.extract_stream(_ranges([("f.log", b"x", 0)]), tmp_path)
+    assert (tmp_path / "f.log").is_dir()
+    assert (out.files, out.refused, out.resync) == (0, [], [])
+
+
+def test_a_range_is_not_appended_through_a_symlink(tmp_path):
+    outside = tmp_path / "outside.log"
+    outside.write_bytes(b"")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    os.symlink(outside, tree / "f.log")
+    out = tar_io.extract_stream(_ranges([("f.log", b"x", 0)]), tree)
+    assert out.resync == ["f.log"]
+    assert outside.read_bytes() == b""
+
+
+def test_a_whole_file_after_ranges_replaces_the_file(tmp_path):
+    out = tar_io.extract_stream(_ranges([("f.log", b"one\n", 0),
+                                         ("f.log", b"two\n", 4),
+                                         ("f.log", b"whole\n", None)]), tmp_path)
+    assert (tmp_path / "f.log").read_bytes() == b"whole\n"
+    assert out.files == 3 and out.resync == []
+
+
 def test_the_stream_reader_hands_pushed_chunks_to_a_blocking_reader():
     reader = tar_io.StreamReader(max_chunks=4)
     reader.push(b"abc")

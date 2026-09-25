@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from robovast.client.status import Phase, Status
 from robovast.common.campaign_data import write_execution_outcome
-from robovast.service import auth
+from robovast.service import auth, tar_io
 from robovast.service.app import build_app
 from robovast.service.data_app import build_data_app
 from robovast.service.interface import Routes
@@ -170,6 +170,28 @@ def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, r
     assert (root / _CAMPAIGN / "_execution" / "controller.log").read_text() == "driver's\n"
 
 
+def test_ranges_append_and_a_mismatch_is_answered_with_a_resync(client, root):
+    """A live delivery extends a log; one that does not continue it names it in ``resync``."""
+    log = root / _CAMPAIGN / "cell-a" / "1" / "logs" / "system.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"one\n")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, payload, offset in (("cell-a/1/logs/system.log", b"two\n", 4),
+                                      ("cell-a/1/metrics.csv", b"a,b\n", 9)):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.pax_headers = {tar_io.OFFSET_HEADER: str(offset)}
+            tar.addfile(info, io.BytesIO(payload))
+    resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=buf.getvalue())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["files"] == 1
+    assert body["resync"] == ["cell-a/1/metrics.csv"]
+    assert log.read_bytes() == b"one\ntwo\n"
+    assert not (root / _CAMPAIGN / "cell-a" / "1" / "metrics.csv").exists()
+
+
 def test_outputs_for_a_campaign_that_is_not_here_are_a_404_before_the_body(client):
     resp = client.put(Routes.campaign_outputs("camp-2026-09-09-000000"),
                       content=_tar([("x", b"y")]))
@@ -273,8 +295,6 @@ def test_a_forged_scope_is_not_authenticated(standalone):
 def test_a_full_disk_is_a_507(client, monkeypatch):
     import errno
 
-    from robovast.service import tar_io
-
     def _full(*_a, **_k):
         raise OSError(errno.ENOSPC, "No space left on device")
     monkeypatch.setattr(tar_io, "_write_atomic", _full)
@@ -286,8 +306,6 @@ def test_a_write_the_service_could_not_make_is_a_500_not_a_bad_upload(client, mo
     """A disk gone read-only or failing is the service's fault, and an uploader retries a 5xx.
     Answered as 400 -- "not a readable tar" -- it would give up on output that was sound."""
     import errno
-
-    from robovast.service import tar_io
 
     def _read_only(*_a, **_k):
         raise OSError(errno.EROFS, "Read-only file system")

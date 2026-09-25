@@ -74,7 +74,9 @@ them. Internally:
    against this rather than creating the whole plan up front.
 4. **Result collection** — Every scenario pod carries an ``uploader`` container that
    delivers the pod's whole ``/out`` to the campaign as one tar ``PUT``, so a Job is
-   complete only when its results are in the campaign. The campaign directory on the
+   complete only when its results are in the campaign; its ``agent`` container delivers
+   the growth of the log and line files while the run runs (see *Pods move bytes as tar
+   streams*). The campaign directory on the
    service's **results volume** is both the durable home and the delivery mechanism:
    the driver writes ``campaign.db`` and ``_execution`` into it as the campaign runs,
    and the service streams downloads straight out of it
@@ -1219,6 +1221,19 @@ twice on the pod and nothing is buffered on the service.
   the shared ``/ipc`` volume. The uploader is a regular container, and that is the point:
   **a Job is complete only when its results are in the campaign**, and a delivery that
   could not be made is a failed Job rather than a quiet one.
+
+  Beside it runs an ``agent`` container, the **file agent**
+  (``python3 /config/file_agent.py``, shipped in ``_transient/`` with the other run
+  scripts): it watches ``/out`` with inotify and, every second something grew, delivers
+  the new complete lines of the run's log files (``*.log`` under ``logs/``), CSV and JSONL
+  files as byte ranges in one small tar ``PUT`` — a member carrying the pax header
+  ``ROBOVAST.offset``, which the data plane appends when its copy ends at that offset and
+  otherwise answers with a ``resync`` that makes the agent send the file whole. So a
+  running job's logs are readable in the campaign while it runs. The agent keeps its
+  delivered offsets in ``/ipc/file_agent.json``, retries a failed delivery with a backoff,
+  and after the others' done markers makes a final drain and writes ``done.agent``; the
+  uploader waits for that marker, so its tar is the pod's last delivery and the one that
+  leaves every file complete.
 * **Aux, exec and build pods** work on a **staged slot** instead
   (``GET``/``PUT /data/staged/<slot>``), which the service stages under
   ``<results_root>/_staged/<slot>/``: scratch beside the campaigns, sharing their disk and

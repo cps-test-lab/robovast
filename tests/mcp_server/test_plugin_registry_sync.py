@@ -485,7 +485,7 @@ _PARAMETER_VOCABULARY = {
     "old_string", "new_string", "sql", "command", "description", "reason",
     "archive_path", "occupancy",
     # how much, and from where
-    "limit", "offset", "top", "tail", "page", "size", "runs", "max_campaigns",
+    "limit", "offset", "cursor", "top", "tail", "page", "size", "runs", "max_campaigns",
     # how to match
     "query", "grep", "search", "pattern", "config_filter", "min_severity",
     "campaign_regex", "t0", "t1", "at", "time",

@@ -864,29 +864,42 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
         return service_access.error_result(e)
 
 
-def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
+def _job_log_text(rows: list) -> str:
+    """*rows* as the lines their containers wrote, each tagged ``[<container>]`` when the job
+    runs more than one, so the log view's filters read what a person would."""
+    multi = len({r["container"] for r in rows}) > 1
+    lines = []
+    for row in rows:
+        head = f"[{row['container']}] " if multi else ""
+        if row["wall_ts"] is not None:
+            level = row["level"] or "INFO"
+            head += f"[{level}] [{row['wall_ts']:.6f}] [{row['node'] or row['container']}]: "
+        lines.append(head + row["message"])
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
                 hide_shutdown: bool = True) -> dict:
-    """What is one job doing, or what did it do? Its containers' stdout/stderr.
+    """What is one job doing, or what did it do? Its containers' output, as it is written.
 
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    A **finished** job is served as readily as a running one -- its output is durable
-    either way. Every container is merged into one stream, tagged ``[<container>]``.
+    A **finished** job is served as readily as a running one: both are read from the job's
+    log files in the campaign. Every container is in one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         job_name: A ``job_name`` from ``list_campaign_jobs``.
-        offset: **Byte** offset to resume from — pass back the previous call's
-            ``next_offset`` to poll incrementally. It indexes the *unfiltered* stream, so
-            filtering never breaks a poll loop.
+        cursor: Pass back the previous call's ``cursor`` to read only what arrived since.
+            It marks the *unfiltered* log, so filtering never breaks a poll loop.
         hide_shutdown, grep, tail, min_severity, summarize, top: The filters
             ``get_campaign_log`` documents, applied in that order.
 
     Returns:
-        Lines: ``{text, next_offset, eof, lines, matched_lines, lines_total, dropped,
+        Lines: ``{text, cursor, eof, lines, matched_lines, lines_total, dropped,
         shutdown_dropped, truncated}``. With ``summarize``: the same minus ``text``,
         plus ``{patterns, patterns_total, severity_counts}``. Or ``{error}``.
         ``lines`` is this chunk, ``matched_lines`` what the filters kept before ``tail``.
@@ -895,19 +908,19 @@ def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
     client = service_access.service_client()
     if client is None:
         return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); live job logs are served "
-                         "by the service"}
+                         "a tunnel before starting MCP); job logs are served by the service"}
     try:
-        chunk = client.get_job_log(campaign_id, job_name, offset).model_dump()
+        chunk = client.get_job_log(campaign_id, job_name, cursor).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
     try:
-        view = view_log(chunk.get("text", ""), grep=grep, tail=tail,
+        view = view_log(_job_log_text(chunk["rows"]), grep=grep, tail=tail,
                         min_severity=min_severity, summarize=summarize, top=top,
                         hide_shutdown=hide_shutdown)
     except ValueError as e:
         return {"error": str(e)}
-    return _log_response(chunk, view, report_shutdown=True)
+    return _log_response({"cursor": chunk["cursor"], "eof": chunk["eof"]}, view,
+                         report_shutdown=True)
 
 
 def stop_campaign(campaign_id: str) -> dict:

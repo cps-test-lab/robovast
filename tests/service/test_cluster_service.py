@@ -396,41 +396,6 @@ class _CoreWithPods:
         return self._nodes
 
 
-def test_get_job_log_resolves_a_pod_by_campaign_and_job_alone(cs, monkeypatch):
-    """Every row the jobs list shows has to open, the conversion's included.
-
-    The pair (campaign, Job name) already identifies one pod, so the selector carries no
-    jobgroup term: adding one would decide which of the campaign's own jobs may be read
-    here, and a row whose log 404s is worse than no row at all.
-    """
-    from contextlib import nullcontext
-
-    seen = {}
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            seen["label_selector"] = label_selector
-            return types.SimpleNamespace(
-                items=[_job_pod("robovast-postproc-camp-2026-07-17-120000")])
-
-    class _Tail:
-        lock = nullcontext()
-        merged = types.SimpleNamespace(slice_from=lambda offset: ("converting 3 bags\n", 18))
-
-        def read(self, core, pod, namespace, now):
-            return True
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    monkeypatch.setattr(cs, "_job_log_tail", lambda campaign_id, job_name: _Tail())
-    chunk = cs.get_job_log("camp-2026-07-17-120000",
-                           "robovast-postproc-camp-2026-07-17-120000")
-
-    assert "jobgroup" not in seen["label_selector"]
-    assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
-    assert "job-name=robovast-postproc-camp-2026-07-17-120000" in seen["label_selector"]
-    assert chunk.text == "converting 3 bags\n"
-
-
 def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
     """An 'active' Job whose pod is still Pending must not show as running."""
     jobs = [_job("j-admitted", active=1)]
@@ -1126,102 +1091,10 @@ def _pod(name="pod-1", phase="Running", sidecars=()):
         status=types.SimpleNamespace(phase=phase))
 
 
-def test_get_job_log_streams_running_pod(cs, monkeypatch):
-    seen = {}
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            seen["label_selector"] = label_selector
-            return types.SimpleNamespace(items=[_pod(phase="Running")])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            seen.update(name=name, container=container)
-            return "hello world\n"
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    chunk = cs.get_job_log("camp-2026-07-17-120000", "j-run")
-
-    assert "job-name=j-run" in seen["label_selector"]
-    assert seen["name"] == "pod-1" and seen["container"] == "robovast"
-    assert chunk.text == "hello world\n"
-    assert chunk.next_offset == len(b"hello world\n")
-    assert chunk.eof is False  # pod still running → keep polling
-    # byte-offset slicing resumes mid-stream
-    assert cs.get_job_log("camp-2026-07-17-120000", "j-run", offset=6).text == "world\n"
-
-
-def test_get_job_log_terminal_pod_sets_eof(cs, monkeypatch):
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(items=[_pod(phase="Succeeded")])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            return "done\n"
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    assert cs.get_job_log("camp", "j").eof is True
-
-
 def _api_exception(status):
     """The kube API's "container is waiting to start" (400) / "gone" (404)."""
     from kubernetes import client
     return client.exceptions.ApiException(status=status)
-
-
-def test_get_job_log_reads_a_pending_pods_sidecars(cs, monkeypatch):
-    """A Pending pod is still read: its native sidecars are already logging.
-
-    Kubelet runs native sidecars during the init phase, so the pod stays ``Pending``
-    while the simulator starts — and a simulator that cannot load its world says so
-    there and then keeps the pod Pending forever. Short-circuiting on the phase discards
-    exactly the output that explains the hang.
-    """
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(
-                items=[_pod(phase="Pending", sidecars=["simulation"])])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            if container == "simulation":
-                return "2026-08-07T10:00:00Z could not load world\n"
-            raise _api_exception(400)  # the scenario container has not started yet
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    chunk = cs.get_job_log("camp", "j")
-    assert "could not load world" in chunk.text
-    assert "[simulation]" in chunk.text
-    assert chunk.eof is False  # still Pending → keep polling
-
-
-def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
-    """The reported break: sidecars moved to initContainers and vanished from the panel.
-
-    Every line must carry a ``[container]`` prefix — that is what the web UI colors —
-    and the three containers must interleave by kubelet's per-line timestamp rather than
-    arriving in three blocks.
-    """
-
-    logs = {
-        "robovast": "2026-08-07T10:00:02Z executing scenario\n",
-        "simulation": "2026-08-07T10:00:01Z mujoco model loaded\n",
-        "sut": "2026-08-07T10:00:03Z bt_navigator ready\n",
-    }
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(
-                items=[_pod(sidecars=["simulation", "sut"])])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            return logs[container]
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    lines = cs.get_job_log("camp", "j").text.splitlines()
-    assert [line.split("]")[0] + "]" for line in lines] == [
-        "[simulation]", "[robovast]", "[sut]"]  # timestamp order, not spec order
-    assert "mujoco model loaded" in lines[0]
 
 
 def _no_pod(cs, monkeypatch, tmp_path, files):
@@ -1237,78 +1110,6 @@ def _no_pod(cs, monkeypatch, tmp_path, files):
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(blob)
-
-
-def test_get_job_log_of_a_finished_job_is_read_from_the_campaign(cs, monkeypatch, tmp_path):
-    """No pod is the normal state of a finished job, not an error.
-
-    The pod's uploader delivered ``/out`` into the campaign as it ended, so the log is read
-    from there: resolved through the job-link manifest to the artifact dir, main container
-    first, the sidecars after it, and tagged the way the live tail tags them so a run reads
-    the same whichever source served it.
-    """
-    from robovast.common.execution import JOB_LINKS_MANIFEST_REL
-    _no_pod(cs, monkeypatch, tmp_path, {
-        f"camp/{JOB_LINKS_MANIFEST_REL}": b"cfg/0/job: ../../_jobs/cfg-0\n",
-        "camp/_jobs/cfg-0/logs/system.log": b"mujoco model loaded\nrun ended\n",
-        "camp/_jobs/cfg-0/logs/system_simulation.log": b"sim up\n",
-        "camp/_jobs/cfg-0/logs/rosout.csv": b"not a container log\n",
-    })
-
-    chunk = cs.get_job_log("camp", "cfg/0")
-
-    assert chunk.eof, "an archived log is complete"
-    lines = chunk.text.splitlines()
-    assert [line.split("]")[0] + "]" for line in lines] == [
-        "[robovast]", "[robovast]", "[simulation]"]
-    assert "mujoco model loaded" in lines[0]
-    assert "not a container log" not in chunk.text
-    # The offset protocol continues past the archive the same way it does past a live tail.
-    assert cs.get_job_log("camp", "cfg/0", offset=chunk.next_offset).text == ""
-
-
-def test_get_job_log_of_a_job_that_delivered_nothing_is_absent(cs, monkeypatch, tmp_path):
-    """A job with no pod AND no delivered logs is reported absent, not as an empty log."""
-    _no_pod(cs, monkeypatch, tmp_path, {})
-    with pytest.raises(KeyError):
-        cs.get_job_log("camp", "gone")
-
-
-def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
-    """A second poll fetches only a trailing window, not the whole log, yet the
-    byte-offset stream continues seamlessly as the pod log grows."""
-    calls = []  # since_seconds seen per read_namespaced_pod_log call
-
-    def line(sec, nano, msg):
-        return f"2026-07-21T10:00:{sec:02d}.{nano:09d}Z {msg}"
-
-    class _Core:
-        def __init__(self):
-            self.rows = [(0, line(0, 1, "boot"))]  # (wall_second, timestamped line)
-
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(items=[_pod(phase="Running")])
-
-        def read_namespaced_pod_log(self, name, namespace, container,
-                                    timestamps=False, since_seconds=None):
-            calls.append(since_seconds)
-            sel = self.rows if since_seconds is None else self.rows[-1:]
-            text = "\n".join(r[1] for r in sel)
-            return text + "\n" if text else ""
-
-    core = _Core()
-    monkeypatch.setattr(cs, "_k8s", lambda: core)
-
-    first = cs.get_job_log("camp", "j")
-    assert first.text == "boot\n"          # timestamp stripped for a single container
-    assert calls[0] is None                # first poll reads the whole log
-
-    core.rows.append((0, line(0, 2, "step 1")))  # log grows
-    second = cs.get_job_log("camp", "j", offset=first.next_offset)
-    assert second.text == "step 1\n"       # only the delta crosses the wire
-    assert calls[1] is not None            # later polls read a bounded window
-    # Full assembled text is still addressable from offset 0.
-    assert cs.get_job_log("camp", "j", offset=0).text == "boot\nstep 1\n"
 
 
 # -- stop (terminates in-flight cluster workloads) --------------------------

@@ -34,6 +34,11 @@ not ask for:
 
 Refused members are named in the result rather than raised on: a pod's output is many
 files, and one it may not write is not a reason to lose the rest.
+
+A regular-file member replaces its file whole, unless it carries the pax header
+:data:`OFFSET_HEADER`: then it holds the bytes ``[offset, offset + size)`` of that file and
+extends it (:func:`_append_range`). That is how a pod ships the growth of a log or a line
+file while it runs, without sending what the tree already has.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import stat
 import tarfile
 from pathlib import Path
 
@@ -57,6 +63,10 @@ INCOMING_SUFFIX = ".robovast-incoming"
 #: driver holds it open for the campaign's whole life, and a pod has nothing to say in it.
 DENY_ALWAYS = ("campaign.db", "campaign.db-journal", "campaign.db-wal", "campaign.db-shm")
 
+#: Pax header naming the byte offset a regular-file member's data starts at in its file.
+#: Its value is a non-negative decimal integer; anything else refuses the member.
+OFFSET_HEADER = "ROBOVAST.offset"
+
 #: Read size for the loop-to-thread bridge, and the bound on how much of an upload waits
 #: in memory between the two.
 _CHUNK = 64 * 1024
@@ -70,6 +80,9 @@ class Extracted:
         self.files = 0
         self.bytes = 0
         self.refused: list[str] = []
+        #: Campaign-relative paths of offset members whose range did not start where the
+        #: file here ends; nothing of them was written, the sender sends each whole.
+        self.resync: list[str] = []
 
 
 def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
@@ -81,6 +94,9 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
 
     Members are written in stream order and the last one wins, which is how several
     containers of one pod, each contributing its own files to a shared tree, resolve.
+    A member carrying :data:`OFFSET_HEADER` extends its file instead of replacing it:
+    appended when the file ends at the offset, skipped when it already holds the whole
+    range, and otherwise left untouched and named in :attr:`Extracted.resync`.
     """
     root = Path(dest_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -114,6 +130,21 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _replace_with_symlink(target, member.linkname)
+            elif member.isfile() and OFFSET_HEADER in member.pax_headers:
+                offset = _offset_of(member)
+                if offset is None:
+                    out.refused.append(member.name)
+                    continue
+                source = tar.extractfile(member)
+                if source is None:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                outcome = _append_range(target, source, offset, member.size, member.mode)
+                if outcome == _APPENDED:
+                    out.files += 1
+                    out.bytes += member.size
+                elif outcome == _RESYNC:
+                    out.resync.append(rel)
             elif member.isfile():
                 source = tar.extractfile(member)
                 if source is None:
@@ -160,6 +191,67 @@ def _replace_with_symlink(target: Path, linkname: str) -> None:
             return
         target.unlink()
     os.symlink(linkname, target)
+
+
+_APPENDED = "appended"
+_PRESENT = "present"
+_RESYNC = "resync"
+
+
+def _offset_of(member: tarfile.TarInfo) -> "int | None":
+    """The member's :data:`OFFSET_HEADER` as an offset, ``None`` when it is not one."""
+    value = member.pax_headers[OFFSET_HEADER]
+    if not value.isascii() or not value.isdigit():
+        return None
+    return int(value)
+
+
+def _append_range(target: Path, source, offset: int, size: int, mode: int) -> str:
+    """Extend *target* by the range ``[offset, offset + size)`` read from *source*.
+
+    Returns :data:`_APPENDED` when the file ended at *offset* (a missing file ends at 0)
+    and the bytes were appended, :data:`_PRESENT` when it already holds the whole range,
+    :data:`_RESYNC` when it does neither -- a gap, a file shorter or longer than a partial
+    overlap, or something other than a regular file at the path -- and nothing was
+    written. A directory at the path wins, as it does for a whole file.
+
+    One open in append mode, with the size checked on the open descriptor: a concurrent
+    reader sees the file grow, never a replaced or truncated one. No temp file and rename,
+    which would copy the whole file for every range.
+    """
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if stat.S_ISDIR(st.st_mode):
+            return _PRESENT
+        if not stat.S_ISREG(st.st_mode):
+            return _RESYNC  # a symlink or a special file: the whole file replaces it
+        if st.st_size >= offset + size:
+            return _PRESENT
+        if st.st_size != offset:
+            return _RESYNC
+    elif offset != 0:
+        return _RESYNC
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(target, flags, (mode or 0o644) | 0o600)
+    try:
+        if os.fstat(fd).st_size != offset:
+            return _RESYNC  # another writer moved the end between the check and the open
+        remaining = size
+        while remaining > 0:
+            chunk = source.read(min(_CHUNK, remaining))
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    return _APPENDED
 
 
 def _write_atomic(target: Path, source, mode: int) -> None:

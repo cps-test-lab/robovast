@@ -854,8 +854,8 @@ class BatchJobRunner:
 
         The two paths differ only in job naming, the initContainer fetch command, and
         a few extra env vars (``extra_main_env``); everything else (volumes, the init
-        container, the main container env, the secondary containers, the uploader) is
-        identical and lives here.
+        container, the main container env, the secondary containers, the file agent, the
+        uploader) is identical and lives here.
         """
         job_manifest = copy.deepcopy(self.manifest)
 
@@ -1125,6 +1125,22 @@ class BatchJobRunner:
             'volumeMounts': [
                 {'name': 'out', 'mountPath': '/out'},
                 {'name': 'ipc', 'mountPath': '/ipc'},
+            ],
+        })
+        # The file agent: ships the growth of the run's log and line files to the campaign
+        # while the run runs, and signs `done.agent` after its final drain, which the
+        # uploader waits for. See `robovast/execution/data/file_agent.py`.
+        spec['containers'].append({
+            'name': pod_upload.AGENT_CONTAINER,
+            'image': self._sidecar_image,
+            'imagePullPolicy': pull_policy_for(self._sidecar_image),
+            'command': pod_upload.agent_command([sc.name for sc in self.plan.sidecars]),
+            'env': list(access_env),
+            'resources': pod_upload.AGENT_RESOURCES,
+            'volumeMounts': [
+                {'name': 'out', 'mountPath': '/out'},
+                {'name': 'ipc', 'mountPath': '/ipc'},
+                {'name': 'config', 'mountPath': '/config', 'readOnly': True},
             ],
         })
         # A deadline or a stop TERMs every container at once; the uploader's handler

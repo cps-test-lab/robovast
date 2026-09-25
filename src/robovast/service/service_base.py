@@ -46,13 +46,12 @@ import shlex
 import shutil
 import threading
 import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 from robovast.client import file_address
 from robovast.client.safe_path import safe_join
@@ -76,7 +75,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         FileListing, FileMeta, FileText,
                                         ImportCampaignRequest, JobKind,
                                         ListCampaignsRequest, ListCampaignsResponse,
-                                        ListWorkspacesResponse, LogChunk,
+                                        JobLogChunk, ListWorkspacesResponse, LogChunk,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
                                         CacheSize, KeptCacheEntry, ServiceCache,
                                         MigrationMarker, RetriggerAxis, RetriggerReport,
@@ -591,9 +590,6 @@ class ServiceBase(RobovastInterface):
     #: sampling per window, not N.
     _USAGE_CACHE_TTL = 10.0
 
-    #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
-    _JOB_LOG_CACHE_MAX = 128
-
     def __init__(self, store=None, results_dir=None):
         #: Where local campaigns land, when the caller pinned one (``vast serve
         #: --results-dir``). ``None`` leaves it to the service-owned default; see
@@ -606,12 +602,6 @@ class ServiceBase(RobovastInterface):
         #: it is indistinguishable from an operator's Stop, and the analysis a stop leaves
         #: owed must not be started against storage this process is about to lose.
         self._shutting_down = False
-        # Incremental job-log tails, so a log panel polling twice a second folds in only
-        # each container's delta instead of re-reading whole files. LRU-bounded so a
-        # long-lived service does not accumulate buffers. Shared with ClusterService,
-        # which caches a PodLogTail in the same map (see _new_job_log_tail).
-        self._job_log_tails: "OrderedDict[tuple, object]" = OrderedDict()
-        self._job_log_guard = threading.Lock()
         # Container exec gets its own lock: creating its manager reaps a stray container
         # first, and on the cluster that waits for a pod to finish terminating. Doing
         # that under the campaign lock would stall every status read and campaign start
@@ -3359,24 +3349,76 @@ class ServiceBase(RobovastInterface):
     #: Directories under a campaign that are not per-configuration results.
     _RESERVED_DIRS = frozenset({"_config", "_execution", "_transient"})
 
-    @abstractmethod
-    def _new_job_log_tail(self, campaign_id: str, job_name: str):
-        """An incremental reader over one job's log, for :meth:`_job_log_tail`'s cache.
-        """
+    def _job_artifact_hint(self, campaign_id: str, job_name: str) -> str:
+        """The campaign-relative directory of a job the job-link manifest does not name.
 
-    def _job_log_tail(self, campaign_id: str, job_name: str):
-        """The cached log tail for a job, created on first use (LRU-bounded)."""
-        key = (campaign_id, job_name)
-        with self._job_log_guard:
-            tail = self._job_log_tails.get(key)
-            if tail is None:
-                tail = self._new_job_log_tail(campaign_id, job_name)
-                self._job_log_tails[key] = tail
-                while len(self._job_log_tails) > self._JOB_LOG_CACHE_MAX:
-                    self._job_log_tails.popitem(last=False)
-            else:
-                self._job_log_tails.move_to_end(key)
-            return tail
+        The manifest names each run's job, keyed by ``<config>/<run>``. A service whose job
+        names are not run keys -- a Kubernetes Job's is not -- answers here from what it
+        knows of the job itself; ``""`` when it knows nothing.
+        """
+        del campaign_id, job_name
+        return ""
+
+    def _job_log_dir(self, campaign_id: str, job_name: str) -> Tuple[Optional[Path], List[str]]:
+        """``(job directory, runs placed in it)``, or ``(None, [])`` before it is known.
+
+        Raises ``KeyError`` for a job the campaign does not have.
+        """
+        from robovast.client.safe_path import             UnsafePathError  # pylint: disable=import-outside-toplevel
+        from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+            read_job_links, resolve_job_artifact_rel)
+        from robovast.service import job_log  # pylint: disable=import-outside-toplevel
+
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not campaign_dir.is_dir():
+            raise KeyError(f"no campaign {campaign_id!r}")
+        links = read_job_links(campaign_dir)
+        try:
+            rel = resolve_job_artifact_rel(links, job_name)
+        except FileNotFoundError:
+            rel = self._job_artifact_hint(campaign_id, job_name)
+        if not rel:
+            # Before the first job starts there is no manifest yet: a run the campaign has
+            # is a job whose log does not exist yet, anything else is not a job of it.
+            try:
+                run_dir = safe_join(campaign_dir, job_name)
+            except UnsafePathError as exc:
+                raise KeyError(str(exc)) from exc
+            if not links and run_dir.is_dir():
+                return None, []
+            raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r}")
+        try:
+            job_dir = safe_join(campaign_dir, rel)
+        except UnsafePathError as exc:
+            raise KeyError(str(exc)) from exc
+        return job_dir, job_log.runs_of_job(links, rel)
+
+    def job_log_watch(self, campaign_id: str, job_name: str):
+        """A :class:`~robovast.service.job_log.LogWatch` over the job's log files, for a stream
+        that pushes rows as they are written. The caller closes it."""
+        from robovast.service import job_log  # pylint: disable=import-outside-toplevel
+        job_dir, _runs = self._job_log_dir(campaign_id, job_name)
+        return job_log.LogWatch(job_dir)
+
+    def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        """A job's log rows after *cursor*, read from its ``logs/system*.log`` files.
+
+        The files grow in the campaign directory while the job runs, so a
+        running job and a finished one are read alike (:mod:`robovast.service.job_log`).
+        ``eof`` once the job is over -- the campaign no longer live, or every run placed in
+        the job has its settled verdict -- and a read found nothing more.
+        """
+        from robovast.service import job_log  # pylint: disable=import-outside-toplevel
+
+        job_dir, runs = self._job_log_dir(campaign_id, job_name)
+        live = self.campaign_is_live(campaign_id)
+        if job_dir is None:
+            job_log.decode_cursor(cursor)
+            return JobLogChunk(cursor=cursor, eof=not live)
+        finished = not live or job_log.runs_finished(self.campaign_dir(campaign_id), runs)
+        rows, next_cursor, pending = job_log.read_rows(job_dir, cursor, final=finished)
+        return JobLogChunk(rows=rows, cursor=next_cursor,
+                           eof=finished and not rows and not pending)
 
     def _campaign_execution(self, campaign_id: str) -> dict:
         """The ``execution`` block of this campaign's own frozen configuration.

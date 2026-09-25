@@ -916,6 +916,39 @@ class LogChunk(BaseModel):
     eof: bool = False
 
 
+class JobLogRow(BaseModel):
+    """One record of a job's log: a stamped line and the unstamped lines that follow it."""
+    #: Epoch seconds from the line's own stamp; ``None`` for a line written without one.
+    wall_ts: Optional[float] = None
+    #: ``stamp`` when :attr:`wall_ts` is the line's own, ``none`` when it has none.
+    time_source: str = "none"
+    #: The container that wrote it: ``robovast`` for the scenario's ``system.log``, else the
+    #: sidecar's name from ``system_<name>.log``.
+    container: str = ""
+    node: str = ""
+    #: The level as written (``INFO``, ``WARN``, ...); empty when the line carries none.
+    level: str = ""
+    #: The one severity classification every log surface uses (``log_summary.severity_of``).
+    severity: str = ""
+    #: The line's text; continuation lines are joined with ``\n``.
+    message: str = ""
+
+
+class JobLogChunk(BaseModel):
+    """The rows of a job's log that arrived after *cursor*.
+
+    Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
+    while the job runs, so a running job and a finished one answer alike.
+    Rows within a chunk are in stamp order; across chunks, in the order they arrived. The
+    finished, deduplicated record of a run's log is the ``run_log`` table.
+    """
+    rows: list[JobLogRow] = Field(default_factory=list)
+    #: Opaque: pass it back to continue after these rows.
+    cursor: str = ""
+    #: The job's logs are complete; nothing more will arrive.
+    eof: bool = False
+
+
 class VersionInfo(BaseModel):
     """Server/client version for the compatibility handshake (see plan 0.7)."""
 
@@ -1628,6 +1661,9 @@ class OutputsIngested(BaseModel):
     #: Members refused rather than written -- a path leaving the tree, a hard link, a
     #: file only the driver writes. Named, so a pod whose output vanished can read why.
     refused: list[str] = Field(default_factory=list)
+    #: Files whose delivered range did not start where the file ends here; the sender
+    #: sends each of them whole next time.
+    resync: list[str] = Field(default_factory=list)
 
 
 class ImportCampaignRequest(BaseModel):
@@ -2574,7 +2610,7 @@ class Routes:
 
     @staticmethod
     def job_log_stream(campaign_id: str) -> str:
-        # SSE transport over ``job_log`` (same ``job_name`` query param + offset seam).
+        # SSE transport over ``job_log``: the same ``job_name`` query param, resumed by cursor.
         return f"/campaigns/{campaign_id}/job-log/stream"
 
     #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
@@ -2995,18 +3031,16 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def get_job_log(self, campaign_id: str, job_name: str,
-                    offset: int = 0) -> LogChunk:
-        """Return a **running** job's live log from byte *offset* onward.
+    def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        """Return a job's log rows after *cursor*, running or finished.
 
-        Same streaming protocol as :meth:`get_campaign_logs` (poll, append
-        :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). Live source
-        only — the running pod on the cluster. Raises if the job's log source is gone.
+        Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
+        while it runs. Resume with :attr:`JobLogChunk.cursor`; stop at
+        :attr:`JobLogChunk.eof`. Raises ``KeyError`` for a job the campaign does not have.
 
-        **Every** container the job runs, merged into one stream: a job is not one
-        container (the ROS shape gives the simulator and the system under test their
-        own), and their output only explains a failure when read together. Each line is
-        tagged ``[<container>]`` when there is more than one.
+        **Every** container the job runs, in one stream: a job is not one container (the
+        ROS shape gives the simulator and the system under test their own), and their
+        output only explains a failure when read together. Each row names its container.
         """
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":

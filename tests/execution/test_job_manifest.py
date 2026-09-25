@@ -275,9 +275,38 @@ def test_the_pod_carries_one_uploader_that_waits_for_every_container(monkeypatch
     assert spec["terminationGracePeriodSeconds"] >= pod_upload.UPLOAD_TERMINATION_GRACE
 
 
+def test_the_pod_carries_a_file_agent_the_uploader_waits_for(monkeypatch):
+    """The file agent ships the growth of the run's line files while it runs; the uploader
+    waits for its marker, so the run-end tar is the pod's last delivery."""
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "sut": {"image": "sut:test"},
+        "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+
+    agent = next(c for c in spec["containers"] if c["name"] == pod_upload.AGENT_CONTAINER)
+    uploader = next(c for c in spec["containers"]
+                    if c["name"] == pod_upload.UPLOADER_CONTAINER)
+    sidecars = [sc.name for sc in r.plan.sidecars]
+    assert "restartPolicy" not in agent
+    assert agent["image"] == uploader["image"]
+    assert agent["command"] == pod_upload.agent_command(sidecars)
+    assert agent["command"][:2] == ["python3", "/config/file_agent.py"]
+    assert agent["env"] == pod_access.campaign_pod_env("ns", r.campaign)
+    assert agent["resources"] == pod_upload.AGENT_RESOURCES
+    mounts = {m["name"]: m for m in agent["volumeMounts"]}
+    assert {n: m["mountPath"] for n, m in mounts.items()} == {
+        "out": "/out", "ipc": "/ipc", "config": "/config"}
+    assert mounts["config"].get("readOnly") is True
+    assert f"WAIT_FOR=\"main {' '.join(sidecars)} {pod_upload.AGENT_CONTAINER}\"" \
+        in uploader["command"][2]
+
+
 def test_only_the_transfer_containers_carry_the_campaigns_access(monkeypatch):
-    """A pod reaches the data plane by address and scoped token, and only the two
-    containers that move bytes -- the inputs fetch and the uploader -- carry them. The
+    """A pod reaches the data plane by address and scoped token, and only the three
+    containers that move bytes -- the inputs fetch, the file agent and the uploader --
+    carry them. The
     workload containers run images that are not ours and are given nothing to reach it."""
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
@@ -288,7 +317,8 @@ def test_only_the_transfer_containers_carry_the_campaigns_access(monkeypatch):
     access = {pod_access.DATA_URL_ENV, pod_access.TOKEN_ENV, pod_access.CAMPAIGN_ID_ENV}
     carriers = {c["name"] for c in spec["containers"] + spec["initContainers"]
                 if access & {e["name"] for e in c.get("env", [])}}
-    assert carriers == {"fetch-inputs", pod_upload.UPLOADER_CONTAINER}
+    assert carriers == {"fetch-inputs", pod_upload.UPLOADER_CONTAINER,
+                        pod_upload.AGENT_CONTAINER}
 
 
 # -- GPUs ---------------------------------------------------------------------------
@@ -575,14 +605,14 @@ def test_only_native_sidecars_can_be_restarted(monkeypatch):
 def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
     """`_container_role` maps this one name onto the `scenario` role; it is the single
     container name that never appears in a .vast. It is the pod's first regular container,
-    ahead of the uploader that delivers what it wrote."""
+    ahead of the uploader and the file agent that deliver what it wrote."""
     from robovast.execution.cluster_execution.manifests import MAIN_CONTAINER_NAME
 
     r = _runner(monkeypatch)
     spec = r.create_job_manifest(r._build_jobs()[0],
                                  total_jobs=1)["spec"]["template"]["spec"]
     assert [c["name"] for c in spec["containers"]] == [
-        MAIN_CONTAINER_NAME, pod_upload.UPLOADER_CONTAINER]
+        MAIN_CONTAINER_NAME, pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER]
 
 def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
     """The pod itself must carry it, not whatever admits it.
@@ -710,9 +740,9 @@ def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatc
         manifest = r.create_job_manifest(job, total_jobs=2)
         spec = manifest["spec"]["template"]["spec"]
         # The premise of the shape: no separate simulator container to deliver it to --
-        # the pod's other regular container only uploads what it wrote.
+        # the pod's other regular containers only deliver what it wrote.
         assert [c["name"] for c in spec["containers"]][1:] == [
-            pod_upload.UPLOADER_CONTAINER]
+            pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER]
         env = _env_dict(_main_of(manifest))
         worlds[job.items[0].config_name] = env["ROQSIM_WORLD"]
 
