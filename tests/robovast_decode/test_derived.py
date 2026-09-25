@@ -2,16 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The tables derived from a job's records, built over a whole campaign as a query builds them.
 
-The unit tests cover the parsing and the slicing. What only shows up here is the wiring:
+The unit tests cover the parsing and the trial window. What only shows up here is the wiring:
 that a run finds its job through the job-link **manifest** and not the ``job`` symlink, that a
-packed job is read once and split so no run inherits a sibling's lines or samples, that a
 degraded campaign still builds and says what was wrong, and that the tables come out typed.
 """
 
 import pyarrow.parquet as pq
 import yaml
 
-from robovast_decode import resource_usage as resource_module
 from robovast_decode.build import available_tables, build
 
 from .conftest import make_campaign
@@ -19,19 +17,15 @@ from .conftest import make_campaign
 _HEADER = "timestamp,pid,name,cpu_percent,memory_rss_bytes\n"
 _SCEN = "scenario_execution_ros"
 
-#: A packed job's shared log: two configurations one after the other, the first tipping over
-#: and the second landing. Both timings around a boundary are the measured ones: the
+#: A run's log, tipping over. Both timings around the trial are the measured ones: the
 #: ``Executing scenario`` line comes ~35 us BEFORE the run's test.xml start, and a failing
 #: run's verdict lands ~1 ms AFTER its window closes.
-_PACKED_LOG = (
+_FAILING_LOG = (
     f"[INFO] [99.99996] [{_SCEN}]: Executing scenario 'test_scenario-0'\n"
     f"[INFO] [104.900] [{_SCEN}]: Outcome: tip_over | max_tilt=0.70\n"
     f"[ERROR] [104.950] [{_SCEN}]: FAILURE: tip_over\n"
     f"[ERROR] [105.0011] [{_SCEN}]: test_scenario-0: execution failed. -^- [x]\n"
     f"[INFO] [105.060] [{_SCEN}]: Shutting down finished.\n"
-    f"[INFO] [109.99997] [{_SCEN}]: Executing scenario 'test_scenario-1'\n"
-    f"[INFO] [114.900] [{_SCEN}]: Outcome: landed | max_tilt=0.03\n"
-    f"[INFO] [114.950] [{_SCEN}]: Scenario 'test_scenario-1' succeeded.\n"
 )
 
 CONFIG = {"containers": ["robovast", "sut"]}
@@ -129,83 +123,28 @@ def test_a_container_that_recorded_nothing_is_named(tmp_path):
     assert any("no resource CSV for" in n and "sut" in n for n in report.notes)
 
 
-def test_a_packed_job_is_read_once_and_split_between_its_runs(tmp_path, monkeypatch):
+def _failing_log_campaign(tmp_path):
     root = _campaign(tmp_path)
-    _job(root, 0, {"robovast": "resource_usage_main.csv", "sut": "resource_usage_sut.csv"},
-         ticks=(100.0, 105.0, 115.0, 125.0))
-    _run(root, "cfg-a", 0, index=0, start_epoch=100.0)
-    _run(root, "cfg-a", 1, index=0, start_epoch=115.0)
-    reads = []
-    real = resource_module.read_container_csv
-    monkeypatch.setattr(resource_module, "read_container_csv",
-                        lambda *a, **k: (reads.append(a[0]), real(*a, **k))[1])
-    build(str(root), tables=["resource_usage"], config=CONFIG)
-    assert len(reads) == 2, "the job's two CSVs are parsed once, not once per run"
-    first = {r["wall_ts"] for r in _rows(root, "resource_usage", run=0)}
-    second = {r["wall_ts"] for r in _rows(root, "resource_usage", run=1)}
-    assert not first & second, "a tick was counted in both runs"
-    assert len(first | second) == 4, "a tick was dropped"
-
-
-def _packed_log_campaign(tmp_path, **run1):
-    root = _campaign(tmp_path)
-    _job(root, 0, {"robovast": "resource_usage_main.csv"}, log_lines=_PACKED_LOG)
+    _job(root, 0, {"robovast": "resource_usage_main.csv"}, log_lines=_FAILING_LOG)
     _run(root, "cfg-a", 0, index=0, start_epoch=100.0, duration=5.0, failures=1)
-    _run(root, "cfg-a", 1, index=0, start_epoch=110.0, duration=5.0, **run1)
     build(str(root), tables=["run_log", "scenario_timestamps"], config={"containers":
                                                                         ["robovast"]})
     return root
 
 
-def _messages(root, run):
-    return [r["message"] for r in _rows(root, "run_log", run=run)]
+def test_a_run_keeps_its_bring_up_verdict_and_teardown_marked_outside_its_trial(tmp_path):
+    rows = _rows(_failing_log_campaign(tmp_path), "run_log")
+    window = {r["message"]: r["in_window"] for r in rows}
+    assert window["Executing scenario 'test_scenario-0'"] == 0
+    assert window["Outcome: tip_over | max_tilt=0.70"] == 1
+    assert window["test_scenario-0: execution failed. -^- [x]"] == 0
+    assert window["Shutting down finished."] == 0
+    assert [r["seq"] for r in rows] == list(range(len(rows)))
 
 
-def test_a_packed_jobs_log_is_split_so_no_run_inherits_a_siblings_verdict(tmp_path):
-    root = _packed_log_campaign(tmp_path)
-    first, second = _messages(root, 0), _messages(root, 1)
-    assert any("test_scenario-0" in m for m in first)
-    assert not any("test_scenario-1" in m for m in first)
-    assert any("test_scenario-1" in m for m in second)
-    assert not any("tip_over" in m for m in second)
-    verdicts = {run: _rows(root, "scenario_timestamps", run=run)[0]["status"] for run in (0, 1)}
-    assert verdicts == {0: "failed", 1: "succeeded"}
-
-
-def test_each_run_owns_its_own_scenario_start_line(tmp_path):
-    root = _packed_log_campaign(tmp_path)
-    for run in (0, 1):
-        starts = [m for m in _messages(root, run) if m.startswith("Executing scenario")]
-        assert starts == [f"Executing scenario 'test_scenario-{run}'"]
-
-
-def test_a_runs_teardown_stays_with_it(tmp_path):
-    root = _packed_log_campaign(tmp_path)
-    assert "Shutting down finished." in _messages(root, 0)
-    assert "Shutting down finished." not in _messages(root, 1)
-
-
-def test_a_failing_runs_verdict_past_its_window_is_still_its_own(tmp_path):
-    root = _packed_log_campaign(tmp_path)
-    verdict = [r for r in _rows(root, "run_log", run=0) if "execution failed." in r["message"]]
-    assert len(verdict) == 1 and verdict[0]["in_window"] == 0
-
-
-def test_seq_orders_each_runs_rows_from_zero(tmp_path):
-    root = _packed_log_campaign(tmp_path)
-    assert [r["seq"] for r in _rows(root, "run_log", run=1)] == list(
-        range(len(_messages(root, 1))))
-
-
-def test_an_unplaceable_run_of_a_packed_job_gets_no_log_rather_than_a_siblings(tmp_path):
-    root = _campaign(tmp_path)
-    _job(root, 0, {"robovast": "resource_usage_main.csv"}, log_lines=_PACKED_LOG)
-    _run(root, "cfg-a", 0, index=0, start_epoch=100.0, duration=5.0)
-    _run(root, "cfg-a", 1, index=0, start_epoch=110.0, duration=5.0)
-    _run(root, "cfg-a", 2, index=0)
-    report = build(str(root), tables=["run_log"], config={"containers": ["robovast"]})
-    assert _rows(root, "run_log", run=2) == []
-    assert any("cfg-a/2" in n and "no test.xml" in n for n in report.notes)
+def test_a_failing_runs_verdict_past_its_window_is_still_read(tmp_path):
+    root = _failing_log_campaign(tmp_path)
+    assert _rows(root, "scenario_timestamps")[0]["status"] == "failed"
 
 
 def test_a_second_build_of_an_unchanged_job_does_nothing(tmp_path):

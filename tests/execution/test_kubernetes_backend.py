@@ -17,6 +17,7 @@ from robovast.execution.backends import RunOptions
 from robovast.execution.cluster_execution.kubernetes_backend import (BatchJobRunner,
                                                                      KubernetesBackend)
 from robovast.execution.control_server import ControllerState
+from robovast.execution.jobs import Job
 
 #: What the service hands the backend for the campaign's pods to authenticate with.
 _TOKEN = "scoped-token"
@@ -272,11 +273,9 @@ class _FakeBatchClient:
         self.deleted.append(name)
 
 
-def _job(index, config_name, runs=1):
-    """A JobSpec-shaped stand-in: what `_build_jobs` hands the wait loop."""
-    items = [types.SimpleNamespace(config_name=config_name, run_number=n)
-             for n in range(runs)]
-    return types.SimpleNamespace(index=index, items=items)
+def _job(index, config_name):
+    """What `_build_jobs` hands the wait loop."""
+    return Job(config={"name": config_name}, run_number=0, index=index)
 
 
 def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=()):
@@ -376,20 +375,6 @@ def test_the_evidence_is_captured_before_the_pod_is_deleted(monkeypatch, tmp_pat
     assert record["log_status"] == "captured"
     assert "traceback" in record["log_tail"]
     assert record["runs"] == ["cfgA/0"]
-
-
-def test_a_packed_jobs_runs_are_all_invalidated(monkeypatch, tmp_path):
-    """One container death ruins every run the job was carrying, not just the current one:
-    they shared the process that lost its state."""
-    import json
-
-    runner = _restart_runner(
-        monkeypatch, tmp_path, [_job(0, "cfgA", runs=3), _job(1, "cfgA")],
-        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
-    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
-
-    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
-    assert entry["runs"] == ["cfgA/0", "cfgA/1", "cfgA/2"]
 
 
 def test_a_job_is_invalidated_only_once(monkeypatch, tmp_path):

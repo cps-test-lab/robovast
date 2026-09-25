@@ -57,7 +57,7 @@ def _derived(campaign_dir, agent_id):
 
 
 VAST = """\
-version: 5
+version: 6
 configuration:
 - name: ca
   parameters:
@@ -144,7 +144,7 @@ def test_a_campaign_with_no_agents_still_produces_a_graph(campaign):
 def test_configurations_sharing_variations_through_an_anchor_each_get_them(campaign):
     """A YAML alias loads as the same object, so reading one configuration must not consume it."""
     (campaign / "_config" / "campaign.vast").write_text("""\
-version: 5
+version: 6
 configuration:
 - name: ca
   variations: &cells

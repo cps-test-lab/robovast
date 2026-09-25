@@ -7,12 +7,11 @@ SCENARIO_EXECUTION_PARAMETERS="${SCENARIO_EXECUTION_PARAMETERS:-}"
 
 # Setup
 # OUTPUT_DIR holds this job's job-level artifacts (sysinfo, resource monitor,
-# logs, rosbag). SCENARIO_OUTPUT_DIR is scenario_execution's -o; per-config
-# results land under it via each parameter document's _output_dir.
-# In single-config jobs both default to /out (the run directory). In packed
-# multi-config jobs /out is the campaign root, so the launcher points OUTPUT_DIR
-# at a per-unit subdir (avoiding cross-unit collisions) while SCENARIO_OUTPUT_DIR
-# stays /out so per-config results are written to /out/<config>/<run>.
+# logs, rosbag). SCENARIO_OUTPUT_DIR is scenario_execution's -o; the run's
+# results land under it via its parameter document's _output_dir.
+# Both default to /out. On the cluster /out is the campaign root, so the
+# launcher points OUTPUT_DIR at the job's subdir while SCENARIO_OUTPUT_DIR
+# stays /out so the run's results are written to /out/<config>/<run>.
 OUTPUT_DIR="${OUTPUT_DIR:-/out}"
 SCENARIO_OUTPUT_DIR="${SCENARIO_OUTPUT_DIR:-${OUTPUT_DIR}}"
 LOG_DIR="${OUTPUT_DIR}/logs"
@@ -201,11 +200,10 @@ else
     # @@POST_RUN_BLOCK@@
 
     SCENARIO_FILE="${SCENARIO_FILE:-scenario.osc}"
-    # Parameter file is a single-config scenario.config by default. In
-    # multi-config-per-job mode robovast supplies a multi-document parameter
-    # file (one document per packed configuration) and sets
-    # OUTPUT_RESULT_PER_SCENARIO=true so scenario_execution writes a separate
-    # test.xml into each configuration's _output_dir subdirectory.
+    # Parameter file is a single-config scenario.config by default. On the
+    # cluster robovast supplies the job's parameter document and sets
+    # OUTPUT_RESULT_PER_SCENARIO=true so scenario_execution writes the run's
+    # test.xml into the document's _output_dir subdirectory.
     SCENARIO_PARAMETER_FILE="${SCENARIO_PARAMETER_FILE:-/config/scenario.config}"
     PER_SCENARIO_PARAM=""
     if [ "${OUTPUT_RESULT_PER_SCENARIO}" = "true" ]; then

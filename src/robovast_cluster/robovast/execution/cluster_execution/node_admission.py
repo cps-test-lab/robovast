@@ -4,7 +4,7 @@
 """Deciding WHEN a campaign's jobs are created, so that the cluster is never handed more
 than it can run.
 
-A typical campaign's plan is upwards of a thousand Jobs (``runs_per_job`` defaults to 1),
+A typical campaign's plan is upwards of a thousand Jobs (one per run),
 and creating them in one loop overwhelms both the cluster and the kubelets pulling their
 images. The property this module exists to hold: **a job is created only when there is room
 for it**, so nothing ever reaches the scheduler that the scheduler cannot place.

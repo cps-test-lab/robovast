@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 _VAST = """\
-version: 5
+version: 6
 metadata:
   name: tiers
 {plugins}configuration:

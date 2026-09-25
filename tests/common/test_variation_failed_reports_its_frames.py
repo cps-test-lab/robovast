@@ -33,7 +33,7 @@ def _project(tmp_path, plugin_source, class_name="Broken"):
     (tmp_path / "broken.py").write_text(textwrap.dedent(plugin_source))
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 5
+        version: 6
         metadata: {{name: broken-plugin-test}}
         configuration:
         - name: cell0

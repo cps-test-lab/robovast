@@ -1887,7 +1887,7 @@
         "type": "object"
       },
       "JobSummary": {
-        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, which may pack several runs. ``job_name`` is the id\n:meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional\nhuman-friendly label (batch/job-index on the cluster).",
+        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, running one run. ``job_name`` is the id\n:meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional\nhuman-friendly label (batch/job-index on the cluster).",
         "properties": {
           "detail": {
             "anyOf": [

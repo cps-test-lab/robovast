@@ -7,7 +7,7 @@ A configuration's own copy of a file is staged where the campaign's copy would h
 so a path a scenario writes relative to itself -- ``get_scenario_file_directory() +
 '/files/nav2_params.yaml'`` -- names the file belonging to the cell. These pin that, and
 the two things that make it unambiguous: one file per path, and one
-file-owning configuration per job.
+configuration per job.
 """
 
 from kubernetes import client
@@ -15,13 +15,13 @@ from kubernetes import client
 from robovast.common.execution import build_job_parameter_documents
 from robovast.execution.cluster_execution import kubernetes_backend
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
-from robovast.execution.packer import JobSpec, WorkItem
+from robovast.execution.jobs import Job
 
 DEPLOY_REL = "files/nav2_params.yaml"
 
 
-def _item(name, run=0, files=(DEPLOY_REL,)):
-    return WorkItem(
+def _job(name, run=0, files=(DEPLOY_REL,)):
+    return Job(
         config={"name": name,
                 "config": {"params_file": DEPLOY_REL},
                 "_config_files": [(rel, f"/gen/{name}/{rel}") for rel in files]},
@@ -41,8 +41,7 @@ def _plan(with_sut=False):
 
 def test_a_file_valued_parameter_is_carried_as_the_campaign_wrote_it():
     """No rewrite: the path already names the cell's file, because that is what is at it."""
-    job = JobSpec(items=[_item("cfg-a", 0)], index=0)
-    document = build_job_parameter_documents(job, "nav")[0]["nav"]
+    document = build_job_parameter_documents(_job("cfg-a", 0), "nav")[0]["nav"]
     assert document["params_file"] == DEPLOY_REL
     assert document["_output_dir"] == "cfg-a/0"
 
@@ -61,7 +60,7 @@ class _FakeClusterConfig:
         return types.SimpleNamespace(pull_secret_name="")
 
 
-def _init_command(monkeypatch, configs, runs=1, runs_per_job=1, also_reads=()):
+def _init_command(monkeypatch, configs, runs=1, also_reads=()):
     monkeypatch.setattr(kubernetes_backend, "resolve_resources",
                         lambda res, ctx: dict(res) if isinstance(res, dict) else {})
 
@@ -79,7 +78,7 @@ def _init_command(monkeypatch, configs, runs=1, runs_per_job=1, also_reads=()):
     monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
     runner = BatchJobRunner.for_batch(
         campaign_data={"configs": configs,
-                       "execution": {"runs_per_job": runs_per_job},
+                       "execution": {},
                        "scenario_file": "scenario.osc", "vast": "/tmp/x.vast"},
         campaign_id="camp-2026-07-17-120000", batch_tag="batch-0", runs=runs,
         cluster_config=_FakeClusterConfig(), namespace="ns", image="img:test",
@@ -96,12 +95,6 @@ _CLUSTER_CONFIGS = [{"name": "cfg-a",
 
 #: How ``config_file=<config>:<rel>`` reads once it is URL-quoted onto the query.
 _ASKED_FOR = "config_file=cfg-a%3Afiles%2Fnav2_params.yaml"
-
-
-def test_the_init_container_asks_for_a_path_once_for_a_packed_job(monkeypatch):
-    """Several runs of one cell in a packed job ask for its file once."""
-    command = _init_command(monkeypatch, _CLUSTER_CONFIGS, runs=3, runs_per_job=3)
-    assert command.count(_ASKED_FOR) == 1, command
 
 
 def test_the_init_container_asks_for_the_cells_file(monkeypatch):

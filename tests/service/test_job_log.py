@@ -222,10 +222,10 @@ def test_a_file_replaced_by_a_shorter_one_is_read_again_whole(transport):
 
 def test_a_job_the_manifest_does_not_name_is_found_through_the_hint(transport, monkeypatch):
     """A cluster names jobs by their Kubernetes Job, which the manifest does not key on."""
-    _run(transport, log=_stamp(1, "packed job"), xml=_XML, job_index=7)
+    _run(transport, log=_stamp(1, "hinted job"), xml=_XML, job_index=7)
     monkeypatch.setattr(transport, "_job_artifact_hint",
                         lambda cid, name: "_jobs/batch-0/job-7" if name == "camp-b0-j7" else "")
-    assert _messages(transport.get_job_log(CID, "camp-b0-j7")) == ["packed job"]
+    assert _messages(transport.get_job_log(CID, "camp-b0-j7")) == ["hinted job"]
 
 
 # -- the stream ---------------------------------------------------------------------------

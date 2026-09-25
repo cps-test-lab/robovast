@@ -4,28 +4,21 @@
 
 Two properties carry this feature and are pinned here rather than left to inspection. The
 first is that it is **column-generic**: nothing between the sampler and ``data.db`` names a
-metric, so adding a probe is a one-line change. The second is that it uses the **same
-partition** as ``resource_usage`` -- a job serves several runs, and a counter copied into all
-of them reports a multiple of the truth in every aggregate, plausibly and with no error.
+metric, so adding a probe is a one-line change. The second is that it marks the **same
+trial window** as ``resource_usage``, keeping bring-up and teardown rather than dropping them.
 """
 
 from robovast.execution.data import monitor_resources as mon
 from robovast_decode import clock_map, run_slices, system_usage
 
 
-def _slice_(tmp_path, job_dir, start=100.0, end=200.0, claim=None):
-    """*start*/*end* are the trial window; *claim* the run's share of the job timeline.
-
-    They differ on purpose: bring-up before the trial still belongs to this run.
-    """
-    claim_start, claim_end = claim if claim else (start, end)
+def _slice_(tmp_path, job_dir, start=100.0, end=200.0):
+    """*start*/*end* are the trial window."""
     run_dir = tmp_path / "cfg" / "0"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_slices.RunSlice(
         config_name="cfg", run_dir=run_dir, job_dir=str(job_dir),
-        clock=clock_map.ClockMap([], []), start_epoch=start, end_epoch=end,
-        claim_start=claim_start, claim_end=claim_end,
-        log_claim_start=claim_start, log_claim_end=claim_end)
+        clock=clock_map.ClockMap([], []), start_epoch=start, end_epoch=end)
 
 
 # -- the sampler ------------------------------------------------------------------------
@@ -194,21 +187,9 @@ def test_containers_reporting_different_sets_are_unioned_with_blanks(tmp_path):
     assert by_container["sut"]["b"] == "2" and by_container["sut"]["a"] == ""
 
 
-def test_a_tick_belongs_to_exactly_one_run(tmp_path):
-    """The partition ``resource_usage`` uses, for the same reason: a counter copied into every
-    run of a packed job multiplies the truth in every aggregate."""
-    job = tmp_path / "_jobs" / "job-0"
-    job.mkdir(parents=True)
-    (job / "system_usage_main.csv").write_text(
-        "timestamp,nr_throttled\n50.0,1\n150.0,2\n250.0,3\n")
-    columns, samples = system_usage.collect_job_rows(str(job))
-    mine = system_usage.rows_for_slice(columns, samples, _slice_(tmp_path, job, 100.0, 200.0))
-    assert [r["wall_ts"] for r in mine] == [150.0]
-
-
 def test_an_unparseable_stamp_is_dropped_not_guessed(tmp_path):
-    """Without a stamp the row cannot be attributed, and attributing it to the wrong run is
-    worse than losing it."""
+    """Without a stamp the row cannot be placed on the run's clock or window, and a guess
+    would be a believable wrong number."""
     job = tmp_path / "_jobs" / "job-0"
     job.mkdir(parents=True)
     (job / "system_usage_main.csv").write_text("timestamp,x\n,1\nnonsense,2\n150.0,3\n")
@@ -232,7 +213,7 @@ def test_out_of_window_ticks_are_kept_and_marked(tmp_path):
     job.mkdir(parents=True)
     (job / "system_usage_main.csv").write_text("timestamp,x\n105.0,1\n150.0,2\n")
     columns, samples = system_usage.collect_job_rows(str(job))
-    slice_ = _slice_(tmp_path, job, start=120.0, end=200.0, claim=(100.0, 200.0))
+    slice_ = _slice_(tmp_path, job, start=120.0, end=200.0)
     marks = {r["wall_ts"]: r["in_window"] for r in
              system_usage.rows_for_slice(columns, samples, slice_)}
     assert marks == {105.0: 0, 150.0: 1}

@@ -196,7 +196,7 @@ def _project_needing_a_build(tmp_path, python_packages=None):
     from robovast.common.config import validate_config
     (tmp_path / "p.vast").write_text("")
     campaign_config = validate_config({
-        "version": 5,
+        "version": 6,
         "execution": {"runs": 1, "containers": {"scenario": {
             "image": "base:1",
             "python_packages": python_packages or ["shapely>=2.0"]}}}})
@@ -1405,7 +1405,7 @@ def _stepped_campaign(tmp_path, revision):
         yaml.safe_dump({"image_revision": revision}))
     (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 5, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
+        {"version": 6, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
                                                     "simulation": {}}}}))
     return tmp_path
 
@@ -1442,7 +1442,7 @@ def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
         yaml.safe_dump({"image_revision": "reg/scenario@sha256:" + "a" * 64}))
     (tmp_path / "_config").mkdir(parents=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 5, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
+        {"version": 6, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
                                                     "simulation": {"image": "reg/sim:1"}}}}))
     with pytest.raises(scene_cache.SceneUnavailable) as err:
         scene_cache.world_identity(tmp_path, {"world": "w.yaml", "overrides": {}})
@@ -1460,7 +1460,7 @@ def _scene_identity_for(tmp_path, world, archive=True):
     # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
     vast = tmp_path / "_config" / "p.vast"
     vast.parent.mkdir(parents=True, exist_ok=True)
-    vast.write_text("version: 5\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+    vast.write_text("version: 6\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
                     "      backend: roqsim\n      config: roqsim_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
@@ -1709,8 +1709,8 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
 
     targets = cs._health_targets("camp-1")
 
-    # ``/out`` and not a run key: this pod's own emptyDir holds only this job's runs, and a packed
-    # Job has no single run dir to name even in principle.
+    # ``/out`` and not a run key: this pod's own emptyDir holds only this job's run, and the Job's
+    # name is not a run key.
     # Both paths, because the simulator's records and the job's artifacts are different subtrees:
     # the job dir first (where a LIVE run's clock record is), the run dir after it. The run dir is
     # the resolved one -- the fixture's runner returns no run key, so it falls back to the job root,
@@ -1775,9 +1775,9 @@ def test_a_one_shot_init_container_is_not_a_role(cs, monkeypatch):
     assert "robovast, sut" in str(raised.value)
 
 
-def test_an_unpacked_job_is_located_too(cs, monkeypatch):
-    """An unpacked Job is one run, but its NAME is not the run key -- so the run still has to be
-    resolved here rather than left to the readers. Both of them can search a couple of levels
+def test_a_jobs_run_is_located(cs, monkeypatch):
+    """A Job is one run, but its NAME is not the run key -- so the run has to be resolved here
+    rather than left to the readers. Both of them can search a couple of levels
     down for their own file, which is two other components modelling this layout, answering with
     a heuristic ("the newest below here") where the service has the fact. Worse, searching around
     a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looks past it and then
@@ -1790,26 +1790,12 @@ def test_an_unpacked_job_is_located_too(cs, monkeypatch):
     del runner
 
 
-def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
-    """A packed Job runs its items one after another, so exactly one is live -- and every section
-    of the reply must describe that one. Pointed at the Job's whole ``/out``, the three readers
-    each picked a run for themselves and the caller could not tell which."""
-    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
-    _core, _runner = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
-                                      execution=execution)
-    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
-        exec_in=lambda target, argv, limit_s, env=None: (0, "cfgb/2\n", "", False)))
-
-    assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfgb/2", "cfgb/2")
-
-
 def test_the_live_run_search_looks_for_run_dirs_and_not_for_the_newest_file(cs, monkeypatch):
     """A campaign root holds ``_jobs/`` beside its runs, and the job artifacts under it are the
     files most recently written -- so taking the newest file anywhere named the run ``_jobs/batch-0``
     and pointed every reader at a subtree with no run in it. The search is for the run LAYOUT."""
-    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     seen = {}
-    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
     monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (
             seen.setdefault("argv", " ".join(argv)), "", "", False) and (0, "", "", False)))
@@ -1855,11 +1841,10 @@ def test_a_stepped_simulator_still_resolves_through_the_plan(cs, monkeypatch):
     assert cs._job_pod_target("c", "j", "simulation") == ("scenario-abc-x9", "robovast")
 
 
-def test_a_packed_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatch):
+def test_a_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatch):
     """A run between starting and its first record is normal. The readers' own "nothing here yet"
     is a better answer than a failure from the step that was only trying to be more precise."""
-    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
-    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
     monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "", "", False)))
 

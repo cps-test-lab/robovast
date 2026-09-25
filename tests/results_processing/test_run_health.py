@@ -21,7 +21,7 @@ def _campaign(tmp_path, name="camp-a"):
     write_campaign_db(root, name)
     (root / "_config").mkdir()
     vast = root / "_config" / "c.vast"
-    vast.write_text("version: 5\nresults_processing:\n  health_checks: [c]\n")
+    vast.write_text("version: 6\nresults_processing:\n  health_checks: [c]\n")
     return root, str(vast)
 
 

@@ -59,7 +59,7 @@ def _project(tmp_path, path_length):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 5
+        version: 6
         metadata: {{name: path-infeasible-test}}
         configuration:
         - name: ok

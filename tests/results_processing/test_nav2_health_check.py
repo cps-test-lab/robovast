@@ -93,7 +93,7 @@ def test_every_level_it_emits_is_one_the_substrate_understands(tmp_path):
 # -- what it must NOT count -----------------------------------------------------------------
 
 def test_lines_outside_the_trial_window_are_not_counted(tmp_path):
-    """Bring-up and teardown -- and in a packed job, another run's lines entirely."""
+    """Bring-up and teardown are not the trial."""
     rows = _check(tmp_path, {("goal-1", 0): [_line()] * 4},
                   windows={("goal-1", 0): _ON_CLOCK + 100})
     assert rows[0].level == "ok"

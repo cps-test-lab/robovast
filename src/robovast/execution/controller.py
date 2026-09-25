@@ -349,10 +349,8 @@ class CampaignController:
     def _progress_deadline(self) -> int | None:
         """How long this campaign's progress may legitimately stand still, in seconds.
 
-        The **declared** job budget, used as declared: packed runs may publish their
-        results in one burst per job, so a per-run figure would accuse a healthy packed
-        campaign of stalling. Published on the status because only the controller can see
-        the ``.vast``; readers just compare against it.
+        The **declared** budget of one run, which is one job. Published on the status
+        because only the controller can see the ``.vast``; readers just compare against it.
 
         This is the same number the cluster puts on ``activeDeadlineSeconds``, which
         is the point -- were the two to diverge, a Job could be force-killed while the

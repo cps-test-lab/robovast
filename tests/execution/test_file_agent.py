@@ -108,7 +108,7 @@ def test_the_script_is_shipped_with_the_campaign_and_reserved_at_the_config_moun
 
 
 def test_a_campaign_stages_the_script_into_its_transient_dir(tmp_path):
-    (tmp_path / "s.vast").write_text("version: 5\n", encoding="utf-8")
+    (tmp_path / "s.vast").write_text("version: 6\n", encoding="utf-8")
     (tmp_path / "s.osc").write_text("scenario x:\n    do serial:\n        wait elapsed(1s)\n",
                                     encoding="utf-8")
     out = tmp_path / "campaign"

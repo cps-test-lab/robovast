@@ -47,7 +47,7 @@ WARN_AT = 1
 ERROR_AT = 10
 
 #: A miss is a line of the trial and nothing else. ``in_window`` excludes bring-up and
-#: teardown -- in a packed job, another run's lines entirely -- and ``sim_time`` being non-NULL
+#: teardown, and ``sim_time`` being non-NULL
 #: means the clock was up, so the stack was actually running against a simulated world. The
 #: same two columns ``resource_usage`` and ``system_usage`` slice on, rather than a rule
 #: invented here.

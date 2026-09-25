@@ -15,6 +15,7 @@ from . import v1_to_v2  # noqa: F401
 from . import v2_to_v3  # noqa: F401
 from . import v3_to_v4  # noqa: F401
 from . import v4_to_v5  # noqa: F401
+from . import v5_to_v6  # noqa: F401
 # <new-migration-import>
 
 #: The oldest version the ladder starts from. Raising this is a deliberate, announced act
@@ -23,7 +24,7 @@ from . import v4_to_v5  # noqa: F401
 BASELINE_CONFIG_VERSION = 1
 
 #: The version a config is brought to, and the only one authoring accepts.
-SUPPORTED_CONFIG_VERSION = 5
+SUPPORTED_CONFIG_VERSION = 6
 
 #: ``_MIGRATIONS[i]`` upgrades a config from ``BASELINE_CONFIG_VERSION + i`` to
 #: ``+ i + 1``. **Append only; never edit an existing entry** -- an edit changes what an
@@ -34,6 +35,7 @@ _MIGRATIONS = [
     v2_to_v3.migrate,
     v3_to_v4.migrate,
     v4_to_v5.migrate,
+    v5_to_v6.migrate,
     # <new-migration-entry>
 ]
 

@@ -829,8 +829,7 @@ Columns, each answering something the others cannot:
 
 * **Overview** — CPU-hours consumed, simulated time (summed run durations; the simulator runs
   at realtime pacing, so one simulated second is one wall second) and completed runs per
-  minute of wall clock. Counted in runs, which is what the data records — a job with
-  ``execution.runs_per_job > 1`` carries several.
+  minute of wall clock. Counted in runs, which is what the data records.
 * **CPU** and **Memory** — a ring of MEAN usage per container, showing which of them the pod's
   demand is actually made of, beside one bar per container: the box is the p25–p75 of per-tick
   demand, the whiskers p05–p95, the tick inside it the median, the amber tick the peak, and the

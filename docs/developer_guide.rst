@@ -1657,11 +1657,8 @@ Schema
   after it (see :ref:`the launch record <campaign-launch-record>`).
 * **job** — one row per **execution job**, holding that job's ``sysinfo.yaml``
   verbatim in ``sysinfo_json``. It is a table rather than a column on ``run``
-  because sysinfo is written once per *job*: a packed multi-config job runs several
-  ``(config, run)`` pairs which reach the same file through each run dir's ``job``
-  symlink. A per-run copy would repeat the blob and destroy the fact that those runs
-  shared a machine — which is what makes "did the slow runs land together?"
-  answerable. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
+  because sysinfo is written by the *job*, the unit that ran on a host, and its run
+  reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
   batch-mode campaign.
@@ -2029,7 +2026,7 @@ behind it.
 **RoboVAST admits its own jobs.** A campaign's Jobs are created by
 :class:`~robovast.execution.cluster_execution.node_admission.AdmissionController`,
 one at a time, each only once the cluster has room for it — so nothing is ever
-submitted to a queue and left to wait. ``runs_per_job`` defaults to 1, so a
+submitted to a queue and left to wait. Every run is its own Job, so a
 typical campaign's plan is upwards of a thousand Jobs, and none is created before
 the cluster can hold it.
 
@@ -2669,9 +2666,11 @@ not skipped quietly: it is a row in the run's ``_recording`` table naming the to
 and the reason, beside every recorded topic's message count and bytes.
 
 **Derived tables** (:mod:`robovast_decode.derived`) come from a job's records rather than a
-single recording, and a job may serve several runs, so :func:`~robovast_decode.derived.derive_job`
-builds them for a whole job at once and cuts them to its runs along one partition of the job's
-timeline (:mod:`robovast_decode.run_slices`):
+single recording. A job runs one run, so :func:`~robovast_decode.derived.derive_job` builds them
+for that run, on its clock and marked against its trial window
+(:mod:`robovast_decode.run_slices`). A campaign whose job-link manifest points several runs at
+one job is refused (:class:`~robovast_decode.build.SharedJobError`): its job's records cannot be
+divided between them:
 
 * ``run_log`` — every container's stdout joined with ``/rosout``, one row per event, on the run's
   clock, with ``sim_time`` and ``in_window`` (:mod:`robovast_decode.run_log`);

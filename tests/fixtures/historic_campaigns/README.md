@@ -1,6 +1,6 @@
 # Historic campaign fixtures
 
-Five complete campaign directories, frozen at the config versions robovast has actually
+Six complete campaign directories, frozen at the config versions robovast has actually
 shipped, kept so that "an old campaign is still readable and re-runnable" is a property
 CI checks rather than a claim someone made once.
 
@@ -21,7 +21,8 @@ helpfully upgraded.
 | `v2-campaign-2026-03-04-152130` | 2 | the format on `main` when the ladder was introduced; also carries no provenance records, like every campaign predating them |
 | `v3-campaign-2026-08-25-120000` | 3 | `execution.timeout` as the whole job's budget, `bt_log`/`log_topics` gone, `shm_size` defaulted. Declares the keys v3 changed, and packs runs, so a later step that reasons about per-run versus per-job budgets meets a fixture where the two actually differ |
 | `v4-campaign-2026-09-07-090000` | 4 | a configuration's fixed values under `parameters:`, grouped by channel, plus a `configuration_presets:` block a configuration composes with `use:`. Declares both, so a later step meets the preset block and not only the entries; also declares `results_processing.resources` and a bare `run_log` step, which v5 removes |
-| `v5-campaign-2026-09-23-090000` | 5 | tables built by the decoder: `rosbags_*` entries configure it, and no `results_processing.resources` |
+| `v5-campaign-2026-09-23-090000` | 5 | tables built by the decoder: `rosbags_*` entries configure it, and no `results_processing.resources`. Packs runs, so v6 meets a job budget it has to split |
+| `v6-campaign-2026-09-25-090000` | 6 | one run per job: no `runs_per_job`, and `timeout` is one run's budget |
 
 None of them carries `plugins.yaml` or `providers.yaml`, on purpose: a campaign from before those
 records existed must report `unknown` and still be re-runnable. Recording them here would

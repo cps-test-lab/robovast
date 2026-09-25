@@ -83,7 +83,7 @@ NOTES = {
                    "separates a slow machine from a fast one of the same kind"),
     "probed": ("1 when a person read into this run while it ran: a fact about its "
                "provenance, not its outcome. Exclude these rows from anything a published "
-               "number rests on. With runs_per_job > 1 the whole packed job is marked."),
+               "number rests on."),
     "end_time": "start_time + duration_s; NULL when either is unknown",
 }
 
@@ -146,8 +146,8 @@ def read_store(campaign_dir: str) -> dict:
 def probed_runs(campaign_dir: str) -> set:
     """``{"<config>/<run>"}`` a person read into while they ran.
 
-    A ledger entry names its runs itself or only its job directory (a packed job's runs are
-    then found through the job-link manifest).
+    A ledger entry names its runs itself or only its job directory (its run is then found
+    through the job-link manifest).
     """
     path = os.path.join(campaign_dir, INTERVENTIONS)
     if not os.path.isfile(path):

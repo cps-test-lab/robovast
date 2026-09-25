@@ -571,13 +571,11 @@ class JobState(BaseModel):
     status: str = "running"
     #: Which run every section below describes, as ``<config>/<run>``.
     #:
-    #: A job may **pack** several runs, run one after another -- so a packed job has exactly
-    #: one live run at a time, and this names it. Present
-    #: because without it a caller could not tell which of a job's runs it had been told about, and
-    #: the sections were free to disagree with each other about that.
+    #: Present because a cluster Job's name is not a run key: without it a caller could not tell
+    #: which run it had been told about, and the sections were free to disagree about that.
     #:
-    #: ``None`` for a job whose run cannot be named, which is an unpacked cluster Job: its single
-    #: run is what the readers find under ``/out``, and the Job's name is not a run key.
+    #: ``None`` for a job whose run cannot be named yet -- between starting and its first
+    #: record -- when the readers are pointed at ``/out``.
     run: Optional[str] = None
     #: Whatever the campaign's simulator reports about itself: findings, and the last poses
     #: and clock. Shape belongs to the simulator (see
@@ -654,7 +652,7 @@ class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-    cluster backend, which may pack several runs. ``job_name`` is the id
+    cluster backend, running one run. ``job_name`` is the id
     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
     human-friendly label (batch/job-index on the cluster).
     """

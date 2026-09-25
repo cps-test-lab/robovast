@@ -7,7 +7,7 @@ import json
 import pyarrow.parquet as pq
 import pytest
 
-from robovast_decode.build import available_tables, build
+from robovast_decode.build import SharedJobError, available_tables, build
 from robovast_decode.cli import main
 
 from .conftest import make_campaign
@@ -83,14 +83,15 @@ def test_rows_carry_their_run(tmp_path):
             (campaign.name, config, run_id)}
 
 
-def test_a_job_that_ran_several_runs_keeps_its_rows_unattributed(tmp_path):
+def test_a_campaign_whose_runs_share_a_job_is_refused_by_name(tmp_path):
+    """A job's records are its one run's; shared, they cannot be divided between runs."""
     campaign = make_campaign(tmp_path / "c-2026-01-01-00000000", runs=(("a", 0), ("a", 1)),
                              shared_job=True)
-    build(str(campaign), tables=["rosout"])
-    path = campaign / ".cache" / "tables" / "rosout" / "_jobs" / "job-0.parquet"
-    rows = pq.read_table(path).to_pylist()
-    assert rows and {(r["config_name"], r["run_id"]) for r in rows} == {(None, None)}
-    assert "_jobs/job-0" in _manifest(campaign)["tables"]["rosout"]["runs"]
+    for call in (lambda: build(str(campaign), tables=["rosout"]),
+                 lambda: available_tables(str(campaign))):
+        with pytest.raises(SharedJobError, match=r"runs a/0 and a/1 share the job _jobs/job-0"):
+            call()
+    assert not (campaign / ".cache").exists()
 
 
 def test_a_run_without_its_verdict_is_built_but_not_complete(tmp_path):

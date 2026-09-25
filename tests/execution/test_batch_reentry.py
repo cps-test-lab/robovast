@@ -15,12 +15,11 @@ is empty, every job is pending, and the batch behaves exactly as it always did.
 import types
 
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
-from robovast.execution.packer import JobSpec, WorkItem
+from robovast.execution.jobs import Job
 
 
-def _job(index, *items):
-    return JobSpec(items=[WorkItem(config={"name": c}, run_number=r) for c, r in items],
-                   index=index)
+def _job(index, config, run):
+    return Job(config={"name": config}, run_number=run, index=index)
 
 
 def _verdict(root, config, run):
@@ -31,12 +30,12 @@ def _verdict(root, config, run):
 
 def test_a_fresh_campaign_has_nothing_done(tmp_path):
     """The no-op that keeps this from being a mode."""
-    jobs = [_job(0, ("cfg-a", 0)), _job(1, ("cfg-a", 1))]
+    jobs = [_job(0, "cfg-a", 0), _job(1, "cfg-a", 1)]
     assert BatchJobRunner._jobs_already_done(jobs, str(tmp_path)) == set()
 
 
 def test_a_run_with_a_verdict_is_not_run_again(tmp_path):
-    jobs = [_job(0, ("cfg-a", 0)), _job(1, ("cfg-a", 1))]
+    jobs = [_job(0, "cfg-a", 0), _job(1, "cfg-a", 1)]
     _verdict(tmp_path, "cfg-a", 0)
 
     assert BatchJobRunner._jobs_already_done(jobs, str(tmp_path)) == {0}
@@ -48,32 +47,16 @@ def test_a_run_directory_without_a_verdict_does_not_count(tmp_path):
     ``test.xml`` is the evidence the store and the status reconstruction are both built
     from; counting anything else here would let two readers disagree about one run.
     """
-    jobs = [_job(0, ("cfg-a", 0))]
+    jobs = [_job(0, "cfg-a", 0)]
     (tmp_path / "cfg-a" / "0").mkdir(parents=True)
     (tmp_path / "cfg-a" / "0" / "console.log").write_text("started, then nothing")
 
     assert BatchJobRunner._jobs_already_done(jobs, str(tmp_path)) == set()
 
 
-def test_a_packed_job_is_done_only_when_all_of_its_runs_are(tmp_path):
-    """Re-created whole, because its items share one simulator process.
-
-    There is no way to re-enter a packed job halfway, so a partly-landed one is honestly
-    pending rather than optimistically finished.
-    """
-    jobs = [_job(0, ("cfg-a", 0), ("cfg-a", 1), ("cfg-a", 2))]
-    _verdict(tmp_path, "cfg-a", 0)
-    _verdict(tmp_path, "cfg-a", 2)
-
-    assert BatchJobRunner._jobs_already_done(jobs, str(tmp_path)) == set()
-
-    _verdict(tmp_path, "cfg-a", 1)
-    assert BatchJobRunner._jobs_already_done(jobs, str(tmp_path)) == {0}
-
-
 def test_jobs_are_matched_by_their_own_config_and_run(tmp_path):
     """Not by count: a verdict under one config says nothing about another's."""
-    jobs = [_job(0, ("cfg-a", 0)), _job(1, ("cfg-b", 0))]
+    jobs = [_job(0, "cfg-a", 0), _job(1, "cfg-b", 0)]
     _verdict(tmp_path, "cfg-a", 0)
 
     assert BatchJobRunner._jobs_already_done(jobs, str(tmp_path)) == {0}
@@ -113,7 +96,7 @@ def _runner(monkeypatch, jobs, created):
 
 def test_only_the_unfinished_jobs_are_created(monkeypatch, tmp_path):
     """The point of the whole change: finished work is not run a second time."""
-    jobs = [_job(0, ("cfg-a", 0)), _job(1, ("cfg-a", 1)), _job(2, ("cfg-a", 2))]
+    jobs = [_job(0, "cfg-a", 0), _job(1, "cfg-a", 1), _job(2, "cfg-a", 2)]
     _verdict(tmp_path, "cfg-a", 0)
     _verdict(tmp_path, "cfg-a", 2)
     created = []
@@ -125,7 +108,7 @@ def test_only_the_unfinished_jobs_are_created(monkeypatch, tmp_path):
 
 def test_a_fresh_batch_creates_every_job(monkeypatch, tmp_path):
     """Unchanged behaviour where nothing has run: the property has no mode in it."""
-    jobs = [_job(0, ("cfg-a", 0)), _job(1, ("cfg-a", 1))]
+    jobs = [_job(0, "cfg-a", 0), _job(1, "cfg-a", 1)]
     created = []
 
     _runner(monkeypatch, jobs, created).run_batch_in_pod(str(tmp_path), "tok")
@@ -135,7 +118,7 @@ def test_a_fresh_batch_creates_every_job(monkeypatch, tmp_path):
 
 def test_a_fully_finished_batch_creates_nothing(monkeypatch, tmp_path):
     """A restart that landed after the last job finished has nothing left to do."""
-    jobs = [_job(0, ("cfg-a", 0))]
+    jobs = [_job(0, "cfg-a", 0)]
     _verdict(tmp_path, "cfg-a", 0)
     created = []
 
@@ -190,7 +173,7 @@ def test_preparing_a_campaign_from_its_own_config_copies_nothing_onto_itself(tmp
     (config_dir / "scenario.osc").write_text(
         "import osc.helpers\n\nscenario test_scenario:\n    timeout(10s)\n"
         "    do serial:\n        wait elapsed(1s)\n")
-    (config_dir / "camp.vast").write_text("version: 5\n")
+    (config_dir / "camp.vast").write_text("version: 6\n")
     (config_dir / "files").mkdir()
     (config_dir / "files" / "params.yaml").write_text("a: 1\n")
 

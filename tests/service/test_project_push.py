@@ -410,7 +410,7 @@ def test_a_workspace_round_trips_through_a_directory(tmp_path):
 
     source = tmp_path / "project"
     (source / "files").mkdir(parents=True)
-    (source / "campaign.vast").write_text("version: 5\n", encoding="utf-8")
+    (source / "campaign.vast").write_text("version: 6\n", encoding="utf-8")
     (source / "scenario.osc").write_text("# scenario\n", encoding="utf-8")
     (source / "files" / "params.yaml").write_text("a: 1\n", encoding="utf-8")
 
@@ -422,7 +422,7 @@ def test_a_workspace_round_trips_through_a_directory(tmp_path):
     counts = pull_workspace_to_directory(client, workspace.workspace_id, target)
 
     assert counts["fetched"] == 3
-    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 5\n"
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 6\n"
     assert (target / "scenario.osc").read_text(encoding="utf-8") == "# scenario\n"
     # Nested paths survive, rather than being flattened into the target root.
     assert (target / "files" / "params.yaml").read_text(encoding="utf-8") == "a: 1\n"
@@ -436,7 +436,7 @@ def test_pulling_refuses_to_overwrite_local_files(tmp_path):
 
     source = tmp_path / "project"
     source.mkdir()
-    (source / "campaign.vast").write_text("version: 5\n", encoding="utf-8")
+    (source / "campaign.vast").write_text("version: 6\n", encoding="utf-8")
 
     client = _transport(tmp_path / "store")
     workspace = client.create_workspace(CreateWorkspaceRequest(name="no-clobber"))
@@ -451,7 +451,7 @@ def test_pulling_refuses_to_overwrite_local_files(tmp_path):
     assert (target / "campaign.vast").read_text(encoding="utf-8") == "my local edits\n"
 
     pull_workspace_to_directory(client, workspace.workspace_id, target, overwrite=True)
-    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 5\n"
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 6\n"
 
 
 def test_the_executable_bit_survives_the_round_trip(tmp_path):
@@ -463,7 +463,7 @@ def test_the_executable_bit_survives_the_round_trip(tmp_path):
 
     source = tmp_path / "project"
     source.mkdir()
-    (source / "campaign.vast").write_text("version: 5\n", encoding="utf-8")
+    (source / "campaign.vast").write_text("version: 6\n", encoding="utf-8")
     script = source / "run.sh"
     script.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
     script.chmod(0o755)

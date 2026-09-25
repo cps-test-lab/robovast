@@ -12,7 +12,7 @@ A ``.vast`` configuration file has the following top-level structure:
 
 .. code-block:: yaml
 
-   version: 5
+   version: 6
    extends: common/base.vast     # optional; see Extends
    metadata:
      title: "Project Title"
@@ -40,7 +40,7 @@ declare only the current one:
 
 .. code-block:: yaml
 
-   version: 5
+   version: 6
 
 An **older** version is migrated forward rather than refused:
 
@@ -109,7 +109,7 @@ meant to change -- a container's resources, a postprocessing step, a dashboard.
 
 .. code-block:: yaml
 
-   version: 5
+   version: 6
    extends: common/nav2-base.vast
    execution:
      containers:
@@ -1022,48 +1022,6 @@ axes are sim and it cannot carry that relation at any price. ROS images only; ig
    rather than failing, so the run still succeeds — it simply produces no ``behaviors.jsonl``
    and no ``behaviors`` table.
 
-runs_per_job
-^^^^^^^^^^^^
-
-**Type:** Integer
-
-**Required:** No (default: ``1``)
-
-How many *runs* are packed into a single job. A **run** is one configuration
-executed at one run-number (one scenario execution); a **job** is one unit of
-dispatch — one Kubernetes Job.
-
-- ``1`` (default): each job runs exactly one run. Right for simulators where
-  setup dominates and one job should be one scenario (e.g. Gazebo).
-- ``> 1``: up to N runs are packed into one job and run sequentially inside a
-  **single simulator setup**, with the simulator reset between them. This pays the
-  simulator setup cost once per job instead of once per run — a big win for
-  simulators with cheap per-run cost (e.g. MuJoCo). Runs are packed config-major,
-  so a configuration's repeated runs stay together within a job.
-
-Packing is invisible to results: every run's output is always written to
-``<config>/<run>/`` regardless of how runs were grouped into jobs (see
-:ref:`results-output-structure`).
-
-An **upper bound**, not a target. A job holds one compiled world and one configuration's
-files, so runs only share a job when they agree about both, and
-``ceil(num_configs * runs / runs_per_job)`` is the count you get when they all do:
-
-- configurations resolving to **different simulator settings** are never packed together —
-  the simulator compiles its model once per process, so the second cell would run against
-  the first one's geometry;
-- configurations that **stage files of their own** (a ``sut:`` block, or a variation that
-  generates one) are never packed with a *different* configuration — each cell's copy is
-  mounted at ``/config/<path>``, and only one file can be there.
-
-Neither restricts a configuration's own repeated runs, which is what ``runs_per_job`` is
-for, and a campaign that varies only scenario parameters is affected by neither.
-
-.. code-block:: yaml
-
-   execution:
-     runs_per_job: 200   # pack up to 200 runs per job (one sim setup)
-
 shm_size
 ^^^^^^^^
 
@@ -1135,23 +1093,16 @@ timeout
 
 **Required:** No
 
-Maximum wall-clock time (in seconds) allowed for a single **job** — one unit of work,
-which is one run unless ``runs_per_job`` packs several into it. The number is used exactly
-as declared; it is not scaled.
+Maximum wall-clock time (in seconds) allowed for a single **run**. Every run is dispatched
+as its own job, one Kubernetes Job. The number is used exactly as declared.
 
-A job is the granularity the cluster can actually enforce at, which is why the budget is
-stated in it: Kubernetes caps a Job, and cannot stop an individual run inside a packed
-one. The declaration sets ``activeDeadlineSeconds`` on the Job spec, so Kubernetes
+The declaration sets ``activeDeadlineSeconds`` on the Job spec, so Kubernetes
 force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
 
-If omitted (or ``null``), runs fall back to a **backstop of 1 hour per run**
-(``activeDeadlineSeconds = 3600 * runs_per_job``) so a hung Job is always eventually
-killed rather than hanging the campaign indefinitely. The backstop is per-run and therefore
-scales with packing, where a *declared* budget does not — deliberately: an hour is a number
-chosen in ignorance of the campaign, so a job of 100 runs must not be killed after the
-first few, while a declaration is a statement about the job and is taken at face value.
-
-``stalled`` still needs a per-run figure, and derives one as ``timeout / runs_per_job``.
+If omitted (or ``null``), a run falls back to a **backstop of 1 hour**
+(``activeDeadlineSeconds = 3600``) so a hung Job is always eventually killed rather than
+hanging the campaign indefinitely. The backstop only enforces: ``stalled`` is judged against
+a declared ``timeout`` alone, and with none it is ``null``.
 
 A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadlineSeconds`` in the service log for later analysis.
 
@@ -2225,7 +2176,7 @@ Here's a complete example showing all major configuration options:
 
 .. code-block:: yaml
 
-   version: 5
+   version: 6
    configuration:
    - name: parameter-sweep
      scenario_file: scenario.osc

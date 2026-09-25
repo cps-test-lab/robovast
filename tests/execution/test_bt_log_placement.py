@@ -4,15 +4,14 @@
 
 Placement is not obvious. ``scenario_execution`` is given ``-o /out``, which is the
 *campaign root*, not a run directory — where each run's results actually go is decided by
-the ``_output_dir`` that :func:`build_job_parameter_documents` puts in every job document.
-So a packed job writing several runs from one process is the case that can silently put the
-file in the wrong place, and the assertion that catches it is not "the file exists" but
-"the file sits beside the ``test.xml`` of the same run".
+the ``_output_dir`` that :func:`build_job_parameter_documents` puts in the job's document.
+So the assertion that catches a misplaced file is not "the file exists" but "the file sits
+beside the ``test.xml`` of the run", and nothing strays to the campaign root.
 
-The tests drive the real derivation (``JobSpec``/``WorkItem`` →
+The tests drive the real derivation (``Job`` →
 ``build_job_parameter_documents`` → ``dump_multi_document_yaml``) rather than a hand-written
 parameter file, so they break if that derivation changes rather than testing a copy of it.
-``build_job_parameter_documents`` decides the run directory for every run.
+``build_job_parameter_documents`` decides the run directory.
 """
 
 import json
@@ -23,7 +22,7 @@ from xml.etree import ElementTree
 import pytest
 
 from robovast.common.execution import build_job_parameter_documents, dump_multi_document_yaml
-from robovast.execution.packer import JobSpec, WorkItem
+from robovast.execution.jobs import Job
 from robovast_decode.authored import JSONL_READERS as _JSONL_READERS
 
 pytest.importorskip("scenario_execution",
@@ -55,12 +54,12 @@ scenario demo:
 """
 
 
-def _item(name, run):
-    return WorkItem(config={"name": name}, run_number=run)
+def _job(name, run):
+    return Job(config={"name": name}, run_number=run, index=0)
 
 
 def _run_scenario_execution(scenario_path, out_root, param_file):
-    """Run the packed-job command line the entrypoint builds, with --bt-log."""
+    """Run the command line the entrypoint builds, with --bt-log."""
     result = subprocess.run(
         [sys.executable, "-m", "scenario_execution.scenario_execution_base",
          "-o", str(out_root), str(scenario_path),
@@ -88,62 +87,15 @@ def _plan():
     return plan_containers({"containers": {"scenario": {"image": "img:test"}}})
 
 
-def test_output_dir_is_per_run(tmp_path):
-    """The documents place each item at <config>/<run> — relative to -o, not absolute."""
-    job = JobSpec(items=[_item("cfg-a", 0), _item("cfg-a", 1), _item("cfg-b", 0)], index=0)
-    docs = build_job_parameter_documents(job, "demo")
-    assert [d["demo"]["_output_dir"] for d in docs] == ["cfg-a/0", "cfg-a/1", "cfg-b/0"]
+def test_output_dir_is_the_runs(tmp_path):
+    """The document places the run at <config>/<run> — relative to -o, not absolute."""
+    docs = build_job_parameter_documents(_job("cfg-a", 1), "demo")
+    assert [d["demo"]["_output_dir"] for d in docs] == ["cfg-a/1"]
 
 
 @needs_bt_log
-def test_behaviors_jsonl_lands_beside_test_xml_in_a_packed_job(tmp_path):
-    """Three runs from one process, each file in its own run directory.
-
-    ``-o`` is the campaign root here, exactly as in a packed job, so this fails if the
-    log is ever written relative to the runner's output dir instead of the scenario's.
-    """
-    job = JobSpec(items=[_item("cfg-a", 0), _item("cfg-a", 1), _item("cfg-b", 0)], index=0)
-    scenario, params = _write_inputs(tmp_path, job)
-    out_root = tmp_path / "out"
-    out_root.mkdir()
-
-    _run_scenario_execution(scenario, out_root, params)
-
-    seen = set()
-    for config_name, run in (("cfg-a", 0), ("cfg-a", 1), ("cfg-b", 0)):
-        run_dir = out_root / config_name / str(run)
-        log = run_dir / "behaviors.jsonl"
-        assert log.is_file(), f"no behaviours log in {run_dir}"
-        # Beside the run sentinel, not merely somewhere under the campaign root: this is
-        # what makes the ingest find it as *this* run's data.
-        assert (run_dir / "test.xml").is_file()
-
-        meta = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
-        # Not a literal spelling: scenario-execution renamed this format from
-        # "behaviour_tree_log" to "behavior_tree_log", so which one arrives depends on
-        # the image the run used, and pinning either makes this test fail on half the
-        # images for no reason. What actually matters is that the ingest dispatches on
-        # whatever was written -- an unrecognised format yields no rows and a silently
-        # empty `behaviors` table, which is the failure worth catching.
-        assert meta["format"] in _JSONL_READERS, (
-            f"{meta['format']!r} is not a format postprocessing can read; "
-            f"the behaviors table would come out empty")
-        # The two files in this directory must describe the *same* run. Multi-document
-        # runs suffix the scenario name per document (demo-0, demo-1, …), so this also
-        # catches a log written into the wrong sibling directory — which merely
-        # asserting that a file exists would not.
-        testcase = ElementTree.parse(run_dir / "test.xml").find(".//testcase")
-        assert meta["scenario"] == testcase.get("name")
-        seen.add(meta["scenario"])
-
-    assert len(seen) == 3, f"runs shared a log instead of one each: {seen}"
-    # Nothing stray at the campaign root, which is where a mis-resolved path would land.
-    assert not (out_root / "behaviors.jsonl").exists()
-
-
-@needs_bt_log
-def test_single_run_job_writes_into_its_run_directory(tmp_path):
-    job = JobSpec(items=[_item("cfg-a", 0)], index=0)
+def test_the_job_writes_into_its_run_directory(tmp_path):
+    job = _job("cfg-a", 0)
     scenario, params = _write_inputs(tmp_path, job)
     out_root = tmp_path / "out"
     out_root.mkdir()
@@ -151,6 +103,24 @@ def test_single_run_job_writes_into_its_run_directory(tmp_path):
     _run_scenario_execution(scenario, out_root, params)
 
     run_dir = out_root / "cfg-a" / "0"
-    assert (run_dir / "behaviors.jsonl").is_file()
+    log = run_dir / "behaviors.jsonl"
+    assert log.is_file(), f"no behaviours log in {run_dir}"
+    # Beside the run sentinel, not merely somewhere under the campaign root: this is
+    # what makes the ingest find it as *this* run's data.
     assert (run_dir / "test.xml").is_file()
+
+    meta = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    # Not a literal spelling: scenario-execution renamed this format from
+    # "behaviour_tree_log" to "behavior_tree_log", so which one arrives depends on
+    # the image the run used, and pinning either makes this test fail on half the
+    # images for no reason. What actually matters is that the ingest dispatches on
+    # whatever was written -- an unrecognised format yields no rows and a silently
+    # empty `behaviors` table, which is the failure worth catching.
+    assert meta["format"] in _JSONL_READERS, (
+        f"{meta['format']!r} is not a format postprocessing can read; "
+        f"the behaviors table would come out empty")
+    # The two files in this directory must describe the same run.
+    testcase = ElementTree.parse(run_dir / "test.xml").find(".//testcase")
+    assert meta["scenario"] == testcase.get("name")
+    # Nothing stray at the campaign root, which is where a mis-resolved path would land.
     assert not (out_root / "behaviors.jsonl").exists()

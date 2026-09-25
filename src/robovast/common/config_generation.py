@@ -2315,7 +2315,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # configuration -- a 25-trial sweep looks like 5 -- right where an agent decides whether
         # it can afford to start.
         "runs": execution_section.get('runs', 1),
-        "runs_per_job": execution_section.get('runs_per_job', 1),
         # Defaulted here as well as on the model, because the two are reached by different
         # routes: `load_config` validates against the model and then hands composition the
         # RAW yaml, so a model default cannot arrive here on its own. Same constant, so the

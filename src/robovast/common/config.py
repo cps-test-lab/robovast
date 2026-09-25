@@ -971,10 +971,8 @@ class ExecutionConfig(BaseModel):
     #: bind-mounted into the run exactly like a hand-written input. See
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
-    # Maximum wall-clock time in seconds for one JOB -- one unit of work, which is one run
-    # unless ``runs_per_job`` packs several. A job is the granularity the cluster can
-    # actually enforce at (a Job's activeDeadlineSeconds), so the number is
-    # used as declared rather than reconstructed from a per-run figure.
+    # Maximum wall-clock time in seconds for one run. A run is one job, the granularity the
+    # cluster can enforce at (a Job's activeDeadlineSeconds).
     timeout: Optional[int] = None
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
@@ -986,20 +984,6 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
-    # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
-    # at one run-number) are packed into a single job:
-    #   1 (default): each job runs exactly one run. Right for simulators where
-    #     setup dominates the execution time, one job == one scenario (e.g. Gazebo).
-    #   >1: up to N runs are packed into one job and run sequentially inside a
-    #     single simulator setup (the simulator is reset between them), amortising
-    #     setup for simulators with cheap per-run cost. Runs are
-    #     packed config-major, so a config's repeated runs stay together in a job.
-    # An upper bound, not a promise: a job holds one compiled world and one
-    # configuration's files, so runs of configurations that disagree about either are
-    # never packed together and the value is reached only within a group that agrees.
-    # Results stay keyed by configuration name / run number regardless, so packing
-    # is invisible to downstream processing.
-    runs_per_job: int = 1
     # Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into every container of
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.
@@ -1149,13 +1133,6 @@ class ExecutionConfig(BaseModel):
 
         return v
 
-    @field_validator('runs_per_job')
-    @classmethod
-    def validate_runs_per_job(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError(f"execution.runs_per_job must be >= 1, got {v}")
-        return v
-
     @field_validator('mode')
     @classmethod
     def validate_mode(cls, v: str) -> str:
@@ -1228,26 +1205,10 @@ DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 
 
 def declared_job_seconds(execution_params: dict) -> Optional[int]:
-    """``execution.timeout`` as declared: the budget for one **job**, or ``None``.
+    """``execution.timeout`` as declared: the budget for one run, or ``None``.
 
-    A job is what the cluster can actually bound -- it sets ``activeDeadlineSeconds`` on the
-    Job -- so this is the number it uses unchanged. It is deliberately not scaled by
-    ``runs_per_job``: a packed job's budget is the budget its author stated, not a per-run
-    figure multiplied back up.
-    """
-    timeout = (execution_params or {}).get("timeout")
-    return int(timeout) if timeout else None
-
-
-def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
-    """The per-run share of the declared job budget, or ``None``.
-
-    Reporting needs a per-run figure even though nothing can enforce one: ``stalled`` is a
-    verdict about a run. With runs packed, the honest per-run share is the job's budget
-    divided by how many runs are in it.
-
-    Distinct from :func:`job_deadline_seconds`, and the distinction matters because the two
-    answer different questions:
+    The **reporting** figure, distinct from :func:`job_deadline_seconds`, and the distinction
+    matters because the two answer different questions:
 
     * *Enforcement* ("never let a campaign hang forever") may fall back to a
       backstop, because killing a wedged run an hour late still beats never.
@@ -1257,11 +1218,8 @@ def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
       than saying nothing. With no declared budget there is no honest threshold, so
       this returns ``None`` and the reader must decline to give a verdict.
     """
-    declared = declared_job_seconds(execution_params)
-    if declared is None:
-        return None
-    runs_per_job = (execution_params or {}).get("runs_per_job") or 1
-    return max(1, declared // int(runs_per_job))
+    timeout = (execution_params or {}).get("timeout")
+    return int(timeout) if timeout else None
 
 
 def job_deadline_seconds(execution_params: dict) -> int:
@@ -1269,23 +1227,14 @@ def job_deadline_seconds(execution_params: dict) -> int:
 
     The **enforcement** figure: the cluster backend sets it as a Job
     ``activeDeadlineSeconds`` so a scenario that never shuts itself down cannot hang
-    the campaign forever. Falls back to a backstop, which is why it must not be used to
-    *report* health -- see :func:`declared_per_run_seconds`.
-
-    The backstop is per-run and scaled, where a declaration is not. That asymmetry is
-    deliberate: :data:`DEFAULT_RUN_DEADLINE_SECONDS` is an hour chosen in ignorance of the
-    campaign, so it has to grow with the number of runs packed behind it or a job of 100
-    runs would be killed after the first few. A declared number is a statement about the
-    job, and is taken at face value.
+    the campaign forever. Falls back to :data:`DEFAULT_RUN_DEADLINE_SECONDS`, which is why
+    it must not be used to *report* health -- see :func:`declared_job_seconds`.
 
     The backstop is the backend's: enforcing a value the author set is a different decision
     from supplying one they did not, and only the backend knows what an unbounded run costs.
     """
     declared = declared_job_seconds(execution_params)
-    if declared is not None:
-        return declared
-    runs_per_job = (execution_params or {}).get("runs_per_job") or 1
-    return DEFAULT_RUN_DEADLINE_SECONDS * int(runs_per_job)
+    return declared if declared is not None else DEFAULT_RUN_DEADLINE_SECONDS
 
 
 class ResultsConfig(BaseModel):
@@ -2149,10 +2098,9 @@ class RepetitionsConfig(BaseModel):
             #   - a simulator override document is written per CONFIG, so every repetition of a
             #     cell would read one seed and stop varying -- strictly worse than the present
             #     behaviour, where an unseeded run draws its own;
-            #   - the simulator's own episode counter cannot stand in for it, because jobs are
-            #     packed by simulator settings rather than by configuration (see
-            #     execution/packer.py: FixedK groups on WorkItem.sim_key), so one process's
-            #     episodes run across several cells and "episode i" is not "repetition i".
+            #   - the simulator's own episode counter cannot stand in for it: every run is its
+            #     own job and its own simulator process, so each one counts from the first
+            #     episode and "episode i" is not "repetition i".
             #
             # What it needs is a per-run seed on the execution backend. Until that exists, saying
             # 'paired' would claim a comparison the data cannot support.

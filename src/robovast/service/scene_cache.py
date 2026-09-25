@@ -323,8 +323,8 @@ def campaign_world_rel(world: str, config_name: str = "") -> str | None:
 
     ``/config/<config-name>/<rel>``   -> ``<config-name>/_config/<rel>``
         A file a *variation generated* for this configuration -- a floorplan baked per cell,
-        say. Mounted under its own prefix precisely so several configurations' files cannot
-        collide in one packed job, which is why the mapping back is not the campaign one.
+        say. Mounted under its own prefix, which is why the mapping back is not the campaign
+        one.
 
     Getting this wrong is not a broken path but a missing 3D scene, so the per-config form
     is recognized by the configuration's own name rather than guessed from the shape of the

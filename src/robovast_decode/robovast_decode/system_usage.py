@@ -95,18 +95,14 @@ def collect_job_rows(job_dir: str) -> Tuple[List[str], List[Sample]]:
 
 def rows_for_slice(columns: Sequence[str], samples: Sequence[Sample],
                    slice_: run_slices.RunSlice) -> List[dict]:
-    """The rows one run claims, on its own clock.
+    """The rows of one run's job, on the run's clock.
 
-    Same partition and the same clock as ``resource_usage``: a job serves several runs, and a
-    counter copied into all of them would report a multiple of the truth in every aggregate.
-    ``timestamp`` is NULL where the clock map cannot answer -- before the simulator published
+    The same clock as ``resource_usage``. ``timestamp`` is NULL where the clock map cannot answer -- before the simulator published
     ``/clock`` and after it stopped -- rather than extrapolated to zero. The metric values are
     the sampler's text, typed by the table they are written to.
     """
     rows: List[dict] = []
     for container, wall, values in samples:
-        if not slice_.claims(wall):
-            continue
         sim: Optional[float] = slice_.clock.to_sim(wall) if slice_.clock else None
         row = {
             "timestamp": sim,

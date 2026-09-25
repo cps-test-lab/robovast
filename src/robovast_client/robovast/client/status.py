@@ -286,9 +286,8 @@ class Status(BaseModel):
     # last actual advance is what separates them. See
     # ``ControllerState._stamp_progress`` for what counts as an advance.
     progress_since: float = Field(default_factory=time.time)
-    # How long ``progress_since`` may legitimately stand still: the declared job budget
-    # (``execution.timeout`` — see ``common.config.declared_job_seconds``), used as
-    # declared, because packed runs can publish their results in one burst per job.
+    # How long ``progress_since`` may legitimately stand still: the declared budget of one
+    # run (``execution.timeout`` — see ``common.config.declared_job_seconds``).
     # Carried on the status so a reader calls a run stalled against a *declared* limit
     # instead of a threshold it invented, and left on the conservative side: a missed
     # stall is recoverable, a false accusation against a healthy long run is not.

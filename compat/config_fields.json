@@ -384,11 +384,6 @@
       "int"
     ],
     [
-      "runs_per_job",
-      false,
-      "int"
-    ],
-    [
       "scenario_file",
       false,
       "Union[str, NoneType]"

@@ -269,10 +269,8 @@ Job Directory
 ^^^^^^^^^^^^^
 
 ``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
-Kubernetes Job, or one local ``docker compose`` run). With the default
-``runs_per_job: 1`` there is one job per run; with ``runs_per_job > 1``
-several runs share a job (and therefore share these artifacts). Each
-run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
+Kubernetes Job, or one local ``docker compose`` run). There is one job per run,
+and each run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 
 .. code-block:: text
 
@@ -290,8 +288,8 @@ run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
 These are the sources of the **derived tables** (:ref:`results-derived-tables`): the logs and
 the ``rosout_bag/`` recording give ``run_log`` and ``scenario_timestamps``, the
 ``resource_usage_*.csv`` files ``resource_usage``, the ``system_usage_*.csv`` files
-``system_usage``. For a packed job they span the whole job, and the derivation cuts them to each
-run.
+``system_usage``. They span the whole job, bring-up and teardown included, and the derivation
+marks what falls inside the run's trial.
 
 ``resource_usage_*.csv`` files have columns ``timestamp`` (wall epoch seconds), ``pid``,
 ``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
@@ -310,8 +308,8 @@ compared with a run that kept one instance throughout.
 Tables
 ------
 
-A table is a set of parquet files under ``<campaign>/.cache/tables/``, one per run (or per job,
-for a job's recording shared by several runs), cataloged by ``.cache/MANIFEST.json``. Every
+A table is a set of parquet files under ``<campaign>/.cache/tables/``, one per run, cataloged by
+``.cache/MANIFEST.json``. Every
 table carries ``campaign_id``, ``config_name`` and ``run_id`` in its own rows, so it joins to
 ``runs`` and to every other table on ``(config_name, run_id)``.
 
@@ -587,10 +585,11 @@ Derived tables
 ^^^^^^^^^^^^^^
 
 A job's container logs, its resource samples and its infrastructure recording are written once
-per job, and a job may serve several runs (``runs_per_job``). The derived tables are therefore
-built for a whole job at once — where one run's share of the job ends is a property of all of
-them — and each run gets its part. They are built for every run of every campaign; no
-configuration asks for them.
+per job, and a job runs one run. The derived tables are built from them for that run, on its
+clock and marked against its trial window. They are built for every run of every campaign; no
+configuration asks for them. A campaign whose job-link manifest points several runs at one job
+is refused rather than read: which of them a job's row belongs to cannot be read off the
+records.
 
 .. _merged-run-log:
 
@@ -609,10 +608,7 @@ The join also supplies what neither source has alone: ``/rosout`` names the node
 *container* it ran in, and that is what a reader filters by. It comes from the file the stdout
 twin was found in.
 
-**A packed job's log is split between its runs, not shared with all of them.** Each line is
-claimed by exactly one run, so a run's rows are its own — another configuration's trial is a
-different experiment, not context for this one. A run whose job artifacts cannot be located, or
-which shares a job and never wrote ``test.xml``, gets no rows, and the build says so;
+A run whose job artifacts cannot be located gets no rows, and the build says so;
 ``get_job_log`` is the whole-container view.
 
 Columns: ``seq``, ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container``,
@@ -636,7 +632,7 @@ Columns: ``seq``, ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``c
   not backfilled from the next stamp, which would render exactly like a real time and claim the
   container booted at whatever second the first node came up.
 * ``in_window`` — 0 for a line outside this run's own wall window: its bring-up, its verdict, its
-  teardown, or the reset before it in a packed job. Real output, kept rather than dropped, and
+  teardown. Real output, kept rather than dropped, and
   flagged so a query can tell "during the trial" from "getting ready for it" and "cleaning up
   after it".
 
@@ -687,25 +683,13 @@ the behaviour.
    JOIN runs r USING (config_name, run_id)
    GROUP BY 1, 3;
 
-Three things differ from ``run_log``, each deliberate:
+Two things are deliberate:
 
-* **The gap between two runs falls the other way.** Both tables partition a packed job's
-  timeline — each tick and each line is claimed by exactly one run, so ``SUM`` over a job's
-  runs is what that job consumed. What differs is where inside the gap between two runs the
-  boundary sits. A *sample* taken while the simulator is being reset is the cost of the run
-  **starting up**, so the boundary is the earlier run's end. The gap's *lines*, though, are the
-  earlier run's verdict and teardown followed by the later run's ``Executing scenario``, and only
-  that marker separates them — so for a log the marker **is** the boundary. When the markers
-  cannot be matched one-to-one with the runs — rosout is only recorded once subscribed, so one
-  can be missing — the runs' start times are used instead.
 * **Rows are keyed by process name, not pid.** Pids churn — a respawned node is a new pid and
   the same program — and no pid is comparable across runs. ``num_pids`` records how many
   shared a name in that tick.
-* **A run of a packed job with no** ``test.xml`` **claims nothing** and gets an empty table
-  rather than the whole job's samples. It cannot be placed on the wall clock, and a table
-  saying "no data" is honest where one stating another run's numbers is not. A *single*-run
-  job in that state still gets its whole trace — there is no other run to confuse it with,
-  and a run killed mid-flight is the one whose trace matters most.
+* **A run with no** ``test.xml`` **still gets its whole trace**, every tick in-window: a run
+  killed mid-flight is the one whose trace matters most.
 
 ``cpu_percent`` and ``memory_rss_bytes`` are sums over the processes sharing a name: CPU is
 per-core, and summed RSS double-counts pages shared with forks.
@@ -783,9 +767,8 @@ succeeded.``, or the failure line ``add_result`` logs). The recognition lives in
 queries this table instead of matching the log text again, which is what keeps the web UI,
 ``search_run_logs`` and the playback clock from disagreeing about where a run ended.
 
-"The first verdict in the log" is the right answer because ``run_log`` is **partitioned** per
-run, so a run's rows are its own: in a packed job, every run finds its own verdict and not the
-first scenario's.
+"The first verdict in the log" is the right answer because a job runs one run, so the
+``run_log`` rows are that run's own.
 
 **Both clocks, because they answer different questions.** ``timestamp`` is what the playback
 timeline is measured in. ``wall_ts`` is what ``run_log`` is *ordered* by, and it is the one the
@@ -860,9 +843,8 @@ operator gave (``manually stopped via webui: stuck in nav recovery``), which is 
 record of *why* — so it is worth giving one.
 
 ``killed`` replaces ``unknown`` and **only** ``unknown``: a run of a killed job that had
-already written a valid ``test.xml`` keeps its real verdict. That matters when a job packs
-several runs (``runs_per_job`` > 1), where the earlier ones routinely finish before anyone
-stops the job — their results are measurement and are never overwritten.
+already written a valid ``test.xml`` keeps its real verdict: a run can finish before its stop
+lands, and its result is measurement, never overwritten.
 
 .. _results-unreadable-rosbag:
 
@@ -985,10 +967,6 @@ should not mean knowing to ask twice. What *follows* differs by kind and that is
 do: a kill becomes a run status, while ``probed`` is a separate column of the ``runs`` table and
 never touches the verdict. Putting an intervention into the measured outcome is the same mistake
 that keeping ``killed`` out of ``num_failed`` avoids.
-
-A probe's granularity follows the job: with ``runs_per_job`` > 1 the whole packed job is marked,
-because which of its runs was in flight cannot be recovered afterwards. That over-excludes rather
-than admitting a perturbed run, which is the safe direction.
 
 .. warning::
 

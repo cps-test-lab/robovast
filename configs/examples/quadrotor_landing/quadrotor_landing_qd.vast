@@ -1,4 +1,4 @@
-version: 5
+version: 6
 metadata:
   name: quadrotor_landing_qd
 # Quality-diversity (pyribs MAP-Elites) search. Run with:
@@ -17,7 +17,6 @@ execution:
   scenario_file: scenario.osc
   run_files:
   - "files/*.py"
-  runs_per_job: 40
 search:
   strategy: qd
   search_space:

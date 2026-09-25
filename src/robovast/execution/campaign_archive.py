@@ -448,8 +448,8 @@ def iter_inputs_tar(campaign_root: str, job_tags, config_files=None,
     The campaign's :data:`INPUT_DIRS` with that leading segment stripped, so ``_config/x``
     lands at ``x``; then, for each ``(config_name, rel)`` in *config_files*, the cell's
     ``<config>/_config/<rel>`` as ``<rel>``. Later members win on extraction, which is
-    what makes a cell's copy land on the campaign's -- the packer keeps one file-owning
-    configuration per job, so which copy wins is never in question.
+    what makes a cell's copy land on the campaign's -- a job runs one configuration, so
+    which copy wins is never in question.
 
     Of the job documents in ``_transient/`` (:func:`job_documents`), only those of
     *job_tags* are sent: the composer writes one pair per job of the campaign, and a pod

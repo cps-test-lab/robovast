@@ -50,7 +50,7 @@ def _project(tmp_path):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 5
+        version: 6
         metadata: {name: path-cache-test}
         configuration:
         - name: cell

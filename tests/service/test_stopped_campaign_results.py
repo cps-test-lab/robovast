@@ -53,7 +53,7 @@ def _launch(svc, monkeypatch, *, stopped=True, postprocess=True, request_stop=Fa
     svc.write_file(WriteFileRequest(
         address=f"/sources/{ws.workspace_id}/pilot.vast",
         content=yaml.safe_dump({
-            "version": 5,
+            "version": 6,
             "metadata": {"name": "pilot"},
             "configuration": [{"name": "config1"}],
             "execution": {"scenario_file": "scenario.osc", "runs": 1,

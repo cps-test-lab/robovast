@@ -766,8 +766,7 @@ def intervened_runs(campaign_dir: Path, kind: str = "") -> dict[str, dict[str, A
 
     * the entry's own ``runs`` hint, for a caller whose ``job_name`` *is* the run key; and
     * the job-link manifest, which maps every ``<config>/<run>`` to its job's artifact dir -- the
-      only way to answer it for a cluster Job, and the way that also covers a packed job's
-      remaining runs without the caller having to enumerate them.
+      only way to answer it for a cluster Job.
 
     The manifest, not the ``job`` symlink :func:`read_run_job` follows: that symlink is created
     when a job *finishes*, so it is missing for precisely the jobs this is asked about. The
@@ -1295,10 +1294,7 @@ def read_run_job(run_dir: Path, campaign_root: Path,
 
     ``job_dir`` is the job's directory relative to *campaign_root* (e.g.
     ``_jobs/batch-0/job-3``), resolved by :func:`run_job_dir`. It is the
-    identity of the *host record*, not of the run: a packed multi-config job executes
-    several (config, run) pairs, and every one of them resolves to the same job dir. That
-    sharing is the point — it is what makes "did these runs land on one machine?"
-    answerable — so the job is recorded once and runs point at it.
+    identity of the *host record*: the job is recorded once and its run points at it.
 
     Without a job -- an older layout that wrote ``sysinfo.yaml`` into the run dir or its
     ``logs/``, or a run whose job dir was pruned -- the run *is* its own unit of
@@ -1352,9 +1348,8 @@ def read_run_outcome(run_dir: Path,
 
     ``killed`` replaces ``unknown`` and **only** ``unknown``. A run whose job was killed
     but which wrote a valid ``test.xml`` finished *before* the kill landed — its verdict
-    is real measurement, and overwriting it would destroy data that a packed job
-    (``runs_per_job > 1``) routinely produces. So a manual kill can only ever annotate a
-    run that delivered nothing, which is what makes this whole distinction additive:
+    is real measurement, and overwriting it would destroy it. So a manual kill can only
+    ever annotate a run that delivered nothing, which is what makes this whole distinction additive:
     no run that ever produced a verdict changes status.
 
     ``invalid`` is the exact inverse, and it is the ONLY status that overrides a written
