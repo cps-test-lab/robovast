@@ -30,9 +30,12 @@ on the run's clock and trial window (:mod:`robovast_decode.run_slices`):
 ``run_clock``          what relates the run's wall stamps to sim time, and how well
 =====================  ==========================================================================
 
-They read the job's ``rosout`` and ``clock_map`` tables, which are built first. The
-campaign's decoder configuration names its containers (``containers``), which is how a
-container that recorded nothing is reported rather than silently absent.
+They read the run's ``rosout`` and ``clock_map`` tables, which are built first. Its
+``clock_map`` is the job's wall-time ``/clock`` or, where the job's recording has none, the
+map the run's simulator recorded itself (roqsim's ``clock`` channel) -- the map of a stepped
+run with no ROS recording at all. The campaign's decoder configuration names its containers
+(``containers``), which is how a container that recorded nothing is reported rather than
+silently absent.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ import pyarrow.parquet as pq
 
 from . import clock_map, resource_usage, run_log, run_slices, scenario_markers, system_usage
 from .layout import MAIN_CONTAINER
+from .registry import ROQSIM_BAG
 from .tables import cache_root
 from .types import INTEGER, REAL, TEXT, UNKNOWN, infer_column_types, stored_value
 
@@ -58,7 +62,7 @@ RUN_CLOCK = "run_clock"
 #: Every derived table, in the order they are built.
 DERIVED = (RUN_LOG, SCENARIO_TIMESTAMPS, RESOURCE_USAGE, SYSTEM_USAGE, RUN_CLOCK)
 
-#: The recorded tables they read, built from the job's wall-time recording before them.
+#: The recorded tables they read, built before them from the run's recordings.
 INPUTS = ("rosout", "clock_map")
 
 _RUN_LOG_TYPES = {
@@ -144,6 +148,19 @@ def _job_rows(campaign_dir: str, manifest: dict, table: str, key: str) -> List[d
     return rows
 
 
+def _clock_of(campaign_dir: str, manifest: dict, key: str) -> clock_map.ClockMap:
+    """The clock map the run *key*'s ``clock_map`` rows give, named for its producer.
+
+    The manifest records what the entry was built from: one built from the run's
+    ``roqsim_bag`` is the simulator's own map, any other the wall-time ROS recording's.
+    """
+    entry = manifest.get("tables", {}).get("clock_map", {}).get("runs", {}).get(key) or {}
+    source = clock_map.SOURCE_ROS_CLOCK_BAG
+    if any(os.path.basename(origin) == ROQSIM_BAG for origin in entry.get("sources") or {}):
+        source = clock_map.SOURCE_ROQSIM
+    return clock_map.from_rows(_job_rows(campaign_dir, manifest, "clock_map", key), source)
+
+
 def _verdict(rows: Sequence[dict]) -> Optional[dict]:
     """The run's terminal verdict from its ``run_log`` rows.
 
@@ -167,14 +184,14 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
                containers: Optional[Sequence[str]]) -> Derivation:
     """Build *tables* for the run of one job.
 
-    The job's ``rosout`` and ``clock_map`` rows are recorded under the run's key; *containers*
-    are the campaign's runtime container names, or ``None`` when its configuration records
-    none.
+    The ``rosout`` and ``clock_map`` rows of the job's recording, or of the run's simulator's
+    own, are recorded under the run's key; *containers* are the campaign's runtime container
+    names, or ``None`` when its configuration records none.
     """
     out = Derivation()
     wanted = set(tables)
     stats = run_slices.SliceStats()
-    clock = clock_map.from_rows(_job_rows(campaign_dir, manifest, "clock_map", run.key))
+    clock = _clock_of(campaign_dir, manifest, run.key)
     slice_ = run_slices.run_slice(job_dir or "", run.config_name, run.path, clock, stats)
     context = {"campaign_id": campaign_id, "config_name": run.config_name, "run_id": run.run_id}
 

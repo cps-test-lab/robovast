@@ -31,7 +31,7 @@ import ChangeCircleRounded from '@mui/icons-material/ChangeCircleRounded'
 import SplitscreenRounded from '@mui/icons-material/SplitscreenRounded'
 import { ERROR, NEUTRAL, SUCCESS, WARNING } from '@/colors'
 import { registerPanel } from '@/lib/panels/registry'
-import { timeSeriesFromRows, type TimeSeriesSource } from '@/lib/panels/timeSeries'
+import { timeSeriesFromRows, useLiveTable, type TimeSeriesSource } from '@/lib/panels/timeSeries'
 import { useClock, type DataProvider, type DataRow, type PanelProps } from '@robovast/panel-kit'
 
 // Always present -- the seven columns every behaviours table has had.
@@ -236,11 +236,15 @@ function ScenarioTreePanel({ spec, clock, data }: PanelProps) {
   const missingHint = String(spec.config.missing_hint ?? DEFAULT_MISSING_HINT)
   const { t, lo, hi, playing } = useClock(clock)
 
+  const treeKey = ['scenario-tree', data.scope, table]
   const tree = useQuery({
-    queryKey: ['scenario-tree', data.scope, table],
+    queryKey: treeKey,
     queryFn: () => loadTree(data, table),
     retry: false,
   })
+  // A live run's tree grows with its recording: the table is re-read as it does, since the tree
+  // is derived from the whole of it rather than appended to.
+  useLiveTable(data, table, treeKey)
 
   const allIds = useMemo(
     () => (tree.data?.kind === 'ok' ? [...tree.data.nodes.keys()] : []),

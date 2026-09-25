@@ -26,19 +26,7 @@ scenario test_scenario:
                     remote('ipc:///ipc/sut', setup_timeout: 120s)
             serial:
                 robot.init_nav2(pose_3d())
-                bag_record([
-                        '/clock',
-                        '/tf',
-                        '/tf_static',
-                        '/amcl_pose',
-                        '/behavior_tree_log',
-                        '/map',
-                        '/global_costmap/costmap',
-                        '/local_costmap/costmap',
-                        '/scan',
-                        '/odom'
-                    ],
-                    use_sim_time: true,
-                    timestamp_suffix: false)
+                # The run's bag is RoboVAST's: it records from before this scenario starts,
+                # and what it holds is the .vast's `recording:` block to say.
                 robot.nav_to_pose(goal_pose)
                 emit end

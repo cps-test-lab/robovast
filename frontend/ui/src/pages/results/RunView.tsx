@@ -1,15 +1,21 @@
-// Results → Run view: a run-focused, time-driven dashboard. Pick one run of a postprocessed campaign
-// and replay it through the panels its .vast declares (visualization.panels) over the rosbag timeline.
-// This component is the glue: it resolves the run, builds the shared PlaybackClock and DataProvider for
+// Results → Run view: a run-focused, time-driven dashboard. Pick one run of a campaign and replay
+// it through the panels its .vast declares (visualization.panels) over the run's timeline. This
+// component is the glue: it resolves the run, builds the shared PlaybackClock and DataProvider for
 // it, discovers the timeline range, and hands the parsed panel specs to the PanelHost. The panels
 // themselves (playback bar, costmaps, scenario tree) are independent plugins.
+//
+// A run that is still recording (`run_view.live`) is the same view: its tables are built as its
+// recording grows, so every declared panel mounts, the provider follows the run's live stream, the
+// clock's range grows with the rows and the clock *follows* it (a Live control in the header says
+// so and returns to the edge). When the run finishes the tables are read once more, and the view
+// is the finished run's.
 //
 // Two "dropdown dialogs" drive it: a Run picker (the shared Explorer campaign→config→run tree) and an
 // Edit-visualization editor (Monaco, same style as the config editor) that saves the campaign's
 // `visualization:` block as a .vast override and reloads the panels.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useToasts } from '@/components/ToastProvider'
 import Editor from '@monaco-editor/react'
 import Alert from '@mui/material/Alert'
@@ -31,10 +37,9 @@ import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import CenterFocusStrongRoundedIcon from '@mui/icons-material/CenterFocusStrongRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import SensorsRoundedIcon from '@mui/icons-material/SensorsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
-import { robovast, hasRecordedRuns, isPreviewable, type CampaignSummary } from '@/lib/robovastClient'
-import { declaresScene3d } from '@/lib/previewRuns'
-import { PreviewChip } from '@/lib/preview/PreviewChip'
+import { robovast, hasRecordedRuns, isRunning, type CampaignSummary } from '@/lib/robovastClient'
 import {
   firstRunSelection,
   resolveSelection,
@@ -46,41 +51,20 @@ import { CAMPAIGN_SEL, type ResultsSel } from '@/lib/hashNav'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon } from '@/components/viewIcons'
-import { PlaybackClock, useClock } from '@robovast/panel-kit'
+import { PlaybackClock, useClock, type DataRow } from '@robovast/panel-kit'
 import { dbDataProvider, describeQuery } from '@/lib/panels/dataProvider'
+import { ANY_TABLE } from '@/lib/panels/liveFeed'
 import { parsePanels } from '@/lib/panels/parsePanels'
 import { PanelHost } from '@/lib/panels/PanelHost'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
-import { DEFAULT_CAPTURE_PATH } from '@/panels/run_view/Scene3DPanel'
 import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
 import '@/panels/run_view' // registers the built-in panels
 
 // Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
-// The fallback for a campaign whose timeline comes from postprocessed rosbag tables.
-const TIME_TABLES = ['poses', 'behaviors', 'scenario_timestamps']
-
-// What a PREVIEW mounts: the panels that read a run's own artifacts rather than the index. A running
-// campaign has no rows there, so every other panel would issue a query per run change that cannot
-// answer, against the very service that is driving the campaign. They are left out rather than
-// mounted empty: a wall of identical errors says less than the one sentence on the preview chip.
-//
-// `scene3d` replays from `capture/capture.json`, which the simulator writes at the run's clean stop.
-// `playback` is the transport: not content, but the clock the other panels follow, so dropping it
-// would leave the scene with nothing driving it. It is the whole of the service's ALWAYS_ON_PANELS
-// -- a second always-on panel added there belongs here too, or it would be contributed to every run
-// view and then silently missing from this one.
-// `log` streams the run's job log rather than reading the `run_log` table, so it needs no index
-// either -- see `components/runLog/useJobLogStream`.
-const PREVIEW_PANELS: ReadonlySet<string> = new Set(['scene3d', 'playback', 'log'])
-
-// Where the log sits in a preview: a full-width bar along the bottom, so it reads beside the replay
-// rather than floating over it. `bottom` DOCKS -- PanelHost reserves the bar's height and lays the
-// `fill` scene out in what is left, offset clear of the playback bar below it -- where the panel's
-// own `bottom-center` default floats above the scene as a collapsed strip. That default is right
-// for a finished run, where the log is what you reach for when something looks wrong; in a preview
-// the log and the scene are the only two things there are.
-const PREVIEW_LOG_POSITION = { anchor: 'bottom' as const, height: '33%' }
+// The fallback for a campaign that declares no `visualization.timeline`: the simulator's own pose
+// table, and the postprocessed rosbag tables.
+const TIME_TABLES = ['sim_poses', 'poses', 'behaviors', 'scenario_timestamps']
 
 /** The run view's settings menu: does the run end at its scenario's verdict or run on through the
  *  teardown, and -- when a 3D view is mounted -- put its camera back where the scene opened.
@@ -188,26 +172,45 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
   )
 }
 
-/** The run capture a panel replays, if any -- the run's own time base, needing no postprocessed data.
+/** The header's Live control, for a run that is still recording: whether the clock is following the
+ *  run's edge, and the way back to it once a reader has scrubbed away.
  *
- *  Read straight from the panel specs rather than plumbed up from the panel: the manifest is a small
- *  JSON at a URL the panel is about to fetch anyway, so the browser serves the second read from cache.
- *
- *  A `scene3d` panel counts even when it declares no `capture:` block, which is the documented complete
- *  form of it -- geometry resolves from the world the capture names, so there is nothing to bind. Keying
- *  this on a declared block alone meant the canonical `- scene3d:` fell through to the postprocessed
- *  tables below, and a campaign with no postprocessed tables -- the case the capture time base exists
- *  for -- got no
- *  range at all and never animated.
- */
-function capturePathOf(panels: { type: string; config: Record<string, unknown> }[]): string | null {
-  for (const panel of panels) {
-    const capture = panel.config?.capture as { path?: unknown } | undefined
-    if (capture || panel.type === 'scene3d') {
-      return String(capture?.path ?? DEFAULT_CAPTURE_PATH)
-    }
+ *  A button rather than a chip, because it does something: following ends the moment the reader
+ *  seeks or pauses (the playback bar says nothing about why the cursor stopped tracking), and this
+ *  is the one control that resumes it. The label states which of the two the view is in. */
+function LiveControl({ clock }: { clock: PlaybackClock }) {
+  const { following } = useClock(clock)
+  return (
+    <Tooltip
+      title={following
+        ? 'Following the run as it records. Scrubbing or pausing stops following.'
+        : 'Return to the edge of the recording and follow it.'}
+    >
+      <Button
+        size="small"
+        variant={following ? 'contained' : 'outlined'}
+        color={following ? 'error' : 'inherit'}
+        startIcon={<SensorsRoundedIcon />}
+        onClick={() => clock.follow()}
+        sx={{ textTransform: 'none', whiteSpace: 'nowrap' }}
+      >
+        {following ? 'Live · following' : 'Live · paused'}
+      </Button>
+    </Tooltip>
+  )
+}
+
+/** The widest time span the rows of a batch cover in `timeCol`, or null when none carries one. */
+function batchSpan(rows: DataRow[], timeCol: string): [number, number] | null {
+  let lo = Infinity
+  let hi = -Infinity
+  for (const row of rows) {
+    const t = Number(row[timeCol])
+    if (!Number.isFinite(t)) continue
+    if (t < lo) lo = t
+    if (t > hi) hi = t
   }
-  return null
+  return lo <= hi ? [lo, hi] : null
 }
 
 export function RunView({
@@ -231,60 +234,17 @@ export function RunView({
 }) {
   const queryClient = useQueryClient()
 
-  // Whether the run picker is open. Up here with the queries rather than with the Popover it drives,
-  // because a preview's run listing is re-read only while somebody is looking at it.
   const [runAnchor, setRunAnchor] = useState<HTMLElement | null>(null)
-
-  // A campaign is offered as a PREVIEW only if it has a 3D scene to replay. A preview shows nothing
-  // else — every other panel needs the index — so a campaign whose simulator records no capture has
-  // literally nothing to show until it finishes, and listing it would be an invitation to an empty
-  // view. Whether it has one is in its served panel list, so ask for that; the key is the one the
-  // panels query below uses, so the selected campaign is fetched once, not twice.
-  //
-  // Only campaigns that are actually previewable are asked about — a handful at most, since they
-  // are the ones running right now.
-  const previewCandidates = useMemo(() => campaigns.filter(isPreviewable), [campaigns])
-  const previewPanels = useQueries({
-    queries: previewCandidates.map((c) => ({
-      queryKey: ['panels', c.campaign_id],
-      queryFn: () => robovast.listCampaignPanels(c.campaign_id),
-      enabled: active,
-      retry: false,
-      staleTime: 60_000,
-    })),
-  })
-  // Pending counts as "not yet", so a campaign appears once it is known to have a scene rather than
-  // appearing and then vanishing.
-  const previewable = useMemo(
-    () => new Set(previewCandidates
-      .filter((_, i) => declaresScene3d(previewPanels[i]?.data?.panels) === true)
-      .map((c) => c.campaign_id)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [previewCandidates, previewPanels.map((q) => q.status).join(',')],
-  )
 
   // Only campaigns that recorded runs can be replayed, so they are the only ones this view offers —
   // the picker never lists a campaign whose store was never written, and a selection inherited from
   // another Results view (the campaign is shared) is treated as no selection here rather than
-  // queried into a "no store to read" error.
-  // A finished campaign is offered when its store recorded runs; a previewed one when it has a
-  // scene to replay. `hasRecordedRuns` must NOT be asked of a preview: it counts `campaign.db`'s
-  // run rows, written only once a batch has finished, so it is 0 for the whole life of a
-  // batch-mode campaign — see `isPreviewable`.
-  const replayable = useMemo(
-    () => campaigns.filter((c) => (isPreviewable(c)
-      ? previewable.has(c.campaign_id)
-      : hasRecordedRuns(c))),
-    [campaigns, previewable],
-  )
+  // queried into a "no store to read" error. A campaign still running is offered like any other:
+  // its `run_view` answers while it runs, and a run still recording is read live.
+  const replayable = useMemo(() => campaigns.filter(hasRecordedRuns), [campaigns])
   const available = !!campaignId && replayable.some((c) => c.campaign_id === campaignId)
   const summary = replayable.find((c) => c.campaign_id === campaignId)
-
-  // A campaign that is still RUNNING is shown as a **preview**: its finished runs replay from their
-  // own capture files, and nothing that needs the index works, because a running campaign has no rows
-  // there at all. Derived from the summary rather than passed in, so nobody has to keep a flag in
-  // step with the campaign on screen.
-  const preview = !!summary && isPreviewable(summary)
+  const running = !!summary && isRunning(summary)
 
   const panels = useQuery({
     queryKey: ['panels', campaignId],
@@ -302,24 +262,20 @@ export function RunView({
 
   // The same query the picker's tree runs (see `runsQuery`), so both read one set of rows and
   // react-query serves them from a single fetch. Why `run_view` rather than the postprocessed
-  // `runs` table is documented on `CAMPAIGN_RUNS_SQL`; for a campaign still running, `runsQuery`
-  // answers from its output directories instead, in the same row shape.
+  // `runs` table is documented on `CAMPAIGN_RUNS_SQL`.
   //
-  // A preview's rows GROW while it is open, so they are re-read — but only while the picker is
-  // actually open, so a run nobody is looking at polls nothing. Growth only ever appends a run, so
-  // a refresh cannot move the selection out from under a reader; and once the campaign finishes,
-  // the key changes and the indexed rows are fetched.
+  // A running campaign's rows GROW, so they are re-read — but only while the picker is actually
+  // open, so a run nobody is choosing between costs nothing. Growth only ever appends a run, so a
+  // refresh cannot move the selection out from under a reader.
   const runs = useQuery({
     ...runsQuery(summary),
     enabled: available,
-    refetchInterval: preview && !!runAnchor ? 5_000 : false,
+    refetchInterval: running && !!runAnchor ? 5_000 : false,
   })
 
   // The batch is only meaningful when the picker's tree groups by it; for a batch-mode campaign
   // it stays null so the tree id built from it is the ungrouped one.
-  // Never grouped in preview: a batch is a round the index records, not a directory, so the listing
-  // cannot see one and every row carries a null batch.
-  const grouped = !preview && summary?.mode === 'search'
+  const grouped = summary?.mode === 'search'
   const rows = runs.data?.rows ?? []
 
   // Only a run the *current* campaign actually has counts as the run on screen. The selection is
@@ -340,7 +296,12 @@ export function RunView({
     onResultsChange(campaignId, firstRun ?? CAMPAIGN_SEL, '')
   }, [active, runs.data, run, firstRun, campaignId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const runKey = run ? `${campaignId}:${run.configName}:${run.runId}` : ''
+  // Whether the run on screen is still recording: `run_view.live` is true while it has no verdict
+  // and its campaign is still running. Read from the same rows the picker draws, so the two agree.
+  // The key carries it: a run that finishes is a new provider, the finished run's.
+  const live = !!run && rows.some((r) =>
+    String(r.config_name) === run.configName && Number(r.run_id) === Number(run.runId) && !!r.live)
+  const runKey = run ? `${campaignId}:${run.configName}:${run.runId}:${live ? 'live' : 'done'}` : ''
 
   // One provider + clock per run. Recreated (and the old clock disposed) when the run changes.
   // `/describe` is the campaign's, so it is not: every provider of this campaign reads one answer
@@ -352,91 +313,95 @@ export function RunView({
     [queryClient, campaignId, describeVersion],
   )
   const provider = useMemo(
-    () => (run ? dbDataProvider(campaignId, run.configName, run.runId, getDescribe) : null),
-    [campaignId, run, getDescribe],
+    () => (run
+      ? dbDataProvider(campaignId, run.configName, run.runId, getDescribe, { live })
+      : null),
+    // `runKey` carries the run and its liveness; `run` itself is an object resolved per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [campaignId, runKey, getDescribe],
   )
+  // The live subscription is the provider's; a run switch closes it with the provider.
+  useEffect(() => () => provider?.close(), [provider])
   const clock = useMemo(() => new PlaybackClock(), [runKey])
   useEffect(() => () => clock.dispose(), [clock])
 
   const specs = useMemo(
-    () => {
-      const parsed = panels.data ? parsePanels(panels.data.panels) : []
-      if (!preview) return parsed
-      // The campaign's declared position and bindings are for the post-hoc panel; in a preview the
-      // panel is a different reader of a different source, so the host says both here rather than
-      // asking every campaign to describe a mode it does not know about.
-      return parsed
-        .filter((p) => PREVIEW_PANELS.has(p.type))
-        .map((p) => (p.type === 'log'
-          ? { ...p, position: { ...p.position, ...PREVIEW_LOG_POSITION },
-              config: { ...p.config, preview: true } }
-          : p))
-    },
-    [panels.data, preview],
+    () => (panels.data ? parsePanels(panels.data.panels) : []),
+    [panels.data],
   )
   // The served list is never empty -- the playback transport is contributed for every campaign --
   // and the transport is not content: it is the clock the other panels follow. So "nothing to look
   // at here" is the service's `transport_only`, asked where the contributed panels are merged in
   // rather than by filtering the served list here, which would mean spelling the contributed types
-  // a second time. A capture-recording simulator's scene3d is a real panel, so a roqsim campaign
+  // a second time. A simulator that records its own poses has a real scene3d panel, so a roqsim campaign
   // that declares nothing is not bare.
   const bare = !!panels.data?.transport_only
 
   // Discover the timeline range and set it on the clock, in order of authority:
-  //   1. a run capture's own time base -- the run's ground truth, available without postprocessing;
-  //   2. an explicit `visualization.timeline` (a sim's own table with a `t` column);
-  //   3. the union of the standard postprocessed nav time tables.
+  //   1. an explicit `visualization.timeline` (a sim's own table with a `t` column);
+  //   2. the union of the standard time tables (the simulator's poses, the postprocessed nav ones).
   // Depend on scalars rather than object identity, which churns on every panels refetch.
+  //
+  // For a live run the range is read the same way once, then grows with the rows: every batch the
+  // provider's stream delivers -- whichever table, since the tables the panels read are the ones
+  // the socket carries -- moves `hi` to its latest sample, and the clock follows. When the stream
+  // ends the range is read once more (the finalised tables) and following ends there.
   const tlTable = panels.data?.timeline?.table
   const tlCol = panels.data?.timeline?.time_column
-  const capturePath = useMemo(() => capturePathOf(specs), [specs])
   useEffect(() => {
     if (!provider || !run) return
     let alive = true
+    const timeCol = tlCol ?? 'timestamp'
 
-    const fromCapture = async (): Promise<[number, number] | null> => {
-      if (!capturePath) return null
-      const res = await fetch(
-        robovast.runFileUrl(campaignId, run.configName, run.runId, capturePath),
-      )
-      if (!res.ok) return null
-      const manifest = (await res.json()) as { time?: { t0?: number; t1?: number } }
-      const { t0, t1 } = manifest.time ?? {}
-      return typeof t0 === 'number' && typeof t1 === 'number' ? [t0, t1] : null
+    const readRange = async (): Promise<[number, number] | null> => {
+      const lookups = tlTable
+        ? [provider.timeRange(tlTable, tlCol).catch(() => null)]
+        : TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null))
+      const valid = (await Promise.all(lookups)).filter((r): r is [number, number] => !!r)
+      if (!valid.length) return null
+      return [Math.min(...valid.map((r) => r[0])), Math.max(...valid.map((r) => r[1]))]
     }
 
-    fromCapture()
-      .catch(() => null)
-      .then(async (captured) => {
-        if (captured) return [captured]
-        // Nothing else to ask in a preview: the tables below live in the index, which holds no rows
-        // for a running campaign. The capture above is the whole timeline, and a run whose capture
-        // is not written yet has no range rather than a wrong one.
-        if (preview) return []
-        const lookups: Promise<[number, number] | null>[] = tlTable
-          ? [provider.timeRange(tlTable, tlCol).catch(() => null)]
-          : TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null))
-        return Promise.all(lookups)
-      })
-      .then((ranges) => {
-        if (!alive) return
-        const valid = ranges.filter((r): r is [number, number] => !!r)
-        if (!valid.length) return
-        const lo = Math.min(...valid.map((r) => r[0]))
-        const hi = Math.max(...valid.map((r) => r[1]))
-        clock.setRange(lo, hi)
-      })
+    let haveRange = false
+    readRange().then((range) => {
+      if (!alive || !range) return
+      haveRange = true
+      clock.setRange(range[0], range[1])
+      if (provider.live) clock.follow()
+    })
+
+    const unsubscribe = provider.live
+      ? provider.subscribeLive(ANY_TABLE, (event) => {
+          if (!alive) return
+          if (event.kind === 'batch') {
+            // A table with its own time column is not the timeline's; the declared one, or the
+            // default, is what the rows are measured in.
+            if (tlTable && event.table !== tlTable) return
+            const span = batchSpan(event.rows, timeCol)
+            if (!span) return
+            const { lo, hi } = clock.getSnapshot()
+            if (haveRange) {
+              clock.setRange(Math.min(lo, span[0]), Math.max(hi, span[1]))
+            } else {
+              haveRange = true
+              clock.setRange(span[0], span[1])
+              clock.follow()
+            }
+          } else if (event.kind === 'eof') {
+            readRange().then((range) => {
+              if (!alive) return
+              if (range) clock.setRange(range[0], range[1])
+              clock.finish()
+            })
+          }
+        })
+      : null
 
     // Where the *trial* ended, which the range above deliberately does not encode: `setRange`
     // is the whole recording, so showing the shutdown phase restores it without re-querying.
-    //
-    // Asked for separately rather than picked out of the lookups above, because those are
-    // skipped entirely when a run capture supplies the range -- and a run replayed from a
-    // capture should still stop at its verdict. One extra query, only on a run change.
-    // Not in a preview: the verdict is a postprocessed table, so this could only fail, once per run
-    // change. The toggle then reports nothing to trim, which is exactly true -- where the trial
-    // ended is not knowable until the campaign has been postprocessed.
-    if (preview) clock.setVerdict(null)
+    // Not for a live run: it has no verdict yet by definition, and the toggle says there is
+    // nothing to trim, which is true until the run ends and the view becomes the finished run's.
+    if (provider.live) clock.setVerdict(null)
     else provider
       .timeRange('scenario_timestamps')
       .catch(() => null)
@@ -448,8 +413,9 @@ export function RunView({
       })
     return () => {
       alive = false
+      unsubscribe?.()
     }
-  }, [provider, clock, tlTable, tlCol, capturePath, campaignId, run, preview])
+  }, [provider, clock, tlTable, tlCol, run])
 
   // The two dropdown dialogs are Popovers anchored to their trigger buttons.
   const [editAnchor, setEditAnchor] = useState<HTMLElement | null>(null)
@@ -524,12 +490,12 @@ export function RunView({
         {/* Beside the picker it feeds: the reload is what puts a newly finished campaign into
             that tree. */}
         <RefreshResultsButton state={refresh} />
-        {/* Refused while the campaign runs, and not merely because the preview shows one panel:
-            saving writes a .vast override into the campaign's own `_config/`, which the runs that
-            have not started yet are configured from. Editing the view would change the experiment.
-            A tooltip on a span, since a disabled button fires no events for one to listen to. */}
+        {/* Refused while the campaign runs: saving writes a .vast override into the campaign's own
+            `_config/`, which the runs that have not started yet are configured from. Editing the
+            view would change the experiment. A tooltip on a span, since a disabled button fires
+            no events for one to listen to. */}
         <Tooltip
-          title={preview
+          title={running
             ? 'Not while the campaign is running — saving edits its configuration, which its '
               + 'remaining runs read.'
             : ''}
@@ -541,13 +507,16 @@ export function RunView({
               startIcon={<EditRoundedIcon />}
               endIcon={<ArrowDropDownRoundedIcon />}
               onClick={(e) => setEditAnchor(e.currentTarget)}
-              disabled={!available || preview}
+              disabled={!available || running}
               sx={{ textTransform: 'none' }}
             >
               Edit visualization
             </Button>
           </span>
         </Tooltip>
+        {/* Beside the transport's owner rather than in the playback bar: following is a state of
+            the whole view, and the bar is a panel a campaign may position anywhere. */}
+        {provider?.live ? <LiveControl clock={clock} /> : null}
         {/* Pushed to the far right: these govern the whole view rather than the run picker they
             would otherwise look attached to. */}
         <Box sx={{ flexGrow: 1 }} />
@@ -625,8 +594,7 @@ export function RunView({
       {!replayable.length ? (
         <Alert severity="info" variant="outlined">
           No campaign has runs to replay yet — a campaign appears here once it has recorded a run,
-          either while it is still running (as a preview of its finished runs) or, with everything
-          it measured, once it has finished and been postprocessed.
+          while it is still running or after.
         </Alert>
       ) : !available ? (
         <Alert severity="info" variant="outlined">
@@ -645,19 +613,14 @@ export function RunView({
         </Alert>
       ) : !provider ? (
         <Alert severity="info" variant="outlined">
-          {preview
-            // A campaign on its very first run: it has runs, none has finished, and a replay needs a
-            // finished one. Said plainly rather than as "no runs to replay", which reads as a
-            // campaign that will never have any -- this one resolves itself within a run.
-            ? 'No run has finished yet. A run can be replayed once it ends and its recording is written.'
-            : 'This campaign has no runs to replay.'}
+          This campaign has no runs to replay.
         </Alert>
       ) : (
         <>
           {/* Said alongside the view rather than instead of it: the transport bar is there for
               every campaign, so replacing the whole host would now hide a working panel to
               explain that there are none. */}
-          {bare && !preview && (
+          {bare && (
             <Alert severity="info" variant="outlined">
               This run view has only the playback transport, which every campaign gets. Declare
               panels under <code>visualization.results.run_view.panels</code> — see{' '}
@@ -672,24 +635,6 @@ export function RunView({
             sx={{ flexGrow: 1, minHeight: 0, mx: -3, mb: -3, position: 'relative' }}
           >
             <PanelHost key={runKey} panels={specs} clock={clock} data={provider} />
-            {/* Over the scene rather than above it, because the scene is the full-bleed base layer
-                and a banner in the page flow would push it down for a state that is temporary.
-                Top-RIGHT: the 3D panel already speaks from top-left, top-centre and bottom-left,
-                and this is about the view rather than the scene.
-
-                `pointerEvents: none` on the wrapper with `auto` on the chip: a right-anchored panel
-                dock sits exactly here, and an invisible box over its header would swallow the drag
-                that moves it. The zIndex clears PanelHost's own stacking -- twice the number of
-                visible panels, when one is brought to the front -- while staying below MUI's
-                overlays (app bar 1100, drawer 1200, modal 1300), so a dialog covers the chip
-                rather than the chip floating over the dialog. */}
-            {preview && (
-              <Box
-                sx={{ position: 'absolute', top: 8, right: 8, pointerEvents: 'none', zIndex: 1000 }}
-              >
-                <PreviewChip />
-              </Box>
-            )}
           </Box>
         </>
       )}

@@ -41,6 +41,7 @@ and the ``vast configuration validate`` CLI command.
 import inspect
 import logging
 import os
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -635,14 +636,14 @@ def _env_names(raw):
     return names
 
 
-def _run_capture_problems(raw):
-    """A ``scene3d`` panel replays a **run capture**, so the runs have to produce one.
+def _scene3d_problems(raw):
+    """A ``scene3d`` panel replays the simulator's **recorded state**, so the runs have to record it.
 
     Nothing else in the campaign declares that dependency, so without this check a campaign
-    runs, passes, and shows a motionless world whenever someone finally opens it. The capture
-    is written per run at simulation time, so unlike a campaign-scope descriptor it cannot be
-    looked for on disk -- what *can* be established is whether the configured simulator
-    produces one at all, which is the mistake actually made.
+    runs, passes, and shows a motionless world whenever someone finally opens it. The
+    recording is written per run at simulation time, so unlike a campaign-scope descriptor it
+    cannot be looked for on disk -- what *can* be established is whether the configured
+    simulator records one at all, which is the mistake actually made.
 
     Asked of the **backend**, not inferred from the campaign's wheel names. The old check
     pattern-matched ``roqsim`` in the simulation ref and the installed packages, which was the
@@ -651,7 +652,7 @@ def _run_capture_problems(raw):
     installs no simulator packages whatsoever.
 
     A campaign with no backend is not second-guessed: nothing here could tell where its
-    capture would come from.
+    recording would come from.
     """
     problems = []
     panels = [(i, entry) for i, entry in enumerate(_run_view_panels(raw))
@@ -668,16 +669,16 @@ def _run_capture_problems(raw):
     try:
         backend = resolve_backend(name)
         cfg = (execution.get("containers") or {}).get("simulation") or {}
-        if backend.produces_run_capture(cfg, execution):
+        if backend.records_scene_state(cfg, execution):
             return problems
     except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
         return problems
 
     return [_problem(
         "panel",
-        f"the scene3d panel replays a run capture, but the '{name}' simulator does not "
-        f"produce one. The campaign would run and pass, and the 3D view would show a world "
-        f"that never moves.",
+        f"the scene3d panel replays the simulator's recorded state, and the '{name}' "
+        f"simulator records none. The campaign would run and pass, and the 3D view would show "
+        f"a world that never moves.",
         field=f"{RUN_VIEW_PANELS}[{i}]") for i, _entry in panels]
 
 
@@ -721,6 +722,127 @@ def _camera_panel_problems(raw):
         "file directly with `source: {path: ..., t0: ...}`.",
         field=f"{RUN_VIEW_PANELS}[{i}]")
         for i, props in panels if not ((props or {}).get("source") or {}).get("path")]
+
+
+#: What a scenario writes when it starts a bag recorder of its own. Matched on the text of
+#: the ``.osc`` rather than its parse tree: the action is reached through its name, and a
+#: name with a call paren is what appears at a use site and nowhere else.
+_SCENARIO_RECORDER_CALL = "bag_record("
+
+
+def _named_recorded_topics(raw):
+    """Every topic the campaign's results side expects the run's bag to hold, with where.
+
+    The decoder entries name theirs under ``topic`` / ``topics``; a camera panel names the
+    one it plays under ``topic``. Both are read shallowly and only as written: an entry that
+    names no topic (``rosbags_tf_to_csv``) relies on the recording's own defaults, which
+    this cannot check and does not pretend to.
+    """
+    named = []
+    entries = ((raw.get("results_processing") or {}).get("postprocessing") or [])
+    for i, entry in enumerate(entries if isinstance(entries, list) else []):
+        if not (isinstance(entry, dict) and len(entry) == 1):
+            continue
+        name, props = next(iter(entry.items()))
+        if not (str(name).startswith("rosbags_") and isinstance(props, dict)):
+            continue
+        field = f"results_processing.postprocessing[{i}]"
+        if isinstance(props.get("topic"), str):
+            named.append((props["topic"], f"{field}.topic"))
+        if isinstance(props.get("topics"), list):
+            named.extend((t, f"{field}.topics") for t in props["topics"] if isinstance(t, str))
+    for i, entry in enumerate(_run_view_panels(raw)):
+        ptype, props = _panel_entry(entry)
+        if ptype == "camera" and isinstance(props, dict) and isinstance(props.get("topic"), str):
+            named.append((props["topic"], f"{RUN_VIEW_PANELS}[{i}].topic"))
+    return named
+
+
+def _topic_is_recorded(topic, topics, exclude):
+    """Whether ``ros2 bag record`` with these arguments captures *topic*.
+
+    A ``topics`` entry starting with ``^`` is a regex passed to ``-e``, which rosbag2 matches
+    by search; any other entry is a name passed to ``--topics``. An exclude wins, as it does
+    in rosbag2. A regex that does not compile is treated as matching nothing rather than
+    raised here: the schema check has already reported the block, and this check reports
+    the topic.
+    """
+    def _search(pattern):
+        try:
+            return re.search(pattern, topic) is not None
+        except re.error:
+            return False
+    if any(_search(p) for p in exclude):
+        return False
+    if topics == "all":
+        return True
+    return any(_search(t) if t.startswith("^") else t == topic for t in topics)
+
+
+def _recording_problems(raw, scenario_file):
+    """The ``recording:`` block against the rest of the campaign.
+
+    Each of these is a campaign that runs and passes, and then has not recorded what its
+    results side reads -- found after the compute is spent, in a table that is empty or a
+    panel with nothing to play. So each is refused here, before any of that:
+
+    * ``recording.roqsim`` on a campaign whose simulator is not roqsim: the knobs would be
+      set for a process that never reads them;
+    * a topic a decoder entry or a camera panel names that ``recording.ros2.topics`` does not
+      capture, by name, by regex, or because an exclude removes it;
+    * a scenario that starts a bag recorder of its own: RoboVAST records the run's bag at
+      ``<run>/rosbag2``, and a second recorder would write the same directory.
+
+    The world's entity roster is deliberately not checked against ``recording.roqsim.tracks``:
+    only the simulator knows it, and roqsim refuses a pattern naming nothing at run start.
+    """
+    problems = []
+    execution = raw.get("execution") if isinstance(raw.get("execution"), dict) else {}
+    recording = raw.get("recording")
+    if isinstance(recording, dict):
+        if recording.get("roqsim") is not None:
+            from robovast.common.simulators import \
+                backend_name  # pylint: disable=import-outside-toplevel
+            backend = backend_name(execution)
+            if backend != "roqsim":
+                have = f"'{backend}'" if backend else "no simulator backend"
+                problems.append(_problem(
+                    "recording",
+                    f"recording.roqsim configures the roqsim simulator's recording, but this "
+                    f"campaign declares {have} (execution.containers.simulation.backend). "
+                    "Remove the block, or declare backend: roqsim.",
+                    field="recording.roqsim"))
+        ros2 = recording.get("ros2") if isinstance(recording.get("ros2"), dict) else {}
+        topics = ros2.get("topics", "all")
+        exclude = [e for e in (ros2.get("exclude") or []) if isinstance(e, str)]
+        if topics == "all" or (isinstance(topics, list)
+                               and all(isinstance(t, str) for t in topics)):
+            for topic, field in _named_recorded_topics(raw):
+                if not _topic_is_recorded(topic, topics, exclude):
+                    problems.append(_problem(
+                        "recording",
+                        f"{field} names topic '{topic}', which recording.ros2 does not "
+                        "record: it is neither listed in topics, matched by a regex there, "
+                        "nor spared by exclude. The table or video built from it would be "
+                        "empty. Add the topic to recording.ros2.topics, or drop the entry.",
+                        field=field))
+
+    if scenario_file:
+        try:
+            with open(scenario_file, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            text = ""
+        if _SCENARIO_RECORDER_CALL in text:
+            problems.append(_problem(
+                "recording",
+                f"{os.path.basename(scenario_file)} calls bag_record(...), but RoboVAST "
+                "records the run's bag itself at <run>/rosbag2, from before the scenario "
+                "starts until it ends. Both would write the same directory. Remove the "
+                "action; what the bag holds is the .vast's recording: block to say "
+                "(use_sim_time included).",
+                field="execution.scenario_file"))
+    return problems
 
 
 def _vega_panel_problems(i, props):
@@ -1367,12 +1489,14 @@ def validate_project_file(config_path):
     # A campaign-scope 3D scene descriptor must be produced by a generator or matched by
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
-    problems.extend(_run_capture_problems(raw))
+    problems.extend(_scene3d_problems(raw))
     problems.extend(_image_provenance_problems(raw))
     problems.extend(_unresolvable_image_problems(raw))
     problems.extend(_migration_marker_problems(raw))
     # ...and a camera panel needs a step that produces the video it plays.
     problems.extend(_camera_panel_problems(raw))
+    # ...and the run's bag has to hold what the tables and panels read from it.
+    problems.extend(_recording_problems(raw, scenario_file))
 
     # A build: section's workspace-path python_packages must exist (fail-fast at
     # submit, before any image build runs). Schema-level checks (tag shape, the

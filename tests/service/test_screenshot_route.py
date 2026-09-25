@@ -13,7 +13,6 @@ Only the *command* is faked, as in ``test_scene_routes``: the generator framewor
 resolution, the cleanup and the routes are the real thing.
 """
 
-import json
 from pathlib import Path
 
 import pytest
@@ -22,9 +21,13 @@ from fastapi.testclient import TestClient
 from robovast.common import simulators
 from robovast.service import screenshot
 from robovast.service.app import build_app
+from tests.robovast_data.conftest import write_store
+from tests.robovast_decode.conftest import write_roqsim_mcap
 from tests.service.null_service import NullService
 CAMPAIGN = "demo-2026-08-09-000000"
 QUERY = {"config_name": "hexagon-1", "run_id": "0"}
+#: What the roqsim backend names as the run's recording; the fixture below stands in for it.
+RECORDING = "roqsim_bag/roqsim.mcap"
 
 # A 1x1 PNG, so the response is a real image rather than bytes that merely have the name.
 PNG = bytes.fromhex(
@@ -37,17 +40,17 @@ PNG = bytes.fromhex(
 def _env(tmp_path, monkeypatch):
     results = tmp_path / "results"
     run = results / CAMPAIGN / "hexagon-1" / "0"
-    (run / "capture").mkdir(parents=True)
+    # The recording is both the world identity (its ``sim_recording`` row) and the state a
+    # render replays; ``campaign.db`` is what makes the run's tables queryable.
+    write_roqsim_mcap(run / RECORDING, samples=4, meta={"world": "pkg:hexagon", "overrides": {}})
     (results / CAMPAIGN / "_execution").mkdir(parents=True)
     (results / CAMPAIGN / "_execution" / "execution.yaml").write_text(
         "image: build:x\nimage_revision: harbor/x@sha256:" + "a" * 64 + "\n", encoding="utf-8")
-    (run / "capture" / "capture.json").write_text(
-        json.dumps({"producer": "roqsim", "world": "pkg:hexagon", "overrides": {}}),
-        encoding="utf-8")
-    (run / "run.npz").write_bytes(b"not really a recording")
+    write_store(results / CAMPAIGN, {"hexagon-1": {"runs": {0: "passed"}}})
 
     monkeypatch.setattr(NullService, "_campaigns_root", lambda self: Path(results))
-    monkeypatch.setattr(simulators, "run_state_filename", lambda execution, base_dir="": "run.npz")
+    monkeypatch.setattr(simulators, "run_state_filename",
+                        lambda execution, base_dir="": RECORDING)
 
     # Stands in for the backend's `roqsim render`: writes the frame the real one would, and logs
     # its arguments *outside* the render directory — that directory is deleted once the
@@ -100,7 +103,7 @@ def test_a_screenshot_comes_back_as_an_image(env):
     assert "at=12.5" in args and "size=640x480" in args
     assert "('azimuth', '90')" in args and "('lookat', '1,2,0')" in args
     # The recording reached the command as its input, not as a literal placeholder.
-    assert "state=" in args and "{inputs[0]}" not in args and "run.npz" in args
+    assert "state=" in args and "{inputs[0]}" not in args and "roqsim.mcap" in args
 
 
 def test_the_render_directory_does_not_survive_the_response(env):
@@ -138,13 +141,26 @@ def test_a_fixed_camera_refuses_a_free_camera_s_angle(env):
 
 
 def test_a_run_with_no_recording_says_what_is_missing(env):
-    """A run killed by its deadline leaves no state, and 'no moment to render' is the answer —
-    not a traceback from a simulator handed a path that is not there."""
+    """A run that never reached its first sample leaves no recording, and 'nothing to replay' is
+    the answer — not a traceback from a simulator handed a path that is not there."""
     client, tmp_path = env
-    (tmp_path / "results" / CAMPAIGN / "hexagon-1" / "0" / "run.npz").unlink()
+    (tmp_path / "results" / CAMPAIGN / "hexagon-1" / "0" / RECORDING).unlink()
     resp = _post(client)
     assert resp.status_code == 400
-    assert "clean stop" in resp.json()["detail"]
+    assert "no sim_recording row" in resp.json()["detail"]
+
+
+def test_a_running_run_renders_from_what_it_has_recorded_so_far(env, tmp_path):
+    """The recording grows while the run goes and is readable up to its last complete chunk, so a
+    live run is rendered from it as a finished one is -- nothing here waits for a verdict."""
+    client, _ = env
+    run = tmp_path / "results" / CAMPAIGN / "hexagon-1" / "0"
+    write_roqsim_mcap(run / RECORDING, samples=4, finish=False,
+                      meta={"world": "pkg:hexagon", "overrides": {}})
+    assert not (run / "test.xml").exists()
+    resp = _post(client, at=0.02)
+    assert resp.status_code == 200, resp.text
+    assert resp.content == PNG
 
 
 def test_a_simulator_that_cannot_render_says_so(env, monkeypatch):

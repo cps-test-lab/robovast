@@ -46,9 +46,7 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
-  hasRecordedRuns,
   hasResults,
-  isPreviewable,
   isTerminalPhase,
   PRE_RUN_PHASES,
   type CampaignSummary,
@@ -84,7 +82,6 @@ import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
-import { declaresScene3d } from '@/lib/previewRuns'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
 import { LaunchedBy } from '@/components/LaunchedBy'
@@ -117,7 +114,7 @@ const ID_COLUMN = 360
 // row.
 //
 // Sized for the WIDEST set (four small icon buttons and the three gaps between them: a running
-// campaign that can be previewed has all four), not the common one. A minimum that the busiest
+// campaign with recorded runs has all four), not the common one. A minimum that the busiest
 // row exceeds is not a reserved column at all: the stack then sizes to its content, and anything
 // that comes and goes inside it moves the whole flexible span to its left — a per-poll spinner
 // appearing and vanishing beside a running card walks the age back and forth every poll.
@@ -727,34 +724,13 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   // button can never open a view that would greet the reader with an empty state. The summary
   // arrives over the same stream as everything else here, so they appear by themselves.
   //
-  // The Explorer still needs a finished, postprocessed campaign: its notebooks and its rows are
-  // what postprocessing produces. The Run view also takes a campaign that is still RUNNING, where
-  // it previews the runs that have already finished — which is the only way to reach one at all,
-  // since the jobs list below is live-only and a run leaves it the moment it completes.
+  // Both take a campaign that has recorded runs, running or not: `run_view` answers while the
+  // campaign runs, and the Run view reads a run still recording live — which is the only way to
+  // reach one at all, since the jobs list below is live-only and a run leaves it the moment it
+  // completes.
   const canExplore = hasResults(summary)
-  // A preview replays a run's 3D recording and shows nothing else, so it is offered only where
-  // there is a scene to replay — asked of the campaign's served panel list, and only for a campaign
-  // that could be previewed at all. The same question the Run view's picker asks, under the same
-  // key, so the two cannot offer different campaigns.
-  //
-  // Deliberately not also gated on `hasRecordedRuns`: that counts `campaign.db`'s run rows, which
-  // are written only once a batch has finished, so it is 0 for the whole life of a batch-mode
-  // campaign — see `isPreviewable`.
-  const mightPreview = isPreviewable(summary)
-  const previewPanels = useQuery({
-    queryKey: ['panels', id],
-    queryFn: () => robovast.listCampaignPanels(id),
-    enabled: active && mightPreview,
-    retry: false,
-    staleTime: 60_000,
-  })
-  const previewing = mightPreview && declaresScene3d(previewPanels.data?.panels) === true
-  // A finished campaign still has to have recorded runs; a previewed one must not be asked, for
-  // the reason above.
-  const canReplay = (canExplore && hasRecordedRuns(summary)) || previewing
-  // Named a preview wherever it is offered, so neither the button nor the menu promises the
-  // finished article and then hands over one panel.
-  const runViewLabel = previewing ? 'Open in Run View (preview)' : 'Open in Run View'
+  const canReplay = canExplore
+  const runViewLabel = 'Open in Run View'
 
   // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
@@ -1238,7 +1214,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
         {/* Leftmost, so the controls every card shares keep their place whether or not it is
             there. The one open-something entry that is also a button: replaying a run is what a
             reader of a finished campaign most often came for, and it is offered only where there
-            is a run (or a preview) to replay — the same `canReplay` gate as its menu entry, which
+            is a run to replay — the same `canReplay` gate as its menu entry, which
             stays so the menu still lists everything that can be opened. */}
         {canReplay ? (
           <Tooltip title={runViewLabel}>

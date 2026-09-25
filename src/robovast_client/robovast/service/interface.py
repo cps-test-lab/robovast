@@ -2164,7 +2164,7 @@ class SceneStatus(BaseModel):
     url: str = ""
     #: The world identity this run needs, for display and for diagnosis when geometry looks wrong.
     world: str = ""
-    #: False when the run's capture predates override recording: geometry is compiled from the *bare*
+    #: False when the run's recording carries no overrides: geometry is compiled from the *bare*
     #: world, which is wrong for a run that varied it. Surfaced rather than silently assumed.
     overrides_known: bool = True
     #: Set when geometry cannot be produced at all, naming the reason.
@@ -2205,7 +2205,7 @@ class CampaignPanelsResponse(BaseModel):
     """The run-view panels for a campaign: the ones its snapshot ``.vast``
     declares under ``visualization.results.run_view.panels``, plus the
     contributed ones no ``.vast`` has to write (the ``playback`` transport
-    always, a ``scene3d`` for a simulator that records a capture). Each entry
+    always, a ``scene3d`` for a simulator that records its scene state). Each entry
     is the flattened panel dict (``type`` + ``position`` + panel-specific data
     bindings), rendered by the web run-view against the campaign's results tables.
     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
@@ -2218,8 +2218,8 @@ class CampaignPanelsResponse(BaseModel):
     #: Whether the served list holds nothing but the always-on transport -- i.e. this run view has
     #: nothing to look at, and the web UI says so and points at **Edit visualization**. The served
     #: list is never empty, so "bare" cannot be its length; and which panels a campaign gets
-    #: without asking is settled here, where they are merged in (a simulator that records a capture
-    #: contributes its own ``scene3d``, which *is* content), rather than in the web UI, which would
+    #: without asking is settled here, where they are merged in (a simulator that records its scene
+    #: state contributes its own ``scene3d``, which *is* content), rather than in the web UI, which would
     #: then have to spell the contributed types a second time.
     transport_only: bool = False
 
@@ -2563,6 +2563,31 @@ class Routes:
         # Where a pod delivers what it produced. A control route on purpose: `/results`
         # has no write verb, and must not grow one.
         return f"{Routes.DATA}/campaigns/{campaign_id}/outputs"
+
+    @staticmethod
+    def campaign_live(campaign_id: str) -> str:
+        """A run's tables as it records, as server-sent events.
+
+        ``?run=<config>/<run_id>&tables=a,b``. On the data plane because it is answered
+        by the process the pods' deliveries land in, which is where the decoder can follow
+        a recording as it is appended to; a finished run's rows are the SQL's.
+        """
+        return f"{Routes.DATA}/campaigns/{campaign_id}/live"
+
+    @staticmethod
+    def campaign_frame(campaign_id: str) -> str:
+        """One camera frame of a run as JPEG: ``?run=<config>/<run_id>&topic=<topic>[&t=<s>]``.
+
+        The nearest frame at or before ``t`` (the newest without it), its stamp in the
+        ``X-Frame-Time`` header. On the data plane beside ``live``: a running run's frame
+        comes from the watcher following its recording there.
+        """
+        return f"{Routes.DATA}/campaigns/{campaign_id}/frame"
+
+    @staticmethod
+    def campaign_frame_index(campaign_id: str) -> str:
+        """The stamps of every frame of a run's image topic: ``?run=<config>/<run_id>&topic=``."""
+        return f"{Routes.DATA}/campaigns/{campaign_id}/frame-index"
 
     @staticmethod
     def staged(slot: str) -> str:
@@ -3657,8 +3682,8 @@ class RobovastInterface(ABC):
     ) -> SceneStatus:
         """Is this run's 3D geometry ready, and if not, what is happening about it.
 
-        **Pure**: it reads the run's capture manifest and the campaign's image identity, and never
-        starts a build. That is :meth:`run_campaign_scene`, because a ``GET`` that launches a 2 GB
+        **Pure**: it reads the run's ``sim_recording`` row and the campaign's image identity, and
+        never starts a build. That is :meth:`run_campaign_scene`, because a ``GET`` that launches a 2 GB
         image pull would fire on a browser prefetch.
         """
 
@@ -3678,7 +3703,7 @@ class RobovastInterface(ABC):
         """Is this project's world compiled, and if not, what is happening about it.
 
         The config view's counterpart of :meth:`campaign_scene_status`, and pure for the same
-        reason. The world comes from the ``.vast`` rather than from a run's capture, so this
+        reason. The world comes from the ``.vast`` rather than from a run's recording, so this
         answers before the project has ever been run.
         """
 

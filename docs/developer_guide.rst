@@ -357,7 +357,7 @@ means "not applicable" rather than "unreadable" — failing closed on them would
 refuse every campaign that has a SUT.
 
 An image built before the label existed now reports nothing and is refused.  Those
-images predate protocol 2, which is also ``MIN_IMAGE_COMPAT``, so a refusal is the
+images predate protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
 right answer for them regardless — but the message says what to do about it
 (rebuild from the recorded revision, or re-tag with the label) rather than only
 that it could not tell.
@@ -2577,7 +2577,7 @@ decoder builds via ``ctx.open_db()`` and returns the frame dict the costmap pane
 
 **3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the browser scene
 descriptor (``scene.json``/``scene.bin``), which a simulator backend's exporter produces;
-the format is RoboVAST's, see :doc:`run_capture`. ``sceneLoader.ts``
+the format is RoboVAST's, see :ref:`scene-descriptor`. ``sceneLoader.ts``
 builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
 ``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
 controls + the Z-up wrapper). The wheel is the viewport's own, not the orbit controller's

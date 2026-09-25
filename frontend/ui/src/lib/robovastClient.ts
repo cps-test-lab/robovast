@@ -107,26 +107,6 @@ export const PRE_RUN_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
 
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
-// The phases in which a campaign has ENDED with results worth reading. `stopped` and `crashed`
-// belong here as much as `finished` does: the runs they completed are on disk and their analysis
-// runs like any other campaign's, so gating on `finished` alone hid exactly the campaigns whose
-// partial results someone had a reason to go looking at. A stopped campaign in particular could
-// never qualify however often its data was rebuilt -- `status_recovery.record_step_outcome`
-// deliberately preserves `stopped` across a re-postprocess, so the phase never becomes `finished`.
-//
-// `failed` stays out, and for a reason about the data rather than about tidiness: a failed campaign
-// never finished projecting its results, so its root is missing pieces postprocessing needs, which
-// is why the controller skips postprocessing for it.
-const ENDED_WITH_RESULTS_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'finished', 'stopped', 'crashed',
-])
-
-// Results are ready to explore only once the campaign ENDED AND its configured postprocessing
-// pipelines ran: the end is reached *before* postprocessing chains, and a campaign that defines no
-// postprocessing never gets the derived data the Results views query. The single gate for what the
-// Results topic (Explorer / Run / Data) shows.
-export const hasResults = (c: CampaignSummary) =>
-  ENDED_WITH_RESULTS_PHASES.has(c.phase) && c.postprocessed
 // Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so
 // zero means there is no store to read — the campaign never started, or ended before writing one.
 // Nothing can be replayed or queried for such a campaign, so the Run view does not offer it.
@@ -136,30 +116,19 @@ export const hasResults = (c: CampaignSummary) =>
 export const hasRecordedRuns = (c: CampaignSummary) =>
   c.num_runs > 0 || (c.num_composition_failed ?? 0) > 0
 
-// The phases in which a campaign can already have finished runs on disk. The earlier live phases
-// (`initializing`, `building`, `variation`, …) run nothing, so offering a preview there would be an
-// invitation to an empty view for a reason that has not happened yet. `finishing` and
-// `postprocessing` still qualify: the runs are all there and the index is not written until
-// postprocessing ends, so a preview is still the only way to see them.
-const PREVIEWABLE_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'running', 'finishing', 'postprocessing',
-])
+// Results are there to explore as soon as the campaign has runs, and while its trials run: a
+// run's tables are built from its recording as it grows, `run_view` lists a run from the moment
+// its directory exists, and a run still recording is read live (`runs.live`). The recorded-run
+// count alone would admit a running campaign only after its first verdict; a campaign still
+// building or composing has no run directory yet. Neither the end of the campaign nor its postprocessing is waited
+// for -- what postprocessing adds (the derived tables, the notebooks) appears in the views that
+// read it once it exists. The single gate for what the Results topic (Explorer / Run / Data)
+// shows.
+// Phases in which a run directory can exist before its verdict: what a live run view shows.
+const TRIAL_PHASES: ReadonlySet<string> = new Set<CampaignPhase>(['running', 'finishing'])
 
-// Whether the Run view may replay this campaign's finished runs *while it is still running*.
-// A preview: the 3D scene replays from each run's own capture file, and nothing else works, because
-// a running campaign has no rows in the index at all (they are written by postprocessing).
-//
-// Deliberately NOT gated on `num_runs`, and this is the whole point of the predicate rather than a
-// detail: those counts come from the `run` rows of `campaign.db`, which the controller writes only
-// once a batch has FINISHED — a batch-mode campaign has exactly one batch, so `num_runs` is 0 for
-// its entire life. Gating on it made the preview unreachable for exactly the campaigns it exists
-// for, while looking correct, because the file is read live even though it is not written live.
-//
-// So this asks only whether runs can exist yet. Whether any actually do is answered where it can be
-// answered honestly — by the run listing, which is the picker's source anyway. A campaign on its
-// first run is offered and says "no run has finished yet", a state that resolves itself within one
-// run; that is the deliberate cost of not asking a question no cheap signal can answer.
-export const isPreviewable = (c: CampaignSummary) => PREVIEWABLE_PHASES.has(c.phase)
+export const hasResults = (c: CampaignSummary) =>
+  hasRecordedRuns(c) || TRIAL_PHASES.has(c.phase)
 
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
@@ -533,6 +502,19 @@ export const robovast = {
   archiveUrl: (campaignId: string) =>
     `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
 
+  // SSE stream of one run's tables as its recording grows, on the data plane like the archive:
+  // the watcher behind it runs where the pods' deliveries land. `batch` frames carry
+  // `{table, rows}` (at most 2000 rows each, several per decoded batch), `eof` follows the run's
+  // verdict -- at once for a run that is not live -- and `streamerror` then `eof` names a refusal.
+  // Not resumable: a client that reconnects reads what landed so far through the query route and
+  // follows from there (see lib/panels/liveFeed.ts).
+  liveRunStreamUrl: (
+    campaignId: string, configName: string, runId: number | string, tables: string[],
+  ) =>
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/live?` +
+    `run=${encodeURIComponent(`${configName}/${runId}`)}&` +
+    `tables=${encodeURIComponent(tables.join(','))}`,
+
   // The same for a workspace's project files — a control-plane route, not the data plane:
   // a workspace is not on the results volume.
   workspaceArchiveUrl: (workspaceId: string) =>
@@ -712,9 +694,7 @@ export const robovast = {
   listProjectFiles: (id: string) => listFilesAt(sourcesUrl(id, '')),
 
   // One level of a campaign's output tree: the child directories (trailing `/`) and files of
-  // `<campaign>/<path>`. The Run view's preview picker walks the tree down this way — root for
-  // the configurations, then one call per configuration for its runs — because a running
-  // campaign has no index rows to ask instead, and a recursive listing of a large campaign is
+  // `<campaign>/<path>`. Not recursive unless asked: a recursive listing of a large campaign is
   // tens of thousands of paths to learn a few dozen names.
   // A trailing slash is what makes the address a *directory* in this space (`/results/<c>/nav/`
   // lists, `/results/<c>/nav` reads), so it is appended here rather than left to every caller.

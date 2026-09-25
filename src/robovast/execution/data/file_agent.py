@@ -15,21 +15,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The file agent of a cluster scenario pod: ships the growth of line files while the run runs.
+"""The file agent of a cluster scenario pod: ships the growth of the run's files while it runs.
 
 A pod's ``/out`` reaches the campaign in one tar once the run is over (the uploader,
-``pod_upload``). This script makes the run's log files and line-format files (CSV, JSONL)
-visible in the campaign directory **as they grow**: it watches ``/out`` with inotify,
+``pod_upload``). This script makes the run's log files, line-format files (CSV, JSONL) and
+bags visible in the campaign directory **as they grow**: it watches ``/out`` with inotify,
 coalesces what changed for one second, and delivers the new bytes of each grown file to the
 data plane as a byte range -- a tar member carrying the pax header ``ROBOVAST.offset``,
 which the data plane appends when its copy of the file ends at that offset
 (``robovast.service.tar_io.extract_stream``).
 
-* **What it ships** (:func:`is_line_file`): ``*.log`` under a ``logs/`` directory, ``*.csv``
-  and ``*.jsonl``; never anything under ``rosbag2/`` or ``logs/rosout_bag/``, never a
-  ``*.part`` stream, never a data-plane temp file.
-* **Complete lines only**: a delivery ends at the last ``\\n`` of what the file holds, so a
-  reader of the campaign's copy never parses half a line. The final drain sends the rest.
+* **What it ships** (:func:`shipped_as`): line files -- ``*.log`` under a ``logs/``
+  directory, ``*.csv`` and ``*.jsonl`` -- as complete lines; the bags' ``*.mcap`` under
+  ``rosbag2/``, ``logs/rosout_bag/`` and ``roqsim_bag/`` as every new byte, since a
+  write-through bag is readable up to its last complete record; and the small files that
+  appear beside a bag (``metadata.yaml``, ``message_definitions.json``) whole, each time
+  they are written. Never a data-plane temp file.
+* **Complete lines only** for a line file: a delivery ends at the last ``\\n`` of what the
+  file holds, so a reader of the campaign's copy never parses half a line. The final drain
+  sends the rest.
 * **A resync** -- the data plane's copy does not end where this agent's offset says -- is
   repaired by sending the file whole (a member without the header replaces it).
 * **Restart-safe**: the delivered offsets persist in ``/ipc/file_agent.json``.
@@ -84,8 +88,6 @@ AGENT_CONTAINER = "agent"
 OFFSET_HEADER = "ROBOVAST.offset"
 #: ``robovast.service.tar_io.INCOMING_SUFFIX``
 INCOMING_SUFFIX = ".robovast-incoming"
-#: ``robovast.execution.cluster_execution.pod_upload.IN_PROGRESS_SUFFIX``
-IN_PROGRESS_SUFFIX = ".part"
 
 #: Where the delivered offsets persist, under the IPC directory.
 STATE_FILE = "file_agent.json"
@@ -96,7 +98,7 @@ COALESCE_S = 1.0
 MAX_BACKOFF_S = 30.0
 #: Bytes one delivery carries at most, so the agent's memory is bounded whatever a file's
 #: size. What does not fit goes in the next cycle.
-MAX_DELIVERY_BYTES = 4 * 1024 * 1024
+MAX_DELIVERY_BYTES = 8 * 1024 * 1024
 #: Seconds one request may take before it counts as failed.
 REQUEST_TIMEOUT_S = 60.0
 
@@ -242,21 +244,49 @@ class Inotify:
 
 # -- what is shipped ------------------------------------------------------------------------
 
-def is_line_file(rel: str) -> bool:
-    """Whether the ``/out``-relative path *rel* names a file the agent ships."""
+#: How a file is shipped: as its complete lines, as every new byte, or whole each time it is
+#: written.
+LINES = "lines"
+BYTES = "bytes"
+WHOLE = "whole"
+
+#: The files that appear beside a bag: rosbag2's metadata once the bag is closed, and the
+#: run's definitions dump. Small by construction, so they are shipped whole.
+BAG_SIDECARS = ("metadata.yaml", "message_definitions.json")
+
+
+def _in_bag(dirs: "list[str]") -> bool:
+    """Whether a path through *dirs* lies in a recording directory."""
+    if "rosbag2" in dirs or "roqsim_bag" in dirs:
+        return True
+    return any(part == "logs" and dirs[i + 1] == "rosout_bag"
+               for i, part in enumerate(dirs[:-1]))
+
+
+def shipped_as(rel: str) -> "str | None":
+    """How the agent ships the ``/out``-relative path *rel*: :data:`LINES`, :data:`BYTES`,
+    :data:`WHOLE`, or ``None`` when it does not."""
     parts = rel.replace(os.sep, "/").strip("/").split("/")
     name = parts[-1]
     dirs = parts[:-1]
-    if not name or name.endswith(IN_PROGRESS_SUFFIX) or name.endswith(INCOMING_SUFFIX):
-        return False
-    if "rosbag2" in dirs:
-        return False
-    for i, part in enumerate(dirs[:-1]):
-        if part == "logs" and dirs[i + 1] == "rosout_bag":
-            return False
+    if not name or name.endswith(INCOMING_SUFFIX):
+        return None
+    if _in_bag(dirs):
+        if name.endswith(".mcap"):
+            return BYTES
+        if name in BAG_SIDECARS:
+            return WHOLE
+        return None
     if name.endswith(".csv") or name.endswith(".jsonl"):
-        return True
-    return name.endswith(".log") and "logs" in dirs
+        return LINES
+    if name.endswith(".log") and "logs" in dirs:
+        return LINES
+    return None
+
+
+def is_line_file(rel: str) -> bool:
+    """Whether *rel* names a file the agent ships as complete lines."""
+    return shipped_as(rel) == LINES
 
 
 # -- the agent core ---------------------------------------------------------------------------
@@ -330,18 +360,18 @@ class Agent:
                 continue
             if os.path.isdir(path):
                 self._notice_tree(path)
-            elif rel and is_line_file(rel):
+            elif rel and shipped_as(rel):
                 self.dirty.add(rel)
 
     def scan(self) -> None:
-        """Take every line file under ``/out`` into the next delivery."""
+        """Take every shipped file under ``/out`` into the next delivery."""
         self._notice_tree(self.out_dir)
 
     def _notice_tree(self, top: str) -> None:
         for dirpath, _dirnames, filenames in os.walk(top):
             for name in filenames:
                 rel = self._rel(os.path.join(dirpath, name))
-                if rel and is_line_file(rel):
+                if rel and shipped_as(rel):
                     self.dirty.add(rel)
 
     @property
@@ -356,29 +386,32 @@ class Agent:
 
         A file's range starts at its delivered offset (or at 0, sent whole, after a resync
         or when the file is now shorter than what was delivered) and ends after its last
-        complete line -- or at its end, when *final*.
+        complete line for a line file -- or at its end, when *final* -- and at its end for a
+        bag. A file shipped whole is sent from 0 to its end every time it was written,
+        whatever the budget: it is small by construction and a range of it is not a file.
         """
         sends = []
         budget = self.max_bytes
         for rel in sorted(self.dirty):
             if budget <= 0:
                 break
+            mode = shipped_as(rel)
             path = os.path.join(self.out_dir, rel)
             try:
                 with open(path, "rb") as fh:
                     size = os.fstat(fh.fileno()).st_size
                     start = self.offsets.get(rel, 0)
-                    whole = rel in self.whole or size < start
+                    whole = mode == WHOLE or rel in self.whole or size < start
                     if whole:
                         start = 0
                     if size <= start:
                         continue
                     fh.seek(start)
-                    data = fh.read(min(size - start, budget))
+                    data = fh.read(size if mode == WHOLE else min(size - start, budget))
             except (FileNotFoundError, IsADirectoryError, PermissionError):
                 continue
             complete = len(data) == size - start
-            if not (final and complete):
+            if mode == LINES and not (final and complete):
                 cut = data.rfind(b"\n") + 1
                 if cut:
                     data = data[:cut]
@@ -527,7 +560,7 @@ FINAL_DRAIN_ROUNDS = 64
 
 
 def drain(agent: Agent) -> bool:
-    """Deliver everything every line file holds, partial last lines included."""
+    """Deliver everything every shipped file holds, partial last lines included."""
     agent.scan()
     for _ in range(FINAL_DRAIN_ROUNDS):
         if not agent.deliver(final=True):
@@ -581,7 +614,7 @@ def run(agent: Agent, ino: Inotify, ipc_dir: str, wait_for, grace_s: float, stop
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Ship the growth of a pod's line files to the data plane.")
+        description="Ship the growth of a pod's files to the data plane.")
     parser.add_argument("--grace", type=float, default=90.0,
                         help="seconds after done.main to end without a missing marker")
     parser.add_argument("wait_for", nargs="*",

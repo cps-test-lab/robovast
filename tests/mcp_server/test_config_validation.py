@@ -9,7 +9,8 @@ process (the old ``load_config`` did ``sys.exit(1)`` on a YAML error), and it
 must report *all* problems at once with locations.
 """
 
-from robovast.common.config_validation import _postprocessing_problems, validate_project_file
+from robovast.common.config_validation import (_postprocessing_problems, _recording_problems,
+                                               validate_project_file)
 
 
 def test_decoder_entries_validate_clean(tmp_path):
@@ -148,50 +149,51 @@ def test_valid_project_reports_counts(tmp_path):
     assert report["total_trials"] == report["configs"] * report["runs_per_config"]
 
 
-def test_scene3d_without_a_capture_producing_simulator_is_refused():
-    """A scene3d panel replays a run capture, so the configured simulator must make one.
+def test_scene3d_without_a_state_recording_simulator_is_refused():
+    """A scene3d panel replays the simulator's recorded state, so the configured simulator must
+    record it.
 
     Asked of the backend rather than pattern-matched out of the campaign's wheel names:
     in the shape where the simulator runs from its own image, a campaign installs no
     simulator packages at all, so the old signal would have found nothing.
     """
     import robovast.common.simulators as sim_mod
-    from robovast.common.config_validation import _run_capture_problems
+    from robovast.common.config_validation import _scene3d_problems
     from robovast.common.simulators import SimulatorBackend
 
-    class _NoCapture(SimulatorBackend):
+    class _RecordsNothing(SimulatorBackend):
         pass
 
     raw = {
         "execution": {"mode": "ros2", "containers": {
-            "simulation": {"backend": "nocapture", "stage": "x"}}},
+            "simulation": {"backend": "recordsnothing", "stage": "x"}}},
         "visualization": {"results": {"run_view": {"panels": [{"scene3d": {}}]}}},
     }
 
     original = sim_mod.resolve_backend
     try:
-        sim_mod.resolve_backend = lambda name, base_dir="": _NoCapture()
-        problems = _run_capture_problems(raw)
+        sim_mod.resolve_backend = lambda name, base_dir="": _RecordsNothing()
+        problems = _scene3d_problems(raw)
         assert len(problems) == 1
-        assert "does not produce one" in problems[0]["message"]
+        assert "'recordsnothing' simulator records none" in problems[0]["message"]
         assert problems[0]["field"] == "visualization.results.run_view.panels[0]"
 
-        class _WithCapture(SimulatorBackend):
-            def produces_run_capture(self, cfg, execution):
+        class _RecordsState(SimulatorBackend):
+            def records_scene_state(self, cfg, execution):
                 return True
 
-        sim_mod.resolve_backend = lambda name, base_dir="": _WithCapture()
-        assert _run_capture_problems(raw) == []
+        sim_mod.resolve_backend = lambda name, base_dir="": _RecordsState()
+        assert _scene3d_problems(raw) == []
     finally:
         sim_mod.resolve_backend = original
 
 
-def test_the_capture_check_stays_quiet_without_a_backend():
-    """Nothing here could tell where an unconfigured simulator's capture would come from."""
-    from robovast.common.config_validation import _run_capture_problems
+def test_the_scene3d_check_stays_quiet_without_a_backend():
+    """Nothing here could tell where an unconfigured simulator's recording would come from."""
+    from robovast.common.config_validation import _scene3d_problems
     raw = {"execution": {"containers": {"scenario": {"image": "a"}}},
            "visualization": {"results": {"run_view": {"panels": [{"scene3d": {}}]}}}}
-    assert _run_capture_problems(raw) == []
+    assert _scene3d_problems(raw) == []
 
 
 # ---------------------------------------------------------------------------
@@ -420,3 +422,88 @@ def test_every_ad_hoc_container_is_named_once(tmp_path):
     assert "execution.containers.explorer" in advisory["message"]
     assert "execution.containers.nav" in advisory["message"]
     assert "are not named after a role" in advisory["message"]
+
+
+# -- the recording block against the rest of the campaign ---------------------------------
+
+def _raw(recording=None, *, backend=None, postprocessing=None, panels=None):
+    execution = {"scenario_file": "s.osc", "runs": 1,
+                 "containers": {"scenario": {"image": "x:1"}}}
+    if backend:
+        execution["containers"]["simulation"] = {"backend": backend, "config": "pkg:w"}
+    raw = {"version": 6, "execution": execution}
+    if recording is not None:
+        raw["recording"] = recording
+    if postprocessing is not None:
+        raw["results_processing"] = {"postprocessing": postprocessing}
+    if panels is not None:
+        raw["visualization"] = {"results": {"run_view": {"panels": panels}}}
+    return raw
+
+
+def _fields(problems):
+    return [(p["field"], p["severity"]) for p in problems]
+
+
+def test_roqsim_knobs_need_the_roqsim_backend():
+    block = {"roqsim": {"rate_hz": 25}}
+    assert _recording_problems(_raw(block, backend="roqsim"), None) == []
+    for backend in ("gazebo", None):
+        problems = _recording_problems(_raw(block, backend=backend), None)
+        assert _fields(problems) == [("recording.roqsim", "error")]
+        assert "roqsim" in problems[0]["message"]
+
+
+def test_a_topic_the_tables_read_must_be_recorded():
+    """By name, by a regex entry, or spared by exclude -- rosbag2's own rules."""
+    entries = [{"rosbags_to_csv": {"topics": ["/odom", "/scan"]}},
+               {"rosbags_to_webm": {"topic": "/camera/image_raw/compressed"}},
+               "rosbags_tf_to_csv"]
+    # Everything: nothing to say.
+    assert _recording_problems(_raw({"ros2": {"topics": "all"}}, postprocessing=entries), None) == []
+    # A list that misses one names it, and where it was asked for.
+    problems = _recording_problems(
+        _raw({"ros2": {"topics": ["/odom", "^/camera/"]}}, postprocessing=entries), None)
+    assert _fields(problems) == [("results_processing.postprocessing[0].topics", "error")]
+    assert "'/scan'" in problems[0]["message"]
+    # An exclude wins, as it does in rosbag2.
+    problems = _recording_problems(
+        _raw({"ros2": {"topics": "all", "exclude": ["^/camera/"]}}, postprocessing=entries), None)
+    assert _fields(problems) == [("results_processing.postprocessing[1].topic", "error")]
+    assert "/camera/image_raw/compressed" in problems[0]["message"]
+
+
+def test_a_camera_panel_names_a_topic_the_bag_must_hold():
+    panels = [{"camera": {"topic": "/front/image/compressed"}}]
+    assert _recording_problems(_raw({"ros2": {"topics": ["^/front/"]}}, panels=panels), None) == []
+    problems = _recording_problems(_raw({"ros2": {"topics": ["/odom"]}}, panels=panels), None)
+    assert _fields(problems) == [("visualization.results.run_view.panels[0].topic", "error")]
+
+
+def test_a_scenario_that_records_its_own_bag_is_refused(tmp_path):
+    """RoboVAST records <run>/rosbag2 itself; a scenario's bag_record would write the same
+    directory."""
+    osc = tmp_path / "s.osc"
+    osc.write_text("scenario t:\n    do serial:\n        bag_record(['/odom'])\n")
+    problems = _recording_problems(_raw(), str(osc))
+    assert _fields(problems) == [("execution.scenario_file", "error")]
+    assert "bag_record" in problems[0]["message"] and "recording:" in problems[0]["message"]
+    osc.write_text("scenario t:\n    do serial:\n        wait(1s)\n")
+    assert _recording_problems(_raw(), str(osc)) == []
+
+
+def test_the_recorder_check_runs_through_validate_project_file(tmp_path):
+    (tmp_path / "scenario.osc").write_text("scenario test:\n    do serial:\n        bag_record([])\n")
+    vast = tmp_path / "rec.vast"
+    vast.write_text(
+        "version: 6\n"
+        "recording: {ros2: {use_sim_time: true}}\n"
+        "execution:\n"
+        "  containers: {scenario: {image: 'family:robovast'}}\n"
+        "  runs: 1\n"
+        "  timeout: 300\n"
+        "  scenario_file: scenario.osc\n"
+    )
+    report = validate_project_file(str(vast))
+    assert report["valid"] is False
+    assert [p["stage"] for p in report["problems"]] == ["recording"]

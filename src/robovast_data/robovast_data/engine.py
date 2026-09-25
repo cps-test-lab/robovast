@@ -33,8 +33,11 @@ every row.
 tables it names -- and the tables the views it names read -- are built for the runs in scope
 that do not have them yet, narrowed by the statement's ``WHERE`` where it restricts a table to
 some runs (:mod:`robovast_data.statement`). A finished run's entry is final, so asking again
-costs a lookup; a run still going is looked at again. What a build could not do is reported
-with the answer, by table and run, never dropped.
+costs a lookup; a run still going is looked at again -- unless a live session
+(:mod:`robovast_decode.live`) is writing it in parts, whose entry carries a ``live`` stamp
+younger than :data:`LIVE_STALE_S` seconds: the query reads the parts written so far. A stamp
+older than that is an abandoned session's, and the table is rebuilt whole. What a build could
+not do is reported with the answer, by table and run, never dropped.
 
 **What a connection may touch** is the campaigns' table files and nothing else: external access
 is off except for those directories, the configuration is locked, the statement is a single
@@ -64,7 +67,8 @@ from robovast_decode.build import (CAMPAIGN_TABLES, DERIVED_TABLES, RECORDING_TA
                                    available_tables, build, find_runs)
 from robovast_decode.layout import decoder_config
 from robovast_decode.runs import RUNS_TABLE, StoreError, build_runs
-from robovast_decode.tables import TABLES_DIR, cache_root, read_manifest, schema_of
+from robovast_decode.tables import (LIVE_STALE_S, TABLES_DIR, cache_root, live_owned,
+                                    read_manifest, schema_of)
 
 from . import record, views
 from .statement import Narrowing, QueryError, Statement, parse
@@ -204,8 +208,10 @@ class Engine:
                     demanded.append((scope, table, run.key))
                     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(
                         run.key)
-                    if (entry and entry.get("complete")
-                            and entry.get("decoder") == DECODER_VERSION):
+                    if entry and entry.get("decoder") == DECODER_VERSION and (
+                            entry.get("complete") or live_owned(entry)):
+                        # Final, or a live session is appending its parts as the run records:
+                        # the query reads the parts written so far.
                         continue
                     todo.append(table)
                 if todo:
@@ -249,8 +255,9 @@ class Engine:
     # -- what a query names ----------------------------------------------------------------
 
     def pose_tables(self) -> List[str]:
-        """Tables that may follow the pose contract: ``poses`` and every run file that does."""
-        names = {"poses"}
+        """Tables that may follow the pose contract: ``poses``, ``sim_poses`` and every run
+        file that does."""
+        names = {"poses", "sim_poses"}
         for scope in self.scopes:
             for run in self._runs(scope):
                 for table, path in run_files(run.path, reserved=DERIVED_TABLES).tables.items():
@@ -391,8 +398,9 @@ class Engine:
         try:
             for macro in _MACROS:
                 con.execute(macro)
-            self._define_record(con)
+            # ``runs`` first: ``run_view`` reads its ``live`` column.
             self._define_runs(con)
+            self._define_record(con)
             relations = set(relations)
             columns: Dict[str, set] = {}
             for table in self.tables_for(relations):
@@ -556,4 +564,5 @@ def _explain(exc: duckdb.Error, relations, con) -> str:
     return message
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "Engine", "Prepared", "Problem", "RECORD_SCHEMA", "Scope"]
+__all__ = ["DEFAULT_TIMEOUT_S", "Engine", "LIVE_STALE_S", "Prepared", "Problem", "RECORD_SCHEMA",
+           "Scope"]

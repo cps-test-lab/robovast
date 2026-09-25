@@ -21,14 +21,14 @@ export interface LogTabScope {
   level: string
   configName?: string
   runId?: number
-  /** The campaign is still running, so `run_log` holds nothing for it and the tab streams the
-   *  run's job log instead. The same switch the run view's log panel makes, rendering the same
-   *  component, so the two views cannot come to say different things about one run. */
-  preview?: boolean
+  /** The run is still recording (`run_view.live`), so `run_log` holds nothing for it and the tab
+   *  streams the run's job log instead. The same switch the run view's log panel makes, rendering
+   *  the same component, so the two views cannot come to say different things about one run. */
+  live?: boolean
 }
 
 export function RunLogTab({ scope }: { scope: LogTabScope }) {
-  if (scope.preview)
+  if (scope.live)
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <LiveRunLog

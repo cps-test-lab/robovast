@@ -45,6 +45,7 @@ from __future__ import annotations
 from typing import Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
+                                    RecordingConfig,
                                     SUT_CONTAINER, flatten_panel_shorthand)
 
 #: Entry-point group backends register in.
@@ -167,11 +168,17 @@ class SimulatorBackend:
         """
         return None
 
-    def env(self, cfg, execution: dict) -> dict:
+    def env(self, cfg, execution: dict, recording: Optional[RecordingConfig]) -> dict:
         """Environment the simulator reads, merged into every container.
 
         A campaign's own ``execution.env`` wins over this: these are defaults a backend
         knows, not decisions it takes away.
+
+        *recording* is the campaign's ``recording:`` block, or ``None`` when it has none --
+        which means "record everything", not "record nothing". A backend that records
+        reads its own section of it here (roqsim reads ``recording.roqsim``) and asks the
+        simulator for exactly that, so the knobs a campaign sets reach the process that
+        honours them by the same route as every other variable the backend contributes.
         """
         return {}
 
@@ -248,20 +255,22 @@ class SimulatorBackend:
         """
         return []
 
-    def produces_run_capture(self, cfg, execution: dict) -> bool:
-        """Whether runs write the capture a ``scene3d`` panel replays.
+    def records_scene_state(self, cfg, execution: dict) -> bool:
+        """Whether runs record the simulator state a ``scene3d`` panel replays.
 
-        Replaces sniffing a campaign's wheel names for ``roqsim``: a capability question
-        the simulator can answer, asked of whichever simulator is actually configured.
+        The panel replays a run from the tables its recording decodes to (``sim_poses``,
+        ``joint_states``, ``sim_recording``, ``sim_entities``), so this is a capability
+        question the simulator can answer, asked of whichever simulator is actually
+        configured rather than sniffed from a campaign's wheel names.
         """
         return False
 
     def default_panels(self, cfg, execution: dict) -> list:
         """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
 
-        The same reasoning as :meth:`env`: a campaign whose runs record a capture always wants
-        the panel that replays it, so there is nothing for the ``.vast`` to decide and nothing
-        it should have to write. A backend that produces no such artifact returns ``[]`` --
+        The same reasoning as :meth:`env`: a campaign whose runs record their scene state
+        always wants the panel that replays it, so there is nothing for the ``.vast`` to decide
+        and nothing it should have to write. A backend that produces no such artifact returns ``[]`` --
         Gazebo has no scene-descriptor export, so it has no 3D panel to offer and must not
         claim one.
 
@@ -283,14 +292,15 @@ class SimulatorBackend:
         generator, with ``{out}`` for the output directory. It runs in the campaign's own
         simulator image, so it may name that image's tools.
 
-        Companion to :meth:`produces_run_capture`: one says a run records the motion a
+        Companion to :meth:`records_scene_state`: one says a run records the motion a
         ``scene3d`` panel replays, this one says the geometry it is replayed against can be
         rebuilt. ``None`` -- the default -- means this backend has no exporter, which is a
         normal answer: Gazebo has none.
 
         The descriptor *format* is RoboVAST's (``scene.json`` + ``scene.bin``, and a
-        ``.generated.json`` manifest; see ``docs/run_capture.rst``), so a second backend
-        implements against it rather than inventing one. What belongs here is only the
+        ``.generated.json`` manifest; see the scene descriptor section of
+        ``docs/simulators.rst``), so a second backend implements against it rather than
+        inventing one. What belongs here is only the
         command: which tool, and how it spells its arguments -- ``overrides`` in particular,
         whose serialization is the simulator's own convention.
 
@@ -529,7 +539,8 @@ def backend_name(execution: dict) -> Optional[str]:
     return (block or {}).get("backend") if isinstance(block, dict) else None
 
 
-def apply_backend(execution: dict, base_dir: str = "") -> dict:
+def apply_backend(execution: dict, base_dir: str = "",
+                  recording: Optional[RecordingConfig] = None) -> dict:
     """Return *execution* with its backend's contributions merged in.
 
     Called once, where the raw ``execution`` mapping is turned into what the execution
@@ -538,6 +549,11 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
 
     The campaign always wins: a backend supplies defaults for keys the author left out,
     and never overrides one they set.
+
+    *recording* is the campaign's ``recording:`` block, handed to :meth:`SimulatorBackend.env`
+    so the environment stored here already carries what the simulator is asked to record.
+    A caller that only wants the container plan may leave it out: the plan does not read
+    the environment, and an absent block means the simulator records everything.
     """
     name = backend_name(execution)
     if not name:
@@ -581,7 +597,7 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
         ref = backend.simulation_ref(cfg, execution)
         if ref:
             result["simulation"] = ref
-    contributed = backend.env(cfg, execution)
+    contributed = backend.env(cfg, execution, recording)
     if contributed:
         result["_backend_env"] = contributed
     return result
@@ -898,7 +914,8 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "",
     return [str(p) for p in (declared or [])]
 
 
-def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
+def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
+                    recording: Optional[RecordingConfig] = None) -> dict:
     """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
 
     :func:`apply_backend`'s per-job twin, and deliberately the *same* hooks: the command and
@@ -907,6 +924,10 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     one thing at composition and another at dispatch.
 
     ``document`` is what the execution backend writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
+
+    *recording* is the same block :func:`apply_backend` was given: the overlay's ``env`` is
+    merged over the campaign-level contribution, so a job asked with a different block
+    would silently rewrite what the run records.
     """
     empty = {"command": None, "env": {}, "document": None}
     name = backend_name(execution or {})
@@ -918,7 +939,7 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     sim_container = contributed.get(SIMULATION_CONTAINER) or {}
     return {
         "command": sim_container.get("command"),
-        "env": backend.env(cfg, execution) or {},
+        "env": backend.env(cfg, execution, recording) or {},
         "document": backend.sim_document(cfg, execution),
     }
 

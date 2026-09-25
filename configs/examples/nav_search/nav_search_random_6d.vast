@@ -183,6 +183,16 @@ execution:
   env:
   - PYTHONUNBUFFERED: "1"
 
+# What every run's bag holds. Everything, by default -- including the two halves of the
+# oracle: /collision is the verdict (a real contact force, latched) and /clearance the gradient
+# (how close it came, against real geometry in the simulator), recorded rather than recomputed
+# offline because a clearance derived from poses would miss the closest approach between
+# samples. use_sim_time stamps each message with the simulator's clock, so a trial reads the
+# same in sim seconds however fast the machine ran.
+recording:
+  ros2:
+    use_sim_time: true
+
 results_processing:
   # nav2's own operating-rate metric, graded per run into the `run_health` table.
   # Declared rather than discovered: a health check that ran everywhere would grade

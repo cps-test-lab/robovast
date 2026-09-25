@@ -23,6 +23,9 @@ many handlers read it.
 
 A segment that is still being written, or that a killed recorder left without its summary, is
 read up to its last complete record; nothing about it is an error.
+
+A metadata record (a named string map, which roqsim's recording uses for its provenance and
+its entity roster) goes to every handler's :meth:`Handler.metadata` as it is met.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List
 
 from .definitions import SIDECAR_NAME, TypeCatalog
-from .framing import Channel, McapTail, Message, Schema
+from .framing import Channel, McapTail, Message, Metadata, Schema
 from .handlers import Handler
 
 _SEGMENT_INDEX = re.compile(r"_(\d+)\.mcap$")
@@ -48,6 +51,16 @@ def segments(bag_dir: str) -> List[str]:
         match = _SEGMENT_INDEX.search(os.path.basename(path))
         return (int(match.group(1)) if match else -1, os.path.basename(path))
     return sorted(files, key=key)
+
+
+def channel_type(channel: Channel, schemas: Dict[int, Schema]) -> str:
+    """The type name a channel's messages are reported under.
+
+    A channel with a schema is typed by the schema's name; one without (roqsim's ``state``
+    channel) by its message encoding, which is the only thing that says what it holds.
+    """
+    schema = schemas.get(channel.schema_id)
+    return schema.name if schema else channel.message_encoding
 
 
 @dataclass
@@ -109,10 +122,16 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
                                            record.data.decode("utf-8", errors="replace"))
                 continue
             if isinstance(record, Channel):
-                schema = tail.schemas.get(record.schema_id)
-                typename = schema.name if schema else ""
+                typename = channel_type(record, tail.schemas)
                 recorded.setdefault(record.topic, typename)
                 report.topics.setdefault(record.topic, TopicStats(type=typename))
+                continue
+            if isinstance(record, Metadata):
+                for handler in list(active):
+                    try:
+                        handler.metadata(record.name, record.metadata)
+                    except Exception as exc:  # noqa: BLE001
+                        fail(handler, exc)
                 continue
             if not isinstance(record, Message):
                 continue
@@ -125,11 +144,12 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
             readers = wanted.get(channel.topic)
             if not readers or stats.undecodable:
                 continue
-            if not catalog.ensure(stats.type):
+            encoding = channel.message_encoding
+            if not catalog.ensure(stats.type, encoding):
                 stats.undecodable = catalog.missing([stats.type])[stats.type]
                 continue
             try:
-                msg = catalog.deserialize(record.data, stats.type)
+                msg = catalog.deserialize(record.data, stats.type, encoding)
             except Exception as exc:  # noqa: BLE001 - a message that does not match its schema
                 stats.undecodable = f"a message does not decode as {stats.type}: {exc}"
                 continue
@@ -148,4 +168,4 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
     return report
 
 
-__all__ = ["BagReport", "SIDECAR_NAME", "TopicStats", "decode_bag", "segments"]
+__all__ = ["BagReport", "SIDECAR_NAME", "TopicStats", "channel_type", "decode_bag", "segments"]

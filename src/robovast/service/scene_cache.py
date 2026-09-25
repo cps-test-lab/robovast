@@ -4,8 +4,9 @@
 
 """On-demand 3D scene descriptors for the run view, cached across campaigns.
 
-A run view needs two artifacts (see ``docs/run_capture.rst``): the **capture** (motion), which the run
-itself writes, and the **scene descriptor** (geometry), which is what this module produces.
+A run view needs two artifacts: the **recording** (motion), which the simulator writes as the run
+goes and the decoder reads into the run's tables, and the **scene descriptor** (geometry; see the
+scene descriptor section of ``docs/simulators.rst``), which is what this module produces.
 
 Producing it eagerly, by an ``execution.generate`` entry at campaign preparation, costs 5-9 s and
 13-31 MB for every campaign whether or not anyone ever opens the 3D view, and cannot be got right for
@@ -15,8 +16,9 @@ other campaign that used the same world — costs nothing.
 
 Three things make that work:
 
-* **A run says which world it needs.** The capture manifest records ``world`` and ``overrides``, so
-  nothing has to be declared in the ``.vast`` and a per-config world needs no special handling.
+* **A run says which world it needs.** The recording's ``sim_recording`` row carries ``world`` and
+  ``overrides``, so nothing has to be declared in the ``.vast`` and a per-config world needs no
+  special handling.
 * **Generation runs in the campaign's own pinned image.** The world is generally not on this host: it is
   installed into the image from a wheel (``/usr/local/share/roqsim_nav2_example/worlds/depot_nav2.yaml``).
   A host that happens to have ``roqsim`` could be a different version and would render *plausible, wrong*
@@ -130,14 +132,16 @@ def _lock_for(key: str) -> threading.Lock:
         return _locks.setdefault(key, threading.Lock())
 
 
-def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
+def world_identity(campaign_dir, recording, resolve_digest=None,
                    config_name: str = "") -> dict:
-    """What geometry this run needs, from its capture manifest plus the campaign's image.
+    """What geometry this run needs, from its recording's provenance plus the campaign's image.
 
     Args:
         campaign_dir: the campaign root (already local — on the cluster the caller materialises the two
             small objects it needs first).
-        capture_manifest: the parsed ``capture/capture.json`` of the run being viewed.
+        recording: the run's ``sim_recording`` row, as ``{world, overrides_json, format_version}``
+            -- the provenance the simulator wrote into its recording, read back through the
+            campaign's tables.
         resolve_digest: ``ref -> digest | None``, from the registry that can answer it. Lets a
             campaign that recorded only a declared *tag* still be
             keyed on bytes; without it such a campaign is refused rather than guessed at.
@@ -146,36 +150,45 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
             :func:`campaign_world_rel`.
 
     Returns:
-        ``{producer, world, overrides, image, overrides_known, capture_version}``.
+        ``{producer, world, overrides, image, overrides_known, recording_version}``.
 
     Raises:
-        SceneUnavailable: when the capture is a format version this code does not implement, when the
-            run does not say what world it used, or when the campaign does not record an image
-            identity precise enough to trust a cache entry against.
+        SceneUnavailable: when the run does not say what world it used, when its recorded overrides
+            cannot be read, or when the campaign does not record an image identity precise enough
+            to trust a cache entry against.
     """
     from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
         RoleImageUnavailable, campaign_role_image)
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
-    from robovast.common.run_capture import (  # pylint: disable=import-outside-toplevel
-        CaptureFormatError, check_supported)
 
-    # Before anything is read out of the manifest, including `world`. Everything below interprets
-    # fields whose meaning the format version defines -- `overrides` most of all -- so a version this
-    # code has not seen has to stop here rather than be keyed and compiled on the assumption that the
-    # fields still mean what they used to.
-    try:
-        capture_version = check_supported(capture_manifest)
-    except CaptureFormatError as err:
-        raise SceneUnavailable(str(err)) from err
-
-    world = (capture_manifest or {}).get("world")
+    recording = recording or {}
+    world = recording.get("world")
     if not world:
         raise SceneUnavailable(
-            "this run's capture does not name the world it was recorded from, so its geometry cannot "
-            "be rebuilt. Re-run with a producer that records `world` in capture.json.")
+            "this run's recording does not name the world it was recorded from, so its geometry "
+            "cannot be rebuilt. Re-run with a simulator that records `world` in its recording.")
+    # `overrides` has three states and two of them must not be conflated: {} means "none applied",
+    # NULL means "this recording did not record them". Compiling the bare world for a run that
+    # *varied* it renders confidently wrong geometry, so absence is carried through and reported.
+    overrides_json = recording.get("overrides_json")
+    overrides_known = overrides_json is not None
+    overrides = {}
+    if overrides_known:
+        try:
+            overrides = json.loads(overrides_json)
+        except (TypeError, ValueError) as err:
+            raise SceneUnavailable(
+                f"this run's recorded overrides could not be read ({err}), so the world it was "
+                "recorded against cannot be identified.") from err
+        if overrides is None:
+            overrides_known, overrides = False, {}
+        elif not isinstance(overrides, dict):
+            raise SceneUnavailable(
+                f"this run's recorded overrides are not a mapping ({overrides_json!r}), so the world "
+                "it was recorded against cannot be identified.")
 
-    # Geometry is compiled from the world the capture names, and that world -- with the exporter that
+    # Geometry is compiled from the world the recording names, and that world -- with the exporter that
     # reads it -- lives in the SIMULATION image, so that is the role asked for. `campaign_role_image`
     # owns the whole answer and refuses rather than substituting another role's image: keying on
     # the scenario container's digest sent the build into an image with neither the world nor the
@@ -199,24 +212,23 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
             "bytes, so it cannot identify the geometry it produced. Re-run the campaign to record a "
             "digest, or generate the descriptor with an execution.generate entry instead.")
 
-    # `overrides` has three states and two of them must not be conflated: {} means "none applied",
-    # absent means "this producer did not record them". Compiling the bare world for a run that
-    # *varied* it renders confidently wrong geometry, so absence is carried through and reported.
-    overrides_known = "overrides" in (capture_manifest or {})
     execution = _campaign_execution(campaign_dir)
+    backend = backend_name(execution)
     identity = {
-        "producer": str((capture_manifest or {}).get("producer") or "roqsim"),
+        # Who wrote the recording, and so whose convention `overrides` follows: the simulator
+        # the campaign names. The recording itself carries no producer field.
+        "producer": backend or "",
         "world": str(world),
-        "overrides": (capture_manifest or {}).get("overrides") or {},
+        "overrides": overrides,
         "overrides_known": overrides_known,
-        # What `overrides` MEANS -- v2 addresses components by path where v1 addressed them by
-        # plugin name, on a document of identical shape. See :func:`cache_key`.
-        "capture_version": capture_version,
+        # The recording format's own version, as the simulator wrote it. Reported, not keyed:
+        # see :func:`cache_key` for why the image digest already settles what `overrides` means.
+        "recording_version": _recording_version(recording.get("format_version")),
         "image": image,
         # Which simulator this campaign ran, so the command that rebuilds its geometry can be
         # asked of that backend rather than assumed here.
         "execution": execution,
-        "backend": backend_name(execution),
+        "backend": backend,
     }
     identity.update(_campaign_world(campaign_dir, str(world), config_name))
     # A second tier, when the world is the campaign's but an override names a file this
@@ -227,15 +239,28 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
     return identity
 
 
+def _recording_version(value) -> int | None:
+    """The recording's ``format_version`` as an int, or ``None`` when the row carries none."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise SceneUnavailable(
+            f"this run's recording declares a format version that is not a number ({value!r}), "
+            "so its world identity cannot be keyed.") from None
+
+
 def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | None = None,
                              resolve_digest=None) -> dict:
     """The same identity, for a world declared in a **workspace** rather than recorded by a run.
 
     The config view compiles the world a ``.vast`` names, before anything has run -- so there is no
-    capture to read the world and its overrides from, and they come from the file instead. Everything
-    downstream (:func:`cache_key`, :func:`generate`, the eviction) is unchanged, which is what makes a
-    workspace and a campaign that name the same world **share one cache entry**: open the Config tab
-    on a project, then the run view of a campaign built from it, and the second is already warm.
+    recording to read the world and its overrides from, and they come from the file instead.
+    Everything downstream (:func:`cache_key`, :func:`generate`, the eviction) is unchanged, which
+    is what makes a workspace and a campaign that name the same world **share one cache entry**:
+    open the Config tab on a project, then the run view of a campaign built from it, and the
+    second is already warm.
 
     *sim_block* is the campaign-level resolved simulation block. Per-configuration overrides are
     deliberately NOT keyed in: a campaign that varies its obstacles would otherwise compile a world
@@ -245,8 +270,6 @@ def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | 
     """
     from robovast.common.config import \
         SIMULATION_CONTAINER  # pylint: disable=import-outside-toplevel
-    from robovast.common.run_capture import \
-        FORMAT_VERSION  # pylint: disable=import-outside-toplevel
 
     execution = (raw_config or {}).get("execution") or {}
     containers = execution.get("containers") or {}
@@ -275,19 +298,20 @@ def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | 
     # what it references by exactly the paths it would at run time -- and so the cache key matches the
     # campaign's for the same bytes.
     world_ref = str(world)
+    backend = backend_name(execution)
     identity = {
-        "producer": "roqsim",
+        "producer": backend or "",
         "world": world_ref if world_ref.startswith(_RUN_FILE_MOUNT) else
                  f"{_RUN_FILE_MOUNT}{world_ref.lstrip('/')}",
         "overrides": {k: v for k, v in (sim_block or {}).items() if k != "world"},
         "overrides_known": True,
-        # A `.vast`'s `sim:` block is written against TODAY's override grammar, there being no
-        # capture to read a version from. That is also what keeps a workspace and a current campaign
-        # sharing one entry -- the warm-share this function's docstring promises.
-        "capture_version": FORMAT_VERSION,
+        # No recording has been written, so there is no format version to report: the version
+        # is the simulator's, stated in what it records. Not part of the key, so its absence
+        # here is what lets the entry be shared with a campaign's.
+        "recording_version": None,
         "image": image,
         "execution": execution,
-        "backend": backend_name(execution),
+        "backend": backend,
     }
     local = root / world_ref.lstrip("/")
     if local.is_file():
@@ -301,7 +325,7 @@ def workspace_world_identity(workspace_dir, raw_config: dict, sim_block: dict | 
 
 
 #: Where a campaign's ``run_files`` are mounted in a running job. A world declared as a
-#: path in the ``.vast`` is recorded by the capture under this prefix, because that is
+#: path in the ``.vast`` is named by the recording under this prefix, because that is
 #: where the simulator read it from.
 _RUN_FILE_MOUNT = "/config/"
 
@@ -497,13 +521,13 @@ def cache_key(identity: dict, max_tex_dim: int = DEFAULT_MAX_TEX_DIM) -> str:
     # a key and be served each other's geometry.
     key.add("extra_sha", identity.get("extra_sha") or "")
     key.add("scene_cache_version", CACHE_FORMAT_VERSION)
-    # The CAPTURE's version, which is not the line above: that one is this module's, bumped when the
-    # cache changes what it asks for. This one is the format's, and it is here because v2 changed what
-    # `overrides` MEANS without changing its shape -- so two documents that hash alike can name
-    # different worlds. The image digest happens to separate the two conventions today (which
-    # convention a document uses is a property of the roqsim inside the image), but that is a
-    # coincidence of how geometry is built, not something the key should rest on.
-    key.add("capture_version", identity.get("capture_version") or 1)
+    # Deliberately NOT the recording's format version. A format revision can change what
+    # `overrides` MEANS on a document of unchanged shape, but which convention a document uses
+    # is a property of the simulator that wrote it -- and that simulator lives in the image
+    # keyed below, which is also the one that compiles the geometry. Two conventions never
+    # share a digest, so the version would separate nothing the digest does not; what it WOULD
+    # do is split a workspace entry (no recording, so no version) from the campaign's, and
+    # lose the warm share `workspace_world_identity` promises.
     key.add("image", identity["image"])
     key.add("world", identity["world"])
     key.add("overrides", identity["overrides"])

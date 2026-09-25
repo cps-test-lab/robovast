@@ -8,6 +8,10 @@ the format is owned by roqsim (`roqsim/export_web.py`), the reference loader is 
 - `sceneLoader.ts` — descriptor → three.js `Group`, plus an imperative animation API:
   `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for world-frame
   body poses.
+- `motionSource.ts` — what a run's *motion* looks like to a viewer: a time base plus named joint
+  and pose tracks, pushed into the scene model as the sink. `rowMotion.ts` is the source over a
+  run's `sim_poses` / `joint_states` rows, windowed around the clock and paged at the query's row
+  cap, following a run still recording through a reader the panel adapts its data provider to.
 - `sceneModelCache.ts` — parsed models leased per viewer mount and parked on release, keyed by the
   content-addressed descriptor URL, so a remount on the same world skips the fetch and the rebuild.
 - `sceneTf.ts` — TF-chain composition (`map -> odom -> base_link`) for data sources that deliver

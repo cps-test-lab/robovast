@@ -5,9 +5,36 @@
 //
 // A run's rows are keyed by (config_name, run_id); a provider is bound to one such run, so every
 // query is scoped to it. A TEXT column stays TEXT, so callers coerce numerics themselves.
+//
+// A run that is still recording (`run_view.live`) has the same provider plus the host-side
+// extension below: its tables are built as its recording grows, so a reader takes its history
+// through SQL once and then hears the rows that follow through `subscribeLive` -- one live
+// subscription per run, carrying every table the mounted panels read (see liveFeed.ts). The
+// extension is the host's, not the kit's: a panel remote is a prebuilt bundle against the kit's
+// interface, and one that wants the live rows asks `isLiveProvider` first.
 
-import type { DataProvider, SeriesOptions } from '@robovast/panel-kit'
+import type { DataProvider, DataRow, SeriesOptions } from '@robovast/panel-kit'
 import { robovast, type DataDescribe } from '@/lib/robovastClient'
+import { LiveRunFeed, type FeedListener } from './liveFeed'
+
+/** The host's provider: the kit's seam plus what a live run needs. */
+export interface LiveDataProvider extends DataProvider {
+  /** Whether the run is still recording. Its tables grow, and `subscribeLive` carries the growth;
+   *  for a finished run every subscription hears `eof` at once and nothing else. */
+  live: boolean
+  /** The rows of `table` as they land, after the history a query gave. See `FeedEvent` for the
+   *  protocol -- in one line: SQL for what is there, the stream for what comes, and a `gap` sends
+   *  the reader back to SQL once. */
+  subscribeLive(table: string, listener: FeedListener): () => void
+  /** A plain read of `table`'s rows for this run, in no particular order -- for a table with no
+   *  time column (`sim_recording` is one row per run). */
+  rows(table: string, opts?: { columns?: string[]; maxRows?: number }): Promise<DataRow[]>
+  /** Release the live subscription. A provider is per run, so a run switch closes it. */
+  close(): void
+}
+
+export const isLiveProvider = (data: DataProvider): data is LiveDataProvider =>
+  typeof (data as LiveDataProvider).subscribeLive === 'function'
 
 /** Quote a value as a SQL string literal (single-quote escaped). */
 function sqlStr(v: string): string {
@@ -85,13 +112,17 @@ export function describeQuery(campaignId: string, version: string) {
  * @param getDescribe the campaign's `/describe`, supplied by the host so that every provider of one
  *   campaign shares a single answer (see {@link describeQuery}); called lazily, on the first
  *   `has`.
+ * @param opts.live the run is still recording: `subscribeLive` opens the run's live stream on the
+ *   first subscription. Off, every subscription hears `eof` at once.
+ * @param opts.feed how the live stream is opened; the client's route unless a test says otherwise.
  */
 export function dbDataProvider(
   campaignId: string,
   configName: string,
   runId: string | number,
   getDescribe: () => Promise<DataDescribe>,
-): DataProvider {
+  opts: { live?: boolean; feed?: () => LiveRunFeed } = {},
+): LiveDataProvider {
   // run scope, reused by every query. run_id is an integer column; refuse a non-integer rather than
   // silently building broken SQL.
   if (!isInt(runId)) throw new Error(`run_id must be an integer, got ${runId!}`)
@@ -105,13 +136,64 @@ export function dbDataProvider(
     return { rows: res.rows, truncated: res.truncated, note: res.note }
   }
 
+  const live = opts.live === true
+  // Opened on the first subscription rather than with the provider: a view whose panels read no
+  // table of a live run -- one that only shows its log -- holds no socket for it.
+  let feed: LiveRunFeed | null = null
+  const openFeed = () =>
+    feed ?? (feed = opts.feed
+      ? opts.feed()
+      : new LiveRunFeed((tables) =>
+          robovast.liveRunStreamUrl(campaignId, configName, runId, tables)))
+
   return {
     scope: `${campaignId}:${configName}:${runId}`,
     campaignId,
     configName,
     runId: String(runId),
+    live,
+
+    subscribeLive(table, listener) {
+      if (!live) {
+        // A finished run's tables are all there: the one read the listener makes on `eof` is the
+        // whole of it, and no socket is opened to say so.
+        let cancelled = false
+        queueMicrotask(() => {
+          if (!cancelled) listener({ kind: 'eof' })
+        })
+        return () => {
+          cancelled = true
+        }
+      }
+      return openFeed().subscribe(table, listener)
+    },
+
+    close() {
+      feed?.close()
+      feed = null
+    },
+
+    async rows(table, { columns, maxRows = 1000 } = {}) {
+      const select = columns?.length ? columns.map((c) => `"${c}"`).join(', ') : '*'
+      const res = await robovast.queryCampaignDataSql(
+        campaignId, `SELECT ${select} FROM "${table}" WHERE ${where}`, maxRows)
+      return res.rows
+    },
 
     async has(table, columns) {
+      if (live) {
+        // A live run's tables appear as its recording grows, so the campaign's cached table list
+        // cannot answer for it; the run itself is asked, and a table it does not carry yet is
+        // simply not there yet.
+        try {
+          const page = await robovast.queryCampaignDataSql(
+            campaignId, `SELECT * FROM "${table}" WHERE ${where} LIMIT 0`, 1)
+          const names = new Set(page.columns)
+          return (columns ?? []).every((c) => names.has(c))
+        } catch {
+          return false
+        }
+      }
       const d = await getDescribe()
       const t = d.tables.find((x) => x.table === table)
       if (!t) return false

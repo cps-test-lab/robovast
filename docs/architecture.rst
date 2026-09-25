@@ -661,6 +661,22 @@ over HTTP:
      - the whole campaign's records, never its ``.cache/`` table cache
    * - ``GET``/``PUT /data/staged/{slot}``
      - the scratch trees a build, exec or auxiliary pod is handed and hands back
+   * - ``GET /data/campaigns/{id}/live``
+     - a run's tables as it records, as server-sent events -- the one route here that is
+       not a tar
+
+**A run's tables as it records, from where the bytes land.** The live route is on the data
+plane for the same reason the deliveries are: this is the process the appends reach.
+:class:`robovast.service.live.LiveCampaigns` keeps one decoder watcher per campaign somebody
+is reading (:mod:`robovast_decode.live`), each on a daemon thread over an inotify watch of
+the campaign directory, so a pod's delivery extracted by this very process wakes the watcher
+like any other write, and no second process has to be told. The watcher writes what it
+decodes as parquet parts the manifest names, so a query during the run reads the same rows
+the stream carries. A reader is a bounded queue: one that falls behind is dropped with the
+reason rather than buffered, and a watcher nobody reads is kept warm for the next reader
+until its campaign is over, then stopped. ``runs.live`` -- no ``test.xml`` in the run's
+directory, no terminal record for the campaign, read from the tree by existence -- is what
+says whether there is anything to follow; a run that is not live gets ``eof`` at once.
 
 **A tar, rather than a file API.** One stream is one request, so a pod's entire output
 tree costs one round trip instead of one per file; and a tar carries executable bits and
@@ -777,7 +793,10 @@ database beside them. SQL is answered over the directory itself:
   query (the tables its statement names, narrowed to the runs its top-level ``WHERE``
   restricts them to by ``config_name``/``run_id`` equality or ``IN``), a notebook's
   ``table()``, or the campaign-end pass of postprocessing. A finished run's entry is final;
-  a run still going is looked at again, which is why SQL works while a campaign runs.
+  a run still going is looked at again, which is why SQL works while a campaign runs. A run
+  followed as it records (:mod:`robovast_decode.live`) has its tables written in parts the
+  manifest names with a ``live`` stamp, read as they land and merged into one file when the
+  run is done.
 * **Queries run in-process on DuckDB** (:mod:`robovast_data.engine`), over views defined
   per query from the manifest, never from a directory listing — so a table being rewritten
   is seen whole or not at all.

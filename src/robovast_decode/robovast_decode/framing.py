@@ -34,6 +34,7 @@ written without chunking at record granularity.
 
 from __future__ import annotations
 
+import os
 import struct
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
@@ -190,6 +191,24 @@ def _chunk_records(body: bytes) -> Iterator:
         pos = start + n
 
 
+def has_footer(path) -> bool:
+    """Whether the file ends with the mcap magic: a writer finished it and wrote its footer.
+
+    A file still being written, or one a killed writer left, ends wherever its last write
+    stopped; only ``finish`` puts the closing magic there.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            if size < 2 * len(MAGIC):
+                return False
+            fh.seek(size - len(MAGIC))
+            return fh.read(len(MAGIC)) == MAGIC
+    except OSError:
+        return False
+
+
 class McapTail:
     """The records of one mcap file, read from where the last read stopped.
 
@@ -269,4 +288,5 @@ class McapTail:
             yield record
 
 
-__all__ = ["Channel", "McapFormatError", "McapTail", "Message", "Metadata", "Schema"]
+__all__ = ["Channel", "McapFormatError", "McapTail", "Message", "Metadata", "Schema",
+           "has_footer"]

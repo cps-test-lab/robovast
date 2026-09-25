@@ -27,6 +27,13 @@ the files that make up that table, their schema, and the version of the decoder 
 them. Readers build their views from it and never from a directory listing, so a reader that
 arrives while a table is being rewritten sees the old set or the new one, never a mixture:
 files are written first, then the manifest is replaced in one ``rename``.
+
+**A table being written while its run records** is a list of parts. A session following the
+recording appends a part per batch and stamps the entry ``live``; a reader reads every file
+the entry names, so a query during a run sees what has been decoded so far. When the run
+ends the parts are merged into the run's one file, the entry loses its stamp and is
+``complete``. A stamp older than :data:`LIVE_STALE_S` means the session died, and the entry
+is rebuilt whole like any incomplete one.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import fcntl
 import hashlib
 import json
 import os
+import time
 from contextlib import contextmanager
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -52,6 +60,11 @@ MANIFEST_VERSION = 1
 
 #: Columns that say which run a row belongs to, first in every table.
 CONTEXT_COLUMNS = ("campaign_id", "config_name", "run_id")
+
+#: A run's entry whose ``live`` stamp is older than this many seconds has been abandoned by
+#: the session that was writing it in parts: a builder rebuilds it whole. Younger, the
+#: session owns it and a builder leaves it alone.
+LIVE_STALE_S = 30.0
 
 
 class TableBuffer:
@@ -141,6 +154,15 @@ def run_table_path(campaign_dir: str, table: str, config_name: str, run_id) -> s
     return os.path.join(TABLES_DIR, table, config_name, f"{run_id}.parquet")
 
 
+def run_part_path(campaign_dir: str, table: str, config_name: str, run_id, index: int) -> str:
+    """One part of a run's table while it is being written, relative to the cache root.
+
+    Parts are numbered in the order they were written; the manifest names the ones that
+    make up the table, and :func:`run_table_path` is where they end up merged.
+    """
+    return os.path.join(TABLES_DIR, table, config_name, str(run_id), f"part-{index:04d}.parquet")
+
+
 def write_table(campaign_dir: str, rel_path: str, table: pa.Table) -> int:
     """Write *table* to *rel_path* under the cache root, atomically; its size in bytes."""
     path = os.path.join(cache_root(campaign_dir), rel_path)
@@ -149,6 +171,23 @@ def write_table(campaign_dir: str, rel_path: str, table: pa.Table) -> int:
     pq.write_table(table, tmp, compression="zstd")
     os.replace(tmp, path)
     return os.path.getsize(path)
+
+
+def remove_files(campaign_dir: str, rel_paths: Iterable[str]) -> None:
+    """Delete table files the manifest no longer names, and the part directories left empty.
+
+    Called after the manifest that dropped them is written, so a reader that arrives now
+    never names a file that is gone; a reader that has one open keeps its handle.
+    """
+    for rel in rel_paths:
+        path = os.path.join(cache_root(campaign_dir), rel)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        parent = os.path.dirname(path)
+        if os.path.basename(path).startswith("part-") and not os.listdir(parent):
+            os.rmdir(parent)
 
 
 # -- the manifest ----------------------------------------------------------------------------
@@ -202,10 +241,18 @@ def schema_of(manifest: dict, entry: dict) -> List[List[str]]:
 
 
 def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[str], rows: int,
-                     schema: pa.Schema, sources: dict, complete: bool) -> None:
-    """Enter one run's contribution to *table* in *manifest* (in memory)."""
+                     schema: pa.Schema, sources: dict, complete: bool,
+                     live: Optional[float] = None) -> List[str]:
+    """Enter one run's contribution to *table* in *manifest* (in memory).
+
+    *files* are every file the run's table is made of: its one finished file, or the parts
+    written so far. *live* is the epoch time the session writing those parts last wrote, or
+    ``None`` for an entry nobody is appending to. Returns the files the entry named before
+    and no longer does, for the caller to remove once the manifest is written.
+    """
     entry = manifest["tables"].setdefault(table, {"runs": {}})
-    entry["runs"][run_key] = {
+    before = entry["runs"].get(run_key) or {}
+    record = {
         "files": files,
         "rows": rows,
         "schema": _schema_id(manifest, schema),
@@ -213,6 +260,22 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
         "complete": complete,
         "decoder": __version__,
     }
+    if live is not None:
+        record["live"] = live
+    entry["runs"][run_key] = record
+    return [f for f in before.get("files") or [] if f not in files]
+
+
+def live_owned(entry: Optional[dict], now: Optional[float] = None) -> bool:
+    """Whether a session is writing *entry* in parts right now (its ``live`` is fresh).
+
+    Such an entry is left to that session: a build that replaced it whole would race the
+    parts it is appending. An entry whose stamp is older than :data:`LIVE_STALE_S` was
+    abandoned (the session died) and is anyone's to rebuild.
+    """
+    if not entry or entry.get("live") is None:
+        return False
+    return (now if now is not None else time.time()) - entry["live"] < LIVE_STALE_S
 
 
 def campaign_table_path(table: str) -> str:
@@ -260,7 +323,8 @@ def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict
     }
 
 
-__all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "MANIFEST", "TableBuffer", "cache_root",
-           "campaign_table_path", "fixed", "leading_then_sorted", "manifest_lock",
-           "read_manifest", "record_campaign_table", "record_run_absent", "record_run_table",
-           "run_table_path", "schema_of", "write_manifest", "write_table"]
+__all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "LIVE_STALE_S", "MANIFEST", "TableBuffer",
+           "cache_root", "campaign_table_path", "fixed", "leading_then_sorted", "live_owned",
+           "manifest_lock", "read_manifest", "record_campaign_table", "record_run_absent",
+           "record_run_table", "remove_files", "run_part_path", "run_table_path", "schema_of",
+           "write_manifest", "write_table"]

@@ -163,10 +163,36 @@ FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 Streaming
 =========
 
-Five routes stream instead of returning a body. The two ``.../stream`` log routes and
+Six routes stream instead of returning a body. The two ``.../stream`` log routes and
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
-than replaying the whole log. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
+than replaying the whole log.
+
+``GET /data/campaigns/{id}/live?run=<config>/<run>&tables=a,b`` is server-sent events too: a
+run's tables as they are decoded while it records. A ``batch`` event carries ``{"table":
+name, "rows": [...]}``, at most 2000 rows, so one decoded batch may be several events; a
+table's batches add up to what a query of the finished run gives, and a table the recording
+does not carry yet starts when a topic that gives it appears. ``eof`` follows the run's
+verdict once its recordings are closed and read to their end; a run that is not live --
+``runs.live`` is false: it has its ``test.xml``, or the campaign its terminal record -- gets
+``eof`` at once, because its rows are all there for ``POST .../query``. ``streamerror`` then
+``eof`` names a campaign or run that is not here, a run key or table list that is not one,
+and a client that fell too far behind: batches keep coming at the recorder's pace, and a
+reader that does not keep up is dropped rather than buffered without bound. It is not
+resumable; a client that reconnects reads what landed so far from the SQL and follows from
+there. On the data plane rather than the control plane because the watcher behind it must
+run where the pods' deliveries land, which is where a recording can be followed as it is
+appended to (:ref:`the data plane <data-plane>`); a pod's scoped token does not reach it.
+With ``&frames=<topic>,...`` the same stream also carries a ``frame`` event per named image
+topic -- ``{"topic", "t", "jpeg_base64"}``, the newest frame, at most every 250 ms and only
+while it changes -- because a camera's messages never become rows. The frames themselves
+are two plain routes beside it: ``GET /data/campaigns/{id}/frame?run=&topic=[&t=]`` answers
+``image/jpeg`` with the last frame at or before ``t`` (the newest without it), no wider
+than 640 px, its stamp in ``X-Frame-Time``; ``GET .../frame-index?run=&topic=`` lists every
+frame's stamp as ``{"topic", "times"}``. Both read the recording itself: a live run's through
+the watcher following it, a finished run's through an index built on first request and
+kept per run and topic. A run without the topic, or with no frame of it yet, is a ``404``
+that says so. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
 campaign, tarred from the campaign directory as it is read. Every service answers it:
 refusing because "the results are already on this host's filesystem" would assert
 something true of a caller on that host and false of everyone else.
@@ -211,7 +237,7 @@ Four tiers, and the question to ask of any new data is which one it is in:
      - a search's per-batch objective trajectory
      - its own route, fetched lazily, keyed on a cursor
    * - High-rate telemetry from a running run
-     - a future live run view
+     - a run's tables as it records, ``GET /data/campaigns/{id}/live``
      - its own stream, per run
 
 The **series** row is the one that gets this wrong. ``Status`` carried a ``batch_history`` — one entry

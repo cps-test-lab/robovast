@@ -410,12 +410,12 @@ export function DetailsBox({
   return (
       <Box sx={{ p: 1 }}>
         {!postprocessed && !data ? (
-          // A campaign is FINISHED as soon as its runs are done, minutes before its metric tables
-          // exist -- and one whose postprocessing failed never gets them at all. Say which it is
-          // and what fixes it, rather than showing an empty grid that reads as "this cost nothing".
+          // The resource tables are postprocessing's, written minutes after the runs are done --
+          // and never for a campaign whose postprocessing failed. Say which it is and what fixes
+          // it, rather than showing an empty grid that reads as "this cost nothing".
           <Typography variant="caption" color="text.secondary">
-            not postprocessed — there is nothing to measure yet. If this campaign has finished,
-            retrigger postprocessing from the actions menu.
+            not postprocessed — the resource usage is measured by postprocessing. If this campaign
+            has finished, retrigger postprocessing from the actions menu.
           </Typography>
         ) : isLoading ? (
           <Typography variant="caption" color="text.secondary">

@@ -37,7 +37,8 @@ import threading
 import time
 from typing import Optional, Protocol
 
-from robovast.common.execution import prepare_campaign_configs, render_entrypoint, scenario_env
+from robovast.common.execution import (MCAP_STORAGE_CONFIG, prepare_campaign_configs,
+                                       render_entrypoint, scenario_env)
 from robovast.service.interface import ExecContainerState, ExecRequest, ExecResult, ExecStopResult
 
 logger = logging.getLogger(__name__)
@@ -473,7 +474,8 @@ def _assemble_config_mount(staging: str, generated: str, campaign_data: dict) ->
     mount = os.path.join(staging, "config")
     os.makedirs(mount, exist_ok=True)
     transient = os.path.join(generated, "_transient")
-    for name in ("entrypoint.sh", "collect_sysinfo.py", "monitor_resources.py"):
+    for name in ("entrypoint.sh", "collect_sysinfo.py", "monitor_resources.py",
+                 MCAP_STORAGE_CONFIG):
         src = os.path.join(transient, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(mount, name))

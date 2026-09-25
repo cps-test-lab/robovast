@@ -14,12 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The data plane: tar streams in and out of the results tree, and nothing else.
+"""The data plane: tar streams in and out of the results tree, and a run's tables as it records.
 
 Every byte a pod exchanges with the service goes through the routes here -- the inputs a
 job extracts into ``/config``, the outputs it delivers when it is done, the scratch tree a
 build or exec pod is handed -- plus the campaign download the web UI and ``vast campaign
-download`` use. They are a
+download`` use, and the one route that is not a tar: a run's tables streamed as they are
+decoded while it records (:mod:`robovast.service.live`), here because this is the process
+the deliveries land in. They are a
 separate FastAPI app for one reason: **bulk bytes must not share a process with the
 control plane.** A dozen pods delivering gigabytes at once should slow each other down,
 never the run view or the admission loop, and the way to make that structural rather than
@@ -42,9 +44,19 @@ control routes under :data:`~robovast.service.interface.Routes.DATA` rather than
 verbs under ``/results``: the namespace is the permission, and ``/results`` has none.
 """
 
+import base64
+import collections
+import datetime
+import functools
+import json
 import logging
+import math
 import os
+import threading
+import time
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from robovast.client.safe_path import UnsafePathError, check_relative, safe_join
 from robovast.service.interface import OutputsIngested, Routes
@@ -73,6 +85,31 @@ UPLOAD_WORKERS = 8
 #: :mod:`robovast.execution.campaign_archive`. Uploads may be either: the reader detects it.
 TAR_MEDIA_TYPE = "application/x-tar"
 GZIP_MEDIA_TYPE = "application/gzip"
+
+#: Seconds of silence after which a live stream sends a ``heartbeat`` event.
+LIVE_HEARTBEAT_S = 5.0
+
+#: Most rows one ``batch`` frame of a live stream carries; a larger batch goes out as
+#: several frames, so no single frame is the size of a burst.
+LIVE_FRAME_ROWS = 2000
+
+#: How many live streams may wait on their subscriptions at once. Their own pool, as the
+#: control plane's streams have, so open browser tabs cannot take every worker thread from
+#: the tar routes.
+LIVE_STREAMS = 64
+
+#: How often, at most, a live stream sends a ``frame`` event per image topic.
+LIVE_FRAME_S = 0.25
+
+#: Frame indexes of finished runs kept in this process, one per ``(campaign, run, topic)``.
+FRAME_INDEXES = 64
+
+#: Disable proxy/CDN buffering so events are delivered as they are produced: the headers
+#: every SSE route of the service sends.
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+_SSE_HEARTBEAT = "event: heartbeat\ndata: {}\n\n"
+_SSE_EOF = "event: eof\ndata: {}\n\n"
 
 
 class DataPlane:
@@ -202,6 +239,117 @@ class DataPlane:
         shutil.rmtree(root, ignore_errors=True)
         return True
 
+    # -- a run as it records --
+
+    def campaign_live(self, campaign_id: str, run: str, tables):
+        """A subscription to *run*'s *tables* as it records (:mod:`robovast.service.live`).
+
+        *run* is ``<config>/<run_id>``. ``KeyError`` for a campaign or run that is not here,
+        ``ValueError`` for a run key or table list that is not one. A run that is not live
+        gets a subscription at its end already: its rows are all there for a query. The
+        watchers behind it are one set per results root in this process, whichever plane
+        object asks.
+        """
+        from robovast.service.live import LiveCampaigns  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        return LiveCampaigns.for_root(self.results_root).subscribe(campaign_dir.name, run, tables)
+
+    # -- a run's camera frames --
+
+    def campaign_frame(self, campaign_id: str, run: str, topic: str,
+                       t: "float | None" = None) -> "tuple[float, bytes]":
+        """``(stamp, JPEG)`` of the frame of *topic* nearest at or before *t* of *run*.
+
+        The newest frame without *t*. A live run answers from the watcher tapping its
+        recording (:meth:`LiveCampaigns.newest_frame` for the newest, its index for a
+        moment); a finished run from a :class:`~robovast_decode.frames.FrameIndex` built
+        on first request and kept per ``(campaign, run, topic)``. ``KeyError`` for a
+        campaign or run that is not here, a run without the topic, and a topic with no
+        frame yet; ``ValueError`` for a run key that is not one.
+        """
+        frames = self._frames(campaign_id, run, topic)
+        if t is None:
+            newest = frames.newest_frame()
+            if newest is None:
+                raise KeyError(f"no frame of {topic} in run {run!r} yet")
+            return newest
+        ref = frames.nearest(t)
+        if ref is None:
+            raise KeyError(f"no frame of {topic} in run {run!r} yet")
+        return ref.t, frames.read_frame(ref)
+
+    def campaign_frame_index(self, campaign_id: str, run: str, topic: str) -> "list[float]":
+        """The stamp of every frame of *topic* of *run*, in recording order.
+
+        The same sources as :meth:`campaign_frame`; ``KeyError`` for a run without the
+        topic, and an empty list for one with the topic and no frame yet.
+        """
+        return self._frames(campaign_id, run, topic).times
+
+    def _frames(self, campaign_id: str, run: str, topic: str):
+        """The :class:`~robovast_decode.frames.Frames` of *topic* of *run*: the watcher's tap
+        while the run is live, a kept index once it is not."""
+        from robovast.service.live import LiveCampaigns, parse_run  # pylint: disable=import-outside-toplevel
+        from robovast_decode.runs import is_live  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        config_name, run_id = parse_run(run)
+        if not topic:
+            raise ValueError("topic names the image topic to read")
+        if not (campaign_dir / config_name / str(run_id)).is_dir():
+            raise KeyError(f"no run {run!r} in campaign {campaign_id!r}")
+        key = f"{config_name}/{run_id}"
+        if is_live(str(campaign_dir), config_name, run_id):
+            tap = LiveCampaigns.for_root(self.results_root).frame_index(campaign_id, key, topic)
+            if tap is None:
+                raise KeyError(f"no frame of {topic} in run {run!r} yet: its recording has "
+                               "not started")
+            return tap
+        return _frame_index(campaign_dir, key, topic)
+
+
+_indexes: "collections.OrderedDict" = collections.OrderedDict()
+_indexes_lock = threading.Lock()
+
+
+def _frame_index(campaign_dir: Path, run: str, topic: str):
+    """The index of *topic* of the finished run *run*, built once per process and kept.
+
+    Bounded to :data:`FRAME_INDEXES`, least recently asked for first out. The index is
+    extended on every request, which costs nothing on a closed recording and follows one
+    a run left open. ``KeyError`` when the run's scenario recording does not carry the
+    topic.
+    """
+    from robovast_decode.build import find_runs, scenario_recording  # pylint: disable=import-outside-toplevel
+    from robovast_decode.frames import IMAGE_TYPES, FrameIndex  # pylint: disable=import-outside-toplevel
+    key = (str(campaign_dir), run, topic)
+    with _indexes_lock:
+        index = _indexes.get(key)
+        if index is not None:
+            _indexes.move_to_end(key)
+    if index is None:
+        match = [r for r in find_runs(str(campaign_dir)) if r.key == run]
+        bag_dir = scenario_recording(match[0]) if match else None
+        if bag_dir is None:
+            raise KeyError(f"run {run!r} has no scenario recording")
+        index = FrameIndex(bag_dir, topic)
+        if index.typename is None:
+            raise KeyError(f"run {run!r} recorded no topic {topic}")
+        if index.typename not in IMAGE_TYPES:
+            raise KeyError(f"{topic} of run {run!r} carries {index.typename}, not an image")
+        with _indexes_lock:
+            _indexes[key] = index
+            while len(_indexes) > FRAME_INDEXES:
+                _indexes.popitem(last=False)
+    else:
+        index.extend()
+    return index
+
+
+class FrameTimes(BaseModel):
+    """The stamps of every frame of one image topic of a run, in seconds of the run's clock."""
+    topic: str
+    times: list[float]
+
 
 def data_router(source):
     """The four data routes plus the archive, over *source*.
@@ -213,7 +361,7 @@ def data_router(source):
     """
     import anyio  # pylint: disable=import-outside-toplevel
     from fastapi import APIRouter, HTTPException, Query, Request  # pylint: disable=import-outside-toplevel
-    from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
+    from fastapi.responses import Response, StreamingResponse  # pylint: disable=import-outside-toplevel
 
     from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
         STORAGE_FULL_DETAIL, is_storage_full)
@@ -349,7 +497,175 @@ def data_router(source):
         """Take a tar into the staged slot *slot*, creating it."""
         return await _ingest(request, lambda reader: source.ingest_staged(slot, reader))
 
+    live_limiter = anyio.CapacityLimiter(LIVE_STREAMS)
+
+    async def _sse_live(request: Request, campaign_id: str, run: str, tables: str,
+                        frames: str = ""):
+        """SSE generator over a run's tables as they are decoded (``campaign_live``).
+
+        The subscription is taken on a worker thread, and each wait on it too, bounded by
+        :data:`LIVE_HEARTBEAT_S` so a client that went away is noticed within that and a
+        quiet run keeps sending heartbeats. A batch is turned into frames off the loop as
+        well: a big one is thousands of rows of Python objects to encode. With image
+        *frames* to follow, the wait is bounded by :data:`LIVE_FRAME_S` instead and every
+        wake looks for a newer frame of each topic (``campaign_frame``), sent when its
+        stamp changed; the heartbeat still comes after :data:`LIVE_HEARTBEAT_S` of nothing
+        sent.
+        """
+        from robovast.service.live import EOF, Dropped  # pylint: disable=import-outside-toplevel
+        yield ": open\n\n"
+        names = [t.strip() for t in tables.split(",")]
+        topics = [t.strip() for t in frames.split(",") if t.strip()]
+        try:
+            subscription = await anyio.to_thread.run_sync(
+                lambda: source.campaign_live(campaign_id, run, names), limiter=live_limiter)
+        except (KeyError, ValueError, UnsafePathError) as exc:
+            yield _sse_error(str(exc.args[0]) if exc.args else str(exc))
+            yield _SSE_EOF
+            return
+        sent: dict = {}
+        quiet_since = time.monotonic()
+        wait_s = min(LIVE_HEARTBEAT_S, LIVE_FRAME_S) if topics else LIVE_HEARTBEAT_S
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    item = await anyio.to_thread.run_sync(
+                        subscription.next, wait_s, abandon_on_cancel=True,
+                        limiter=live_limiter)
+                except Dropped as exc:
+                    yield _sse_error(str(exc))
+                    yield _SSE_EOF
+                    return
+                if item is EOF:
+                    yield _SSE_EOF
+                    return
+                if item is not None:
+                    for frame in await anyio.to_thread.run_sync(
+                            functools.partial(_live_frames, item), limiter=live_limiter):
+                        yield frame
+                    quiet_since = time.monotonic()
+                for topic in topics:
+                    event = await anyio.to_thread.run_sync(
+                        functools.partial(_frame_event, source, campaign_id, run, topic, sent),
+                        limiter=live_limiter)
+                    if event:
+                        yield event
+                        quiet_since = time.monotonic()
+                if time.monotonic() - quiet_since >= LIVE_HEARTBEAT_S:
+                    yield _SSE_HEARTBEAT
+                    quiet_since = time.monotonic()
+        finally:
+            subscription.close()
+
+    @router.get(Routes.campaign_live("{campaign_id}"))
+    async def stream_campaign_live(
+            request: Request, campaign_id: str,
+            run: str = Query(description="the run, as <config>/<run_id>"),
+            tables: str = Query(description="the tables to follow, comma-separated"),
+            frames: str = Query(default="", description="image topics whose newest frame "
+                                "to send as it changes, comma-separated")):
+        """Stream a run's tables as they are decoded while it records, as server-sent events.
+
+        A ``batch`` event carries ``{"table": name, "rows": [...]}`` -- at most
+        :data:`LIVE_FRAME_ROWS` rows, so one decoded batch may be several events -- and
+        a table's batches add up to what a query of the finished run gives. A table the
+        run's recordings do not carry yet is followed from the moment a topic that gives it
+        appears. With ``frames``, a ``frame`` event per named image topic carries
+        ``{"topic", "t", "jpeg_base64"}``, the newest frame, at most every
+        :data:`LIVE_FRAME_S` seconds and only while it changes. ``heartbeat`` after
+        :data:`LIVE_HEARTBEAT_S` seconds of silence. ``eof`` once the run has its verdict
+        and its recordings are closed and read to their end; at once for a run that is not
+        live, since its rows are all there for a query. ``streamerror`` then ``eof`` for a
+        campaign or run that is not here, a run key or table list that is not one, and a
+        client that fell :data:`~robovast.service.live.QUEUE_MAX` batches behind, which is
+        dropped rather than buffered without bound. A non-finite float is ``null`` in a
+        row, a timestamp its ISO text, and bytes base64.
+        """
+        return StreamingResponse(_sse_live(request, campaign_id, run, tables, frames),
+                                 media_type="text/event-stream", headers=SSE_HEADERS)
+
+    @router.get(Routes.campaign_frame("{campaign_id}"), response_class=Response,
+                responses={200: {"content": {"image/jpeg": {}}}, 404: {}})
+    def get_campaign_frame(
+            campaign_id: str,
+            run: str = Query(description="the run, as <config>/<run_id>"),
+            topic: str = Query(description="the image topic"),
+            t: "float | None" = Query(default=None, description="a moment in seconds of "
+                                      "the run's clock; the newest frame without it")):
+        """One camera frame of a run as ``image/jpeg``, no wider than 640 px.
+
+        The last frame at or before ``t``, the first when none is; the newest without
+        ``t``. Its stamp, in the seconds every table of the run uses, is the
+        ``X-Frame-Time`` header. A live run's frame comes from the watcher following its
+        recording, a finished run's from an index built on first request. ``404`` for a
+        run without the topic or with no frame of it yet, with the reason.
+        """
+        stamp, jpeg = _guard(lambda: source.campaign_frame(campaign_id, run, topic, t))
+        return Response(content=jpeg, media_type="image/jpeg",
+                        headers={"X-Frame-Time": repr(float(stamp)),
+                                 "Cache-Control": "no-cache"})
+
+    @router.get(Routes.campaign_frame_index("{campaign_id}"), response_model=FrameTimes)
+    def get_campaign_frame_index(
+            campaign_id: str,
+            run: str = Query(description="the run, as <config>/<run_id>"),
+            topic: str = Query(description="the image topic")) -> FrameTimes:
+        """The stamp of every frame of a run's image topic, in recording order.
+
+        What a scrubber steps through: the moments ``GET .../frame?t=`` answers exactly.
+        The same sources as the frame route; ``404`` for a run without the topic.
+        """
+        times = _guard(lambda: source.campaign_frame_index(campaign_id, run, topic))
+        return FrameTimes(topic=topic, times=list(times))
+
     return router
+
+
+def _frame_event(source, campaign_id: str, run: str, topic: str, sent: dict) -> str:
+    """The ``frame`` event for *topic* when its newest frame is newer than the one *sent*,
+    else ``""``. A topic the run has no frame of yet is nothing to send, not an error."""
+    try:
+        stamp, jpeg = source.campaign_frame(campaign_id, run, topic, None)
+    except KeyError:
+        return ""
+    if sent.get(topic) == stamp:
+        return ""
+    sent[topic] = stamp
+    payload = {"topic": topic, "t": stamp, "jpeg_base64": base64.b64encode(jpeg).decode("ascii")}
+    return f"event: frame\ndata: {json.dumps(payload)}\n\n"
+
+
+def _sse_error(message: str) -> str:
+    return f"event: streamerror\ndata: {json.dumps(message)}\n\n"
+
+
+def _json_default(value):
+    """JSON for what a table row holds beside numbers and text."""
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    return str(value)
+
+
+def _json_row(row: dict) -> dict:
+    """*row* with its non-finite floats as ``None``: JSON has no spelling for them that a
+    browser's parser takes."""
+    return {key: (None if isinstance(value, float) and not math.isfinite(value) else value)
+            for key, value in row.items()}
+
+
+def _live_frames(batch) -> "list[str]":
+    """The ``batch`` events one decoded batch goes out as, :data:`LIVE_FRAME_ROWS` rows each."""
+    rows = batch.rows.to_pylist()
+    frames = []
+    for start in range(0, len(rows), LIVE_FRAME_ROWS):
+        payload = {"table": batch.table,
+                   "rows": [_json_row(r) for r in rows[start:start + LIVE_FRAME_ROWS]]}
+        frames.append(f"event: batch\ndata: {json.dumps(payload, default=_json_default)}\n\n")
+    return frames
 
 
 def _drain(reader) -> None:

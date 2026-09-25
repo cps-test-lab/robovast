@@ -34,7 +34,7 @@ class _StubBackend(S.SimulatorBackend):
             command += ["--override", S.SIM_OVERRIDES_MOUNT]
         return {S.SIMULATION_CONTAINER: {"command": command}}
 
-    def env(self, cfg, execution):
+    def env(self, cfg, execution, recording):
         return {"STUB_WORLD": cfg.config}
 
     def input_files(self, cfg, execution, vast_dir):

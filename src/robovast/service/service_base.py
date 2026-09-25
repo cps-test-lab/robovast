@@ -1248,6 +1248,23 @@ class ServiceBase(RobovastInterface):
             campaign_id, live=live,
             facts=self._snapshot_facts(campaign_id) if live else None)
 
+    def campaign_live(self, campaign_id: str, run: str, tables):
+        """A subscription to a run's tables as it records; the data plane's, over this root.
+
+        The watchers behind it are per results root in this process
+        (:class:`robovast.service.live.LiveCampaigns`), so the plane made here per call
+        reaches the same ones every time.
+        """
+        return self._data_plane().campaign_live(campaign_id, run, tables)
+
+    def campaign_frame(self, campaign_id: str, run: str, topic: str, t=None):
+        """``(stamp, JPEG)`` of a run's camera frame at or before *t*; the data plane's."""
+        return self._data_plane().campaign_frame(campaign_id, run, topic, t)
+
+    def campaign_frame_index(self, campaign_id: str, run: str, topic: str):
+        """The stamps of a run's image topic's frames; the data plane's."""
+        return self._data_plane().campaign_frame_index(campaign_id, run, topic)
+
     def _workspace_tar_members(self, workspace_id: str):
         """``(add_members, workspace_id)`` for tarring a workspace's project tree.
 
@@ -3053,7 +3070,8 @@ class ServiceBase(RobovastInterface):
         # family. The stepped shape is unaffected: there the simulator genuinely *is* the
         # scenario container, and the backend says so.
         execution = apply_backend(campaign_config.execution.model_dump(),
-                                  os.path.dirname(os.path.abspath(vast_file)))
+                                  os.path.dirname(os.path.abspath(vast_file)),
+                                  recording=campaign_config.recording)
         plan = plan_containers(execution)
         target = plan.by_name(container) if container else plan.main
 
@@ -4959,26 +4977,58 @@ class ServiceBase(RobovastInterface):
 
     # -- on-demand 3D geometry ---------------------------------------------
 
-    def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
-        """The run's parsed ``capture/capture.json``, which names the world it needs.
+    #: The run's ``sim_recording`` row. ``*`` rather than the three columns the identity reads:
+    #: a campaign none of whose runs recorded anything has the table with its key columns alone,
+    #: and naming a column it lacks answers a binder error where "no row" is the fact.
+    _SCENE_RECORDING_SQL = "SELECT * FROM sim_recording WHERE config_name = ? AND run_id = ?"
+    #: What the identity reads of that row: the world it was recorded from, the overrides it was
+    #: built with, and the format that says what those mean.
+    _SCENE_RECORDING_COLUMNS = ("world", "overrides_json", "format_version")
 
-        Raises ``SceneUnavailable`` when the run has none -- a run recorded without a capture has no
-        motion to replay either, so there is nothing for geometry to serve.
+    def _scene_recording(self, campaign_id: str, config_name: str, run_id: str) -> dict:
+        """The run's ``sim_recording`` row, which names the world it needs.
+
+        Read through the campaign's tables rather than off a file: the recording is the
+        simulator's own format, and the decoder is the one reader of it. A run still going has
+        its row as soon as the simulator has written its provenance, which is before its first
+        sample, so a preview resolves its world the same way a finished run does.
+
+        Raises ``SceneUnavailable`` when the run has no row -- a run that recorded no simulator
+        state has no motion to replay either, so there is nothing for geometry to serve -- or
+        when the campaign's tables cannot be opened at all.
         """
-
-        from robovast.service.scene_cache import SceneUnavailable
-        path = (self.campaign_dir(campaign_id) / config_name / str(run_id)
-                / "capture" / "capture.json")
+        from robovast.results_processing.data_query import (  # pylint: disable=import-outside-toplevel
+            DataQueryError, open_data_db)
+        from robovast.service.scene_cache import \
+            SceneUnavailable  # pylint: disable=import-outside-toplevel
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except FileNotFoundError as err:
+            db = open_data_db(self.campaign_dir(campaign_id), campaign_id)
+            cursor = db.execute(self._SCENE_RECORDING_SQL, (config_name, int(run_id)))
+            row = cursor.fetchone()
+        except (DataQueryError, ValueError) as err:
             raise SceneUnavailable(
-                "this run has no capture, so there is nothing to replay and no world to build geometry "
-                "from. A capture is the simulator backend's to record -- see its documentation for "
-                "what enables one -- and is written only on a clean stop.") from err
-        except (OSError, ValueError) as err:
-            raise SceneUnavailable(f"this run's capture manifest could not be read: {err}") from err
+                f"this run's recording could not be read from the campaign's tables: {err}") from err
+        if row is None:
+            raise SceneUnavailable(
+                "this run has no sim_recording row, so there is nothing to replay and no world to "
+                "build geometry from. The recording is the simulator backend's to write -- see its "
+                "documentation for what enables one -- and a run that never reached its first "
+                "sample leaves none.")
+        record = dict(zip((d[0] for d in cursor.description), row))
+        return {name: record.get(name) for name in self._SCENE_RECORDING_COLUMNS}
+
+    def _run_recording_path(self, campaign_id: str, config_name: str, run_id: str):
+        """Where this run's recording sits, or ``None`` for a campaign whose simulator records none
+        or whose configuration cannot say."""
+        from robovast.common.simulators import \
+            run_state_filename  # pylint: disable=import-outside-toplevel
+        try:
+            filename = run_state_filename(self._campaign_execution(campaign_id))
+        except Exception:  # noqa: BLE001 - an unreadable config is reported by the read itself
+            return None
+        if not filename:
+            return None
+        return self._run_state_path(campaign_id, config_name, run_id, filename)
 
     @abstractmethod
     @abstractmethod
@@ -4995,32 +5045,35 @@ class ServiceBase(RobovastInterface):
     def _scene_identity(self, campaign_id, config_name, run_id):
         """``(identity, cache key)`` of the geometry this run needs, memoised at rest.
 
-        Asked on every run switch in the run view, and not cheap: it parses the run's capture and
-        the campaign's frozen ``.vast``, hashes every byte of each ``_config/`` tree a
-        campaign-file world reads, and for a campaign that recorded only an image tag resolves
-        the digest the tag names. None of that can change for a campaign nothing is driving, so the
-        answer is kept against :meth:`_rest_key` plus the stat of the run's own capture --
-        the one input the campaign's record files do not cover. A refusal is not memoised: it
-        is cheap to repeat, and its cause (a missing capture, an unpulled image) may be fixed.
+        Asked on every run switch in the run view, and not cheap: it queries the run's
+        ``sim_recording`` row, parses the campaign's frozen ``.vast``, hashes every byte of each
+        ``_config/`` tree a campaign-file world reads, and for a campaign that recorded only an
+        image tag resolves the digest the tag names. None of that can change for a campaign
+        nothing is driving, so the answer is kept against :meth:`_rest_key` plus the stat of the
+        run's own recording -- the one input the campaign's record files do not cover. A refusal
+        is not memoised: it is cheap to repeat, and its cause (a missing recording, an unpulled
+        image) may be fixed.
         """
         from robovast.service import scene_cache
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         rest = self._rest_key(campaign_id, entry)
-        capture = (self.campaign_dir(campaign_id) / config_name / str(run_id)
-                   / "capture" / "capture.json")
-        try:
-            st = capture.stat()
-            memo_key = (rest, st.st_mtime_ns, st.st_size) if rest is not None else None
-        except OSError:
-            memo_key = None  # no capture: _scene_capture below raises the reason
+        memo_key = None
+        if rest is not None:
+            recording = self._run_recording_path(campaign_id, config_name, run_id)
+            try:
+                st = recording.stat() if recording is not None else None
+            except OSError:
+                st = None  # no recording: _scene_recording below raises the reason
+            if st is not None:
+                memo_key = (rest, st.st_mtime_ns, st.st_size)
         run = (config_name, str(run_id))
         if memo_key is not None:
             hit = self._scene_identity_cache.get(campaign_id, {}).get(run)
             if hit is not None and hit[0] == memo_key:
                 return hit[1]
-        manifest = self._scene_capture(campaign_id, config_name, run_id)
-        identity = scene_cache.world_identity(str(self.campaign_dir(campaign_id)), manifest,
+        recording_row = self._scene_recording(campaign_id, config_name, run_id)
+        identity = scene_cache.world_identity(str(self.campaign_dir(campaign_id)), recording_row,
                                               resolve_digest=self._resolve_image_digest,
                                               config_name=config_name)
         answer = (identity, scene_cache.cache_key(identity))
@@ -5058,7 +5111,7 @@ class ServiceBase(RobovastInterface):
         else:
             note = "geometry has not been built for this world yet"
         if not identity["overrides_known"]:
-            note += ("; this run's capture predates override recording, so geometry is compiled from "
+            note += ("; this run's recording carries no overrides, so geometry is compiled from "
                      "the bare world and may not reflect per-config world overrides")
         return base.model_copy(update={
             "cached": cached,

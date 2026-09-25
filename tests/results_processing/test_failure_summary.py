@@ -12,7 +12,7 @@ from robovast.results_processing.postprocessing import _failure_summary
 
 
 def test_the_cause_travels_with_the_exit_status():
-    """Verbatim from nav2-baseline-pilot-navtopose-2026-08-13-00050125, which reported only
+    """Verbatim from a nav2 pilot campaign, which reported only
     its exit code while the line naming the bad handler stayed in the log."""
     message = (
         "rosbags_process failed with exit code 1\n"

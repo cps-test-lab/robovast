@@ -136,7 +136,7 @@ def _metrics_for_run(run_dir: Path, poses_table: str, gt_frame: str, goal) -> di
         # verdict. Refuse the run instead; the extractor then records the cell as unmeasured.
         raise FileNotFoundError(
             f"{run_dir}: no collision table ({' or '.join(_COLLISION_TABLES)}). Is /collision "
-            f"in the scenario's bag_record and in rosbags_to_csv's topics?")
+            f"recorded (recording.ros2.topics in the .vast) and in rosbags_to_csv's topics?")
     collided = any(_true(r.get('data')) for r in tables.rows(collision))
 
     # Optional, unlike the two above: a run that needed no recovery behaviour records no
@@ -204,5 +204,5 @@ class NavMetrics(BasePostprocessingPlugin):
             note += f"; {missing} run(s) had no '{gt_frame}' pose track"
         if no_clearance:
             note += (f"; {no_clearance} run(s) recorded no /clearance -- is clearance_monitor "
-                     f"in the world and the topic in bag_record?")
+                     f"in the world and the topic recorded (recording.ros2.topics)?")
         return True, note

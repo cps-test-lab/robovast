@@ -75,7 +75,7 @@ them. Internally:
 4. **Result collection** — Every scenario pod carries an ``uploader`` container that
    delivers the pod's whole ``/out`` to the campaign as one tar ``PUT``, so a Job is
    complete only when its results are in the campaign; its ``agent`` container delivers
-   the growth of the log and line files while the run runs (see *Pods move bytes as tar
+   the growth of the log and line files and of the bags while the run runs (see *Pods move bytes as tar
    streams*). The campaign directory on the
    service's **results volume** is both the durable home and the delivery mechanism:
    the driver writes ``campaign.db`` and ``_execution`` into it as the campaign runs,
@@ -1225,11 +1225,14 @@ twice on the pod and nothing is buffered on the service.
   Beside it runs an ``agent`` container, the **file agent**
   (``python3 /config/file_agent.py``, shipped in ``_transient/`` with the other run
   scripts): it watches ``/out`` with inotify and, every second something grew, delivers
-  the new complete lines of the run's log files (``*.log`` under ``logs/``), CSV and JSONL
-  files as byte ranges in one small tar ``PUT`` — a member carrying the pax header
+  what grew as byte ranges in one small tar ``PUT`` — a member carrying the pax header
   ``ROBOVAST.offset``, which the data plane appends when its copy ends at that offset and
-  otherwise answers with a ``resync`` that makes the agent send the file whole. So a
-  running job's logs are readable in the campaign while it runs. The agent keeps its
+  otherwise answers with a ``resync`` that makes the agent send the file whole. A log file
+  (``*.log`` under ``logs/``), CSV or JSONL file is shipped up to its last complete line; a
+  bag (``*.mcap`` under ``rosbag2/``, ``logs/rosout_bag/`` and ``roqsim_bag/``, recorded
+  write-through so it is readable as it grows) up to its last byte; and what appears beside
+  a bag (``metadata.yaml``, ``message_definitions.json``) whole. So a running job's logs
+  and bags are readable in the campaign while it runs. The agent keeps its
   delivered offsets in ``/ipc/file_agent.json``, retries a failed delivery with a backoff,
   and after the others' done markers makes a final drain and writes ``done.agent``; the
   uploader waits for that marker, so its tar is the pod's last delivery and the one that

@@ -1,5 +1,5 @@
 export type { ClockSnapshot, ClockSource } from './clock';
-export { PlaybackClock, useClock } from './clock';
+export { DEFAULT_FOLLOW_BUFFER_S, PlaybackClock, useClock } from './clock';
 export type { DataProvider, DataRow, SeriesOptions } from './dataProvider';
 export type { PanelBuiltins, PanelProps, PanelSpec } from './panel';
 export { useCanvasClock } from './useCanvasClock';

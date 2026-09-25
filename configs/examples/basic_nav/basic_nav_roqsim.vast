@@ -148,6 +148,14 @@ execution:
   - files/nav2_params.yaml
   - files/nav2_bt.xml
   - files/nav2_sut.launch.py
+# What every run's bag holds. Everything, by default; use_sim_time stamps each message with
+# the simulator's clock, so every derived table reads the same in sim seconds however fast the
+# machine ran, and /clock is in the bag so a wall-stamped topic (/behavior_tree_log) can still
+# be mapped back to it.
+recording:
+  ros2:
+    use_sim_time: true
+
 results_processing:
   health_checks:
   - nav2_control_loop_rate

@@ -16,13 +16,13 @@ fetched to disk is enough::
     costmaps table                                rosbags_costmap_to_csv's topics: the grids
     poses table                                   rosbags_tf_to_csv's frames: the robot, and any
                                                   frame a grid is in
-    <campaign>/<config>/<run>/run.npz             the recording being drawn
+    <campaign>/<config>/<run>/roqsim_bag/roqsim.mcap   the recording being drawn
 
 The options mirror the ``.vast`` panel binding, so a layer set that works in the web UI works
 here::
 
-    roqsim render --state run.npz --overlay costmap --out clip.mp4
-    roqsim render --state run.npz --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
+    roqsim render --state roqsim_bag/roqsim.mcap --overlay costmap --out clip.mp4
+    roqsim render --state roqsim_bag/roqsim.mcap --overlay '{"costmap": {"anchor": "top-right", "width": 0.3,
         "layers": {"map": {"topic": "/map"}, "local": {"topic": "/local_costmap/costmap"}}}}'
 
 ``markers`` takes the same declarations the ``map2d`` panel does (``{kind: pose, pos: [x, y]}``,
@@ -421,11 +421,13 @@ class CostmapOverlay:
     # -- loading -----------------------------------------------------------------------------------
 
     def prepare(self, width: int, height: int, *, state=None) -> None:
-        run = self.run or (Path(state).parent if state else None)
+        # A recording sits in its own directory under the run (``<run>/roqsim_bag/roqsim.mcap``),
+        # so the run is the parent of that directory, not of the file.
+        run = self.run or (Path(state).parent.parent if state else None)
         if run is None:
             raise NavVideoError(
                 "overlay 'costmap': no run directory. Pass run: <dir>, or render a recording that "
-                "sits in one."
+                "sits in a run's recording directory (<run>/roqsim_bag/roqsim.mcap)."
             )
         if not run.is_dir():
             raise NavVideoError(f"overlay 'costmap': {run} is not a directory")

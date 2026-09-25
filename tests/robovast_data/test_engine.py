@@ -196,3 +196,94 @@ def test_the_decoder_used_is_the_one_the_manifest_names(campaign):
     Engine([Scope(str(campaign))], workers=1).arrow("SELECT count(*) FROM poses")
     entries = _manifest(campaign)["tables"]["poses"]["runs"].values()
     assert {e["decoder"] for e in entries} == {decode_build.__version__}
+
+
+# -- a table being written in parts while its run records ----------------------------------
+
+def _two_parts(campaign, key="cfg-a/0"):
+    """The run's poses as two live parts, from a whole build's rows split in half."""
+    import pyarrow.parquet as pq
+    from robovast_decode.build import find_runs
+    from robovast_decode.live import Batch, PartWriter
+
+    decode_build.build(str(campaign), tables=["poses"], runs=[key])
+    rows = pq.read_table(campaign / ".cache" / "tables" / "poses" / "cfg-a" / "0.parquet")
+    manifest = _manifest(campaign)
+    del manifest["tables"]["poses"]["runs"][key]
+    (campaign / ".cache" / "MANIFEST.json").write_text(json.dumps(manifest))
+    (run,) = [r for r in find_runs(str(campaign)) if r.key == key]
+    writer = PartWriter(str(campaign), run)
+    half = rows.num_rows // 2
+    writer.append(Batch("poses", rows.slice(0, half)))
+    writer.write({"cfg-a/0/rosbag2": 1})
+    writer.append(Batch("poses", rows.slice(half)))
+    writer.write({"cfg-a/0/rosbag2": 2})
+    return rows.num_rows
+
+
+def test_a_live_entry_is_read_from_its_parts_and_not_rebuilt(campaign, monkeypatch):
+    total = _two_parts(campaign)
+    entry = _manifest(campaign)["tables"]["poses"]["runs"]["cfg-a/0"]
+    assert len(entry["files"]) == 2 and entry["complete"] is False and "live" in entry
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a table a live session owns is not rebuilt")
+    monkeypatch.setattr("robovast_data.engine.build", refuse)
+    engine = Engine([Scope(str(campaign), "cfg-a", 0)], workers=1)
+    assert not engine.prepare("SELECT * FROM poses").problems
+    assert engine.arrow("SELECT count(*) AS n FROM poses").column("n")[0].as_py() == total
+    catalog = engine.catalog()["poses"]
+    assert catalog["built"] == 1 and catalog["rows"] == total
+
+
+def test_a_stale_live_entry_is_rebuilt_whole_and_its_parts_removed(campaign):
+    total = _two_parts(campaign)
+    manifest = _manifest(campaign)
+    manifest["tables"]["poses"]["runs"]["cfg-a/0"]["live"] -= 1000
+    (campaign / ".cache" / "MANIFEST.json").write_text(json.dumps(manifest))
+    engine = Engine([Scope(str(campaign), "cfg-a", 0)], workers=1)
+    assert engine.arrow("SELECT count(*) AS n FROM poses").column("n")[0].as_py() == total
+    entry = _manifest(campaign)["tables"]["poses"]["runs"]["cfg-a/0"]
+    assert entry["files"] == ["tables/poses/cfg-a/0.parquet"] and "live" not in entry
+    assert entry["complete"] is True
+    assert not (campaign / ".cache" / "tables" / "poses" / "cfg-a" / "0").exists()
+
+
+def test_runs_and_run_view_say_whether_a_run_is_still_being_written(tmp_path):
+    root = nav_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1)))
+    (root / "cfg" / "1" / "test.xml").unlink()
+    import sqlite3
+    db = sqlite3.connect(root / "campaign.db")
+    db.execute("INSERT INTO unit (batch_id, paramset_id, config_name, params_json, status) "
+               "VALUES (1, 'ps-9', NULL, '{}', 'composition_failed')")
+    db.commit()
+    db.close()
+    engine = Engine([Scope(str(root))], workers=1)
+    sql = "SELECT config_name, run_id, live FROM {} ORDER BY config_name, run_id"
+    assert engine.arrow(sql.format("runs")).to_pylist() == [
+        {"config_name": "cfg", "run_id": 0, "live": False},
+        {"config_name": "cfg", "run_id": 1, "live": True},
+        {"config_name": "ps-9", "run_id": None, "live": False}]
+    assert engine.arrow(sql.format("run_view")).to_pylist() == [
+        {"config_name": "cfg", "run_id": 0, "live": False},
+        {"config_name": "cfg", "run_id": 1, "live": True},
+        {"config_name": "ps-9", "run_id": None, "live": False}]
+    (root / "_execution").mkdir(exist_ok=True)
+    (root / "_execution" / "outcome.json").write_text("{}")
+    assert not any(r["live"] for r in engine.arrow(sql.format("run_view")).to_pylist())
+
+
+def test_run_view_lists_a_run_that_has_a_directory_and_no_verdict_yet(tmp_path):
+    """A run in progress is a directory before it is a store row; the tree that shows a
+    running campaign must list it, live, with its unit's params and no outcome."""
+    root = tmp_path / "camp-live"
+    root.mkdir()
+    write_store(root, {"cfg-a": {"params": {"wind": 1.0}, "runs": {0: "passed"}}})
+    (root / "cfg-a" / "0").mkdir(parents=True)
+    (root / "cfg-a" / "0" / "test.xml").write_text("<testsuite/>")
+    (root / "cfg-a" / "1").mkdir(parents=True)          # started: no verdict, no row yet
+    with Engine([Scope(str(root))]).execute(
+            "SELECT run_id, status, live, params_json FROM run_view ORDER BY run_id") as (con, _):
+        rows = con.fetchall()
+    assert rows[0][:3] == (0, "passed", False)
+    assert rows[1][:3] == (1, None, True) and '"wind"' in rows[1][3]

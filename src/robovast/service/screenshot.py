@@ -132,8 +132,9 @@ def render(identity: dict, *, state_path: Path, at: Optional[float], view: dict,
     if not state_path.is_file():
         raise ScreenshotUnavailable(
             f"this run recorded no state at {state_path.name}, so there is no moment to render. "
-            "A recording is the simulator backend's to write and is written only on a clean "
-            "stop — a run killed by its deadline leaves none.")
+            "A recording is the simulator backend's to write, from the run's first sample on: "
+            "a run still going is rendered from what it has recorded so far, and only a run "
+            "that never reached its first sample leaves none.")
 
     execution = identity.get("execution") or {}
     name = identity.get("backend")

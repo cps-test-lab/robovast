@@ -4,10 +4,10 @@ import osc.ros
 scenario test_scenario:
     timeout(20s)
 
-    do parallel:
-        bag_record(['/counter'], timestamp_suffix: false)
-        serial:
-            parallel:
-                run_process(common.get_scenario_file_directory() + '/files/publisher_node.py')
-                run_process(common.get_scenario_file_directory() + '/files/trigger_client_node.py')
-            emit end
+    # The run's bag (/counter included) is RoboVAST's: recorded from before the scenario
+    # starts, so nothing here has to start a recorder.
+    do serial:
+        parallel:
+            run_process(common.get_scenario_file_directory() + '/files/publisher_node.py')
+            run_process(common.get_scenario_file_directory() + '/files/trigger_client_node.py')
+        emit end

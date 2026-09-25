@@ -36,6 +36,10 @@ SQLite file whatever the campaign's size.
 * ``probed`` is 1 for a run a person read into while it ran. A separate column, never folded
   into ``status``: a probed run can still pass, and it is excluded from published numbers by
   the analysis, not by its verdict.
+* ``live`` is true while the run is still being written: its directory has no verdict
+  (``test.xml``) and the campaign has no terminal record (``_execution/outcome.json``). Read
+  from the tree alone, by existence, so it costs nothing and needs no registry. A live run's
+  tables grow as it records; a finished run's rows are all there.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ from typing import Dict, List, Optional, Tuple
 import pyarrow as pa
 
 from .layout import INTERVENTIONS, STORE, job_links, run_dirs
+from .live import VERDICT
 from .quantity import to_bytes
 from .types import INTEGER, REAL, TEXT, UNKNOWN, json_text, stored_value, widen
 
@@ -67,6 +72,10 @@ RUNLESS_UNIT_STATUSES = ("composition_failed", "missing")
 
 #: The intervention kind that marks a run as probed.
 KIND_PROBED = "probed"
+
+#: The campaign's terminal record, written by the driver on every terminal path. Its
+#: existence is all that is read here: a campaign that has one is over, whatever it says.
+OUTCOME = os.path.join("_execution", "outcome.json")
 
 #: The fixed columns after ``config_name`` and ``run_id``, with their types.
 #: ``available_cpus`` is REAL because a reservation can be a fraction of a core.
@@ -85,6 +94,9 @@ NOTES = {
                "provenance, not its outcome. Exclude these rows from anything a published "
                "number rests on."),
     "end_time": "start_time + duration_s; NULL when either is unknown",
+    "live": ("true while the run is still being written: no test.xml in its directory and "
+             "no terminal record for the campaign. Its tables grow as it records, so a "
+             "number read from them is provisional until this is false."),
 }
 
 _ARROW = {INTEGER: pa.int64(), REAL: pa.float64(), TEXT: pa.string(), UNKNOWN: pa.null()}
@@ -141,6 +153,24 @@ def read_store(campaign_dir: str) -> dict:
             "duration_s": duration, "start_time": start, "sysinfo": _json(sysinfo, {})}
     return {"params": params, "channels": channels, "objective": objective,
             "runless": runless, "outcomes": outcomes}
+
+
+def campaign_finished(campaign_dir: str) -> bool:
+    """Whether the campaign has its terminal record: nothing in it is still being written."""
+    return os.path.isfile(os.path.join(campaign_dir, OUTCOME))
+
+
+def is_live(campaign_dir: str, config_name: str, run_id: int) -> bool:
+    """Whether the run ``<config_name>/<run_id>`` is still being written.
+
+    True for a run directory without its verdict in a campaign without its terminal record;
+    false for a finished run, for a run of a finished campaign, and for a run that has no
+    directory (nothing of it is on disk to follow).
+    """
+    run_dir = os.path.join(campaign_dir, config_name, str(run_id))
+    if not os.path.isdir(run_dir) or os.path.isfile(os.path.join(run_dir, VERDICT)):
+        return False
+    return not campaign_finished(campaign_dir)
 
 
 def probed_runs(campaign_dir: str) -> set:
@@ -281,6 +311,7 @@ def build_runs(campaign_dir: str) -> pa.Table:
     types = {**fixed, **{f"param_{k}": _param_type(k, sources) for k in keys}}
 
     probed = probed_runs(campaign_dir)
+    finished = campaign_finished(campaign_dir)
     walk = sorted(set(run_dirs(campaign_dir)) | set(store["outcomes"]))
     rows = []
     for config_name, run_id in walk:
@@ -288,6 +319,7 @@ def build_runs(campaign_dir: str) -> pa.Table:
         info = outcome.get("sysinfo") or {}
         start, duration = outcome.get("start_time"), outcome.get("duration_s")
         row = {"config_name": config_name, "run_id": run_id,
+               "live": not finished and is_live(campaign_dir, config_name, run_id),
                "status": outcome.get("status"), "passed": outcome.get("passed"),
                "duration_s": duration, "errors": outcome.get("errors"),
                "failures": outcome.get("failures"),
@@ -305,7 +337,7 @@ def build_runs(campaign_dir: str) -> pa.Table:
     for identity, status, unit in store["runless"]:
         row = {c: None for c in types}
         row.update({"config_name": identity, "run_id": None, "status": status, "passed": 0,
-                    "probed": 0})
+                    "probed": 0, "live": False})
         row.update({f"param_{k}": unit.get(k) for k in keys})
         rows.append(row)
 
@@ -315,9 +347,12 @@ def build_runs(campaign_dir: str) -> pa.Table:
     for column, verdict in types.items():
         arrays[column] = pa.array([stored_value(r.get(column), verdict) for r in rows],
                                   type=_ARROW[verdict])
+    # A boolean, apart from the store-typed columns: it is read from the tree, not the store.
+    arrays["live"] = pa.array([r["live"] for r in rows], type=pa.bool_())
     return pa.table(arrays)
 
 
-__all__ = ["KIND_PROBED", "NOTES", "RUNLESS_UNIT_STATUSES", "RUNS_COLUMNS",
-           "RUNS_TABLE", "StoreError", "build_runs", "channel_column_names",
-           "channel_params", "flatten_channel", "probed_runs", "read_store"]
+__all__ = ["KIND_PROBED", "NOTES", "OUTCOME", "RUNLESS_UNIT_STATUSES", "RUNS_COLUMNS",
+           "RUNS_TABLE", "StoreError", "build_runs", "campaign_finished",
+           "channel_column_names", "channel_params", "flatten_channel", "is_live",
+           "probed_runs", "read_store"]
