@@ -50,19 +50,21 @@ per-run and per-configuration detail:
      also matches runs in other configs.
    - **`config_view`** – the campaign's `.vast` as rows (`fullkey`, `value`), for
      exploring the configuration without pulling one huge cell.
-   Metric tables (one per recorded CSV) and the wide `runs` dimension table appear
-   after postprocessing; `main.postprocessing_steps` says which plugin produced
-   each of them. `campaign.campaign` holds the campaign's provenance (which
-   robovast, which image) and `unit.objectives_json` / `measures_json` the
-   multi-objective and quality-diversity results.
+   The wide `runs` dimension table and the per-run tables (poses, logs, resource
+   usage, one per recorded metric) are listed beside them; a table is built the first
+   time a query names it, and `built` of `runs` says for how many runs it already is.
+   `postprocessing_steps` says which plugin produced a table. `campaign.campaign`
+   holds the campaign's provenance (which robovast, which image) and
+   `campaign.unit`'s `objectives_json` / `measures_json` the multi-objective and
+   quality-diversity results.
 2. `query_campaign_data_sql(campaign_id, sql)` – one read-only `SELECT`. Join
    `runs` (or `run_view`) to any metric table on `(config_name, run_id)`. Besides
    the built-ins, `STDDEV`, `VARIANCE`, `MEDIAN`, `PERCENTILE(col, p)` and
-   `REGEXP(pat, col)` are available. The index is Postgres, so a JSON-encoded
-   (non-scalar) param or `*_json` column is read with `col::jsonb ->> 'key'`
+   `REGEXP(pat, col)` are available. The engine is DuckDB: a JSON-encoded
+   (non-scalar) param or `*_json` column is TEXT, read with `col::JSON ->> 'key'`
    (`->` to descend, 0-based for an array) and fanned out with
-   `jsonb_array_elements(col::jsonb)` — not SQLite's `json_extract` / `json_each`.
-   Every campaign lives in one index, so comparing campaigns is a `WHERE campaign_id IN (...)` predicate.
+   `unnest(from_json(col, '["JSON"]'))`. A query sees only the campaign it names, so
+   `WHERE campaign_id = ...` is never needed; compare campaigns with a query each.
 3. `list_campaign_plots(campaign_id)` – the plots the campaign author declared,
    each a runnable `query` plus a Vega-Lite spec. A good first look at what matters.
 
@@ -79,12 +81,11 @@ address space with `list_files` / `read_file` on `/results/<campaign_id>/<path>`
   campaign — use `list_campaigns` to discover what is available.
 - Prefer `describe_campaign_data` + `query_campaign_data_sql` for any
   count/rate/aggregate question rather than reading files run-by-run.
-- SQL needs the campaign to have been **ingested**, which postprocessing is what
-  does: a campaign still running has no rows at all, and the reply says so rather
-  than answering empty. Once ingested, `run_view` answers per-run outcomes even
-  where no *metrics* were derived (`postprocessed` in `list_campaigns` says
-  whether postprocessing has run). To see what a running campaign has produced so
-  far, list its directories.
+- SQL answers from the campaign's own files, so it works on a campaign still
+  running: `run_view` has a row for every run recorded so far, and a table covers
+  the runs that have written what it is built from. The first query naming a large
+  table builds it, so narrow a first look to one run (`config_name = ? AND
+  run_id = ?`).
 - To list a campaign's configurations, list its **directories**
   (`list_files("/results/<campaign_id>/")`). SQL sees only configurations that
   produced runs, so on a stopped or partially-run campaign it omits some.

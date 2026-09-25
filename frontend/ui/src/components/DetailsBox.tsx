@@ -93,8 +93,8 @@ function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean
         DETAILS_RUNS_SQL,
         DETAILS_MAX_ROWS,
       )
-      // The CPU pair is allowed to fail: `resource_usage` lives in the results index, which a campaign
-      // that was never postprocessed does not have. That is a missing column, not a broken
+      // The CPU pair is allowed to fail: `resource_usage` exists once a run's monitor recorded
+      // something, which not every campaign's runs did. That is a missing column, not a broken
       // panel, so it resolves to [] and `summariseCpu` returns null from there.
       //
       // The actions query is allowed to fail for the same reason and one more: `behaviors` is
@@ -103,9 +103,8 @@ function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean
       // one missing table costs one column rather than the panel.
       //
       // Each carries its own failure rather than flattening to []: "no rows" and "the query
-      // failed" are different facts, and the CPU column states a CAUSE. It once said "not
-      // postprocessed" about a campaign with 43k rows of `resource_usage`, because a swallowed
-      // error and an absent table were indistinguishable by the time it rendered.
+      // failed" are different facts, and the CPU column states a CAUSE: a swallowed error and an
+      // absent table are indistinguishable by the time it renders.
       const optional = <T,>(sql: string) =>
         robovast
           .queryCampaignDataSql(campaignId, sql, DETAILS_MAX_ROWS)

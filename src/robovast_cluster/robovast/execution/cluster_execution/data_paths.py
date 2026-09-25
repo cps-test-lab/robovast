@@ -39,7 +39,6 @@ from typing import NamedTuple
 #: would point at a fresh empty directory beside its data and report success.
 DEFAULT_WORKSPACES_HOST_PATH = "/var/lib/robovast-workspaces"
 DEFAULT_RESULTS_HOST_PATH = "/var/lib/robovast-results"
-DEFAULT_INDEX_HOST_PATH = "/var/lib/robovast-index"
 DEFAULT_REGISTRY_HOST_PATH = "/var/lib/robovast-registry"
 DEFAULT_BUILDKITD_HOST_PATH = "/data/robovast-buildkit"
 
@@ -63,19 +62,12 @@ class Tenant(NamedTuple):
 
 
 #: Every tenant, in the order an operator meets them -- and a parent before what derives
-#: from it, which :func:`resolve` relies on. Two are derived, and for the same reason:
-#: separating them would leave derived data without the source it was derived from.
-#: ``results`` follows ``workspaces`` because the service pod holds both and a deployment
-#: that provisioned one and left the other on the node's root disk is the split this
-#: prevents; ``index`` follows ``results`` because every row in the index was
-#: ingested from a campaign on the results volume. The index takes a class of its own where
-#: one is stated (``--index-class``): its Postgres is a different workload from the bulk of
-#: the results, and on a managed node pool the one thing this deployment keeps that a
-#: replaced node would take with it.
+#: from it, which :func:`resolve` relies on. ``results`` is derived from ``workspaces``
+#: because the service pod holds both, and a deployment that provisioned one and left the
+#: other on the node's root disk is the split this prevents.
 TENANTS = (
     Tenant("workspaces", DEFAULT_WORKSPACES_HOST_PATH),
     Tenant("results", DEFAULT_RESULTS_HOST_PATH, derived_from="workspaces"),
-    Tenant("index", DEFAULT_INDEX_HOST_PATH, derived_from="results"),
     Tenant("registry", DEFAULT_REGISTRY_HOST_PATH),
     Tenant("buildkit", DEFAULT_BUILDKITD_HOST_PATH),
 )

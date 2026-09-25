@@ -700,7 +700,7 @@ class BatchJobRunner:
         self.configs = campaign_data.get("configs", [])
         self.num_runs = runs
         # The SUT image ref the run pods use; captured back as an immutable digest
-        # after the batch runs (see run_batch_in_pod) so postprocessing reuses the
+        # after the batch runs (see run_batch_in_pod) so the campaign records the
         # exact image the runs recorded their bags with.
         self.image = image
         self._resolved_image_digest = None
@@ -2807,10 +2807,9 @@ class BatchJobRunner:
         # Taking it here is what up-front pinning promised ("execution.yaml records what ran
         # rather than what was asked for") and what this method did not do -- it read the
         # digest off the batch's pods instead, which is a race a SHORT batch loses: its pods
-        # are reaped before the read, `image_revision` is written "unknown", and the search
-        # loop's per-batch bag conversion can then resolve no execution image at all -- so
-        # every batch fails to score and the campaign blames the world. The pod read below
-        # still runs: it is the only source of a PER-CONTAINER digest.
+        # are reaped before the read, and `image_revision` is written "unknown" for a
+        # campaign whose image was pinned all along. The pod read below still runs: it is
+        # the only source of a PER-CONTAINER digest.
         if self.image and "@sha256:" in self.image and not self._resolved_image_digest:
             self._resolved_image_digest = self.image
         # The same argument, per container. `_pin_image_refs` resolved every ref in the plan to
@@ -3515,8 +3514,7 @@ class KubernetesBackend(ExecutionBackend):
         # process, and a backend built per campaign would give each its own -- which is
         # exactly the per-caller arbitration the queue exists to replace.
         self._admission = admission
-        #: The campaign's scoped data-plane token. Read by the controller too, for the
-        #: postprocessing Jobs it submits on this campaign's behalf.
+        #: The campaign's scoped data-plane token, which every pod of this campaign carries.
         self.data_token = data_token
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -3810,7 +3808,7 @@ class KubernetesBackend(ExecutionBackend):
         """Write ``_execution/execution.yaml`` from what the runner has resolved.
 
         Not at finalize, so the campaign root is complete before the controller chains
-        analysis postprocessing -- which reads the execution image from it. This mirrors the
+        analysis postprocessing -- which reads it. This mirrors the
         local backend, whose run.sh writes execution.yaml during the run. Best-effort cluster
         info; degrades in-pod. Idempotent across a search's repeated batches, which is also
         what lets it be written twice per batch.

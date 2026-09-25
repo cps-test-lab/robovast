@@ -8,7 +8,6 @@ import pytest
 
 from robovast.execution.cluster_execution.kubernetes_backend import (pullable_digest,
                                                                      resolve_image_digest)
-from robovast.execution.cluster_execution.postprocess_job import campaign_execution_image
 
 
 @pytest.mark.parametrize("image_id, expected", [
@@ -40,27 +39,6 @@ def test_resolve_image_digest_none_when_unpinnable():
     statuses = [types.SimpleNamespace(image="sut:latest", image_id="sha256:localid")]
     assert resolve_image_digest(statuses, "sut:latest") is None
     assert resolve_image_digest([], "sut:latest") is None
-
-
-def _write_execution_yaml(tmp_path, **fields):
-    import yaml
-    exec_dir = tmp_path / "_execution"
-    exec_dir.mkdir()
-    (exec_dir / "execution.yaml").write_text(yaml.safe_dump(fields))
-
-
-def test_campaign_execution_image_prefers_pinned_digest(tmp_path):
-    _write_execution_yaml(tmp_path, image="ghcr.io/o/sut:latest",
-                          image_revision="ghcr.io/o/sut@sha256:aaa")
-    # The pinned digest wins so a re-postprocess uses the exact image the runs used.
-    assert campaign_execution_image(str(tmp_path)) == "ghcr.io/o/sut@sha256:aaa"
-
-
-def test_campaign_execution_image_falls_back_to_tag(tmp_path):
-    # A local-docker id (the off-cluster/unpinned case) is not a digest ref → use tag.
-    _write_execution_yaml(tmp_path, image="ghcr.io/o/sut:latest",
-                          image_revision="unknown")
-    assert campaign_execution_image(str(tmp_path)) == "ghcr.io/o/sut:latest"
 
 
 def test_every_planned_container_reaches_the_launch_record(tmp_path):

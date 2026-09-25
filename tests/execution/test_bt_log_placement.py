@@ -24,7 +24,7 @@ import pytest
 
 from robovast.common.execution import build_job_parameter_documents, dump_multi_document_yaml
 from robovast.execution.packer import JobSpec, WorkItem
-from robovast.results_processing.postprocessing_plugins import _JSONL_READERS
+from robovast_decode.authored import JSONL_READERS as _JSONL_READERS
 
 pytest.importorskip("scenario_execution",
                     reason="the placement assertion needs the real runner")

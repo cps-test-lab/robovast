@@ -17,7 +17,7 @@
 """Where RoboVAST's own node-local state lives, decided once and made durable.
 
 Everything a deployment keeps is node-local by default: the results volume that holds every
-campaign and the campaign index beside it, the workspaces, the registry, and the build cache
+campaign, the workspaces, the registry, and the build cache
 -- a ``hostPath`` each. A stock cluster ships no StorageClass, so ``hostPath`` is not a
 preference here, it is the fallback that works. The pin therefore holds the campaigns
 themselves, not only rebuildable blobs: a deployment that came up on another node would find

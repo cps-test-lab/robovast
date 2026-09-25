@@ -398,20 +398,22 @@ async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -
     """The schema to write SQL against. Call this before ``query_campaign_data_sql``.
 
     Read the returned ``note`` first — it carries ready-made queries for the common
-    questions. Lists the flat views (``run_view``, ``config_view``), then the metric
-    tables and the attached ``campaign`` schema, each column as ``"name TYPE"``: a TEXT
-    column orders lexicographically, so ``CAST(col AS REAL)`` before comparing it.
+    questions. Lists the flat views (``run_view``, ``config_view``), then the tables and
+    the ``campaign`` schema, each column as ``"name TYPE"``: a TEXT column orders
+    lexicographically, so ``CAST(col AS DOUBLE)`` before comparing it. A table is built the
+    first time a query names it; ``built`` of ``runs`` says for how many runs it already is,
+    and its ``columns`` are empty until it is built for one.
 
     Args:
         campaign_id: Campaign identifier, or an absolute campaign path.
 
     Returns:
         ``{campaign_id, tables, note}`` — each table
-        ``{schema, table, columns, rows, description}``. Or ``{error}``.
+        ``{schema, table, columns, rows, kind, runs?, built?, description}``. Or ``{error}``.
     """
     import anyio
     del ctx
-    # Off the event loop: the read goes to the service, or to the index.
+    # Off the event loop: the read goes to the service, or to the campaign's files.
     return await anyio.to_thread.run_sync(lambda: data_access.describe(campaign_id))
 
 
@@ -449,9 +451,11 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
           ON r.config_name = m.config_name AND r.run_id = m.run_id
         GROUP BY r.param_wind_strength
 
-        -- comparing campaigns: they live in one index, so it is a WHERE clause
-        SELECT campaign_id, AVG(objective) FROM runs
-        WHERE campaign_id IN ('campaign-A', 'campaign-B') GROUP BY campaign_id
+        -- a JSON field of a TEXT column
+        SELECT config_name, sysinfo_json::JSON ->> 'cpu_name' AS cpu FROM run_view
+
+    The query sees *campaign_id*'s data and no other campaign's; compare campaigns with one
+    query each.
     """
     import anyio
     del ctx
@@ -557,30 +561,42 @@ def _drawn_track(campaign_id: str, config_name: str, run_id: int, source: str,
     Refuses rather than drawing a prefix: a reply cut at its size ceiling would be the start
     of the run shown as all of it.
     """
+    def lit(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    run_scope = f"config_name = {lit(config_name)} AND run_id = {int(run_id)}"
     described = data_access.describe(campaign_id)
     if "error" in described:
         raise ValueError(described["error"])
-    columns = next((set(c.split(" ", 1)[0] for c in t.get("columns", []))
-                    for t in described.get("tables", []) if t.get("table") == source), None)
-    if not columns or "position.x" not in columns:
+    listed = next((t.get("columns") or [] for t in described.get("tables", [])
+                   if t.get("table") == source), None)
+    if listed is None:
+        raise ValueError(f"{source!r} is not a table of {campaign_id!r}")
+    if listed:
+        columns = {c.split(" ", 1)[0] for c in listed}
+    else:
+        # Listed but not built for any run yet: an empty page of this run builds it and
+        # names its columns.
+        page = data_access.query(
+            campaign_id, f'SELECT * FROM "{source}" WHERE {run_scope} LIMIT 0', max_rows=1)
+        if "error" in page:
+            raise ValueError(page["error"])
+        columns = set(page.get("columns") or [])
+    if "position.x" not in columns:
         raise ValueError(f"{source!r} is not a pose table of {campaign_id!r}")
-    from robovast.results_processing.campaign_ingest import pose_clock  # noqa: PLC0415
+    from robovast_data.views import pose_clock  # noqa: PLC0415
     clock = pose_clock(columns)
-    z = 'CAST("position.z" AS double precision)' if "position.z" in columns else "0.0"
-    def lit(value):
-        return "'" + str(value).replace("'", "''") + "'"
-    scope = (f"campaign_id = {lit(campaign_id)} AND config_name = {lit(config_name)} "
-             f"AND CAST(run_id AS integer) = {int(run_id)} AND \"{clock}\" IS NOT NULL")
+    z = 'CAST("position.z" AS DOUBLE)' if "position.z" in columns else "0.0"
+    scope = f"{run_scope} AND \"{clock}\" IS NOT NULL"
     n = _DRAWN_TRACK_POINTS
     result = data_access.query(campaign_id, f"""
-        WITH src AS (SELECT CAST("{clock}" AS double precision) AS t,
-                            CAST("position.x" AS double precision) AS x,
-                            CAST("position.y" AS double precision) AS y, {z} AS z
+        WITH src AS (SELECT CAST("{clock}" AS DOUBLE) AS t,
+                            CAST("position.x" AS DOUBLE) AS x,
+                            CAST("position.y" AS DOUBLE) AS y, {z} AS z
                      FROM "{source}" WHERE {scope} AND frame = {lit(frame)}),
              idx AS (SELECT *, ROW_NUMBER() OVER (ORDER BY t) - 1 AS _i,
                             COUNT(*) OVER () AS _n FROM src)
         SELECT x, y, z, _n FROM idx
-        WHERE _n <= {n} OR _i % GREATEST(1, (_n + {n} - 1) / {n}) = 0 OR _i = _n - 1
+        WHERE _n <= {n} OR _i % GREATEST(1, (_n + {n} - 1) // {n}) = 0 OR _i = _n - 1
         ORDER BY _i""", max_rows=n + 1, max_bytes=8 * 1024 * 1024)
     if "error" in result:
         raise ValueError(result["error"])
@@ -669,9 +685,9 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
 
 # -- Looking at a run --------------------------------------------------------
 
-#: The manifest every video producer writes a row to, one per recording (see
-#: ``rosbags_process.VIDEOS_CSV``). The run view's ``camera`` panel reads the same row, which
-#: is what keeps the two surfaces from disagreeing about where a video sits in time.
+#: The table every video producer fills, one row per encoded camera topic
+#: (:class:`robovast_decode.handlers.Videos`). The run view's ``camera`` panel reads the same
+#: row, which is what keeps the two surfaces from disagreeing about where a video sits in time.
 _VIDEOS_TABLE = "videos"
 
 

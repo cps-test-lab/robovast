@@ -343,6 +343,27 @@
         "title": "BudgetItem",
         "type": "object"
       },
+      "BuildCampaignTablesRequest": {
+        "description": "Build a finished campaign's tables now rather than when each is first named.\n\nNot needed for any answer: a table is built the first time a query, a panel or an\nexport names it. This only moves that cost to now, for a campaign about to be analyzed\nat length. ``tables`` names the ones to build; empty builds every table its records can\ngive.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "BuildCampaignTablesRequest",
+        "type": "object"
+      },
       "BuildImageRequest": {
         "description": "Build the derived images a workspace project's containers declare.\n\nEvery entry in ``execution.containers`` that adds ``system_packages``,\n``python_packages`` or ``ros_packages`` is built on top of its ``image``; one that adds nothing is\npulled as-is and never built. So this is zero or more images, tagged by container\nname \u2014 not one \"experiment image\", and not tied to any particular role.\n\nThe declarative content lives in the ``.vast``; this request only names the\nproject, so the client stays free of any registry knowledge.\nIdempotent/content-addressed: if an image for the same inputs already exists it is\nreused (no build runs).",
         "properties": {
@@ -727,6 +748,26 @@
         "title": "CampaignSummary",
         "type": "object"
       },
+      "CampaignTablesCleared": {
+        "description": "What clearing one campaign's built tables removed. Each is built again on use.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "freed_bytes": {
+            "default": 0,
+            "title": "Freed Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "freed_bytes"
+        ],
+        "title": "CampaignTablesCleared",
+        "type": "object"
+      },
       "CampaignVisualization": {
         "description": "One ``evaluation.visualization`` notebook workload + the node levels it\ndefines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).\nA ``batch`` notebook is only reachable on a search campaign, whose tree has the\nbatch nodes to select.",
         "properties": {
@@ -896,7 +937,7 @@
         "type": "object"
       },
       "DataDescribe": {
-        "description": "Schema of a campaign's tables in the index (+ the ``campaign`` schema).\n\nEach ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in\nevery dump it appears in.",
+        "description": "Schema of a campaign's tables, views and ``campaign`` record.\n\nEach ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in\nevery dump it appears in.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -981,6 +1022,17 @@
       "DataTable": {
         "description": "One queryable table, as :meth:`describe_campaign_data` reports it.",
         "properties": {
+          "built": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Built"
+          },
           "column_notes": {
             "additionalProperties": true,
             "title": "Column Notes",
@@ -998,6 +1050,16 @@
             "title": "Description",
             "type": "string"
           },
+          "failed": {
+            "additionalProperties": true,
+            "title": "Failed",
+            "type": "object"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
           "rows": {
             "anyOf": [
               {
@@ -1008,6 +1070,17 @@
               }
             ],
             "title": "Rows"
+          },
+          "runs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runs"
           },
           "schema": {
             "default": "",
@@ -1021,10 +1094,14 @@
           }
         },
         "required": [
+          "built",
           "column_notes",
           "columns",
           "description",
+          "failed",
+          "kind",
           "rows",
+          "runs",
           "schema",
           "table"
         ],
@@ -1616,11 +1693,6 @@
             "title": "Pending",
             "type": "integer"
           },
-          "postprocessing": {
-            "default": 0,
-            "title": "Postprocessing",
-            "type": "integer"
-          },
           "running": {
             "default": 0,
             "title": "Running",
@@ -1644,7 +1716,6 @@
           "failed",
           "killed",
           "pending",
-          "postprocessing",
           "running",
           "total",
           "waiting"
@@ -2086,11 +2157,6 @@
             "title": "Calls",
             "type": "array"
           },
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
           "limit": {
             "default": 0,
             "title": "Limit",
@@ -2100,11 +2166,6 @@
             "default": 0,
             "title": "Offset",
             "type": "integer"
-          },
-          "status": {
-            "default": "ok",
-            "title": "Status",
-            "type": "string"
           },
           "total": {
             "default": 0,
@@ -2119,10 +2180,8 @@
         },
         "required": [
           "calls",
-          "detail",
           "limit",
           "offset",
-          "status",
           "total",
           "truncated"
         ],
@@ -2180,13 +2239,8 @@
         "type": "object"
       },
       "McpToolStats": {
-        "description": "The ranking, plus what the record covers.\n\n:attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:\nno tool has been called yet, or the index that holds the log is unreachable and the\nanswer is unknown. A reader that drew the second as the first would be inventing a fact.",
+        "description": "The ranking, plus what the record covers.",
         "properties": {
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
           "max_age_s": {
             "default": 0.0,
             "title": "Max Age S",
@@ -2197,11 +2251,6 @@
             "title": "Max Rows",
             "type": "integer"
           },
-          "status": {
-            "default": "ok",
-            "title": "Status",
-            "type": "string"
-          },
           "tools": {
             "items": {
               "$ref": "#/components/schemas/McpToolStat"
@@ -2211,10 +2260,8 @@
           }
         },
         "required": [
-          "detail",
           "max_age_s",
           "max_rows",
-          "status",
           "tools"
         ],
         "title": "McpToolStats",
@@ -6768,7 +6815,7 @@
     },
     "/campaigns/{campaign_id}/query": {
       "post": {
-        "description": "Run a read-only ``SELECT``, scoped to ``campaign_id``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.\n\n``campaigns`` widens the scope to the ids it names -- the A/B comparison, the\nwhole search arm. It is a parameter rather than the default because the index\nholds every campaign: a query that spans them by *omission* returns rows of the\nright shape from the wrong experiment, and nothing about the reply says so.",
+        "description": "Run a read-only ``SELECT``, scoped to ``campaign_id``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.\n\n``campaigns`` widens the scope to the ids it names -- the A/B comparison, the\nwhole search arm. It is a parameter rather than the default because a query that\nspans campaigns by *omission* returns rows of the right shape from the wrong\nexperiment, and nothing about the reply says so.",
         "operationId": "query_campaign_data_sql_campaigns__campaign_id__query_post",
         "parameters": [
           {
@@ -7568,6 +7615,102 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/tables": {
+      "delete": {
+        "description": "Remove one campaign's built tables to free storage; each is built again on use.",
+        "operationId": "clear_campaign_tables_campaigns__campaign_id__tables_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignTablesCleared"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Campaign Tables",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/tables/build": {
+      "post": {
+        "description": "Build a finished campaign's tables now; never needed, since each is built on use.",
+        "operationId": "build_campaign_tables_campaigns__campaign_id__tables_build_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildCampaignTablesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Build Campaign Tables",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/track_deviation": {
       "get": {
         "operationId": "get_track_deviation_campaigns__campaign_id__track_deviation_get",
@@ -7731,7 +7874,7 @@
     },
     "/data/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.\n\nBacks ``vast campaign download``, the web UI's download button and the\npostprocessing pod's stage, which asks for the plain tar, being in the cluster.\nWhat comes out is the campaign as this service holds\nit -- postprocessed if it has been, raw if it has not; derived data is an addition\nto a campaign, never the condition for reading one. ``stage``, ``skip_bags``,\n``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads\n(:class:`ArchiveSelection`).\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download button. What comes out\nis the campaign's records as this service holds them -- postprocessed if it has\nbeen, raw if it has not -- never its table cache: derived data is an addition to a\ncampaign, never the condition for reading one.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
         "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
         "parameters": [
           {
@@ -7740,56 +7883,6 @@
             "required": true,
             "schema": {
               "title": "Campaign Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "stage",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Stage",
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "skip_bags",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Skip Bags",
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "batch_jobs",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Batch Jobs",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "uncompressed",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Uncompressed",
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "part",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Part",
               "type": "string"
             }
           }

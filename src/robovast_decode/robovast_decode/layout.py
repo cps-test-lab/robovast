@@ -26,6 +26,13 @@ import yaml
 #: pure-Python parser spends most of a query's own time on a campaign of hundreds of runs.
 _LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
+#: What the main container is called. The runtime container is ``robovast`` (the pod's
+#: container) -- NOT ``scenario``, which is the container plan's
+#: *role* name. Every reader that names a container agrees on it: the live job log tags its
+#: lines with it, and ``run_log``, ``resource_usage`` and ``system_usage`` file their rows under
+#: it, so one campaign reads as one set of containers on every surface.
+MAIN_CONTAINER = "robovast"
+
 #: The campaign's store, written by the controller.
 STORE = "campaign.db"
 
@@ -76,5 +83,5 @@ def run_dirs(campaign_dir: str):
     return out
 
 
-__all__ = ["DECODER_CONFIG", "INTERVENTIONS", "JOB_LINKS", "STORE", "decoder_config", "job_links",
-           "run_dirs"]
+__all__ = ["DECODER_CONFIG", "INTERVENTIONS", "JOB_LINKS", "MAIN_CONTAINER", "STORE",
+           "decoder_config", "job_links", "run_dirs"]

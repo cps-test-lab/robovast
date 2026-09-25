@@ -17,7 +17,7 @@
 """Minikube: a one-node development cluster.
 
 The same deployment as RKE2 -- node directories for everything, the ``robovast`` pod for
-the registry and the index, campaigns on the service's results volume -- on a machine
+the registry, campaigns on the service's results volume -- on a machine
 that is usually the developer's own.
 """
 import logging
@@ -36,7 +36,7 @@ class MinikubeClusterConfig(BaseConfig):
 
 Every directory this deployment keeps is a hostPath on the minikube node. Finished
 campaigns live on the service's **results volume**, beside the workspaces; the
-`robovast` pod in this manifest holds the container registry and the campaign index.
+`robovast` pod in this manifest holds the container registry.
 Suitable for development and short-lived runs: archive anything that must outlive the
 machine with `vast share`, and empty the directories with
 `vast cluster cleanup --delete-data`.
@@ -55,8 +55,7 @@ kubectl apply -f robovast-manifest.yaml
 kubectl wait --for=condition=ready pod/robovast --timeout=60s
 ```
 
-The registry answers on `/v2` of the service's published host; the index on port 5432 of
-the `robovast` Service, from inside the cluster only.
+The registry answers on `/v2` of the service's published host.
 """
         with open(f"{output_dir}/README_minikube.md", "w") as f:
             f.write(readme_content)

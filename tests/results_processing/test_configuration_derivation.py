@@ -22,7 +22,7 @@ from robovast.results_processing.metadata import generate_campaign_metadata
 DATASET_IRI = "https://purl.org/robovast/datasets/test/"
 
 VAST = """\
-version: 4
+version: 5
 configuration:
 - name: cfg
   parameters:

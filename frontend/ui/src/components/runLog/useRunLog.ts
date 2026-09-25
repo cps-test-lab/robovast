@@ -38,8 +38,8 @@ export interface ClockProvenance {
   wallSpanS: number
 }
 
-/** Where this run's trial ended, read from `scenario_timestamps` — the one place
- *  postprocessing records it, so the log, the playback clock and `search_run_logs` cut at
+/** Where this run's trial ended, read from `scenario_timestamps` — the one table that
+ *  records it, so the log, the playback clock and `search_run_logs` cut at
  *  the same moment instead of each matching the log text again. */
 export interface Verdict {
   /** On the run's clock. Null when the clock map could not place the verdict. */
@@ -62,19 +62,13 @@ export interface RunLogData {
   /** One run's rows, so sim time rises across the whole load and the cursor can binary-search
    *  it. False for a config's or a campaign's log, where every run restarts at zero. */
   singleRun: boolean
-  /** Where the trial ended, or null when this run reached no verdict (and for a campaign
-   *  postprocessed before the verdict was recorded). Absent for a multi-run scope, where one
+  /** Where the trial ended, or null when this run reached no verdict. Absent for a multi-run scope, where one
    *  answer would not be true of every run. */
   verdict: Verdict | null
   /** True when the load stopped at `maxRows`, so the view can say so rather than imply completeness. */
   truncated: boolean
-  /** Absent `run_log` table (postprocessing predates it) vs. present but empty. */
+  /** Absent `run_log` table (no run in scope recorded a log line) vs. present but empty. */
   missingTable: boolean
-  /** The campaign has no rows in the index at all, i.e. postprocessing has not run for it.
-   *  Distinct from `missingTable`, which is a campaign that WAS ingested by an older
-   *  postprocessing: the remedy is the same but the reason a reader is looking at an empty
-   *  log is not, and an empty log with no explanation reads as a broken tab. */
-  notIngested: boolean
   total: number
 }
 
@@ -91,9 +85,12 @@ const PAGE = 5000
 
 const quote = (v: string) => `'${v.replace(/'/g, "''")}'`
 
+/** The engine's answer for a table no run in scope has recorded anything for. */
+const NO_RUN_LOG = /Table with name run_log does not exist/i
+
 /** SQL for one page. `severityFloor` is the only content predicate pushed down: it can drop
  *  most of a run's rows, where the others only re-express what is already loaded. */
-function pageSql(
+export function pageSql(
   configName: string | undefined,
   runId: number | undefined,
   severityFloor: string[] | undefined,
@@ -105,9 +102,10 @@ function pageSql(
   if (severityFloor?.length)
     where.push(`severity IN (${severityFloor.map(quote).join(', ')})`)
   const scope = where.length ? ` WHERE ${where.join(' AND ')}` : ''
-  // ORDER BY on the server: the merge already wrote the rows in wall order, but a table is a
-  // set and the panel's cursor search needs them sorted. Wall time is the key to sort on,
-  // because it is the one every row carries in the same sense.
+  // ORDER BY on the server: a table is a set and the panel's cursor search needs the rows
+  // sorted. `seq` is the merge's own order within a run, from 0: wall order, with the ties a
+  // burst of lines sharing one inherited stamp would leave broken the same way every time, so
+  // paging with LIMIT/OFFSET neither shows a row twice nor drops one.
   //
   // Not `sim_time IS NOT NULL` first, which reads a NULL sim time as "pre-roll, logged before
   // the simulator's clock existed". It does not mean that: the clock map refuses to extrapolate,
@@ -116,19 +114,10 @@ function pageSql(
   // with.
   //
   // The run leads the key so that a multi-run scope reads as one run after another. Sorting a
-  // whole campaign by time alone interleaves runs that each start at zero, which is how the
-  // old sim-time key left it.
-  //
-  // `seq` breaks the wall-time ties, and it is a real column the merge writes (see
-  // `run_log.FIELDNAMES`), not the storage engine's implicit row number. This ordered by
-  // `rowid` until the results moved to Postgres, which has none -- and the reason that ever
-  // worked was an accident: rows happened to come back in insertion order from a file only
-  // one writer touched. A table is a set. Ties here are routine rather than exotic, since a
-  // burst of lines can share one inherited stamp, and without a total order paging with
-  // LIMIT/OFFSET shows some rows twice and drops others.
+  // whole campaign by time alone interleaves runs that each start at zero.
   return (
     `SELECT config_name, run_id, ${COLUMNS} FROM run_log${scope} ` +
-    `ORDER BY config_name, run_id, wall_ts, seq ` +
+    `ORDER BY config_name, run_id, seq ` +
     `LIMIT ${PAGE} OFFSET ${offset}`
   )
 }
@@ -182,7 +171,6 @@ export function useRunLog(opts: UseRunLogOptions) {
       const rows: LogRow[] = []
       let truncated = false
       let missingTable = false
-      let notIngested = false
       for (let offset = 0; offset < maxRows; offset += PAGE) {
         const want = Math.min(PAGE, maxRows - offset)
         let page
@@ -193,39 +181,30 @@ export function useRunLog(opts: UseRunLogOptions) {
             want,
           )
         } catch (e) {
-          // "no such table: run_log" is the campaign whose postprocessing predates this, and
-          // is worth reporting as exactly that rather than as a failed request.
-          if (offset === 0 && /no such table/i.test(String((e as Error).message))) {
+          // No run in scope recorded a log line, so there is no `run_log` to read: worth
+          // reporting as exactly that rather than as a failed request.
+          if (offset === 0 && NO_RUN_LOG.test(String((e as Error).message))) {
             missingTable = true
             break
           }
           throw e
         }
         const got = page.rows ?? []
-        // An empty first page carrying the index's "not in the index" note is a campaign
-        // postprocessing never ingested -- the service answers it as a result with a note
-        // rather than as an error, so there is nothing thrown to catch above. Same wording
-        // the Data browser matches on (`index_query.missing_campaign_note`), so the two tabs
-        // explain one state the same way.
-        if (offset === 0 && !got.length && /not in the index/i.test(page.note ?? '')) {
-          notIngested = true
-          break
-        }
         // Rows come back keyed by column name (`DataQueryResult.rows: list[dict]`).
         for (const row of got) rows.push(toRow(row as Record<string, unknown>))
         if (got.length < want) break
         if (offset + PAGE >= maxRows) truncated = true
       }
 
-      // The clock provenance lives on `runs`, so a reader can tell "not aligned" from
+      // The clock provenance is `run_clock`'s, so a reader can tell "not aligned" from
       // "nothing logged before the clock started". Missing for a multi-run scope, where one
       // answer would not be true of every run.
       let clock: ClockProvenance | null = null
-      if (!missingTable && !notIngested && singleRun) {
+      if (!missingTable && singleRun) {
         try {
           const res = await robovast.queryCampaignDataSql(
             campaignId,
-            `SELECT clock_map_source, clock_map_samples, clock_map_wall_span_s FROM runs ` +
+            `SELECT clock_map_source, clock_map_samples, clock_map_wall_span_s FROM run_clock ` +
               `WHERE config_name = ${quote(configName)} AND run_id = ${runId}`,
             1,
           )
@@ -237,16 +216,16 @@ export function useRunLog(opts: UseRunLogOptions) {
               wallSpanS: Number(row.clock_map_wall_span_s ?? 0),
             }
         } catch {
-          // An older campaign's `runs` has no such columns. The view then says nothing about
-          // alignment, which is honest -- it does not know.
+          // A run with no clock record: the view then says nothing about alignment, which is
+          // honest -- it does not know.
         }
       }
 
-      // Where the trial ended. Read, not re-derived: postprocessing already matched the
-      // verdict once (`common/scenario_markers`) and wrote it here, so this view, the
-      // playback clock and `search_run_logs` cut at the same moment.
+      // Where the trial ended. Read, not re-derived: the table build matched the verdict
+      // once and wrote it here, so this view, the playback clock and `search_run_logs` cut
+      // at the same moment.
       let verdict: Verdict | null = null
-      if (!missingTable && !notIngested && singleRun) {
+      if (!missingTable && singleRun) {
         try {
           const res = await robovast.queryCampaignDataSql(
             campaignId,
@@ -265,8 +244,8 @@ export function useRunLog(opts: UseRunLogOptions) {
               status: String(row.status),
             }
         } catch {
-          // A campaign postprocessed before `wall_ts` existed. Nothing is trimmed and the
-          // toggle says why -- re-run postprocessing to get it.
+          // No `scenario_timestamps` for this run (it recorded no scenario end). Nothing is
+          // trimmed and the toggle says why.
         }
       }
 
@@ -279,7 +258,6 @@ export function useRunLog(opts: UseRunLogOptions) {
         }
       })
       return { rows, simTimes, simIndex, clock, singleRun, verdict, truncated, missingTable,
-        notIngested,
                total: rows.length }
     },
   })

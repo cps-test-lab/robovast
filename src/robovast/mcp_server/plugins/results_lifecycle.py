@@ -72,25 +72,58 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
 
 def run_postprocessing(campaign_id: str, force: bool = False,
                        skip: list | None = None) -> dict:
-    """(Re)run analysis postprocessing for one campaign, rebuilding its derived data.
+    """(Re)run analysis postprocessing for one campaign: its steps, declared tables, grades.
 
-    **Dispatched in the background** — returns as soon as the run is started (it can take
-    minutes to hours). The campaign enters the ``postprocessing`` phase; background
-    ``vast campaign wait <campaign_id>`` until it is over, then read the outcome
-    (``postprocessed`` / ``postprocessing_error``). Reprocesses just this campaign (not its siblings), reading
-    its own ``_config/<name>.vast``. Returns ``{ok, message}`` where *message* confirms
-    the dispatch, or ``ok=false`` if an operation is already running for the campaign.
+    **Dispatched in the background** — returns as soon as the run is started. The campaign
+    enters the ``postprocessing`` phase; background ``vast campaign wait <campaign_id>``
+    until it is over, then read the outcome (``postprocessed`` / ``postprocessing_error``).
+    Reads the campaign's own ``_config/<name>.vast``. Returns ``{ok, message}``, or
+    ``ok=false`` if an operation is already running for the campaign.
 
     Args:
         campaign_id: The campaign to (re)process.
-        force: Bypass per-rosbag caches and reprocess all bags.
-        skip: Plugin names to skip (e.g. ``["rosbags_to_webm"]``).
+        force: Clear the campaign's built tables first, so what it declares is built again.
+        skip: Plugin names to skip.
     """
     from robovast.service.interface import RunPostprocessingRequest
     try:
         return service_access.require_service() \
             .run_postprocessing(RunPostprocessingRequest(
                 campaign_id=campaign_id, force=force, skip=skip or [])).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def build_campaign_tables(campaign_id: str, tables: list | None = None) -> dict:
+    """Build a finished campaign's tables for every run now, in the background.
+
+    **Not needed for any answer**: every table is built the first time a query names it,
+    for the runs the query asks about. Use this only before a long analysis of a whole
+    large campaign, to pay that cost up front; pass *tables* to build only those. Progress
+    is in the campaign log's TABLES section (``get_campaign_log``), and
+    ``describe_campaign_data`` reports each table as built for M of M runs when it is done.
+
+    Args:
+        campaign_id: The finished campaign.
+        tables: Table names to build; every table its records can give when omitted.
+    """
+    from robovast.service.interface import BuildCampaignTablesRequest
+    try:
+        return service_access.require_service().build_campaign_tables(
+            BuildCampaignTablesRequest(campaign_id=campaign_id,
+                                       tables=list(tables or []))).model_dump()
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def clear_campaign_tables(campaign_id: str) -> dict:
+    """Remove one campaign's built tables to free storage; each is built again on use.
+
+    Loses nothing but the time to build again. Refused while the campaign runs or its
+    tables are being built. Returns ``{campaign_id, freed_bytes}``.
+    """
+    try:
+        return service_access.require_service().clear_campaign_tables(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -121,8 +154,8 @@ def run_share(campaign_id: str) -> dict:
 
 
 def delete_campaign(campaign_id: str | list[str]) -> dict:
-    """Irreversibly remove campaigns: each one's directory, the local archives beside it,
-    its index rows, and on a cluster its leftover Jobs.
+    """Irreversibly remove campaigns: each one's directory (its built tables with it), the
+    local archives beside it, and on a cluster its leftover Jobs.
 
     Each id is deleted or refused on its own: a running one is refused (stop it first);
     ``partial`` says what it had to leave behind, and deleting again retries it.
@@ -238,6 +271,8 @@ _TOOLS = [
     get_postprocessing,
     update_postprocessing,
     run_postprocessing,
+    build_campaign_tables,
+    clear_campaign_tables,
     run_share,
     delete_campaign,
     get_campaign_download,

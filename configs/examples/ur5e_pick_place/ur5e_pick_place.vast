@@ -1,4 +1,4 @@
-version: 4
+version: 5
 metadata:
   name: ur5e-pick-place
   title: "UR5e pick-and-place: how accurate does the reported box pose have to be?"
@@ -130,7 +130,7 @@ execution:
 
 # The box's own trajectory, so a failure can be READ rather than guessed at: `out.csv` says the box
 # never rose, and this says where it was while the arm was busy not lifting it. `out.csv` itself
-# needs no step here -- a CSV in the run directory is ingested as a table named after the file.
+# needs no step here -- a CSV in the run directory is a table named after the file.
 #
 # `require:` makes a missing frame a loud failure instead of an empty table. The box is the frame
 # the verdict is built from, so a run that recorded no box pose measured nothing at all.

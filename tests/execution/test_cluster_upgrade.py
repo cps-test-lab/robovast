@@ -156,11 +156,8 @@ def test_setup_preserves_the_registry_prefix_of_a_published_deployment(monkeypat
     deploy = mock.Mock()
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
-    # Setup creates the index Secret before the robovast pod and then refuses a live pod that
-    # does not match the manifest; both read the API server.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
-    # Same moment, same reason: the registry's password file is put in the cluster before
-    # the robovast pod that mounts it, and that reads the API server too.
+    # The registry's password file is put in the cluster before the robovast pod that
+    # mounts it, and that reads the API server.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
     from robovast.execution.cluster_execution import tailnet_deploy
     # Every setup reconciles the optional tailnet node, which reads the API server
@@ -213,11 +210,8 @@ def test_setup_does_not_hang_when_the_api_server_cannot_be_reached(monkeypatch):
     deploy = mock.Mock()
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
-    # Setup creates the index Secret before the robovast pod and then refuses a live pod that
-    # does not match the manifest; both read the API server.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
-    # Same moment, same reason: the registry's password file is put in the cluster before
-    # the robovast pod that mounts it, and that reads the API server too.
+    # The registry's password file is put in the cluster before the robovast pod that
+    # mounts it, and that reads the API server.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
     from robovast.execution.cluster_execution import tailnet_deploy
     # Every setup reconciles the optional tailnet node, which reads the API server
@@ -273,11 +267,8 @@ def test_an_explicit_ingress_host_still_wins(monkeypatch):
     deploy = mock.Mock()
     monkeypatch.setattr(service_deploy, "deploy_service", deploy)
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
-    # Setup creates the index Secret before the robovast pod and then refuses a live pod that
-    # does not match the manifest; both read the API server.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
-    # Same moment, same reason: the registry's password file is put in the cluster before
-    # the robovast pod that mounts it, and that reads the API server too.
+    # The registry's password file is put in the cluster before the robovast pod that
+    # mounts it, and that reads the API server.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
     from robovast.execution.cluster_execution import tailnet_deploy
     # Every setup reconciles the optional tailnet node, which reads the API server
@@ -355,11 +346,8 @@ def test_upgrade_reconciles_the_controller_rbac(monkeypatch):
                         mock.Mock(return_value=False))
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
-    # Setup creates the index Secret before the robovast pod and then refuses a live pod that
-    # does not match the manifest; both read the API server.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
-    # Same moment, same reason: the registry's password file is put in the cluster before
-    # the robovast pod that mounts it, and that reads the API server too.
+    # The registry's password file is put in the cluster before the robovast pod that
+    # mounts it, and that reads the API server.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
     from robovast.execution.cluster_execution import tailnet_deploy
     # Every setup reconciles the optional tailnet node, which reads the API server
@@ -468,11 +456,8 @@ def test_an_upgrade_declares_the_origin_it_read_from_the_ingress(monkeypatch):
                         mock.Mock(return_value=False))
     monkeypatch.setattr(buildkitd_deploy, "buildkitd_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
-    # Setup creates the index Secret before the robovast pod and then refuses a live pod that
-    # does not match the manifest; both read the API server.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
-    # Same moment, same reason: the registry's password file is put in the cluster before
-    # the robovast pod that mounts it, and that reads the API server too.
+    # The registry's password file is put in the cluster before the robovast pod that
+    # mounts it, and that reads the API server.
     monkeypatch.setattr(service_deploy, "ensure_registry_htpasswd", lambda *a, **k: "rpw")
     from robovast.execution.cluster_execution import tailnet_deploy
     # Every setup reconciles the optional tailnet node, which reads the API server
@@ -630,7 +615,6 @@ def _deploy_capturing_manifests(monkeypatch, live_pool, **kwargs):
     monkeypatch.setattr(service_deploy, "service_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "existing_auth_token", lambda *a, **k: "token")
-    monkeypatch.setattr(service_deploy, "existing_index_password", lambda *a, **k: "pw")
     monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster",
                         lambda *a, **k: dict(live_pool))
 
@@ -824,7 +808,6 @@ def _deploy_over_a_live_service(monkeypatch, *, origin="", **kwargs):
     monkeypatch.setattr(service_deploy, "service_storage_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "existing_auth_token", lambda *a, **k: "token")
-    monkeypatch.setattr(service_deploy, "existing_index_password", lambda *a, **k: "pw")
     monkeypatch.setattr(service_deploy, "published_url", lambda *a, **k: origin)
     for var in service_deploy._GIT_TOKEN_HOST_ENVS:
         monkeypatch.delenv(var, raising=False)

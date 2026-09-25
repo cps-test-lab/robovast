@@ -48,7 +48,7 @@ def _project(tmp_path, *, config=None, search=None, results=None, files=None):
         target.write_text(body)
 
     document = {
-        "version": 4,
+        "version": 5,
         "metadata": {"name": "archived"},
         "execution": {
             "containers": {"sut": {"image": "sut:latest"},

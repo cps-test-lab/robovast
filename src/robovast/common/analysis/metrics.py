@@ -18,7 +18,7 @@
 """Derivations over a run-data frame — pure, no I/O.
 
 Everything here takes a DataFrame and returns a DataFrame, so it works the same on a frame
-from :mod:`~robovast.common.analysis.db` (a results-index table) and on one from
+from :mod:`robovast_data` (a campaign's table) and on one from
 :mod:`~robovast.common.analysis.files` (per-run files).
 
 That is why these are not in ``ros2``. ``scenario_execution`` writes ``behaviors.jsonl``
@@ -33,8 +33,8 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
-#: The two ways a frame identifies which run a row came from. The index uses
-#: ``(config_name, run_id)`` — the column pair every metric table is keyed by, and the one
+#: The two ways a frame identifies which run a row came from. A campaign's tables use
+#: ``(config_name, run_id)`` — the column pair every table is keyed by, and the one
 #: ``runs`` joins on. ``read_output_files`` attaches ``(config, run)`` instead. Both are
 #: current, so these functions accept either rather than forcing a rename on the caller.
 _RUN_KEY_PAIRS = (("config_name", "run_id"), ("config", "run"))
@@ -62,9 +62,9 @@ def get_behavior_info(behavior_name: str, behavior_dataframe: pd.DataFrame) -> p
         behavior_name: The ``behavior_name`` to filter on.
         behavior_dataframe: A behaviour-tree frame — ``timestamp``, ``behavior_name``,
             ``behavior_id``, ``status_name``, plus whichever run-key pair the source uses
-            (see :data:`_RUN_KEY_PAIRS`). ``read_table(DATA_DIR, "behaviors")`` and
-            ``read_table(DATA_DIR, "nav2_behaviors")`` both qualify — the ingest gives the
-            two tables one schema.
+            (see :data:`_RUN_KEY_PAIRS`). ``open_data(DATA_DIR).table("behaviors")`` and
+            ``open_data(DATA_DIR).table("nav2_behaviors")`` both qualify — the two tables
+            share one schema.
 
     Returns:
         One row per instance: ``behavior_name``, ``id``, ``start_time``, ``end_time``,

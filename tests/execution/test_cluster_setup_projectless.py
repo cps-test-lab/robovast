@@ -76,10 +76,8 @@ def _deploy_stubs(monkeypatch):
     # --ingress-host was given, so it reaches the API server where it did not before.
     # Unstubbed, these tests wait out a connection timeout apiece.
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
-    # Setup creates the index password Secret before the robovast pod (whose Postgres reads
-    # it), then refuses a live pod that does not match the manifest. Both talk to the
+    # Setup refuses a live robovast pod that does not match the manifest, which talks to the
     # API server; unstubbed, these tests wait out a connection timeout apiece.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     for name in ("apply_controller_rbac", "ensure_nvidia_device_plugin"):
@@ -200,10 +198,8 @@ def test_gpus_are_provisioned_before_the_service_can_run_a_campaign(monkeypatch)
                         lambda *a, **k: (None, None))
     monkeypatch.setattr(service_deploy, "wait_for_service_ready", mock.Mock())
     monkeypatch.setattr(service_deploy, "published_host", lambda *a, **k: "")
-    # Setup creates the index password Secret before the robovast pod (whose Postgres reads
-    # it), then refuses a live pod that does not match the manifest. Both talk to the
+    # Setup refuses a live robovast pod that does not match the manifest, which talks to the
     # API server; unstubbed, these tests wait out a connection timeout apiece.
-    monkeypatch.setattr(service_deploy, "ensure_index_secret", lambda *a, **k: "pw")
     monkeypatch.setattr(service_deploy, "verify_store_pod_infrastructure",
                         lambda *a, **k: None)
     monkeypatch.setattr(cluster_setup, "apply_node_id_labels", mock.Mock(return_value={}))
@@ -431,27 +427,20 @@ def test_a_provider_that_can_take_one_still_gets_it_by_default(deploy_stubs):
     assert node_governor.ensure_cpu_governor.call_args.kwargs["explicit"] is False
 
 
-def test_the_index_and_registry_placement_reach_the_provider_not_the_service(deploy_stubs):
-    """Both volumes are in the ``robovast`` pod, which the provider deploys.
+def test_the_registry_placement_reaches_the_provider_not_the_service(deploy_stubs):
+    """The registry's volume is in the ``robovast`` pod, which the provider deploys.
 
-    The service Deployment carries the workspaces and the results only; an index placement
+    The service Deployment carries the workspaces and the results only; a registry placement
     handed to it would be accepted, recorded and mounted by nothing.
     """
     from robovast.execution.cluster_execution import service_deploy
 
     setup_server(config_name="rke2", namespace="default",
-                 service_kwargs={"index_storage_path": "/media/data/index",
-                                 "index_storage_class": "premium-rwo",
-                                 "index_storage_size": "50Gi",
-                                 "registry_storage_path": "/media/data/registry",
+                 service_kwargs={"registry_storage_path": "/media/data/registry",
                                  "workspaces_storage_path": "/media/data/workspaces"})
 
     provider = deploy_stubs.setup_cluster.call_args.kwargs
-    assert provider["index_storage_path"] == "/media/data/index"
-    assert provider["index_storage_class"] == "premium-rwo"
-    assert provider["index_storage_size"] == "50Gi"
     assert provider["registry_storage_path"] == "/media/data/registry"
     service = service_deploy.deploy_service.call_args.kwargs
     assert service["workspaces_storage_path"] == "/media/data/workspaces"
-    assert not any(k.startswith("index_") or k.startswith("registry_storage")
-                   for k in service)
+    assert not any(k.startswith("registry_storage") for k in service)

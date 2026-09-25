@@ -26,10 +26,8 @@ import yaml
 from robovast.client.errors import handle_cli_exception
 from robovast.common import fmt_size as _fmt_size
 from robovast.common.execution import is_campaign_dir
-from robovast.results_processing import run_postprocessing
 from robovast.results_processing.merge_results import merge_results
 from robovast.results_processing.metadata import generate_campaign_metadata
-from robovast.results_processing.postprocessing import load_postprocessing_plugins
 from robovast.results_processing.publication import load_publication_plugins, run_publication
 
 
@@ -112,6 +110,8 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     # Run postprocessing first (unless skipped)
     if not skip_postprocessing:
         click.echo("Running postprocessing...")
+        from robovast.results_processing.postprocessing import \
+            run_postprocessing  # pylint: disable=import-outside-toplevel
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
             campaign=campaign,
@@ -330,6 +330,8 @@ def list_postprocessing_commands():
     Shows plugin names that can be used in the ``results_processing.postprocessing`` section
     of the configuration file, along with their descriptions and parameters.
     """
+    from robovast.results_processing.postprocessing import \
+        load_postprocessing_plugins  # pylint: disable=import-outside-toplevel
     plugins = load_postprocessing_plugins()
 
     if not plugins:

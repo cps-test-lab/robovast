@@ -128,19 +128,16 @@ def variant_from_record(record) -> str:
     *record* is the file's contents, or ``None`` when the campaign has no such file.
 
     Why this file and not a derived artifact. The variant has to be decidable from the
-    archive ALONE -- a recipient analyses it without our service and without the results
-    index -- so querying the index is out, and after the per-campaign ``data.db`` was
-    dropped in favour of that index there is no single derived file left to point at:
-    what postprocessing leaves in the directory is per-run CSVs whose names come from the
-    campaign's own plugin list, so "is there derived data?" would mean guessing at names
-    a stranger's campaign chose. The provenance record is the one thing postprocessing
-    always writes, under a fixed name, and it is *self-describing*: it does not merely
-    imply that derived data exists, it says which files were derived from which sources
-    by which plugin -- exactly what the recipient of a ``postprocessed`` archive needs.
+    archive ALONE -- a recipient analyses it without our service -- and an archive carries
+    the campaign's records, never its table cache, so the only derived files in it are the
+    ones the campaign's own steps wrote, under names its plugin list chose. The provenance
+    record is the one thing postprocessing always writes, under a fixed name, and it is
+    *self-describing*: it says which files were derived from which sources by which plugin
+    -- exactly what the recipient of a ``postprocessed`` archive needs.
 
     An empty ``entries`` list is :data:`RAW`, deliberately. The file is written even when
     every step failed or none was configured, and calling that ``postprocessed`` would
-    hand a reader a campaign with no derived data under a name promising results -- the
+    hand a reader a campaign with no derived files under a name promising them -- the
     one direction of error that is not recoverable by looking.
 
     A record that cannot be parsed raises: it is postprocessing's own output in a format

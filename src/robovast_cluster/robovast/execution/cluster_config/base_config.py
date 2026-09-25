@@ -90,7 +90,6 @@ class RegistryConfig:
 #: provider ``-o`` options that travel in the same ``kwargs`` (and are persisted as the
 #: cluster's recorded config) are not mistaken for placement.
 STORE_POD_PLACEMENT_KEYS = (
-    "index_storage_path", "index_storage_class", "index_storage_size",
     "registry_storage_path", "registry_storage_class",
     "registry_authenticated", "ingress_class",
 )
@@ -100,7 +99,7 @@ class BaseConfig(object):
     """A cluster provider: the ``robovast`` pod, and what the cluster can say about itself.
 
     Every cluster config plugin subclasses this. A provider does two things. It deploys the
-    deployment's setup-lifetime pod -- the container registry and the campaign index
+    deployment's setup-lifetime pod -- the container registry
     (:mod:`~robovast.execution.cluster_execution.store_pod`) -- which is the same on every
     provider and is therefore done here, with the provider deciding only what its README
     says about backing the volumes. And it answers the scheduling questions setup and
@@ -123,8 +122,8 @@ class BaseConfig(object):
         *kwargs* is what :meth:`setup_cluster` receives: ``namespace``, the placement
         arguments in :data:`STORE_POD_PLACEMENT_KEYS`, and ``control_node_labels`` -- the
         data node's selector ANDed with the operator's control pool, which the pod takes
-        because its registry blobs and its index are hostPath-backed unless a class says
-        otherwise, and an unpinned pod would come back on another node with both empty.
+        because its registry blobs are hostPath-backed unless a class says otherwise, and an
+        unpinned pod would come back on another node with an empty registry.
         """
         from ..cluster_execution import store_pod  # pylint: disable=import-outside-toplevel
 
@@ -134,7 +133,7 @@ class BaseConfig(object):
         return self._apply_pod_node_selector(docs, kwargs.get("control_node_labels"))
 
     def setup_cluster(self, **kwargs):
-        """Deploy the ``robovast`` pod (registry + index) and its Service.
+        """Deploy the ``robovast`` pod (the registry) and its Service.
 
         A live pod is kept as it is (``apply_manifests`` tolerates a 409), so a placement
         the live pod does not match is refused before anything is applied rather than
@@ -162,14 +161,14 @@ class BaseConfig(object):
         except Exception as e:
             raise RuntimeError(
                 f"Error applying the {store_pod.STORE_POD_NAME} pod manifest: {e}") from e
-        logger.info("The %s pod (registry and index) is deployed in namespace %s",
+        logger.info("The %s pod (the registry) is deployed in namespace %s",
                     store_pod.STORE_POD_NAME, namespace)
 
     def cleanup_cluster(self, **kwargs):
         """Remove the ``robovast`` pod, its Service and the claims setup may have created.
 
-        The registry and the index are re-derivable and go with the pod. The campaigns are
-        on the service's results volume, which this does not touch.
+        The registry is re-derivable and goes with the pod. The campaigns are on the
+        service's results volume, which this does not touch.
 
         Args:
             **kwargs: ``namespace``, ``kube_context``, and the provider's own options.

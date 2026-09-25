@@ -11,7 +11,7 @@ from robovast.common.store import (STORE_FILENAME, CampaignStore, read_campaign_
                                    read_campaign_description)
 
 VAST = textwrap.dedent("""\
-    version: 4
+    version: 5
     configuration:
     - name: ca
       parameters:

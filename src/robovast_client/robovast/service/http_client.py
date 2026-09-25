@@ -445,6 +445,16 @@ class HTTPTransport(RobovastInterface):
             Routes.campaign_postprocessing_run(request.campaign_id),
             json=request.model_dump()))
 
+    def build_campaign_tables(self, request) -> ActionResult:
+        return ActionResult.model_validate(self._post(
+            Routes.campaign_tables_build(request.campaign_id),
+            json=request.model_dump()))
+
+    def clear_campaign_tables(self, campaign_id: str):
+        from robovast.service.interface import CampaignTablesCleared
+        return CampaignTablesCleared.model_validate(
+            self._delete(Routes.campaign_tables(campaign_id)))
+
     def run_share(self, request) -> ActionResult:
         return ActionResult.model_validate(self._post(
             Routes.campaign_share_run(request.campaign_id),
@@ -500,9 +510,9 @@ class HTTPTransport(RobovastInterface):
     def list_variation_types(self) -> VariationTypesResponse:
         return VariationTypesResponse.model_validate(self._get(Routes.VARIATION_TYPES))
 
-    #: A data call can spend minutes inside the request — a query is answered by the index
-    #: now rather than by a fetch, but a wide aggregate over a large campaign still runs
-    #: there — and the default 30 s would abort the client mid-answer, leaving the caller
+    #: A data call can spend minutes inside the request — a query builds the tables it names
+    #: on first use, and a wide aggregate over a large campaign runs there too — and the
+    #: default 30 s would abort the client mid-answer, leaving the caller
     #: with a ReadTimeout indistinguishable from a broken service. The web UI never hit
     #: this because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
@@ -550,7 +560,7 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return OutputsIngested.model_validate(resp.json())
 
-    def campaign_tar_stream(self, campaign_id: str, selection=None):
+    def campaign_tar_stream(self, campaign_id: str):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
@@ -558,10 +568,7 @@ class HTTPTransport(RobovastInterface):
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """
-        params = {}
-        if selection is not None:
-            params = {k: v for k, v in selection.model_dump().items() if v}
-        return self._stream(Routes.campaign_archive(campaign_id), **params)
+        return self._stream(Routes.campaign_archive(campaign_id))
 
     def workspace_tar_stream(self, workspace_id: str):
         """Stream the workspace archive through, chunk by chunk.

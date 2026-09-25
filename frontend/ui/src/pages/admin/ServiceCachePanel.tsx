@@ -62,8 +62,8 @@ export function ServiceCachePanel() {
   return (
     <Stack spacing={1}>
       <Typography variant="caption" color="text.secondary">
-        Copies of durable data — compiled 3D worlds. Clearing them loses nothing but the time
-        to rebuild what is next asked for.
+        Copies of durable data — compiled 3D worlds, and the tables built from campaigns'
+        recordings. Clearing them loses nothing but the time to rebuild what is next asked for.
       </Typography>
       {report.caches.map((part) => (
         <Typography key={part.name} variant="caption">

@@ -101,7 +101,7 @@ class TableBuffer:
 
 
 def _column_array(values: list) -> pa.Array:
-    """One column as an Arrow array; a column mixing types falls back to text, as today."""
+    """One column as an Arrow array; a column mixing types falls back to text."""
     try:
         return pa.array(values)
     except (pa.ArrowInvalid, pa.ArrowTypeError):
@@ -215,6 +215,29 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
     }
 
 
+def campaign_table_path(table: str) -> str:
+    """The file a campaign-level table lives in, relative to the cache root."""
+    return os.path.join(TABLES_DIR, table, "_campaign.parquet")
+
+
+def record_campaign_table(manifest: dict, table: str, *, files: List[str], rows: int,
+                          schema: pa.Schema, sources: dict) -> None:
+    """Enter a table written for the whole campaign at once in *manifest* (in memory).
+
+    Its rows carry ``config_name`` and ``run_id`` like any table's, so a reader scoped to one
+    run reads that run's rows of it.
+    """
+    entry = manifest["tables"].setdefault(table, {"runs": {}})
+    entry["campaign"] = {
+        "files": files,
+        "rows": rows,
+        "schema": _schema_id(manifest, schema),
+        "sources": sources,
+        "complete": True,
+        "decoder": __version__,
+    }
+
+
 def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict,
                       complete: bool, reason: Optional[str] = None, known: bool = False) -> None:
     """Enter that a run has no rows for *table*: it recorded nothing for it, or *reason*.
@@ -237,6 +260,7 @@ def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict
     }
 
 
-__all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "MANIFEST", "TableBuffer", "cache_root", "fixed",
-           "leading_then_sorted", "manifest_lock", "read_manifest", "record_run_absent",
-           "record_run_table", "run_table_path", "schema_of", "write_manifest", "write_table"]
+__all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "MANIFEST", "TableBuffer", "cache_root",
+           "campaign_table_path", "fixed", "leading_then_sorted", "manifest_lock",
+           "read_manifest", "record_campaign_table", "record_run_absent", "record_run_table",
+           "run_table_path", "schema_of", "write_manifest", "write_table"]

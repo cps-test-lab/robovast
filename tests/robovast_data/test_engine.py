@@ -153,10 +153,10 @@ def test_config_view_has_json_trees_shape(tmp_path):
 
 
 def test_run_validity_view_reads_system_usage(campaign):
-    for run in ("cfg-a/0", "cfg-a/1", "cfg-b/0"):
-        (campaign / run / "system_usage.csv").write_text(
-            "container,wall_ts,in_window,nr_periods,nr_throttled,throttled_usec\n"
-            "scenario,0,1,0,0,0\nscenario,10,1,1000,100,500\n")
+    for job in (campaign / "_jobs").iterdir():
+        (job / "system_usage_main.csv").write_text(
+            "timestamp,nr_periods,nr_throttled,throttled_usec\n"
+            "0,0,0,0\n10,1000,100,500\n")
     rows = Engine([Scope(str(campaign))], workers=1).arrow(
         "SELECT config_name, run_id, throttle_ratio, quota_bound, stalled_full_usec "
         "FROM run_validity_view ORDER BY 1, 2").to_pylist()

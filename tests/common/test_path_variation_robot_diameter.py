@@ -59,7 +59,7 @@ def _project(tmp_path):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 4
+        version: 5
         metadata: {{name: robot-diameter-test}}
         configuration:
         - name: cell

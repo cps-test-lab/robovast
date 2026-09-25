@@ -1,4 +1,4 @@
-version: 4
+version: 5
 metadata:
   name: nav_search_qd
   title: "A map of the different ways it goes wrong"
@@ -45,14 +45,8 @@ search:
       sim: components.pedestrian.dwell
       values: [$walker_dwell]
   postprocessing:
-  # The bags have to be converted HERE, inside the loop: search.postprocessing runs before
-  # each batch is scored, while results_processing runs once the campaign is over. Without
-  # it the extractor reads a poses.csv that does not exist yet and refuses the batch.
-  #
-  # Written exactly as results_processing below, because it is now dispatched the same way:
-  # the commands that need the campaign's own image go to an in-cluster conversion Job and
-  # the rest run in the controller. Before that, everything ran in the controller and the
-  # converters failed there, so the extractor refused every batch.
+  # The rosbags_* entries configure the tables this batch's plugins read, built from its
+  # recordings the first time a plugin names them.
   - rosbags_tf_to_csv:
       frames: all
       require: [base_link, odom, turtlebot4_base_link_gt]
@@ -168,11 +162,8 @@ execution:
   # The trial bounds itself at 120 s; this is the outer backstop for a run that wedges
   # before its own timeout arms.
   #
-  # 600 and not 300 in a SEARCH: this is a no-progress deadline, and in a search loop a
-  # batch is followed by an in-cluster bag conversion before anything is scored. Progress
-  # legitimately pauses for the length of that Job, and at 300 the stall verdict fired
-  # while it was working -- reporting a wedge that was not one. The batch-mode grid keeps
-  # 300, because its conversion runs after the campaign rather than inside it.
+  # 600 and not 300 in a SEARCH: progress pauses while each batch is scored, and this
+  # no-progress deadline has to outlast that pause.
   timeout: 600
   scenario_file: scenario_roqsim.osc
   run_files:

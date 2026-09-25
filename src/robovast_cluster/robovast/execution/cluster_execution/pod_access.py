@@ -16,8 +16,7 @@
 
 """How a pod reaches the service's data plane, and what it is given to do so.
 
-Every pod the service launches -- a scenario Job, a postprocessing Job, an aux or exec
-pod, an image build -- moves its bytes through the data plane
+Every pod the service launches -- a scenario Job, an aux or exec pod, an image build -- moves its bytes through the data plane
 (:mod:`robovast.service.data_app`): one ``GET`` of a tar for what it needs, one ``PUT``
 of a tar for what it made. This module is the one place that knows three things every
 such pod needs to agree on with the service:

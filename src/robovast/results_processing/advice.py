@@ -111,30 +111,35 @@ DEFAULT_SHM_SIZE_BYTES = to_bytes(DEFAULT_SHM_SIZE)
 #:
 #: The inner query is load-bearing: one row of ``resource_usage`` is one PROCESS NAME, not a
 #: container, so per-tick values must be summed before any max or percentile -- a tick is
-#: concurrent demand, and the largest single process is not it.
+#: concurrent demand, and the largest single process is not it. A tick is ``wall_ts``, the
+#: moment the monitor sampled: ``timestamp`` is sim time and is empty wherever the clock map
+#: cannot place a sample, which would pool those ticks into one.
 USAGE_SQL = """
     SELECT container,
            PERCENTILE(cores, 95) AS cpu_p95, MAX(cores) AS cpu_peak,
            SUM(cores) AS core_seconds,
            MAX(bytes) AS mem_peak, COUNT(*) AS ticks
-    FROM (SELECT container, config_name, run_id, timestamp,
+    FROM (SELECT container, config_name, run_id, wall_ts,
                  SUM(cpu_percent) / 100.0 AS cores,
                  SUM(memory_rss_bytes) AS bytes
           FROM resource_usage WHERE in_window = 1
-          GROUP BY container, config_name, run_id, timestamp)
+          GROUP BY container, config_name, run_id, wall_ts)
     GROUP BY container
 """
 
 #: The run's shared-memory pool: the highest any run peaked at, and the limit that was in
-#: force. From ``runs`` rather than from the per-tick table because that is where the builder
-#: puts the high-water mark -- and because an older campaign then yields NULLs instead of a
-#: missing table, which is a value this module can reason about rather than an error.
+#: force. ``/dev/shm`` is one pool per run, so its value repeats across a tick's process rows
+#: and across containers: each run's high-water mark is a ``MAX`` over its rows, never a sum.
+#: A run whose monitor did not sample the pool has NULL there, which this module reads as
+#: unmeasured rather than as zero.
 #:
 #: Not filtered to the trial window, unlike :data:`USAGE_SQL`: a participant allocates its
 #: segments while it starts up, and a SIGBUS during bring-up loses the run just as completely.
 SHM_SQL = """
-    SELECT MAX(shm_peak_bytes) AS shm_peak, MAX(shm_limit_bytes) AS shm_limit
-    FROM runs
+    SELECT MAX(peak) AS shm_peak, MAX(pool) AS shm_limit
+    FROM (SELECT config_name, run_id,
+                 MAX(shm_used_bytes) AS peak, MAX(shm_total_bytes) AS pool
+          FROM resource_usage GROUP BY config_name, run_id)
 """
 
 #: Container memory as the KERNEL accounts it, which is what the limit is enforced against.
@@ -704,10 +709,9 @@ def _campaign_sizing(query_rows) -> "str | None":
     before the key existed -- which is the mode every campaign had then.
     """
     try:
-        # `->` then `->>`, not SQLite's json_extract with a '$.a.b' path: the index is
-        # Postgres, which has no such function, and the call would fail outright rather
-        # than return the NULL the `except` below is written for.
-        rows = query_rows("SELECT config_json::jsonb -> 'execution' ->> 'sizing' AS sizing "
+        # `config_json` is TEXT holding JSON: `->` descends, `->>` ends the path as TEXT, and
+        # a missing key is the NULL a campaign without the key is read as.
+        rows = query_rows("SELECT config_json::JSON -> 'execution' ->> 'sizing' AS sizing "
                           "FROM campaign.campaign LIMIT 1")
     except Exception:  # noqa: BLE001 - no campaign table attached is not an error here
         return None
@@ -918,14 +922,13 @@ def contention_advice(contention_rows: list[dict], declared_rows: list[dict]) ->
 #: speed a function of how busy it is -- a variable no campaign declares or records.
 WANTED_CPU_GOVERNOR = "performance"
 
-#: ``->>`` rather than SQLite's ``json_extract``, which Postgres does not have. The cast is
-#: explicit because the column is text: an unparseable value fails here rather than reading
-#: as an absent governor, and "this node did not report" is a different finding from "this
-#: node was on ondemand" -- the whole point of the check below.
+#: The cast is explicit because the column is text: an unparseable value fails here rather
+#: than reading as an absent governor, and "this node did not report" is a different finding
+#: from "this node was on ondemand" -- the whole point of the check below.
 GOVERNOR_SQL = """
-    SELECT DISTINCT sysinfo_json::jsonb ->> 'node_label'   AS node,
-                    sysinfo_json::jsonb ->> 'cpu_name'     AS cpu,
-                    sysinfo_json::jsonb ->> 'cpu_governor' AS governor
+    SELECT DISTINCT sysinfo_json::JSON ->> 'node_label'   AS node,
+                    sysinfo_json::JSON ->> 'cpu_name'     AS cpu,
+                    sysinfo_json::JSON ->> 'cpu_governor' AS governor
     FROM campaign.job
     WHERE sysinfo_json IS NOT NULL
 """

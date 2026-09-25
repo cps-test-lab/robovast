@@ -14,8 +14,8 @@ Visual artifact egress over MCP (video and rasters)
 ---------------------------------------------------
 
 **Motivation.** Analysis over MCP is increasingly driven by an LLM. Quantitative
-questions are well served: per-run metrics are consolidated into
-the central results index and queried with read-only SQL
+questions are well served: a campaign's tables are built from its records on first use
+and queried with read-only SQL
 (``describe_campaign_data`` / ``query_campaign_data_sql``), and
 a campaign's author-declared charts are exposed as Vega-Lite specs by
 ``list_campaign_plots`` (from ``visualization.results.data_browser.plots`` in the snapshot ``.vast``).
@@ -114,36 +114,21 @@ easier to lose than the code.
   ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
   second way to ask the same question.
 
-**3b. Log patterns are computed on read, never joinable.** Telling a hanging run from a
-healthy one landed (:ref:`mcp-liveness`): the status carries ``progress_age_s`` and a
+**3b. A run's log is a table only once it has reached the service.** Telling a hanging run
+from a healthy one is in :ref:`mcp-liveness`: the status carries ``progress_age_s`` and a
 ``stalled`` verdict against the declared per-run budget, and the log tools take
 ``min_severity`` and ``summarize`` so a flood of one message costs one line instead of
-thousands. Deliberately, **nothing derived from a log is stored** — the counts are
-recomputed per call, which is what keeps them out of competition with the tables in
-:ref:`database-or-address-space`.
+thousands, recomputed per call. The analysis question — "which failed runs share a warning
+pattern?" — is a join, and the ``run_log`` table (see :ref:`merged-run-log`) answers it:
+every container's output joined with ``/rosout``, on the run's own playback clock, joinable
+to ``runs``, and ``search_run_logs`` asks it across runs and campaigns.
 
-That is the right split for the *liveness* question and the wrong one for the
-*analysis* question. Normalized pattern plus count is an aggregate, so by that same
-rule it should be a table, joinable to ``run_view`` — "which failed runs share a
-warning pattern?" is a query nobody can currently write, and it is the question that
-turns a flaky sweep into a diagnosis. The raw lines stay files regardless; one TEXT
-column is not queryable data.
-
-The open part is the ingest path, and it is genuinely open. It must work on a **live**
-campaign, where ``data.db`` does not exist yet and ``campaign.db``'s writer does not
-tail container logs, and the run's own output exists only in pod logs, which no
-in-campaign writer sees. A live ingest point is the thing to design.
-
-The post-hoc half of this **shipped** as ``run_log`` (see :ref:`merged-run-log`): every
-container's output joined with ``/rosout``, on the run's own playback clock, as a table
-joinable to ``runs``. So "which failed runs share a warning pattern?" is now one query, and
-``search_run_logs`` asks it across runs and campaigns. What remains open is exactly the
-*live* ingest above — ``run_log`` is written by postprocessing, so a running campaign still
-has only its streams.
-
-(The earlier text here claimed ``rosout`` was already a DB table. It never was: the CSV is
-written to the **job** directory, which the index ingest does not glob. That gap is what
-``run_log`` closes.)
+The open part is the **live** half. ``run_log`` is built from the job's ``system*.log`` files
+and its infra bag, and a query builds a run that is still going again rather than keeping
+what it found. A pod delivers its ``/out`` to the data plane when it ends, so until then its
+output exists only in pod logs and a running job has no ``run_log`` at all. A live source is
+the thing to design, and until it exists the live question stays with the stream tools
+(``get_job_log``).
 
 * A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
   ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
@@ -162,7 +147,7 @@ written to the **job** directory, which the index ingest does not glob. That gap
 
 **10. The cloud instance-type commands are untested.**
 ``get_instance_type_command`` is now wired into the generated entrypoint, so a run records
-the node's instance type in its ``sysinfo.yaml`` (and thence ``main.runs.instance_type``).
+the node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
 Only the bare-metal implementations have actually run: ``rke2`` and ``minikube`` return
 ``uname -m``, which is verifiable locally. The **GCP and Azure** commands query a cloud
 metadata service —
@@ -292,7 +277,8 @@ one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
   discarded**. It should come from ``execution.timeout``.
 * ``container_cpu_profile`` takes its percentiles over the container's **whole lifetime**, not
   over the trial: it is the one reader of ``resource_usage_<container>.csv`` that meets the
-  raw artifact, and ``in_window`` is added later by postprocessing. With nav2's short bring-up
+  raw artifact, and ``in_window`` is added only when the decoder builds the
+  ``resource_usage`` table. With nav2's short bring-up
   against a 150 s trial this is roughly right. For a stack with a five-minute bring-up and a
   60 s trial, the p95 measures bring-up and the node is calibrated for the wrong thing.
 
@@ -375,36 +361,24 @@ sixteenth.
 
 **Design work already done, worth keeping when this is finalised.**
 
-* **Process-level and system-level are different kinds of metric and want different tables.**
-  ``resource_usage`` is per-process by contract, and putting a device figure in it as a
+* **A device figure goes in** ``system_usage``, **never in** ``resource_usage``.
+  ``resource_usage`` is per-process by contract, and a device figure written into it as a
   synthetic ``__gpu__`` process would surface in the web UI's process list
   (``frontend/ui/src/lib/campaignDetails.ts``) and be aggregated by ``advice.USAGE_SQL``
-  (:mod:`robovast.results_processing.advice`) as though it were one. A sibling
-  ``system_usage`` table is the right shape, and the split should be structural so later
-  metrics of either kind have an obvious home.
-* **Make the new table column-generic.** CSV → index already is: any ``*.csv`` in a run
-  directory becomes a table, columns are the union of row keys and types are inferred
-  (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
-  :mod:`robovast_decode.types`), including ``ALTER TABLE`` for a column that
-  first appears in a later run. Only the sampler-CSV → per-run-CSV step is not:
-  :mod:`robovast.results_processing.resource_usage` names its columns in five places (its two
-  fieldname tuples, ``read_container_csv``'s row tuple, ``Tick.processes``, and the ``grouped``
-  accumulator). A slicer that carries every non-key column through verbatim would make a new
-  metric a one-line change in the sampler and nothing else — and would be the thing
-  process-level sampling could later migrate onto.
-* **Reuse the sampler and the slicing helpers.** One daemon should write both files:
-  :mod:`robovast.execution.data.monitor_resources` can derive the sibling path from its
-  ``argv[1]``, which leaves both entrypoint scripts — and the launch contract pinned by
-  ``tests/execution/test_resource_monitor_output_path.py`` — untouched. Per-run splitting,
-  ``in_window`` and the clock conversion all come from
-  :mod:`robovast.results_processing.run_slices`; its ``container_of`` is deliberately the one
-  place per-container artifact names are inverted, so a new filename is registered there.
-* **A probe registry, not a special case.** A probe is a callable returning
-  ``{metric: value}`` whose availability is decided once at startup, so an unavailable probe
-  contributes no columns and costs nothing. The GPU probe's availability test is
-  ``/dev/nvidiactl`` plus ``nvidia-smi`` on ``PATH`` — which is exactly the right gate without
-  configuration, because the container toolkit injects both per container: a CPU-only sidecar
-  has neither and simply does not sample.
+  (:mod:`robovast.results_processing.advice`) as though it were one. ``system_usage`` is the
+  container-level sibling the same sampler writes (``system_usage_<container>.csv``, one row
+  per tick), and the decoder passes its columns through typed from what is found
+  (:mod:`robovast_decode.system_usage`), so a new counter there is a change to the sampler
+  and nothing else. Per-run splitting, ``in_window`` and the clock conversion come from
+  :mod:`robovast_decode.run_slices`, whose ``container_of`` is the one place per-container
+  artifact names are inverted.
+* **A GPU probe is one more probe.** The sampler's container-level figures come from probes
+  (:mod:`robovast.execution.data.monitor_resources`, ``PROBES``), each a callable returning
+  ``{metric: value}`` whose availability ``start_probes`` decides once at startup, so an
+  unavailable probe contributes no columns and costs nothing. The GPU probe's availability
+  test is ``/dev/nvidiactl`` plus ``nvidia-smi`` on ``PATH`` — which is exactly the right gate
+  without configuration, because the container toolkit injects both per container: a
+  CPU-only sidecar has neither and simply does not sample.
 * **Sample the device at 5 s, not 1 Hz.** 26 ms per call is 2.6% of a core per container at
   1 Hz, ~42% across sixteen concurrent GPU jobs — overhead charged to the very node whose
   throughput the GPU work exists to improve. GPU memory of a running renderer is near

@@ -336,13 +336,8 @@ def test_a_cache_hit_whose_prewarm_fails_still_reports_cached(cs, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_every_family_image_a_node_runs_is_warmed(monkeypatch):
-    """``robovast-controller`` is in the set because postprocessing runs in it.
-
-    The service Deployment's ``imagePullPolicy: Always`` puts that image on the node
-    carrying the service and nowhere else. Postprocessing runs in a Job, so the image is
-    needed on whichever node the Job lands on -- a campaign node with no reason to have
-    pulled it. Left out, every postprocess on a fresh node pays a full pull of it on the
-    critical path, and a registry that is merely slow fails the Job outright.
+    """Every family image but ``robovast-controller``, which only the service Deployment
+    runs: its ``imagePullPolicy: Always`` pulls it during the rollout already happening.
     """
     from robovast.common.execution import FAMILY_MEMBERS
     from robovast.execution.cluster_execution.image_warm import (WARM_FAMILY_MEMBERS,
@@ -350,12 +345,11 @@ def test_every_family_image_a_node_runs_is_warmed(monkeypatch):
     monkeypatch.setenv("ROBOVAST_PROJECT", "harbor.example.org/robovast")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "2026-08-20")
 
-    assert set(WARM_FAMILY_MEMBERS) == set(FAMILY_MEMBERS)
+    assert set(WARM_FAMILY_MEMBERS) == set(FAMILY_MEMBERS) - {"robovast-controller"}
     assert family_refs_to_warm() == [
         "harbor.example.org/robovast/robovast:2026-08-20",
         "harbor.example.org/robovast/robovast-roqsim:2026-08-20",
         "harbor.example.org/robovast/robovast-sidecar:2026-08-20",
-        "harbor.example.org/robovast/robovast-controller:2026-08-20",
     ]
 
 

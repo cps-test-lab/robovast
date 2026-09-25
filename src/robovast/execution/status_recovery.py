@@ -251,7 +251,7 @@ def record_step_outcome(campaign_dir: str | Path, *,
             # the error it read is the one THIS call has just cleared. Left as it was, a
             # campaign whose postprocessing failed once and then succeeded reported
             # ``postprocessed: False`` with no error to explain it, and every reader was
-            # told the run derived nothing while its rows sat in the index.
+            # told the run derived nothing while its tables were all there.
             status.postprocessed = campaign_has_derived_data(campaign_dir)
     if share is not None:
         ok, message = share

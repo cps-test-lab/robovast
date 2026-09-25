@@ -19,13 +19,12 @@
 What is provider-specific here is how the cluster answers for itself: which GKE cluster a
 context names, how large its node pools may autoscale to, and how a node reports its
 machine type. The deployment is the same as everywhere -- the ``robovast`` pod for the
-registry and the campaign index, campaigns on the service's results volume -- and what
+registry, campaigns on the service's results volume -- and what
 matters on GKE is how those volumes are backed: a node directory goes with the node, so
 back the workspaces (and so the results) with a StorageClass::
 
     vast cluster setup gcp \\
         --workspaces-class standard-rwo \\
-        --index-class standard-rwo \\
         --registry-class standard-rwo \\
         --buildkit-class premium-rwo
 
@@ -158,7 +157,7 @@ class GcpClusterConfig(BaseConfig):
         readme_content = """# GCP Cluster Setup Instructions
 
 Finished campaigns live on the service's **results volume**, beside the workspaces; the
-`robovast` pod in this manifest holds the container registry and the campaign index.
+`robovast` pod in this manifest holds the container registry.
 
 On GKE, back every volume with a StorageClass rather than a node directory: a managed
 node pool replaces machines, and a hostPath goes with the machine. The stock classes are
@@ -167,7 +166,6 @@ node pool replaces machines, and a hostPath goes with the machine. The stock cla
 ```bash
 vast cluster setup gcp \\
     --workspaces-class standard-rwo \\
-    --index-class standard-rwo \\
     --registry-class standard-rwo \\
     --buildkit-class premium-rwo
 ```
@@ -190,8 +188,7 @@ kubectl apply -f robovast-manifest.yaml
 kubectl wait --for=condition=ready pod/robovast --timeout=120s
 ```
 
-The registry answers on `/v2` of the service's published host; the index on port 5432 of
-the `robovast` Service, from inside the cluster only.
+The registry answers on `/v2` of the service's published host.
 """
         with open(f"{output_dir}/README_gcp.md", "w") as f:
             f.write(readme_content)

@@ -41,11 +41,12 @@ import yaml
 from robovast.client.status import Phase
 from robovast.common.campaign_data import (read_execution_metadata, read_execution_outcome,
                                            read_interventions, read_launch_record,
-                                           read_sysinfo, read_test_result)
+                                           read_sysinfo)
 from robovast.common.common import load_config
 from robovast.common.execution import is_campaign_dir, read_job_links
 from robovast.common.results_utils import find_campaign_vast_file
 from robovast.common.variation.loader import load_variation_classes
+from robovast_decode.junit import read_test_result
 
 logger = logging.getLogger(__name__)
 

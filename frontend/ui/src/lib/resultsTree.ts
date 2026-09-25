@@ -13,15 +13,13 @@ import { isFailed, isPreviewable, isRunning, type CampaignSummary } from './robo
 
 // The tree's one query, shared by the Explorer and the Run view's picker (see `runsQuery`).
 //
-// `run_view`, not the postprocessed `runs` table: it is a view over the campaign record -- the
-// dimensions mirrored from `campaign.db` -- so a campaign that produced no rosbags, and therefore has
-// no postprocessed measurements at all, still lists its runs. It also means both surfaces build the
-// same tree from the same rows.
+// `run_view` is a view over the campaign record in `campaign.db`, so a campaign whose runs recorded
+// nothing still lists them, and its batch and host columns come with each run. It also means both
+// surfaces build the same tree from the same rows.
 //
-// It is NOT readable before postprocessing: the record reaches the index only when the campaign is
-// ingested, so a campaign that is still running has no rows here at all (the service answers with
-// `index_query.missing_campaign_note`). The Run view's preview picker therefore builds the same rows
-// from the campaign's output directories instead -- see `previewRuns.ts`.
+// For a campaign still running, the Run view's preview picker builds the same rows from the
+// campaign's output directories instead, listing only runs that wrote a recording to replay -- see
+// `previewRuns.ts`.
 //
 // `batch` is the ask/tell round that proposed the configuration, and `objective` its score --
 // the two things that make a search's history readable. `objective_direction` comes from the
@@ -30,14 +28,13 @@ import { isFailed, isPreviewable, isRunning, type CampaignSummary } from './robo
 // subselect rather than a second request: one row's worth of campaign metadata, on a query
 // that is already per-campaign.
 //
-// The index is Postgres: `->`/`->>` rather than SQLite's `json_extract`, which does not exist
-// there. `config_json` is a TEXT column, hence the `::jsonb`; `-> 0` is the first objective
-// (Postgres array indexing is 0-based like the `$…[0]` path it replaces), and `->>` yields the
-// direction as text, which is what the client compares against 'minimize'/'maximize'. A campaign
-// without a search block yields NULL rather than an error at every step.
+// `config_json` is TEXT holding JSON, hence the `::JSON`; `->` descends, `-> 0` is the first
+// objective (0-based), and `->>` yields the direction as text, which is what the client compares
+// against 'minimize'/'maximize'. A campaign without a search block yields NULL rather than an error
+// at every step.
 export const CAMPAIGN_RUNS_SQL =
   'SELECT config_name, run_id, status, passed, objective, batch, ' +
-  "(SELECT config_json::jsonb -> 'search' -> 'objectives' -> 0 ->> 'direction' " +
+  "(SELECT config_json::JSON -> 'search' -> 'objectives' -> 0 ->> 'direction' " +
   'FROM campaign.campaign LIMIT 1) AS objective_direction ' +
   'FROM run_view ORDER BY batch, config_name, run_id'
 

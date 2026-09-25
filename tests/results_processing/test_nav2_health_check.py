@@ -7,67 +7,52 @@ it declared for itself. Measured across a sizing sweep it separated a good alloc
 bad one 12x, where the throttle counter moved 1.4x over the same range and was not monotone
 against it.
 
-It now reads the central index, so every case here is also a case about scoping: the tables
-hold every campaign, and a count that leaks across campaigns is the same bug as a count that
-leaks across runs, one level up.
-
-Set ``ROBOVAST_TEST_PG_DSN`` to run them; without it they skip.
+Each case is a campaign directory whose jobs logged the lines under test: the check reads the
+``run_log`` table the decoder derives from those logs, windowed and clock-mapped as it is for
+a real campaign.
 """
 
-import os
+from pathlib import Path
 
-import pytest
-
-from robovast.results_processing.run_health import (LEVELS, TABLE,
-                                                    build_run_health_table)
-from robovast.results_processing.row_sink import PostgresRowSink
+from robovast.results_processing.data_query import open_data_db
+from robovast.results_processing.run_health import LEVELS, TABLE, run_checks, to_table
 from robovast_nav.health_checks import CHECK_NAME, CONTROL_LOOP_MISS, ERROR_AT, ControlLoopRate
+from tests.robovast_data.conftest import nav_campaign, write_store
 
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
+CAMPAIGN = "nav-2026-01-01-00000000"
 
-SCHEMA = "nav2_health_test"
-CAMPAIGN = "camp-a"
+_LINE = f"[controller_server]: {CONTROL_LOOP_MISS} of 20.0000Hz. Current loop rate is 12.4Hz"
 
-_LINE = f"[controller_server]: {CONTROL_LOOP_MISS}, achieved 12.4Hz"
-
-
-@pytest.fixture(name="conn")
-def _conn():
-    psycopg = pytest.importorskip("psycopg")
-    with psycopg.connect(DSN, autocommit=True) as conn:
-        for statement in (f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE",
-                          "DROP SCHEMA IF EXISTS campaign CASCADE",
-                          f"CREATE SCHEMA {SCHEMA}", f"SET search_path TO {SCHEMA}"):
-            conn.execute(statement)
-        yield conn
-        conn.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        conn.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
+#: Wall times against the fixture recording's clock, which spans these seconds: a line here
+#: gets a sim time, a line well before it gets none.
+_ON_CLOCK = 1780000001.2
+_BEFORE_CLOCK = 1779999000.0
 
 
-def _runs_table(conn):
-    conn.execute("CREATE TABLE IF NOT EXISTS runs (campaign_id text, config_name text, "
-                 "run_id bigint)")
+def _line(message=_LINE, wall=_ON_CLOCK):
+    return f"[WARN] [{wall}] {message}\n"
 
 
-def _log_table(conn):
-    conn.execute("CREATE TABLE IF NOT EXISTS run_log (campaign_id text, config_name text, "
-                 "run_id bigint, message text, in_window bigint, "
-                 "sim_time double precision)")
+def _campaign(root: Path, logs, windows=None):
+    """A campaign whose run ``(config, run_id)`` ran in a job that logged ``logs[run]``.
+
+    *windows* maps a run to the wall time its trial started, for a trial that did not
+    cover the lines its job logged.
+    """
+    runs = tuple(logs)
+    nav_campaign(root, runs=runs)
+    for index, run in enumerate(runs):
+        (root / "_jobs" / f"job-{index}" / "logs" / "system.log").write_text("".join(logs[run]))
+    for (config, run_id), start in (windows or {}).items():
+        (root / config / str(run_id) / "test.xml").write_text(
+            '<testsuite errors="0" failures="0" tests="1"><testcase time="1.0"><properties>'
+            f'<property name="start_time" value="{start}"/></properties></testcase>'
+            "</testsuite>")
+    return open_data_db(root)
 
 
-def _db(conn, runs, log_rows, campaign_id=CAMPAIGN):
-    """*runs* are ``(config_name, run_id)``; *log_rows* are
-    ``(config_name, run_id, message, in_window, sim_time)``. Both are filed under
-    *campaign_id*, which is what the check has to scope to."""
-    _runs_table(conn)
-    _log_table(conn)
-    with conn.cursor() as cur:
-        cur.executemany("INSERT INTO runs VALUES (%s,%s,%s)",
-                        [(campaign_id, *r) for r in runs])
-        cur.executemany("INSERT INTO run_log VALUES (%s,%s,%s,%s,%s,%s)",
-                        [(campaign_id, *r) for r in log_rows])
-    return conn
+def _check(tmp_path, logs, windows=None):
+    return ControlLoopRate()(_campaign(tmp_path / CAMPAIGN, logs, windows), CAMPAIGN)
 
 
 def _by_run(rows):
@@ -76,64 +61,60 @@ def _by_run(rows):
 
 # -- what it counts -------------------------------------------------------------------------
 
-def test_a_clean_run_gets_an_ok_row(conn):
-    """Rule 2, and the reason it matters here: a run that never missed and a run whose log was
-    never converted must not look alike. Only the first is evidence."""
-    rows = ControlLoopRate()(_db(conn, [("goal-1", 0)], []), CAMPAIGN)
+def test_a_clean_run_gets_an_ok_row(tmp_path):
+    """Rule 2, and the reason it matters here: a run that never missed and a run with no log
+    to read must not look alike. Only the first is evidence."""
+    rows = _check(tmp_path, {("goal-1", 0): []})
     assert len(rows) == 1
     assert rows[0].level == "ok" and rows[0].value == 0.0
     assert rows[0].check == CHECK_NAME
 
 
-def test_misses_are_counted_and_carried_as_a_measure(conn):
+def test_misses_are_counted_and_carried_as_a_measure(tmp_path):
     """``value`` is the point of the contract: a finding says bad, a measure says how bad, and
     a resource floor is found in the knee of a curve rather than in a boolean."""
-    _db(conn, [("goal-1", 0)],
-               [("goal-1", 0, _LINE, 1, 5.0)] * 3)
-    row = ControlLoopRate()(conn, CAMPAIGN)[0]
+    row = _check(tmp_path, {("goal-1", 0): [_line()] * 3})[0]
     assert row.value == 3.0 and row.unit == "misses" and row.level == "warn"
 
 
-def test_a_sustained_loss_is_an_error(conn):
+def test_a_sustained_loss_is_an_error(tmp_path):
     """Ten, to agree with the ``repeat(10)`` debounce the scenario idiom uses on the same
     string. A post-hoc check disagreeing with the live one about the same evidence would be
     the second oracle rule 1 forbids."""
-    _db(conn, [("goal-1", 0)], [("goal-1", 0, _LINE, 1, 5.0)] * ERROR_AT)
-    assert ControlLoopRate()(conn, CAMPAIGN)[0].level == "error"
+    assert _check(tmp_path, {("goal-1", 0): [_line()] * ERROR_AT})[0].level == "error"
 
 
-def test_every_level_it_emits_is_one_the_substrate_understands(conn):
-    _db(conn, [("a", 0), ("b", 0), ("c", 0)],
-               [("b", 0, _LINE, 1, 5.0)] + [("c", 0, _LINE, 1, 5.0)] * ERROR_AT)
-    assert {r.level for r in ControlLoopRate()(conn, CAMPAIGN)} <= set(LEVELS)
+def test_every_level_it_emits_is_one_the_substrate_understands(tmp_path):
+    rows = _check(tmp_path, {("a", 0): [], ("b", 0): [_line()],
+                             ("c", 0): [_line()] * ERROR_AT})
+    assert {r.level for r in rows} == set(LEVELS)
 
 
 # -- what it must NOT count -----------------------------------------------------------------
 
-def test_lines_outside_the_trial_window_are_not_counted(conn):
+def test_lines_outside_the_trial_window_are_not_counted(tmp_path):
     """Bring-up and teardown -- and in a packed job, another run's lines entirely."""
-    _db(conn, [("goal-1", 0)], [("goal-1", 0, _LINE, 0, 5.0)] * 4)
-    assert ControlLoopRate()(conn, CAMPAIGN)[0].level == "ok"
+    rows = _check(tmp_path, {("goal-1", 0): [_line()] * 4},
+                  windows={("goal-1", 0): _ON_CLOCK + 100})
+    assert rows[0].level == "ok"
 
 
-def test_lines_logged_before_the_clock_existed_are_not_counted(conn):
+def test_lines_logged_before_the_clock_existed_are_not_counted(tmp_path):
     """``sim_time`` NULL means the simulator's clock was not up, so the stack was not yet
     running against a simulated world and a missed rate says nothing about the trial."""
-    _db(conn, [("goal-1", 0)], [("goal-1", 0, _LINE, 1, None)] * 4)
-    assert ControlLoopRate()(conn, CAMPAIGN)[0].level == "ok"
+    rows = _check(tmp_path, {("goal-1", 0): [_line(wall=_BEFORE_CLOCK)] * 4})
+    assert rows[0].level == "ok"
 
 
-def test_other_log_lines_are_not_counted(conn):
-    _db(conn, [("goal-1", 0)],
-               [("goal-1", 0, "[controller_server]: Passing new path to controller.", 1, 5.0)])
-    assert ControlLoopRate()(conn, CAMPAIGN)[0].value == 0.0
+def test_other_log_lines_are_not_counted(tmp_path):
+    rows = _check(tmp_path, {("goal-1", 0): [
+        _line("[controller_server]: Passing new path to controller.")]})
+    assert rows[0].value == 0.0
 
 
-def test_counts_do_not_leak_between_runs(conn):
-    _db(conn, [("goal-1", 0), ("goal-1", 1), ("goal-2", 0)],
-               [("goal-1", 0, _LINE, 1, 5.0), ("goal-1", 0, _LINE, 1, 6.0),
-                ("goal-2", 0, _LINE, 1, 5.0)])
-    got = _by_run(ControlLoopRate()(conn, CAMPAIGN))
+def test_counts_do_not_leak_between_runs(tmp_path):
+    got = _by_run(_check(tmp_path, {("goal-1", 0): [_line(), _line(wall=_ON_CLOCK + 0.5)],
+                                    ("goal-1", 1): [], ("goal-2", 0): [_line()]}))
     assert got[("goal-1", 0)].value == 2.0
     assert got[("goal-1", 1)].value == 0.0
     assert got[("goal-2", 0)].value == 1.0
@@ -141,43 +122,34 @@ def test_counts_do_not_leak_between_runs(conn):
 
 # -- absence is not a pass ------------------------------------------------------------------
 
-def test_a_campaign_with_no_run_log_is_not_checked_rather_than_clean(conn):
-    """A campaign whose logs were never converted, or one that is not a nav2 stack at all.
-    Writing ``ok`` rows would be a clean bill produced from an absent measurement.
-
-    Asked with ``to_regclass`` rather than by letting the query fail: on a non-autocommit
-    connection a failed statement aborts the surrounding transaction, so a check probing by
-    exception would take the rest of the ingest down with it.
-    """
-    _runs_table(conn)
-    conn.execute("INSERT INTO runs VALUES (%s, 'goal-1', 0)", (CAMPAIGN,))
-    assert ControlLoopRate()(conn, CAMPAIGN) == []
+def test_a_run_with_no_log_is_not_checked_rather_than_clean(tmp_path):
+    """A run whose job left no logs. Writing ``ok`` for it would be a clean bill produced from
+    an absent measurement."""
+    root = tmp_path / CAMPAIGN
+    (root / "goal-1" / "0").mkdir(parents=True)
+    write_store(root, {"goal-1": {"runs": {0: "passed"}}})
+    assert ControlLoopRate()(open_data_db(root), CAMPAIGN) == []
 
 
-def test_another_campaigns_runs_are_never_counted_or_graded(conn):
-    """The scoping the new signature exists for. One index holds every campaign, so an
-    unscoped count files a neighbour's misses under this campaign's runs -- and would grade
-    runs this check was never asked about."""
-    _db(conn, [("goal-1", 0)], [("goal-1", 0, _LINE, 1, 5.0)])
-    _db(conn, [("goal-1", 0), ("goal-9", 0)],
-        [("goal-1", 0, _LINE, 1, 5.0)] * ERROR_AT, campaign_id="camp-b")
-
+def test_another_campaigns_runs_are_never_counted_or_graded(tmp_path):
+    """A campaign beside this one in the results directory is not this campaign: its misses
+    are not filed under this one's runs, and its runs are not graded."""
+    conn = _campaign(tmp_path / CAMPAIGN, {("goal-1", 0): [_line()]})
+    _campaign(tmp_path / "nav-2026-01-02-00000000",
+              {("goal-1", 0): [_line()] * ERROR_AT, ("goal-9", 0): []})
     rows = ControlLoopRate()(conn, CAMPAIGN)
     assert [(r.config_name, r.run_id, r.value) for r in rows] == [("goal-1", 0, 1.0)]
 
 
 # -- it reaches the table -------------------------------------------------------------------
 
-def test_the_rows_land_in_run_health(conn):
-    _db(conn, [("goal-1", 0), ("goal-1", 1)], [("goal-1", 1, _LINE, 1, 5.0)] * 2)
-    sink = PostgresRowSink(conn, campaign_id=CAMPAIGN)
-    written = build_run_health_table(sink, conn, CAMPAIGN,
-                                     {CHECK_NAME: ControlLoopRate()})
-    assert written == 2
-    got = dict(conn.execute(
-        f"SELECT run_id, level FROM {TABLE} WHERE campaign_id = %s AND check_name = %s",
-        (CAMPAIGN, CHECK_NAME)).fetchall())
-    assert got == {0: "ok", 1: "warn"}
+def test_the_rows_land_in_run_health(tmp_path):
+    conn = _campaign(tmp_path / CAMPAIGN, {("goal-1", 0): [], ("goal-1", 1): [_line()] * 2})
+    rows = run_checks(conn, CAMPAIGN, {CHECK_NAME: ControlLoopRate()})
+    table = to_table(rows, CAMPAIGN).to_pylist()
+    assert TABLE == "run_health"
+    assert {(r["campaign_id"], r["run_id"], r["check_name"], r["level"]) for r in table} == {
+        (CAMPAIGN, 0, CHECK_NAME, "ok"), (CAMPAIGN, 1, CHECK_NAME, "warn")}
 
 
 def test_it_is_resolvable_by_name_when_declared():

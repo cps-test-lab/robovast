@@ -27,7 +27,7 @@ status is a read of the in-process ``ControllerState``.
 
 What still runs as its own Kubernetes workload — because each genuinely needs to:
 
-* **scenario runs** and the **rosbag→CSV postprocessing** — Jobs (scheduled, queued);
+* **scenario runs** — Jobs (scheduled, queued);
 * **auxiliary variation containers** — one aux Pod per campaign the driver execs
   into (see :mod:`..execution.cluster_execution.container_runner`).
 
@@ -54,8 +54,7 @@ from pathlib import Path
 from robovast.common.config import SCENARIO_CONTAINER
 from robovast.common.errors import CampaignStopped
 from robovast.execution.control_server import (STOP_ALREADY_OVER, STOP_RUNS,
-                                               STOP_SCOPE_MESSAGES, Phase,
-                                               stop_scope_for_phase)
+                                               STOP_SCOPE_MESSAGES, stop_scope_for_phase)
 from robovast.common.campaign_data import update_launch_scheduling
 from robovast.service.service_base import ServiceBase, require_scheduling_change
 from robovast.service.interface import (ActionResult, CampaignDeletion, JobCounts, JobKind,
@@ -218,7 +217,7 @@ class ClusterService(ServiceBase):
                  reap_on_start=True, kube_context=None, results_dir=None):
         # Where every campaign of this service lives. Not a cache: the driver writes into
         # it, pods deliver their outputs into it through the data plane, extraction reads
-        # it through a path, and postprocessing derives data.db from it -- so it has to
+        # it through a path, and postprocessing builds its tables from it -- so it has to
         # outlive a container, and the deployment mounts the directory it names (see
         # serve_backend / service_deploy).
         super().__init__(store=store, results_dir=results_dir)
@@ -1084,25 +1083,15 @@ class ClusterService(ServiceBase):
         is the pod template's ``job-name-full`` annotation (``<batch>-job-<index>``)
         for a readable label.
 
-        **Two jobgroups, one listing and one selector.** The campaign's trials
-        (``scenario-runs``) and its postprocessing conversion (``postprocessing``) are
-        separate jobgroups, and both are the campaign doing its own work — a phase whose only
-        job is not listed shows a reader an empty list while the cluster is busy on their
-        behalf. A set-based requirement fetches them together because this is polled per live
-        campaign every couple of seconds, and a second selector would double both the Job
-        listing and the pod listing behind it for a row that is there at most once.
-
-        **Neither probes nor postprocessing are tallied.** Both carry the campaign's labels —
-        they are real work holding real capacity, and every selector that counts or cleans up
-        has to keep seeing them — so they appear here, marked with their
-        :class:`~robovast.service.interface.JobKind` and named for what they are. The counts
-        stay the campaign's runs alone, because a reader takes them as facts about *runs*:
-        see :attr:`~robovast.service.interface.JobCounts.calibration`.
+        **Probes are not tallied.** A calibration probe carries the campaign's labels — it is
+        real work holding real capacity, and every selector that counts or cleans up has to
+        keep seeing it — so it appears here, marked with its
+        :class:`~robovast.service.interface.JobKind`. The counts stay the campaign's runs
+        alone, because a reader takes them as facts about *runs*: see
+        :attr:`~robovast.service.interface.JobCounts.calibration`.
         """
         from .cluster_execution import _label_safe_campaign, list_jobs_with_phase
-        from .postprocess_job import POSTPROCESS_JOBGROUP
-        label = (f"jobgroup in (scenario-runs,{POSTPROCESS_JOBGROUP}),"
-                 f"campaign-id={_label_safe_campaign(campaign_id)}")
+        label = f"jobgroup=scenario-runs,campaign-id={_label_safe_campaign(campaign_id)}"
         # Phase is pod-accurate: a Job whose pod is still Pending (unscheduled or
         # image-pulling) reports pending, not running.
         usage_by_job, metrics_reason = self._pod_metrics()
@@ -1123,8 +1112,7 @@ class ClusterService(ServiceBase):
         # Planned jobs are the campaign's own by construction: probes queue under a separate
         # owner (see ``_PROBE_OWNER_SUFFIX``), so ``states(campaign_id)`` never yields one.
         jobs.extend(self._planned_jobs(campaign_id, {j.job_name for j in jobs}))
-        runs = [j for j in jobs
-                if j.kind not in (JobKind.CALIBRATION, JobKind.POSTPROCESSING)]
+        runs = [j for j in jobs if j.kind != JobKind.CALIBRATION]
         counts = JobCounts(
             running=sum(1 for j in runs if j.status == "running"),
             pending=sum(1 for j in runs if j.status == "pending"),
@@ -1133,7 +1121,6 @@ class ClusterService(ServiceBase):
             failed=sum(1 for j in runs if j.status == "failed"),
             blocked=sum(1 for j in runs if j.status == "blocked"),
             calibration=sum(1 for j in jobs if j.kind == JobKind.CALIBRATION),
-            postprocessing=sum(1 for j in jobs if j.kind == JobKind.POSTPROCESSING),
             total=len(runs))
         return ListJobsResponse(jobs=jobs, counts=counts,
                                 metrics_unavailable=metrics_reason)
@@ -1170,7 +1157,6 @@ class ClusterService(ServiceBase):
         """
         from .kube_client import (CONNECT_TIMEOUT_SECONDS,  # pylint: disable=import-outside-toplevel
                                   parse_duration, parse_resource)
-        from .postprocess_job import POSTPROCESS_JOBGROUP  # pylint: disable=import-outside-toplevel
 
         if not self._pod_metrics_lock.acquire(blocking=False):
             held = self._pod_metrics_snapshot
@@ -1186,7 +1172,7 @@ class ClusterService(ServiceBase):
             try:
                 listed = self._k8s_custom().list_namespaced_custom_object(
                     "metrics.k8s.io", "v1beta1", self.namespace, "pods",
-                    label_selector=f"jobgroup in (scenario-runs,{POSTPROCESS_JOBGROUP})",
+                    label_selector="jobgroup=scenario-runs",
                     # A (connect, read) pair rather than a scalar, for the reason spelled out
                     # in ``_measured_cpu_mem``.
                     _request_timeout=(CONNECT_TIMEOUT_SECONDS, self._METRICS_TIMEOUT))
@@ -1287,34 +1273,20 @@ class ClusterService(ServiceBase):
     def _job_kind(job) -> str:
         """Which kind of Job this is, from the labels the backend stamps.
 
-        The ``jobgroup`` separates postprocessing from the campaign's batch; within the
-        batch, an unlabelled Job is the campaign's own work, because
+        An unlabelled Job is the campaign's own work, because
         :data:`~.manifests.JOB_KIND_LABEL` is stamped by
-        :func:`~.kubernetes_backend.probe_manifest` and by nothing else, and a Job created
-        before it existed is a run.
+        :func:`~.kubernetes_backend.probe_manifest` and by nothing else.
         """
-        from .postprocess_job import POSTPROCESS_JOBGROUP
         try:
             labels = job.metadata.labels or {}
         except AttributeError:
             return JobKind.RUN
-        if labels.get("jobgroup") == POSTPROCESS_JOBGROUP:
-            return JobKind.POSTPROCESSING
         return (JobKind.CALIBRATION
                 if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
 
-    @classmethod
-    def _job_display_name(cls, campaign_id, job) -> "str | None":
-        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix.
-
-        A postprocessing Job carries no such annotation — it is not one of the batch's
-        indexed jobs — and its own name is the campaign id with a hash on it, which tells a
-        reader nothing they are not already looking at. Named for the work instead: this is
-        the conversion of the campaign's rosbags, run in the campaign's execution image
-        because only there do its custom message types deserialize.
-        """
-        if cls._job_kind(job) == JobKind.POSTPROCESSING:
-            return "rosbag conversion"
+    @staticmethod
+    def _job_display_name(campaign_id, job) -> "str | None":
+        """The Job's ``job-name-full`` pod annotation, minus the campaign prefix."""
         try:
             full = job.spec.template.metadata.annotations.get("job-name-full")
         except AttributeError:
@@ -1354,8 +1326,8 @@ class ClusterService(ServiceBase):
         core = self._k8s()
         # Campaign + Job name, with no jobgroup term: the pair already identifies one pod,
         # and adding the group would decide which of the campaign's own jobs may be read
-        # here. Every row :meth:`list_jobs` shows has to open, including its postprocessing
-        # conversion -- a row whose log 404s is worse than no row.
+        # here. Every row :meth:`list_jobs` shows has to open -- a row whose log 404s is
+        # worse than no row.
         label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
@@ -2294,9 +2266,8 @@ class ClusterService(ServiceBase):
         sibling campaign waiting on the same image, and the image is a cache entry rather
         than this campaign's property. ``_await_build_image`` detaches instead.
 
-        A campaign already **postprocessing** is likewise not reached by that teardown --
-        its conversion Job is in ``jobgroup=postprocessing`` -- and is stopped by its own
-        scope instead: ``run_conversion_job`` polls it and deletes the Job.
+        A campaign already **postprocessing** runs in this process, so the flag is all
+        its stop needs: the pipeline polls it between steps.
 
         Which unit of work a stop lands on is
         :func:`~robovast.execution.control_server.stop_scope_for_phase`'s to decide, and
@@ -2314,9 +2285,9 @@ class ClusterService(ServiceBase):
             return ActionResult(ok=False, message=STOP_ALREADY_OVER.format(phase=phase))
         entry.state.request_stop(scope)
         if scope != STOP_RUNS:
-            # The teardown is label-scoped to ``jobgroup=scenario-runs``, so it would not
-            # reach a postprocessing Job or an upload anyway; not calling it keeps this
-            # from reading as though it might.
+            # Postprocessing and an upload run in this process, and the teardown is
+            # label-scoped to ``jobgroup=scenario-runs``; not calling it keeps this from
+            # reading as though it might reach them.
             return ActionResult(ok=True, message=STOP_SCOPE_MESSAGES[scope])
         self._teardown_campaign_jobs(campaign_id)
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
@@ -2685,19 +2656,13 @@ class ClusterService(ServiceBase):
 
         Called by ``build_app`` once the auth token is bound and before the port is, so a
         resumed campaign can mint its pods' token and no launch over the API can race a
-        campaign about to be adopted -- the two properties the constructor used to hold
-        one of each.
+        campaign about to be adopted.
         """
         if not self._reap_on_start:
             return
         self._reap_on_start = False  # adopt once, however often a caller builds an app
         self.reap_orphans()
         self.resume_interrupted_campaigns()
-        # After the resume, and separately from it: a campaign whose postprocess is
-        # still running has recorded an ending, so the resume above passes over it by
-        # design. Only a waiter writes what that Job did, so without this the previous
-        # attempt's verdict stands over a conversion that succeeded.
-        self.reattach_live_postprocessing()
 
     def resume_interrupted_campaigns(self) -> dict:
         """Pick up the campaigns a previous service process was driving.
@@ -2812,160 +2777,3 @@ class ClusterService(ServiceBase):
         import guarded by a bare ``except``, which turns a wrong module path into a silent no-op.
         """
         return self._images.pull_secret_name()
-
-    def _postprocess_campaign(self, campaign_id: str, campaign_dir, *,
-                              force: bool = False, skip=(), state=None) -> tuple:
-        """Postprocess through the Job, as every campaign here is.
-
-        The inherited version runs the whole pipeline in-process, where the rosbag steps
-        shell out to ``docker_exec.sh`` and a pod has no daemon. Overriding the seam rather
-        than its callers sends both -- a retrigger and an imported raw campaign -- through
-        the Job.
-        """
-        from robovast.execution.control_server import stop_checker  # noqa: PLC0415
-
-        from . import pod_access  # noqa: PLC0415
-        from .postprocess_job import postprocess_campaign  # noqa: PLC0415
-
-        return postprocess_campaign(
-            self._cluster_config(), campaign_id, str(campaign_dir), self.namespace,
-            token=self.scoped_token(pod_access.campaign_scope(campaign_id)),
-            force=force, skip=list(skip or []), kube_context=self.kube_context,
-            state=state,
-            # A postprocess is a tracked campaign while it runs, so ``stop`` reaches it --
-            # and with this, ends it instead of leaving it to finish.
-            should_stop=stop_checker(state),
-            # The same queue the campaign's trials went through, so this pod waits for room
-            # rather than being created against a cluster that has none.
-            admission=self._admission_controller())
-
-    def run_postprocessing(self, request) -> ActionResult:
-        """(Re)run analysis postprocessing for a cluster campaign, as a monitored
-        background operation (returns immediately; watch it in the campaign view).
-
-        Both stages run in the postprocessing pod: it fetches the campaign once into a
-        shared volume, converts the rosbags there in the campaign's own execution image,
-        and runs the host stage -- metrics, provenance, the index ingest -- against the
-        same volume, delivering what it derived back into the campaign. This process only
-        submits the Job and records its outcome.
-
-        No campaign log handler is attached around this: the pod's
-        own output is what the POSTPROCESSING section shows, published into the campaign's
-        ``postprocessing.log`` while the Job runs, so a handler streaming this process's
-        lines into the same file would be overwritten by each publish. The failure path
-        where no such file arrives authors one instead
-        (``postprocess_job._write_failure_log``), which is what keeps a failed postprocess
-        visible in the campaign log where a successful one is read.
-        """
-        self._admit_storage(f"postprocess {request.campaign_id}")
-        campaign_dir = self.campaign_dir(request.campaign_id)
-
-        def work(state):
-            ok, message = self._postprocess_campaign(
-                request.campaign_id, campaign_dir,
-                force=request.force, skip=list(request.skip or []), state=state)
-            self._record_postprocess_outcome(request.campaign_id, state, ok, message)
-
-        return self._dispatch_background(
-            request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
-
-    def _record_postprocess_outcome(self, campaign_id: str, state, ok: bool,
-                                    message: str) -> None:
-        """Write a postprocessing verdict into the campaign, and notify on it.
-
-        One definition for the process that submitted the Job and the one that only waited
-        for it (:meth:`reattach_postprocessing`): the campaign has a single record of what
-        its postprocess did, so two writers of it would be two answers a reader cannot
-        choose between.
-        """
-        from robovast.execution.status_recovery import record_step_outcome
-        status = record_step_outcome(self.campaign_dir(campaign_id),
-                                     postprocessing=(ok, message))
-        state.update(postprocessed=status.postprocessed,
-                     postprocessing_error=status.postprocessing_error)
-        # The recorded phase, not `finished`: `record_step_outcome` preserves how the
-        # campaign ended, and a live entry that disagreed with it would answer
-        # differently until the next restart.
-        state.set_phase(status.phase)
-        # The one-shot notifier: a detached cluster campaign is what the push
-        # notifications exist for.
-        notifier = self._notifier(campaign_id)
-        if ok:
-            notifier.postprocessed()
-        elif ok is None:
-            # No push at all while the outcome is open: both notifications are terminal
-            # statements about the campaign, and ``None`` says the Job could not be read --
-            # announcing a failure over a conversion that may be finishing is the one
-            # message that cannot be taken back.
-            logger.warning("Postprocessing outcome for %s is unknown, so no "
-                           "notification is sent: %s", campaign_id, message)
-        else:
-            notifier.postprocessing_failed(message)
-
-    def reattach_live_postprocessing(self):
-        """Wait on the postprocessing Jobs a previous service process left running.
-
-        Its own concern beside :meth:`resume_interrupted_campaigns`, not part of it: that
-        one picks up campaigns owed work, and a retriggered postprocess runs on a campaign
-        whose ``outcome.json`` is already terminal -- which resume excludes on purpose, so
-        that a finished campaign is never restarted. What is owed here is a *verdict*, not
-        work: the Job is running and will finish either way, and only a waiter writes what
-        it did into the campaign.
-
-        Started in the background rather than run here, because it lists the namespace's
-        Jobs, and waiting on the API must not hold up a service that has to answer.
-        Returns the thread, for a caller that needs to join it; see
-        :mod:`.postprocess_reattach` for how the Jobs are found. Never raises.
-        """
-        from . import postprocess_reattach
-        return postprocess_reattach.start_reattach(self)
-
-    def resume_postprocessing(self, campaign_id: str, *, force: bool = False,
-                              skip=()) -> bool:
-        """Resume a split postprocess an earlier process started. False if busy.
-
-        Started again with the options it recorded, it waits for the part Jobs still
-        running rather than creating them again, runs the parts that are not, and then
-        completes the campaign (``postprocess_job.postprocess_campaign``).
-        """
-        campaign_dir = self.campaign_dir(campaign_id)
-
-        def work(state):
-            ok, message = self._postprocess_campaign(
-                campaign_id, campaign_dir, force=force, skip=list(skip or []), state=state)
-            self._record_postprocess_outcome(campaign_id, state, ok, message)
-
-        result = self._dispatch_background(campaign_id, phase=Phase.POSTPROCESSING, work=work)
-        return bool(result.ok)
-
-    def reattach_postprocessing(self, campaign_id: str, job_name: str) -> bool:
-        """Wait for *job_name* in the background and record its outcome. False if busy.
-
-        Dispatched exactly as a retrigger is, so the campaign reads as POSTPROCESSING while
-        the Job runs and its live log keeps being published -- and so a launch or a
-        retrigger arriving over the API meets the same busy campaign it would meet if this
-        process had submitted the Job itself.
-
-        Nothing is submitted, created or replaced: the Job already mounts the scripts it
-        was created with, and writing those again swaps the script out from under the
-        running interpreter (see ``postprocess_job.reattach_conversion_job``). An outcome
-        that could not be established is logged and left unwritten -- the previous record
-        standing is wrong, but a verdict this process did not observe would be worse.
-        """
-        from .postprocess_job import reattach_conversion_job
-
-        def work(state):
-            from robovast.execution.control_server import stop_checker  # noqa: PLC0415
-            ok, message = reattach_conversion_job(
-                campaign_id, str(self.campaign_dir(campaign_id)), self.namespace,
-                job_name, kube_context=self.kube_context,
-                should_stop=stop_checker(state))
-            if ok is None:
-                logger.info("Left the postprocessing record of %s alone: %s",
-                            campaign_id, message)
-                state.set_phase(Phase.FINISHED)
-                return
-            self._record_postprocess_outcome(campaign_id, state, ok, message)
-
-        result = self._dispatch_background(campaign_id, phase=Phase.POSTPROCESSING, work=work)
-        return bool(result.ok)

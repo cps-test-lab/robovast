@@ -675,26 +675,22 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
 @campaign.command('postprocess')
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @click.option('--force', '-f', is_flag=True,
-              help='Bypass per-rosbag caches and reprocess all bags.')
+              help="Clear the campaign's built tables first, so what it declares is built "
+                   "again from its records.")
 @click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
-              help='Skip a postprocessing plugin (repeatable), e.g. --skip rosbags_to_webm.')
+              help='Skip a postprocessing plugin (repeatable).')
 @target_options
 def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
     """(Re)run analysis postprocessing for CAMPAIGN.
 
-    The rosbag->CSV step runs in-cluster and the campaign's derived data is rebuilt.
-    Mirrors the web "Retrigger postprocessing" action and the MCP ``run_postprocessing``
+    Runs the campaign's own postprocessing steps, builds the tables it declares, grades it
+    with its health checks and writes its provenance record -- on the service that holds
+    it. Mirrors the web "Retrigger postprocessing" action and the MCP ``run_postprocessing``
     tool, so all three drive one implementation.
 
-    This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the
-    same job in-process against a results directory on this machine. Two postprocessing
-    paths is the same split ``vast exec local run`` was: one of them could only ever see a
-    local campaign, and it was the one the documentation reached for first.
-
-    **Dispatched, not awaited.** Postprocessing takes minutes to hours, so the campaign
-    re-enters its ``postprocessing`` phase and this returns -- follow it with ``vast
-    campaign wait CAMPAIGN``, exactly as after ``vast workspace run``. A second run is
-    refused while one is in flight.
+    **Dispatched, not awaited.** The campaign re-enters its ``postprocessing`` phase and
+    this returns -- follow it with ``vast campaign wait CAMPAIGN``. A second run is refused
+    while one is in flight.
     """
     from robovast.service.interface import \
         RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
@@ -713,6 +709,53 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
         raise click.ClickException(res.message or "postprocessing failed")
     click.echo(f"✓ {res.message or 'postprocessing started'}")
     click.echo(f"  next: vast campaign wait {campaign_id}")
+
+
+@campaign.group('tables')
+def tables_group():
+    """A campaign's tables: built from its records the first time something names them."""
+
+
+@tables_group.command('build')
+@click.argument('campaign', metavar='CAMPAIGN')
+@click.option('--table', 'tables', multiple=True, metavar='TABLE',
+              help='Build only this table (repeatable); every table when omitted.')
+@target_options
+def tables_build_cmd(campaign, tables, namespace, context):
+    """Build CAMPAIGN's tables for every run now, in the background.
+
+    Never needed for an answer: a table is built the first time a query, a panel or an
+    export names it. This moves that cost to now, for a campaign about to be analyzed at
+    length; --table keeps a large campaign from paying for tables it will not read.
+    Progress is in the campaign log's TABLES section.
+    """
+    from robovast.service.interface import \
+        BuildCampaignTablesRequest  # pylint: disable=import-outside-toplevel
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            res = client.build_campaign_tables(BuildCampaignTablesRequest(
+                campaign_id=campaign, tables=list(tables)))
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+    click.echo(f"✓ {res.message}")
+    click.echo(f"  follow: vast campaign log {campaign}")
+
+
+@tables_group.command('clear')
+@click.argument('campaign', metavar='CAMPAIGN')
+@target_options
+def tables_clear_cmd(campaign, namespace, context):
+    """Remove CAMPAIGN's built tables to free storage; each is built again on use."""
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            res = client.clear_campaign_tables(campaign)
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+    click.echo(f"✓ cleared {res.freed_bytes // (1024 * 1024)} MiB of {campaign}'s tables")
 
 
 @campaign.command('delete')

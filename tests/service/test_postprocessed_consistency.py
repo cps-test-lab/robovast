@@ -167,14 +167,14 @@ def test_it_flips_once_postprocessing_writes_its_record(svc):
     assert svc.get_status(CID).postprocessed is True
 
 
-def test_a_record_declaring_no_entries_is_not_postprocessed(svc):
-    """The record is written even when every step failed or none was configured. Reading its
-    mere presence as success would promote a campaign with no derived data at all — the one
-    direction of error a reader cannot detect by looking."""
+def test_a_record_declaring_no_entries_is_postprocessed(svc):
+    """A campaign with no steps of its own writes a record with no entries once its tables are
+    built; that pass finished, so it is postprocessed. A failed pass is told apart by its
+    recorded error (below), not by an empty record."""
     campaign = _campaign(svc, with_derived_data=False)
     _record(campaign, [])
     _track(svc, postprocessed=False)
-    assert svc.get_status(CID).postprocessed is False
+    assert svc.get_status(CID).postprocessed is True
 
 
 def test_a_recorded_failure_is_never_promoted(svc):

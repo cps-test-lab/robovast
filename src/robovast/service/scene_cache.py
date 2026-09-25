@@ -182,10 +182,8 @@ def world_identity(campaign_dir, capture_manifest, resolve_digest=None,
     # exporter, which surfaced as "invalid literal for int()" (the Kubernetes client int()s an exec status that
     # carries a message instead of an exit code).
     #
-    # Deliberately not ``postprocess_job.campaign_execution_image``: that resolves an image to *run*,
-    # where falling back to a tag is correct -- a run just needs something to launch. This keys a
-    # cache, and a mutable tag cannot: the same tag names different bytes after a rebuild, so an entry
-    # keyed on it would serve geometry from an image that no longer exists.
+    # Never a tag: this keys a cache, and the same tag names different bytes after a rebuild, so an
+    # entry keyed on it would serve geometry from an image that no longer exists.
     try:
         image = campaign_role_image(Path(campaign_dir), SIMULATION_CONTAINER,
                                     resolve_digest=resolve_digest)

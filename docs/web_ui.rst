@@ -140,7 +140,7 @@ It provides four views:
   finished, extrapolating from the average time per completed run. Below that progress, the open
   card carries **two tabs**, and which two depends on what the campaign is: a running one gets
   **Jobs** and **Log**, a finished one **Details** and **Log**. Details is not offered while a
-  campaign runs because its numbers come from a table postprocessing writes, and Jobs is not
+  campaign runs because its numbers describe the campaign as a whole, and Jobs is not
   offered once it is over because there are no live jobs left. Only the selected tab is rendered,
   so an unwatched Log holds no stream open; a job whose log you expanded is still expanded when
   you come back to the Jobs tab. The **Jobs** tab lists
@@ -175,20 +175,14 @@ It provides four views:
   and lets the rest of the campaign carry on — the intervention for a job that is visibly
   wedged and will not exit by itself. It is offered on running jobs only: a queued one has
   not started, and a blocked one has a cause (no quota, an unpullable image) that deleting
-  it does not fix. Nor on the two rows that are not trials. On a cluster campaign that
+  it does not fix. Nor on a row that is not a trial: on a cluster campaign that
   calibrates its sizing (see :ref:`cluster-node-calibration`) the Jobs list carries one row
   per node being measured, marked with a ``calibration`` chip beside its status and named for
-  its node; and while a cluster campaign is in its ``postprocessing`` phase it carries the
-  conversion of its rosbags, marked with a ``postprocessing`` chip and named ``rosbag
-  conversion``. It is the phase's only job, so without the row a campaign that is busy
-  converting gigabytes of bags shows an empty Jobs list. That row is the one that does **not**
-  open: its work runs in init containers, which a pod log does not carry, and its output is
-  published to the campaign log's ``POSTPROCESSING`` section every few seconds while it runs
-  — where it stays once the cluster has removed the job, which is when a failed postprocess is
-  usually read. The Log tab beside it is where to look, and the chip's tooltip says so. Both rows are the campaign's
-  *infrastructure*, not its trials — they are kept out of the job counts, out of the run meter
-  and out of the ETA — and neither can be stopped one at a time, because there is no run to
-  record as killed.
+  its node. Those rows are the campaign's *infrastructure*, not its trials — they are kept out
+  of the job counts, out of the run meter and out of the ETA — and none can be stopped one at a
+  time, because there is no run to record as killed. Postprocessing lists no job: it runs
+  inside the service process, and its progress is the campaign log's ``POSTPROCESSING``
+  section.
   Confirming asks for an optional reason, and the reason is worth giving —
   it is stored with the run and is what explains the kill to whoever reads the results
   later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see
@@ -243,14 +237,20 @@ It provides four views:
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
   the* ``results_processing.postprocessing`` *block* (in a Monaco YAML editor) and
-  re-run the analysis against the preserved raw rosbags — to compute different metrics
-  after the fact without a new run. Because a campaign is self-contained (it carries
+  re-run the campaign's postprocessing against its preserved records — to compute different
+  metrics after the fact without a new run (see :ref:`results-postprocessing`). Because a campaign is self-contained (it carries
   the ``.vast`` that ran), the edit is written **into that file in place**: the
   ``results_processing.postprocessing`` block of the campaign's own
   ``_config/<name>.vast``, with no override file and no revision history. It is the one
   narrow exception to the snapshot being a record of what ran, and it is why the
   read-only config view calls that snapshot *frozen* rather than *immutable*. The
   browser equivalent of ``vast cluster monitor``.
+  A finished campaign's menu also offers **Build all tables**, which builds every table its
+  records can give, for every run, in the background — the same operation as
+  ``vast campaign tables build`` (:ref:`results-tables-ahead`). Its confirmation says what is
+  true: it is not needed, because every table is built the first time a query, a panel or an
+  export names it; building them all only moves that cost forward, for a campaign about to be
+  analyzed at length. Progress appears in the campaign log's ``TABLES`` section.
   Its **Export to share** entry names the variant it will write — *(raw)* or
   *(postprocessed)*. That is not a setting: which one a campaign yields is read off the
   campaign itself, and once postprocessing has written into its tree the raw campaign no
@@ -384,15 +384,27 @@ describe it in ``robovast.service.settings_report``.
 
 **What it can give back.** The **Service cache** panel — collapsed until you open it, and
 measured when you do — lists what the service keeps that it can rebuild from durable data:
-the compiled 3D worlds. The results tree is never offered: it is the campaigns' durable
-home, not a copy of one. **Clear cache** removes everything not in
-use and says what it freed; what it keeps is listed with the reason. It is the thing to reach
-for when new work is refused for disk space. ``vast service cache [--clear]`` does the same
-from a terminal.
+the compiled 3D worlds, and the ``table cache`` — the built tables under every campaign's
+``.cache/tables/``, in bytes, each rebuilt from the campaign's records the next time something
+names it (:ref:`results-table-cache`). The results tree itself is never offered: it is the
+campaigns' durable home, not a copy of one. **Clear cache** removes everything not in use and
+says what it freed; what it keeps is listed with the reason — for the table cache, a campaign
+that is still running or whose tables are being built right now. It is the thing to reach for
+when new work is refused for disk space. ``vast service cache [--clear]`` does the same from a
+terminal, and ``vast campaign tables clear <id>`` clears one campaign's tables.
+
+**What agents asked of it.** The **MCP tools** panel — collapsed until you open it — ranks
+every MCP tool by how often it has been called, each with its mean and maximum duration and a
+bar whose red tail is the share of calls that failed; a tool never called is listed too. Below
+the ranking is the log the ranking is computed from: the recent calls, with what each was given
+and what it answered, truncated to a few lines. Click a tool to filter the log to it; **Failed
+only** and **Export CSV** narrow and export the same record. It is kept in ``mcp_calls.db``, a
+SQLite file on the service's workspaces volume, so it outlives the process; how far back it
+reaches is stated under the log.
 
 **What the service has been doing.** A service writes to stderr, and stderr is not readable
-back, which is why several failures in RoboVAST are diagnosable only from a log nobody
-could reach. The service now keeps its last few hundred kilobytes in memory and tails them
+back, so a failure diagnosable only from a log would otherwise be one nobody
+could reach. The service keeps its last few hundred kilobytes in memory and tails them
 here live, over the same stream the campaign logs use.
 
 Two limits, both stated on the page: it holds what *this process* logged, so a container
@@ -453,7 +465,7 @@ must be re-read: without it a card would show the phase from before you switched
 long as its timer takes to restart. Those queries, and the Results tab's campaign listing,
 therefore fetch once on return.
 
-**Switching pages counts as coming back**, and for a while it did not. Every page is kept
+**Switching pages counts as coming back.** Every page is kept
 mounted once visited so its state survives navigation — an editor buffer, a scroll position,
 an upgrade in progress — and a page that never unmounts is one whose data is never re-read
 either. So a page's readings are also gated on that page being the one on screen: they stop
@@ -468,7 +480,7 @@ a run view's panel layout. It deliberately does **not** apply to a finished camp
 results — the SQL behind the Explorer, the Data browser and every run-view panel, and the
 notebook render. That data cannot change, because the campaign that produced it is over, and
 re-reading it is the most expensive thing this UI does; making every visit pay for it would
-buy nothing. Re-running postprocessing is what invalidates those, and it already does.
+buy nothing. Re-running postprocessing is what invalidates those, and it does.
 
 One **stream** takes the gate as well. In its default order the campaign list reads the
 app-wide stream, which stays open wherever you are: the start and end notices it feeds are
@@ -542,10 +554,9 @@ shifting it out from under the pointer. Hovering the stack holds it for as long 
 reading. It still clears itself: a notice that must be clicked away turns every failure into a
 chore.
 
-They are no longer kept on the card that raised them, because nothing there ever cleared one.
-The card does not unmount and the action's state was never reset, so a refusal stayed visible
-until the tab was reloaded — long after the campaign it was about had moved on, and sometimes
-next to a later attempt that had succeeded.
+They are not kept on the card that raised them: the card does not unmount, so a refusal kept
+there would stay visible until the tab was reloaded — long after the campaign it was about had
+moved on, and sometimes next to a later attempt that had succeeded.
 
 **What is worth keeping has a home.** A campaign's failure reason is on its card, and the notice
 announcing it offers **Open campaign**, which unfolds that card and scrolls to it. A refused
@@ -655,15 +666,17 @@ takes one off the configured share instead and is described under
 :ref:`web-ui-share-import`; there the service does the fetching and no bytes pass through
 your browser at all.
 
-**Extracting is not importing.** Listings, this page and every query answer from the
-campaign's ``campaign.db``, not from its results tree, so an archive that was merely unpacked
-would appear blank — which is why the archive is registered, and why ``vast results
+**Extracting is not importing.** Listings and this page answer from the campaign's
+registration and its ``campaign.db``, not from a scan of the results tree, so an archive that
+was merely unpacked would appear blank — which is why the archive is registered, and why ``vast results
 download`` alone does not make a campaign appear here.
 
 **It is also not instant.** The import is a tracked operation like any other: the campaign
 appears in the list straight away at phase ``importing`` — its id is read from the archive
 before a byte is extracted — and, when the archive is a raw one, rolls on into
-``postprocessing`` rather than finishing without the tables anybody would query. So the
+``postprocessing``, which runs its steps and builds the tables it declares. An archive never
+carries built tables (``.cache/``); every other table is built from the campaign's records the
+first time something names it. So the
 dialog closes as soon as you start it and you watch the row, exactly as for a run. A failed
 import removes itself; there is no half-campaign left to tidy up.
 
@@ -798,15 +811,16 @@ A finished campaign's card opens onto its **Details** tab: what the campaign cos
 it behaved, and — the reason it exists — what the next one should reserve. It answers "did
 this run well, and what did it cost?"; the Results explorer keeps answering "what did it
 find?", which is why there is no per-configuration breakdown here. A campaign that has
-finished but not yet been postprocessed has no such measurements, and the tab says so rather
-than drawing an empty grid that would read as "this cost nothing".
+finished but is not postprocessed, and whose queries come back with nothing, says so — with
+**Retrigger postprocessing** as the remedy — rather than drawing an empty grid that would read
+as "this cost nothing".
 
 It has no frame of its own — the tab is its title and its open state — and it **queries
 nothing until that tab is showing**. Its four SQL statements include
-one that scans every 1 Hz resource sample of every run, so a page of twenty campaigns would
-otherwise pay for twenty campaigns nobody asked about. Opening it reads once; the answer is
-re-read when the campaign's metric tables appear, since a campaign is *finished* some minutes
-before it is *postprocessed*.
+one that scans every 1 Hz resource sample of every run — and builds ``resource_usage`` for
+every run the first time it does — so a page of twenty campaigns would otherwise pay for twenty
+campaigns nobody asked about. Opening it reads once; the answer is re-read when the campaign
+becomes postprocessed, since a campaign is *finished* some minutes before it is.
 
 Columns, each answering something the others cannot:
 
@@ -1418,31 +1432,32 @@ can only ever show one run:
 There is no playback clock here, so the view drops the graying and the jump button rather than
 implying a position it does not have.
 
-**Data browser.** The left panel lists the campaign's tables in the results
-index — one per metric CSV, plus the ``runs`` **dimension table**
-(per-run ``status``/``duration_s`` and each varied parameter as a ``param_*``
-column), with ``campaign.db`` attached as schema ``campaign``. Write **read-only SQL**
-in the editor and **Run** it; the result shows as a table and, via the chart builder,
-as a chart — pick *x* / *y* / *color* columns and a mark. Join ``runs`` to any metric
-table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric>*".
+**Data browser.** The left panel lists every table and view the campaign can answer
+(:ref:`results-tables`), each as ``name (rows)``, marked ``view`` for a view and, for a
+per-run table, ``built M/N`` — for how many of the N runs whose records can give it the table
+is built. A partial count is the normal state of a campaign nobody has queried yet, not missing
+data: a table is built the first time a query names it, and a table not yet built for any run
+lists its columns as soon as a query builds it. Hover a name for its description; click it to
+browse it. Among them are the ``runs`` **dimension table** (per-run ``status``/``duration_s``
+and each varied parameter as a ``param_*`` column) and the campaign's record as schema
+``campaign`` (``campaign.run``, ``campaign.unit``, …). Write **read-only SQL** — DuckDB's
+dialect (:ref:`results-querying`) — in the editor and **Run** it; the result shows as a table
+and, via the chart builder, as a chart — pick *x* / *y* / *color* columns and a mark. Join
+``runs`` to any metric table on ``(config_name, run_id)`` to answer "how does *<param>* affect
+*<metric>*".
 
-The campaign's databases are files in its own directory on the service's results tree,
-so a first query transfers
-nothing and waits for nothing — there is no cache to warm and no state a view has to
-explain before it runs.
+The campaign's records and its built tables are files in its own directory on the service's
+results tree, so a query reads them where they are; what it builds for the first time is
+built there and kept for the next query.
 
 .. note::
 
-   A campaign only becomes queryable once **analysis postprocessing** has run — it
-   derives its tables from the raw rosbags and loads them into the index. Launching with **Postprocess when done**
-   (the default) runs it automatically on both backends; otherwise the Results tab
-   offers a **Run postprocessing** button, and the CLI equivalent is
-   ``vast campaign postprocess <id>``. To *change* the postprocessing
-   parameters and re-run, use **Retrigger postprocessing** in the Monitor view's
-   campaign actions menu (see above). The rosbag→CSV step always runs in
-   the campaign's own execution image, as a Job,
-   because rosbags only deserialize where the system-under-test's ROS2 message types
-   are defined.
+   The Results tab lists a campaign once it has ended **and** been postprocessed. Launching with
+   **Postprocess when done** (the default) postprocesses it automatically; otherwise run
+   ``vast campaign postprocess <id>``, or use **Retrigger postprocessing** in the campaign's
+   actions menu, which is also how to *change* the postprocessing parameters and re-run.
+   Postprocessing runs the campaign's own steps and builds the tables it declares
+   (:ref:`results-postprocessing`); every other table is built when first queried.
 
 .. _declared-plots:
 
@@ -1492,8 +1507,8 @@ Run view
 The **Run view** replays a *single run* of a postprocessed campaign over its **rosbag
 timeline**. You pick a campaign and a run; the view then lays out a set of **panels**
 that a shared **playback clock** drives — dragging the timeline moves every panel to
-the same instant. All panels read only the run's recorded results — its postprocessed
-tables, plus per-run artifact files such as the 3D scene descriptor (there is no
+the same instant. All panels read only the run's recorded results — its tables, plus per-run
+artifact files such as the 3D scene descriptor (there is no
 live connection to the system-under-test).
 
 The run picker lists only campaigns that actually **recorded runs** (``num_runs > 0``,
@@ -1511,11 +1526,9 @@ A campaign's finished runs can be replayed **while the rest of it is still runni
 list is live-only, so a run leaves it the moment it completes, and the other Results views wait for
 postprocessing.
 
-Only the **3D replay** works. ``scene3d`` reads a run's own ``capture/capture.json`` and a scene
-descriptor compiled on demand, neither of which needs postprocessing; every other panel reads the
-index, and a running campaign has **no rows there at all** — they are written when postprocessing
-ingests the campaign. So the preview mounts the 3D scene and the playback transport and leaves the
-rest out, rather than mounting panels that could only report the same failure once each per run.
+Only the **3D replay** is mounted. ``scene3d`` reads a run's own ``capture/capture.json`` and a
+scene descriptor compiled on demand, neither of which needs postprocessing; the preview mounts the
+3D scene and the playback transport and leaves the other panels out.
 
 That is also why a campaign is offered as a preview **only if it has a scene to replay**. A
 simulator that records no capture contributes no ``scene3d``, so there would be nothing at all to
@@ -1539,9 +1552,9 @@ It says so in both places it can be misread: a **Preview** chip at the top right
 hover explains what is and is not available, and the word ``preview`` beside the campaign in the run
 picker, where the campaign is actually chosen.
 
-The picker's rows come from the campaign's **output directories**, because the query the Explorer
-uses answers nothing for a campaign that has not been ingested: one listing for its configurations,
-then one *recursive* listing per configuration. That second listing is where the trade is made — a
+The picker's rows come from the campaign's **output directories**, because what it offers is a run
+that has written a recording to replay, and only the tree says which have: one listing for its
+configurations, then one *recursive* listing per configuration. That second listing is where the trade is made — a
 request per configuration either way, and the recursive answer says not only which runs exist but
 which have written a recording, so it costs response size rather than round trips, bounded by one
 configuration rather than the whole campaign.
@@ -1593,11 +1606,10 @@ It sits in the header rather than on the panel for the mirror image of the reaso
 belongs to one panel, but that panel is the full-bleed base layer and carries no header of its own,
 and a button floating over the world would sit in front of the very thing it acts on.
 
-The moment itself is read from ``scenario_timestamps``, written once by postprocessing —
-the same row ``search_run_logs`` cuts on, so the web UI and the MCP tools cannot disagree
-about where a run ended. A run that reached no verdict, and a campaign postprocessed before
-the verdict was recorded, leave the control disabled with that reason on hover: nothing is
-trimmed, rather than trimmed to a guess.
+The moment itself is read from :ref:`scenario_timestamps <scenario-verdict>`, built once from
+the run's log — the same row ``search_run_logs`` cuts on, so the web UI and the MCP tools cannot
+disagree about where a run ended. A run that reached no verdict leaves the control disabled with
+that reason on hover: nothing is trimmed, rather than trimmed to a guess.
 
 Which panels appear, where they sit, and where each gets its data are declared in the
 ``.vast`` under a top-level ``visualization.results.run_view.panels`` list — the campaign author defines
@@ -1740,7 +1752,7 @@ button never pauses. The bar owns the clock; every other panel follows it, which
 contributed to every campaign rather than declared — see above. The timeline range comes from the run
 capture's own time base when a ``scene3d`` panel declares one (the run's ground truth, and available
 before any postprocessing), else from an explicit ``visualization.results.run_view.timeline``, else from the union of the
-postprocessed ``poses`` / ``behaviors`` / ``scenario_timestamps`` timestamps.
+``poses`` / ``behaviors`` / ``scenario_timestamps`` tables' timestamps.
 
 That range is the whole **recording**; where the trial ended is a separate figure, so the
 :ref:`shutdown toggle <shutdown-toggle>` can shorten the timeline and restore it without
@@ -1752,9 +1764,9 @@ nothing.
 map, the global and local costmaps, the **actual path the robot drove**, and the robot
 marker, all at the current time (scroll to zoom, drag to pan). Each ``layers`` entry
 binds a name to a costmap **topic**; ``poses`` (the TF table) both places the layers into
-the map frame and provides the driven-path trail + robot pose. It requires the
-:ref:`costmap postprocessing step <costmap-delivery>` — if the ``costmaps`` data is
-missing the panel says so rather than drawing nothing.
+the map frame and provides the driven-path trail + robot pose. It reads the
+:ref:`costmaps table <costmap-delivery>` — if the run recorded no grids the panel says so
+rather than drawing nothing.
 
 A layer is left out, and named in the top-left corner (*"local: nearest frame 4.3 s away"*),
 when the recording genuinely has no frame near the cursor — before nav2 starts publishing,
@@ -1858,19 +1870,18 @@ first, so it reads as one run after another instead of interleaving runs that ea
 There is no cursor in that view: every run has its own moment ``12.5 s``, so a single position
 cannot point into all of them, and the log is shown plain rather than divided at an arbitrary row.
 
-The footer never stays silent about what is missing: no ``run_log`` table (postprocessing predates
-it), a run with no clock map (``wall time only``), how many shutdown lines were hidden and how the
+The footer never stays silent about what is missing: no ``run_log`` rows, a run with no clock map (``wall time only``), how many shutdown lines were hidden and how the
 scenario ended, how many lines the filter hid, and whether the load hit its ceiling.
 
 The playback bar itself gains tick marks for every warning and error — full height for errors,
 half for warnings — so the log's shape is visible *before* you scrub into it.
 
 **Nav2 behavior tree** (``nav2_behavior_tree``) — the same tree view for **nav2's own**
-behavior tree, reading the ``nav2_behaviors`` table produced by the :ref:`nav2 BT
-postprocessing <configuration>` (``rosbags_nav2bt_to_csv`` + ``nav2_bt_tree``): node status
-over time from nav2's ``/behavior_tree_log``, tree structure from the BT XML nav2 ran.
+behavior tree, reading the ``nav2_behaviors`` table the ``nav2_bt_tree`` postprocessing step
+writes (:ref:`configuration`): node status over time from the ``nav2_behavior_tree`` table,
+built from nav2's ``/behavior_tree_log``, and tree structure from the BT XML nav2 ran.
 Declare it as ``- nav2_behavior_tree:`` and it brings its own table, title and — when the
-table is absent — the nav2 postprocessing steps to add, rather than the scenario's
+table is absent — the nav2 postprocessing entries to add, rather than the scenario's
 ``bt_log``.
 
 *This type ships with the* ``robovast_nav`` *package*, so it is available whenever that
@@ -1934,7 +1945,7 @@ Under the stage, when the cluster has one, comes **its own words for the wait**:
 wait that will never end, and it is the case to know about for a campaign **imported from another
 cluster**: geometry is compiled in the image that campaign *recorded*, which is a reference into the
 registry it ran against. Where this host cannot pull that image there is no 3D view for that campaign,
-and the panel now says so in seconds instead of at the build's deadline. Nothing else about the campaign
+and the panel says so in seconds rather than at the build's deadline. Nothing else about the campaign
 is affected — its logs, tables, plots and capture playback need no image.
 
 The rest of the run view stays usable meanwhile — the capture, the timeline and the
@@ -1948,7 +1959,7 @@ static world.
 
 .. note::
 
-   The panel does not animate from the postprocessed ``poses`` table (``rosbags_tf_to_csv``): that
+   The panel does not animate from the ``poses`` table built from ``/tf``: that
    would need a rosbag before anything moved, impose a naming contract on the simulator plus a
    ``bind`` list for its exceptions, and could only place bodies parented to the world — so an
    articulated robot would replay rigid. Nor is there a ``scene.scope``/``capture.scope`` to declare:
@@ -2003,7 +2014,7 @@ yourself to place it anywhere else.
 
 Three things to know when charting a ``poses`` table, because every such spec hits them:
 
-* **Dotted column names.** ``rosbags_tf_to_csv`` writes ``position.x`` / ``orientation.yaw``, and a
+* **Dotted column names.** A pose table has ``position.x`` / ``orientation.yaw``, and a
   Vega-Lite ``field`` reads a dot as a nested path. Either escape it (``position\.x``) or — usually
   clearer — hoist it to a flat name in a ``calculate`` transform: ``datum['position.x']``.
 * **A TEXT column stays TEXT.** The panel coerces each column whose values all parse as
@@ -2127,15 +2138,15 @@ lines that render ``builtins.ScenarioTree`` with nav2's defaults, and inherits e
 improvement to it. Write a renderer only when the host cannot draw the data at all — ``costmap``,
 whose binary grids need their own endpoint.
 
-**Serving a panel's data.** A panel reads the run's postprocessed rows through ``data``
-(``fetchRun`` for anything beyond plain table rows). When that data comes from a table your own
-**postprocessing** step produced and needs custom serving (untruncated blobs, nearest-frame
-selection, …), a package can also ship the endpoint: a small class registered in the
+**Serving a panel's data.** A panel reads the run's table rows through ``data``
+(``fetchRun`` for anything beyond plain table rows). When that data needs custom serving
+(untruncated blobs, nearest-frame selection, …), a package can also ship the endpoint: a small class registered in the
 ``robovast.service_endpoints`` entry-point group, serving ``GET /campaigns/{id}/<name>`` from the
-campaign's data — no core change. So an analysis package can own the whole chain end-to-end — *postprocessing step →
-service endpoint → panel* — with nothing in core. The costmap panel is exactly this: its
-``rosbags_costmap_to_csv`` step, its ``costmap`` endpoint, and its panel all ship in
-``robovast_nav``. (Large binary artifacts don't even need an endpoint — serve them as ordinary files
+campaign's data — no core change. So an analysis package can own the whole chain end-to-end —
+*postprocessing step (or the table a recording already gives) → service endpoint → panel* —
+with nothing in core. The costmap panel is this: it reads the ``costmaps`` table, and its
+``costmap`` endpoint and its panel ship in ``robovast_nav``. (Large binary artifacts don't even
+need an endpoint — serve them as ordinary files
 via ``data.runFileUrl(path)`` for one run's, or ``data.campaignFileUrl(path)`` for one the whole
 campaign shares, as the ``scene3d`` panel does.) See the developer guide for the endpoint contract.
 
@@ -2182,13 +2193,14 @@ least-recently-used). Two consequences worth knowing:
 
 .. _costmap-delivery:
 
-**Costmap data delivery.** A grid reaches the browser through a step of its own, because
-the panel needs the frame whole and with the geometry to draw it against. The
-``rosbags_costmap_to_csv`` postprocessing step stores each grid **losslessly and
-compactly** — its int8 cells zlib-compressed — into a ``costmaps`` table, together with
-the geometry (resolution in m/cell, width/height in cells, so the map spans
-``width×resolution`` by ``height×resolution`` **meters**, and the origin pose). Record the
-costmap topics in the scenario and add the step to postprocessing:
+**Costmap data delivery.** A grid reaches the browser through a table of its own, because
+the panel needs the frame whole and with the geometry to draw it against. Every
+``nav_msgs/msg/OccupancyGrid`` topic a run records is tabulated into the ``costmaps`` table
+**losslessly and compactly** — its int8 cells zlib-compressed — together with the geometry
+(resolution in m/cell, width/height in cells, so the map spans ``width×resolution`` by
+``height×resolution`` **meters**, and the origin pose) and a ``topic`` column keeping the layers
+apart. Record the costmap topics in the scenario; a ``rosbags_costmap_to_csv`` entry fixes which
+topics the table holds (:ref:`results-decoder-config`):
 
 .. code-block:: yaml
 
@@ -2199,10 +2211,10 @@ costmap topics in the scenario and add the step to postprocessing:
            topics: [/map, /global_costmap/costmap, /local_costmap/costmap]
 
 The run-view costmap panel fetches the frame nearest the current time from the campaign
-``costmap`` endpoint (delivered untruncated) and inflates it in the browser. The same
-geometry is visible to an LLM via MCP ``describe_campaign_data`` (the ``costmaps`` table
-description carries the map's size in meters, resolution, layers, and delivery), so it can
-reason about the run without decoding grids.
+``costmap`` endpoint, which reads the ``costmaps`` table untruncated, and inflates it in the
+browser. The same geometry is visible to an LLM via MCP ``describe_campaign_data`` (the
+``costmaps`` table description carries the map's size in meters, resolution, layers, and
+delivery), so it can reason about the run without decoding grids.
 
 .. _costmap-video-overlay:
 
@@ -2230,13 +2242,13 @@ declarations and replaces the campaign's (``markers: []`` draws none).
 name a map ``file`` (campaign-relative) instead of a ``topic``. With no ``layers`` stated, the
 panel's default layers are taken as far as the run recorded them -- a campaign that stored only
 its global costmap gets that one, and the choice is logged -- while a stated binding is held to
-the letter. It reads **files, not the
-service**: ``costmaps.csv`` and ``poses.csv`` beside the recording, and the campaign's
-``_transient/configurations.yaml`` and frozen ``_config/<name>.vast``, laid out as the campaign
-directory is
-(``<campaign>/<config>/<run>/``) -- so a run fetched to disk, or a campaign archive, is enough.
-A file it needs and cannot find is refused by name, together with the postprocessing step that
-writes it; a costmap in a frame the poses do not carry (the local costmap is in ``odom``) is
+the letter. It reads **the campaign directory, not the
+service**: the run's ``costmaps`` and ``poses`` tables through ``robovast-data``, built from the
+recording on first use, and the campaign's ``_transient/configurations.yaml`` and frozen
+``_config/<name>.vast`` -- so a run fetched to disk, or a campaign archive, is enough. A table
+it needs and cannot get is refused by name, together with the entry that configures it; a file
+it needs and cannot find is refused by name; a costmap in a frame the poses do not carry (the
+local costmap is in ``odom``) is
 refused naming the frames present; and a layer whose nearest frame is further from the
 cursor than two of its publish periods is withheld and said in the picture, as the panel does
 (``stale_after`` sets the window in seconds).

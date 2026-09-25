@@ -1,6 +1,7 @@
 // dbDataProvider: the host's implementation of the DataProvider seam (declared in
 // @robovast/panel-kit, shared with panel remotes). It reads a single run's rows out of the campaign's
-// postprocessed results tables through the read-only query/describe endpoints.
+// tables through the read-only query/describe endpoints; a table is built for the run the first
+// time a query names it.
 //
 // A run's rows are keyed by (config_name, run_id); a provider is bound to one such run, so every
 // query is scoped to it. A TEXT column stays TEXT, so callers coerce numerics themselves.
@@ -20,16 +21,12 @@ const isInt = (v: string | number): boolean => /^-?\d+$/.test(String(v))
  *  Decimation groups the rows into 1/`hz`-second buckets and keeps ONE per bucket: the bucket's
  *  earliest real sample, with every column of that row intact.
  *
- *  `DISTINCT ON (bucket) ... ORDER BY bucket, time` is how the index (Postgres) says that. The
- *  original spelling -- `MIN(time)` with the other columns bare under a `GROUP BY bucket` -- was
- *  SQLite's bare-column rule, which Postgres rejects outright ("column must appear in the GROUP BY
- *  clause"). It also had to be un-aliased back into the time column, and to hide the aggregate under
- *  a sentinel alias for the `SELECT *` case; `DISTINCT ON` returns the row itself, so neither is
- *  needed and the time column keeps its measured value rather than a bucket minimum that happens to
- *  equal it.
+ *  `DISTINCT ON (bucket) ... ORDER BY bucket, time` says that: it returns the row itself, so the
+ *  time column keeps its measured value rather than a bucket minimum that happens to equal it, and
+ *  a `SELECT *` needs no aggregate hidden among its columns.
  *
- *  The wrapping subquery is Postgres' rule that the outer `ORDER BY` must start with the
- *  `DISTINCT ON` expressions: the rows are picked ordered by bucket, then re-ordered by time. */
+ *  The inner `ORDER BY` must start with the `DISTINCT ON` expressions for "earliest" to be defined,
+ *  so the rows are picked ordered by bucket and the wrapping query re-orders them by time. */
 export function buildSeriesSql(table: string, where: string, opts: SeriesOptions = {}): string {
   const timeCol = opts.timeCol ?? 'timestamp'
   const time = `CAST("${timeCol}" AS REAL)`
@@ -70,9 +67,11 @@ export function buildSeriesSql(table: string, where: string, opts: SeriesOptions
  *  `/describe` is per campaign, not per run, so the providers of one campaign's runs share one
  *  answer: a run switch builds a new provider, and asking again for each would repeat a request
  *  whose answer cannot differ. The key is the Data browser's (`['describe', campaignId]`) plus
- *  `version`, so that browser's invalidation after it starts postprocessing reaches this entry
- *  too, and a campaign whose index changed under a newer summary is asked again rather than
- *  served the old table list. Never stale otherwise: nothing else changes the answer. */
+ *  `version`, so an invalidation of that prefix reaches this entry too, and a campaign whose
+ *  tables changed under a newer summary is asked again rather than served the old table list.
+ *
+ *  A table's `columns` are empty until it is built for some run, so this answer says which tables
+ *  exist and `has` asks the run itself for the columns of one not built yet. */
 export function describeQuery(campaignId: string, version: string) {
   return {
     queryKey: ['describe', campaignId, version],
@@ -121,7 +120,14 @@ export function dbDataProvider(
       // to be split off first -- comparing against the whole entry never matches, which
       // made every column look absent and only ever showed as a panel reporting missing
       // data rather than as an error.
-      const names = new Set(t.columns.map((c) => c.split(/\s+/)[0]))
+      //
+      // No columns means the table is not built for any run yet: an empty page of this run's
+      // rows builds it for this run and names its columns.
+      const listed = t.columns.length
+        ? t.columns.map((c) => c.split(/\s+/)[0])
+        : (await robovast.queryCampaignDataSql(
+            campaignId, `SELECT * FROM "${table}" WHERE ${where} LIMIT 0`, 1)).columns
+      const names = new Set(listed)
       return columns.every((c) => names.has(c))
     },
 

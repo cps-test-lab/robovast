@@ -51,8 +51,7 @@ CREATED = "created"
 BUDGET_TTL_S = 3.0
 
 #: How a refusal for want of disk space begins, so a reader -- the batch loop putting it on
-#: the campaign's status, a postprocess explaining its timeout -- can tell it from a wait for
-#: a node. The rest is the reserve's own sentence (:mod:`robovast.common.disk_reserve`).
+#: the campaign's status -- can tell it from a wait for a node. The rest is the reserve's own sentence (:mod:`robovast.common.disk_reserve`).
 DISK_WAIT = "waiting for disk space: "
 
 #: How many jobs may be outstanding **unpinned** at once on a cluster that can grow.
@@ -463,7 +462,7 @@ class AdmissionController:
         its own runs.
 
         *priority* stays what it has always been: the ordering WITHIN a campaign, which puts
-        a probe ahead of the work it gates and postprocessing ahead of both. The campaign's
+        a probe ahead of the work it gates. The campaign's
         own rank (:meth:`set_scheduling`) is the more significant key, so setting one never
         disturbs the other.
 
@@ -1049,10 +1048,10 @@ class AdmissionController:
         """Priority first, then campaign rank, then oldest campaign, then submission order.
 
         ``priority`` leads, and it has to. It is not a preference but a campaign's own
-        sequence: a calibration probe measures the node its work will be sized from, and
-        postprocessing turns a finished campaign's runs into its results. Both are bounded --
-        a few per campaign, short -- and both are *preconditions*, so ranking ordinary work
-        ahead of them does not make the queue fairer, it makes the campaign behind them fail.
+        sequence: a calibration probe measures the node its work will be sized from. Probes
+        are bounded -- a few per campaign, short -- and they are *preconditions*, so ranking
+        ordinary work ahead of them does not make the queue fairer, it makes the campaign
+        behind them fail.
         A demoted campaign whose probe keeps losing its node is refused outright after
         ``UNMEASURED_BATCH_LIMIT`` batches, so a rank that reached its probes would turn
         "let other campaigns past" into "end this campaign", which is not what anyone setting

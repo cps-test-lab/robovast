@@ -50,7 +50,6 @@ def apis(monkeypatch):
     monkeypatch.setattr(service_deploy, "job_node_pool_from_cluster", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "_resolve_data_node", lambda *a, **k: {})
     monkeypatch.setattr(service_deploy, "existing_auth_token", lambda *a, **k: "token")
-    monkeypatch.setattr(service_deploy, "existing_index_password", lambda *a, **k: "pw")
     return core, apps, order
 
 

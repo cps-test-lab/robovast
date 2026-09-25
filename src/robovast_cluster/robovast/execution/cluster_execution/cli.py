@@ -533,7 +533,7 @@ def _echo_placement(placement):
     if not data:
         click.echo("  node-local data: nothing pinned (a StorageClass backs it)")
         return
-    click.echo(f"  workspaces, results, index and registry on {data} "
+    click.echo(f"  workspaces, results and registry on {data} "
                f"({reason.get(placement.get('data_source'), 'decided')})")
     if build and build != data:
         click.echo(f"  build cache on {build}")
@@ -658,14 +658,13 @@ def _echo_job_node_aliases(changes, *, whole=False):
               envvar='ROBOVAST_WORKSPACES_PATH',
               help='Host directory holding the service\'s workspaces '
                    f'(default: {data_paths.DEFAULT_WORKSPACES_HOST_PATH}). The campaign '
-                   'results root -- where finished campaigns live -- is placed beside it, '
-                   'and the campaign index beside that; neither needs a flag of its own.')
+                   'results root -- where finished campaigns live -- is placed beside it '
+                   'and needs no flag of its own.')
 @click.option('--workspaces-class', default='', metavar='NAME',
               envvar='ROBOVAST_WORKSPACES_CLASS',
               help='Back the workspaces and the campaign results with PVCs from this '
                    'StorageClass instead of hostPaths, which also unpins the service pod. '
-                   'The campaign index follows unless --index-class says otherwise. Stock '
-                   'RKE2 provisions nothing, which is why hostPath is the default.')
+                   'Stock RKE2 provisions nothing, which is why hostPath is the default.')
 @click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
               envvar='ROBOVAST_RESULTS_SIZE',
               help='Size of the campaign results PVC (default: 500Gi) -- the volume every '
@@ -673,19 +672,6 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    'without one the results are a directory on the data node, bounded by '
                    'that disk, and there is no volume to size. The same flag on '
                    "'vast service upgrade' raises an existing claim.")
-@click.option('--index-class', 'index_storage_class', default='', metavar='NAME',
-              envvar='ROBOVAST_INDEX_CLASS',
-              help='Back the campaign index with a PVC from this StorageClass. Without it '
-                   'the index takes the results\' backing: a PVC of the workspaces\' class '
-                   'where one is given, else a directory beside the results on the data '
-                   'node. Its own flag because Postgres is a different workload from the '
-                   'bulk of the results, and on a managed node pool the index is what a '
-                   'replaced node would otherwise take with it.')
-@click.option('--index-size', 'index_storage_size', default='', metavar='SIZE',
-              envvar='ROBOVAST_INDEX_SIZE',
-              help='Size of the campaign index PVC (default: 20Gi). Needs a class, its own '
-                   'or the workspaces\': without one the index is a directory on the node '
-                   'and there is no volume to size.')
 @click.option('--registry-class', 'registry_storage_class', default='', metavar='NAME',
               envvar='ROBOVAST_REGISTRY_CLASS',
               help='Back the built-in container registry with a PVC from this '
@@ -698,7 +684,7 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    f'(default: {data_paths.DEFAULT_REGISTRY_HOST_PATH}).')
 @click.option('--data-node', default='', metavar='NODE',
               help='Hold this deployment\'s node-local data on this node: the workspaces, '
-                   'the results, the index, the registry and, unless --buildkit-node says '
+                   'the results, the registry and, unless --buildkit-node says '
                    'otherwise, the build cache. Rarely needed -- setup picks the node with '
                    'the most free space the first time and records the choice as a node '
                    'label, so later runs stay put without any flag. Naming a node moves the '
@@ -755,7 +741,7 @@ def _echo_job_node_aliases(changes, *, whole=False):
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
-          data_root, index_storage_class, index_storage_size,
+          data_root,
           workspaces_path, workspaces_class, results_storage_size,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
@@ -764,7 +750,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           cluster_config):
     """Set up the Kubernetes cluster for execution.
 
-    Deploys the ``robovast`` pod (the container registry and the campaign index), the
+    Deploys the ``robovast`` pod (the container registry), the
     ``robovast-service`` Deployment that drives campaigns and keeps their results on its
     results volume, the shared build daemon, and the cluster-wide pieces they need (RBAC,
     the GPU device plugin, the placement labels).
@@ -826,20 +812,16 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         cluster_kwargs[key] = value
 
     # Resolved here, once, so every tenant is placed by the same rule and a --data-root
-    # cannot reach three of them and miss the fourth. Refused before anything is applied:
+    # cannot reach some of them and miss another. Refused before anything is applied:
     # an argument error must not leave a half-set-up cluster behind it.
     stated = {
         'workspaces_path': workspaces_path, 'workspaces_class': workspaces_class,
-        # No index path: it is placed beside the results it was ingested from, derived
-        # rather than stated. Only its class is a separate question.
-        'index_class': index_storage_class,
         'registry_path': registry_storage_path, 'registry_class': registry_storage_class,
         'buildkit_path': buildkit_storage_path, 'buildkit_class': buildkit_storage_class,
     }
     try:
         data_paths.refuse_conflicts(stated, data_root=data_root,
                                     sizes={'buildkit': buildkit_storage_size,
-                                           'index': index_storage_size,
                                            'results': results_storage_size})
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
@@ -868,11 +850,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         # Sized rather than placed: results follows the workspaces' class and directory
         # (`data_paths.TENANTS`), and only how much it may grow to is its own question.
         'results_storage_size': results_storage_size,
-        # Popped by setup_server and handed to the provider: the index is in the
-        # `robovast` pod, not in the service Deployment.
-        'index_storage_class': placements['index'].storage_class,
-        'index_storage_path': placements['index'].path,
-        'index_storage_size': index_storage_size,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
@@ -1092,7 +1069,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
                      the environment (git, share, ntfy, registry). Recovers this
                      cluster's config and ingress host from the cluster itself, so it
                      cannot lose them. The access token is preserved.
-      setup --force  re-provisions: the registry/index pod, the storage placement. It
+      setup --force  re-provisions: the registry pod, the storage placement. It
                      takes its options as *arguments*, so a re-run without the original
                      flags re-provisions with different ones. Also re-mints the access
                      token when asked (--rotate-token), logging everyone out.
@@ -1140,7 +1117,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
         ingress_host = public_origin.split("://", 1)[-1] if public_origin else ""
 
         # Before anything is changed. The service pod this upgrade renders reaches the
-        # registry and the index in the `robovast` pod, so a cluster whose pod lacks them --
+        # registry in the `robovast` pod, so a cluster whose pod lacks it --
         # or carries an object store nothing reads -- needs cleanup + setup, and must
         # hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
@@ -1433,7 +1410,7 @@ def cluster_token(namespace, kube_context, quiet):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--delete-data', is_flag=True,
               help="Also empty this deployment's data directories on the node: the "
-                   'workspaces, the results, the campaign index and the registry. Cleanup '
+                   'workspaces, the results and the registry. Cleanup '
                    'keeps them by default, because the results hold every finished '
                    'campaign and a teardown is a very expensive way to discover that. '
                    'Irreversible, and no archive is taken first -- use vast share or vast '
@@ -1453,7 +1430,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement,
             delete_data, vast):
     """Clean up the Kubernetes cluster setup.
 
-    Removes the ``robovast`` pod (registry and index), the ``robovast-service``
+    Removes the ``robovast`` pod (the registry), the ``robovast-service``
     Deployment, the build daemon and the cluster-wide pieces setup installed. The data
     directories on the node are kept unless ``--delete-data`` asks otherwise.
 

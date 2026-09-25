@@ -11,12 +11,6 @@ import errno
 from robovast.common.errors import is_storage_full
 
 
-class _DiskFull(Exception):
-    """What psycopg raises when Postgres's volume is full, by the attribute that says so."""
-
-    sqlstate = "53100"
-
-
 def test_a_write_with_no_space_left_is_storage_full():
     assert is_storage_full(OSError(errno.ENOSPC, "No space left on device"))
 
@@ -26,8 +20,22 @@ def test_an_exhausted_quota_is_storage_full():
     assert is_storage_full(OSError(errno.EDQUOT, "Disk quota exceeded"))
 
 
-def test_a_full_index_disk_is_storage_full():
-    assert is_storage_full(_DiskFull("could not extend file"))
+def test_a_table_build_on_a_full_disk_is_storage_full(tmp_path):
+    """A campaign's tables are parquet files on the results volume; a write that finds it
+    full is the same fact as any other."""
+    import os
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import pytest
+    if not os.path.exists("/dev/full"):
+        pytest.skip("needs /dev/full")
+    try:
+        pq.write_table(pa.table({"a": list(range(100_000))}), "/dev/full")
+    except OSError as error:
+        assert is_storage_full(error)
+    else:
+        pytest.fail("a write to /dev/full succeeded")
 
 
 def test_a_full_campaign_store_is_storage_full():

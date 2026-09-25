@@ -482,8 +482,8 @@ def start_probes(probes=PROBES):
     """The probes that actually answered, with the columns each produces.
 
     **Availability is decided once, at startup, not per tick.** That is what keeps the CSV
-    header fixed for the file's lifetime, which the generic CSV ingest needs in order to type a
-    column; a probe that came and went would produce a ragged file. It also means an
+    header fixed for the file's lifetime, which the decoder needs in order to type a column of
+    the ``system_usage`` table; a probe that came and went would produce a ragged file. It also means an
     unavailable probe costs one read at startup and nothing thereafter.
     """
     live = []

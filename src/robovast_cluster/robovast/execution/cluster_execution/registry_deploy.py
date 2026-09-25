@@ -155,9 +155,8 @@ DEFAULT_REGISTRY_HOST_PATH = data_paths.DEFAULT_REGISTRY_HOST_PATH
 #: floor rather than a comfortable estimate.
 #:
 #: The memory limit has headroom for concurrent layer transfers but is not open-ended: a
-#: registry that is OOMKilled mid-push fails a build, which is cheap to retry -- unlike the
-#: index, whose failure lands at the end of a campaign. No CPU limit, for the same reason
-#: the index has none: throttling a push is a slow build with no visible cause.
+#: registry that is OOMKilled mid-push fails a build, which is cheap to retry. No CPU limit:
+#: throttling a push is a slow build with no visible cause.
 REGISTRY_RESOURCES = {
     "requests": {"cpu": "10m", "memory": "32Mi"},
     "limits": {"memory": "1Gi"},
@@ -233,10 +232,9 @@ def registry_volume(storage_path=DEFAULT_REGISTRY_HOST_PATH, storage_class=""):
     ImagePullBackOff rather than fail honestly. Upgrades no longer restart this pod, but a
     crash, an eviction and a node reboot still do.
 
-    A claim is still offered here, unlike the index's volume, and the asymmetry is
-    deliberate: losing the index costs a re-ingest of data that still exists in the object
-    store, while losing the blobs strands refs that submitted campaigns are already being
-    pulled from. So a deployment that *has* a StorageClass may put the registry on it.
+    A claim is offered because losing the blobs strands refs that submitted campaigns are
+    already being pulled from. So a deployment that *has* a StorageClass may put the
+    registry on it.
 
     hostPath is the default because a stock RKE2 cluster ships no StorageClass at all, so
     a PVC there stays Pending forever. It pins the registry's data to one node, which is

@@ -30,6 +30,8 @@ from typing import Any, Optional
 
 import yaml
 
+from robovast_decode.junit import read_test_result
+
 
 def read_execution_metadata(campaign_dir: Path) -> dict[str, Any]:
     """Read execution metadata from ``_execution/execution.yaml``.
@@ -532,7 +534,7 @@ _OUTCOME_FILENAME = "outcome.json"
 
 
 #: Postprocessing's own provenance record, relative to the campaign directory. Written by
-#: ``results_processing.postprocessing`` as the **last** step, after the index ingest, and
+#: ``results_processing.postprocessing`` as the **last** step, after the tables are built, and
 #: by nothing else. Both readers of "is this campaign postprocessed?" -- this module and
 #: ``execution.share_providers.naming`` -- resolve it, so the two cannot disagree.
 POSTPROCESSING_RECORD = "_transient/postprocessing.yaml"
@@ -564,40 +566,27 @@ def postprocessing_entries(record):
 
 
 def campaign_has_derived_data(campaign_dir) -> bool:
-    """Has this campaign's postprocessing **finished**, leaving derived data behind?
+    """Has this campaign's postprocessing **finished**?
 
     The single evidence test behind ``Status.postprocessed``, shared by the disk-recovery
     path and the live-snapshot one so that the same campaign cannot be given two answers.
 
-    This used to prove it from a finished ``_execution/data.db``: the file's existence alone
-    was a false positive that read as a clean bill of health -- the builder unlinked the old
-    database and connected, so it appeared at 0%, and a 9 GB build across 1870 runs reported
-    ``postprocessed: true`` for the twenty minutes it was being written. SQLite's WAL and
-    journal sidecars were what told a build in progress from a finished one.
-
-    Derived data now lives in the central index, and neither of those props survives: there
-    is no per-campaign file to stat, and querying the index would make a campaign's *status*
-    depend on a service being up -- so a campaign would read as un-postprocessed whenever the
-    index was down, which is a statement about the index, not the campaign.
-
-    What replaces both is **when** the provenance record is written: postprocessing writes it
-    last, after the ingest, so its presence carries the same "finished" guarantee the missing
-    sidecars did. It is read from the campaign directory, so this stays answerable offline and
-    without the index -- the same requirement the archive variant has.
+    The evidence is **when** the provenance record is written: postprocessing writes it last,
+    after the campaign's own steps and the campaign-end pass that builds its declared tables,
+    so its presence means that pass completed. It is read from the campaign directory, so the
+    answer needs no service and holds for an archive too. A record with no entries counts: a
+    campaign with no steps of its own is postprocessed once its tables are built.
 
     Errs towards ``False``: a postprocessing run killed part-way has written no record, so it
-    reads as "no data" rather than as results. That is the recoverable direction --
-    ``run_postprocessing`` rebuilds from the run directories, which are kept -- where the
-    other hands a reader a half-built campaign and calls it the campaign's results.
+    reads as not postprocessed, and ``run_postprocessing`` finishes it from the records, which
+    are kept. A record that cannot be parsed raises (:func:`postprocessing_entries`).
     """
     record_path = Path(campaign_dir) / POSTPROCESSING_RECORD
     try:
         record = record_path.read_bytes()
-    except FileNotFoundError:
-        return False
     except OSError:
-        return False      # an unreadable record dir is not evidence of results
-    return bool(postprocessing_entries(record))
+        return False      # absent, or an unreadable record dir: not evidence of a finished pass
+    return postprocessing_entries(record) is not None
 
 
 def write_execution_outcome(campaign_root: Path, status) -> None:
@@ -1268,7 +1257,7 @@ def read_config_channels(config_dir: Path) -> dict[str, Any]:
     writes its destinations on. A channel a campaign does not use has no file and no key, so
     the result says which channels this configuration actually has.
 
-    This is the single reader for all three, so what reaches the index is by construction
+    This is the single reader for all three, so what reaches the ``runs`` table is by construction
     what the results tree records. The ``sut`` block is already flat
     (``{"<source>.<path>": value}``); the ``sim`` block is the backend's whole resolved
     configuration and stays nested here.
@@ -1298,70 +1287,6 @@ def read_config_channels(config_dir: Path) -> dict[str, Any]:
         if isinstance(block, dict) and block:
             channels[channel] = block
     return channels
-
-
-def read_test_result(run_dir: Path) -> dict[str, Any]:
-    """Parse JUnit test result from ``test.xml``.
-
-    Args:
-        run_dir: Path to the run directory (e.g. ``campaign-<id>/<config>/0``).
-
-    Returns:
-        Dictionary with keys: success (bool), duration_sec (float), start_time (ISO
-        string), start_epoch (float), errors (int), failures (int), tests (int),
-        failure_message (str or None).
-
-    Raises:
-        FileNotFoundError: If test.xml does not exist.
-    """
-    path = run_dir / "test.xml"
-    if not path.exists():
-        raise FileNotFoundError(f"test.xml not found in {run_dir}")
-
-    tree = ET.parse(path)
-    root = tree.getroot()
-
-    errors = int(root.get("errors", "0"))
-    failures = int(root.get("failures", "0"))
-    tests = int(root.get("tests", "0"))
-
-    testcase = root.find("testcase")
-    duration = float(testcase.get("time", "0")) if testcase is not None else 0.0
-
-    # Extract start_time from properties. Kept in both forms: the ISO string every reader
-    # already uses, and the raw epoch seconds, because the wall window (start .. start +
-    # duration) is how a job's container log is attributed to the run that produced it, and
-    # re-parsing the ISO string to get back a number it was made from is a needless round
-    # trip that also loses nothing gracefully when the format changes.
-    start_time_iso = None
-    start_epoch = None
-    if testcase is not None:
-        properties = testcase.find("properties")
-        if properties is not None:
-            for prop in properties.findall("property"):
-                if prop.get("name") == "start_time":
-                    ts = float(prop.get("value", "0"))
-                    start_epoch = ts
-                    start_time_iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-                    break
-
-    # Extract failure message if present
-    failure_message = None
-    if testcase is not None:
-        failure_elem = testcase.find("failure")
-        if failure_elem is not None:
-            failure_message = failure_elem.get("message") or failure_elem.text
-
-    return {
-        "success": errors == 0 and failures == 0,
-        "duration_sec": duration,
-        "start_time": start_time_iso,
-        "start_epoch": start_epoch,
-        "errors": errors,
-        "failures": failures,
-        "tests": tests,
-        "failure_message": failure_message,
-    }
 
 
 def read_run_job(run_dir: Path, campaign_root: Path,

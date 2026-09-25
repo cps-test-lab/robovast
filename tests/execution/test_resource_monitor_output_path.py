@@ -18,7 +18,7 @@ from importlib.resources import files
 import pytest
 
 from robovast.common.execution import job_artifact_rel
-from robovast.results_processing import run_slices
+from robovast_decode import run_slices
 
 SCRIPTS = ("entrypoint.sh", "secondary_entrypoint.sh")
 

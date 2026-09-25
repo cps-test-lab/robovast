@@ -430,25 +430,36 @@ Reading results: SQL, not a tool per scope
 ------------------------------------------
 
 There is no tool that summarizes one configuration, none that returns a single run's
-outcome, none that returns a run's host information. There were nine such tools, each a
-hand-written reader of the campaign's ``metadata.yaml`` with its own response schema. Two
-things were wrong with that. The file is written **only by postprocessing**, so every one
-of them answered "run postprocessing first" about campaigns whose outcomes were already
-recorded in ``campaign.db``. And the shape of the question was fixed by whoever wrote the
-tool: "the mean error per parameter value, for the runs that passed" was not expressible at
-all, while "the status of 200 runs" cost 200 calls.
+outcome, none that returns a run's host information. A reader per scope would fix the shape
+of the question to whoever wrote the tool: "the mean error per parameter value, for the runs
+that passed" would not be expressible at all, while "the status of 200 runs" would cost 200
+calls. And a reader of a file postprocessing writes would answer "run postprocessing first"
+about campaigns whose outcomes are already recorded in ``campaign.db``.
 
-So the per-run and per-configuration views collapsed onto the same read-only SQL the
-metric tables already used:
+So the per-run and per-configuration views are the same read-only SQL the metric tables
+answer to, over the campaign directory itself (:ref:`database-or-address-space`): the engine
+is DuckDB, in-process, and a table is built from the campaign's records the first time a
+query names it.
 
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
-  question is written down**. Read its ``note`` first.
-* ``query_campaign_data_sql`` — one ``SELECT``, **confined to the campaign it names**.
-  Every campaign's rows live in one index, so a query that omits ``WHERE campaign_id =
-  ...`` would otherwise answer with the corpus, in the same columns and with nothing in
-  the reply to say it had; the index enforces the scope instead of the caller remembering
-  it. Spanning campaigns is still one query and is now asked for: name the ids in the
-  call's ``campaigns`` argument.
+  question is written down**. Read its ``note`` first. It lists every table the campaign's
+  records can give, each with its ``kind`` (``view``, ``table``, ``record``) and, for a
+  per-run table, ``built`` of ``runs`` — for how many runs it is built already. Describing
+  builds nothing; a table's ``columns`` are empty until it is built for some run.
+* ``query_campaign_data_sql`` — one ``SELECT`` in DuckDB's dialect, **confined to the
+  campaign it names**: the query sees only that campaign's files, so ``WHERE campaign_id =
+  ...`` is never needed to keep another campaign's rows out. Before it runs, the tables it
+  names are built for the runs in scope that lack them — narrowed to the runs its top-level
+  ``WHERE`` restricts them to by ``config_name``/``run_id`` equality or ``IN``, so a first
+  look at a large table is cheap when it names one run. What could not be built is reported
+  in the reply's ``note``, by table and run. Spanning campaigns is deliberate rather than
+  default: the interface's ``campaigns`` argument (on the HTTP query route) names the
+  further campaigns, and every row then carries ``campaign_id``.
+* ``build_campaign_tables(campaign_id, tables=None)`` / ``clear_campaign_tables(campaign_id)``
+  — build a finished campaign's tables for every run ahead of a long analysis, in the
+  background with progress in the campaign log's ``TABLES`` section; or remove them to free
+  storage. Neither is needed for an answer: a query builds what it names, and a cleared
+  table is built again on use.
 
 The entry points are two flat views, queried unqualified:
 
@@ -532,10 +543,10 @@ response has no dict to carry one. And for a *human* who wants to watch a run, n
 answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
 through this interface one frame at a time.
 
-An aggregate over a distance needs a square root, and SQLite's own ``sqrt`` is a
-compile-time option, so a query could work on the MCP host and fail in the service.
-``SQRT(x)`` is therefore registered alongside ``STDDEV``/``MEDIAN``/``PERCENTILE`` and is
-available to every SQL caller.
+The dialect is DuckDB's: ``CAST(x AS DOUBLE)``, ``x::JSON`` with ``->`` / ``->>``,
+``unnest``, ``median``, ``quantile_cont``, ``regexp_matches``, and ``sqrt`` for an aggregate
+over a distance. Two macros keep SQL written for other engines meaning what it meant:
+``PERCENTILE(x, p)`` with ``p`` in 0..100, and ``REGEXP(pattern, x)`` as a search.
 
 Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
 
@@ -544,22 +555,23 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   runs, so on a stopped or partially-run campaign it omits exactly the ones worth
   inspecting.
 * **Do not** ``SELECT config_json``. It is the whole ``.vast`` in one cell, exceeds the
-  per-cell limit, and returns truncated. Use ``config_view``, the Postgres JSON operators
-  for a known path (``config_json::jsonb -> 'execution' -> 'containers' -> 'scenario' ->>
-  'image'`` -- the index has no SQLite ``json_extract``), or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
+  per-cell limit, and returns truncated. Use ``config_view``, the JSON operators for a
+  known path (``config_json::JSON -> 'execution' -> 'containers' -> 'scenario' ->>
+  'image'``), or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
 A query costs the rows it touches
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Results live in a central index, so a query is answered there for every campaign. Nothing is materialized in the service to answer one, and no per-campaign database
-has to exist before a question can be asked — so ``describe_campaign_data`` takes a
-campaign id and returns the schema, and a query result says what it matched and nothing
-about where it came from.
+A query is answered by the service, next to the campaign's directory, and nothing has to be
+prepared before a question can be asked — so ``describe_campaign_data`` takes a campaign id
+and returns the schema, and a query works while the campaign runs.
 
-Cost tracks the rows a query touches, not the rosbags beside them — the same rule
-``read_file`` follows for ``/results``.
+The first query to name a table for a run pays for building it from that run's records; every
+later one reads the parquet file it left in ``.cache/``. After that, cost tracks the rows a
+query touches, not the rosbags beside them — the same rule ``read_file`` follows for
+``/results``. Which is why a first look names one run.
 
 
 .. _mcp-files:
@@ -747,8 +759,8 @@ ids apart. The launcher in the web UI has the same field.
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (the in-flight scenario Jobs). It lands on whatever is *running*, and the reply says which: the
-   **runs** (the batches that finished are still postprocessed and indexed, so the
-   campaign stays queryable), **postprocessing** (results kept, derived data not
+   **runs** (the batches that finished are still postprocessed, and the campaign
+   stays queryable), **postprocessing** (results kept, derived data not
    computed — re-run it), or the **share upload** (cancelled, partial archive removed).
    A campaign that is already over is refused rather than silently accepted.
    ``list_campaigns(running_only=True)`` reports the campaigns the service considers
@@ -932,7 +944,7 @@ author's, and :ref:`configuration <config-sizing>` says how.
 
 This paragraph is the specification, deliberately: the two sides of it cannot import each
 other, and an agreed format with no written home drifts the first time either side is
-edited. The precedent is :mod:`robovast.common.scenario_markers`, for the same reason.
+edited. The precedent is :mod:`robovast_decode.scenario_markers`, for the same reason.
 
 .. important::
 
@@ -995,10 +1007,8 @@ them apart.
    others reported that the run had written nothing.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
-(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) — and
-``search_run_logs`` below — take the same
-controls, applied in this order — a claim this page made while ``get_campaign_log`` was
-in fact the one tool without ``tail``, so it now has one:
+(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) take the same controls,
+applied in this order (``search_run_logs`` below shares all but ``tail``):
 
 .. list-table::
    :header-rows: 1
@@ -1018,10 +1028,10 @@ in fact the one tool without ``tail``, so it now has one:
        call, ``0`` included, and names the way back when it cut something.
 
        ``get_campaign_log`` and ``get_job_log`` read a live stream, so they find the
-       verdict in the text (:mod:`robovast.common.scenario_markers`); a stream that
+       verdict in the text (:mod:`robovast_decode.scenario_markers`); a stream that
        concatenates runs resumes at the next ``Executing scenario``. ``search_run_logs``
-       reads it from :ref:`scenario_timestamps <scenario-verdict>` instead, where
-       postprocessing recorded it — one answer to "when did the trial end", shared with
+       reads it from :ref:`scenario_timestamps <scenario-verdict>` instead, the table the
+       decoder builds from the same verdict line — one answer to "when did the trial end", shared with
        the web UI. Not offered by ``get_image_build_log`` or ``exec_in_container``:
        neither has a scenario.
    * - ``grep``
@@ -1030,7 +1040,7 @@ in fact the one tool without ``tail``, so it now has one:
      - Keep lines rated at least ``"warn"`` / ``"error"`` by RoboVAST's **own**
        classifier: a line's ``[WARN]``/``[ERROR]`` marker when it has one, else the
        published keyword pattern
-       (:data:`~robovast.common.log_summary.DEFAULT_SEVERITY_PATTERN`). Use this
+       (:data:`~robovast_decode.log_summary.DEFAULT_SEVERITY_PATTERN`). Use this
        instead of hand-writing a severity ``grep`` — it is the same definition
        everything else uses, and two patterns mean two answers to "is this healthy?".
        A marker outranks a keyword, so an ``[INFO]`` line reporting ``errors=0`` is
@@ -1048,33 +1058,37 @@ searches the merged :ref:`run_log <merged-run-log>` table — every container's 
 ``/rosout``, on each run's own playback clock — across runs and across campaigns.
 
 Same reading vocabulary as the tools above (``hide_shutdown``, ``grep``, ``min_severity``,
-``summarize``, ``tail``), defaults included — though ``hide_shutdown`` is the one it implements
+``summarize``), defaults included — though ``hide_shutdown`` is the one it implements
 differently, as a SQL term over ``scenario_timestamps`` rather than a scan of the text, because
 its default shape (``group_by_run``) never renders lines at all. Since nothing is dropped in
 Python there is no ``shutdown_dropped`` to report, so every response instead *says* in its
 ``note`` that only the trial was searched. What it adds is *scope*: ``config_filter``, ``run_id``,
-``container``, ``node``, ``source``, a sim-time window (``t0``/``t1``), and ``in_window`` to
-separate "during the trial" from "while the simulator was being reset around it". Set
-``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids.
+``container``, ``node`` and a sim-time window (``t0``/``t1``). Set ``campaign_regex`` to make
+``campaign_id`` a pattern over campaign ids. ``tail``, ``offset``, ``source`` and ``in_window``
+are not parameters: the ``run_log`` table has those columns, and ``query_campaign_data_sql``
+reaches them directly for the question that needs them.
 
 Three shapes, one per question:
 
 * ``group_by_run=True`` (the default) — hits per run, joined to ``passed``/``status`` and the
   first sim time it appeared at. This is the "which runs, and did they fail?" answer.
-* ``group_by_run=False`` — the matching lines themselves, paged with ``limit``/``offset``.
+* ``group_by_run=False`` — the matching lines themselves, up to ``limit``.
 * ``summarize=True`` — patterns and counts, so "what flooded this sweep" costs one call. The
   summary scans far more rows than it returns, because it returns counts.
 
 Two costs it reports rather than hides. Every response carries ``campaigns`` and
-``campaigns_skipped``: the rows live in the central index, so a campaign costs no transfer, but
-``grep`` is still a regex over every log line of every campaign it spans — hence
+``campaigns_skipped``: each campaign's ``run_log`` is read where it lies, so a campaign costs
+no transfer, but ``grep`` is still a regex over every log line of every campaign it spans, and
+a campaign whose ``run_log`` is not built yet builds it first — hence
 ``max_campaigns`` defaults to 5, and what it leaves out is named rather than silently trimmed.
 
 Each run also reports its ``clock_map_source``; ``none`` means that run's lines have no
 ``sim_time`` at all — readable, but not on the timeline (see :ref:`clock-map`).
 
 ``get_campaign_log`` takes one more, because its stream is several phases concatenated
-under ``===== PHASE =====`` dividers (variation → run → postprocessing): ``phase`` reads
+under ``===== PHASE =====`` dividers (build → plugin install → variation → run, then
+postprocessing, share and ``TABLES`` — a table build asked for ahead — in the order they ran,
+each as often as it ran): ``phase`` reads
 one of them — or ``"all"``. Every read reports ``phases`` as
 ``[{name, lines, included}, …]``, so what a read left out is stated rather than absent.
 
@@ -1325,7 +1339,8 @@ reach a live job, and the difference between them is who chooses the command:
   is recorded. That property holds *because* the commands are ours: they read files the run is
   already writing.
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
-  campaign instead: every run the job covers is marked ``probed`` in the results index.
+  campaign instead: every run the job covers is recorded as probed in the campaign's
+  ``_execution/interventions.json``, which is the ``runs.probed`` column a query reads.
 
 That makes this tool the right *first* move rather than the only one, because it answers the
 same question against a copy at no cost to the campaign. A fault that does not reproduce here
@@ -1403,10 +1418,10 @@ What it keeps, and does not:
   :data:`~robovast.mcp_server.tool_stats.MAX_ROWS`, whichever bites first. Age alone would not
   bound the table -- one agent loop emits thousands of calls in an hour -- so a burst shortens
   the retained window, and the panel says so rather than claiming a month it does not have.
-* Rows go to the central index (:mod:`robovast.common.index_db`), buffered rather than written
-  per call: a Postgres round-trip in front of every tool call would cost more than some of the
-  tools. They therefore survive a service restart but not the results volume, which the index
-  shares a lifetime with.
+* Rows go to ``mcp_calls.db``, a SQLite file on the workspaces volume beside the service's
+  event log, buffered rather than written per call: a write in front of every tool call would
+  cost more than some of the tools. They therefore survive a service restart, and last as
+  long as that volume does.
 * ``actor`` is the resolved principal -- the name the caller gave and the source it
   authenticated by -- and ``session`` is ``"<client>/<session>"``: over streamable HTTP that
   client's ``mcp-session-id``, the same for every call it makes. The principal is who the
@@ -1421,7 +1436,7 @@ window. The panel's page ceiling bounds one JSON response the service holds in m
 export streams and so is bounded only by what is retained.
 
 **Recording never fails a tool call.** Every path in
-:mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unreachable index costs the
+:mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unwritable log file costs the
 log, never the call. This is the same contract :class:`robovast.service.event_log.EventLog`
 states for itself, for the same reason: what is recorded is a description of the work, not the
 work.

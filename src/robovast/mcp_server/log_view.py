@@ -30,7 +30,7 @@ diagnosis without paying for the whole stream:
 * ``grep`` — keep lines matching a regex.
 * ``min_severity`` — keep lines the shared classifier rates at least that severe.
   Distinct from ``grep`` on purpose: ``grep`` is free text, this is
-  :func:`~robovast.common.log_summary.severity_of`, so a caller stops hand-writing
+  :func:`~robovast_decode.log_summary.severity_of`, so a caller stops hand-writing
   a severity regex (and stops getting a different answer than the status does).
 * ``tail`` — keep the last N of what survived.
 * ``summarize`` — return *distinct patterns with counts* instead of lines.
@@ -41,7 +41,7 @@ diagnosis without paying for the whole stream:
 On top of that, each line of a forwarded log carries a relay prefix stamped on by
 whatever passed it along; it is dropped where the payload already says the same thing.
 The prefix grammar, the severity vocabulary and the pattern counter all live in
-:mod:`robovast.common.log_summary`, so the service's campaign health and these tools
+:mod:`robovast_decode.log_summary`, so the service's campaign health and these tools
 cannot disagree about what "an error line" is.
 
 **Nothing is hidden silently.** Every view reports how many lines it left out, so a
@@ -52,7 +52,7 @@ import re
 
 # Imported as a module, not by name, so the parameters below can carry the names a
 # caller would choose (``summarize``, ``collapse_relay``) without shadowing them.
-from robovast.common import log_summary, scenario_markers
+from robovast_decode import log_summary, scenario_markers
 
 
 def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0,
@@ -64,7 +64,7 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
     what a caller chasing an error wants:
 
     1. ``hide_shutdown`` drops what each run said after its scenario reached a
-       verdict (:mod:`robovast.common.scenario_markers`).
+       verdict (:mod:`robovast_decode.scenario_markers`).
     2. ``grep`` keeps only lines matching that regex (case-insensitive).
     3. ``min_severity`` (``"warn"`` / ``"error"``) keeps only lines that severe.
     4. ``summarize`` groups and counts what survived — **or**, when it is false,

@@ -622,12 +622,6 @@ class JobKind(StrEnum):
 
     RUN = "run"                  # one of the campaign's own trials
     CALIBRATION = "calibration"  # a node-sizing probe
-    #: The campaign's own postprocessing work, running as a job of its own: the rosbag
-    #: conversion, which runs in the execution image its runs were recorded with. Listed for the same reason
-    #: a probe is -- it is real work holding real capacity, and it is the only thing a
-    #: campaign in its ``postprocessing`` phase is doing -- and, like a probe, it carries no
-    #: run.
-    POSTPROCESSING = "postprocessing"
 
 
 class JobUsage(BaseModel):
@@ -672,7 +666,7 @@ class JobSummary(BaseModel):
     #: batch *is* a run, so the default is a true statement and
     #: no construction site has to restate it. It is also what a client sees from a service
     #: older than this field -- which is why a reader must test for the kinds it cares about
-    #: (``== "calibration"``, ``== "postprocessing"``) and never for ``!= "run"``.
+    #: (``== "calibration"``) and never for ``!= "run"``.
     kind: str = JobKind.RUN
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
@@ -742,17 +736,7 @@ class JobCounts(BaseModel):
     # run meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
     # reports a campaign run that never existed as finished.
     calibration: int = 0
-    # The campaign's postprocessing job in the same listing, on the same terms as
-    # ``calibration`` and for the same reason: a conversion is not a trial, so counting it
-    # among the runs would put a job that never carried a scenario into the run meter, the
-    # ``done/total`` label and the ETA's divisor.
-    #
-    # Not a progress figure. It is 1 while a conversion is in flight and 0 otherwise, so what
-    # it says is "there is postprocessing to look at in the jobs list", not how far along it
-    # is -- the conversion reports its own progress in the campaign log.
-    postprocessing: int = 0
-    #: The campaign's own runs. See :attr:`calibration` and :attr:`postprocessing` for what
-    #: is deliberately not in it.
+    #: The campaign's own runs. See :attr:`calibration` for what is deliberately not in it.
     total: int = 0
 
 
@@ -889,6 +873,24 @@ class PostprocessingSource(BaseModel):
 class UpdatePostprocessingSourceRequest(BaseModel):
     campaign_id: str
     content: str
+
+
+class BuildCampaignTablesRequest(BaseModel):
+    """Build a finished campaign's tables now rather than when each is first named.
+
+    Not needed for any answer: a table is built the first time a query, a panel or an
+    export names it. This only moves that cost to now, for a campaign about to be analyzed
+    at length. ``tables`` names the ones to build; empty builds every table its records can
+    give.
+    """
+    campaign_id: str
+    tables: list[str] = Field(default_factory=list)
+
+
+class CampaignTablesCleared(BaseModel):
+    """What clearing one campaign's built tables removed. Each is built again on use."""
+    campaign_id: str
+    freed_bytes: int = 0
 
 
 class RunPostprocessingRequest(BaseModel):
@@ -1436,16 +1438,9 @@ class McpCall(BaseModel):
 
 
 class McpToolStats(BaseModel):
-    """The ranking, plus what the record covers.
-
-    :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
-    no tool has been called yet, or the index that holds the log is unreachable and the
-    answer is unknown. A reader that drew the second as the first would be inventing a fact.
-    """
+    """The ranking, plus what the record covers."""
 
     tools: list[McpToolStat] = Field(default_factory=list)
-    status: str = "ok"
-    detail: str = ""
     #: The retained window, so a reader is never told a month when a burst left a day.
     max_age_s: float = 0.0
     max_rows: int = 0
@@ -1461,8 +1456,6 @@ class McpCalls(BaseModel):
     """
 
     calls: list[McpCall] = Field(default_factory=list)
-    status: str = "ok"
-    detail: str = ""
     #: How many rows matched, ignoring the page bound.
     total: int = 0
     #: True when rows matched beyond this page -- ask again with a larger :attr:`offset`.
@@ -1625,31 +1618,6 @@ class StagedArchive(BaseModel):
 
     path: str
     size: int = 0
-
-
-class ArchiveSelection(BaseModel):
-    """Which part of a campaign an archive carries.
-
-    The default is the whole campaign, minus staging. A postprocessing pod asks for what its
-    conversion reads: ``stage`` drops the calibration probes, the log this pod will write
-    and the archived log sections; ``skip_bags`` drops the rosbags when the conversion
-    does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch; ``part`` to the runs
-    a split postprocess gave one of its Jobs. The selection is
-    made where the bytes are, not where they land: what the pod is never given it cannot
-    convert, cannot fail on and does not pay to download.
-
-    ``uncompressed`` asks for a plain tar rather than a ``tar.gz``: right for a reader in
-    the cluster, where gzip costs a core per stream and saves almost nothing on run
-    output, and wrong for a download that crosses a slow link.
-    """
-
-    stage: bool = False
-    skip_bags: bool = False
-    batch_jobs: str = ""
-    uncompressed: bool = False
-    #: A part of a split postprocess: only its runs and their jobs, and everything that is
-    #: neither (see ``campaign_archive.part_include``).
-    part: str = ""
 
 
 class OutputsIngested(BaseModel):
@@ -2049,13 +2017,22 @@ class VariationTypesResponse(BaseModel):
 class DataTable(BaseModel):
     """One queryable table, as :meth:`describe_campaign_data` reports it."""
 
-    #: The index schema the table is in. Spelled ``schema_`` because the bare name is a
-    #: pydantic attribute, and serialised as ``schema`` -- which is the key every client
-    #: path hands on, so a reader looking it up finds it.
+    #: The schema the table is in: ``main`` for views and tables, ``campaign`` for the
+    #: campaign's record. Spelled ``schema_`` because the bare name is a pydantic attribute,
+    #: and serialised as ``schema`` -- which is the key every client path hands on, so a
+    #: reader looking it up finds it.
     schema_: str = Field("", alias="schema")
     table: str = ""
+    #: ``name TYPE`` per column; empty until the table is built for some run.
     columns: list[str] = Field(default_factory=list)
     rows: Optional[int] = None
+    #: ``view``, ``table`` (built per run on first use) or ``record`` (the campaign schema).
+    kind: str = ""
+    #: For a built-per-run table: how many runs it covers, and for how many it is built.
+    runs: Optional[int] = None
+    built: Optional[int] = None
+    #: Runs whose build failed, keyed by run, with the reason (at most a sample of them).
+    failed: dict = Field(default_factory=dict)
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
@@ -2063,7 +2040,7 @@ class DataTable(BaseModel):
 
 
 class DataDescribe(BaseModel):
-    """Schema of a campaign's tables in the index (+ the ``campaign`` schema).
+    """Schema of a campaign's tables, views and ``campaign`` record.
 
     Each ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in
     every dump it appears in.
@@ -2111,9 +2088,9 @@ class DataQueryResult(BaseModel):
     rows: list[dict] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
-    # Present when 0 rows matched: distinguishes "genuinely empty" from a likely
-    # filter/JOIN-key mismatch (see ``data_query._empty_result_note``). Carried on
-    # the model so the hint survives the HTTP path, not just the in-process one.
+    # Present when the reply was cut at its size ceiling, or leaves out runs a table could
+    # not be built for (see ``data_query.query_data_db``). Carried on the model so the
+    # hint survives the HTTP path, not just the in-process one.
     note: Optional[str] = None
 
 
@@ -2665,6 +2642,15 @@ class Routes:
         return f"/campaigns/{campaign_id}/postprocessing"
 
     @staticmethod
+    def campaign_tables(campaign_id: str) -> str:
+        # DELETE clears the campaign's built tables; its sibling below builds them.
+        return f"/campaigns/{campaign_id}/tables"
+
+    @staticmethod
+    def campaign_tables_build(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/tables/build"
+
+    @staticmethod
     def campaign_postprocessing_run(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing/run"
 
@@ -3064,7 +3050,7 @@ class RobovastInterface(ABC):
         :func:`~robovast.common.campaign_data.record_intervention` records it *before* the command
         runs -- the same ordering :meth:`stop_job` uses, and for the same reason: a crash in
         between must not leave perturbed data with no explanation. Every run the job covers is
-        marked, which surfaces as ``runs.probed`` in the results index.
+        marked, which surfaces as ``runs.probed`` in the campaign's tables.
 
         That is the whole line between this and :meth:`get_job_state`: there the service chooses a
         fixed read, so nothing arbitrary can ride in and nothing needs recording. Here the *caller*
@@ -3189,8 +3175,7 @@ class RobovastInterface(ABC):
     @abstractmethod
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Permanently delete **one** campaign wholesale: its directory under the results
-        root, a share copy an import staged and kept, its rows in the central index, plus
-        any
+        root, a share copy an import staged and kept, plus any
         leftover Jobs and its token Secret.
 
         Refuses a campaign that is still running (raises so it surfaces as a 409);
@@ -3219,15 +3204,13 @@ class RobovastInterface(ABC):
     # control plane; the HTTP client reaches them under ``Routes.DATA``.
 
     @abstractmethod
-    def campaign_tar_stream(self, campaign_id: str,
-                            selection: "ArchiveSelection | None" = None):
+    def campaign_tar_stream(self, campaign_id: str):
         """Yield the campaign as a ``tar.gz``, in chunks, for ``GET .../archive``.
 
-        What comes out is the campaign as this service holds it -- postprocessed, if it
-        has been -- minus the internal ``_postproc/`` staging, so what lands is the clean
-        campaign layout. *selection* narrows it (:class:`ArchiveSelection`); ``None`` is
-        the whole campaign. Streamed, never buffered: the tree is tarred into the
-        response as it is read.
+        What comes out is the campaign's records as this service holds them --
+        postprocessed, if it has been -- minus its table cache, which is rebuilt from them
+        wherever a table is next named. Streamed, never buffered: the tree is tarred into
+        the response as it is read.
         """
 
     @abstractmethod
@@ -3498,6 +3481,21 @@ class RobovastInterface(ABC):
         """(Re)run analysis postprocessing for one campaign with the effective config."""
 
     @abstractmethod
+    def build_campaign_tables(self, request: BuildCampaignTablesRequest) -> ActionResult:
+        """Build a finished campaign's tables now, in the background; returns at once.
+
+        Progress goes to the campaign log's TABLES section, and ``describe_campaign_data``
+        reports each table as built for M of M runs when it is done. Never needed for an
+        answer: every table is built the first time something names it.
+        """
+
+    @abstractmethod
+    def clear_campaign_tables(self, campaign_id: str) -> CampaignTablesCleared:
+        """Remove one campaign's built tables to free storage; each is built again on use.
+
+        Refused while the campaign runs or its tables are being built."""
+
+    @abstractmethod
     def run_share(self, request: RunShareRequest) -> ActionResult:
         """(Re)trigger the upload-to-share of one finished campaign's raw archive.
 
@@ -3583,7 +3581,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_campaign_data(self, campaign_id: str) -> DataDescribe:
-        """Describe a campaign's tables in the index (+ the ``campaign`` schema).
+        """Describe a campaign's tables, views and ``campaign`` record.
 
         The dir is resolved per transport (local disk / object-store fetch); the
         query logic is shared with the MCP ``run_data`` plugin
@@ -3598,13 +3596,12 @@ class RobovastInterface(ABC):
         """Run a read-only ``SELECT`` over a campaign's data.
 
         The campaign record is reachable in the same query as schema ``campaign``. The
-        session is **confined to** *campaign_id*: the rows of every campaign live in one
-        index, so a query that omits ``WHERE campaign_id = ...`` would otherwise answer
-        with the corpus, in the same columns and with nothing to say it had.
+        query sees **only** *campaign_id*'s files, so ``WHERE campaign_id = ...`` is never
+        needed to keep another campaign's rows out.
 
-        A query may still span campaigns -- that is what one index is for -- by naming
-        them in *campaigns*. Deliberate rather than default, because spanning them by
-        accident and on purpose look identical in the reply.
+        A query may span campaigns by naming them in *campaigns*. Deliberate rather than
+        default, because spanning them by accident and on purpose look identical in the
+        reply.
 
         The reply is bounded on two axes: ``max_rows`` (clamped at 5000) and its serialized
         size. The size ceiling defaults to a *context* budget, because the caller that

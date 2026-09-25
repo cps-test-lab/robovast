@@ -14,45 +14,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``robovast`` pod: the image registry and the campaign index.
+"""The ``robovast`` pod: the image registry.
 
-``vast cluster setup`` creates one pod per deployment for its two pieces of
-**setup-lifetime infrastructure** -- the container registry (:mod:`.registry_deploy`) and
-the Postgres campaign index (:mod:`.index_deploy`) -- and one ClusterIP Service in front
-of it. Every provider deploys exactly this pod; what differs between providers is where its
-volumes come from, and that arrives as arguments.
+``vast cluster setup`` creates one pod per deployment for its **setup-lifetime
+infrastructure** -- the container registry (:mod:`.registry_deploy`) -- and one ClusterIP
+Service in front of it. Every provider deploys exactly this pod; what differs between
+providers is where its volume comes from, and that arrives as arguments.
 
-**Why they are not in the service pod.** ``robovast-service`` is a Deployment, and every
+**Why it is not in the service pod.** ``robovast-service`` is a Deployment, and every
 ``vast service upgrade`` rolls it: a container living there is restarted by each upgrade,
 including one that only bumps the controller image, and its volume follows the Deployment
-rather than the cluster. Neither the registry nor the index is service-lifetime state. The
-registry holds the images already-submitted campaigns will be pulled from; the index holds
-rows that took hours to ingest. Both belong to the *cluster*, are created once at setup,
-and are torn down deliberately by ``vast cluster cleanup``.
+rather than the cluster. The registry is not service-lifetime state: it holds the images
+already-submitted campaigns will be pulled from. It belongs to the *cluster*, is created
+once at setup, and is torn down deliberately by ``vast cluster cleanup``.
 
 **Campaigns are not here.** They live on the service's results volume
-(:data:`.service_deploy.RESULTS_VOLUME_NAME`), which the service Deployment carries. The
-index is derived from them and is placed beside them (:mod:`.data_paths`), so the two
-share a disk and a node; the registry holds blobs that are rebuilt on demand.
+(:data:`.service_deploy.RESULTS_VOLUME_NAME`), which the service Deployment carries, and
+the tables derived from them are built beside them, in each campaign's ``.cache/``. The
+registry holds blobs that are rebuilt on demand.
 
-**One pod, one Service, two ports.** A second Service would duplicate the selector, add
-objects for setup to create and cleanup to delete, and introduce a further name the
-service's environment has to agree with -- for no isolation, since a ClusterIP is not a
-security boundary and a port on it is reachable from the same pods either way. So
-``registry`` and ``index`` are two ports on one Service.
-
-**Which address is which.** The index is reached by the service over the pod network, so
-its DSN names :func:`store_host`. The registry is reached through the service's published
+**Which address is which.** The registry is reached through the service's published
 Ingress host: an image ref is resolved twice, by BuildKit inside a pod and by the kubelet
 on the node, and only that host works for both (see :mod:`.registry_deploy`). The
 Ingress' ``/v2`` backend is this pod's Service.
 """
 
 #: The Pod every cluster config deploys, the ClusterIP Service in front of it, and the
-#: label the Service selects on. Spelled once, here, because three things must agree on
-#: it: the manifest that creates the pod, the DSN baked into the service's environment, and
-#: the Ingress rule routing ``/v2``. Two spellings would drift into a deployment that
-#: cannot find its own registry or index while every half looks correct on its own.
+#: label the Service selects on. Spelled once, here, because the manifest that creates the
+#: pod and the Ingress rule routing ``/v2`` must agree on it. Two spellings would drift into
+#: a deployment that cannot find its own registry while every half looks correct on its own.
 STORE_POD_NAME = "robovast"
 STORE_SERVICE_NAME = "robovast"
 STORE_POD_SELECTOR = {"role": "robovast"}
@@ -92,26 +82,24 @@ def _add_port(service, name, port):
         ports.append({"name": name, "port": port, "targetPort": port, "protocol": "TCP"})
 
 
-def attach_infrastructure(docs, namespace="default", index_storage_path="",
-                          index_storage_class="", index_storage_size="",
-                          registry_storage_path="", registry_storage_class="",
-                          ingress_class="", registry_authenticated=False):
-    """The ``robovast`` pod's manifest: the registry and the index, their claims, the Service.
+def attach_infrastructure(docs, namespace="default", registry_storage_path="",
+                          registry_storage_class="", ingress_class="",
+                          registry_authenticated=False):
+    """The ``robovast`` pod's manifest: the registry, its claim, the Service.
 
     *docs* is what a caller already has of it, parsed -- ``[]`` for a fresh manifest, which
-    is what every provider passes. The containers are appended to the Pod named
-    :data:`STORE_POD_NAME` (created here when absent) and their ports to the Service of the
-    same name, so the registry Ingress and the index DSN name one host on every provider.
+    is what every provider passes. The container is appended to the Pod named
+    :data:`STORE_POD_NAME` (created here when absent) and its port to the Service of the
+    same name, so the registry Ingress names one host on every provider.
 
-    Each volume is a claim where a class is given and a ``hostPath`` otherwise; an index
-    hostPath left empty takes :data:`.data_paths.DEFAULT_INDEX_HOST_PATH`, the registry's
-    likewise.
+    The volume is a claim where a class is given and a ``hostPath`` otherwise; a hostPath
+    left empty takes :data:`.data_paths.DEFAULT_REGISTRY_HOST_PATH`.
 
     Idempotent by name, so a manifest that already carries them is returned unchanged.
     Returns a new list; PVCs are placed first, because ``apply_manifests`` creates in order
     and a Pod scheduled against a claim that does not exist yet stays Pending.
     """
-    from . import index_deploy, registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
 
     docs = [d for d in docs if d is not None]
     pod = _find(docs, "Pod", STORE_POD_NAME)
@@ -124,24 +112,16 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     spec = pod.setdefault("spec", {})
     containers = spec.setdefault("containers", [])
     volumes = spec.setdefault("volumes", [])
-    for container, volume in (
-            (registry_deploy.registry_container(authenticated=registry_authenticated),
-             registry_deploy.registry_volume(registry_storage_path,
-                                             registry_storage_class)),
-            (index_deploy.index_container(),
-             index_deploy.index_volume(index_storage_path, index_storage_class))):
-        if not any(c.get("name") == container["name"] for c in containers):
-            containers.append(container)
+    container = registry_deploy.registry_container(authenticated=registry_authenticated)
+    if not any(c.get("name") == container["name"] for c in containers):
+        containers.append(container)
+    wanted = [registry_deploy.registry_volume(registry_storage_path, registry_storage_class)]
+    if registry_authenticated:
+        # The password file, beside the blobs it guards.
+        wanted.append(registry_deploy.registry_auth_volume())
+    for volume in wanted:
         if not any(v.get("name") == volume["name"] for v in volumes):
             volumes.append(volume)
-
-    if registry_authenticated:
-        # The password file, beside the blobs it guards. Added here rather than in the
-        # loop above because it pairs with no container of its own -- it is a second
-        # volume for one of them.
-        auth_volume = registry_deploy.registry_auth_volume()
-        if not any(v.get("name") == auth_volume["name"] for v in volumes):
-            volumes.append(auth_volume)
 
     service = _find(docs, "Service", STORE_SERVICE_NAME)
     if service is None:
@@ -157,14 +137,9 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     if backend:
         service["metadata"].setdefault("annotations", {}).update(backend)
     _add_port(service, "registry", registry_deploy.REGISTRY_PORT)
-    _add_port(service, "index", index_deploy.INDEX_PORT)
 
-    claims = [c for c in (registry_deploy.registry_pvc_manifest(namespace,
-                                                                registry_storage_class),
-                          index_deploy.index_pvc_manifest(namespace, index_storage_class,
-                                                          index_storage_size))
-              if c]
-    return claims + docs
+    claim = registry_deploy.registry_pvc_manifest(namespace, registry_storage_class)
+    return ([claim] if claim else []) + docs
 
 
 def infrastructure_claims(namespace="default"):
@@ -174,35 +149,32 @@ def infrastructure_claims(namespace="default"):
     so this enumerates what *could* exist; deletion tolerates a 404, which makes that both
     correct and cheap.
 
-    **Both are re-derivable.** Built images are rebuilt on demand and the index is
-    re-ingested from the campaigns on the results volume, so removing either costs time and
-    nothing else. The results volume is the service Deployment's and is not touched here:
+    **It is re-derivable.** Built images are rebuilt on demand, so removing the claim costs
+    time and nothing else. The results volume is the service Deployment's and is not touched here:
     it holds the campaigns, and ``vast cluster cleanup --delete-data`` is how emptying it is
     asked for.
     """
-    from . import index_deploy, registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
 
-    return [registry_deploy.registry_pvc_manifest(namespace, "local-path"),
-            index_deploy.index_pvc_manifest(namespace, "local-path")]
+    return [registry_deploy.registry_pvc_manifest(namespace, "local-path")]
 
 
 def infrastructure_container_names():
     """The containers :func:`attach_infrastructure` puts in the pod, by name."""
-    from . import index_deploy, registry_deploy  # pylint: disable=import-outside-toplevel
+    from . import registry_deploy  # pylint: disable=import-outside-toplevel
 
-    return (registry_deploy.REGISTRY_CONTAINER_NAME, index_deploy.INDEX_CONTAINER_NAME)
+    return (registry_deploy.REGISTRY_CONTAINER_NAME,)
 
 
 def missing_infrastructure(pod) -> list:
     """Which of the pod's infrastructure containers a **live** pod does not run.
 
     ``apply_manifests`` tolerates a 409 on this pod and keeps the running one --
-    deliberately, since recreating it on every setup would restart the index and the
-    registry for nothing. The cost is that a live pod missing a container does not gain it
-    by re-running setup, and would otherwise carry on looking healthy: the service would
-    come up, its Ingress would route ``/v2`` at a container that is not there, and its DSN
-    would name a port nothing listens on. Neither failure appears until a build is pushed
-    or a campaign is queried.
+    deliberately, since recreating it on every setup would restart the registry for nothing.
+    The cost is that a live pod missing a container does not gain it by re-running setup,
+    and would otherwise carry on looking healthy: the service would come up and its Ingress
+    would route ``/v2`` at a container that is not there. That failure does not appear until
+    a build is pushed.
 
     *pod* is a ``V1Pod`` (or ``None`` for "no such pod"), so the caller decides what an
     unreadable cluster means.
@@ -214,7 +186,7 @@ def missing_infrastructure(pod) -> list:
 
 
 def carries_an_object_store(pod) -> bool:
-    """Whether a **live** pod runs an object-store container beside the registry and index.
+    """Whether a **live** pod runs an object-store container beside the registry.
 
     Campaigns live on the service's results volume, and nothing reads such a store: a
     deployment whose pod carries one keeps its campaigns where the service does not
@@ -233,14 +205,12 @@ def refuse_a_pod_on_the_wrong_node(namespace, node_labels):
 
     ``apply_manifests`` tolerates a 409 and **keeps** the existing object, so a changed
     ``nodeSelector`` does not take effect: setup would print "completed successfully" over
-    a pod still on the old node, with the registry blobs and the index on a machine nobody
-    chose. Checked before the apply rather than reported afterwards, because a placement
+    a pod still on the old node, with the registry blobs on a machine nobody chose. Checked before the apply rather than reported afterwards, because a placement
     that is announced and not applied is the failure the placement label exists to remove.
 
-    Recreating the pod costs nothing durable: the registry and the index are on the node
-    directories or the claims they were given, and a pod recreated on the same node finds
-    them again; on another node the registry starts empty and the index is re-ingested
-    from the results volume.
+    Recreating the pod costs nothing durable: the registry is on the node directory or the
+    claim it was given, and a pod recreated on the same node finds it again; on another node
+    the registry starts empty and images are rebuilt on demand.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
 
@@ -256,12 +226,11 @@ def refuse_a_pod_on_the_wrong_node(namespace, node_labels):
     if all(selector.get(k) == v for k, v in node_labels.items()):
         return
     raise RuntimeError(
-        f"the {STORE_POD_NAME} pod (registry and index) is already running on node "
+        f"the {STORE_POD_NAME} pod (the registry) is already running on node "
         f"{pod.spec.node_name} and cannot be moved by re-applying its manifest -- an "
         f"existing pod is kept as it is, so the new placement would be reported but never "
         f"take effect. Delete it (`kubectl delete pod {STORE_POD_NAME} -n {namespace}`) or "
-        f"run `vast cluster cleanup` first. Built images are rebuilt on demand and the index "
-        f"is re-ingested from the campaigns on the results volume; the campaigns themselves "
+        f"run `vast cluster cleanup` first. Built images are rebuilt on demand; the campaigns "
         f"are not in this pod.")
 
 

@@ -31,6 +31,7 @@ handler                table                             rows
 :class:`Rosout`        ``rosout``                        one per log message at or above a level
 :class:`Clock`         ``clock_map``                     the decimated wall -> sim samples
 :class:`Costmaps`      ``costmaps``                      one per occupancy grid, cells compressed
+:class:`Videos`        ``videos``                        one per encoded camera topic
 =====================  ===============================  ==========================================
 
 **One clock per run.** ``timestamp`` is the bag's receive time -- in seconds, except in a
@@ -41,9 +42,15 @@ on it. A topic's own stamp, where it has one, is kept beside it under its own na
 from __future__ import annotations
 
 import base64
+import contextlib
 import math
+import os
+import re
+import shutil
+import subprocess
+import tempfile
 import zlib
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -419,5 +426,109 @@ class Costmaps(Handler):
         })
 
 
+# -- camera video ------------------------------------------------------------------------------
+
+class Videos(Handler):
+    """Each configured ``CompressedImage`` topic encoded to a WebM file beside the recording.
+
+    The file lands in the run directory, named after the recording and the topic, and a row
+    in ``videos`` says which topic it holds and what span of the run: the camera panel plays
+    it, and a frame is decoded from it on request.
+
+    * **Frames are spooled to disk, not held in memory.** The rate cannot be chosen until the
+      last stamp is known, so the frames outlive the read; a 25 fps camera over half an hour
+      is gigabytes of JPEG. Only each frame's length and stamp stays resident.
+    * **The rate is constant**: ``(n - 1) / duration`` puts the first and last frames at their
+      recorded moments.
+    * **The keyframe interval is pinned** (``-g``), so a seek decodes from at most two seconds
+      back -- seeking is what the panel does.
+
+    Encoding needs ``ffmpeg`` where the table is built; without it the table fails with that
+    reason rather than coming out empty. So does a named topic that gave no frame.
+    """
+
+    TABLE = "videos"
+    FIELDNAMES = ["topic", "file", "t_start", "t_end", "fps", "frames"]
+    DEFAULT_FPS = 30.0
+    KEYFRAME_SECONDS = 2.0
+
+    def __init__(self, streams: Sequence[Tuple[str, float]]):
+        super().__init__()
+        self._fps = dict(streams)
+        #: Set by the builder: the run directory the files go to, and the recording's name.
+        self.output_dir: Optional[str] = None
+        self.bag_name = "rosbag2"
+        self._spools: Dict[str, tuple] = {}
+
+    def topics(self):
+        return list(self._fps)
+
+    def tables(self):
+        return [self.TABLE]
+
+    def message(self, topic, msg, typename, log_time):
+        spool = self._spools.get(topic)
+        if spool is None:
+            if self.output_dir is None:
+                raise HandlerError("videos: no run directory to write the video into")
+            handle = tempfile.NamedTemporaryFile(  # pylint: disable=consider-using-with
+                prefix=".webm-frames-", dir=self.output_dir, delete=False)
+            spool = self._spools[topic] = (handle, [], [])
+        data = bytes(msg.data)
+        spool[0].write(data)
+        spool[1].append(len(data))
+        spool[2].append(log_time)
+
+    def end(self, recorded):
+        buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
+        try:
+            # A named topic that gave no frame fails the table, as a required TF frame does:
+            # a camera panel would otherwise say "no video" for a topic that was never there.
+            missing = sorted(t for t in self._fps if t not in self._spools)
+            if missing:
+                raise HandlerError(f"videos: no frames on {', '.join(missing)} in this "
+                                   "recording; check the topic is recorded")
+            if self._spools and shutil.which("ffmpeg") is None:
+                raise HandlerError("videos: ffmpeg is not installed where this campaign's "
+                                   "tables are built")
+            for topic, (handle, sizes, stamps) in sorted(self._spools.items()):
+                buf.add(self._encode(topic, handle, sizes, stamps))
+        finally:
+            for handle, _sizes, _stamps in self._spools.values():
+                handle.close()
+                with contextlib.suppress(OSError):
+                    os.unlink(handle.name)
+            self._spools = {}
+
+    def _encode(self, topic, handle, sizes, stamps) -> dict:
+        n = len(sizes)
+        duration_s = (stamps[-1] - stamps[0]) / 1e9 if n > 1 else 0.0
+        fps = (n - 1) / duration_s if duration_s > 0 else self._fps[topic]
+        name = f"{self.bag_name}_{re.sub(r'[^a-zA-Z0-9]+', '_', topic).strip('_')}.webm"
+        output = os.path.join(self.output_dir, name)
+        command = ["ffmpeg", "-y", "-loglevel", "error",
+                   "-f", "image2pipe", "-vcodec", "mjpeg", "-r", f"{fps:.6f}", "-i", "pipe:0",
+                   "-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0",
+                   "-g", str(max(1, round(fps * self.KEYFRAME_SECONDS))),
+                   "-deadline", "realtime", "-cpu-used", "8", "-threads", "1", output]
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE) as proc:
+            handle.flush()
+            handle.seek(0)
+            try:
+                for size in sizes:
+                    proc.stdin.write(handle.read(size))
+            except BrokenPipeError:
+                pass
+            _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise HandlerError(f"videos: ffmpeg failed on {topic}: "
+                               f"{stderr.decode(errors='replace').strip()[:500]}")
+        # Stamps in seconds, like every other table's, so a moment found in one is directly
+        # comparable here and with the run view's playback clock.
+        return {"topic": topic, "file": name, "t_start": stamps[0] / 1e9,
+                "t_end": stamps[-1] / 1e9, "fps": round(fps, 6), "frames": n}
+
+
 __all__ = ["ActionTopics", "Clock", "Costmaps", "Handler", "HandlerError", "LEVEL_BY_NAME",
-           "Nav2BtLog", "POSE_FIELDNAMES", "Rosout", "TfPoses", "TopicTable"]
+           "Nav2BtLog", "POSE_FIELDNAMES", "Rosout", "TfPoses", "TopicTable", "Videos"]

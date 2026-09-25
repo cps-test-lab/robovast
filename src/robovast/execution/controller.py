@@ -372,9 +372,9 @@ class CampaignController:
         In the ``finally`` of :meth:`run` for the same reasons as
         :meth:`_record_execution_provenance`, and one sharper one: the campaign this exists
         for is the one that DIED. A campaign that fails mid-batch records no ``run`` rows
-        at all and never postprocesses, so it never reaches the index -- and the query
-        interface fetches only ``campaign.db``. Writing here is
-        what makes the evidence reachable by SQL for exactly the campaigns that need it.
+        at all and never postprocesses, and the query engine reads the campaign record from
+        ``campaign.db``. Writing here is what makes the evidence reachable by SQL for exactly
+        the campaigns that need it.
 
         The JSON file stays the record; this is an index into it. Best-effort throughout:
         bookkeeping about a failure must never become a second failure.
@@ -1107,8 +1107,6 @@ class CampaignController:
                     self.backend.run_batch(
                         campaign_data, campaign_root=self.campaign_root, batch_tag=tag,
                         runs=reps, options=self.options)
-                # The tag identifies this conversion: one per repetitions-group, which is
-                # what the conversion Job's name has to be discriminated by.
                 self._run_postprocessing(tag)
 
                 for ps in group:
@@ -1204,228 +1202,53 @@ class CampaignController:
     def _run_postprocessing(self, tag: str = "") -> None:
         """Run search.postprocessing over the campaign root (no-op if none).
 
-        *tag* names which conversion this is (``batch-<n>``, plus ``/reps-<n>`` when a
-        batch has more than one repetitions-group). It becomes the conversion Job's
-        discriminator, without which the second conversion of a campaign silently
-        inherits the first one's completed Job.
+        Runs before each batch is scored, in this process, with the same loader and runner as
+        ``results_processing.postprocessing`` -- so a plugin (entry-point name or local
+        ``./file.py:Class``) that writes per-run ``metrics.csv`` for the extractor runs here
+        exactly as it does at campaign end. The tables it reads are built from the batch's
+        records when it asks for them; its ``rosbags_*`` entries are the decoder's
+        configuration, recorded when the campaign's config was frozen.
 
-        Uses the same loader/runner as ``results_processing.postprocessing`` so a
-        plugin (entry-point name or local ``./file.py:Class``) — e.g. one that
-        writes per-run ``metrics.csv`` for the extractor — runs identically here.
+        *tag* names the batch in the log.
         """
         if not self.postprocessing:
             return
         # Make the workspace's `plugins:` importable here: compose staged them into
-        # <vast_dir>/.robovast_plugins/ but only led sys.path in its *subprocess*, so
-        # this controller process needs them prepended before resolving search
-        # postprocessing plugins (and their deps). Same helper the analysis path uses.
+        # <vast_dir>/.robovast_plugins/ but only led sys.path in its *subprocess*.
         from robovast.common.config_plugins import ensure_plugins_importable
         ensure_plugins_importable(self.vast_dir)
-        # Imported lazily to avoid importing the results_processing stack (and its
-        # heavier deps) unless a search actually configures postprocessing.
+        # Imported lazily to avoid importing the results_processing stack unless a search
+        # actually configures postprocessing.
         from robovast.results_processing.postprocessing import run_postprocessing_commands
-
-        # Deserializing a rosbag needs the image the runs recorded it with, which is why the
-        # campaign-level block dispatches an in-cluster Job rather than importing anything.
-        # A search's block runs every batch; running all of it here launches a named
-        # converter's aux container from the controller, which resolves the image against the
-        # default project instead of the deployment's and exits 1 -- and every plugin after it
-        # reads files that were never written.
-        container, local = split_container_postprocessing(
-            self.postprocessing, config_dir=self.vast_dir)
-        derived_in_pod = False
-        if container:
-            derived_in_pod = self._postprocess_batch_in_cluster(container, local, tag)
-        # A batch whose scoring was cut is a batch cut mid-way: the same verdict as a run
-        # cut mid-batch, and it keeps the loop from scoring a generation whose metrics were
-        # never derived -- which reads as a generation that measured nothing.
+        ok, _entries = run_postprocessing_commands(
+            self.postprocessing, results_dir=self.campaign_root,
+            config_dir=self.vast_dir, output=logger.info,
+            # The RUNS scope: this is part of a batch of the search, so the stop that ends
+            # the runs ends it too.
+            should_stop=stop_checker(self.state, scope=STOP_RUNS))
+        if not ok:
+            logger.warning("Batch postprocessing%s failed; this batch's metrics will be "
+                           "missing and the extractor will say so", f" ({tag})" if tag else "")
+        # A batch whose scoring was cut is a batch cut mid-way: the same verdict as a run cut
+        # mid-batch, and it keeps the loop from scoring a generation whose metrics were never
+        # derived.
         if self.state is not None:
             self.state.raise_if_stopped(
-                f"stopped during the conversion of batch {tag}" if tag else
-                "stopped during this batch's conversion")
-        if local and not derived_in_pod:
-            # Only where the pod did not already do it: on a cluster the batch Job runs
-            # BOTH halves beside the data and sends back the few rows per run they derive,
-            # rather than shipping every per-run track here so this process can derive them.
-            # Running it again here would re-derive from files that are now the Job's own
-            # output.
-            run_postprocessing_commands(
-                local, results_dir=self.campaign_root,
-                config_dir=self.vast_dir, output=logger.info,
-                should_stop=stop_checker(self.state, scope=STOP_RUNS))
-
-    def _postprocess_batch_in_cluster(self, image_cmds: list, local_cmds: list,
-                                      tag: str = "") -> bool:
-        """Postprocess a search batch the way the campaign-level path does; did the pod derive?
-
-        Returns ``True`` when the Job ran the whole pipeline beside the data, so the caller
-        must not derive again here, and ``False`` from a backend that ran only the
-        conversion, leaving the pure-Python half the caller's to run.
-
-        **One Job per conversion.** *tag* discriminates it. Naming the Job after the campaign
-        alone makes the second conversion's create return 409; the wait then reads the FIRST
-        conversion's completed Job and reports "rosbag conversion complete" having converted
-        nothing -- 0 outputs synced, and an extractor that refuses the batch while naming the
-        world as the likely cause.
-
-        The pod delivers what it derived straight into the campaign root before its Job
-        counts as finished, so a CSV is readable the moment the Job is.
-
-        **Derive there, complete later.** The Job runs *local_cmds* -- this batch's own
-        ``search.postprocessing`` half -- beside the data, and sends back only what it
-        derived: a few rows per run, against the per-run tracks they come from. The
-        commands are passed rather than looked up in the pod, because the campaign-level
-        pass reads a DIFFERENT block of the ``.vast`` and a Job left to find its own would
-        run that one. Completing the campaign is not among them: the index ingest, the
-        metadata and the provenance record are the account of a *finished* campaign, and
-        this runs per batch on one that is still growing.
-
-        A failure is reported and does not raise: the extractor decides whether a batch is
-        scorable and refuses loudly when its inputs are missing, which says more than an
-        exception about a Job.
-        """
-        # A bag belonging to a job stopped by hand or invalidated by the runner cannot be
-        # opened, ever, and must not fail the conversion for every job that finished. A
-        # search feels that harder than the campaign-level path it is copied from: one
-        # stopped job stays in the campaign root for the rest of the search, so without
-        # this every *later* batch's conversion fails on it too and nothing scores again.
-        from robovast.common.results_utils import campaign_vast
-        from robovast.results_processing.postprocessing import postprocess_convert_resources
-        from robovast.results_processing.postprocessing_plugins import _interrupted_job_dirs
-        try:
-            run_job, image_for, complete_message, job_role = _conversion_job_runner()
-            ok, message = run_job(
-                self.backend.cluster_config, self.campaign_id, self.campaign_root,
-                os.environ.get("ROBOVAST_NAMESPACE", "default"),
-                image_for(self.campaign_root),
-                image_cmds,
-                # The campaign's data-plane token, which its pods carry: the backend was
-                # built with it by the service, the one process holding the secret.
-                token=getattr(self.backend, "data_token", ""),
-                kube_context=getattr(self.backend, "kube_context", None),
-                # This batch's own conversion, and its own half of the pipeline run in the
-                # pod. Deriving beside the data is what keeps the per-run tracks off the
-                # wire: what comes back is the few rows per run the search scores next.
-                role=job_role.search_batch(tag, local_cmds),
-                tolerate_under=_interrupted_job_dirs(self.campaign_root),
-                # The same sizing the campaign-level conversion uses. A search converts
-                # once per batch, so a conversion left at the default here would be the
-                # one place a campaign's declared figure did not apply -- and it is the
-                # path that runs it most often.
-                convert_resources=postprocess_convert_resources(
-                    str(campaign_vast(self.campaign_root))),
-                admission=getattr(self.backend, "admission", None),
-                # The RUNS scope, not postprocessing's: this conversion is part of a batch
-                # of the search, so the stop that ends the runs ends it too -- unlike the
-                # campaign-level pass, which is what a stopped campaign's finished batches
-                # are still owed.
-                should_stop=stop_checker(self.state, scope=STOP_RUNS))
-            message = complete_message(
-                message,
-                os.path.join(self.campaign_root, "_execution", "postprocessing.log"))
-            logger.info("Batch postprocessing: %s", message)
-            if not ok:
-                logger.warning("Batch postprocessing failed; this batch's metrics will be "
-                               "missing and the extractor will say so: %s", message)
-                return False
-        except Exception as exc:  # pylint: disable=broad-except
-            # RAISED, not warned. A conversion that could not START is a different failure
-            # from one that ran and produced nothing, and reporting them the same way
-            # loses that distinction. The second is the extractor's business -- it refuses the batch and names
-            # what was missing. The first is a broken campaign: every batch will hit it,
-            # nothing will ever score, and the reason is not in the world.
-            #
-            # Warning here instead sends the reader somewhere correct and useless: the
-            # extractor then reports that no run recorded a value and points at the
-            # postprocessing plugins, which are fine, while the cause sits in a warning
-            # further up the log.
-            raise RuntimeError(
-                f"batch postprocessing could not run at all, so no batch of this search can "
-                f"be scored: {exc}. This is not a missing measurement -- the Job was "
-                f"never attempted, and the extractor's own error would name the world "
-                f"instead of this.") from exc
-        # The pod derived, so the caller must not. Reached only on a Job that succeeded:
-        # a failed one returns False above, and the caller then derives from whatever the
-        # pod did deliver rather than skipping the step on the strength of a Job that did
-        # not do it.
-        return True
+                f"stopped during the postprocessing of batch {tag}" if tag else
+                "stopped during this batch's postprocessing")
 
 
 
 # -- builders ---------------------------------------------------------------
 
-def split_container_postprocessing(commands, config_dir: str = "") -> tuple:
-    """Split postprocessing into what needs the campaign's execution image, and what does not.
-
-    Returns ``(container_commands, local_commands)``. The caller runs the container half
-    first, because the local half is what reads its output.
-
-    Which half a command belongs in is the **plugin's** call, via
-    :attr:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin.needs_execution_image`,
-    not a list kept here. A future plugin that needs the image -- another deserializer, a
-    tool only the SUT image carries -- is then dispatched correctly without this function
-    changing; a name list here would silently serve only what existed when it was written.
-
-    The ``rosbags_*`` names are the one thing resolved by name rather than by class, and
-    they have to be: they are not plugins at all but shorthand the orchestrator batches into
-    a single ``rosbags_process`` per bag (so a bag is read once rather than once per
-    handler), exactly as the campaign-level path batches them. The batch map is their
-    declaration.
-
-    A command that cannot be resolved is left local. It will fail loudly where it runs,
-    which is a better message than one invented here about dispatch.
-    """
-    from robovast.results_processing.postprocessing import (ROSBAG_BATCH_NAMES,
-                                                            _batch_rosbags_commands,
-                                                            needs_execution_image)
-    if not commands:
-        return [], []
-
-    def _name(command):
-        return command if isinstance(command, str) else next(iter(command))
-
-    def _needs_image(command) -> bool:
-        return needs_execution_image(command, config_dir)
-
-    def _is_rosbag(command) -> bool:
-        return _name(command) in ROSBAG_BATCH_NAMES or _name(command) == "rosbags_process"
-
-    rosbag_cmds = [c for c in commands if _is_rosbag(c)]
-    # Batched only when there is something to batch: `_batch_rosbags_commands` also injects
-    # the infrastructure-bag handlers, and running those for a campaign that asked for no
-    # bag conversion at all would convert a bag nobody wanted, once per batch.
-    container = list(_batch_rosbags_commands(rosbag_cmds)) if rosbag_cmds else []
-    # Anything else that declares it needs the image travels with them, unbatched: batching
-    # is a rosbag-specific optimisation, not the dispatch rule.
-    container += [c for c in commands if not _is_rosbag(c) and _needs_image(c)]
-    local = [c for c in commands if not _is_rosbag(c) and not _needs_image(c)]
-    return container, local
-
-
-def _conversion_job_runner():
-    """The four cluster helpers a batch conversion needs, resolved in one place.
-
-    A seam rather than three imports at the call site: it keeps the cluster package out
-    of the import path on a local run, and lets a test substitute the whole set without a
-    cluster to run them against.
-
-    ``with_log_pointer`` rides along because a failed Job's message says where to read
-    the conversion error, and whether that place exists is only known once the Job's
-    account has been published.
-    """
-    from robovast.execution.cluster_execution.postprocess_job import (
-        JobRole, campaign_execution_image, run_conversion_job, with_log_pointer)
-    return run_conversion_job, campaign_execution_image, with_log_pointer, JobRole
-
-
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                           campaign_id: str, state=None,
                           options: "RunOptions | None" = None) -> None:
-    """Run analysis postprocessing in-cluster, when the caller asked for it.
+    """Run analysis postprocessing for a cluster campaign, when the caller asked for it.
 
     Called from the builders' ``finally`` **after the store is closed** (so
-    ``campaign.db`` is flushed — the index ingest mirrors it) and **before**
-    :func:`_finalize`.
+    ``campaign.db`` is flushed — the ``runs`` table reads it) and **before**
+    :func:`_finalize`. It runs in this process, beside the campaign on the results volume.
 
     Opt-in via ``RunOptions.postprocess`` (set by ``create_campaign(postprocess=True)``)
     and a no-op otherwise. This is an **option, not an env var**, because the service
@@ -1436,30 +1259,19 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     options = options or RunOptions()
     if not options.postprocess:
         return
-    cluster_config = backend.cluster_config
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
     try:
-        from robovast.execution.cluster_execution.postprocess_job import postprocess_campaign
-        ok, message = postprocess_campaign(
-            cluster_config, campaign_id, campaign_root,
-            options.namespace or os.environ.get("ROBOVAST_NAMESPACE", "default"),
-            token=getattr(backend, "data_token", ""),
-            # The context this backend submitted the campaign's Jobs with; postprocessing
-            # must schedule against the same cluster the runs went to.
-            kube_context=getattr(backend, "kube_context", None),
-            # Publishes stage 2's step lines as the live ``stage`` marker: this phase has no
-            # run counter, so its narration is all a reader has to tell a long step from a
-            # stuck one.
-            state=state,
-            # The queue this backend's own jobs went through. Without it the pod is created
-            # against whatever the cluster has at that instant -- and this runs at the END
-            # of a campaign, when other campaigns have had the whole run to fill it.
-            admission=getattr(backend, "admission", None),
-            # A stop reaches this phase through the same flag the run loop reads. Without
-            # it the flag is only *checked* before this step, so a campaign stopped once
-            # postprocessing has begun converts to the end regardless while its stop
-            # reports itself as done.
+        from robovast.execution.control_server import stage_output_callback
+        from robovast.results_processing.postprocessing import run_postprocessing
+        ok, message = run_postprocessing(
+            results_dir=os.path.dirname(os.path.normpath(campaign_root)),
+            campaign=os.path.basename(os.path.normpath(campaign_root)),
+            # Publishes each step's line as the live ``stage`` marker: this phase has no run
+            # counter, so its narration is all a reader has to tell a long step from a stuck
+            # one.
+            output_callback=stage_output_callback(state, logger.info),
+            # A stop reaches this phase through the same flag the run loop reads.
             should_stop=stop_checker(state),
         )
         logger.info("Analysis postprocessing: %s", message)
@@ -1476,14 +1288,6 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                     state.update(postprocessed=True)
                 state.update(postprocessing_error=None)
                 state.set_phase(Phase.FINISHED)
-            elif ok is None:
-                # The Job is a cluster object that outlives this driver, and ``None`` says
-                # the driver stopped being able to read it -- so nothing about the campaign
-                # is known to be wrong and ``postprocessing_error`` stays unset. Named in
-                # the stage marker instead, which is where a non-terminal report belongs:
-                # a re-run reads the Job and settles it.
-                state.set_phase(Phase.FINISHED,
-                                stage=f"postprocessing outcome unknown: {message}")
             else:
                 # The runs finished — postprocessing is a separate step, so a
                 # postprocessing failure keeps ``phase == finished`` (the runs are
@@ -2087,8 +1891,8 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     finally:
         store.close()
         _campaign_root = os.path.join(results_dir, campaign_id)
-        # After store.close() (campaign.db flushed, which data.db's `runs` table
-        # reads) and before _finalize, so the derived data rides the existing upload.
+        # After store.close() (campaign.db flushed, which the `runs` table is built
+        # from) and before _finalize, so the campaign is finalised with its tables.
         _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)
 
 
@@ -2267,6 +2071,6 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         finally:
             store.close()
             _campaign_root = os.path.join(results_dir, campaign_id)
-            # After store.close() (campaign.db flushed, which data.db's `runs` table
-            # reads) and before _finalize, so the derived data rides the existing upload.
+            # After store.close() (campaign.db flushed, which the `runs` table is built
+            # from) and before _finalize, so the campaign is finalised with its tables.
             _finish_campaign(be, _campaign_root, campaign_id, state, opts, notifier)

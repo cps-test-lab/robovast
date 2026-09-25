@@ -312,8 +312,8 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
     the whole answer in context, and the question -- "is this tool surface worth what it
     costs?" -- is one asked *about* agents rather than by one.
 
-    The record lives in the central index, so it outlives a service restart but not the
-    results store, and it covers a bounded window that the ranking prints.
+    The record is a file on the service's workspaces volume, so it outlives a service
+    restart, and it covers a bounded window that the ranking prints.
     """
     try:
         with service_client(namespace, context) as (client, label):
@@ -326,12 +326,6 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
-
-    # "The record cannot be read" and "nothing has been called" are different answers, and a
-    # reader who is shown an empty table for the first has been told something false.
-    if answer.status != 'ok':
-        raise click.ClickException(
-            f"the MCP call record is unavailable: {answer.detail or answer.status}")
 
     if as_csv:
         writer = csv.writer(sys.stdout)

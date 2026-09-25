@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """``job_links.yaml``, the only way a run's job artifacts can be found.
 
-``iter_run_slices`` resolves a run's job through this manifest and deliberately never through
-the ``job`` symlink (a symlink cannot exist in an object store). So a missing entry is not a
-cosmetic problem: that run gets no ``run_log`` and no ``resource_usage``, and reports only
-"no job_links entry".
+The decoder finds a run's job through this manifest and deliberately never through the ``job``
+symlink (a symlink cannot exist in an object store). So a missing entry is not a cosmetic
+problem: that run gets an empty ``run_log`` and ``resource_usage``, and its build reports
+"no job-link entry".
 
 The manifest is **campaign-level** while it is written **per batch**, which is the whole
 hazard here. A four-batch campaign was found holding entries for its last two batches only.
@@ -19,7 +19,8 @@ import yaml
 from robovast.common import execution
 from robovast.common.execution import (JOB_LINKS_MANIFEST, job_artifact_dir, read_job_links,
                                        write_job_links_manifest)
-from robovast.results_processing import run_slices
+from robovast_decode import build as decode_build
+from robovast_decode import layout
 
 
 def _count_manifest_reads(monkeypatch) -> list:
@@ -36,18 +37,22 @@ def _count_manifest_reads(monkeypatch) -> list:
 
 def test_a_campaign_walk_reads_the_manifest_once(tmp_path, monkeypatch):
     """The manifest holds one entry per run, so a read per run makes resolving a campaign
-    quadratic in its size -- hours of postprocessing for a campaign of ten thousand runs."""
+    quadratic in its size -- a long wait before any table of a large campaign is built."""
     configs = [f"cfg-{i}" for i in range(4)]
     for config in configs:
         for run in range(3):
             (tmp_path / config / str(run)).mkdir(parents=True)
     _write(tmp_path, [_Job(0, [_Item(c, r) for c in configs for r in range(3)])], "batch-0")
+    (tmp_path / "_jobs" / "batch-0" / "job-0").mkdir(parents=True)
 
-    reads = _count_manifest_reads(monkeypatch)
-    slices = list(run_slices.iter_run_slices(tmp_path, run_slices.SliceStats()))
+    reads = []
+    real = layout.job_links
+    monkeypatch.setattr(decode_build, "job_links",
+                        lambda campaign_dir: (reads.append(campaign_dir), real(campaign_dir))[1])
+    runs = decode_build.find_runs(str(tmp_path))
 
-    assert len(slices) == 12
-    assert {Path(s.job_dir) for s in slices} == {tmp_path / "_jobs" / "batch-0" / "job-0"}
+    assert len(runs) == 12
+    assert {Path(r.job_dir) for r in runs} == {tmp_path / "_jobs" / "batch-0" / "job-0"}
     assert len(reads) == 1
 
 

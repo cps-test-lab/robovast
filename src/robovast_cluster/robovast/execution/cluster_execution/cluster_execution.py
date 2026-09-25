@@ -263,7 +263,7 @@ def pod_awaiting_setup(pod, grace: float = BLOCKED_GRACE_SECONDS) -> bool:
     with reason ``PodInitializing``). *grace* is what separates them, so it is applied
     here rather than left to the caller -- :func:`pod_block_reason`'s answers are acted on
     the moment they appear, and a reason that is true of a healthy pod at t=0 would fail a
-    postprocess that was about to succeed.
+    run that was about to start.
     """
     from datetime import datetime, timezone  # noqa: PLC0415
 

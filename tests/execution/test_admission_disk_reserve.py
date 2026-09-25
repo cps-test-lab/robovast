@@ -12,7 +12,6 @@ short, says why, and resumes by itself once space is freed; Jobs already running
 import logging
 import types
 
-from robovast.execution.cluster_execution import postprocess_job as pj
 from robovast.execution.cluster_execution.kubernetes_backend import BatchJobRunner
 from robovast.execution.cluster_execution.node_admission import (CREATED, DISK_WAIT, PLANNED,
                                                                  AdmissionController, Budget,
@@ -95,20 +94,6 @@ def test_no_gate_is_the_queue_as_it_was():
     admission.submit("camp-1", [("job-0", JobSizing(cpu=1.0, memory=1024 ** 3),
                                  lambda node: created.append(0))], started_at=0.0)
     assert admission.drain() == 1 and created == [0]
-
-
-def test_a_postprocess_held_for_disk_says_so_rather_than_that_the_cluster_was_full():
-    """The two want opposite remedies: space freed, not smaller resources."""
-    admission = AdmissionController(_Provider(), budget_ttl=0.0, space_gate=_Gate(_SHORT))
-    manifest = {"metadata": {"name": "pp-job"},
-                "spec": {"template": {"spec": {"containers": [
-                    {"name": "host", "resources": {"requests": {"cpu": "1", "memory": "1Gi"},
-                                                   "limits": {"cpu": "1", "memory": "1Gi"}}}]}}}}
-    ok, _node, message = pj.await_admission(admission, "camp-1", "pp-job", manifest,
-                                            timeout=0.05, poll=0.01)
-    assert not ok
-    assert "90 GB free" in message and "delete campaigns" in message
-    assert "stayed full" not in message and "results_processing.resources" not in message
 
 
 def test_the_campaigns_status_carries_the_wait_and_drops_it_after():

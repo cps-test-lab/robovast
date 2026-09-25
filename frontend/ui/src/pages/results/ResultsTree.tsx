@@ -22,13 +22,13 @@ import { StatusTreeItem } from './StatusTreeItem'
 // renders this same tree -- reuses it verbatim: same key, so react-query serves both from one
 // fetch, and the two surfaces cannot drift onto different rows for the same tree.
 //
-// Takes the campaign rather than its id because a campaign that is still RUNNING has no rows in the
-// index to query -- they are written when postprocessing ingests it -- so its rows are derived from
-// its output directories instead (`previewRuns.ts`). Both branches yield the same row shape, so
-// everything downstream is unaware of which one answered.
+// Takes the campaign rather than its id because the rows of a campaign that is still RUNNING are
+// derived from its output directories instead (`previewRuns.ts`), which say which runs have written
+// a recording to replay. Both branches yield the same row shape, so everything downstream is unaware
+// of which one answered.
 //
 // The mode is part of the KEY, which is what makes the transition safe in both directions: when the
-// campaign finishes, the key changes and react-query fetches the indexed rows by itself. Sharing one
+// campaign finishes, the key changes and react-query fetches the queried rows by itself. Sharing one
 // key would instead serve the Explorer 60 s of verdict-less preview rows for a campaign that now has
 // real verdicts, and require an invalidation somewhere that someone has to remember.
 //

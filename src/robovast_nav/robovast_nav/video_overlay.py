@@ -8,13 +8,14 @@ view draws for the configuration -- the planned path, goal and obstacles its var
 and the markers the campaign's ``map2d`` panel declares -- as an inset in a corner of the video, in
 step with the simulation because both sides carry simulated seconds.
 
-It reads the files postprocessing wrote beside the recording rather than the service, so a run
+It reads the run's tables through :mod:`robovast_data` rather than the service, so a campaign
 fetched to disk is enough::
 
     <campaign>/_transient/configurations.yaml     the planned path, goal and obstacles
     <campaign>/_config/<campaign>.vast            the map2d panel's declared markers
-    <campaign>/<config>/<run>/costmaps.csv        rosbags_costmap_to_csv: the grids, by topic
-    <campaign>/<config>/<run>/poses.csv           rosbags_tf_to_csv: the robot, and any frame a grid is in
+    costmaps table                                rosbags_costmap_to_csv's topics: the grids
+    poses table                                   rosbags_tf_to_csv's frames: the robot, and any
+                                                  frame a grid is in
     <campaign>/<config>/<run>/run.npz             the recording being drawn
 
 The options mirror the ``.vast`` panel binding, so a layer set that works in the web UI works
@@ -31,7 +32,7 @@ them when all three of ``planned_path``/``goal``/``obstacles`` are off.
 
 Nothing here imports roqsim: the overlay is found by name through the entry point and speaks the
 small duck-typed contract roqsim documents (``prepare(width, height, *, state)``, ``draw(frame,
-t)``). What it cannot find, it refuses by file name -- a layer silently left blank would read as
+t)``). What it cannot find, it refuses by table name -- a layer silently left blank would read as
 "nav2 saw nothing here", which is a different claim.
 """
 
@@ -39,21 +40,21 @@ from __future__ import annotations
 
 import base64
 import bisect
-import csv
 import logging
 import math
 import statistics
-import sys
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import yaml
 from PIL import Image, ImageDraw
 
 from robovast.common.panel_bindings import declared_markers
+from robovast_data import QueryError, open_data
 
 from .config_view import GOAL_COLOR, obstacle_markers, path_markers
 
@@ -190,25 +191,37 @@ class PoseTrack:
         return i if self.times[i] - t < t - self.times[i - 1] else i - 1
 
 
-def read_costmaps(path: Path) -> dict[str, GridTopic]:
-    """``costmaps.csv`` by topic. Payloads exceed csv's default field limit, so it is raised."""
-    csv.field_size_limit(sys.maxsize)
+def run_table(run: Path, table: str, needed_for: str) -> pd.DataFrame:
+    """Table *table* of the run at *run*, built on first use; refused by name when absent."""
+    try:
+        data = open_data(str(run))
+    except FileNotFoundError as err:
+        raise NavVideoError(f"overlay 'costmap': {err}") from None
+    try:
+        return data.table(table)
+    except QueryError as err:
+        if "does not exist" not in str(err):
+            raise
+        raise NavVideoError(f"run {run} has no {table} table: {needed_for}") from None
+
+
+def read_costmaps(frame: pd.DataFrame) -> dict[str, GridTopic]:
+    """The ``costmaps`` table's rows by topic, each topic's frames sorted by time."""
     by_topic: dict[str, list[GridRow]] = {}
-    with path.open(newline="") as fh:
-        for row in csv.DictReader(fh):
-            by_topic.setdefault(row["topic"], []).append(
-                GridRow(
-                    t=float(row["timestamp"]),
-                    frame_id=row.get("frame_id") or "",
-                    resolution=float(row["resolution"]),
-                    width=int(row["width"]),
-                    height=int(row["height"]),
-                    origin_x=float(row["origin_x"]),
-                    origin_y=float(row["origin_y"]),
-                    origin_yaw=float(row.get("origin_yaw") or 0.0),
-                    data=row["data"],
-                )
+    for row in frame.to_dict("records"):
+        by_topic.setdefault(row["topic"], []).append(
+            GridRow(
+                t=float(row["timestamp"]),
+                frame_id=row.get("frame_id") or "",
+                resolution=float(row["resolution"]),
+                width=int(row["width"]),
+                height=int(row["height"]),
+                origin_x=float(row["origin_x"]),
+                origin_y=float(row["origin_y"]),
+                origin_yaw=float(row.get("origin_yaw") or 0.0),
+                data=row["data"],
             )
+        )
     out = {}
     for topic, rows in by_topic.items():
         rows.sort(key=lambda r: r.t)
@@ -218,36 +231,28 @@ def read_costmaps(path: Path) -> dict[str, GridTopic]:
     return out
 
 
-def _yaw(qx: float, qy: float, qz: float, qw: float) -> float:
-    return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+def _yaw(qx, qy, qz, qw):
+    return np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
 
-def read_poses(path: Path) -> dict[str, PoseTrack]:
-    """``poses.csv`` by frame: time, position and yaw, in the map frame, sorted by time."""
-    tracks: dict[str, list[tuple[float, float, float, float]]] = {}
-    with path.open(newline="") as fh:
-        for row in csv.DictReader(fh):
-            try:
-                tracks.setdefault(row["frame"], []).append(
-                    (
-                        float(row["timestamp"]),
-                        float(row["position.x"]),
-                        float(row["position.y"]),
-                        _yaw(
-                            float(row["orientation.x"]),
-                            float(row["orientation.y"]),
-                            float(row["orientation.z"]),
-                            float(row["orientation.w"]),
-                        ),
-                    )
-                )
-            except (KeyError, ValueError) as err:
-                raise NavVideoError(f"{path}: a pose row is not readable: {err}") from None
+_POSE_COLUMNS = ("frame", "timestamp", "position.x", "position.y",
+                 "orientation.x", "orientation.y", "orientation.z", "orientation.w")
+
+
+def read_poses(frame: pd.DataFrame, table: str = "poses") -> dict[str, PoseTrack]:
+    """A pose table's rows by frame: time, position and yaw, in the map frame, sorted by time."""
+    if missing := [c for c in _POSE_COLUMNS if c not in frame.columns]:
+        raise NavVideoError(f"the {table} table has no column(s) {', '.join(missing)}")
+    values = frame[list(_POSE_COLUMNS[1:])].apply(pd.to_numeric, errors="coerce")
+    if values.isna().to_numpy().any():
+        raise NavVideoError(f"the {table} table has pose rows that are not numbers")
     out = {}
-    for frame, rows in tracks.items():
-        rows.sort()
-        arr = np.array(rows, dtype=float).reshape(-1, 4)
-        out[frame] = PoseTrack(arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3])
+    for name, rows in values.groupby(frame["frame"], sort=True):
+        rows = rows.sort_values("timestamp", kind="stable")
+        yaw = _yaw(*(rows[c].to_numpy(dtype=float) for c in _POSE_COLUMNS[4:]))
+        out[name] = PoseTrack(rows["timestamp"].to_numpy(dtype=float),
+                              rows["position.x"].to_numpy(dtype=float),
+                              rows["position.y"].to_numpy(dtype=float), yaw)
     return out
 
 
@@ -426,19 +431,18 @@ class CostmapOverlay:
             raise NavVideoError(f"overlay 'costmap': {run} is not a directory")
         self.run = run
         if self.layers is None:
-            self.layers = self._recorded_defaults(run / "costmaps.csv")
+            self.layers = self._recorded_defaults(run)
 
         poses_table = (self.layers.get("poses") or {}).get("table", "poses")
-        poses_path = run / f"{poses_table}.csv"
-        if not poses_path.is_file():
-            raise NavVideoError(
-                f"{poses_path} is missing: the robot's trail and pose come from it. It is written by "
-                "rosbags_tf_to_csv; its frames must include the robot's and any frame a costmap is in."
-            )
-        self._poses = read_poses(poses_path)
+        self._poses = read_poses(
+            run_table(run, poses_table,
+                      "the robot's trail and pose come from it. rosbags_tf_to_csv builds it from "
+                      "the recording; its frames must include the robot's and any frame a "
+                      "costmap is in."),
+            poses_table)
         if self.robot_frame not in self._poses:
             raise NavVideoError(
-                f"{poses_path} has no frame {self.robot_frame!r} (it has: "
+                f"the {poses_table} table has no frame {self.robot_frame!r} (it has: "
                 f"{', '.join(sorted(self._poses)) or 'none'}); pass robot_frame: <frame>."
             )
 
@@ -451,18 +455,15 @@ class CostmapOverlay:
                     f"overlay 'costmap': layer {name!r} names neither a topic nor a file: {binding!r}"
                 )
         if topics:
-            costmaps_path = run / "costmaps.csv"
-            if not costmaps_path.is_file():
-                raise NavVideoError(
-                    f"{costmaps_path} is missing: the {', '.join(sorted(topics))} layer(s) read their "
-                    "grids from it. It is written by rosbags_costmap_to_csv, which must list "
-                    f"{', '.join(sorted(topics.values()))}."
-                )
-            recorded = read_costmaps(costmaps_path)
+            recorded = read_costmaps(run_table(
+                run, "costmaps",
+                f"the {', '.join(sorted(topics))} layer(s) read their grids from it. "
+                "rosbags_costmap_to_csv builds it from the recording, and must list "
+                f"{', '.join(sorted(topics.values()))}."))
             for name, topic in topics.items():
                 if topic not in recorded:
                     raise NavVideoError(
-                        f"{costmaps_path} holds no frames of {topic} (layer {name!r}); it has: "
+                        f"the costmaps table holds no frames of {topic} (layer {name!r}); it has: "
                         f"{', '.join(sorted(recorded)) or 'none'}. Add the topic to "
                         "rosbags_costmap_to_csv, or drop the layer."
                     )
@@ -480,7 +481,8 @@ class CostmapOverlay:
         needed = {r.frame_id for g in self._grids.values() for r in g.rows} - {"map", ""}
         if missing := needed - set(self._poses):
             raise NavVideoError(
-                f"costmap frames are in {', '.join(sorted(missing))}, which {poses_path} does not "
+                f"costmap frames are in {', '.join(sorted(missing))}, which the {poses_table} "
+                "table does not "
                 f"carry (it has: {', '.join(sorted(self._poses))}). Add the frame to "
                 "rosbags_tf_to_csv's frames."
             )
@@ -507,7 +509,7 @@ class CostmapOverlay:
         self._fit(width, height)
 
     @staticmethod
-    def _recorded_defaults(costmaps_path: Path) -> dict:
+    def _recorded_defaults(run: Path) -> dict:
         """The panel's default layers, as far as this run recorded them.
 
         A stated binding is held to the letter; an unstated one means "what the panel would show",
@@ -515,12 +517,10 @@ class CostmapOverlay:
         refusal over the ``/map`` it never had. Which layers were taken is logged, so the choice is
         visible; a run with none of the three is refused naming what it does have.
         """
-        if not costmaps_path.is_file():
-            raise NavVideoError(
-                f"{costmaps_path} is missing: the costmap layers read their grids from it. It is "
-                "written by rosbags_costmap_to_csv, which must list the costmap topics."
-            )
-        recorded = read_costmaps(costmaps_path)
+        recorded = read_costmaps(run_table(
+            run, "costmaps",
+            "the costmap layers read their grids from it. rosbags_costmap_to_csv builds it from "
+            "the recording, and must list the costmap topics."))
         layers = {
             name: binding
             for name, binding in DEFAULT_LAYERS.items()
@@ -529,7 +529,7 @@ class CostmapOverlay:
         if len(layers) == 1:
             wanted = ", ".join(b["topic"] for n, b in DEFAULT_LAYERS.items() if n != "poses")
             raise NavVideoError(
-                f"{costmaps_path} holds none of {wanted}; it has: "
+                f"the costmaps table holds none of {wanted}; it has: "
                 f"{', '.join(sorted(recorded)) or 'none'}. Bind a layer to one of those with "
                 "layers: {<name>: {topic: ...}}, or add the topics to rosbags_costmap_to_csv."
             )
@@ -726,5 +726,6 @@ __all__ = [
     "palette",
     "read_costmaps",
     "read_poses",
+    "run_table",
     "grid_extent",
 ]

@@ -22,26 +22,26 @@ neither can answer "which of these forty runs logged this, and did they fail?", 
 is a join between a log and a run's verdict and a stream has nothing to join to.
 
 The merged ``run_log`` table can (see
-:mod:`robovast.results_processing.run_log`), so this tool is a thin shape over SQL that keeps
+:mod:`robovast_decode.run_log`), so this tool is a thin shape over SQL that keeps
 the *reading* vocabulary identical to the other log tools — ``grep`` / ``min_severity`` /
 ``summarize`` mean exactly what they mean there, because they are the same
 :func:`~robovast.mcp_server.log_view.view_log`.
 
-Cost: the rows live in the central index, so nothing is fetched per campaign any more — a
-campaign is a ``WHERE campaign_id = …`` predicate. What a wide search still costs is the scan:
-``grep`` is a regular expression evaluated over *every* log line of *every* campaign it spans,
-and a campaign's merged log runs to millions of rows. That is what ``max_campaigns`` bounds, and
-why it still defaults low; campaigns are searched newest-first, and every response says which
-campaigns it searched and which it skipped — a partial answer that looked complete would be the
-worst outcome here.
+Cost: each campaign is one query over its own files, and the first query naming a campaign's
+``run_log`` builds it for the runs that do not have it yet. What a wide search costs is the
+scan: ``grep`` is a regular expression evaluated over *every* log line of *every* campaign it
+spans, and a campaign's merged log runs to millions of rows. That is what ``max_campaigns``
+bounds, and why it defaults low; campaigns are searched newest-first, and every response says
+which campaigns it searched and which it skipped — a partial answer that looked complete would
+be the worst outcome here.
 """
 
 import logging
 import re
 
-from robovast.common import log_summary
 from robovast.mcp_server import data_access, log_view, service_access
 from robovast.mcp_server.lacks import lacks
+from robovast_decode import log_summary
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_CAMPAIGNS = 5
 
 #: How many campaigns to look at when resolving a regex. The list is cheap (it is served from
-#: the service's cached index); the *scans* are not, which is what ``max_campaigns`` bounds.
+#: the service's cached listing); the *scans* are not, which is what ``max_campaigns`` bounds.
 _CAMPAIGN_SCAN = 200
 
 #: Rows a summary reads per campaign, regardless of ``limit``. A summary's whole value is the
@@ -95,32 +95,29 @@ def _resolve_campaigns(campaign_id: str, campaign_regex: bool,
 def _shutdown_term() -> str:
     """"This line came before its run's scenario reached a verdict", as SQL.
 
-    The verdict is read from where postprocessing recorded it rather than matched again
-    here: ``scenario_timestamps`` is keyed on ``(config_name, run_id)``, so this is a
-    primary-key lookup per row, and "when did the trial end" keeps one answer across the
-    SQL, the web UI and the stream tools.
+    The verdict is read from where the table build recorded it rather than matched again
+    here: ``scenario_timestamps`` holds one row per ``(config_name, run_id)``, and "when did
+    the trial end" keeps one answer across the SQL, the web UI and the stream tools.
 
     On ``wall_ts`` and not ``sim_time``, because the clock map does not extrapolate: a
     run whose ``/clock`` stopped at shutdown has NULL ``sim_time`` on every line after
     the verdict, so a sim-time comparison would keep exactly the lines this drops. A run
     with no recorded verdict trims nothing — trimming to an invented moment is worse.
     """
-    # Correlated on campaign_id as well as the run: one index holds every campaign, so
-    # without it another campaign's verdict would trim this campaign's lines.
     return ("NOT EXISTS (SELECT 1 FROM scenario_timestamps s "
-            "WHERE s.campaign_id = l.campaign_id "
-            "AND s.config_name = l.config_name AND s.run_id = l.run_id "
+            "WHERE s.config_name = l.config_name AND s.run_id = l.run_id "
             "AND s.wall_ts IS NOT NULL AND l.wall_ts IS NOT NULL "
             "AND l.wall_ts > s.wall_ts)")
 
 
 def _glob_to_regex(pattern: str) -> str:
-    """One glob, as a POSIX regex, anchored at both ends.
+    """One glob, as an RE2 regex, anchored at both ends.
 
-    Postgres runs this pattern, so it may use only what Postgres parses. That rules out
-    ``fnmatch.translate``, whose output carries a scoped inline flag group (``(?s:...)``) and,
-    on newer Pythons, atomic groups: Postgres rejects them, and a rejected pattern is a query
-    that errors rather than one that returns the wrong rows.
+    The query engine runs this pattern with RE2, so it may use only what RE2 parses. That
+    rules out ``fnmatch.translate``, whose output ends in ``\\Z`` and, on newer Pythons,
+    carries atomic groups: RE2 rejects both, and a rejected pattern is a query that errors
+    rather than one that returns the wrong rows. ``^``/``$`` anchor at the ends of the text in
+    RE2 and in Python alike.
 
     Anchored at BOTH ends because REGEXP searches rather than matches: unanchored, ``*-1`` also
     selects ``config-11`` and reports another configuration's runs as this one's.
@@ -146,13 +143,7 @@ def _glob_to_regex(pattern: str) -> str:
         else:
             out.append(re.escape(ch))
         i += 1
-    return r"\A" + "".join(out) + r"\Z"
-
-
-def _campaign_term(campaign_id: str) -> str:
-    """Scope to one campaign. The index holds every campaign's rows in one table, so an
-    unscoped query does not read one campaign's log -- it reads the corpus."""
-    return f"l.campaign_id = {_quote(campaign_id)}"
+    return "^" + "".join(out) + "$"
 
 
 def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, container: str,
@@ -161,9 +152,8 @@ def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, con
     terms = []
     if grep:
         # Pre-checked so an obviously malformed pattern is a message about the pattern rather
-        # than a failed query. It is a courtesy, not a guarantee: REGEXP() is `value ~ pattern`
-        # in Postgres, whose dialect is not Python's, so a pattern accepted here can still be
-        # rejected there.
+        # than a failed query. It is a courtesy, not a guarantee: REGEXP() runs RE2, whose
+        # dialect is not Python's, so a pattern accepted here can still be rejected there.
         try:
             re.compile(grep)
         except re.error as e:
@@ -175,8 +165,8 @@ def _predicates(*, grep: str, min_severity: str, config_filter: str, run_id, con
                 if log_summary.severity_rank(s) >= floor]
         terms.append(f"l.severity IN ({', '.join(_quote(s) for s in keep)})")
     if config_filter:
-        # The same glob vocabulary the campaign tools use, carried by REGEXP: Postgres has no
-        # GLOB operator, so a glob has to reach it as a regex.
+        # The same glob vocabulary the campaign tools use, carried by REGEXP, so the glob
+        # grammar is fnmatch's rather than the SQL engine's.
         terms.append(f"REGEXP({_quote(_glob_to_regex(config_filter))}, l.config_name)")
     if run_id is not None:
         terms.append(f"l.run_id = {int(run_id)}")
@@ -200,23 +190,23 @@ def _rollup_sql(terms: list, limit: int) -> str:
 
     The join is the whole point: it turns "this warning appears" into "this warning appears in
     the four runs that failed and none that passed". ``LEFT JOIN`` so a run missing from
-    ``runs`` still reports its hits rather than disappearing.
+    ``runs`` or ``run_clock`` still reports its hits rather than disappearing.
     """
     where = f" WHERE {' AND '.join(terms)}" if terms else ""
     # Ranked, not `max(severity)`: severity is text, and alphabetically 'error' < 'other' <
     # 'warn', so a plain max over a run holding both an error and an info line reports "warn".
     # The rank mirrors log_summary.SEVERITIES and is mapped back in Python.
     return (
-        f"SELECT l.config_name, l.run_id, r.passed, r.status, r.clock_map_source, "
+        f"SELECT l.config_name, l.run_id, r.passed, r.status, c.clock_map_source, "
         f"count(*) AS hits, min(l.sim_time) AS first_sim_time, min(l.wall_ts) AS first_wall_ts, "
         f"max(CASE l.severity WHEN 'error' THEN 2 WHEN 'warn' THEN 1 ELSE 0 END) "
         f"AS worst_severity_rank, min(l.message) AS example "
         f"FROM run_log l LEFT JOIN runs r "
-        f"ON r.campaign_id = l.campaign_id "
-        f"AND r.config_name = l.config_name AND r.run_id = l.run_id"
-        # The run's own columns are grouped, not aggregated: Postgres requires every selected
-        # column to be one or the other, and they are constant per (config_name, run_id) anyway.
-        f"{where} GROUP BY l.config_name, l.run_id, r.passed, r.status, r.clock_map_source "
+        f"ON r.config_name = l.config_name AND r.run_id = l.run_id "
+        f"LEFT JOIN run_clock c ON c.config_name = l.config_name AND c.run_id = l.run_id"
+        # The run's own columns are grouped, not aggregated: every selected column must be one
+        # or the other, and they are constant per (config_name, run_id) anyway.
+        f"{where} GROUP BY l.config_name, l.run_id, r.passed, r.status, c.clock_map_source "
         f"ORDER BY hits DESC, l.config_name, l.run_id LIMIT {int(limit)}"
     )
 
@@ -238,7 +228,9 @@ def _lines_sql(terms: list, limit: int, offset: int) -> str:
         f"SELECT l.config_name, l.run_id, l.sim_time, l.wall_ts, l.time_source, l.in_window, "
         f"l.container, l.node, l.source, l.level, l.severity, l.message "
         f"FROM run_log l{where} "
-        f"ORDER BY l.config_name, l.run_id, l.sim_time IS NOT NULL, l.sim_time, l.wall_ts "
+        # `seq` is the merge's own order within a run: wall order, with ties broken the same
+        # way every time, so a page neither repeats a line nor drops one.
+        f"ORDER BY l.config_name, l.run_id, l.seq "
         f"LIMIT {int(limit)} OFFSET {int(offset)}"
     )
 
@@ -281,8 +273,8 @@ def _as_line(row: dict) -> str:
     return f"[{level}] [{when}] [{node}]: {head}"
 
 
-# A plain ``def``: every step below queries the service or the index, and FastMCP runs a
-# sync tool on a worker thread -- an ``async def`` with nothing to await runs on the loop.
+# A plain ``def``: every step below queries the service or the campaign's files, and FastMCP
+# runs a sync tool on a worker thread -- an ``async def`` with nothing to await runs on the loop.
 @lacks(tail="narrow with limit, or page the run_log table with query_campaign_data_sql",
         top="summarize=True gives the most frequent line patterns",
         offset="narrow with limit, or page the run_log table with query_campaign_data_sql")
@@ -306,10 +298,9 @@ def search_run_logs(
     """Which runs logged this? Searches the merged per-run log, across runs and campaigns.
 
     The log is every container's output joined with ``/rosout``, on the run's playback clock, so
-    ``t0``/``t1`` are sim-time seconds of the *trial*. For one live or just-finished run use
-    ``get_job_log`` (this needs postprocessing); for build/controller phases,
-    ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` / ``summarize`` /
-    ``hide_shutdown`` mean the same in all of them, defaults included.
+    ``t0``/``t1`` are sim-time seconds of the *trial*. For one live run use ``get_job_log``;
+    for build/controller phases, ``get_campaign_log``. ``grep`` (regex) / ``min_severity`` /
+    ``summarize`` / ``hide_shutdown`` mean the same in all of them, defaults included.
 
     Args:
         campaign_id: Campaign id or path; a regex over ids when *campaign_regex*.
@@ -367,14 +358,13 @@ def search_run_logs(
     for cid in campaigns:
         # A summary reads far more rows than it returns, because it returns counts.
         scan = _SUMMARY_SCAN if summarize else limit + offset
-        scoped = [_campaign_term(cid)] + terms + (
-            [_shutdown_term()] if hide_shutdown else [])
+        scoped = terms + ([_shutdown_term()] if hide_shutdown else [])
         sql = (_rollup_sql(scoped, limit) if group_by_run and not summarize
                else _lines_sql(scoped, scan, 0))
         result = data_access.query(cid, sql, max(1, scan))
         if "error" in result:
-            # A campaign with no run_log (postprocessed before the merge existed, or still
-            # running) is skipped by name, never counted as "nothing matched".
+            # A campaign with no run_log (no run in it recorded a log line) is skipped by
+            # name, never counted as "nothing matched".
             skipped.append({"campaign_id": cid, "reason": result["error"][:200]})
             continue
         rows = result.get("rows") or []

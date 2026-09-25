@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .handlers import (LEVEL_BY_NAME, ActionTopics, Clock, Costmaps, Handler, Nav2BtLog, Rosout,
-                       TfPoses, TopicTable)
+                       TfPoses, TopicTable, Videos)
 from .values import DEFAULT_CLOCK_TOLERANCE_S
 
 #: The scenario recording, below a run, and the infrastructure recording, below a job.
@@ -83,6 +83,7 @@ class Plan:
 def _configured(plugins: Iterable[dict]) -> List[Handler]:
     """Handlers from the ``.vast``'s own entries for one recording."""
     out = []
+    videos = []
     for cfg in plugins:
         kind = cfg.get("type", "")
         if kind == "tf_to_csv":
@@ -101,9 +102,13 @@ def _configured(plugins: Iterable[dict]) -> List[Handler]:
         elif kind == "clock_to_csv":
             out.append(Clock(float(cfg.get("tolerance_s", DEFAULT_CLOCK_TOLERANCE_S))))
         elif kind == "to_webm":
-            continue        # a video is a file made at run end, not a table
+            # One handler for every camera: one table, and the registry maps a table to one.
+            videos.append((cfg.get("topic", "/camera/image_raw/compressed"),
+                           float(cfg.get("fps", Videos.DEFAULT_FPS))))
         else:
             raise ValueError(f"unknown decoder handler type {kind!r}")
+    if videos:
+        out.append(Videos(videos))
     return out
 
 

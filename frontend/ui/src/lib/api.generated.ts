@@ -762,9 +762,9 @@ export interface paths {
          *     agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
          *
          *     ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
-         *     whole search arm. It is a parameter rather than the default because the index
-         *     holds every campaign: a query that spans them by *omission* returns rows of the
-         *     right shape from the wrong experiment, and nothing about the reply says so.
+         *     whole search arm. It is a parameter rather than the default because a query that
+         *     spans campaigns by *omission* returns rows of the right shape from the wrong
+         *     experiment, and nothing about the reply says so.
          */
         post: operations["query_campaign_data_sql_campaigns__campaign_id__query_post"];
         delete?: never;
@@ -1050,6 +1050,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/tables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Clear Campaign Tables
+         * @description Remove one campaign's built tables to free storage; each is built again on use.
+         */
+        delete: operations["clear_campaign_tables_campaigns__campaign_id__tables_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/tables/build": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build Campaign Tables
+         * @description Build a finished campaign's tables now; never needed, since each is built on use.
+         */
+        post: operations["build_campaign_tables_campaigns__campaign_id__tables_build_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/track_deviation": {
         parameters: {
             query?: never;
@@ -1110,15 +1150,12 @@ export interface paths {
         };
         /**
          * Download Campaign Archive
-         * @description Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
+         * @description Stream the campaign as a ``tar.gz``.
          *
-         *     Backs ``vast campaign download``, the web UI's download button and the
-         *     postprocessing pod's stage, which asks for the plain tar, being in the cluster.
-         *     What comes out is the campaign as this service holds
-         *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
-         *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags``,
-         *     ``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads
-         *     (:class:`ArchiveSelection`).
+         *     Backs ``vast campaign download`` and the web UI's download button. What comes out
+         *     is the campaign's records as this service holds them -- postprocessed if it has
+         *     been, raw if it has not -- never its table cache: derived data is an addition to a
+         *     campaign, never the condition for reading one.
          *
          *     Nothing is buffered and no scratch is used: the tree is tarred into the response
          *     as it is read. Decisive for campaigns that run to terabytes.
@@ -1964,6 +2001,21 @@ export interface components {
             op: string | null;
         };
         /**
+         * BuildCampaignTablesRequest
+         * @description Build a finished campaign's tables now rather than when each is first named.
+         *
+         *     Not needed for any answer: a table is built the first time a query, a panel or an
+         *     export names it. This only moves that cost to now, for a campaign about to be analyzed
+         *     at length. ``tables`` names the ones to build; empty builds every table its records can
+         *     give.
+         */
+        BuildCampaignTablesRequest: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Tables */
+            tables?: string[];
+        };
+        /**
          * BuildImageRequest
          * @description Build the derived images a workspace project's containers declare.
          *
@@ -2231,6 +2283,19 @@ export interface components {
             started_at: string | null;
         };
         /**
+         * CampaignTablesCleared
+         * @description What clearing one campaign's built tables removed. Each is built again on use.
+         */
+        CampaignTablesCleared: {
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Freed Bytes
+             * @default 0
+             */
+            freed_bytes: number;
+        };
+        /**
          * CampaignVisualization
          * @description One ``evaluation.visualization`` notebook workload + the node levels it
          *     defines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).
@@ -2361,7 +2426,7 @@ export interface components {
         };
         /**
          * DataDescribe
-         * @description Schema of a campaign's tables in the index (+ the ``campaign`` schema).
+         * @description Schema of a campaign's tables, views and ``campaign`` record.
          *
          *     Each ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in
          *     every dump it appears in.
@@ -2408,6 +2473,8 @@ export interface components {
          * @description One queryable table, as :meth:`describe_campaign_data` reports it.
          */
         DataTable: {
+            /** Built */
+            built: number | null;
             /** Column Notes */
             column_notes: {
                 [key: string]: unknown;
@@ -2419,8 +2486,19 @@ export interface components {
              * @default
              */
             description: string;
+            /** Failed */
+            failed: {
+                [key: string]: unknown;
+            };
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
             /** Rows */
             rows: number | null;
+            /** Runs */
+            runs: number | null;
             /**
              * Schema
              * @default
@@ -2902,11 +2980,6 @@ export interface components {
              */
             pending: number;
             /**
-             * Postprocessing
-             * @default 0
-             */
-            postprocessing: number;
-            /**
              * Running
              * @default 0
              */
@@ -3144,11 +3217,6 @@ export interface components {
             /** Calls */
             calls: components["schemas"]["McpCall"][];
             /**
-             * Detail
-             * @default
-             */
-            detail: string;
-            /**
              * Limit
              * @default 0
              */
@@ -3158,11 +3226,6 @@ export interface components {
              * @default 0
              */
             offset: number;
-            /**
-             * Status
-             * @default ok
-             */
-            status: string;
             /**
              * Total
              * @default 0
@@ -3211,17 +3274,8 @@ export interface components {
         /**
          * McpToolStats
          * @description The ranking, plus what the record covers.
-         *
-         *     :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
-         *     no tool has been called yet, or the index that holds the log is unreachable and the
-         *     answer is unknown. A reader that drew the second as the first would be inventing a fact.
          */
         McpToolStats: {
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
             /**
              * Max Age S
              * @default 0
@@ -3232,11 +3286,6 @@ export interface components {
              * @default 0
              */
             max_rows: number;
-            /**
-             * Status
-             * @default ok
-             */
-            status: string;
             /** Tools */
             tools: components["schemas"]["McpToolStat"][];
         };
@@ -6478,6 +6527,72 @@ export interface operations {
             };
         };
     };
+    clear_campaign_tables_campaigns__campaign_id__tables_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignTablesCleared"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    build_campaign_tables_campaigns__campaign_id__tables_build_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuildCampaignTablesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_track_deviation_campaigns__campaign_id__track_deviation_get: {
         parameters: {
             query: {
@@ -6570,13 +6685,7 @@ export interface operations {
     };
     download_campaign_archive_data_campaigns__campaign_id__archive_get: {
         parameters: {
-            query?: {
-                stage?: boolean;
-                skip_bags?: boolean;
-                batch_jobs?: string;
-                uncompressed?: boolean;
-                part?: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 campaign_id: string;

@@ -32,9 +32,9 @@ from pathlib import Path
 
 import yaml
 
-# The one resolver for "this campaign's .vast" — shared with the cluster conversion
-# Job (postprocess_job) and the rest of the service, so there is a single source of
-# truth for which file is the campaign's config.
+# The one resolver for "this campaign's .vast" — shared with postprocessing and the rest
+# of the service, so there is a single source of truth for which file is the campaign's
+# config.
 from robovast.common.results_utils import campaign_vast
 
 logger = logging.getLogger(__name__)

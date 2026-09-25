@@ -23,7 +23,8 @@ code rather than data. Which notes a table earns is decided from its columns:
   shape -- a table converted from a transport has an arrival ``timestamp`` that must not be
   differenced and a ``stamp`` that must, while a table the simulator wrote has one exact clock
   and no ``stamp`` -- and the orientation note;
-* ``runs`` gets the notes its builder declares (:data:`robovast_decode.runs.NOTES`);
+* ``runs`` and the derived tables get the notes their builders declare
+  (:data:`robovast_decode.runs.NOTES`, :data:`robovast_decode.derived.NOTES`);
 * a few columns are noted by name (:data:`STATIC_NOTES`).
 """
 
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable
 
+from robovast_decode.derived import NOTES as DERIVED_NOTES
 from robovast_decode.runs import NOTES as RUNS_NOTES
 from robovast_decode.runs import RUNS_TABLE
 
@@ -100,6 +102,7 @@ def notes_for(table: str, columns: Iterable[str]) -> Dict[str, str]:
            if noted == table and column in columns}
     if table == RUNS_TABLE:
         out.update({c: n for c, n in RUNS_NOTES.items() if c in columns})
+    out.update({c: n for c, n in DERIVED_NOTES.get(table, {}).items() if c in columns})
     clock = pose_clock(columns)
     if clock is not None:
         clock_notes = (_POSE_TRANSPORT_CLOCK_NOTES if clock == "stamp"

@@ -695,10 +695,10 @@ def _camera_panel_problems(raw):
 
     Deliberately shallow: this asks whether *a* video producer is declared, not whether it
     names the right topic. Which topics a scenario records is in the ``.osc``, which is not
-    parsed here — and a wrong topic already fails loudly at postprocessing time with
-    "topic not in bag".
+    parsed here — and a wrong topic fails the ``videos`` table when it is built, naming the
+    topic that gave no frame.
     """
-    from robovast.results_processing.postprocessing import \
+    from robovast.results_processing.campaign_tables import \
         VIDEO_PRODUCER_COMMANDS  # pylint: disable=import-outside-toplevel
 
     problems = []
@@ -958,13 +958,15 @@ def _postprocessing_problems(entries, vast_dir, field_prefix):
     class, not a ``BasePostprocessingPlugin`` — is caught here instead of in a
     controller-pod log after launch. Collect-all: never raises.
 
-    The ``rosbags_*`` command names in ``ROSBAG_BATCH_NAMES`` are not entry points
-    but are transparently rewritten into a batched ``rosbags_process`` call at
-    runtime, so they are accepted here just as the runtime accepts them —
-    otherwise validation would reject configs that actually execute fine.
+    The decoder entries (``rosbags_*``, ``rosbags_process``) configure how the campaign's
+    tables are built rather than naming a plugin, so they are checked as that configuration:
+    a handler type the decoder does not know is reported here, before launch.
     """
-    from robovast.results_processing.postprocessing import (  # pylint: disable=import-outside-toplevel
-        ROSBAG_BATCH_NAMES, resolve_postprocessing_plugin)
+    from robovast.results_processing.campaign_tables import (  # pylint: disable=import-outside-toplevel
+        decoder_groups, is_decoder_command)
+    from robovast.results_processing.postprocessing import \
+        resolve_postprocessing_plugin  # pylint: disable=import-outside-toplevel
+    from robovast_decode.registry import plan_for  # pylint: disable=import-outside-toplevel
 
     problems = []
     for i, command in enumerate(entries or []):
@@ -979,8 +981,14 @@ def _postprocessing_problems(entries, vast_dir, field_prefix):
                 f"mapping): {command!r}",
                 field=f"{field_prefix}[{i}]"))
             continue
-        if name in ROSBAG_BATCH_NAMES:
-            continue  # rewritten to rosbags_process at runtime; not an entry point
+        if is_decoder_command(command):
+            try:
+                for group in decoder_groups([command]):
+                    plan_for(group["bag_dir"], {}, group["plugins"])
+            except (ValueError, KeyError, TypeError) as e:
+                problems.append(_problem("postprocessing", f"{name}: {e}",
+                                         field=f"{field_prefix}[{i}]"))
+            continue
         try:
             resolve_postprocessing_plugin(name, vast_dir)
         except Exception as e:  # noqa: BLE001 - surface any resolution error

@@ -1,4 +1,4 @@
-version: 4
+version: 5
 metadata:
   name: quadrotor_landing
 # Batch-mode example (no search block). Run with:
@@ -45,8 +45,8 @@ results_processing:
 visualization:
   results:
     # Web run-view: replay one run over its own (non-ROS) timeline. The sim writes
-    # trajectory.csv (t,x,z,vx,vz,tilt), which postprocessing loads into the `trajectory`
-    # table; `timeline` points the playback clock at its `t` column. The same generic panels
+    # trajectory.csv (t,x,z,vx,vz,tilt), which is the run's `trajectory` table;
+    # `timeline` points the playback clock at its `t` column. The same generic panels
     # that render nav runs render this one -- no source-specific code.
     run_view:
       panels:

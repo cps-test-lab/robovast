@@ -190,7 +190,7 @@ def test_preparing_a_campaign_from_its_own_config_copies_nothing_onto_itself(tmp
     (config_dir / "scenario.osc").write_text(
         "import osc.helpers\n\nscenario test_scenario:\n    timeout(10s)\n"
         "    do serial:\n        wait elapsed(1s)\n")
-    (config_dir / "camp.vast").write_text("version: 4\n")
+    (config_dir / "camp.vast").write_text("version: 5\n")
     (config_dir / "files").mkdir()
     (config_dir / "files" / "params.yaml").write_text("a: 1\n")
 

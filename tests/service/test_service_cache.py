@@ -18,7 +18,7 @@ from robovast.common.errors import InsufficientStorageError
 from robovast.service import scene_cache
 from robovast.service.app import build_app
 from robovast.service.interface import DiskSpace, Routes
-from robovast.service.service_base import SCENE_CACHE
+from robovast.service.service_base import SCENE_CACHE, TABLE_CACHE
 from robovast.common.disk_reserve import RESERVE_ENV
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
@@ -59,7 +59,8 @@ def test_a_report_measures_and_removes_nothing(transport, scenes):
 
     report = transport.service_cache()
 
-    assert [(c.name, c.size_bytes, c.entries) for c in report.caches] == [(SCENE_CACHE, 1500, 2)]
+    assert [(c.name, c.size_bytes, c.entries) for c in report.caches] == [
+        (SCENE_CACHE, 1500, 2), (TABLE_CACHE, 0, 0)]
     assert (report.freed_bytes, report.removed_entries) == (0, 0)
     assert (scenes / "world-a").is_dir() and (scenes / "world-b").is_dir()
 
@@ -78,11 +79,40 @@ def test_a_clear_frees_every_entry_no_viewer_is_loading(transport, scenes):
     assert cleared.caches[0].size_bytes == 500, "caches report what remains"
 
 
-def test_the_service_offers_no_cache_of_its_results(transport, tmp_path):
-    """Its results directory is the campaigns' durable home, not a copy of one."""
-    (tmp_path / "results" / "camp-1").mkdir(parents=True)
-    assert [c.name for c in transport.clear_service_cache().caches] == [SCENE_CACHE]
-    assert (tmp_path / "results" / "camp-1").is_dir()
+def _campaign_with_tables(results, name, size):
+    campaign = results / name
+    (campaign / ".cache" / "tables" / "poses").mkdir(parents=True)
+    (campaign / ".cache" / "tables" / "poses" / "cfg.parquet").write_bytes(b"x" * size)
+    (campaign / "campaign.db").write_bytes(b"")
+    (campaign / "cfg" / "0").mkdir(parents=True)
+    (campaign / "cfg" / "0" / "test.xml").write_text("<testsuite/>")
+    return campaign
+
+
+def test_the_table_cache_is_offered_and_the_records_are_kept(transport, tmp_path):
+    """A campaign's built tables are rebuilt from its records on use; the records are its
+    durable home and are never offered."""
+    campaign = _campaign_with_tables(tmp_path / "results", "camp-1", 700)
+    report = transport.service_cache()
+    assert (TABLE_CACHE, 700, 1) in [(c.name, c.size_bytes, c.entries) for c in report.caches]
+
+    cleared = transport.clear_service_cache()
+
+    assert cleared.freed_bytes == 700
+    assert not (campaign / ".cache" / "tables").exists()
+    assert (campaign / "campaign.db").is_file() and (campaign / "cfg" / "0" / "test.xml").is_file()
+
+
+def test_a_campaign_whose_tables_are_being_built_is_kept(transport, tmp_path, monkeypatch):
+    campaign = _campaign_with_tables(tmp_path / "results", "camp-2", 300)
+    monkeypatch.setattr(transport, "_tables_in_use",
+                        lambda cid: "a build of its tables is running" if cid == "camp-2" else "")
+
+    cleared = transport.clear_service_cache()
+
+    assert (campaign / ".cache" / "tables").is_dir()
+    assert [(k.cache, k.name, k.reason) for k in cleared.kept] == [
+        (TABLE_CACHE, "camp-2", "a build of its tables is running")]
 
 
 # -- the refusal points at the cache when a clear would help ------------------------------------

@@ -60,7 +60,7 @@ def _project(tmp_path, configuration, run_files=""):
     block = textwrap.indent(textwrap.dedent(configuration).strip("\n"), "  ")
     vast = tmp_path / "campaign.vast"
     vast.write_text(
-        "version: 4\n"
+        "version: 5\n"
         "metadata: {name: sut-channel}\n"
         "configuration:\n"
         f"{block}\n"
