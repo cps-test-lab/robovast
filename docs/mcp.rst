@@ -855,7 +855,7 @@ owns, with no log reading at all:
        either way.
    * - ``stalled``
      - **Tri-state.** ``true`` once ``progress_age_s`` passes ``progress_deadline_s``
-       (the declared ``execution.timeout`` scaled by ``runs_per_job``); ``false``
+       (the declared ``execution.timeout``); ``false``
        inside it; ``null`` when no verdict is possible — the ``.vast`` declares no
        timeout, ``status`` is not ``running`` (see below), or every job of the current
        batch is queued for cluster capacity, so no run is running and none can complete.
@@ -892,7 +892,7 @@ owns, with no log reading at all:
 
 That backstop is not wasted — it is simply a different job. The cluster *enforces* a per-job
 limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds``), and falls back to an
-hour per packed run when none is declared. Killing late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
+hour when none is declared. Killing late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
 figures are deliberately separate (``job_deadline_seconds``, which falls back, versus
 ``declared_job_seconds``, which does not). A wedged local run with no declared timeout
 therefore stays alive to be inspected — end it with ``stop_campaign``.

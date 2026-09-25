@@ -8,7 +8,7 @@ from robovast.common.common import load_config
 from robovast.common.config_extends import extends_sources, resolve_extends
 
 CAMPAIGN = """\
-version: 5
+version: 6
 execution:
   containers: {scenario: {image: a}}
   runs: 1
@@ -33,13 +33,13 @@ def _load(tmp_path, child, *, base=None):
 
 def test_a_config_without_extends_is_returned_untouched():
     """The whole existing corpus takes this path; passing through must not rewrite it."""
-    config = {"version": 5, "execution": {"runs": 1}}
+    config = {"version": 6, "execution": {"runs": 1}}
     assert resolve_extends(config, "/nowhere/x.vast") is config
 
 
 def test_a_campaign_without_extends_lists_only_itself(tmp_path):
     path = _write(tmp_path, "campaign.vast", CAMPAIGN)
-    assert extends_sources({"version": 5}, str(path)) == [path]
+    assert extends_sources({"version": 6}, str(path)) == [path]
 
 
 def test_every_shipped_vast_passes_through_the_expander_unchanged():
@@ -65,7 +65,7 @@ def test_every_shipped_vast_passes_through_the_expander_unchanged():
 def test_mappings_merge_at_every_depth_and_the_child_wins(tmp_path):
     cfg = _load(
         tmp_path,
-        "version: 5\nextends: base.vast\nexecution:\n  containers:\n"
+        "version: 6\nextends: base.vast\nexecution:\n  containers:\n"
         "    sut: {resources: {cpu: 8}}\n",
         base="execution:\n  containers:\n    scenario: {image: a}\n"
              "    sut: {image: s, resources: {cpu: 2, memory: 4Gi}}\n  runs: 1\n")
@@ -75,7 +75,7 @@ def test_mappings_merge_at_every_depth_and_the_child_wins(tmp_path):
 
 
 def test_the_extends_key_is_consumed(tmp_path):
-    assert "extends" not in _load(tmp_path, "version: 5\nextends: base.vast\n", base=CAMPAIGN)
+    assert "extends" not in _load(tmp_path, "version: 6\nextends: base.vast\n", base=CAMPAIGN)
 
 
 def test_a_chain_resolves_bases_first(tmp_path):
@@ -85,7 +85,7 @@ def test_a_chain_resolves_bases_first(tmp_path):
            "  timeout: 10\n  shm_size: 1Gi\n")
     _write(tmp_path, "b.vast",
            "extends: a.vast\nexecution:\n  timeout: 20\n  shm_size: 2Gi\n")
-    execution = _load(tmp_path, "version: 5\nextends: b.vast\n"
+    execution = _load(tmp_path, "version: 6\nextends: b.vast\n"
                                 "execution:\n  shm_size: 3Gi\n")["execution"]
     assert (execution["runs"], execution["timeout"], execution["shm_size"]) == (1, 20, "3Gi")
 
@@ -93,8 +93,8 @@ def test_a_chain_resolves_bases_first(tmp_path):
 def test_the_chain_is_archived_nearest_last(tmp_path):
     _write(tmp_path, "a.vast", BODY)
     _write(tmp_path, "b.vast", "extends: a.vast\n")
-    child = _write(tmp_path, "campaign.vast", "version: 5\nextends: b.vast\n")
-    assert [p.name for p in extends_sources({"version": 5, "extends": "b.vast"}, str(child))] \
+    child = _write(tmp_path, "campaign.vast", "version: 6\nextends: b.vast\n")
+    assert [p.name for p in extends_sources({"version": 6, "extends": "b.vast"}, str(child))] \
         == ["a.vast", "b.vast", "campaign.vast"]
 
 
@@ -110,7 +110,7 @@ def test_a_child_list_replaces_the_base_list_rather_than_appending(tmp_path, blo
     """The rule people meet first: a list is inherited whole or restated whole."""
     base = BODY + block.replace("log", "camera").replace("rosbags_nav2bt_to_csv",
                                                          "rosbags_to_csv")
-    cfg = _load(tmp_path, "version: 5\nextends: base.vast\n" + block, base=base)
+    cfg = _load(tmp_path, "version: 6\nextends: base.vast\n" + block, base=base)
     node = cfg
     for key in path:
         node = node[key]
@@ -118,7 +118,7 @@ def test_a_child_list_replaces_the_base_list_rather_than_appending(tmp_path, blo
 
 
 def test_a_child_configuration_list_replaces_the_bases_entirely(tmp_path):
-    cfg = _load(tmp_path, "version: 5\nextends: base.vast\nconfiguration:\n- name: mine\n",
+    cfg = _load(tmp_path, "version: 6\nextends: base.vast\nconfiguration:\n- name: mine\n",
                 base=BODY + "configuration:\n- name: theirs\n- name: also-theirs\n")
     assert [c["name"] for c in cfg["configuration"]] == ["mine"]
 
@@ -127,13 +127,13 @@ def test_a_child_configuration_list_replaces_the_bases_entirely(tmp_path):
 
 def test_a_base_beside_the_campaign_is_fine(tmp_path):
     """There is no rule that a base must sit in a subdirectory."""
-    assert _load(tmp_path, "version: 5\nextends: base.vast\n",
+    assert _load(tmp_path, "version: 6\nextends: base.vast\n",
                  base=CAMPAIGN)["execution"]["runs"] == 1
 
 
 def test_a_base_in_a_subdirectory_is_fine(tmp_path):
     _write(tmp_path, "common/base.vast", CAMPAIGN)
-    assert _load(tmp_path, "version: 5\nextends: common/base.vast\n")["execution"]["runs"] == 1
+    assert _load(tmp_path, "version: 6\nextends: common/base.vast\n")["execution"]["runs"] == 1
 
 
 def test_a_base_outside_the_project_directory_is_refused(tmp_path):
@@ -141,17 +141,17 @@ def test_a_base_outside_the_project_directory_is_refused(tmp_path):
     wherever the campaign is not run from this tree."""
     _write(tmp_path, "outside/base.vast", CAMPAIGN)
     with pytest.raises(ValueError, match="outside the campaign's project directory"):
-        _load(tmp_path / "proj", "version: 5\nextends: ../outside/base.vast\n")
+        _load(tmp_path / "proj", "version: 6\nextends: ../outside/base.vast\n")
 
 
 def test_a_missing_base_is_refused_naming_it(tmp_path):
     with pytest.raises(ValueError, match="does not exist"):
-        _load(tmp_path, "version: 5\nextends: nope.vast\n")
+        _load(tmp_path, "version: 6\nextends: nope.vast\n")
 
 
 def test_a_non_string_extends_is_refused(tmp_path):
     with pytest.raises(ValueError, match="must be a path"):
-        _load(tmp_path, "version: 5\nextends: [a.vast, b.vast]\n")
+        _load(tmp_path, "version: 6\nextends: [a.vast, b.vast]\n")
 
 
 # -- refusals that protect the reading ---------------------------------------------
@@ -160,27 +160,27 @@ def test_a_cycle_is_refused_and_the_error_shows_the_chain(tmp_path):
     _write(tmp_path, "a.vast", "extends: b.vast\n")
     _write(tmp_path, "b.vast", "extends: a.vast\n")
     with pytest.raises(ValueError, match="cycle detected") as exc:
-        _load(tmp_path, "version: 5\nextends: a.vast\n")
+        _load(tmp_path, "version: 6\nextends: a.vast\n")
     assert "->" in str(exc.value)
 
 
 def test_a_self_extending_file_is_a_cycle(tmp_path):
     with pytest.raises(ValueError, match="cycle detected"):
-        _load(tmp_path, "version: 5\nextends: campaign.vast\n")
+        _load(tmp_path, "version: 6\nextends: campaign.vast\n")
 
 
 def test_a_version_disagreement_is_refused_naming_both(tmp_path):
     """Inheriting a version silently would validate against one schema what was authored
     against another, with nothing saying so."""
     with pytest.raises(ValueError, match="must agree") as exc:
-        _load(tmp_path, "version: 5\nextends: base.vast\n", base="version: 2\n" + BODY)
+        _load(tmp_path, "version: 6\nextends: base.vast\n", base="version: 2\n" + BODY)
     assert "base.vast" in str(exc.value)
 
 
 def test_a_base_without_a_version_inherits_the_childs(tmp_path):
-    cfg = _load(tmp_path, "version: 5\nextends: base.vast\n",
+    cfg = _load(tmp_path, "version: 6\nextends: base.vast\n",
                 base="execution:\n  containers: {scenario: {image: a}}\n  runs: 4\n")
-    assert cfg["version"] == 5 and cfg["execution"]["runs"] == 4
+    assert cfg["version"] == 6 and cfg["execution"]["runs"] == 4
 
 
 def test_a_partial_base_is_never_validated_on_its_own(tmp_path):
@@ -188,7 +188,7 @@ def test_a_partial_base_is_never_validated_on_its_own(tmp_path):
     base = _write(tmp_path, "base.vast", "results_processing:\n  postprocessing: [x]\n")
     with pytest.raises(ValueError):
         load_config(str(base))
-    cfg = _load(tmp_path, "version: 5\nextends: base.vast\n" + BODY)
+    cfg = _load(tmp_path, "version: 6\nextends: base.vast\n" + BODY)
     assert cfg["results_processing"]["postprocessing"] == ["x"]
 
 
@@ -204,7 +204,7 @@ def _archive(tmp_path, project_vast):
 
 def test_a_campaign_extending_nothing_is_archived_byte_for_byte(tmp_path):
     """Comments and anchors survive because the file is copied, not re-serialised."""
-    text = "version: 5\n# a comment nobody should lose\n" + BODY
+    text = "version: 6\n# a comment nobody should lose\n" + BODY
     config_dir = _archive(tmp_path, _write(tmp_path / "proj", "campaign.vast", text))
     assert (config_dir / "campaign.vast").read_text(encoding="utf-8") == text
 
@@ -215,7 +215,7 @@ def test_the_chain_is_archived_at_the_paths_the_author_gave_it(tmp_path):
     _write(proj, "base.vast", CAMPAIGN)
     _write(proj, "common/mid.vast", "extends: ../base.vast\n")
     config_dir = _archive(tmp_path, _write(proj, "campaign.vast",
-                                           "version: 5\nextends: common/mid.vast\n"))
+                                           "version: 6\nextends: common/mid.vast\n"))
     assert sorted(p.relative_to(config_dir).as_posix()
                   for p in config_dir.rglob("*") if p.is_file()) == \
         [".campaign", "base.vast", "campaign.vast", "common/mid.vast"]
@@ -227,7 +227,7 @@ def test_the_pointer_beats_alphabetical_order(tmp_path):
     proj = tmp_path / "proj"
     _write(proj, "base.vast", CAMPAIGN)
     config_dir = _archive(tmp_path, _write(proj, "campaign.vast",
-                                           "version: 5\nextends: base.vast\n"))
+                                           "version: 6\nextends: base.vast\n"))
     assert sorted(config_dir.glob("*.vast"))[0].name == "base.vast"
     assert campaign_vast(config_dir.parent).name == "campaign.vast"
 
@@ -239,7 +239,7 @@ def test_postprocessing_reads_the_pointer_too(tmp_path):
     proj = tmp_path / "proj"
     _write(proj, "campaign.vast", CAMPAIGN)
     config_dir = _archive(tmp_path, _write(proj, "probe.vast",
-                                           "version: 5\nextends: campaign.vast\n"))
+                                           "version: 6\nextends: campaign.vast\n"))
     assert find_campaign_vast_file(str(config_dir.parent)) == \
         (str(config_dir / "probe.vast"), str(config_dir))
 
@@ -269,7 +269,7 @@ def test_a_base_does_not_make_a_workspace_ambiguous(tmp_path):
     from robovast.service.service_base import _extended_bases
     proj = tmp_path / "proj"
     base = _write(proj, "base.vast", CAMPAIGN)
-    child = _write(proj, "campaign.vast", "version: 5\nextends: base.vast\n")
+    child = _write(proj, "campaign.vast", "version: 6\nextends: base.vast\n")
     assert _extended_bases([base, child], proj) == {base.resolve()}
 
 
@@ -286,5 +286,5 @@ def test_a_half_written_campaign_is_not_mistaken_for_a_base(tmp_path):
     author gets a validation error naming the section rather than 'no .vast file'."""
     from robovast.service.service_base import _extended_bases
     proj = tmp_path / "proj"
-    draft = _write(proj, "draft.vast", "version: 5\nconfiguration:\n- name: a\n")
+    draft = _write(proj, "draft.vast", "version: 6\nconfiguration:\n- name: a\n")
     assert _extended_bases([draft], proj) == set()

@@ -33,7 +33,7 @@ DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
 
 
 def _vast(containers=None):
-    return {"version": 5, "metadata": {"name": "pilot"},
+    return {"version": 6, "metadata": {"name": "pilot"},
             "configuration": [{"name": "config1"}],
             "execution": {"scenario_file": "scenario.osc", "runs": 3,
                           "containers": containers or {"scenario": {"image": "base:1"}}}}
@@ -491,7 +491,7 @@ def test_a_workspace_launch_is_unaffected(svc):
 # -- keys a campaign ran without ---------------------------------------------------
 
 _POOL_KEYS_VAST = """\
-version: 5
+version: 6
 metadata: {name: pilot}
 configuration:
 - name: config1

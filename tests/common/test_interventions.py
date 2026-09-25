@@ -71,21 +71,20 @@ def test_a_resultless_run_of_a_killed_job_is_killed_not_unknown(campaign):
 
 
 def test_a_finished_run_of_a_killed_job_keeps_its_real_verdict(campaign):
-    """The packed-job case: a kill must never overwrite measurement that exists.
+    """A kill must never overwrite measurement that exists.
 
-    With ``runs_per_job > 1`` a job's earlier runs routinely complete before anyone stops
-    it. Marking those ``killed`` would delete real results — which is why ``killed``
-    replaces ``unknown`` and only ``unknown``.
+    A run can finish, verdict written, before its stop lands. Marking it ``killed`` would
+    delete a real result — which is why ``killed`` replaces ``unknown`` and only ``unknown``.
     """
     _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
-    _run(campaign, "cfgA", "1", xml=_FAIL_XML, job_index=0)
-    _run(campaign, "cfgA", "2", job_index=0)  # the one actually in flight
-    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0",
-                      job_name="batch-0-job-0", source="mcp", detail="wedged")
+    _run(campaign, "cfgA", "1", job_index=1)  # the one actually in flight
+    for index in (0, 1):
+        record_intervention(campaign, kind=KIND_KILLED, job_dir=f"_jobs/batch-0/job-{index}",
+                            job_name=f"batch-0-job-{index}", source="mcp", detail="wedged")
 
     statuses = {o["run_id"]: o["status"] for o in read_run_outcomes(campaign / "cfgA",
                                                                    campaign)}
-    assert statuses == {0: "passed", 1: "failed", 2: "killed"}
+    assert statuses == {0: "passed", 1: "killed"}
 
 
 def test_no_ledger_leaves_outcomes_exactly_as_they_were(campaign):

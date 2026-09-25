@@ -13,7 +13,7 @@ would sit.
 import subprocess
 import sys
 
-# The engine: dispatch, lifecycle, packing, status recovery, and the whole
+# The engine: dispatch, lifecycle, jobs, status recovery, and the whole
 # cluster backend. NOT execution_utils (CLI/host-side orchestration), and NOT
 # `cluster_execution.cluster_service` -- it lives under `execution/` because that is
 # where the cluster backend is packaged, but it *is* a service binding and imports the
@@ -22,7 +22,7 @@ _ENGINE_MODULES = [
     "robovast.execution.backends",
     "robovast.execution.controller",
     "robovast.execution.control_server",
-    "robovast.execution.packer",
+    "robovast.execution.jobs",
     "robovast.execution.status_recovery",
     "robovast.execution.cluster_execution.kubernetes_backend",
     "robovast.execution.cluster_execution.cluster_execution",

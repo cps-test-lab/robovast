@@ -380,10 +380,10 @@ def _no_timeout_note(raw_config: dict) -> str:
     Advisory, not a validation error: a campaign with no declared per-run budget is a
     legitimate thing to run.
     """
-    from robovast.common.config import declared_per_run_seconds
+    from robovast.common.config import declared_job_seconds
 
     execution = (raw_config or {}).get("execution") or {}
-    if not isinstance(execution, dict) or declared_per_run_seconds(execution):
+    if not isinstance(execution, dict) or declared_job_seconds(execution):
         return ""
     return ("this project declares no execution.timeout, so no stall verdict is possible "
             "for it — `vast campaign wait` cannot end on one, and get_campaign_status reports "
@@ -3936,12 +3936,6 @@ class ServiceBase(RobovastInterface):
         The container is taken from the file name, which is what
         :func:`~robovast_decode.resource_usage.expected_container_files` already
         encodes: ``resource_usage_<container>.csv``, with ``main`` for the scenario container.
-
-        A packed Job holds several runs under one ``/out``, so the same container appears more than
-        once. The **last** block for a name wins, and the parser then keeps that block's newest
-        tick: the question is what is happening now, and the run still being appended to is the one
-        that answers it. Merging the blocks would put a finished run's processes beside a live
-        one's under a single container.
         """
         blocks: dict = {}
         current = None

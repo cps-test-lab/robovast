@@ -486,7 +486,7 @@ export function DetailsBox({
                           : '') +
                         '. This is the number a smaller CPU reservation moves — halve the pod ' +
                         'and twice as many fit the quota. Counted in runs, which is what the ' +
-                        'data records; a packed job carries several of them.'
+                        'data records.'
                       }
                     />
                   ) : null}

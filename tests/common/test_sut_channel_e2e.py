@@ -60,7 +60,7 @@ def _project(tmp_path, configuration, run_files=""):
     block = textwrap.indent(textwrap.dedent(configuration).strip("\n"), "  ")
     vast = tmp_path / "campaign.vast"
     vast.write_text(
-        "version: 5\n"
+        "version: 6\n"
         "metadata: {name: sut-channel}\n"
         "configuration:\n"
         f"{block}\n"
@@ -248,7 +248,7 @@ def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
     rewritten, and no campaign has to remember to name the file.
     """
     from robovast.common.execution import build_job_parameter_documents
-    from robovast.execution.packer import JobSpec, WorkItem
+    from robovast.execution.jobs import Job
 
     data = _compose(tmp_path, f"""\
         - name: inflation
@@ -266,7 +266,7 @@ def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
     assert len(set(staged.values())) == len(configs), staged
     # ... and what the trial is told is that path, carried rather than rewritten.
     for config in configs:
-        job = JobSpec(items=[WorkItem(config=config, run_number=0)], index=0)
+        job = Job(config=config, run_number=0, index=0)
         document = build_job_parameter_documents(job, "nav")[0]["nav"]
         assert document["params_file"] == "files/nav2_params.yaml"
 

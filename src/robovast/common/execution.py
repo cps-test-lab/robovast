@@ -1020,8 +1020,8 @@ def scenario_env(campaign_data):
     Deliberately *not* here:
 
     - **Path-valued vars** (``SCENARIO_PARAMETER_FILE``, ``OUTPUT_DIR``,
-      ``SCENARIO_OUTPUT_DIR``). Those depend on the mount layout and job packing — the
-      caller owns them.
+      ``SCENARIO_OUTPUT_DIR``). Those depend on the mount layout — the caller owns
+      them.
     - **``SCENARIO_EXECUTION_PARAMETERS``**. The Kubernetes backend derives it from
       ``log_tree``.
     """
@@ -1919,12 +1919,11 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
 
 
 def build_job_parameter_documents(job, scenario_name):
-    """Build scenario-parameter override documents for a packed job.
+    """Build the scenario-parameter override document for a job.
 
-    Produces one YAML document per work item in the job. Each document
-    overrides ``scenario_name``'s parameters for that config and sets the special
-    ``_output_dir`` key to ``<config-name>/<run_number>`` so scenario_execution
-    writes the item's results into robovast's per-config/run layout.
+    The document overrides ``scenario_name``'s parameters for the job's configuration and
+    sets the special ``_output_dir`` key to ``<config-name>/<run_number>`` so
+    scenario_execution writes the run's results into robovast's per-config/run layout.
 
     A file-valued parameter is carried **as the campaign wrote it**. It needs no
     rewriting: a scenario resolves a file parameter against its own directory, which is
@@ -1932,26 +1931,21 @@ def build_job_parameter_documents(job, scenario_name):
     the campaign's -- so the path the campaign wrote already names the cell's file.
 
     Args:
-        job: A :class:`~robovast.execution.packer.JobSpec`.
+        job: A :class:`~robovast.execution.jobs.Job`.
         scenario_name: The scenario name to override (top-level key, matching
             the single-config ``scenario.config`` wrapping).
 
     Returns:
-        list[dict]: One override document per work item, ready to dump as a
-        multi-document YAML for ``--scenario-parameter-file``.
+        list[dict]: The override document, ready to dump as the multi-document YAML
+        ``--scenario-parameter-file`` reads.
     """
-    documents = []
-    for item in job.items:
-        config_data = item.config
-        config_name = config_data.get("name", "")
-        config = config_data.get("config") or {}
-        config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
+    config = job.config.get("config") or {}
+    config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
 
-        # _output_dir is consumed by scenario_execution to place this item's
-        # results; relative paths resolve under -o/--output-dir.
-        config_dict["_output_dir"] = f"{config_name}/{item.run_number}"
-        documents.append({scenario_name: config_dict})
-    return documents
+    # _output_dir is consumed by scenario_execution to place this run's
+    # results; relative paths resolve under -o/--output-dir.
+    config_dict["_output_dir"] = f"{job.config_name}/{job.run_number}"
+    return [{scenario_name: config_dict}]
 
 
 def dump_multi_document_yaml(documents) -> str:
@@ -2000,16 +1994,16 @@ def job_artifact_rel(index, job_prefix="") -> str:
 
 
 def build_job_links(jobs, job_prefix="") -> dict:
-    """Map each work item's ``job`` link to its job's artifact directory.
+    """Map each run's ``job`` link to its job's artifact directory.
 
-    For a packed job ``N`` running config ``C`` at run ``R``, the work item's
-    result dir is ``C/R`` and the job-level artifacts (sysinfo, logs, resource
-    monitor) live in ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
+    For job ``N`` running config ``C`` at run ``R``, the run's result dir is ``C/R``
+    and the job-level artifacts (sysinfo, logs, resource monitor) live in
+    ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
     mapping where the link is ``C/R/job`` and the target is that dir relative to the
     link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts.
 
     Args:
-        jobs: An iterable of :class:`~robovast.execution.packer.JobSpec`.
+        jobs: An iterable of :class:`~robovast.execution.jobs.Job`.
         job_prefix: Batch namespace (e.g. ``"batch-3"``) when runs are executed in
             batches; empty for the flat single-batch layout. Must match the prefix the
             runner actually writes under, or the manifest points at a dir that
@@ -2020,9 +2014,8 @@ def build_job_links(jobs, job_prefix="") -> dict:
     """
     links = {}
     for job in jobs:
-        target = f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
-        for item in job.items:
-            links[f"{item.config_name}/{item.run_number}/job"] = target
+        links[f"{job.config_name}/{job.run_number}/job"] = \
+            f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
     return links
 
 
@@ -2041,8 +2034,8 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
 
     It is accumulated **only when** *job_prefix* namespaces the target, and that is not a
     detail. Unprefixed, a target is ``_jobs/job-<idx>``, an index meaningful only within the
-    call that assigned it: re-running a campaign, or packing it differently, moves ``cfg/1``
-    from ``job-1`` to ``job-0``, and keeping the older entry would aim a run at another run's
+    call that assigned it: re-running a campaign with another configuration list moves
+    ``cfg/1`` to another job index, and keeping the older entry would aim a run at another run's
     artifacts. Prefixed (``_jobs/batch-3/job-0``) it is stable for the life of the campaign,
     and accumulating is then not optional but required. So an unprefixed write replaces,
     which is also what a single-batch campaign — one call, the default — has always done.

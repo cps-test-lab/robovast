@@ -316,11 +316,8 @@ ALTER TABLE campaign ADD COLUMN description TEXT;
 # 3 -> 4: the execution job, and the campaign's own provenance.
 #
 # ``job`` is its own table rather than columns on ``run`` because ``sysinfo.yaml`` is
-# written once per *job*, not per run: a packed multi-config job runs several
-# (config, run) pairs and they share one host record through each run dir's ``job``
-# symlink. A ``run.sysinfo_json`` would repeat the same blob across those runs and
-# destroy the fact that they shared a machine — which is exactly what makes "did the slow
-# runs land together?" answerable.
+# written by the *job*, the unit that ran on a host, and reached from its run through the
+# run dir's ``job`` symlink.
 #
 # The ``campaign`` columns lift ``_execution/execution.yaml`` into the row it describes.
 # They are the fields compared ACROSS campaigns ("which of these ran which image?"), and
@@ -835,9 +832,8 @@ class CampaignStore:
                    ) -> Optional[int]:
         """Record the execution job at *job_dir*, returning its row id.
 
-        Idempotent on ``(campaign_id, job_dir)``: a packed multi-config job is reached
-        once per run that ran inside it, and all of them describe the same host, so the
-        second and later calls resolve to the existing row instead of duplicating it.
+        Idempotent on ``(campaign_id, job_dir)``: a second call for the same job resolves
+        to the existing row instead of duplicating it.
 
         ``sysinfo`` may be ``None`` — a job whose ``sysinfo.yaml`` never appeared still
         gets a row, because *which* job a run belonged to is worth recording even when the

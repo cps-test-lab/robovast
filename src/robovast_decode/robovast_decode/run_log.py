@@ -152,8 +152,8 @@ class MergeStats:
     rows: int = 0
     containers: List[str] = field(default_factory=list)
 
-    #: Counted per RUN by the caller, because a packed job's records are sliced into several
-    #: runs — so it is the one field :meth:`add_job` must not take from a job's stats.
+    #: Counted per RUN by the caller, from the rows it keeps — so it is the one field
+    #: :meth:`add_job` must not take from a job's stats.
     _PER_RUN_FIELDS = ("rows",)
 
     def add_job(self, other: "MergeStats") -> None:
@@ -379,9 +379,8 @@ def collect_job_records(job_dir: str, rosout_rows: Iterable[dict] = (),
 
     *rosout_rows* are the ``rosout`` table's rows for this job.
 
-    One job, not one run: these artifacts are written per job, and a job may run several
-    configurations in sequence (``runs_per_job``). Splitting them per run is
-    :func:`rows_for_window`'s job.
+    These artifacts are written per job, which runs one run; placing them on that run's clock
+    and trial window is :func:`rows_for_window`'s job.
 
     *sole_container* names the one container this campaign runs, when it runs exactly one. A
     rosout row learns its container from its stdout twin, so a row without one has none — and
@@ -445,11 +444,10 @@ def rows_for_window(records: Sequence[LogRecord], clock, *,
     started publishing ``/clock`` (image boot, stack bring-up), which is real output with no
     sim time rather than output at sim time zero.
 
-    ``in_window`` is 0 for a line outside this run's own wall window. In a packed job those
-    lines are the simulator being reset between runs — real output that belongs to *some*
-    run, so it is attributed to the nearest one rather than dropped, and flagged so a query
-    can tell "during this trial" from "while getting ready for it". With no window given
-    (the single-run job) everything is in-window.
+    ``in_window`` is 0 for a line outside this run's own wall window: bring-up, verdict and
+    teardown — real output of the run, kept and flagged so a query can tell "during this
+    trial" from "while getting ready for it". With no window given (a run without a readable
+    ``test.xml``) everything is in-window.
 
     ``seq`` is numbered here, at the one place the merged order exists: *records* arrive in
     it. Numbered per run, from 0, so it means "the nth line of this run".

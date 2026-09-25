@@ -18,7 +18,8 @@
 
 Every container runs ``monitor_resources.py``, which writes one row per process per second
 to ``_jobs/[<batch>/]job-N/resource_usage_<container>.csv`` — a JOB artifact, so it spans
-bring-up, every run the job served, and teardown. This module cuts it to a run.
+bring-up, the job's run, and teardown. This module puts it on the run's clock and marks the
+ticks inside its trial.
 
 Why this is worth a table rather than a file: the cluster gives a job a fixed number
 of cores, and a simulator that starves the stack changes what the stack does. That is a
@@ -31,10 +32,6 @@ Two decisions here that a reader will otherwise want to "fix" back:
 **Rows are grouped by process NAME, not by pid.** Pids churn: a node restarted by a
 respawn is a new pid and the same program. Nothing joins to a pid and no pid is comparable
 across runs, so the name is the key and ``num_pids`` records how many shared it.
-
-**Each tick belongs to exactly one run** (see :mod:`run_slices` for the partition). A sample
-outside this run's claim is another run's CPU. Copying it would make ``SUM`` over a job's runs
-report several times what the job consumed, with nothing anywhere reporting an error.
 """
 
 from __future__ import annotations
@@ -267,9 +264,6 @@ def collect_job_ticks(job_dir: str, expected: Optional[Dict[str, str]],
     ``monitor_resources.py`` dies before it opens the file and the entrypoint backgrounds it
     without checking. It is reported, never inferred away by taking the files that happen to
     be there.
-
-    Window-independent by construction, so a packed job's ticks are read and rolled up once
-    and then sliced per run.
     """
     label = label or os.path.basename(job_dir)
     try:
@@ -322,7 +316,7 @@ def collect_job_ticks(job_dir: str, expected: Optional[Dict[str, str]],
 
 
 def rows_for_slice(ticks: Sequence[Tick], slice_: run_slices.RunSlice) -> List[dict]:
-    """The rows for one run: the ticks it claims, on its clock.
+    """The rows for one run: its job's ticks, on its clock.
 
     ``timestamp`` is NULL where the clock map cannot answer — every tick before the
     simulator started publishing ``/clock`` (image boot, stack bring-up) and every one after
@@ -331,8 +325,6 @@ def rows_for_slice(ticks: Sequence[Tick], slice_: run_slices.RunSlice) -> List[d
     """
     rows: List[dict] = []
     for tick in ticks:
-        if not slice_.claims(tick.wall_ts):
-            continue
         sim = slice_.clock.to_sim(tick.wall_ts) if slice_.clock else None
         marker = slice_.in_window(tick.wall_ts)
         for name, (cpu, mem, pids) in sorted(tick.processes.items()):
@@ -353,12 +345,11 @@ def rows_for_slice(ticks: Sequence[Tick], slice_: run_slices.RunSlice) -> List[d
     return rows
 
 
-def peak_shm(ticks: Sequence[Tick],
-             slice_: run_slices.RunSlice) -> Tuple[Optional[int], Optional[int]]:
+def peak_shm(ticks: Sequence[Tick]) -> Tuple[Optional[int], Optional[int]]:
     """``(peak used, limit in force)`` for one run, or ``(None, None)`` if unmeasured.
 
     The run's high-water mark, which is the figure ``execution.shm_size`` has to cover. Taken
-    over every tick the run claims and **not** filtered to the trial window: a participant
+    over every tick of its job and **not** filtered to the trial window: a participant
     allocates its shared-memory segments as it starts up, and a SIGBUS during bring-up loses
     the run just as completely as one mid-trial.
 
@@ -369,8 +360,6 @@ def peak_shm(ticks: Sequence[Tick],
     used: Optional[int] = None
     total: Optional[int] = None
     for tick in ticks:
-        if not slice_.claims(tick.wall_ts):
-            continue
         used = _max_opt(used, tick.shm_used_bytes)
         total = _max_opt(total, tick.shm_total_bytes)
     return used, total

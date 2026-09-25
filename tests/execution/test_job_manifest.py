@@ -91,7 +91,7 @@ def test_base_manifest_carries_no_external_queue_label_and_has_deadline(monkeypa
     labels = r.manifest["metadata"].get("labels", {})
     assert not [k for k in labels if k.startswith("kueue.x-k8s.io/")], labels
     # Every Job is wall-clock capped so a stuck scenario is force-killed.
-    assert r.manifest["spec"]["activeDeadlineSeconds"] == 30  # per-run * runs_per_job(1)
+    assert r.manifest["spec"]["activeDeadlineSeconds"] == 30  # the declared timeout
 
 
 def test_create_job_manifest_shape(monkeypatch):
@@ -744,7 +744,7 @@ def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatc
         assert [c["name"] for c in spec["containers"]][1:] == [
             pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER]
         env = _env_dict(_main_of(manifest))
-        worlds[job.items[0].config_name] = env["ROQSIM_WORLD"]
+        worlds[job.config_name] = env["ROQSIM_WORLD"]
 
     assert worlds == {"depot": "/config/worlds/depot.yaml",
                       "warehouse": "/config/worlds/warehouse.yaml"}

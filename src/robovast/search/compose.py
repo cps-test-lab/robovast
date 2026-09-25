@@ -16,10 +16,10 @@
 
 """Compose sampled parameter sets into runnable configs.
 
-This is the bridge from search to the existing generation/packing/execution
+This is the bridge from search to the existing generation/execution
 path: each :class:`ParamSet` is turned into one ``configuration`` block, then the
 existing ``generate_scenario_variations`` chain runs to produce
-``campaign_data["configs"]`` — exactly the structure the packer and launchers
+``campaign_data["configs"]`` — exactly the structure the job builder and launchers
 already consume. No rewrite of the variation plugins is required.
 
 How a sampled value reaches a config:

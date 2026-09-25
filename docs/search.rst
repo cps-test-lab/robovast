@@ -33,7 +33,6 @@ A ``search:`` section is self-contained: its configurations are synthesized from
    execution:
      scenario_file: scenario.osc
      runs: 3
-     runs_per_job: 1
 
    search:
      # ---- universal core (every strategy) ----

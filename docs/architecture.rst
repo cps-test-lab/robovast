@@ -293,10 +293,6 @@ Both are produced where the backend already renders a per-job manifest, by the s
 hooks ``apply_backend`` calls -- so a backend cannot answer one thing at composition and
 another at dispatch.
 
-That is also why the packer groups work items by their resolved block: containers start once
-per job and are not restarted between packed items, so a job that mixed two worlds would run
-the second configuration against the first one's compiled model.
-
 Asking the simulator a question
 -------------------------------
 
@@ -878,9 +874,7 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        cores, so a stack held at that ceiling is a competing explanation for what a run did,
        and ruling that out means joining it to ``runs.available_cpus`` and to the behaviour
        itself (``run_validity_view`` answers the ceiling half directly, from
-       ``system_usage``). Unlike ``run_log``, a packed job's ticks are **partitioned**
-       between its runs rather than shared — another run's CPU is not this run's. See
-       :ref:`per-run-resource-usage`.
+       ``system_usage``). See :ref:`per-run-resource-usage`.
    * - ``system.log``, ``controller.log``
      - File + the log tools — the raw bytes, read live and reduced on read
        (``min_severity``, ``summarize`` — see :ref:`mcp-liveness`). What a table holds is

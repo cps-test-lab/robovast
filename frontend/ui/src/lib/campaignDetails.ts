@@ -786,8 +786,7 @@ export interface DetailsTotals {
    *
    *  The number that says whether the sweep is worth running wider, and the one a smaller CPU
    *  reservation moves — halve the pod and twice as many fit the quota. Measured in RUNS, which is
-   *  what the data records; a job with `execution.runs_per_job > 1` carries several of them, so on
-   *  a packed campaign this is above the rate at which jobs are dispatched. */
+   *  what the data records. */
   runsPerMinute: number | null
 }
 

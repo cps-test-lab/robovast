@@ -55,7 +55,7 @@ def _endings(monkeypatch):
 
 
 def _vast(search=None):
-    doc = {"version": 5, "metadata": {"name": "pilot"},
+    doc = {"version": 6, "metadata": {"name": "pilot"},
            "configuration": [{"name": "config1"}],
            "execution": {"scenario_file": "scenario.osc", "runs": 2,
                          "containers": {"scenario": {"image": "base:1"}}}}
@@ -275,7 +275,7 @@ def test_a_config_this_service_cannot_read_is_a_refusal_not_a_crash(tmp_path):
     would make the second half a different experiment from the first.
     """
     root = _campaign(tmp_path, _A, launch={"runs": 1},
-                     vast={"version": 5, "metadata": {"name": "p"}})
+                     vast={"version": 6, "metadata": {"name": "p"}})
 
     _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
 

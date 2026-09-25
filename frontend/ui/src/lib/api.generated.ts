@@ -3100,7 +3100,7 @@ export interface components {
          * @description One execution unit of a campaign's current batch.
          *
          *     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-         *     cluster backend, which may pack several runs. ``job_name`` is the id
+         *     cluster backend, running one run. ``job_name`` is the id
          *     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
          *     human-friendly label (batch/job-index on the cluster).
          */

@@ -23,7 +23,7 @@ def _campaign_tree(tmp_path):
     (run_dir / "nav_metrics.csv").write_text("duration_s,collided\n12.5,0\n")
     (root / "_config").mkdir()
     (root / "_config" / "campaign.vast").write_text(
-        "version: 5\nexecution:\n  containers: {}\n"
+        "version: 6\nexecution:\n  containers: {}\n"
         "results_processing:\n  postprocessing: []\n")
     return root
 

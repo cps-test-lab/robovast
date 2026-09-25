@@ -4,12 +4,9 @@
 
 The two things worth breaking a build over are here. A **damaged** file must not yield a
 tick reporting a fraction of a container's CPU, because that is not a parse error, it is a
-believable wrong number. And a packed job's ticks must be **partitioned**, because a tick
-copied into every run of a job makes every aggregate a multiple of the truth.
+believable wrong number. And a tick outside the trial must be **flagged, not dropped**,
+because bring-up and teardown are the run's too.
 """
-
-import math
-
 
 from robovast_decode import resource_usage, run_log, run_slices
 from robovast_decode.clock_map import NO_CLOCK_MAP, ClockMap
@@ -27,21 +24,12 @@ def _tick(rows, container="robovast", wall=100.0):
     return resource_usage.Tick(wall_ts=wall, container=container, processes=rows)
 
 
-def _slice(tmp_path, *, start=None, end=None, claim_start=-math.inf,
-           claim_end=math.inf, clock=NO_CLOCK_MAP):
-    """A slice for the MEASUREMENT claim, which is all these tests exercise.
-
-    The log claim mirrors it here rather than defaulting on ``RunSlice`` itself: a partition
-    field that defaults to "claims everything" would let a caller that forgot to compute one
-    silently double-count, which is the bug the partition exists to prevent.
-    """
+def _slice(tmp_path, *, start=None, end=None, clock=NO_CLOCK_MAP):
     run_dir = tmp_path / "cfg" / "0"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_slices.RunSlice(
         config_name="cfg", run_dir=run_dir, job_dir=str(tmp_path / "_jobs" / "job-0"),
-        clock=clock, start_epoch=start, end_epoch=end,
-        claim_start=claim_start, claim_end=claim_end,
-        log_claim_start=claim_start, log_claim_end=claim_end)
+        clock=clock, start_epoch=start, end_epoch=end)
 
 
 # -- the container name, which two tables are joined on -----------------------
@@ -175,58 +163,13 @@ def test_an_unexpected_csv_is_ingested_and_flagged(tmp_path):
     assert {t.container for t in ticks} == {"robovast", "ghost"}
 
 
-# -- cutting a job's ticks to one run -----------------------------------------
+# -- a job's ticks as its run's rows -----------------------------------------
 
 
-def test_only_the_ticks_this_run_claims_become_rows(tmp_path):
-    ticks = [_tick({"a": (1.0, 1, 1)}, wall=w) for w in (50.0, 150.0, 250.0)]
-    rows = resource_usage.rows_for_slice(
-        ticks, _slice(tmp_path, claim_start=100.0, claim_end=200.0))
-    assert [r["wall_ts"] for r in rows] == [150.0]
-
-
-def test_a_tick_belongs_to_exactly_one_run_of_a_packed_job(tmp_path):
-    """The invariant the whole partition exists for: SUM over a job's runs is what the job
-    consumed. No tick counted twice, none dropped."""
-    claims = run_slices._claims_for_job(
-        [("cfg/0", 100.0), ("cfg/1", 200.0), ("cfg/2", 300.0)])
-    ticks = [_tick({"a": (1.0, 1, 1)}, wall=w)
-             for w in (10.0, 90.0, 110.0, 190.0, 210.0, 400.0)]
-    claimed = []
-    for _name, (start, end) in claims.items():
-        got = resource_usage.rows_for_slice(
-            ticks, _slice(tmp_path, claim_start=start, claim_end=end))
-        claimed.append({float(r["wall_ts"]) for r in got})
-    union = set().union(*claimed)
-    assert union == {t.wall_ts for t in ticks}          # nothing dropped
-    assert sum(len(c) for c in claimed) == len(union)   # nothing counted twice
-
-
-def test_the_gap_between_two_runs_belongs_to_the_one_starting_up(tmp_path):
-    """The simulator being reset is the NEXT run's bring-up, not the finished one's tail."""
-    claims = run_slices._claims_for_job([("cfg/0", 100.0), ("cfg/1", 200.0)])
-    assert claims["cfg/1"][0] == 100.0
-
-
-def test_a_windowless_run_of_a_packed_job_claims_nothing(tmp_path):
-    """It cannot be placed on the wall clock. A table saying "no data" is honest; one
-    stating another run's numbers is not."""
-    claims = run_slices._claims_for_job([("cfg/0", 100.0), ("cfg/1", None)])
-    start, end = claims["cfg/1"]
-    assert math.isnan(start) and math.isnan(end)
-    rows = resource_usage.rows_for_slice(
-        [_tick({"a": (1.0, 1, 1)}, wall=50.0)],
-        _slice(tmp_path, claim_start=start, claim_end=end))
-    assert rows == []
-
-
-def test_a_single_run_job_without_test_xml_still_gets_its_whole_trace(tmp_path):
+def test_a_run_without_test_xml_still_gets_its_whole_trace(tmp_path):
     """The run killed mid-flight is the one whose resource trace matters most."""
-    claims = run_slices._claims_for_job([("cfg/0", None)])
-    start, end = claims["cfg/0"]
     rows = resource_usage.rows_for_slice(
-        [_tick({"a": (1.0, 1, 1)}, wall=50.0)],
-        _slice(tmp_path, claim_start=start, claim_end=end))
+        [_tick({"a": (1.0, 1, 1)}, wall=50.0)], _slice(tmp_path))
     assert len(rows) == 1
     assert rows[0]["in_window"] == 1
 
@@ -331,7 +274,7 @@ def test_an_unmeasured_pool_is_absent_not_zero(tmp_path):
 def test_the_peak_covers_bring_up_not_just_the_trial_window(tmp_path):
     """A participant allocates its segments as it starts, and a SIGBUS there loses the run.
 
-    So the high-water mark is taken over every tick the run CLAIMS, which includes bring-up,
+    So the high-water mark is taken over every tick of the job, which includes bring-up,
     rather than over the ticks inside the trial window.
     """
     ticks = [
@@ -342,14 +285,4 @@ def test_the_peak_covers_bring_up_not_just_the_trial_window(tmp_path):
     ]
     slice_ = _slice(tmp_path, start=100.0, end=200.0)
     assert [r["in_window"] for r in resource_usage.rows_for_slice(ticks, slice_)] == [0, 1]
-    assert resource_usage.peak_shm(ticks, slice_) == (900_000_000, 1_073_741_824)
-
-
-def test_a_tick_no_run_claims_is_left_out_of_the_peak(tmp_path):
-    """Same partition as the rows: another run's pool is not this run's peak."""
-    ticks = [resource_usage.Tick(wall_ts=50.0, container="robovast",
-                                 processes={"a": (1.0, 1, 1)},
-                                 shm_used_bytes=900_000_000,
-                                 shm_total_bytes=1_073_741_824)]
-    assert resource_usage.peak_shm(
-        ticks, _slice(tmp_path, claim_start=100.0, claim_end=200.0)) == (None, None)
+    assert resource_usage.peak_shm(ticks) == (900_000_000, 1_073_741_824)

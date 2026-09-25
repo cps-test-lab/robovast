@@ -1,4 +1,4 @@
-version: 5
+version: 6
 metadata:
   name: basic_nav_gazebo
   title: Basic nav2 navigation on the Gazebo TurtleBot 4 (Depot)

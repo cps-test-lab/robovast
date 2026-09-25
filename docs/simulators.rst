@@ -425,12 +425,6 @@ its containers after the spec's image. Both were once missing here and the query
 run at all: it asked for an image called ``family``, and once past that it was given a world
 path relative to a directory the container did not have.
 
-**Packing groups by the resolved block.** A job's containers start once and are not restarted
-between packed work items, so one job runs one compiled model; ``runs_per_job > 1`` therefore
-chunks *within* work items that agree on their simulator settings. A campaign whose
-configurations share a world -- every campaign before this existed -- packs exactly as it
-always did.
-
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
 carries ``tf_namespace``), and whether it serves the ``simulation_interfaces`` control

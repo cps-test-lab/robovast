@@ -69,8 +69,7 @@ _SUCCEEDED_RE = re.compile(r"^Scenario '.*?' succeeded\.")
 _FAILED_RE = re.compile(
     r"^[\w.-]*:\s(?:" + "|".join(re.escape(m) for m in FAILURE_MESSAGES) + r")(?:\s|$)")
 
-#: ``Executing scenario '<name>'`` — what ends a suppressed span in a stream that
-#: concatenates several runs.
+#: ``Executing scenario '<name>'`` — what ends a suppressed span in a stream.
 _STARTED_RE = re.compile(r"^Executing scenario '")
 
 #: Both loggers scenario-execution can run under: ``scenario_execution`` (plain) and

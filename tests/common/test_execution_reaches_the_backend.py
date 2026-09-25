@@ -38,7 +38,6 @@ _DECLARED = {
     "timeout": 321,
     "simulation": "some.module:Class",
     "mode": "ros2",
-    "runs_per_job": 2,
     "shm_size": "256Mi",
     # Read by the cluster runner to decide whether a reservation is declared or measured;
     # it must ARRIVE, or a calibrated campaign would silently run fixed.
@@ -64,7 +63,7 @@ def _project(tmp_path):
     declared = yaml.safe_dump(_DECLARED, default_flow_style=False, sort_keys=True)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 5
+        version: 6
         metadata: {name: seam}
         configuration:
         - name: base

@@ -18,7 +18,7 @@
 
 A campaign with a ``search:`` block runs as a closed loop instead of a single
 batch: a :class:`~robovast.search.strategy.SearchStrategy` proposes parameter
-sets, they are composed into configs and executed (reusing the same packing and
+sets, they are composed into configs and executed (reusing the same
 launchers as batch mode), an :class:`~robovast.search.evaluator.Evaluator`
 scores the results, and the strategy is told the outcome so it can propose the
 next generation. The goal is surfacing as many failures / near-failures as

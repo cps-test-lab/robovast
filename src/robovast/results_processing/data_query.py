@@ -430,14 +430,10 @@ _TABLE_DESCRIPTIONS = {
         "One row per log EVENT, every container joined with /rosout, on the run's playback "
         "clock. ORDER BY wall_ts: sim_time is empty wherever the clock map cannot place a "
         "line (before /clock started, after it stopped), so ordering by it silently reorders "
-        "the run. A packed job (execution.runs_per_job > 1) runs several configurations in "
-        "sequence into ONE log, and that log is SPLIT between its runs -- a run's rows are "
-        "its own, so no run shows another configuration's trial. in_window=0 is this run's "
-        "bring-up, verdict and teardown, NOT another run's work; it is not the trial "
+        "the run. in_window=0 is this run's bring-up, verdict and teardown; it is not the trial "
         "boundary either -- a failing run's verdict is stamped ~1ms after the window closes, "
         "so 'WHERE in_window=1' drops it. For where the trial ended join "
-        "scenario_timestamps. A run with no rows either had no locatable job artifacts or "
-        "shares a job and never wrote test.xml."),
+        "scenario_timestamps. A run with no rows had no locatable job artifacts."),
     ("main", "postprocessing_steps"): (
         "How each of this campaign's tables was produced. One row per step: plugin, output, "
         "table_name (the table it became; NULL when the output is not a table), sources_json, "
@@ -446,8 +442,7 @@ _TABLE_DESCRIPTIONS = {
         "table_name='poses'. Use DISTINCT: a step is recorded once per run. A table with "
         "no row here was produced by a step that recorded no provenance."),
     ("campaign", "job"): (
-        "One row per execution job, holding that job's host record. Several runs can share "
-        "one job, so this answers 'did these runs run on the same machine?'. "
+        "One row per execution job, which is one run, holding that job's host record. "
         "sysinfo_json is TEXT holding JSON: sysinfo_json::JSON ->> 'cpu_name', ->> "
         "'available_cpus', ->> 'platform'. ->> yields TEXT, so cast before comparing a number: "
         "CAST(sysinfo_json::JSON ->> 'available_cpus' AS DOUBLE). job_dir is campaign-relative. "
@@ -572,8 +567,7 @@ _TABLE_DESCRIPTIONS = {
         "stepped in-process has none of its own, so its processes are in the 'robovast' "
         "rows). timestamp is sim seconds and is empty outside the clock map's range (boot, "
         "bring-up, after /clock stops), so ORDER BY wall_ts — epoch seconds, what the "
-        "monitor stamped. in_window=0 is bring-up and teardown, not the trial; every tick "
-        "belongs to exactly one run, so SUM over a job's runs is what that job consumed. "
+        "monitor stamped. in_window=0 is bring-up and teardown, not the trial. "
         "Load per container over time: SELECT container, wall_ts, SUM(cpu_percent) FROM "
         "resource_usage WHERE config_name=? AND run_id=? AND in_window=1 GROUP BY 1,2. "
         "shm_used_bytes/shm_total_bytes are the exception to the row grain: /dev/shm is ONE "

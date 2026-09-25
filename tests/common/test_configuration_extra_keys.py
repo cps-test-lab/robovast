@@ -15,7 +15,7 @@ from robovast.common.config import validate_config
 
 
 def _cfg(*entries):
-    return {"version": 5,
+    return {"version": 6,
             "execution": {"containers": {"scenario": {"image": "a"}}, "runs": 1},
             "configuration": list(entries)}
 

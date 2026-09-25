@@ -18,7 +18,7 @@ from robovast.common.campaign_data import write_execution_outcome
 from robovast.results_processing.metadata import MetadataGenerator, generate_campaign_metadata
 
 VAST = """\
-version: 5
+version: 6
 configuration:
 - name: cfg
   parameters:

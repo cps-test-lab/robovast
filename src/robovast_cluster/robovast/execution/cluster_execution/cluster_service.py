@@ -2192,11 +2192,10 @@ class ClusterService(ServiceBase):
         :class:`ServiceBase`'s and shared. Only the target differs, which is the whole reason
         ``exec_in`` takes one.
 
-        Two facts shape it. ``job_name`` here is the **Kubernetes Job** name rather than a run
-        key, so it cannot be turned into ``/out/<config>/<run>``; and a Job may pack several runs,
-        so there is no single run dir to name even in principle. But ``/out`` is *this pod's own*
-        emptyDir, holding only this job's runs -- so naming it is exact rather than vague, and every
-        reader finds the run still being written underneath it, whichever container it is asked in.
+        ``job_name`` here is the **Kubernetes Job** name rather than a run key, so it cannot be
+        turned into ``/out/<config>/<run>``. But ``/out`` is *this pod's own* emptyDir, holding only
+        this job's run -- so naming it is exact rather than vague, and the run dir underneath it is
+        resolved by :meth:`_job_live_run`, whichever container it is asked in.
 
         Raises ``KeyError`` for a job between scheduling and running, or already gone; the callers
         turn that into a stated reason rather than an empty answer.
@@ -2219,9 +2218,8 @@ class ClusterService(ServiceBase):
     def _job_live_run(self, campaign_id: str, job_name: str, target, run_dir: str) -> tuple:
         """``(run_dir, run_key)`` for the run this Job is on. Always resolved, never delegated.
 
-        **Which run a job is on is RoboVAST's question, and it gets answered here.** Answering it
-        only for a Job that packs several runs hands an unpacked one ``/out`` and leaves the readers
-        to find the run underneath it. Both of them can -- ``tree_state`` and ``roqsim health`` each
+        **Which run a job is on is RoboVAST's question, and it gets answered here.** Handing the
+        readers ``/out`` would leave them to find the run underneath it. Both of them can -- ``tree_state`` and ``roqsim health`` each
         search a couple of levels down -- and that is exactly the problem:
 
         * it is two other components modelling *this* layout, and a layout guessed in two places is

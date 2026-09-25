@@ -19,6 +19,7 @@ import yaml
 from robovast.common import execution
 from robovast.common.execution import (JOB_LINKS_MANIFEST, job_artifact_dir, read_job_links,
                                        write_job_links_manifest)
+from robovast.execution.jobs import build_jobs
 from robovast_decode import build as decode_build
 from robovast_decode import layout
 
@@ -42,8 +43,10 @@ def test_a_campaign_walk_reads_the_manifest_once(tmp_path, monkeypatch):
     for config in configs:
         for run in range(3):
             (tmp_path / config / str(run)).mkdir(parents=True)
-    _write(tmp_path, [_Job(0, [_Item(c, r) for c in configs for r in range(3)])], "batch-0")
-    (tmp_path / "_jobs" / "batch-0" / "job-0").mkdir(parents=True)
+    jobs = build_jobs([{"name": c} for c in configs], 3)
+    _write(tmp_path, jobs, "batch-0")
+    for job in jobs:
+        (tmp_path / "_jobs" / "batch-0" / f"job-{job.index}").mkdir(parents=True)
 
     reads = []
     real = layout.job_links
@@ -52,7 +55,8 @@ def test_a_campaign_walk_reads_the_manifest_once(tmp_path, monkeypatch):
     runs = decode_build.find_runs(str(tmp_path))
 
     assert len(runs) == 12
-    assert {Path(r.job_dir) for r in runs} == {tmp_path / "_jobs" / "batch-0" / "job-0"}
+    assert {Path(r.job_dir) for r in runs} == {
+        tmp_path / "_jobs" / "batch-0" / f"job-{i}" for i in range(12)}
     assert len(reads) == 1
 
 
@@ -67,22 +71,10 @@ def test_a_manifest_in_hand_is_resolved_without_reading_the_file(tmp_path, monke
         job_artifact_dir(str(tmp_path), "cfg-b/0", links=links)
 
 
-class _Item:
-    def __init__(self, config_name, run_number):
-        self.config_name = config_name
-        self.run_number = run_number
-
-
-class _Job:
-    """The shape ``build_job_links`` reads: an index and the work items packed into it."""
-
-    def __init__(self, index, items):
-        self.index = index
-        self.items = items
-
-
-def _job(index, *configs):
-    return _Job(index, [_Item(c, 0) for c in configs])
+def _job(index, config):
+    (job,) = build_jobs([{"name": config}], 1)
+    job.index = index
+    return job
 
 
 def _write(campaign, jobs, prefix):
@@ -127,24 +119,12 @@ def test_without_a_base_only_the_current_batch_is_written(tmp_path):
 
 def test_an_unprefixed_write_replaces_because_its_job_index_is_not_stable(tmp_path):
     """The single-batch default: one call writes the whole campaign, and ``_jobs/job-<idx>``
-    is only meaningful within it. Re-running or re-packing moves ``cfg-b/0`` from ``job-1`` to
-    ``job-0``, so accumulating would aim it at ``cfg-a``'s artifacts. Replacing is what this
-    path has always done, and it must stay that way."""
+    is only meaningful within it. Re-running with another configuration list moves ``cfg-b/0``
+    from ``job-1`` to ``job-0``, so accumulating would aim it at ``cfg-a``'s artifacts."""
     _write(tmp_path, [_job(0, "cfg-a"), _job(1, "cfg-b")], "")
     assert read_job_links(str(tmp_path))["cfg-b/0/job"] == "../../_jobs/job-1"
-    _write(tmp_path, [_job(0, "cfg-b")], "")   # re-packed: cfg-b is job-0 now
+    _write(tmp_path, [_job(0, "cfg-b")], "")   # cfg-a dropped: cfg-b is job-0 now
     assert read_job_links(str(tmp_path)) == {"cfg-b/0/job": "../../_jobs/job-0"}
-
-
-def test_a_packed_job_links_every_run_it_serves(tmp_path):
-    """runs_per_job > 1: several configurations share one job dir, so several links point at
-    it. This is what makes one log belong to several runs, and it must survive the merge."""
-    _write(tmp_path, [_job(0, "cfg-a", "cfg-b", "cfg-c")], "batch-0")
-    assert read_job_links(str(tmp_path)) == {
-        "cfg-a/0/job": "../../_jobs/batch-0/job-0",
-        "cfg-b/0/job": "../../_jobs/batch-0/job-0",
-        "cfg-c/0/job": "../../_jobs/batch-0/job-0",
-    }
 
 
 def test_nothing_is_written_when_there_is_nothing_to_write(tmp_path):

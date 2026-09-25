@@ -246,7 +246,7 @@ def _liveness_advisories(config_path):
 
     An **advisory**, never an error: a campaign runs perfectly well without one. What it
     cannot do is be *judged*. ``stalled`` is asserted only against a declared per-run
-    budget (see :func:`~robovast.common.config.declared_per_run_seconds`), so with none
+    budget (see :func:`~robovast.common.config.declared_job_seconds`), so with none
     the verdict is ``null`` forever -- a wedged run and a slow one stay the same picture,
     and ``vast campaign wait`` has nothing to exit 4 on.
 

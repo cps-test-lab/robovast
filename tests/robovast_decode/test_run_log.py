@@ -274,9 +274,8 @@ def test_with_no_clock_map_every_row_is_wall_only():
 
 
 def test_a_line_outside_the_runs_window_is_kept_and_flagged():
-    """In a packed job the lines between two runs are the simulator being reset. They belong
-    to some run, so they are attributed rather than dropped — and flagged, so a query can
-    tell "during the trial" from "getting ready for it"."""
+    """Bring-up and teardown are the run's own output, so they are kept rather than dropped —
+    and flagged, so a query can tell "during the trial" from "getting ready for it"."""
     records = _one_record(100.0) + _one_record(150.0)
     rows = run_log.rows_for_window(records, NO_CLOCK_MAP,
                                    start_epoch=120.0, end_epoch=200.0)

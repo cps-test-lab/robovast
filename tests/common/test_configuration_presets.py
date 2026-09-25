@@ -10,7 +10,7 @@ from robovast.common.config_presets import expand_configuration_presets as expan
 
 
 def _cfg(presets, *entries):
-    return {"version": 5,
+    return {"version": 6,
             "execution": {"containers": {"scenario": {"image": "a"}}, "runs": 1},
             "configuration_presets": presets,
             "configuration": list(entries)}
@@ -27,7 +27,7 @@ def _params(config, channel):
 # -- opting out --------------------------------------------------------------------
 
 def test_a_config_with_no_presets_and_no_use_is_returned_untouched():
-    config = {"version": 5, "configuration": [{"name": "a"}]}
+    config = {"version": 6, "configuration": [{"name": "a"}]}
     assert expand(config) is config
 
 
@@ -131,7 +131,7 @@ def test_an_undefined_preset_is_refused_listing_the_defined_ones():
 
 
 def test_an_undefined_preset_with_no_presets_at_all_says_so():
-    config = {"version": 5, "configuration": [{"name": "c", "use": ["nope"]}]}
+    config = {"version": 6, "configuration": [{"name": "c", "use": ["nope"]}]}
     with pytest.raises(ValueError, match=r"\(none defined\)"):
         expand(config)
 
