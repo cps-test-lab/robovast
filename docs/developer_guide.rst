@@ -236,9 +236,18 @@ Releasing to PyPI
 The five distributions are released as **one set at one version**, because ``robovast``
 requires ``robovast-client`` and ``robovast-sim-roqsim`` at *exactly* the version being
 released, and ``robovast-nav`` and ``robovast-cluster`` require ``robovast``. A version
-that exists for some of them and not the others is a set nobody can install, so the
-version is never edited by hand: ``.github/workflows/publish.yml`` stamps it into every
-manifest from the git tag.
+that exists for some of them and not the others is a set nobody can install, so
+``.github/workflows/publish.yml`` stamps the tag's version into every manifest before it
+builds a wheel. The tree carries the version being released too, set in all five
+``pyproject.toml`` files in the release commit, because the images are built from the tree
+and report the version it names.
+
+**The version's section of ``CHANGELOG.md`` comes first**, written with the ``changelog``
+skill (``skills/changelog/SKILL.md``) from the merges since the previous tag and reviewed
+before it is committed: a few short entries, never more than fifteen, on what a user of the
+previous version would want to hear about, each citing its pull requests as links.
+``skills/changelog/changelog.py check`` holds it to that shape. That section is the release's
+notes; the rest is in the git history.
 
 **Every release goes to TestPyPI first, and is tested by hand there.** An upload cannot be
 taken back — a version can be yanked, never replaced, and ``pip`` still installs a yanked

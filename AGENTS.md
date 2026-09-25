@@ -34,6 +34,10 @@ it by name — never accepts what it will not do.
   still have, are not history and stay.
 - Same for comments, test docstrings, CLI help and shipped examples: a guard keeps its reason
   and loses the incident that produced it.
+- **`CHANGELOG.md` is the one place history lives**: one section per released version,
+  written with the `changelog` skill before the tag and reviewed before it is committed. Its
+  entries follow the rule for a PR — the class of the change and its mechanism, nothing
+  measured on one deployment.
 - **Numbers from one cluster are not documentation.** State the property that holds anywhere
   and the command that produces the reader's own figures.
 - A PR or comment states the rule, not the run that revealed it. Keep a measurement only where

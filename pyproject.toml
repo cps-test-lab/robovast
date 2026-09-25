@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast"
-version = "2.1.0"
+version = "2.2.0"
 description = "Variation Automation and Scalable Testing for Robotic Systems: vary a scenario, run the sweep as recorded simulation runs on Docker or Kubernetes, query the results."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"

@@ -2780,7 +2780,8 @@ class RobovastInterface(ABC):
 
         Refuses while campaigns are live, because the controller driving them runs in the
         pod being replaced. ``force`` overrides that refusal and nothing else -- in
-        particular it does not make an unsupported deployment supported.
+        particular it does not make an unsupported deployment supported, nor roll a deployment
+        pinned to a fixed version, which ``upgrade_info`` reports as unsupported.
         """
 
     # -- workspaces (editable project inputs) -------------------------------

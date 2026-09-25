@@ -4003,7 +4003,7 @@ tests = ["pytest", "pytest-cov"]
 
 [[package]]
 name = "robovast-client"
-version = "2.1.0"
+version = "2.2.0"
 description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
 optional = false
 python-versions = ">=3.12,<3.14"
@@ -4021,7 +4021,7 @@ url = "src/robovast_client"
 
 [[package]]
 name = "robovast-nav"
-version = "2.1.0"
+version = "2.2.0"
 description = "Navigation-specific variation types for RoboVAST"
 optional = true
 python-versions = ">=3.12,<3.14"
@@ -4043,7 +4043,7 @@ url = "src/robovast_nav"
 
 [[package]]
 name = "robovast-sim-roqsim"
-version = "2.1.0"
+version = "2.2.0"
 description = "The roqsim simulator backend for RoboVAST"
 optional = true
 python-versions = ">=3.10,<3.14"
