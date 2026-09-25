@@ -67,11 +67,11 @@ from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
 # dropped, or this replaces a safe refusal with a broken run. Equality was wrong for the use
 # case, but it was wrong in the safe direction. configs/examples/camera_smoke is the cheap
 # way to keep the claim true -- it runs a container and produces an artifact in seconds.
-COMPAT_VERSION = 2
+COMPAT_VERSION = 3
 
 #: The oldest image protocol this host still knows how to drive. Equal to
 #: :data:`COMPAT_VERSION` means "only the current one", which is where equality left us.
-MIN_IMAGE_COMPAT = 2
+MIN_IMAGE_COMPAT = 3
 
 #: Image label carrying the protocol version -- the only marker there is.
 #:
@@ -81,7 +81,7 @@ MIN_IMAGE_COMPAT = 2
 #: the image a year-old campaign recorded, asked from a machine that does not have it.
 #:
 #: An image built before this label existed reports nothing, and `check_image_compat` refuses
-#: rather than guessing. Those images predate protocol 2, which is also `MIN_IMAGE_COMPAT`, so a
+#: rather than guessing. Those images predate protocol 2, below `MIN_IMAGE_COMPAT`, so a
 #: refusal is the right answer for them anyway -- but the message has to say what to do about it,
 #: not merely that it cannot tell.
 COMPAT_VERSION_LABEL = "org.robovast.compat-version"

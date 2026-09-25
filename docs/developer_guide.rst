@@ -357,7 +357,7 @@ means "not applicable" rather than "unreadable" — failing closed on them would
 refuse every campaign that has a SUT.
 
 An image built before the label existed now reports nothing and is refused.  Those
-images predate protocol 2, which is also ``MIN_IMAGE_COMPAT``, so a refusal is the
+images predate protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
 right answer for them regardless — but the message says what to do about it
 (rebuild from the recorded revision, or re-tag with the label) rather than only
 that it could not tell.
