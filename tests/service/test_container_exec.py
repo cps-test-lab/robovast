@@ -887,11 +887,13 @@ def test_an_archived_campaign_is_read_as_archived(tmp_path):
     """A campaign's own ``_config/`` already ran and cannot be edited, so a key the schema
     has since retired changed nothing when it ran. Reading it strictly makes a finished
     campaign unreadable -- and there is no edit its owner could make to satisfy the read."""
+    from robovast.common.migrations.config import SUPPORTED_CONFIG_VERSION
     from robovast.service.container_exec import stage
 
+    # The current version, so the strict read refuses the retired key and not the version.
     vast = tmp_path / "p.vast"
     vast.write_text(
-        "version: 4\n"
+        f"version: {SUPPORTED_CONFIG_VERSION}\n"
         "configuration:\n"
         "- name: only\n"
         "execution:\n"
