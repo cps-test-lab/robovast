@@ -22,7 +22,6 @@ from PIL import Image as PILImage
 
 from robovast.service import data_app
 from robovast.service.app import build_app
-from tests.service.null_service import NullService
 from robovast.service.data_app import build_data_app
 from robovast.service.interface import Routes
 from robovast.service.live import LiveCampaigns
@@ -31,6 +30,7 @@ from tests.robovast_decode.conftest import NAV_CONFIG, make_campaign
 from tests.robovast_decode.test_frames import (COMPRESSED, TOPIC, closed_bag, compressed,
                                                fixture_span, image_bag, jpeg)
 from tests.robovast_decode.test_live import GrowingBag, cuts
+from tests.service.null_service import NullService
 
 from .conftest import TEST_TOKEN
 from .test_live_route import _events
