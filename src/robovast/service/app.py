@@ -56,6 +56,7 @@ from robovast.service.interface import (ActionResult, BuildCampaignTablesRequest
                                         EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
                                         UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
+                                        ExportRef, ExportRequest, ExportStatus,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
                                         CampaignSortKey, SortOrder,
@@ -1828,6 +1829,18 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def clear_campaign_tables(campaign_id: str) -> CampaignTablesCleared:
         """Remove one campaign's built tables to free storage; each is built again on use."""
         return _guard(lambda: impl.clear_campaign_tables(campaign_id))
+
+    @app.post(Routes.campaign_exports("{campaign_id}"), response_model=ExportRef,
+              tags=["results"])
+    def create_export(campaign_id: str, request: ExportRequest) -> ExportRef:
+        """Start an export of the campaign: its tables as files, its records, its bags."""
+        return _guard(lambda: impl.create_export(campaign_id, request))
+
+    @app.get(Routes.campaign_export("{campaign_id}", "{export_id}"), response_model=ExportStatus,
+             tags=["results"])
+    def get_export_status(campaign_id: str, export_id: str) -> ExportStatus:
+        """Where an export has got to; its file is on the data plane once it is done."""
+        return _guard(lambda: impl.get_export_status(campaign_id, export_id))
 
     @app.post(Routes.campaign_share_run("{campaign_id}"), response_model=ActionResult, tags=["results"])
     def run_share(campaign_id: str, request: RunShareRequest) -> ActionResult:

@@ -10,10 +10,10 @@ from robovast.common.migrations.config.v4_to_v5 import migrate
 
 def test_the_conversion_pods_sizing_is_removed():
     out = migrate({"version": 4, "results_processing": {
-        "resources": {"cpu": 8, "memory": "16Gi"}, "postprocessing": ["compress"]}})
+        "resources": {"cpu": 8, "memory": "16Gi"}, "postprocessing": ["command"]}})
     assert out["version"] == 5
     assert "resources" not in out["results_processing"]
-    assert out["results_processing"]["postprocessing"] == ["compress"]
+    assert out["results_processing"]["postprocessing"] == ["command"]
 
 
 def test_a_bare_entry_for_a_table_built_for_every_run_is_removed():

@@ -71,7 +71,9 @@ Large uploads take the side channel instead: ``POST /uploads`` grants a token, a
 The **data plane** is the third namespace, ``/data``: every route that moves a campaign's
 or a staged slot's bytes as one tar stream. ``GET /data/campaigns/{id}/archive`` is the
 whole campaign's records as a tar.gz -- postprocessed if they have been, raw if not --
-and never its ``.cache/`` table cache; ``GET .../inputs`` is what a job pod extracts into its
+and never its ``.cache/`` table cache; ``GET /data/campaigns/{id}/exports/{export_id}`` is
+a finished export's tar.gz (:ref:`results-export`), a ``404`` until it is done and a ``409``
+naming the reason once it failed; ``GET .../inputs`` is what a job pod extracts into its
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened, only the
 named jobs' own documents (``job=<tag>``, required) taken from the per-job ones, and a
 cell's own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
@@ -199,6 +201,17 @@ something true of a caller on that host and false of everyone else.
 ``GET /workspaces/{id}/archive`` is the same for a workspace's project files, under a
 single top-level directory. It is a control-plane route rather than a data one, because a
 workspace is not on the results volume the data routes serve.
+
+An **export** is the campaign's tables as files, with its records and, if asked, its
+recordings, built for one request (:ref:`results-export`). ``POST /campaigns/{id}/exports``
+takes the request (``tables``, ``format``, ``bags``, ``records``) and answers at once with
+the export's id and the data-plane route its file will be at; a table the campaign's
+catalog does not have is a ``400`` before anything is built, and a campaign still running
+a ``409``. ``GET /campaigns/{id}/exports/{export_id}`` is its status -- ``done``, ``error``,
+``bytes`` and the row count of every table written so far -- answered from the export's
+own record on disk once it is finished, so it survives a restart. The file is
+``GET /data/campaigns/{id}/exports/{export_id}``, which a token scoped to the campaign may
+fetch like its archive.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is

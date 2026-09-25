@@ -67,7 +67,7 @@ from robovast.execution.control_server import (STOP_RUNS,
                                                is_terminal, stop_checker)
 from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
                                         CampaignDeletion, CampaignTablesCleared,
-                                        DeleteCampaignsRequest,
+                                        DeleteCampaignsRequest, ExportRef, ExportStatus,
                                         DeleteCampaignsResponse, OutputsIngested,
                                         CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
@@ -658,6 +658,9 @@ class ServiceBase(RobovastInterface):
         #: clear keeps them and a second build is refused.
         self._table_builds: set = set()
         self._table_builds_lock = threading.Lock()
+        #: The exports building in this process; see :mod:`robovast.service.exports`.
+        from robovast.service.exports import ExportStore  # pylint: disable=import-outside-toplevel
+        self._exports = ExportStore()
         self._sweep_staged_projects()
 
     # -- the durable record -------------------------------------------------
@@ -1934,6 +1937,8 @@ class ServiceBase(RobovastInterface):
         with self._table_builds_lock:
             if campaign_id in self._table_builds:
                 return "they are being built right now"
+        if self._exports.running(campaign_id):
+            return "an export is reading them right now"
         return ""
 
     def _sweep_table_cache(self, clear: bool) -> _Swept:
@@ -2017,6 +2022,39 @@ class ServiceBase(RobovastInterface):
             f"building {len(tables)} table(s) of {campaign_id} for every run; progress is in "
             "the campaign log's TABLES section. Not needed for any answer: each table is "
             "built the first time something names it."))
+
+    def create_export(self, campaign_id: str, request) -> ExportRef:
+        """Start an export of *campaign_id*; see the interface.
+
+        The plan is made here, before anything starts: the catalog is read (building
+        nothing), a table the campaign does not have refuses the request, and the reserve
+        is checked; only then does the export's directory exist and its thread run.
+        """
+        from robovast.service.exports import plan_tables  # pylint: disable=import-outside-toplevel
+        from robovast_data import Engine, Scope  # pylint: disable=import-outside-toplevel
+
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not (campaign_dir / "campaign.db").is_file():
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+        if self.campaign_is_live(campaign_id):
+            raise RuntimeError(f"not exporting {campaign_id} now: it is still running, and "
+                               "its records and tables are changing as it goes")
+        tables = plan_tables(Engine([Scope(str(campaign_dir))]).catalog(), request.tables)
+        self._admit_storage(f"export {campaign_id}")
+        logger.info("Exporting %s: %d table(s) as %s, bags %s, records %s", campaign_id,
+                    len(tables), request.format, request.bags, request.records)
+        return self._exports.start(campaign_dir, campaign_id, request, tables)
+
+    def get_export_status(self, campaign_id: str, export_id: str) -> ExportStatus:
+        """Where an export has got to; see the interface."""
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not campaign_dir.is_dir():
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+        return self._exports.status(campaign_dir, campaign_id, export_id)
+
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """A finished export's file, from the data plane over this root."""
+        return self._data_plane().export_tar_stream(campaign_id, export_id)
 
     def clear_campaign_tables(self, campaign_id: str) -> CampaignTablesCleared:
         """Remove one campaign's built tables; see the interface."""

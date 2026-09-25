@@ -22,14 +22,23 @@ def test_decoder_entries_validate_clean(tmp_path):
     assert problems == []
 
 
-def test_compress_and_unknown_postprocessing(tmp_path):
-    """compress is a registered entry point (accepted); a bogus name is rejected."""
+def test_command_and_unknown_postprocessing(tmp_path):
+    """command is a registered entry point (accepted); a bogus name is rejected."""
     problems = _postprocessing_problems(
-        ["compress", "definitely_not_a_plugin"], str(tmp_path), "rp")
-    # Only the bogus name (index 1) is a problem; compress (index 0) resolved.
+        ["command", "definitely_not_a_plugin"], str(tmp_path), "rp")
+    # Only the bogus name (index 1) is a problem; command (index 0) resolved.
     assert len(problems) == 1
     assert problems[0]["field"] == "rp[1]"
     assert "definitely_not_a_plugin" in problems[0]["message"]
+
+
+def test_compress_is_not_a_postprocessing_step(tmp_path):
+    """A campaign's tarball is an export, not a step; a config naming ``compress`` is refused
+    like any other name no plugin registers."""
+    problems = _postprocessing_problems(["compress"], str(tmp_path), "rp")
+    assert len(problems) == 1
+    assert problems[0]["field"] == "rp[0]"
+    assert "compress" in problems[0]["message"]
 
 
 def test_malformed_yaml_returns_problem_without_exiting(tmp_path):

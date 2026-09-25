@@ -1901,10 +1901,6 @@ the run's own, ``logs/rosout_bag`` for the job's infrastructure recording):
 
 - ``command``: run a script. Required ``script`` (a path relative to the ``.vast``, copied into
   the campaign's ``_config/`` so a re-run finds it); optional ``args`` (list).
-- ``compress``: write a gzipped tarball of the campaign. Optional ``output_dir`` (default: the
-  directory holding the ``.vast``; relative paths resolve from there, and it must not be inside
-  the results directory), ``exclude_dirs`` (directory names to leave out, default ``['.cache']``),
-  ``overwrite`` (default ``true``; ``false`` skips a campaign whose tarball exists).
 - ``nav2_bt_tree`` (requires the ``robovast_nav`` package): reconstruct nav2's behavior tree by
   parsing the BT XML nav2 ran and joining it with the ``nav2_behavior_tree`` table, writing each
   run's ``nav2_behaviors.csv`` — the ``nav2_behaviors`` table — in the same schema as the

@@ -301,6 +301,14 @@ export type DataTable = Schemas['DataTable']
 
 export type DataDescribe = Schemas['DataDescribe']
 
+// -- exports: the tables as files, the records, the bags, in one tar.gz ----------------------
+
+export type ExportRequest = Schemas['ExportRequest']
+
+export type ExportRef = Schemas['ExportRef']
+
+export type ExportStatus = Schemas['ExportStatus']
+
 export type DataQueryResult = Schemas['DataQueryResult']
 
 export interface PlotSpec {
@@ -948,6 +956,23 @@ export const robovast = {
   clearCampaignTables: (campaignId: string) =>
     request<CampaignTablesCleared>(
       'DELETE', `/campaigns/${encodeURIComponent(campaignId)}/tables`),
+
+  // Start an export: the campaign's tables as one file each, its records and, if asked, its
+  // bags, built on the service into one tar.gz. Returns at once with the export's id; poll
+  // `getExportStatus` until `done`, then `exportUrl` is the file.
+  createExport: (campaignId: string, body: ExportRequest) =>
+    request<ExportRef>(
+      'POST', `/campaigns/${encodeURIComponent(campaignId)}/exports`, body),
+
+  getExportStatus: (campaignId: string, exportId: string) =>
+    request<ExportStatus>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/exports/${encodeURIComponent(exportId)}`),
+
+  // Direct URL of a finished export's tar.gz, on the data plane like the archive: a 404 until
+  // the export is done, a 409 once it failed.
+  exportUrl: (campaignId: string, exportId: string) =>
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/exports/${encodeURIComponent(exportId)}`,
 
   // (Re)trigger upload-to-share for a finished campaign. Works from disk after a
   // restart; the target provider comes from the service environment.

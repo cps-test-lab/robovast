@@ -97,6 +97,8 @@ import { isSelectable, pruneSelection } from '@/lib/campaignSelection'
 // sessions never click. Mounted only once opened, so the chunk is fetched on first use.
 const PostprocessingDialog = lazyView('Postprocessing settings',
   () => import('./PostprocessingDialog').then((m) => ({ default: m.PostprocessingDialog })))
+const ExportDialog = lazyView('Export',
+  () => import('./ExportDialog').then((m) => ({ default: m.ExportDialog })))
 
 // The campaign id's column, fixed so a page of collapsed cards reads down its columns instead of
 // zig-zagging. Sized against the ids campaigns actually get, measured rather than guessed: the
@@ -465,6 +467,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     fn()
   }
   const [ppOpen, setPpOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   const del = useMutation({
     mutationFn: () => robovast.deleteCampaign(id),
@@ -830,6 +833,15 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               results are raw until postprocessing has produced its tables and plots. */}
           <ListItemText primary={`Download (${archiveStage})`} />
         </MenuItem>,
+        // The other way out: the tables as files, built for the request, with the records
+        // beside them. Not offered while the campaign runs, since the export refuses a tree
+        // that is still changing -- the snapshot above is what a running campaign offers.
+        running ? null : (
+          <MenuItem key="export" onClick={() => { closeMenu(); setExportOpen(true) }}>
+            <ListItemIcon><TableChartRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Export…</ListItemText>
+          </MenuItem>
+        ),
         // Omitted where the provider has no openable link -- sftp never has one, and a webdav
         // URL often needs credentials the recipient lacks.
         shareCopy?.url ? (
@@ -1405,6 +1417,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
 
       {ppOpen && (
         <PostprocessingDialog campaignId={id} open onClose={() => setPpOpen(false)} />
+      )}
+      {exportOpen && (
+        <ExportDialog campaignId={id} open onClose={() => setExportOpen(false)} />
       )}
     </Paper>
   )

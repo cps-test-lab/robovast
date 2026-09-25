@@ -711,6 +711,18 @@ one from — see :ref:`mcp-origin`). It says nothing about the share: whether a 
 a copy there is not a fact the service records, so claiming one would be advertising what
 the caller may not have.
 
+``export_campaign`` is the other way out, and the one to reach for when the point is an
+**analysis away from the service** -- a notebook on a laptop, a hand-off to someone without
+an account: it has the service build an export (:ref:`results-export`) -- the campaign's
+tables as one parquet or CSV file each, its records beside them, its recordings if asked --
+and returns a handle: the ``export_id`` to poll with ``get_export_status``, the route, a
+URL where an origin is declared, and the ``vast campaign export`` command with every option
+filled in. The download is link-only for the same reason the archive's is. Download the
+archive instead when the point is the **campaign itself** -- to import it into another
+service, to keep it whole, or when the tables are not what is wanted: the archive ships no
+table, and an export's tables are built for the request, from the same records, by the
+same decoder a query uses.
+
 The opposite direction is ``import_campaign``: it takes in a campaign archive
 somebody else produced and registers it, so it lists, displays and can be re-run like
 one that ran here. It has two sources and **neither carries bytes, for the same reason

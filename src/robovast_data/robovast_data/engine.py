@@ -390,8 +390,14 @@ class Engine:
         con.execute(f"CREATE TABLE {name} AS SELECT * FROM _incoming")
         con.unregister("_incoming")
 
-    def connect(self, relations: Iterable[str] = ()) -> duckdb.DuckDBPyConnection:
-        """A locked-down connection defining *relations* (and what they read) for the scopes."""
+    def connect(self, relations: Iterable[str] = (), *,
+                writable: Optional[str] = None) -> duckdb.DuckDBPyConnection:
+        """A locked-down connection defining *relations* (and what they read) for the scopes.
+
+        *writable* is one directory a ``COPY ... TO`` on this connection may write into --
+        what an export uses to write the tables as files. Every other path stays off limits:
+        the connection reads the campaigns' table files and writes there and nowhere else.
+        """
         config = {"threads": self.threads}
         if self.memory_limit:
             config["memory_limit"] = self.memory_limit
@@ -416,9 +422,11 @@ class Engine:
                 pose_track = views.pose_track_sql(columns)
                 if pose_track:
                     con.execute("CREATE VIEW pose_track_view AS " + pose_track)
-            allowed = ", ".join(
-                _quote(os.path.join(cache_root(d), TABLES_DIR) + os.sep)
-                for d in sorted({s.campaign_dir for s in self.scopes}))
+            directories = [os.path.join(cache_root(d), TABLES_DIR) + os.sep
+                           for d in sorted({s.campaign_dir for s in self.scopes})]
+            if writable:
+                directories.append(os.path.abspath(writable) + os.sep)
+            allowed = ", ".join(_quote(d) for d in directories)
             con.execute(f"SET allowed_directories = [{allowed}]")
             con.execute("SET enable_external_access = false")
             con.execute("SET lock_configuration = true")

@@ -473,7 +473,8 @@ recordings are closed.
 
 **The cache is disposable.** Clearing it (:ref:`results-tables-ahead`) loses nothing but the time
 to rebuild; archives and downloads leave it out, and an imported or downloaded campaign builds its
-tables from its records the first time they are named.
+tables from its records the first time they are named. A campaign's exports
+(:ref:`results-export`) live under it too, and go with it.
 
 .. _run-clock:
 
@@ -1129,10 +1130,10 @@ no Kubernetes Job, no container, no execution image — in four parts:
    ``results_processing.postprocessing``, in order — plugins named by entry point
    (``robovast.postprocessing_commands``) or by ``./path.py:Class`` beside the config (see
    :ref:`extending-postprocessing`). A step's output files are tables like any other run file.
-   Built in: ``command`` (run a script) and ``compress`` (a tarball per campaign, leaving out
-   ``.cache``); ``robovast-nav`` adds ``nav2_bt_tree``, which reads the ``nav2_behavior_tree``
-   table and writes each run's ``nav2_behaviors.csv``. List them with
-   ``vast results postprocess-commands``.
+   Built in: ``command`` (run a script); ``robovast-nav`` adds ``nav2_bt_tree``, which reads
+   the ``nav2_behavior_tree`` table and writes each run's ``nav2_behaviors.csv``. List them
+   with ``vast results postprocess-commands``. A tarball of the campaign is not a step: the
+   archive and an export (:ref:`results-export`) are built on request.
 2. **The campaign-end pass** (:ref:`results-campaign-end`).
 3. **The provenance record**, ``_transient/postprocessing.yaml``, written **last** among the
    derived data: its presence is what makes a campaign read as postprocessed (``postprocessed``
@@ -1327,6 +1328,72 @@ Without a service, ``robovast-decode`` builds a campaign directory's tables in p
 
    robovast-decode tables <campaign-dir>                      # what the records can give, and what is built
    robovast-decode build <campaign-dir> [--table NAME] [--run CONFIG/RUN] [--force]
+
+
+.. _results-export:
+
+Export
+------
+
+An **export** is one ``tar.gz`` built for one request: the campaign's tables as files, with
+the records that produced them and, if asked, its recordings. It is for an analysis away
+from the service -- a notebook on a laptop, a hand-off -- where the archive is the wrong
+shape: the archive is the campaign as the service holds it and ships no table, and its
+tables are built again wherever it lands. An export's tables are built once, on the
+service, by the same decoder a query uses, and written where pandas or DuckDB opens them
+directly.
+
+What it contains is the request's to decide:
+
+* **Tables** -- one file per table, ``tables/<name>.parquet`` (zstd) or ``tables/<name>.csv``,
+  written by DuckDB from the same views a query reads, after each is built for every run.
+  ``runs`` is always written. Naming none writes every table the records can give; a name
+  the campaign's catalog does not have (``describe_campaign_data`` lists it) is refused
+  before anything is built. Parquet is the tables as they are; CSV the same rows as text.
+* **Bags** -- ``none`` (the default), ``mcap`` (each run's ``rosbag2/`` and ``roqsim_bag/``
+  and each job's ``logs/rosout_bag/``, as recorded), or ``sqlite3``: every rosbag2 bag
+  rewritten in rosbag2's sqlite3 storage from the mcap records -- the raw CDR bytes,
+  message for message, each topic's definition taken from the recording, its sidecar or the
+  distro's types -- for a ROS 2 install without the mcap plugin. A channel whose definition
+  none of the three carry fails the export, naming the topic and the type, rather than
+  being left out. roqsim's recording is not a rosbag2 and is copied as it is.
+* **Records** (on by default) -- ``campaign.db``, ``_config/``, ``_execution/``,
+  ``_transient/``, the metadata documents and every run's own files: everything the
+  archive carries except the recordings and ``.cache``. With them, the export's
+  ``<campaign_id>/`` directory is a campaign directory ``robovast-data`` opens.
+
+The tarball holds ``export.json`` -- the request, the decoder version, the row count and
+file of every table, the campaign id and when it was built -- then ``tables/`` and the
+campaign tree under ``<campaign_id>/``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Surface
+     - Export
+   * - Web UI
+     - **Export…** in the campaign's actions menu: a checklist of the tables, the format,
+       the bags, the records; the download link appears when the export is done
+   * - CLI
+     - ``vast campaign export <id> [--tables a,b] [--format parquet|csv] [--bags none|mcap|sqlite3] [--no-records] [-o PATH]``
+   * - MCP
+     - ``export_campaign(campaign_id, tables=None, format='parquet', bags='none', records=True)``,
+       then ``get_export_status(campaign_id, export_id)``
+   * - HTTP
+     - ``POST /campaigns/{id}/exports``, ``GET /campaigns/{id}/exports/{export_id}`` (status),
+       ``GET /data/campaigns/{id}/exports/{export_id}`` (the file)
+
+An export builds in the background on the service and returns a handle at once; the CLI
+waits on it, the web UI follows it, an MCP caller polls ``get_export_status``. Several
+exports of one campaign may build at the same time, and while any does the campaign's
+tables are in use, so a clear of the table cache keeps them. A campaign still running is
+refused: its records and tables are changing under the export. The export lands under the
+campaign's ``.cache/exports/<export_id>/`` -- rebuildable and disposable like the tables
+beside it, counted and cleared with the ``table cache`` (:ref:`results-tables-ahead`) --
+and its status is answered from that directory once it is finished, so a status read after
+a service restart still answers; an export that was building when the service stopped reads
+as failed, to be started again.
 
 
 .. _results-querying:

@@ -892,6 +892,56 @@ class CampaignTablesCleared(BaseModel):
     freed_bytes: int = 0
 
 
+class ExportRequest(BaseModel):
+    """What an export of a campaign carries: its tables as files, its bags, its records.
+
+    An export is what a laptop analysis or a hand-off wants: the campaign's logical tables
+    written one file per table, in a format pandas or DuckDB opens directly, with the
+    records that produced them and, if asked, the recordings. The archive
+    (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it and
+    ships no table; an export is built for the request and disposable.
+    """
+
+    #: The tables to write, by their query names (``describe_campaign_data`` lists them).
+    #: ``None`` writes every table the campaign's records can give; ``runs`` is always
+    #: written. A name the catalog does not have is refused before anything is built.
+    tables: Optional[list[str]] = None
+    #: How each table is written: one parquet file (zstd) or one CSV file per table.
+    format: Literal["parquet", "csv"] = "parquet"
+    #: Which recordings ship. ``mcap`` copies each run's ``rosbag2/`` and ``roqsim_bag/``
+    #: and each job's ``logs/rosout_bag/`` as recorded; ``sqlite3`` rewrites each rosbag2
+    #: bag in rosbag2's sqlite3 storage for a ROS 2 install without the mcap plugin (roqsim's
+    #: recording is not a rosbag2 and is copied as mcap); ``none`` ships no recording.
+    bags: Literal["none", "mcap", "sqlite3"] = "none"
+    #: Whether the campaign's records ship: ``campaign.db``, ``_config/``, ``_execution/``,
+    #: the metadata documents and every run's own files -- everything the archive carries
+    #: except the recordings and the table cache.
+    records: bool = True
+
+
+class ExportRef(BaseModel):
+    """A started export: its id, and where its file will be once it is done."""
+
+    export_id: str
+    #: The data-plane route the finished file is downloaded from; a 404 until it is done.
+    url: str
+
+
+class ExportStatus(BaseModel):
+    """Where one export has got to (poll like an image build's :class:`ImageBuildStatus`)."""
+
+    export_id: str
+    done: bool = False
+    #: Why it failed, when it did; ``""`` otherwise. A failed export is ``done``.
+    error: str = ""
+    #: The finished file's size; 0 until it is done.
+    bytes: int = 0
+    #: Rows written per table, filled as the tables are written.
+    tables: dict[str, int] = Field(default_factory=dict)
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
 class RunPostprocessingRequest(BaseModel):
     """(Re)run one campaign's postprocessing.
 
@@ -2562,6 +2612,12 @@ class Routes:
         return f"{Routes.DATA}/campaigns/{campaign_id}/archive"
 
     @staticmethod
+    def campaign_export_download(campaign_id: str, export_id: str) -> str:
+        # A finished export's file. On the data plane like the archive: it is a campaign's
+        # bytes leaving the service, and a ``campaign:<id>`` token may fetch it.
+        return f"{Routes.DATA}/campaigns/{campaign_id}/exports/{export_id}"
+
+    @staticmethod
     def campaign_inputs(campaign_id: str) -> str:
         # What a job pod is given: the campaign's `_config/` and `_transient/`, flattened,
         # with only the named jobs' own documents from the latter.
@@ -2717,6 +2773,16 @@ class Routes:
     @staticmethod
     def campaign_tables_build(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/tables/build"
+
+    @staticmethod
+    def campaign_exports(campaign_id: str) -> str:
+        # POST starts an export; the file itself is fetched on the data plane
+        # (``campaign_export_download``), where every route that moves a campaign's bytes is.
+        return f"/campaigns/{campaign_id}/exports"
+
+    @staticmethod
+    def campaign_export(campaign_id: str, export_id: str) -> str:
+        return f"/campaigns/{campaign_id}/exports/{export_id}"
 
     @staticmethod
     def campaign_postprocessing_run(campaign_id: str) -> str:
@@ -3347,6 +3413,15 @@ class RobovastInterface(ABC):
     def ingest_staged(self, slot: str, stream) -> OutputsIngested:
         """Extract a tar *stream* into the staged slot *slot*, creating it."""
 
+    @abstractmethod
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """Yield a finished export's ``tar.gz`` in chunks, for ``GET .../exports/{id}``.
+
+        Read from the file the export wrote, so the data plane answers it from the tree
+        alone. ``KeyError`` for an export that is not here or not finished yet, and
+        ``RuntimeError`` naming the reason for one that failed.
+        """
+
     def campaign_archive_name(self, campaign_id: str) -> str:
         """The file name :meth:`campaign_tar_stream`'s bytes should be offered under.
 
@@ -3560,6 +3635,30 @@ class RobovastInterface(ABC):
         """Remove one campaign's built tables to free storage; each is built again on use.
 
         Refused while the campaign runs or its tables are being built."""
+
+    @abstractmethod
+    def create_export(self, campaign_id: str, request: ExportRequest) -> ExportRef:
+        """Start building an export of *campaign_id* as *request* describes; returns at once.
+
+        The export is a ``tar.gz`` built on the service under the campaign's ``.cache/``,
+        from its records and its tables -- built first for every run, for the tables the
+        request names -- and fetched from the data plane once :meth:`get_export_status`
+        says it is done. Several exports of one campaign may build at once; while one does,
+        the campaign's tables are in use and a clear keeps them.
+
+        Raises ``KeyError`` for a campaign that is not here, ``ValueError`` for a table the
+        campaign's catalog does not have -- checked before anything is built -- and
+        ``RuntimeError`` while the campaign still runs.
+        """
+
+    @abstractmethod
+    def get_export_status(self, campaign_id: str, export_id: str) -> ExportStatus:
+        """Where an export has got to. ``KeyError`` for an id this campaign never had.
+
+        Answered from the export's own record on disk once it is finished, so a status read
+        after a service restart still answers; one that was building when the service
+        stopped reads as failed.
+        """
 
     @abstractmethod
     def run_share(self, request: RunShareRequest) -> ActionResult:

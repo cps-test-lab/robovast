@@ -478,10 +478,8 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     jobs, and the second one nobody asked for. Unpacking is ``tar``'s, and putting a
     campaign back into a service is ``vast campaign import``.
 
-    Written through a ``.part`` sibling and renamed on success, so an interrupted
-    transfer cannot leave a truncated archive sitting under the real name looking
-    complete. There is no resume: this is a service on your own network, and a
-    half-finished HTTP GET is cheaper to repeat than to reason about.
+    There is no resume: this is a service on your own network, and a half-finished HTTP
+    GET is cheaper to repeat than to reason about (:func:`download_to_file`).
 
     The **service** names the file, not *dest_path*: a campaign that was still running when
     it was archived comes back as ``<id>.incomplete.tar.gz``, and only the service knows
@@ -490,9 +488,39 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     """
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
-    say = logger.info
-    url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
-    say("Downloading %s from robovast-service ...", campaign_id)
+    logger.info("Downloading %s from robovast-service ...", campaign_id)
+    return download_to_file(client, Routes.campaign_archive(campaign_id), dest_path,
+                            progress_callback=progress_callback)
+
+
+def download_campaign_export(client, campaign_id: str, export_id: str, dest_path: str,
+                             progress_callback=None) -> str:
+    """Stream a finished export's ``tar.gz`` through *client* into *dest_path*; return it.
+
+    The same transfer as :func:`download_campaign_archive` -- a ``.part`` sibling, renamed
+    on success, named by the service -- for the file ``vast campaign export`` fetches once
+    the export is done.
+    """
+    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
+
+    logger.info("Downloading export %s of %s from robovast-service ...", export_id, campaign_id)
+    # The caller names the file: an export's served name carries nothing the caller does
+    # not already know, so ``-o`` is honoured to the letter.
+    return download_to_file(client, Routes.campaign_export_download(campaign_id, export_id),
+                            dest_path, progress_callback=progress_callback, served_name=False)
+
+
+def download_to_file(client, route: str, dest_path: str, progress_callback=None, *,
+                     served_name: bool = True) -> str:
+    """Stream the data-plane *route* through *client* into *dest_path*; return where it landed.
+
+    Written through a ``.part`` sibling and renamed on success, so an interrupted transfer
+    cannot leave a truncated file under the real name looking complete. With *served_name*
+    the service names the file through ``Content-Disposition`` and *dest_path* supplies the
+    directory and the fallback name; without it the file lands at *dest_path* exactly. The
+    returned path is where the file actually landed.
+    """
+    url = f"{client.base_url}{route}"
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
     tmp_path = f"{dest_path}.part"
     try:
@@ -501,7 +529,8 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
             # the URL and throws the body away, which is where this service writes the
             # actionable sentence ("no campaign 'x' on this service").
             client.raise_for_status(resp)
-            served = _served_filename(resp.headers.get("Content-Disposition"))
+            served = _served_filename(resp.headers.get("Content-Disposition")) \
+                if served_name else ""
             if served:
                 dest_path = os.path.join(os.path.dirname(os.path.abspath(dest_path)), served)
             # Absent for a campaign archive: the service tars it on the fly, so there is

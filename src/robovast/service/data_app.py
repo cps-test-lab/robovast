@@ -219,6 +219,12 @@ class DataPlane:
             raise KeyError(f"nothing staged at {slot!r}" + (f"/{path}" if path else ""))
         return campaign_archive.iter_tree_tar(str(root))
 
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """A finished export's tarball, read from the export's directory; see the interface."""
+        from robovast.service import exports  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        return exports.iter_file(exports.export_file(campaign_dir, campaign_id, export_id))
+
     def ingest_staged(self, slot: str, stream) -> OutputsIngested:
         from robovast.service import tar_io  # pylint: disable=import-outside-toplevel
         root = self.staged_dir(slot)
@@ -452,6 +458,25 @@ def data_router(source):
             _guard(lambda: source.campaign_tar_stream(campaign_id)),
             media_type=GZIP_MEDIA_TYPE,
             headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @router.get(Routes.campaign_export_download("{campaign_id}", "{export_id}"))
+    def download_campaign_export(campaign_id: str, export_id: str):
+        """Stream a finished export as a ``tar.gz``.
+
+        Backs ``vast campaign export`` and the web UI's Export dialog. A 404 until the
+        export is done (the status route on the control plane says how far it is), a 409
+        carrying the reason once it failed. Answered from the export's files alone, so the
+        standalone data container serves what the control plane built.
+        """
+        from robovast.service.exports import export_file_name  # pylint: disable=import-outside-toplevel
+        try:
+            stream = _guard(lambda: source.export_tar_stream(campaign_id, export_id))
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        return StreamingResponse(
+            stream, media_type=GZIP_MEDIA_TYPE,
+            headers={"Content-Disposition":
+                     f'attachment; filename="{export_file_name(campaign_id, export_id)}"'})
 
     @router.get(Routes.campaign_inputs("{campaign_id}"))
     def download_campaign_inputs(campaign_id: str,

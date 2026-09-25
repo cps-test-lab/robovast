@@ -900,3 +900,75 @@ def download_cmd(campaigns, output, force, namespace, context):
     if skipped:
         parts.append(f"{skipped} skipped")
     click.echo("  ".join(parts))
+
+
+@campaign.command('export')
+@click.argument('campaign_id', metavar='CAMPAIGN')
+@click.option('--tables', 'tables', default=None, metavar='A,B',
+              help='Tables to write, by their query names [default: every table the '
+                   'records can give]. `runs` is always written.')
+@click.option('--format', 'fmt', default='parquet',
+              type=click.Choice(['parquet', 'csv']), show_default=True,
+              help='One file per table: parquet (the tables as they are) or CSV.')
+@click.option('--bags', default='none', type=click.Choice(['none', 'mcap', 'sqlite3']),
+              show_default=True,
+              help='Which recordings ship: none, as recorded (mcap), or every rosbag2 bag '
+                   'rewritten in sqlite3 storage.')
+@click.option('--no-records', 'records', flag_value=False, default=True,
+              help="Leave the campaign's records out: campaign.db, _config/, _execution/ "
+                   "and every run's own files ship by default.")
+@click.option('--output', '-o', 'output', default=None, type=click.Path(dir_okay=False),
+              help='Where to write the file [default: <campaign>-export-<id>.tar.gz here]')
+@target_options
+def export_cmd(campaign_id, tables, fmt, bags, records, output, namespace, context):
+    """Export CAMPAIGN as one ``.tar.gz``: its tables as files, its records, its bags.
+
+    The service builds the export -- every table it names for every run, then the file --
+    and this waits for it, downloads it and prints where it landed. For a laptop analysis
+    or a hand-off: a parquet export opens with pandas or DuckDB directly, and the records
+    beside it open with ``robovast-data``. ``vast campaign download`` is the other thing:
+    the campaign as the service holds it, with no table in it.
+    """
+    import time  # pylint: disable=import-outside-toplevel
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+    from robovast.client.progress import (  # pylint: disable=import-outside-toplevel
+        fmt_size, make_transfer_progress_callback)
+    from robovast.service.interface import ExportRequest  # pylint: disable=import-outside-toplevel
+    from robovast.service.project_push import \
+        download_campaign_export  # pylint: disable=import-outside-toplevel
+
+    request = ExportRequest(
+        tables=[t.strip() for t in tables.split(',') if t.strip()] if tables is not None else None,
+        format=fmt, bags=bags, records=records)
+    try:
+        with service_client(namespace, context) as (client, label):
+            _echo_target(label)
+            ref = client.create_export(campaign_id, request)
+            click.echo(f"Export {ref.export_id} of {campaign_id} started ...", err=True)
+            start = time.monotonic()
+            while True:
+                status = client.get_export_status(campaign_id, ref.export_id)
+                if status.done:
+                    break
+                written = len(status.tables)
+                click.echo(f"  {time.monotonic() - start:.0f}s  {written} table(s) written",
+                           err=True)
+                time.sleep(2)
+            if status.error:
+                raise click.ClickException(f"export {ref.export_id} failed: {status.error}")
+            dest = Path(output) if output else \
+                Path.cwd() / f"{campaign_id}-export-{ref.export_id}.tar.gz"
+            landed = download_campaign_export(
+                client, campaign_id, ref.export_id, str(dest),
+                progress_callback=make_transfer_progress_callback(campaign_id, start))
+            sys.stdout.write("\n")
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:  # noqa: BLE001
+        handle_cli_exception(e)
+        return
+    size = Path(landed).stat().st_size
+    click.echo(f"  {len(status.tables)} table(s), {fmt_size(size)}", err=True)
+    click.echo(landed)

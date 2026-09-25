@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in postprocessing steps: run a script, and archive a campaign.
+"""Built-in postprocessing steps: run a script.
 
 A campaign's tables are not a step: the decoder builds them from its records when something
 names them (:mod:`robovast_data`). The steps here are what a campaign asks to *run* at its
@@ -35,11 +35,7 @@ Configuration format:
 """
 import os
 import subprocess
-import tarfile
-from pathlib import Path
 from typing import List, Optional, Tuple
-
-from robovast.common.execution import is_campaign_dir
 
 
 class BasePostprocessingPlugin:
@@ -198,106 +194,3 @@ class Command(BasePostprocessingPlugin):
 
         except Exception as e:
             return False, f"Error executing command: {e}"
-
-
-class Compress(BasePostprocessingPlugin):
-    """Create a gzipped tarball for each campaign-* directory (runs on host).
-
-    For each direct subdirectory of results_dir whose name starts with ``campaign-``,
-    creates a ``<campaign-name>-<id>.tar.gz`` in the output directory containing that campaign's
-    contents. Does not use Docker; runs entirely on the host using Python's
-    tarfile module. Useful for archiving or transferring results.
-
-    output_dir must not be inside the results directory (a later archive would then contain
-    the earlier one). Relative paths are resolved from the directory containing the
-    .vast file (config_dir).
-
-    Example usage in .vast config:
-
-    .. code-block:: yaml
-
-       postprocessing:
-         - compress:
-             output_dir: archives
-         - compress:
-             output_dir: /path/to/archives
-             overwrite: false
-    """
-
-    def __call__(
-        self,
-        results_dir: str,
-        config_dir: str,
-        output_dir: Optional[str] = None,
-        exclude_dirs: Optional[List[str]] = None,
-        overwrite: bool = True,
-        provenance_file: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Execute compress plugin.
-
-        Args:
-            results_dir: Path to the results directory (parent of campaign* dirs).
-            config_dir: Directory containing the .vast config file; relative output_dir
-                is resolved from here.
-            output_dir: Where to write tarballs. If not set, defaults to config_dir.
-                Relative paths are resolved from config_dir. Must not be inside
-                results_dir.
-            exclude_dirs: Directory names to exclude from the tarball (default: ['.cache']).
-                Pass an empty list to include everything.
-            overwrite: If True (default), recreate and overwrite existing tarballs.
-                If False, skip run dirs that already have a corresponding .tar.gz in the
-                output directory.
-            provenance_file: Optional path for provenance JSON
-
-        Returns:
-            Tuple of (success, message).
-        """
-        # Resolve output_dir from config_dir (relative to .vast file dir); default = config_dir
-        if output_dir:
-            out_dir = os.path.normpath(
-                os.path.join(config_dir, output_dir) if not os.path.isabs(output_dir) else output_dir
-            )
-        else:
-            out_dir = os.path.abspath(config_dir)
-        out_abs = Path(out_dir).resolve()
-        results_abs = Path(results_dir).resolve()
-        # Never into the results directory: a later archive would then contain this one.
-        if out_abs == results_abs or (out_abs != results_abs and results_abs in out_abs.parents):
-            return False, (
-                f"compress output_dir must not be inside the results directory "
-                f"(a later archive would contain this one). output_dir={out_dir!r}, "
-                f"results_dir={results_dir!r}. Use a path outside results (e.g. relative to "
-                f".vast dir: output_dir: archives)."
-            )
-        exclude = set(exclude_dirs if exclude_dirs is not None else [".cache"])
-
-        root = Path(results_dir)
-        if not root.is_dir():
-            return False, f"Results directory does not exist: {results_dir}"
-
-        created = []
-        for campaign_item in sorted(root.iterdir()):
-            if not campaign_item.is_dir() or not is_campaign_dir(campaign_item.name):
-                continue
-            if campaign_item.name == "_config":
-                continue
-
-            tarball_path = Path(out_dir) / f"{campaign_item.name}.tar.gz"
-            if not overwrite and tarball_path.exists():
-                continue
-            try:
-                os.makedirs(out_dir, exist_ok=True)
-                with tarfile.open(tarball_path, "w:gz") as tf:
-                    for entry in campaign_item.rglob("*"):
-                        if not entry.is_file():
-                            continue
-                        if any(part in exclude for part in entry.relative_to(campaign_item).parts):
-                            continue
-                        tf.add(entry, arcname=campaign_item.name + "/" + str(entry.relative_to(campaign_item)))
-                created.append(tarball_path.name)
-            except OSError as e:
-                return False, f"Failed to create {tarball_path}: {e}"
-
-        if not created:
-            return True, "No campaign* directories found or all tarballs already exist (use overwrite: true to recreate)"
-        return True, f"Created tarballs: {', '.join(created)}"

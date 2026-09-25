@@ -183,6 +183,21 @@ campaigns as one (every row keeps its ``campaign_id``), and a downloaded ``.tar.
 its directory does, extracted beside it on first use. ``read_table(path, name)`` and
 ``read_runs(path)`` are the one-line forms.
 
+An **export** (:ref:`results-export`, ``vast campaign export <id>``) needs none of this for
+its tables: they are already files, one per table, and a parquet export opens with pandas or
+DuckDB directly --
+
+.. code-block:: python
+
+   import duckdb
+   import pandas as pd
+
+   poses = pd.read_parquet("<campaign>-export-<id>/tables/poses.parquet")
+   duckdb.sql("SELECT config_name, count(*) FROM '<campaign>-export-<id>/tables/runs.parquet' GROUP BY 1")
+
+-- while the records it ships beside them (``<campaign_id>/``) are a campaign directory
+``Campaign`` opens as it opens the archive.
+
 A campaign on a service opens by its URL, without downloading it:
 
 .. code-block:: python
