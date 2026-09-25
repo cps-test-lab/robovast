@@ -1252,6 +1252,34 @@ def test_the_waiting_count_is_this_owners_not_the_whole_queues():
     assert "40 job(s) waiting" in c.refusal("theirs"), c.refusal("theirs")
 
 
+def _item_reads_in_one_refusing_drain(monkeypatch, per_owner, owners=4):
+    """Attribute reads on queue items during one drain in which nothing fits."""
+    reads = [0]
+
+    class CountingItem(node_admission.WorkItem):
+        def __getattribute__(self, name):
+            reads[0] += 1
+            return super().__getattribute__(name)
+
+    monkeypatch.setattr(node_admission, "WorkItem", CountingItem)
+    c = _controller(FakeProvider(cpu=1.0))
+    for k in range(owners):
+        _items(c, f"o{k}", per_owner, cpu=99.0, memory=MIB, started_at=float(k))
+    reads[0] = 0
+    c.drain()
+    return reads[0]
+
+
+def test_a_refusing_drain_is_linear_in_the_queue(monkeypatch):
+    """Every campaign's poll drains the whole queue under the lock the rest of the service
+    waits on, and on a full cluster nearly every item is refused. Work per refusal that
+    grows with the queue makes the pass quadratic, and a deep queue then holds the lock for
+    seconds at a time. Counted in item reads rather than timed, so it cannot flake."""
+    small = _item_reads_in_one_refusing_drain(monkeypatch, 50)
+    large = _item_reads_in_one_refusing_drain(monkeypatch, 400)
+    assert large < 10 * small, f"8x the queue cost {large / small:.1f}x the reads"
+
+
 def test_the_refusal_names_the_size_the_fit_test_actually_used():
     """`need` was left at the DECLARED sizing whenever nothing fit, so a calibrated campaign
     was told its job needs the declared figure while the nodes it was being tested against had

@@ -34,6 +34,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
@@ -549,6 +550,11 @@ class AdmissionController:
             nodes, growable = self._effective_free_locked(force=True)
             by_id = {n.node_id: n for n in nodes}
             unpinned = self._unpinned_outstanding_locked()
+            # Each owner's PLANNED count, kept current as items are created. Counted once per
+            # pass rather than per refused item: a recount per refusal walks the queue once for
+            # every item it refuses, and a full cluster refuses nearly all of them -- a pass
+            # quadratic in the queue, held under the lock every campaign's poll needs.
+            planned_by_owner = Counter(item.owner for item in pending)
             failed: "List[WorkItem]" = []
             # Nodes a pinned item is waiting for. Built as the pass walks the queue in
             # priority order, so it only ever shuts out work that ranks BELOW the item
@@ -588,11 +594,9 @@ class AdmissionController:
                     # so a campaign with a handful of jobs queued was told the whole cluster's
                     # queue depth, reported into its own log as though it were its own.
                     # The refusal SLOT was made per owner for exactly this confusion; the
-                    # number inside the string was not. `state` is mutated as items are
-                    # created, so counting PLANNED here is accurate mid-pass.
-                    own = sum(1 for i in pending
-                              if i.owner == item.owner and i.state == PLANNED)
-                    waiting = f"{own} job(s) waiting"
+                    # number inside the string was not. The count drops as this pass creates
+                    # the owner's items, so it is accurate mid-pass.
+                    waiting = f"{planned_by_owner[item.owner]} job(s) waiting"
                     # Which of the two filters emptied the list, because they need opposite
                     # responses and the message is the only thing an operator sees. A node
                     # excluded by `may_use` is being measured, or is outside the configured
@@ -681,6 +685,7 @@ class AdmissionController:
                                        CREATE_ATTEMPT_LIMIT, exc_info=True)
                     continue
                 item.state = CREATED
+                planned_by_owner[item.owner] -= 1
                 # The node the grant is CHARGED to, which is not the same question as the
                 # node the pod was pinned to: an unpinnable node still gets the charge, so
                 # the rest of this pass does not hand its cores out twice. ``None`` here is
