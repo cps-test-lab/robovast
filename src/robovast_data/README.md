@@ -1,6 +1,6 @@
 # robovast-data
 
-**A RoboVAST campaign's data in pandas and SQL, from its directory or its archive.**
+**A RoboVAST campaign's data in pandas and SQL, from its directory, its archive or a service.**
 
 A campaign directory is the database. Its records are the bags, logs, `campaign.db` and the
 files each run wrote. A table is built from those records the first time something names it,
@@ -37,6 +37,17 @@ runs = read_runs("~/Downloads/nav-…")
 
 `runs`, `table()` and `sql()` then answer for that node only. This is how the same notebook
 cell works on a laptop and in RoboVAST's Results Explorer.
+
+A campaign on a service opens by its URL, with the service's token (`vast service token`
+prints it), and answers `runs`, `tables`, `table()` and `sql()` without a download:
+
+```python
+c = Campaign("https://<service>/campaigns/<campaign_id>", token="<token>")
+c.table("poses", config="<config>", run=0)
+```
+
+The service builds what each call names and sends the rows as CSV, so pandas types the
+columns. A query to a service takes no parameters, and `config()` needs the campaign on disk.
 
 ## Queries
 

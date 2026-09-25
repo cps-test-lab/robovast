@@ -27,6 +27,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .data import Campaign, ConfigFiles, Corpus, Data, open_data, read_runs, read_table, scope_of
 from .engine import Engine, Problem, Scope
+from .remote import RemoteCampaign
 from .statement import QueryError
 
 try:
@@ -35,4 +36,4 @@ except PackageNotFoundError:  # a source tree that was never installed
     __version__ = "0+unknown"
 
 __all__ = ["Campaign", "ConfigFiles", "Corpus", "Data", "Engine", "Problem", "QueryError",
-           "Scope", "__version__", "open_data", "read_runs", "read_table", "scope_of"]
+           "RemoteCampaign", "Scope", "__version__", "open_data", "read_runs", "read_table", "scope_of"]

@@ -131,7 +131,46 @@ class ConfigFiles:
                       for root, _dirs, names in os.walk(self.path) for f in names)
 
 
-class Data:
+class Reader:
+    """``table()`` over whatever answers ``_frame(sql)``: a campaign on disk or on a service."""
+
+    def _frame(self, sql: str, params=None) -> pd.DataFrame:
+        raise NotImplementedError
+
+    def table(self, name: str, config: Optional[str] = None, run: Optional[int] = None,
+              with_params: bool = False, columns: Optional[List[str]] = None) -> pd.DataFrame:
+        """Table *name* for the scope (narrowed to *config* and *run*), as a DataFrame.
+
+        *with_params* adds the runs' ``param_*`` columns; *columns* selects some columns only.
+        """
+        selected = ", ".join(f"t.{_ident(c)}" for c in columns) if columns else "t.*"
+        where = []
+        if config is not None:
+            where.append(f"t.config_name = {_quote(config)}")
+        if run is not None:
+            where.append(f"t.run_id = {int(run)}")
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        if with_params:
+            params = [c for c in self._frame(f"SELECT * FROM {RUNS_TABLE} LIMIT 0").columns
+                      if c.startswith("param_")]
+            added = "".join(f", r.{_ident(c)}" for c in params)
+            sql = (f"SELECT {selected}{added} "
+                   f"FROM {_ident(name)} t LEFT JOIN {RUNS_TABLE} r "
+                   "ON r.campaign_id = t.campaign_id AND r.config_name = t.config_name "
+                   f"AND r.run_id = t.run_id{clause}")
+        else:
+            sql = f"SELECT {selected} FROM {_ident(name)} t{clause}"
+        if config is None and run is None:
+            count = self._frame(f"SELECT count(*) AS n FROM {_ident(name)}")["n"].iloc[0]
+            if count > LARGE_TABLE_ROWS:
+                warnings.warn(
+                    f"{name} holds {count:,} rows here; reading them all into one DataFrame "
+                    "takes the memory of all of them. Narrow it with config= and run=, or "
+                    "aggregate with sql().", stacklevel=2)
+        return self._frame(sql)
+
+
+class Data(Reader):
     """What one or more scopes hold, as DataFrames. Build one with :func:`open_data`,
     :class:`Campaign` or :class:`Corpus`."""
 
@@ -166,38 +205,6 @@ class Data:
                 for name, entry in sorted(self.engine.catalog().items())]
         return pd.DataFrame(rows)
 
-    def table(self, name: str, config: Optional[str] = None, run: Optional[int] = None,
-              with_params: bool = False, columns: Optional[List[str]] = None) -> pd.DataFrame:
-        """Table *name* for the scope (narrowed to *config* and *run*), as a DataFrame.
-
-        *with_params* adds the runs' ``param_*`` columns; *columns* selects some columns only.
-        """
-        selected = ", ".join(f"t.{_ident(c)}" for c in columns) if columns else "t.*"
-        where = []
-        if config is not None:
-            where.append(f"t.config_name = {_quote(config)}")
-        if run is not None:
-            where.append(f"t.run_id = {int(run)}")
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
-        if with_params:
-            params = [c for c in self._frame(f"SELECT * FROM {RUNS_TABLE} LIMIT 0").columns
-                      if c.startswith("param_")]
-            added = "".join(f", r.{_ident(c)}" for c in params)
-            sql = (f"SELECT {selected}{added} "
-                   f"FROM {_ident(name)} t LEFT JOIN {RUNS_TABLE} r "
-                   "ON r.campaign_id = t.campaign_id AND r.config_name = t.config_name "
-                   f"AND r.run_id = t.run_id{clause}")
-        else:
-            sql = f"SELECT {selected} FROM {_ident(name)} t{clause}"
-        if config is None and run is None:
-            count = self._frame(f"SELECT count(*) AS n FROM {_ident(name)}")["n"].iloc[0]
-            if count > LARGE_TABLE_ROWS:
-                warnings.warn(
-                    f"{name} holds {count:,} rows here; reading them all into one DataFrame "
-                    "takes the memory of all of them. Narrow it with config= and run=, or "
-                    "aggregate with sql().", stacklevel=2)
-        return self._frame(sql)
-
     def sql(self, query: str, params=None) -> pd.DataFrame:
         """Any ``SELECT`` over the tables and views here, as a DataFrame."""
         return self._frame(query, params)
@@ -228,17 +235,30 @@ def _report(problems: List[Problem]) -> None:
                       f"answer leaves them out:\n  {shown}{more}", stacklevel=3)
 
 
-def open_data(path: str, **engine_options) -> Data:
+def open_data(path: str, **options):
     """The data a path selects: a campaign, one of its configurations, or one run.
 
-    *path* is a campaign directory, any directory inside one, or a downloaded ``.tar.gz``
-    (extracted beside it on first use).
+    *path* is a campaign directory, any directory inside one, a downloaded ``.tar.gz``
+    (extracted beside it on first use), or a campaign on a service,
+    ``https://<service>/campaigns/<campaign_id>`` (pass ``token=``; see
+    :mod:`robovast_data.remote`).
     """
-    return Data([scope_of(os.path.expanduser(path))], **engine_options)
+    from .remote import RemoteCampaign, is_url  # pylint: disable=import-outside-toplevel
+    if is_url(path):
+        return RemoteCampaign(path, **options)
+    return Data([scope_of(os.path.expanduser(path))], **options)
 
 
 class Campaign(Data):
-    """A whole campaign, from its directory, any directory inside it, or its archive."""
+    """A whole campaign, from its directory, any directory inside it, or its archive -- or
+    from a service, ``https://<service>/campaigns/<campaign_id>`` with ``token=``, which
+    gives a :class:`~robovast_data.remote.RemoteCampaign` answering the same calls."""
+
+    def __new__(cls, path: str, **options):
+        from .remote import RemoteCampaign, is_url  # pylint: disable=import-outside-toplevel
+        if is_url(path):
+            return RemoteCampaign(path, **options)
+        return super().__new__(cls)
 
     def __init__(self, path: str, **engine_options):
         scope = scope_of(os.path.expanduser(path))
@@ -254,6 +274,11 @@ class Corpus(Data):
     def __init__(self, paths, **engine_options):
         if isinstance(paths, str):
             paths = sorted(glob.glob(os.path.expanduser(paths)))
+        from .remote import is_url  # pylint: disable=import-outside-toplevel
+        remote = [p for p in paths if is_url(p)]
+        if remote:
+            raise ValueError(f"a Corpus reads campaign directories and archives; {remote[0]} "
+                             "is on a service -- open it with Campaign(url) instead")
         scopes: Dict[str, Scope] = {}
         for path in paths:
             scope = scope_of(os.path.expanduser(path))
@@ -263,21 +288,23 @@ class Corpus(Data):
         super().__init__(scopes.values(), **engine_options)
 
 
-def _data(path) -> Data:
+def _data(path, token: Optional[str] = None):
     if isinstance(path, str) and _GLOB_CHARS & set(path):
         return Corpus(path)
-    return open_data(path)
+    return open_data(path, token=token) if token is not None else open_data(path)
 
 
-def read_table(path, name: str, **options) -> pd.DataFrame:
-    """Table *name* of what *path* selects (a glob: of every campaign it matches)."""
-    return _data(path).table(name, **options)
+def read_table(path, name: str, token: Optional[str] = None, **options) -> pd.DataFrame:
+    """Table *name* of what *path* selects (a glob: of every campaign it matches; a
+    service URL: that campaign, with *token*)."""
+    return _data(path, token).table(name, **options)
 
 
-def read_runs(path) -> pd.DataFrame:
-    """The ``runs`` of what *path* selects (a glob: of every campaign it matches)."""
-    return _data(path).runs
+def read_runs(path, token: Optional[str] = None) -> pd.DataFrame:
+    """The ``runs`` of what *path* selects (a glob: of every campaign it matches; a service
+    URL: that campaign, with *token*)."""
+    return _data(path, token).runs
 
 
-__all__ = ["Campaign", "ConfigFiles", "Corpus", "Data", "LARGE_TABLE_ROWS", "QueryError",
+__all__ = ["Campaign", "ConfigFiles", "Corpus", "Data", "LARGE_TABLE_ROWS", "QueryError", "Reader",
            "open_data", "read_runs", "read_table", "scope_of"]
