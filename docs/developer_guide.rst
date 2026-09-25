@@ -178,7 +178,7 @@ Afterwards, read the results in the browser (``vast ui``, against a running serv
 Working across the distributions
 --------------------------------
 
-RoboVAST is four packages in one checkout (see :ref:`architecture-distributions`), which
+RoboVAST is several packages in one checkout (see :ref:`architecture-distributions`), which
 changes two things about the development loop. Both have bitten; both are silent.
 
 **Install the client last.** ``robovast-client`` is a *non-optional path dependency* of
@@ -233,7 +233,7 @@ not importable. Anything the client needs must live in the client: a wire consta
 Releasing to PyPI
 -----------------
 
-The five distributions are released as **one set at one version**, because ``robovast``
+The six distributions are released as **one set at one version**, because ``robovast``
 requires ``robovast-client`` and ``robovast-sim-roqsim`` at *exactly* the version being
 released, and ``robovast-nav`` and ``robovast-cluster`` require ``robovast``. A version
 that exists for some of them and not the others is a set nobody can install, so

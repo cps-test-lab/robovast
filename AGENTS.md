@@ -66,7 +66,7 @@ worse than an error, because nothing downstream can detect it.
 ## 5. Which distribution owns what
 
 The distributions, their layering, the shared namespace and the entry-point boundary are in
-`docs/architecture.rst` ("Four distributions, layered by audience", "The service
+`docs/architecture.rst` ("Distributions, layered by audience", "The service
 implementation is resolved, not imported") and `docs/developer_guide.rst` ("Working across the distributions").
 A change must hold four things:
 

@@ -30,8 +30,8 @@ where the campaign runs.
 
 .. _architecture-distributions:
 
-Four distributions, layered by audience
----------------------------------------
+Distributions, layered by audience
+----------------------------------
 
 The contract above is one thing; what you have to install to use it is another. RoboVAST
 ships as separate distributions so each audience installs what it needs and — the part
@@ -59,12 +59,18 @@ that matters — can decline what it does not.
    * - ``robovast-nav`` / ``robovast-sim-roqsim``
      - navigation variation types and panels; the roqsim simulator backend
      - per package
+   * - ``robovast-decode``
+     - tables from a campaign's recordings: an mcap reader that follows a file as it is
+       written, ROS 2 message definitions from the recording itself, ``tf2``-exact pose
+       resolution, parquet tables under the campaign's ``.cache/``; the
+       ``robovast-decode`` command
+     - ``mcap``, ``rosbags``, ``pyarrow`` -- pure Python, no ROS
 
-**The dependency direction is the design.** ``robovast-client`` depends on nothing of
-ours, ``robovast`` depends on it, and ``robovast-cluster`` depends on ``robovast``.
-``robovast`` must never depend on ``robovast-cluster`` — that edge back is what would make
-the graph cyclic, and it is why it cannot be offered as an extra. Anywhere that installs it
-needs its own step.
+**The dependency direction is the design.** ``robovast-client`` and ``robovast-decode``
+depend on nothing of ours, ``robovast`` depends on both, and ``robovast-cluster`` depends
+on ``robovast``. ``robovast`` must never depend on ``robovast-cluster`` — that edge back is
+what would make the graph cyclic, and it is why it cannot be offered as an extra. Anywhere
+that installs it needs its own step.
 
 They share **one import namespace**: ``robovast/``, ``robovast/service/`` and
 ``robovast/execution/`` carry no ``__init__.py`` in any distribution, so they are PEP 420

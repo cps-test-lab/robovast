@@ -1,0 +1,38 @@
+rosbag2_bagfile_information:
+  version: 9
+  storage_identifier: mcap
+  duration:
+    nanoseconds: 2990000000
+  starting_time:
+    nanoseconds_since_epoch: 1780000000000000000
+  message_count: 306
+  topics_with_message_count:
+    - topic_metadata:
+        name: /clock
+        type: rosgraph_msgs/msg/Clock
+        serialization_format: cdr
+        offered_qos_profiles:
+          []
+        type_description_hash: ""
+      message_count: 300
+    - topic_metadata:
+        name: /rosout
+        type: rcl_interfaces/msg/Log
+        serialization_format: cdr
+        offered_qos_profiles:
+          []
+        type_description_hash: ""
+      message_count: 6
+  compression_format: ""
+  compression_mode: ""
+  relative_file_paths:
+    - rosout_bag_0.mcap
+  files:
+    - path: rosout_bag_0.mcap
+      starting_time:
+        nanoseconds_since_epoch: 1780000000000000000
+      duration:
+        nanoseconds: 2990000000
+      message_count: 612
+  custom_data: ~
+  ros_distro: jazzy

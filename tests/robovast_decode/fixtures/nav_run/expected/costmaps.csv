@@ -1,0 +1,2 @@
+topic,timestamp,frame_id,resolution,width,height,origin_x,origin_y,origin_yaw,data
+/global_costmap/costmap,3.0,map,0.05000000074505806,4,3,0.0,0.0,0.0,eNr7z5BixMDAwMjEnPwfABOFAv4=

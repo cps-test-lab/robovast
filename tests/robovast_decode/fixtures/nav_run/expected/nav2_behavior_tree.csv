@@ -1,0 +1,6 @@
+timestamp,node_name,uid,previous_status,current_status,event_timestamp
+2.095,node_0,0,IDLE,RUNNING,1700000000.0
+2.895,node_2,8,IDLE,RUNNING,1700000000.0
+3.695,node_1,16,IDLE,RUNNING,1700000000.0
+4.495,node_0,24,IDLE,RUNNING,1700000000.0
+5.295,node_2,32,IDLE,RUNNING,1700000000.0

@@ -7,7 +7,7 @@ A version is not an identity here -- provenance is a git revision, and
 The number exists for the one job a commit cannot do: naming a release on an index, which
 is also what ``robovast = "^2.0.0"`` in the siblings resolves against. So it only has to
 be right at the moment of publishing -- and the way it goes wrong is quietly, in one of
-five files nobody was editing.
+the files nobody was editing.
 """
 
 import re
@@ -25,6 +25,7 @@ IN_STEP = (
     "src/robovast_nav/pyproject.toml",
     "src/robovast_cluster/pyproject.toml",
     "src/robovast_sim_roqsim/pyproject.toml",
+    "src/robovast_decode/pyproject.toml",
 )
 
 #: Versioned on its own. Empty, and listed rather than dropped, so a new distribution has
@@ -45,7 +46,7 @@ def _version(rel):
 
 
 def test_every_distribution_is_accounted_for():
-    """A sixth one must not default into either column by being forgotten."""
+    """A new one must not default into either column by being forgotten."""
     assert set(_manifests()) == set(IN_STEP) | set(INDEPENDENT), (
         "a distribution is neither released in step nor listed as independent -- add it to "
         "IN_STEP or INDEPENDENT in this file, whichever it is")

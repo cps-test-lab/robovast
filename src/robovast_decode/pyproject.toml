@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "robovast-decode"
+version = "2.2.0"
+description = "Tables from RoboVAST campaign recordings (ROS 2 bags and mcap), in plain Python: no ROS, no execution image."
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
+packages = [{include = "robovast_decode"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+# Deliberately NOT depending on robovast. The decoder is the layer the service, the notebook
+# package and a laptop with a downloaded campaign all build tables with, so it carries only
+# what reading a recording needs: the mcap framing, ROS 2 message definitions and CDR, and
+# the columnar format the tables are written in. Everything here is pure Python wheels --
+# a recording decodes wherever Python runs, without ROS installed.
+mcap = "^1.2"
+rosbags = "^0.11"
+pyarrow = ">=17"
+numpy = ">=1.26"
+pyyaml = "^6.0"
+
+[tool.poetry.scripts]
+robovast-decode = "robovast_decode.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
