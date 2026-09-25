@@ -34,7 +34,7 @@ pytest.importorskip("pandas")
 yaml = pytest.importorskip("yaml")
 pytest.importorskip("robovast_data")
 
-from robovast.common.store import CampaignStore  # noqa: E402
+from robovast.common.store import CampaignStore  # noqa: E402  pylint: disable=wrong-import-position
 
 EXAMPLE = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples" / "nav_search"
 MODES = ["none", "collision", "timeout", "goal_miss"]

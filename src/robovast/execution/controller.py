@@ -1259,7 +1259,6 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
     options = options or RunOptions()
     if not options.postprocess:
         return
-    cluster_config = backend.cluster_config
     if state is not None:
         state.set_phase(Phase.POSTPROCESSING)
     try:

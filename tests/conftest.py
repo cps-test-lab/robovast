@@ -187,4 +187,3 @@ def pytest_configure(config):
         "markers",
         "reaches_a_cluster: deliberately sends requests to a Kubernetes API server; "
         "exempt from the guard in _no_test_reaches_a_real_cluster")
-
