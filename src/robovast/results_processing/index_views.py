@@ -53,8 +53,8 @@ import logging
 
 from psycopg import errors
 
-from robovast.common import store
 from robovast.results_processing import index_schema, index_scope
+from robovast_decode.runs import RUNLESS_UNIT_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ def campaign_view_sql(conn) -> dict:
         # or a campaign silently reports the cells that happened to work as its whole shape:
         # the draws a search could not compose, and the configurations a sweep declared and
         # never got back.
-        runless = ", ".join(f"'{status}'" for status in store.RUNLESS_UNIT_STATUSES)
+        runless = ", ".join(f"'{status}'" for status in RUNLESS_UNIT_STATUSES)
         views["run_view"] = f"""
             SELECT r.campaign_id, u.config_name, r.run_id, r.status, r.passed, r.duration_s,
                    r.errors, r.failures, r.tests, r.start_time, r.failure_message,

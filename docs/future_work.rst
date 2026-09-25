@@ -385,7 +385,7 @@ sixteenth.
 * **Make the new table column-generic.** CSV → index already is: any ``*.csv`` in a run
   directory becomes a table, columns are the union of row keys and types are inferred
   (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
-  :mod:`robovast.results_processing.csv_types`), including ``ALTER TABLE`` for a column that
+  :mod:`robovast_decode.types`), including ``ALTER TABLE`` for a column that
   first appears in a later run. Only the sampler-CSV → per-run-CSV step is not:
   :mod:`robovast.results_processing.resource_usage` names its columns in five places (its two
   fieldname tuples, ``read_container_csv``'s row tuple, ``Tick.processes``, and the ``grouped``
@@ -411,8 +411,8 @@ sixteenth.
   constant, so 5 s loses little. The existing loop already sleeps in 0.1 s increments to keep
   SIGTERM prompt, so the slower cadence has to be a tick counter rather than a longer sleep.
 * **Emit** ``""`` **for a missing value, never** ``"N/A"``. One non-numeric value demotes its
-  whole column to ``TEXT`` campaign-wide (``csv_types.value_type``); an empty string becomes
-  ``NULL`` and contributes no type evidence. ``nvidia-smi`` returns ``[N/A]`` and
+  whole column to ``TEXT`` campaign-wide (``robovast_decode.types.value_type``); an empty
+  string becomes ``NULL`` and contributes no type evidence. ``nvidia-smi`` returns ``[N/A]`` and
   ``[Not Supported]`` for unsupported fields on some cards.
 * **If a device figure is ever recorded anyway**, record the concurrent GPU process count with
   it. Counting the device's processes needs no PID matching, and it is what turns an

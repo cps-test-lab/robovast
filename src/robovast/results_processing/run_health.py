@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from importlib.metadata import entry_points
 
 from robovast.results_processing import index_schema
-from robovast.results_processing.csv_types import REAL, TEXT
+from robovast_decode.types import REAL, TEXT
 
 logger = logging.getLogger(__name__)
 

@@ -102,6 +102,10 @@ robovast-sim-roqsim = {path = "src/robovast_sim_roqsim", optional = true}
 # capability it can decline. The direction matters and is the whole reason the split is
 # safe -- robovast-client depends on nothing of ours, so this edge cannot become a cycle.
 robovast-client = {path = "src/robovast_client"}
+# Tables from a campaign's records: the decoder the service, the notebook package and a
+# laptop build them with, and the reading of recorded values (resource quantities) it
+# shares with the service. Not optional, and it depends on nothing of ours.
+robovast-decode = {path = "src/robovast_decode"}
 # The central index driver. Not optional: every campaign's data lives in Postgres now, so
 # a robovast without it can neither ingest nor read -- and pretending otherwise would
 # surface as an ImportError from somewhere deep instead of the one sentence

@@ -32,6 +32,9 @@ Where recordings live, relative to the campaign directory:
   that ran several leaves ``config_name`` and ``run_id`` empty, and its file is named after the
   job, because which of its runs a row belongs to is a question of time windows.
 
+A run's own ``*.csv`` and ``*.jsonl`` files are tables too, named after the file
+(:mod:`robovast_decode.authored`).
+
 Every table carries ``campaign_id``, ``config_name`` and ``run_id`` in its own rows, so a set of
 parquet files is a table without anything else to join it to.
 """
@@ -46,14 +49,21 @@ from typing import Dict, Iterable, List, Optional
 import yaml
 
 from . import __version__
+from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
 from .decode import decode_bag, segments
 from .framing import Channel, McapTail
+from .layout import job_links, run_dirs
 from .registry import INFRA_BAG, SCENARIO_BAG, narrow, plan_for
-from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_run_table,
-                     run_table_path, write_manifest, write_table)
+from .tables import (TableBuffer, fixed, manifest_lock, read_manifest, record_run_absent,
+                     record_run_table, run_table_path, write_manifest, write_table)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
+
+#: Tables built from a campaign's records rather than read from a file of that name: a run's
+#: data file claiming one is refused, since its rows and the built ones would be one table.
+DERIVED_TABLES = frozenset({RECORDING_TABLE, "runs", "scenario_timestamps", "run_health",
+                            "postprocessing_steps"})
 RECORDING_FIELDS = ["recording", "topic", "type", "messages", "bytes", "table", "reason"]
 
 _ATTEMPT = re.compile(r"^rosbag2(?:_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})?$")
@@ -79,33 +89,15 @@ class BuildReport:
     unknown: List[str] = field(default_factory=list)
 
 
-#: The campaign's ``{"<config>/<run>/job": "<target relative to the run>"}`` manifest.
-JOB_LINKS = os.path.join("_transient", "job_links.yaml")
-
-
-def job_links(campaign_dir: str) -> dict:
-    path = os.path.join(campaign_dir, JOB_LINKS)
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
-
-
 def find_runs(campaign_dir: str) -> List[Run]:
     """Every run directory of *campaign_dir*: ``<config>/<numeric run>``, with its job."""
     links = job_links(campaign_dir)
     runs = []
-    for config in sorted(os.listdir(campaign_dir)):
-        config_path = os.path.join(campaign_dir, config)
-        if config.startswith(("_", ".")) or not os.path.isdir(config_path):
-            continue
-        for run in sorted((d for d in os.listdir(config_path) if d.isdigit()), key=int):
-            path = os.path.join(config_path, run)
-            if not os.path.isdir(path):
-                continue
-            target = links.get(f"{config}/{run}/job")
-            job = os.path.normpath(os.path.join(path, target)) if target else None
-            runs.append(Run(config, int(run), path, job if job and os.path.isdir(job) else None))
+    for config, run_id in run_dirs(campaign_dir):
+        path = os.path.join(campaign_dir, config, str(run_id))
+        target = links.get(f"{config}/{run_id}/job")
+        job = os.path.normpath(os.path.join(path, target)) if target else None
+        runs.append(Run(config, run_id, path, job if job and os.path.isdir(job) else None))
     return runs
 
 
@@ -205,10 +197,12 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
         report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
                                                    sum(sizes.values()))
         recording_rows = TableBuffer(RECORDING_TABLE)
+        run_bag_tables: set = set()
         for role, bag_dir, owner in sources:
             recorded = recorded_topics(bag_dir)
             plan = plan_for(role, recorded, groups.get(role))
             known_tables.update(plan.tables)
+            run_bag_tables.update(plan.tables)
             handlers, _unknown = narrow(plan, wanted_tables)
             size = sizes[os.path.relpath(bag_dir, campaign_dir)]
             context = _context(campaign_id, role, owner, runs_of_job)
@@ -236,7 +230,8 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
                 for table, buf in handler.buffers.items():
                     if wanted_tables is not None and table not in wanted_tables:
                         continue
-                    arrow = buf.to_arrow(handler.orders.get(table), context=context["columns"])
+                    arrow = with_yaw(buf.to_arrow(handler.orders.get(table),
+                                                  context=context["columns"]))
                     rel = run_table_path(campaign_dir, table, *context["path"])
                     write_table(campaign_dir, rel, arrow)
                     written.append((table, rel, arrow))
@@ -253,9 +248,78 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
                 write_manifest(campaign_dir, fresh)
         if not report_current and sources:
             _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
+            report.built.setdefault(RECORDING_TABLE, []).append(run.key)
+        elif sources:
+            report.skipped.setdefault(RECORDING_TABLE, []).append(run.key)
+        _build_files(campaign_dir, campaign_id, run, wanted_tables, force, report, known_tables,
+                     reserved=run_bag_tables | DERIVED_TABLES)
+        if wanted_tables is not None:
+            _record_absent(campaign_dir, run, wanted_tables, report, sizes)
     if wanted_tables is not None:
         report.unknown = [t for t in wanted_tables if t not in known_tables]
     return report
+
+
+def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, force: bool,
+                 report: BuildReport, known_tables: set, reserved) -> None:
+    """The run's own ``*.csv``/``*.jsonl`` files as tables (:mod:`robovast_decode.authored`)."""
+    files = run_files(run.path, reserved=reserved)
+    for table, reason in files.refused.items():
+        known_tables.add(table)
+        if wanted_tables is None or table in wanted_tables:
+            report.failed.setdefault(table, {})[run.key] = reason
+    manifest = read_manifest(campaign_dir)
+    columns = {"campaign_id": campaign_id, "config_name": run.config_name,
+               "run_id": run.run_id}
+    complete = os.path.isfile(os.path.join(run.path, "test.xml"))
+    written = []
+    for table, path in files.tables.items():
+        known_tables.add(table)
+        if wanted_tables is not None and table not in wanted_tables:
+            continue
+        size = os.path.getsize(path)
+        if not force and _is_current(manifest, table, run.key, size):
+            report.skipped.setdefault(table, []).append(run.key)
+            continue
+        try:
+            rows = read_rows(path)
+        except (RaggedFile, OSError, ValueError) as exc:
+            report.failed.setdefault(table, {})[run.key] = (
+                f"{os.path.relpath(path, run.path)}: {exc}")
+            continue
+        if not rows:
+            continue
+        arrow = to_arrow(rows, context=columns)
+        rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
+        write_table(campaign_dir, rel, arrow)
+        written.append((table, rel, arrow, os.path.relpath(path, campaign_dir), size))
+    if written:
+        with manifest_lock(campaign_dir):
+            fresh = read_manifest(campaign_dir)
+            for table, rel, arrow, source, size in written:
+                record_run_table(fresh, table, run.key, files=[rel], rows=arrow.num_rows,
+                                 schema=arrow.schema, sources={source: size},
+                                 complete=complete)
+                report.built.setdefault(table, []).append(run.key)
+            write_manifest(campaign_dir, fresh)
+
+
+def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildReport,
+                   sizes: dict) -> None:
+    """Enter the asked-for tables *run* has no rows for, and why where a build failed."""
+    have = {t for t, keys in report.built.items() if run.key in keys}
+    have |= {t for t, keys in report.skipped.items() if run.key in keys}
+    missing = [t for t in wanted_tables if t not in have]
+    if not missing:
+        return
+    complete = os.path.isfile(os.path.join(run.path, "test.xml"))
+    with manifest_lock(campaign_dir):
+        manifest = read_manifest(campaign_dir)
+        for table in missing:
+            reason = report.failed.get(table, {}).get(run.key)
+            record_run_absent(manifest, table, run.key, sources=sizes, complete=complete,
+                              reason=reason)
+        write_manifest(campaign_dir, manifest)
 
 
 def _context(campaign_id: str, role: str, owner: Run, runs_of_job: Dict[str, List[Run]]) -> dict:
@@ -304,29 +368,53 @@ def _write_recording(campaign_dir: str, campaign_id: str, run: Run, buf: TableBu
         write_manifest(campaign_dir, manifest)
 
 
-def available_tables(campaign_dir: str, config: Optional[dict] = None) -> Dict[str, dict]:
-    """``{table: {"runs": n buildable, "built": n built}}`` without building anything."""
+def available_tables(campaign_dir: str, config: Optional[dict] = None,
+                     runs: Optional[Iterable[str]] = None) -> Dict[str, dict]:
+    """``{table: {"runs": n, "built": n, "failed": {run: reason}}}`` without building anything.
+
+    ``runs`` counts the runs (or, for a job that ran several, the jobs) whose records can yield
+    the table, ``built`` those it is built for. *runs* limits both to those ``config/run`` keys.
+    """
     campaign_dir = os.path.abspath(campaign_dir)
     groups = _groups(config)
     manifest = read_manifest(campaign_dir)
-    out: Dict[str, dict] = {}
+    wanted = set(runs) if runs is not None else None
+    all_runs = find_runs(campaign_dir)
+    runs_of_job: Dict[str, List[Run]] = {}
+    for run in all_runs:
+        if run.job_dir:
+            runs_of_job.setdefault(run.job_dir, []).append(run)
+    keys: Dict[str, set] = {}
     seen_jobs = set()
-    for run in find_runs(campaign_dir):
+    for run in all_runs:
+        if wanted is not None and run.key not in wanted:
+            continue
         sources = [(SCENARIO_BAG, scenario_recording(run))]
         if run.job_dir and run.job_dir not in seen_jobs:
             seen_jobs.add(run.job_dir)
             infra = os.path.join(run.job_dir, INFRA_BAG)
             if os.path.isdir(infra):
                 sources.append((INFRA_BAG, infra))
+        bag_tables = set()
         for role, bag_dir in sources:
             if bag_dir is None:
                 continue
+            key = _context("", role, run, runs_of_job)["key"]
             for table in plan_for(role, recorded_topics(bag_dir), groups.get(role)).tables:
-                out.setdefault(table, {"runs": 0, "built": 0})["runs"] += 1
-    for table, entry in manifest.get("tables", {}).items():
-        out.setdefault(table, {"runs": 0, "built": 0})["built"] = len(entry.get("runs", {}))
+                bag_tables.add(table)
+                keys.setdefault(table, set()).add(key)
+        for table in run_files(run.path, reserved=bag_tables | DERIVED_TABLES).tables:
+            keys.setdefault(table, set()).add(run.key)
+    out: Dict[str, dict] = {}
+    for table, table_keys in keys.items():
+        entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
+        built = [k for k in table_keys if k in entries and not entries[k].get("reason")]
+        failed = {k: entries[k]["reason"] for k in table_keys
+                  if k in entries and entries[k].get("reason")}
+        out[table] = {"runs": len(table_keys), "built": len(built), "failed": failed}
     return out
 
 
-__all__ = ["BuildReport", "JOB_LINKS", "RECORDING_TABLE", "Run", "available_tables", "build",
-           "find_runs", "job_links", "recorded_topics", "scenario_recording"]
+__all__ = ["BuildReport", "DERIVED_TABLES", "RECORDING_TABLE", "Run",
+           "available_tables", "build", "find_runs", "recorded_topics",
+           "scenario_recording"]

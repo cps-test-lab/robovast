@@ -23,11 +23,11 @@ import math
 
 import pytest
 
-from robovast.results_processing.csv_types import REAL, TEXT, infer_column_types
 from robovast.results_processing.data.rosbags_common import (decode_numeric_array,
                                                              gen_msg_values,
                                                              is_numeric_array_cell,
                                                              numeric_array_dtype)
+from robovast_decode.types import REAL, TEXT, infer_column_types
 
 
 class _Msg:

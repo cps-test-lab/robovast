@@ -18,7 +18,7 @@ import time
 import pytest
 
 from robovast.results_processing import index_schema
-from robovast.results_processing.csv_types import INTEGER, REAL, TEXT, UNKNOWN
+from robovast_decode.types import INTEGER, REAL, TEXT, UNKNOWN
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
@@ -111,7 +111,7 @@ def test_an_integer_column_widens_to_real_in_place(conn):
 
 
 def test_one_stray_label_demotes_a_numeric_column_to_text(conn):
-    """``csv_types``' strict rule, surviving into the index: numbers become text.
+    """``robovast_decode.types``' strict rule, surviving into the index: numbers become text.
 
     The stored number must come across as its own text, because a query that was
     averaging the column will now see strings and must at least see the right ones.

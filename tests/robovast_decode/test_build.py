@@ -40,10 +40,11 @@ def test_the_recording_report_says_what_was_not_tabulated_and_why(campaign):
 
 def test_only_the_named_table_is_built_and_a_second_build_does_nothing(campaign):
     first = build(str(campaign), tables=["poses"])
-    assert first.built == {"poses": ["cfg/0"]}
+    assert first.built == {"poses": ["cfg/0"], "_recording": ["cfg/0"]}
     assert set(_manifest(campaign)["tables"]) == {"poses", "_recording"}
     second = build(str(campaign), tables=["poses"])
-    assert second.built == {} and second.skipped == {"poses": ["cfg/0"]}
+    assert second.built == {}
+    assert second.skipped == {"poses": ["cfg/0"], "_recording": ["cfg/0"]}
 
 
 def test_a_grown_recording_is_built_again(campaign):
@@ -51,7 +52,7 @@ def test_a_grown_recording_is_built_again(campaign):
     with open(campaign / "cfg" / "0" / "rosbag2" / "rosbag2_0.mcap", "ab") as fh:
         fh.write(b"\x00")                                 # the bytes changed: stale
     assert build(str(campaign), tables=["rosbag2_collision"]).built == {
-        "rosbag2_collision": ["cfg/0"]}
+        "rosbag2_collision": ["cfg/0"], "_recording": ["cfg/0"]}
 
 
 def test_a_required_frame_that_never_resolves_fails_its_table_only(campaign):
@@ -105,3 +106,92 @@ def test_the_command_line_builds_and_lists(campaign, capsys):
     out = capsys.readouterr().out
     assert "built   costmaps: 1 run(s)" in out
     assert "costmaps" in out and "built for 1 of 1" in out
+
+
+def test_a_runs_own_data_files_are_tables_typed_by_their_values(campaign):
+    run = campaign / "cfg" / "0"
+    (run / "out.csv").write_text("# units: m\ndistance,label,missing\n1.5,a,\ninf,007,\n")
+    (run / "behaviors.jsonl").write_text(
+        '{"format": "behavior_tree_log"}\n'
+        '{"id": 1, "name": "root", "status": "RUNNING", "is_active": true}\n')
+    report = build(str(campaign), tables=["out", "behaviors"])
+    assert not report.failed
+    out = pq.read_table(campaign / ".cache" / "tables" / "out" / "cfg" / "0.parquet")
+    assert out.schema.field("distance").type == "double"
+    assert out.column("label").to_pylist() == ["a", "007"]       # leading zero: text
+    assert out.column("distance").to_pylist()[1] == float("inf")
+    behaviors = pq.read_table(campaign / ".cache" / "tables" / "behaviors" / "cfg" / "0.parquet")
+    row = behaviors.to_pylist()[0]
+    assert (row["status"], row["status_name"], row["is_active"]) == (2, "RUNNING", 1)
+
+
+def test_a_data_file_claiming_a_built_table_is_refused_by_name(campaign):
+    (campaign / "cfg" / "0" / "poses.csv").write_text("frame,timestamp\nx,1\n")
+    report = build(str(campaign), tables=["poses"])
+    assert "poses.csv" in report.failed["poses"]["cfg/0"]
+
+
+def test_a_ragged_file_fails_its_own_table_only(campaign):
+    (campaign / "cfg" / "0" / "bad.csv").write_text("a,b\n1,2,3\n")
+    (campaign / "cfg" / "0" / "good.csv").write_text("a,b\n1,2\n")
+    report = build(str(campaign), tables=["bad", "good"])
+    assert "more fields than its header" in report.failed["bad"]["cfg/0"]
+    assert report.built["good"] == ["cfg/0"]
+
+
+def test_a_pose_table_gets_its_heading(campaign):
+    build(str(campaign), tables=["poses"], config={"groups": []})
+    poses = pq.read_table(campaign / ".cache" / "tables" / "poses" / "cfg" / "0.parquet")
+    assert "orientation.yaw" in poses.column_names
+
+
+def test_a_table_a_run_has_nothing_for_is_recorded_so_it_is_not_looked_for_again(campaign):
+    build(str(campaign), tables=["rosbag2_nope"])
+    entry = _manifest(campaign)["tables"]["rosbag2_nope"]["runs"]["cfg/0"]
+    assert entry["files"] == [] and entry["rows"] == 0 and entry["complete"] is True
+    assert entry["reason"] is None
+
+
+def test_a_failed_table_is_recorded_with_its_reason_and_counted_as_failed(campaign):
+    config = {"groups": [{"bag_dir": "rosbag2", "plugins": [
+        {"type": "tf_to_csv", "frames": "all", "require": ["nowhere"]}]}]}
+    build(str(campaign), tables=["poses"], config=config)
+    entry = _manifest(campaign)["tables"]["poses"]["runs"]["cfg/0"]
+    assert entry["files"] == [] and "nowhere" in entry["reason"]
+    counts = available_tables(str(campaign), config=config)["poses"]
+    assert counts["built"] == 0 and "nowhere" in counts["failed"]["cfg/0"]
+
+
+def test_the_catalog_counts_the_runs_a_table_is_built_for(tmp_path):
+    campaign = make_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1)))
+    build(str(campaign), tables=["rosbag2_collision"], runs=["cfg/1"])
+    counts = available_tables(str(campaign))["rosbag2_collision"]
+    assert counts == {"runs": 2, "built": 1, "failed": {}}
+    assert available_tables(str(campaign), runs=["cfg/1"])["rosbag2_collision"]["runs"] == 1
+
+
+def test_a_schema_is_stored_once_however_many_runs_share_it(tmp_path):
+    campaign = make_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1), ("cfg", 2)))
+    build(str(campaign), tables=["rosbag2_collision"])
+    manifest = _manifest(campaign)
+    ids = {e["schema"] for e in manifest["tables"]["rosbag2_collision"]["runs"].values()}
+    assert len(ids) == 1
+    assert ["run_id", "int64"] in manifest["schemas"][ids.pop()]
+
+
+def test_a_data_files_columns_are_read_from_its_header_alone(campaign):
+    from robovast_decode.authored import header
+
+    path = campaign / "cfg" / "0" / "sim_poses.csv"
+    path.write_text("# frame is the body\nframe,position.x,position.y\nrobot,1,2\n")
+    assert header(str(path)) == ["frame", "position.x", "position.y"]
+    jsonl = campaign / "cfg" / "0" / "behaviors.jsonl"
+    jsonl.write_text('{"format": "behavior_tree_log"}\n')
+    assert header(str(jsonl)) is None
+
+
+def test_naming_the_recording_report_builds_it_and_nothing_else(campaign):
+    report = build(str(campaign), tables=["_recording"])
+    assert report.built == {"_recording": ["cfg/0"]}
+    entry = _manifest(campaign)["tables"]["_recording"]["runs"]["cfg/0"]
+    assert entry["files"] and entry["rows"] > 0

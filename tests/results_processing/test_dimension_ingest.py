@@ -197,7 +197,7 @@ def test_the_context_index_covers_the_campaign(conn, tmp_path):
 
 def test_metric_and_dimension_tables_share_the_campaign_scope(conn, tmp_path):
     """The join that makes the mirror worth doing: a run's record beside its metrics."""
-    from robovast.results_processing.csv_types import REAL
+    from robovast_decode.types import REAL
     from robovast.results_processing.row_sink import PostgresRowSink
 
     dimension_ingest.mirror_campaign_record(conn, _store(tmp_path), "camp-a")

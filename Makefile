@@ -403,15 +403,15 @@ publish-client: build-client
 	cd src/robovast_client && poetry publish
 
 # Post-release stamped and repeatable, for the same reason publish-client-test is; see the
-# comment there and tools/next_testpypi_version.py. One stamp for all five, because
+# comment there and tools/next_testpypi_version.py. One stamp for all six, because
 # `robovast` requires its siblings at exactly the version being released: a number free on
 # every one of their TestPyPI histories is the only one the pin can resolve to. The root's
 # path dependencies are rewritten to that pin the way the publish workflow does it
 # (tools/pin_released_siblings.py), so the rehearsal uploads the wheel the release will --
 # a path dependency reaches the metadata as a direct reference, which the index refuses.
 #
-# Order follows the dependency edges: client and sim-roqsim (pinned by robovast), then
-# robovast, then nav and cluster (which require it) -- each has to be on the index by the
+# Order follows the dependency edges: client, sim-roqsim and decode (pinned by robovast),
+# then robovast, then nav and cluster (which require it) -- each has to be on the index by the
 # time the next one's install is resolved. It does NOT depend on `build`, which builds at
 # the tree's plain version; every manifest is restored on the way out, including on failure.
 #
@@ -422,9 +422,9 @@ publish-test: ui-stage
 	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
 	@set -e; \
 	base=$$(poetry version -s); \
-	stamp=$$(python3 tools/next_testpypi_version.py "$$base" robovast robovast-client robovast-nav robovast-cluster robovast-sim-roqsim); \
+	stamp=$$(python3 tools/next_testpypi_version.py "$$base" robovast robovast-client robovast-nav robovast-cluster robovast-sim-roqsim robovast-decode); \
 	echo "Rehearsing the set as $$stamp; every pyproject.toml stays at $$base."; \
-	for spec in "robovast-client:src/robovast_client" "robovast-sim-roqsim:src/robovast_sim_roqsim" "robovast:." "robovast-nav:src/robovast_nav" "robovast-cluster:src/robovast_cluster"; do \
+	for spec in "robovast-client:src/robovast_client" "robovast-sim-roqsim:src/robovast_sim_roqsim" "robovast-decode:src/robovast_decode" "robovast:." "robovast-nav:src/robovast_nav" "robovast-cluster:src/robovast_cluster"; do \
 		dist=$${spec%%:*}; dir=$${spec#*:}; \
 		echo "Publishing $$dist $$stamp to TestPyPI..."; \
 		( cd "$$dir" && \

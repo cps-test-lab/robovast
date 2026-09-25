@@ -74,13 +74,13 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        job_artifact_rel, node_label, read_job_links,
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
-from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
                                          refuse_unimportable,
                                          ShareStopped)
 from robovast.execution.campaign_archive import job_documents
 from robovast.execution.packer import build_jobs
+from robovast_decode.quantity import to_bytes
 
 from . import pod_access, pod_upload
 from .cluster_context import resolve_resources
@@ -454,7 +454,7 @@ def _declared_cores(declared: dict):
     form leaves calibration exactly as it was rather than clamping against a number that is
     not one.
     """
-    from robovast.common.quantity import to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_cores  # noqa: PLC0415
 
     raw = declared.get("cpu_limit") or declared.get("cpu")
     if not raw:
@@ -1964,7 +1964,7 @@ class BatchJobRunner:
         impossible rather than believed as a peak. Without it the probe's bring-up samples
         size a node from numbers no cgroup could produce.
         """
-        from robovast.common.quantity import to_cores  # noqa: PLC0415
+        from robovast_decode.quantity import to_cores  # noqa: PLC0415
 
         limits = {}
         plan = getattr(self, "plan", None)

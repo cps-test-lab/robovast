@@ -15,7 +15,7 @@ import pytest
 
 from robovast.common.errors import TableColumnLimitExceeded
 from robovast.results_processing import index_schema
-from robovast.results_processing.csv_types import REAL
+from robovast_decode.types import REAL
 
 
 class _ExplodingConn:

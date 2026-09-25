@@ -9,9 +9,9 @@ import pytest
 
 import robovast.execution.cluster_execution.postprocess_job as pj
 from robovast.common.index_db import DSN_ENV
-from robovast.common.quantity import to_bytes, to_cores
 from robovast.execution.cluster_execution import pod_access
 from robovast.results_processing.postprocessing import POSTPROCESS_CONVERT_DEFAULTS
+from robovast_decode.quantity import to_bytes, to_cores
 
 from .image_steps_helper import CMDS, steps, stub_image_steps
 

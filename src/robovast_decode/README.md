@@ -15,6 +15,10 @@ robovast-decode tables  path/to/campaign            # what the recordings can gi
 robovast-decode build   path/to/campaign --table poses
 ```
 
+A run's own `*.csv` and `*.jsonl` files are tables too, named after the file and typed from
+their values, and `runs` -- one row per run with its outcome, host and every varied factor as a
+typed `param_*` column -- is read from the campaign's `campaign.db` (`robovast_decode.runs`).
+
 A table is built for a run once and kept; building again rebuilds only what changed. The
 tables are the same ones a RoboVAST service builds, row for row: a pose is resolved with
 `tf2`'s own rules (its caches, its extrapolation refusals, its interpolation), not with a

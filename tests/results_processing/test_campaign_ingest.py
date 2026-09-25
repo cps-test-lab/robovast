@@ -15,8 +15,8 @@ import sqlite3
 import pytest
 
 from robovast.results_processing import campaign_ingest, index_schema
-from robovast.results_processing.csv_types import REAL
 from robovast.results_processing.row_sink import PostgresRowSink
+from robovast_decode.types import REAL
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
@@ -84,7 +84,7 @@ def test_rows_are_scoped_by_campaign_config_and_run(conn, tmp_path):
 
 
 def test_types_are_inferred_so_ordering_is_numeric(conn, tmp_path):
-    """The failure csv_types exists to prevent: '10.022' sorting before '9.5'."""
+    """The failure the type inference exists to prevent: '10.022' sorting before '9.5'."""
     campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
 
     types = dict(conn.execute(
@@ -282,7 +282,7 @@ def test_clear_campaign_on_an_empty_index_is_not_an_error(conn):
 
 def test_a_sink_written_row_and_an_ingested_row_share_one_table(conn, tmp_path):
     """The RowSink seam and the CSV glob are two sources, not two schemas."""
-    from robovast.results_processing.csv_types import TEXT
+    from robovast_decode.types import TEXT
 
     campaign_ingest.ingest_campaign(conn, _campaign(tmp_path), "camp-a")
     PostgresRowSink(conn, campaign_id="camp-b").write(

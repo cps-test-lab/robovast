@@ -62,9 +62,9 @@ from robovast.common import log_summary, scenario_markers
 from robovast.common.campaign_data import PROBE_DIR
 from robovast.common.execution import (COMPAT_VERSION, MIN_IMAGE_COMPAT,
                                        is_campaign_dir)
-from robovast.common.quantity import to_bytes, to_cores
 from robovast.common.results_utils import campaign_vast
 from robovast.common.stop import terminate_group, watch_stop
+from robovast_decode.quantity import to_bytes, to_cores
 
 logger = logging.getLogger(__name__)
 

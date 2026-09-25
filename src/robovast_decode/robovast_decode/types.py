@@ -14,46 +14,44 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Column typing for the CSV -> results-index ingest: infer, declare, convert.
+"""Column typing for tables read from CSV and JSONL files: infer, then convert.
 
-Every value a CSV yields is a string, so a column ingested verbatim lands in a
-``TEXT`` column and every comparison over it becomes lexicographic. That failure
-is silent and plausible: ``ORDER BY timestamp`` puts ``"10.022"`` before
-``"9.5"``, so a trajectory comes out shuffled and its path length is wrong by a
-factor, not by an error. This module decides, per column, whether the CSV's own
-values say the column is numeric, and converts them so the index stores real
-``INTEGER``/``REAL`` values and plain SQL means what it says.
+Every value a CSV yields is a string, so a column taken verbatim is text and every
+comparison over it becomes lexicographic. That failure is silent and plausible:
+``ORDER BY timestamp`` puts ``"10.022"`` before ``"9.5"``, so a trajectory comes out
+shuffled and its path length is wrong by a factor, not by an error. This module decides,
+per column, whether the file's own values say the column is numeric, and converts them so
+the table stores real integers and doubles and plain SQL means what it says.
 
 The rule is deliberately strict — a column is numeric only if *every* non-empty
 value in it is a number:
 
 * ``"1"``, ``"-3"``                       -> ``INTEGER``
 * ``"1.5"``, ``"-0.5"``, ``"1e-3"``       -> ``REAL`` (any ``.`` or exponent)
-* ``"inf"``, ``"-inf"``, ``"nan"``        -> ``REAL``, stored as ``double precision``'s own
-  ``Infinity``, ``-Infinity``, ``NaN``
+* ``"inf"``, ``"-inf"``, ``"nan"``        -> ``REAL``, stored as the double's own infinity
+  and NaN
 * ``""``                                  -> ``NULL``, and no evidence either way
 * anything else, including ``"1e999"``,
   ``"1,5"``, ``"007"``                    -> ``TEXT``, stored verbatim
 
 **A non-finite value is a measurement, so it is stored as one.** "No return", "no
 trajectory came back, so the path length is infinite" and "the ratio had no denominator"
-are results a query has to be able to find, and ``double precision`` holds them as values
-that order and compare: infinity above every number, ``NaN`` equal to itself and above
-infinity. They stay distinct from the ``NULL`` that means nothing was measured, and the
+are results a query has to be able to find, and a double holds them as values that order
+and compare. They stay distinct from the ``NULL`` that means nothing was measured, and the
 column stays numeric, so one censored trial does not turn a column of numbers into text.
 
 Two exclusions are load-bearing rather than fussy. Leading zeros mark an identifier whose
 text matters (``"007"`` must not become ``7``), and a finite literal no number column can
-hold is refused rather than mangled: one that overflows ``double precision`` (``"1e999"``
-would become an infinity nobody measured) and an integer past ``bigint``'s 8 bytes. In
+hold is refused rather than mangled: one that overflows a double (``"1e999"`` would become
+an infinity nobody measured) and an integer past 8 bytes. In
 either case the whole column stays ``TEXT`` and the raw strings survive for inspection.
 
 **A container is JSON-encoded with** ``allow_nan=False``. JSON has no token for a
 non-finite number, and Python's ``json`` writes ``Infinity``, ``-Infinity`` and ``NaN``
 anyway, reading them back without complaint -- so a record carrying one looks right until
-SQL casts the column to ``jsonb``, and Postgres then fails the *whole query*, not the
-offending row. Inside a container each non-finite float is written as the string
-``"inf"``, ``"-inf"`` or ``"nan"`` (:data:`NON_FINITE_TEXT`) instead.
+a query parses the column as JSON and fails on the whole column, not the offending row.
+Inside a container each non-finite float is written as the string ``"inf"``, ``"-inf"`` or
+``"nan"`` (:data:`NON_FINITE_TEXT`) instead.
 """
 
 import json
@@ -78,10 +76,9 @@ _REAL_MARKER_RE = re.compile(r"[.eE]")
 TEXT = "TEXT"
 REAL = "REAL"
 INTEGER = "INTEGER"
-#: No evidence yet: the column has been seen but held only empty values. A verdict,
-#: not SQL — :func:`column_def` declares such a column with no type at all (BLOB
-#: affinity), so a later run's numbers are stored as numbers instead of being
-#: coerced to strings by a premature ``TEXT`` declaration.
+#: No evidence yet: the column has been seen but held only empty values. Written as a
+#: column of nulls, so another run's numbers for the same column stay numbers when the
+#: runs are read as one table instead of being coerced to text by a premature verdict.
 UNKNOWN = "UNKNOWN"
 
 # Widest wins: one text value makes the column text, one real value makes an
@@ -89,8 +86,8 @@ UNKNOWN = "UNKNOWN"
 _RANK = {UNKNOWN: 0, INTEGER: 1, REAL: 2, TEXT: 3}
 
 
-# ``bigint`` holds integers in 8 bytes; a wider one would fail the insert, so it stays
-# text (a 20-digit id is not a quantity anyone averages).
+# An integer column holds 8 bytes; a wider value stays text (a 20-digit id is not a
+# quantity anyone averages).
 _INT64_MIN, _INT64_MAX = -2**63, 2**63 - 1
 
 
@@ -153,13 +150,8 @@ def coerce(value, col_type: str):
     if value is None or value == "":
         return None
     # A genuine JSON boolean, which only a .jsonl source produces -- `behaviors.jsonl`
-    # carries `is_active`. Stored as 1/0, which is what sqlite3 did with a Python bool
-    # whatever the column's declared type, so the values match what data.db held.
-    #
-    # Not cosmetic: psycopg adapts a bool to Postgres' own `t`/`f` literal, and COPY into
-    # the bigint that `infer_column_types` declares for it (bool IS an int in Python, so
-    # it is judged INTEGER) fails with `invalid input syntax for type bigint: "f"`. That
-    # took down a whole campaign's postprocessing after the runs had already been paid for.
+    # carries `is_active`. Stored as 1/0: a bool IS an int in Python, so the column is
+    # judged INTEGER, and the value has to be one.
     if isinstance(value, bool):
         return int(value)
     if col_type not in (INTEGER, REAL) or not isinstance(value, str):
@@ -172,8 +164,7 @@ def coerce(value, col_type: str):
 
 #: The spelling each non-finite float takes inside a JSON-encoded container, where JSON has
 #: no token for one, in the order ``+inf``, ``-inf``, ``nan``. These are what
-#: :func:`float` parses and what Postgres accepts for ``double precision``, so
-#: ``(col::jsonb ->> 0)::double precision`` reads one back as the number.
+#: :func:`float` parses, and what a SQL cast to a double reads back as the number.
 NON_FINITE_TEXT = ("inf", "-inf", "nan")
 _POSITIVE_INFINITY, _NEGATIVE_INFINITY, _NOT_A_NUMBER = NON_FINITE_TEXT
 
@@ -193,39 +184,25 @@ def as_stored(value):
 
 
 def json_text(value, **dumps_kwargs) -> str:
-    """*value* JSON-encoded for a column SQL casts to ``jsonb``.
+    """*value* JSON-encoded for a column a query may parse as JSON.
 
     ``allow_nan=False`` is the guard behind :func:`as_stored`: a float that reaches the
-    encoder non-finite raises here, inside the ingest and naming the value, instead of
-    being written as a token that breaks every later query over the column.
+    encoder non-finite raises here, while the table is built and naming the value, instead
+    of being written as a token that breaks every later query over the column.
     """
     return json.dumps(as_stored(value), allow_nan=False, **dumps_kwargs)
 
 
-def sql_value(value, col_type: str):
-    """A CSV or param value ready to insert: containers JSON-encoded, numbers typed.
+def stored_value(value, col_type: str):
+    """A file or param value as its column stores it: containers JSON-encoded, numbers typed.
 
-    A non-finite number on its own goes to the driver as the float it is, which
-    ``double precision`` stores natively; inside a container it is written as its
-    :data:`NON_FINITE_TEXT` spelling (:func:`json_text`).
+    A non-finite number on its own is the float it is; inside a container it is written as
+    its :data:`NON_FINITE_TEXT` spelling (:func:`json_text`). In a ``TEXT`` column every value
+    is text: a number that shares the column with a label is stored as it is spelled.
     """
     if isinstance(value, (list, dict)):
         return json_text(value)
-    return coerce(value, col_type)
-
-
-def column_def(name: str, col_type: str) -> str:
-    """A column definition for DDL; :data:`UNKNOWN` declares no type at all."""
-    return f'"{name}"' if col_type == UNKNOWN else f'"{name}" {col_type}'
-
-
-def cast_expr(name: str, col_type: str) -> str:
-    """A SELECT expression re-typing an already-stored column to *col_type*.
-
-    Used when a table is rebuilt because later runs widened a column: the values in it
-    were converted under the old, narrower verdict and have to be brought over as the
-    new type so storage matches the declaration. ``CAST`` reformats a number on its
-    way to ``TEXT`` (``1e-3`` was already stored as ``0.001``), which is the price of
-    a homogeneous column; the value itself is preserved.
-    """
-    return f'"{name}"' if col_type == UNKNOWN else f'CAST("{name}" AS {col_type})'
+    stored = coerce(value, col_type)
+    if col_type == TEXT and stored is not None and not isinstance(stored, str):
+        return str(stored)
+    return stored

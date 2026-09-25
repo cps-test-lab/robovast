@@ -23,7 +23,7 @@ from typing import Annotated, Any, ClassVar, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from robovast.common.quantity import to_bytes, to_cores
+from robovast_decode.quantity import to_bytes, to_cores
 
 logger = logging.getLogger(__name__)
 

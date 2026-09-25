@@ -60,9 +60,10 @@ that matters — can decline what it does not.
      - navigation variation types and panels; the roqsim simulator backend
      - per package
    * - ``robovast-decode``
-     - tables from a campaign's recordings: an mcap reader that follows a file as it is
+     - tables from a campaign's records: an mcap reader that follows a file as it is
        written, ROS 2 message definitions from the recording itself, ``tf2``-exact pose
-       resolution, parquet tables under the campaign's ``.cache/``; the
+       resolution, a run's own CSV and JSONL files typed from their values, the ``runs``
+       table from ``campaign.db``, parquet tables under the campaign's ``.cache/``; the
        ``robovast-decode`` command
      - ``mcap``, ``rosbags``, ``pyarrow`` -- pure Python, no ROS
 
@@ -934,7 +935,7 @@ from the tool output an assistant already reads, not only from this page.
 untyped ingest makes every comparison lexicographic — ``ORDER BY timestamp`` puts
 ``"10.022"`` before ``"9.5"``, shuffling a trajectory and producing a path length that is
 wrong by a factor rather than an error. So ingest infers a type per column
-(:mod:`robovast.results_processing.csv_types`): a column whose every non-empty value is a
+(:mod:`robovast_decode.types`): a column whose every non-empty value is a
 number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything else stays
 ``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the column, and
 ``"007"`` is text, because a zero-padded identifier must keep its text.

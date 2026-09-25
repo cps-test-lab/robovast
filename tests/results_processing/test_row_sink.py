@@ -14,8 +14,8 @@ import os
 
 import pytest
 
-from robovast.results_processing.csv_types import INTEGER, REAL, TEXT
 from robovast.results_processing.row_sink import PostgresRowSink
+from robovast_decode.types import INTEGER, REAL, TEXT
 
 DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
@@ -40,7 +40,7 @@ def test_declared_types_are_written_as_numbers_not_strings(conn):
     """The bag path: the schema says what the column is, so no value is scanned.
 
     Asserted on the stored Python type, because storing ``0.5`` as ``'0.5'`` is the
-    failure ``csv_types`` exists to prevent and it is invisible until an ``ORDER BY``.
+    failure ``robovast_decode.types`` exists to prevent and it is invisible until an ``ORDER BY``.
     """
     sink = PostgresRowSink(conn, campaign_id="camp-1")
     rows = [{"timestamp": 0.5, "frame": "base_link"},
@@ -104,7 +104,7 @@ def test_without_declared_types_the_values_decide(conn):
 
 
 def test_one_stray_label_keeps_the_whole_column_text(conn):
-    """``csv_types``' strict rule, reaching the index: the raw strings survive."""
+    """``robovast_decode.types``' strict rule, reaching the index: the raw strings survive."""
     sink = PostgresRowSink(conn, campaign_id="camp-1")
     rows = [{"value": "1"}, {"value": "n/a"}, {"value": "3"}]
 
