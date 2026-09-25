@@ -286,6 +286,10 @@ every later ``2.1.x``, so pin the full version. The tag is never taken from the 
 ``vast``, so installing a release does not move the images: set the tag to match it.
 For a set of your own, ``make release-images TAG=<tag>`` publishes one.
 
+Two branch tags float as ``latest`` does, each moved by every push to its branch: ``main``,
+the released line, and ``next``, where the next minor release is developed. A deployment
+that tries what is coming runs ``ROBOVAST_PROJECT_TAG=next``.
+
 Resolving to a floating tag logs a warning naming the image, so an unpinned deployment
 says so rather than looking identical to a pinned one.
 

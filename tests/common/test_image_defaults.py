@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from robovast.common.execution import (DEFAULT_BRANCH_IMAGE_TAG, FAMILY_MEMBERS,
+from robovast.common.execution import (BRANCH_IMAGE_TAGS, FAMILY_MEMBERS,
                                        FLOATING_IMAGE_TAG, MEMBER_ROBOVAST, MEMBER_ROQSIM,
                                        default_image_tag, is_floating_image_tag,
                                        resolve_family_image)
@@ -52,21 +52,21 @@ def test_the_default_tag_is_one_ci_publishes_on_every_merge(monkeypatch):
     assert "type=raw,value=latest,enable={{is_default_branch}}" in workflow
 
 
-def test_the_branch_tag_is_the_one_branch_ci_publishes_on_push():
-    """``type=ref,event=branch`` tags a push with its branch's name, and the workflow builds
-    pushes to one branch: that name is the tag which floats beside ``latest``."""
+def test_the_branch_tags_are_the_branches_ci_publishes_on_push():
+    """``type=ref,event=branch`` tags a push with its branch's name, so the branches the
+    workflow builds pushes for are exactly the tags that float beside ``latest``."""
     workflow = WORKFLOW.read_text()
     push = re.search(r"\n  push:\n    branches:\n((?:      - .+\n)+)", workflow)
     assert push, "image.yml no longer lists the branches whose pushes it builds"
     branches = re.findall(r"- (\S+)", push.group(1))
-    assert branches == [DEFAULT_BRANCH_IMAGE_TAG]
+    assert set(branches) == set(BRANCH_IMAGE_TAGS)
     assert "type=ref,event=branch" in workflow and "type=ref,event=pr" in workflow
 
 
 @pytest.mark.parametrize("reference, floats", [
-    ("latest", True), ("main", True), ("pr-691", True),
+    ("latest", True), ("main", True), ("next", True), ("pr-691", True),
     ("2.2.0", False), ("2.2", False), ("2026-08-17", False), ("sha256:aaa", False),
-    ("pr-", False), ("main-2", False),
+    ("pr-", False), ("main-2", False), ("next-2", False),
 ])
 def test_a_tag_floats_only_where_ci_moves_it(reference, floats):
     assert is_floating_image_tag(reference) is floats

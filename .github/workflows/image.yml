@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - main
+      - next
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+      - next
   workflow_dispatch:
 
 # Two pushes to main minutes apart otherwise both run to completion, each publishing the same
@@ -178,16 +180,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:base-${{ matrix.slug }}"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
@@ -418,16 +429,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:roqsim-${{ matrix.slug }}"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
@@ -735,16 +755,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:sidecar"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
@@ -830,16 +859,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:controller"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
