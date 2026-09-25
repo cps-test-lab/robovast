@@ -1747,7 +1747,10 @@ to ``--topics`` and an entry starting with ``^`` is a regex for ``-e``; ``exclud
 ``--exclude-regex``, ``exclude_types`` is ``--exclude-topic-types`` and ``use_sim_time`` is
 ``--use-sim-time``. ``use_sim_time: true`` is what every campaign that reads its tables in sim
 seconds wants (see :ref:`one clock per run <run-clock>`); the default is rosbag2's own,
-``false``.
+``false``. Hidden topics are always admitted (``--include-hidden-topics``): an action's
+``/<name>/_action/feedback`` and ``status`` are hidden, rosbag2 drops a hidden topic even when
+``topics`` names it, and the ``action_<name>_feedback``/``_status`` tables are read from
+exactly those.
 
 ``roqsim`` is the simulator's own recording (``<run>/roqsim_bag``): the capture rate, and which
 tracks it holds as patterns over ``<entity>/<body-or-joint>`` — ``robot/**`` is all of an entity,

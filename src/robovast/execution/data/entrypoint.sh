@@ -210,9 +210,11 @@ else
     # RECORD_TOPICS is `all` or space-separated entries, a regex when it starts with `^`:
     # names go to --topics, regexes joined to one -e pattern. RECORD_EXCLUDE is one regex,
     # RECORD_EXCLUDE_TYPES space-separated type names, RECORD_USE_SIM_TIME true or false.
-    # Absent, everything is recorded in wall time.
+    # Absent, everything is recorded in wall time. Hidden topics are always admitted: an
+    # action's `/<name>/_action/feedback` and `status` are hidden, rosbag2 drops a hidden
+    # topic even when it is named, and the action tables are read from exactly those.
     scenario_record_args() {
-        SCENARIO_RECORD_ARGS=(bag record -o "${RUN_OUTPUT_DIR}/rosbag2" ${RECORD_OPTIONS})
+        SCENARIO_RECORD_ARGS=(bag record -o "${RUN_OUTPUT_DIR}/rosbag2" ${RECORD_OPTIONS} --include-hidden-topics)
         if [ "${RECORD_USE_SIM_TIME:-false}" = "true" ]; then
             SCENARIO_RECORD_ARGS+=(--use-sim-time)
         fi

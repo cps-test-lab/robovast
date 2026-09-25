@@ -924,11 +924,14 @@ export const robovast = {
       { campaign_id: campaignId, content },
     ),
 
-  runPostprocessing: (campaignId: string, force = false) =>
+  // `force` clears the campaign's built tables and builds the declared ones again; `replay`
+  // clears them and builds every table the records can give for every run, then the declared
+  // pass — the check that a replay yields the rows the live watcher wrote.
+  runPostprocessing: (campaignId: string, opts: { force?: boolean; replay?: boolean } = {}) =>
     request<ActionResult>(
       'POST',
       `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/run`,
-      { campaign_id: campaignId, force, skip: [] },
+      { campaign_id: campaignId, force: !!opts.force, replay: !!opts.replay, skip: [] },
     ),
 
   // Build a finished campaign's tables now instead of the first time each is named; returns at

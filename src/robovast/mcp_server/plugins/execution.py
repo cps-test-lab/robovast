@@ -809,11 +809,11 @@ def get_job_state(campaign_id: str, job_name: str) -> dict:
     """Where is one **running** job right now? Call this before its log on a wedge: a log says what
     is *repeating*, this says where the run *is*.
 
-    Three reads, each from the tool that owns the record, in the container that runs it:
-    ``scenario`` (which action the behaviour tree is in and for how long -- usually the sentence
-    that names the fault), ``simulator`` (its own findings, clock and poses) and ``resources``
-    (newest sample per process: a deadlock at 0% CPU vs a spin at 100%). Perturbs nothing and
-    records nothing.
+    Three reads: ``scenario`` (which action the behaviour tree is in and for how long -- usually
+    the sentence that names the fault), folded from the run's own ``behaviors`` tables;
+    ``simulator`` (its own findings, clock and poses) and ``resources`` (newest sample per
+    process: a deadlock at 0% CPU vs a spin at 100%), each from the tool that owns the record,
+    in the container that runs it. Perturbs nothing and records nothing.
 
     Args:
         campaign_id: The id from ``start_campaign``.

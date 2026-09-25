@@ -41,7 +41,8 @@ parquet files is a table without anything else to join it to.
 
 A table a live session (:mod:`robovast_decode.live`) is writing in parts for a run that is
 still recording is left to that session while its ``live`` stamp is fresh; once the stamp is
-stale the session is gone, and the table is built here whole, replacing its parts.
+stale the session is gone, and the table is built here whole, replacing its parts. A derived
+table a watcher rebuilds whole as the run goes carries the same stamp and is left alike.
 """
 
 from __future__ import annotations
@@ -337,8 +338,12 @@ def _sources(run: Run) -> List[Tuple[str, str]]:
     return [(role, bag_dir) for role, bag_dir in sources if bag_dir]
 
 
-def _derived_sources(campaign_dir: str, run: Run, manifest: dict) -> Dict[str, int]:
-    """What a run's derived tables are built from, as ``{source: size or rows}``."""
+def derived_sources(campaign_dir: str, run: Run, manifest: dict) -> Dict[str, int]:
+    """What a run's derived tables are built from, as ``{source: size or rows}``.
+
+    A live derivation (:class:`~robovast_decode.live.Watcher`) records the same shape, so
+    its finalised entry is what a build would have written and a later build leaves it.
+    """
     sources: Dict[str, int] = {}
     paths = []
     job_dir = run.job_dir
@@ -365,11 +370,12 @@ def _build_derived(campaign_dir: str, campaign_id: str, selected: List[Run],
     """The derived tables of every selected run, from its job's records."""
     for run in selected:
         manifest = read_manifest(campaign_dir)
-        sources = _derived_sources(campaign_dir, run, manifest)
+        sources = derived_sources(campaign_dir, run, manifest)
         entries = {t: manifest.get("tables", {}).get(t, {}).get("runs", {}) for t in tables}
-        if not force and all((entries[t].get(run.key) or {}).get("sources") == sources
-                             and entries[t][run.key].get("decoder") == __version__
-                             for t in tables):
+        # Current: the same sources by this decoder, or a live derivation's whose stamp is
+        # fresh (a watcher rebuilds it whole as the run goes and finalises it); one whose
+        # stamp went stale is the abandoned watcher's, whatever it was built from.
+        if not force and all(_entry_current(entries[t].get(run.key), sources) for t in tables):
             for table in tables:
                 report.skipped.setdefault(table, []).append(run.key)
             continue
@@ -426,7 +432,7 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
             report.skipped.setdefault(table, []).append(run.key)
             continue
         try:
-            rows = read_rows(path)
+            rows = read_rows(path, table)
         except (RaggedFile, OSError, ValueError) as exc:
             report.failed.setdefault(table, {})[run.key] = (
                 f"{os.path.relpath(path, run.path)}: {exc}")
@@ -476,9 +482,19 @@ def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(run_key)
     if not entry or entry.get("decoder") != __version__:
         return False
-    if live_owned(entry):
-        return True
+    if entry.get("live") is not None:
+        return live_owned(entry)
     return sum(entry.get("sources", {}).values()) == size
+
+
+def _entry_current(entry: Optional[dict], sources: dict) -> bool:
+    """Whether a derived entry needs no build: the same *sources* by this decoder, or a
+    watcher's whose stamp is fresh."""
+    if not entry or entry.get("decoder") != __version__:
+        return False
+    if entry.get("live") is not None:
+        return live_owned(entry)
+    return entry.get("sources") == sources
 
 
 def _recording_rows(buf: TableBuffer, role: str, decoded, plan) -> None:
@@ -540,5 +556,5 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 
 
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
-           "Run", "SharedJobError", "available_tables", "build", "find_runs", "recorded_topics",
-           "recording_closed", "roqsim_recording", "scenario_recording"]
+           "Run", "SharedJobError", "available_tables", "build", "derived_sources", "find_runs",
+           "recorded_topics", "recording_closed", "roqsim_recording", "scenario_recording"]

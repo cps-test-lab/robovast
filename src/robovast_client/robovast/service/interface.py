@@ -582,12 +582,13 @@ class JobState(BaseModel):
     #: :meth:`~robovast.common.simulators.SimulatorBackend.health_command`), so RoboVAST
     #: passes it through rather than reshaping it into a vocabulary of its own.
     simulator: Optional[dict] = None
-    #: Where the scenario has got to: the action executing and the state of every node, as
-    #: scenario-execution reports it from the log its own behaviour tree wrote. Passed through
-    #: for the same reason ``simulator`` is -- the shape belongs to whoever owns the record.
+    #: Where the scenario has got to: the action executing and the state of every node, in the
+    #: shape scenario-execution's own ``tree_state`` reader gives for the log its behaviour tree
+    #: writes -- folded by the service from the run's ``behaviors`` and ``behaviors_meta``
+    #: tables, so the tree shown here is the one a query of the run sees.
     #:
     #: The expensive half of this call, and deliberately so: the log holds one line per status
-    #: change, so the current tree is a fold over the whole file rather than a tail read. That is
+    #: change, so the current tree is a fold over every row rather than a tail read. That is
     #: why it is here, asked for when someone wants it, and not in whatever the service polls.
     scenario: Optional[dict] = None
     #: ``{container: {"at": <wall ts>, "processes": [{name, cpu_percent, memory_rss_bytes}]}}`` --
@@ -892,8 +893,16 @@ class CampaignTablesCleared(BaseModel):
 
 
 class RunPostprocessingRequest(BaseModel):
+    """(Re)run one campaign's postprocessing.
+
+    ``force`` clears the campaign's built tables first, so what it declares is built again
+    and its steps run with ``force``; ``replay`` clears them and builds every table the
+    records can give, for every run, before the campaign-end pass -- the rows a live watcher
+    wrote as the runs went, built again from the records.
+    """
     campaign_id: str
     force: bool = False
+    replay: bool = False
     skip: list[str] = Field(default_factory=list)
 
 

@@ -109,7 +109,10 @@ Recommended first-cell pattern
 Reading results
 ---------------
 
-A notebook reads a campaign through the ``robovast-data`` package. ``open_data(DATA_DIR)``
+A notebook reads a campaign through the ``robovast-data`` package: ``pip install
+robovast-data`` from PyPI alone, on any machine with Python -- it needs no ROS installation,
+no service and no container image, because the decoder it builds tables with reads a
+recording's message definitions from the recording itself. ``open_data(DATA_DIR)``
 walks up from the path to the campaign (the directory holding ``campaign.db``) and **scopes
 everything to the node the path names** — a run directory gives that run's rows, a
 configuration directory that configuration's, the campaign root everything. The same cell
@@ -130,8 +133,9 @@ therefore serves all three notebook scopes, and no notebook names a file.
 
 ``data.runs`` has one row per run with its ``status``, ``passed``, ``duration_s``,
 ``objective``, the host it ran on (``instance_type``, ``node_label``, ``cpu_name``, ...),
-``probed``, and one typed ``param_<name>`` column per varied factor, whichever channel it was
-written on (:ref:`channel-param-columns`). A unit that produced no run at all — a draw that
+``probed``, ``live`` -- true while the run is still being written, so a number read from its
+tables is provisional until it is false -- and one typed ``param_<name>`` column per varied
+factor, whichever channel it was written on (:ref:`channel-param-columns`). A unit that produced no run at all — a draw that
 could not be composed, a configuration whose results never arrived — is a row with an empty
 ``run_id``, so a count over ``runs`` includes the coverage that was not obtained.
 

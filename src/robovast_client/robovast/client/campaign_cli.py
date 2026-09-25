@@ -634,8 +634,10 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
     Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
     not from the results tree, so a campaign that is only unpacked is invisible. And when
     the archive is a **raw** one -- carrying no postprocessing record, which is what the
-    share holds -- postprocessing is chained automatically, because a campaign without its metric tables
-    is not one you can ask anything.
+    share holds -- postprocessing is chained automatically: the campaign's own steps and the
+    campaign-end pass. An archive carries no tables either way; every table is built from
+    the records the first time something names it, so a query answers as soon as the
+    import lands.
 
     Long-running, so it returns once the import is under way: the campaign appears
     immediately at phase ``importing``. Watch it with ``vast campaign wait <campaign-id>``,
@@ -677,16 +679,22 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
 @click.option('--force', '-f', is_flag=True,
               help="Clear the campaign's built tables first, so what it declares is built "
                    "again from its records.")
+@click.option('--replay', is_flag=True,
+              help="Clear the campaign's built tables and build every table its records can "
+                   "give, for every run, before the campaign-end pass.")
 @click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
               help='Skip a postprocessing plugin (repeatable).')
 @target_options
-def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
+def postprocess_cmd(campaign, force, replay, skip_plugins, namespace, context):
     """(Re)run analysis postprocessing for CAMPAIGN.
 
     Runs the campaign's own postprocessing steps, builds the tables it declares, grades it
     with its health checks and writes its provenance record -- on the service that holds
     it. Mirrors the web "Retrigger postprocessing" action and the MCP ``run_postprocessing``
     tool, so all three drive one implementation.
+
+    ``--replay`` builds every table the records can give rather than the declared ones: the
+    rows a live watcher wrote as the runs went, built again from the records.
 
     **Dispatched, not awaited.** The campaign re-enters its ``postprocessing`` phase and
     this returns -- follow it with ``vast campaign wait CAMPAIGN``. A second run is refused
@@ -701,7 +709,7 @@ def postprocess_cmd(campaign, force, skip_plugins, namespace, context):
             if not campaign_id:
                 raise ValueError("no campaign is running; pass CAMPAIGN.")
             res = client.run_postprocessing(RunPostprocessingRequest(
-                campaign_id=campaign_id, force=force, skip=list(skip_plugins)))
+                campaign_id=campaign_id, force=force, replay=replay, skip=list(skip_plugins)))
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return

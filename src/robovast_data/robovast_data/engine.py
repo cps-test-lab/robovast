@@ -34,10 +34,11 @@ tables it names -- and the tables the views it names read -- are built for the r
 that do not have them yet, narrowed by the statement's ``WHERE`` where it restricts a table to
 some runs (:mod:`robovast_data.statement`). A finished run's entry is final, so asking again
 costs a lookup; a run still going is looked at again -- unless a live session
-(:mod:`robovast_decode.live`) is writing it in parts, whose entry carries a ``live`` stamp
-younger than :data:`LIVE_STALE_S` seconds: the query reads the parts written so far. A stamp
-older than that is an abandoned session's, and the table is rebuilt whole. What a build could
-not do is reported with the answer, by table and run, never dropped.
+(:mod:`robovast_decode.live`) is writing it in parts, or deriving it whole again as the run
+goes, whose entry carries a ``live`` stamp younger than :data:`LIVE_STALE_S` seconds: the
+query reads what is written so far. A stamp older than that is an abandoned session's, and
+the table is rebuilt whole. What a build could not do is reported with the answer, by table
+and run, never dropped.
 
 **What a connection may touch** is the campaigns' table files and nothing else: external access
 is off except for those directories, the configuration is locked, the statement is a single

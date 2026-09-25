@@ -71,7 +71,7 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
 
 
 def run_postprocessing(campaign_id: str, force: bool = False,
-                       skip: list | None = None) -> dict:
+                       skip: list | None = None, replay: bool = False) -> dict:
     """(Re)run analysis postprocessing for one campaign: its steps, declared tables, grades.
 
     **Dispatched in the background** — returns as soon as the run is started. The campaign
@@ -84,12 +84,16 @@ def run_postprocessing(campaign_id: str, force: bool = False,
         campaign_id: The campaign to (re)process.
         force: Clear the campaign's built tables first, so what it declares is built again.
         skip: Plugin names to skip.
+        replay: Clear the campaign's built tables and build every table its records can
+            give, for every run, before the campaign-end pass -- the rows a live watcher
+            wrote as the runs went, built again from the records.
     """
     from robovast.service.interface import RunPostprocessingRequest
     try:
         return service_access.require_service() \
             .run_postprocessing(RunPostprocessingRequest(
-                campaign_id=campaign_id, force=force, skip=skip or [])).model_dump()
+                campaign_id=campaign_id, force=force, replay=replay,
+                skip=skip or [])).model_dump()
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -187,9 +191,10 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
     """Take a campaign in — from the service host or the share — and register it.
 
     Registration, not just extraction: listings and every query answer from ``campaign.db``,
-    so an unpacked archive lists blank. A **raw** archive (no metric tables — what the share
-    holds) is postprocessed once it lands. Returns immediately; the campaign is already
-    listed at phase ``importing``.
+    so an unpacked archive lists blank. A **raw** archive (no postprocessing record — what
+    the share holds) is postprocessed once it lands; an archive carries no tables either
+    way, and every table is built from the records the first time something names it.
+    Returns immediately; the campaign is already listed at phase ``importing``.
 
     Give exactly one source. Neither carries bytes through this tool — an archive is
     routinely gigabytes. For one on *your own* machine use ``vast campaign import`` or the

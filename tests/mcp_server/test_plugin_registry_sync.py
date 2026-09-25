@@ -500,6 +500,9 @@ _PARAMETER_VOCABULARY = {
     # Which pair of world axes a picture is drawn on (xy, xz, yz).
     "projection",
     "skip", "data_only", "share_archive", "rebuild_store",
+    # Build every table the records can give again, not only the declared ones: the switch
+    # of run_postprocessing, the CLI's --replay and the request body spell it the same way.
+    "replay",
 }
 
 

@@ -118,3 +118,24 @@ def test_the_derived_data_is_still_recorded_when_the_record_is_not(tmp_path, mon
 
     assert ok is False
     assert (root / POSTPROCESSING_RECORD).is_file()
+
+
+def test_replay_builds_every_table_the_records_can_give(tmp_path):
+    """``force`` builds the declared tables again; ``replay`` builds every table the records
+    can give, for every run, so a table nobody has asked for yet is there afterwards."""
+    root = _campaign_tree(tmp_path)
+    postprocessing.run_postprocessing(str(tmp_path), campaign=root.name, skip_metadata=True)
+    assert "nav_metrics" not in _manifest(root)["tables"], "declared tables only"
+
+    lines = []
+    ok, message = postprocessing.run_postprocessing(
+        str(tmp_path), campaign=root.name, skip_metadata=True, replay=True,
+        output_callback=lines.append)
+
+    assert ok, message
+    assert any("Replay: cleared the campaign's tables" in line for line in lines)
+    entries = _manifest(root)["tables"]["nav_metrics"]["runs"]
+    assert set(entries) == {"cfg-a/0", "cfg-a/1", "cfg-b/0", "cfg-b/1"}
+    assert all(e["files"] for e in entries.values()), "built, not merely looked for"
+    assert {"run_health", "postprocessing_steps"} <= set(_manifest(root)["tables"])
+    assert (root / POSTPROCESSING_RECORD).is_file()

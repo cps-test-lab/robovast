@@ -3771,7 +3771,15 @@ export interface components {
              */
             runnable: boolean;
         };
-        /** RunPostprocessingRequest */
+        /**
+         * RunPostprocessingRequest
+         * @description (Re)run one campaign's postprocessing.
+         *
+         *     ``force`` clears the campaign's built tables first, so what it declares is built again
+         *     and its steps run with ``force``; ``replay`` clears them and builds every table the
+         *     records can give, for every run, before the campaign-end pass -- the rows a live watcher
+         *     wrote as the runs went, built again from the records.
+         */
         RunPostprocessingRequest: {
             /** Campaign Id */
             campaign_id: string;
@@ -3780,6 +3788,11 @@ export interface components {
              * @default false
              */
             force: boolean;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
             /** Skip */
             skip?: string[];
         };

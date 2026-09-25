@@ -2882,6 +2882,7 @@
         "type": "object"
       },
       "RunPostprocessingRequest": {
+        "description": "(Re)run one campaign's postprocessing.\n\n``force`` clears the campaign's built tables first, so what it declares is built again\nand its steps run with ``force``; ``replay`` clears them and builds every table the\nrecords can give, for every run, before the campaign-end pass -- the rows a live watcher\nwrote as the runs went, built again from the records.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -2890,6 +2891,11 @@
           "force": {
             "default": false,
             "title": "Force",
+            "type": "boolean"
+          },
+          "replay": {
+            "default": false,
+            "title": "Replay",
             "type": "boolean"
           },
           "skip": {

@@ -36,11 +36,20 @@ demanded ``(run, tables)`` need, advances the ones whose files changed, writes p
 period or when a segment closed, and finalises a session when its run is done. It is driven
 from an inotify-style watch over the campaign directory; it does not need one to be tested.
 
+The derived tables (:mod:`robovast_decode.derived`) are not decoded from a recording but
+built from the job's files and the ``rosout`` and ``clock_map`` rows, so the watcher does
+not follow them in parts: it derives them **whole** again, from the job's files as they are,
+once per period that saw a change, writes each as the run's one file with a ``live`` stamp,
+and hands subscribers the rows that are new since the previous derivation. When the run has
+its verdict and its recordings are closed, the last derivation is recorded exactly as a
+build would record it.
+
 Everything here is the decoder's plain Python: no ROS, no execution image.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -52,10 +61,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .authored import with_yaw
-from .build import (BAG_METADATA, Run, find_runs, plugin_groups, recorded_topics,
-                    recording_closed, roqsim_recording, scenario_recording)
+from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
+                    recorded_topics, recording_closed, roqsim_recording, scenario_recording)
 from .decode import channel_type, segments
 from .definitions import TypeCatalog
+from .derived import DERIVED, INPUTS, RUN_LOG, JobRun, derive_job
 from .frames import FrameRef, FrameTap
 from .framing import Channel, McapTail, Message, Metadata, Schema
 from .handlers import Handler, Videos
@@ -439,6 +449,30 @@ class PartWriter:
         return [rel for _, rel, _ in final]
 
 
+def _new_rows(deriving: _Deriving, table: str, rows: pa.Table) -> pa.Table:
+    """The rows of *rows* that the previous derivation of *table* did not have.
+
+    A row is new when no row of the previous derivation equals it, so a row that changed
+    -- its sim time filled in once the clock map reached it, its window marked once the
+    verdict landed -- is given again in its new form. For ``run_log`` the comparison leaves
+    ``seq`` out: it numbers the merge's own order, and a line that lands between two earlier
+    ones -- a container's stdout beside the ``rosout`` rows already there -- renumbers every
+    row after it, so the number cannot say which rows are new; a batch carries the ``seq``
+    each row has in the derivation it came from.
+    """
+    before = deriving.seen.get(table, set())
+    identities = []
+    for row in rows.to_pylist():
+        if table == RUN_LOG:
+            row.pop("seq", None)
+        identities.append(json.dumps(row, sort_keys=True, default=str))
+    keep = [i not in before for i in identities]
+    deriving.seen[table] = set(identities)
+    if all(keep):
+        return rows
+    return rows.filter(pa.array(keep, type=pa.bool_()))
+
+
 @dataclass
 class _Following:
     """One session and the writer its batches go to; no writer for a session that only
@@ -450,15 +484,37 @@ class _Following:
 
 
 @dataclass
+class _Deriving:
+    """The derived tables of one run, rebuilt whole as the run goes.
+
+    A whole rebuild, not parts: ``run_log``'s dedup and its sim-time fill need the job's
+    whole log, so no derivation extends an earlier one. What a subscriber gets is the
+    difference between two derivations (:func:`_new_rows`), against the rows kept in *seen*.
+    """
+    tables: Set[str]
+    #: When the last derivation ran (monotonic); ``0`` before the first.
+    last_run: float = 0.0
+    #: Whether a change concerning the run was seen since the last derivation.
+    dirty: bool = True
+    seen: Dict[str, object] = field(default_factory=dict)
+    #: Set once the last derivation is recorded as a build would record it.
+    finalised: bool = False
+
+
+@dataclass
 class _LiveRun:
     run: Run
     following: List[_Following] = field(default_factory=list)
+    derived: Optional[_Deriving] = None
     #: When the run's verdict was first seen with its recording still open.
     verdict_seen: Optional[float] = None
 
     @property
     def served(self) -> Set[str]:
-        return {t for f in self.following for t in f.session.tables}
+        tables = {t for f in self.following for t in f.session.tables}
+        if self.derived is not None and not self.derived.finalised:
+            tables |= self.derived.tables
+        return tables
 
 
 @dataclass
@@ -484,10 +540,18 @@ class Watcher:
     moment it appears; a table demanded that the recording's topics cannot give yet is
     started, from the recording's beginning, once a topic that gives it appears.
 
+    A derived table (:data:`~robovast_decode.derived.DERIVED`) demanded is derived whole
+    again every *part_s* seconds in which a file of the run's job or of the run changed, and
+    written as the run's one file with a ``live`` stamp; the recorded tables it reads
+    (:data:`~robovast_decode.derived.INPUTS`) are demanded with it. Its last derivation,
+    once the run has its verdict and its recordings are closed, is recorded ``complete``
+    without a stamp, as a build records it.
+
     A run is *done* for its subscribers when no session of it is left and nothing of it is
     pending: its sessions were finalised, or dropped because the run had its verdict for
-    :data:`~robovast_decode.tables.LIVE_STALE_S` seconds with a recording still open or a
-    table its recording never gave. A subscriber's ``finished`` callback is called then, once.
+    :data:`~robovast_decode.tables.LIVE_STALE_S` seconds with a recording still open, or
+    because every recording it has is closed and none gives a table still pending. A
+    subscriber's ``finished`` callback is called then, once.
     """
 
     #: How often, at most, accumulated batches become parts on disk, by default.
@@ -501,6 +565,8 @@ class Watcher:
         self._lock = threading.RLock()
         self._runs: Dict[str, _LiveRun] = {}
         self._pending: Dict[str, Set[str]] = {}
+        #: ``{run key: derived tables}`` asked for and not yet derived.
+        self._pending_derived: Dict[str, Set[str]] = {}
         #: ``{run key: image topics}`` asked for and not yet tapped by a session.
         self._pending_frames: Dict[str, Set[str]] = {}
         self._listeners: List[_Listener] = []
@@ -516,8 +582,16 @@ class Watcher:
             live = self._runs.get(run)
             if live is not None:
                 wanted -= live.served
+            derived = wanted & set(DERIVED)
+            if derived:
+                self._pending_derived.setdefault(run, set()).update(derived)
+                # What a derivation reads, followed beside it; a recording that gives
+                # neither leaves them pending, which the run's end resolves.
+                wanted = (wanted - derived) | {t for t in INPUTS
+                                               if live is None or t not in live.served}
             if wanted:
                 self._pending.setdefault(run, set()).update(wanted)
+            if wanted or derived:
                 self._start(run)
 
     def subscribe(self, run: str, tables: Iterable[str],
@@ -588,7 +662,11 @@ class Watcher:
             for path in paths:
                 keys.update(self._runs_of(os.path.abspath(path)))
             for key in keys:
-                if self._pending.get(key) or self._pending_frames.get(key):
+                live = self._runs.get(key)
+                if live is not None and live.derived is not None:
+                    live.derived.dirty = True
+                if (self._pending.get(key) or self._pending_frames.get(key)
+                        or self._pending_derived.get(key)):
                     self._start(key)
                 live = self._runs.get(key)
                 if live is not None:
@@ -621,7 +699,8 @@ class Watcher:
     def _start(self, key: str) -> None:
         pending = self._pending.get(key)
         frames = self._pending_frames.get(key)
-        if not pending and not frames:
+        derived = self._pending_derived.get(key)
+        if not pending and not frames and not derived:
             return
         live = self._runs.get(key)
         if live is None:
@@ -630,6 +709,13 @@ class Watcher:
             if run is None:
                 return
             live = self._runs[key] = _LiveRun(run)
+        if derived:
+            if live.derived is None or live.derived.finalised:
+                live.derived = _Deriving(set(derived))
+            else:
+                live.derived.tables.update(derived)
+                live.derived.dirty, live.derived.last_run = True, 0.0
+            self._pending_derived.pop(key, None)
         if frames:
             # Cameras record into the scenario recording. A tap reads it from the start in
             # a session of its own, with no tables: a session already under way has read
@@ -709,9 +795,11 @@ class Watcher:
                     continue
                 following.last_write = now
         key = live.run.key
+        abandoned = False
         if verdict and (live.following or self._pending.get(key) or self._pending_frames.get(key)):
             live.verdict_seen = live.verdict_seen or now
             if now - live.verdict_seen >= LIVE_STALE_S:
+                abandoned = True
                 # The run is over and the recorder never closed its bag: the recording is
                 # cut where it stopped, and a whole build makes what it can of it.
                 for following in live.following:
@@ -724,10 +812,107 @@ class Watcher:
                 # recording that never started are not coming either.
                 self._pending.pop(key, None)
                 self._pending_frames.pop(key, None)
+            elif not live.following and self._recordings_closed(live.run):
+                # Every recording the run has is closed and none gives what is pending:
+                # not coming either.
+                self._pending.pop(key, None)
+                self._pending_frames.pop(key, None)
+        deriving = live.derived
+        if deriving is not None and not deriving.finalised:
+            # The derivation reads the input tables' parts, written above in this same
+            # pass; the last one, once the run's recordings are closed and their sessions
+            # finalised, reads their finished files.
+            final = (verdict and not live.following and not self._pending.get(key)
+                     and (abandoned or self._recordings_closed(live.run)))
+            if final or (deriving.dirty and now - deriving.last_run >= self.part_s):
+                self._derive(live, final)
+            elif now - deriving.last_run >= self.part_s:
+                self._restamp(live)
+                deriving.last_run = now
         if (not live.following and not self._pending.get(key)
-                and not self._pending_frames.get(key)):
+                and not self._pending_frames.get(key)
+                and (live.derived is None or live.derived.finalised)):
             self._runs.pop(key, None)
             self._finished(key)
+
+    def _recordings_closed(self, run: Run) -> bool:
+        """Whether every recording *run* has is closed (:func:`recording_closed`)."""
+        recordings = [(SCENARIO_BAG, scenario_recording(run)), (ROQSIM_BAG, roqsim_recording(run))]
+        if run.job_dir:
+            infra = os.path.join(run.job_dir, INFRA_BAG)
+            recordings.append((INFRA_BAG, infra if os.path.isdir(infra) else None))
+        return all(bag_dir is None or recording_closed(role, bag_dir)
+                   for role, bag_dir in recordings)
+
+    # -- the derived tables ------------------------------------------------------------
+
+    def _derive(self, live: _LiveRun, final: bool) -> None:
+        """Derive the run's derived tables whole from the job's files as they are.
+
+        Each is written as the run's one file and recorded with a ``live`` stamp, or --
+        *final* -- ``complete`` without one, as :func:`~robovast_decode.build.build` records
+        it, from the same sources, so a later build finds it current. The rows new since
+        the previous derivation go to the run's subscribers.
+        """
+        deriving = live.derived
+        run = live.run
+        manifest = read_manifest(self.campaign_dir)
+        sources = derived_sources(self.campaign_dir, run, manifest)
+        tables = [t for t in DERIVED if t in deriving.tables]
+        derivation = derive_job(
+            self.campaign_dir, os.path.basename(self.campaign_dir), run.job_dir,
+            JobRun(run.key, run.config_name, run.run_id, run.path), tables, manifest,
+            self.config.get("containers"))
+        for note in derivation.notes:
+            _LOG.debug("%s: %s", run.key, note)
+        # As a build records it: complete once the run has its verdict.
+        complete = final and os.path.isfile(os.path.join(run.path, VERDICT))
+        stamp = None if final else time.time()
+        batches: List[Batch] = []
+        written = []
+        for table in tables:
+            rows = derivation.tables.get(table)
+            if rows is None:
+                written.append((table, None, None))
+                continue
+            new = _new_rows(deriving, table, rows)
+            if new.num_rows:
+                batches.append(Batch(table, new))
+            rel = run_table_path(self.campaign_dir, table, run.config_name, run.run_id)
+            write_table(self.campaign_dir, rel, rows)
+            written.append((table, rel, rows))
+        superseded: List[str] = []
+        with manifest_lock(self.campaign_dir):
+            fresh = read_manifest(self.campaign_dir)
+            for table, rel, rows in written:
+                if rel is None:
+                    # A run with no verdict line has no scenario_timestamps row: a table it
+                    # has, and that came out empty so far.
+                    superseded += record_run_absent(fresh, table, run.key, sources=sources,
+                                                    complete=complete, known=True, live=stamp)
+                else:
+                    superseded += record_run_table(fresh, table, run.key, files=[rel],
+                                                   rows=rows.num_rows, schema=rows.schema,
+                                                   sources=sources, complete=complete,
+                                                   live=stamp)
+            write_manifest(self.campaign_dir, fresh)
+        remove_files(self.campaign_dir, superseded)
+        deriving.dirty = False
+        deriving.last_run = time.monotonic()
+        deriving.finalised = final
+        self._push(run.key, batches)
+
+    def _restamp(self, live: _LiveRun) -> None:
+        """Refresh the ``live`` stamp of the run's derived entries, nothing having changed:
+        the stamp is what keeps a build from taking a table whose run is quiet."""
+        now = time.time()
+        with manifest_lock(self.campaign_dir):
+            manifest = read_manifest(self.campaign_dir)
+            for table in live.derived.tables:
+                entry = manifest["tables"].get(table, {}).get("runs", {}).get(live.run.key)
+                if entry is not None and entry.get("live") is not None:
+                    entry["live"] = now
+            write_manifest(self.campaign_dir, manifest)
 
     def _retry(self, live: _LiveRun) -> None:
         pending = self._pending.get(live.run.key)

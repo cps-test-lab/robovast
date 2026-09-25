@@ -2340,8 +2340,9 @@ So your ``.env`` holds *your* share credentials, and the service's
 ``vast share import`` is the one worth knowing about: the **service** downloads from
 the share, so a multi-gigabyte campaign never travels through your machine to get
 between two servers, and you need no share credentials at all for it. What arrives
-raw is postprocessed automatically once it lands, so you get a campaign with its
-metric tables rather than a directory to remember to reprocess.
+raw is postprocessed automatically once it lands -- its own steps and the campaign-end
+pass -- and every table its records can give is built the first time something names
+it, so you get a campaign to query rather than a directory to remember to reprocess.
 
 **The share is not a subset of what a service has.** A campaign can be deleted here
 while its archive stays up there — ``vast share list`` marks such an archive

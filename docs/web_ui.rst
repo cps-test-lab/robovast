@@ -577,9 +577,9 @@ to start and not what the page must look like.
 
 **Campaigns announce themselves.** Starting and ending is reported wherever you are in the
 app, not only on the Campaigns page — a campaign that ends while you are reading results says
-so. A campaign that has finished *and* been postprocessed offers **View results** on the
-notice, which opens the Explorer on it; one with no results yet does not, since there would be
-nothing to open. Two cases are deliberately quiet: a service restart, which leaves campaigns
+so. A campaign that has results -- runs recorded, or trials under way -- offers **View
+results** on the notice, which opens the Explorer on it; one with none does not, since there
+would be nothing to open. Two cases are deliberately quiet: a service restart, which leaves campaigns
 at phase ``unknown`` because their driver was lost rather than because they ended, and which
 would otherwise announce an ending for every campaign at once; and a campaign moving between
 running phases, which is progress rather than news.
@@ -1343,11 +1343,10 @@ nothing keeps re-checking it.
 
 Each campaign card in **Campaigns** also offers shortcuts — in its **actions menu** (the ☰
 button) — that jump straight into the Explorer or the Run view *for that campaign*. A card only
-offers what it can deliver: **Open in Results Explorer** once the campaign is finished **and**
-postprocessed (the same gate the Results tab itself applies), and **Open in Run
-view** only if the campaign also recorded runs to replay. The Run view's entry appears
-**while the campaign is still running** too, reading **Open in Run View (preview)** — it leads to a
-replay of the runs that have already finished (see :ref:`run-view-preview`), and it is the only
+offers what it can deliver: **Open in Results Explorer** and **Open in Run View** once the
+campaign has results (the same gate the Results tab itself applies) -- runs recorded, or
+trials under way. Both appear **while the campaign is still running**, and the Run view then
+reads a run that is still recording as it goes (see :ref:`run-view-live`); it is the only
 route to one, since the jobs list above drops a run as soon as it completes. The Run view is
 also a play-icon button on the card itself, first among its controls, shown under the same condition as
 its menu entry, folded or open: replaying a run is what a reader most often opens a campaign
@@ -1454,11 +1453,12 @@ built there and kept for the next query.
 
 .. note::
 
-   The Results tab lists a campaign once it has ended **and** been postprocessed. Launching with
-   **Postprocess when done** (the default) postprocesses it automatically; otherwise run
-   ``vast campaign postprocess <id>``, or use **Retrigger postprocessing** in the campaign's
-   actions menu, which is also how to *change* the postprocessing parameters and re-run.
-   Postprocessing runs the campaign's own steps and builds the tables it declares
+   The Results tab lists a campaign as soon as it has results -- runs recorded, or trials under
+   way; what postprocessing adds (the derived tables, the notebooks) appears once it has run.
+   Launching with **Postprocess when done** (the default) postprocesses it automatically;
+   otherwise run ``vast campaign postprocess <id>``, or use **Retrigger postprocessing** in the
+   campaign's actions menu, which is also how to *change* the postprocessing parameters and
+   re-run. Postprocessing runs the campaign's own steps and builds the tables it declares
    (:ref:`results-postprocessing`); every other table is built when first queried.
 
 .. _declared-plots:
@@ -1506,72 +1506,52 @@ service — so CLI, MCP, and the web UI read results the same way.
 Run view
 --------
 
-The **Run view** replays a *single run* of a postprocessed campaign over its **rosbag
-timeline**. You pick a campaign and a run; the view then lays out a set of **panels**
-that a shared **playback clock** drives — dragging the timeline moves every panel to
-the same instant. All panels read only the run's recorded results — its tables, plus per-run
-artifact files such as the 3D scene descriptor (there is no
-live connection to the system-under-test).
+The **Run view** replays a *single run* of a campaign over its **timeline**. You pick a
+campaign and a run; the view then lays out a set of **panels** that a shared **playback
+clock** drives — dragging the timeline moves every panel to the same instant. All panels read
+the run's tables and its per-run artifacts such as the 3D scene descriptor, through the
+service (there is no connection to the system under test); a run still recording is read as
+it goes (:ref:`run-view-live`).
 
-The run picker lists only campaigns that actually **recorded runs** (``num_runs > 0``,
-tallied from ``campaign.db``). A campaign that never started, or that ended before its
-``campaign.db`` was written, has nothing to replay, so it is not offered here at all — rather
-than being selectable and then answering with an empty view.
+The run picker lists the campaigns that have results: those that **recorded runs**
+(``num_runs > 0``, tallied from ``campaign.db`` -- or a search campaign whose draws failed to
+compose, which recorded why) and those whose trials are under way. A campaign that never
+started has nothing to replay, so it is not offered here at all — rather than being
+selectable and then answering with an empty view.
 
-.. _run-view-preview:
+.. _run-view-live:
 
-Previewing a campaign that is still running
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A run that is still recording
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A campaign's finished runs can be replayed **while the rest of it is still running**, as a
-**preview**. This is the only way to see one at all before the campaign ends: the Monitor's jobs
-list is live-only, so a run leaves it the moment it completes, and the other Results views wait for
-postprocessing.
+A campaign's runs can be opened **while it is still running**, and a run that is still
+recording is the same view as a finished one: every declared panel mounts, its tables are
+built from its recording as it grows, and the panels follow the run's live stream
+(``GET /data/campaigns/{id}/live``) rather than reading once. The clock's range grows with
+the rows and the clock **follows** it: a **Live · following** control in the header says so,
+scrubbing or pausing stops following (it then reads **Live · paused**), and pressing it
+returns to the edge of the recording. When the stream ends -- the run has its verdict and its
+recordings are closed -- the range is read once more, from the final tables, and following
+ends there.
 
-Only the **3D replay** is mounted. ``scene3d`` reads a run's own recording -- the ``sim_poses``
-and ``joint_states`` tables, built from it as it grows -- and a scene descriptor compiled on
-demand, neither of which needs postprocessing; the preview mounts the 3D scene and the playback
-transport and leaves the other panels out.
+Which runs are live is read from the same rows the picker draws: ``run_view.live`` is true
+while a run has no verdict and its campaign is still running. The picker's rows come from
+``run_view`` in one query, so a running campaign's runs list the way a finished one's do, from
+the moment a run's directory exists; while the campaign runs and a run is picked, the rows
+are re-read every few seconds, so a run that starts appears and one that ends gets its
+verdict. Each run and configuration carries a status dot from the campaign's record -- pass,
+fail, or a pulsing *running* for a run still recording -- and a configuration shows its
+passed/total count.
 
-That is also why a campaign is offered as a preview **only if it has a scene to replay**. A
-simulator that records no scene state contributes no ``scene3d``, so there would be nothing at all to
-show; such a campaign simply does not appear — in the run picker or in its card's menu — until it
-has finished, when its real results exist. Both surfaces ask the campaign's served panel list, so
-neither can offer what the other refuses.
+A live run has no verdict to trim to, so the :ref:`shutdown toggle <shutdown-toggle>` has
+nothing to apply to it, and **Edit visualization** is disabled while the campaign runs:
+saving writes a ``.vast`` override into the campaign's own ``_config/``, which its remaining
+runs are configured from, so editing the view would edit the experiment.
 
-Having a scene is the *only* extra condition: a campaign is offered as soon as it is running,
-without asking how many runs it has recorded. That question has no cheap honest answer while a
-campaign runs — the run counts come from ``campaign.db``, which the controller writes only once a
-**batch** has finished, and a batch-mode campaign has exactly one batch — so a preview gated on them
-was unreachable for the entire life of exactly the campaigns it exists for. What runs there are is
-answered where it can be answered: by the listing that fills the picker. A campaign on its first run
-is therefore offered, and says so.
-For the same reason there is no verdict to trim to, so the :ref:`shutdown toggle <shutdown-toggle>`
-reports nothing to trim, and **Edit visualization** is disabled — saving writes a ``.vast`` override
-into the campaign's own ``_config/``, which its remaining runs are configured from, so editing the
-view would edit the experiment.
-
-It says so in both places it can be misread: a **Preview** chip at the top right of the scene, whose
-hover explains what is and is not available, and the word ``preview`` beside the campaign in the run
-picker, where the campaign is actually chosen.
-
-The picker's rows come from the campaign's **output directories**, because what it offers is a run
-that has written a recording to replay, and only the tree says which have: one listing for its
-configurations, then one *recursive* listing per configuration. That second listing is where the trade is made — a
-request per configuration either way, and the recursive answer says not only which runs exist but
-which have written a recording, so it costs response size rather than round trips, bounded by one
-configuration rather than the whole campaign.
-
-**Only runs that can be replayed are offered**, and a configuration with none of them is not shown
-at all. A run still in progress has a directory and no recording; listing it would fill the picker
-with rows that report they have nothing to show once they are opened, which on a campaign of several
-configurations is most of the tree. The presence of the recording is exact — it is written once, at
-a run's clean stop — so this neither offers a half-written run nor hides a finished one.
-
-The rows carry no verdict: pass/fail lives in each run's own report, so colouring the dots would
-cost a read per run, the shape that does not scale. The dot therefore stays neutral, and a
-configuration shows how many runs it has rather than a ``0/N`` that would be indistinguishable from
-every run having failed.
+The 3D panel needs a scene to replay: a simulator that records no scene state contributes no
+``scene3d``, and such a campaign's run view shows its other panels. A run whose simulator has
+not written its recording's provenance yet has no ``sim_recording`` row, and the panel says so
+until it does.
 
 When the campaign finishes, nothing swaps under the reader: the **Refresh** button beside the picker
 reports that there is something new, and taking it re-reads the campaign with all of its panels.

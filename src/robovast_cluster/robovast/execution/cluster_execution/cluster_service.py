@@ -2184,13 +2184,14 @@ class ClusterService(ServiceBase):
         return ActionResult(ok=True, message="stop requested; in-flight jobs terminated")
 
     def _job_state_target(self, campaign_id: str, job_name: str, role: str) -> tuple:
-        """The inherited reads, pointed at this job's pod instead of a local container.
+        """The inherited execs, pointed at this job's pod instead of a local container.
 
-        Everything that decides *what* is asked -- the simulator's own command, the scenario's own
-        tree reader, which container each belongs in, the JSON passed through unreshaped, what
-        "unavailable" means, and the TTL that makes one check serve every watcher -- is
+        Everything that decides *what* is asked -- the simulator's own command, the resource
+        monitor's files, which container each belongs in, the JSON passed through unreshaped,
+        what "unavailable" means, and the TTL that makes one check serve every watcher -- is
         :class:`ServiceBase`'s and shared. Only the target differs, which is the whole reason
-        ``exec_in`` takes one.
+        ``exec_in`` takes one. The scenario's tree is not an exec: it is folded from the run's
+        tables in the campaign directory, where the file agent delivers the log.
 
         ``job_name`` here is the **Kubernetes Job** name rather than a run key, so it cannot be
         turned into ``/out/<config>/<run>``. But ``/out`` is *this pod's own* emptyDir, holding only
@@ -2219,10 +2220,10 @@ class ClusterService(ServiceBase):
         """``(run_dir, run_key)`` for the run this Job is on. Always resolved, never delegated.
 
         **Which run a job is on is RoboVAST's question, and it gets answered here.** Handing the
-        readers ``/out`` would leave them to find the run underneath it. Both of them can -- ``tree_state`` and ``roqsim health`` each
-        search a couple of levels down -- and that is exactly the problem:
+        readers ``/out`` would leave them to find the run underneath it. A reader can --
+        ``roqsim health`` searches a couple of levels down -- and that is exactly the problem:
 
-        * it is two other components modelling *this* layout, and a layout guessed in two places is
+        * it is another component modelling *this* layout, and a layout guessed in two places is
           free to disagree with the one place that owns it;
         * "the newest one below here" is a heuristic answering a question they cannot see the answer
           to, while the service can;
@@ -2230,9 +2231,10 @@ class ClusterService(ServiceBase):
           a reader searches around it and then reports that the scenario may have run without
           ``--bt-log`` -- a confident wrong cause for a path bug.
 
-        So the exact run dir goes out, every time, and ``run`` names it in the reply. One ``find``
-        over the pod's own emptyDir per read, which is nothing beside the reads it precedes -- one
-        resolution in place of two heuristics.
+        So the exact run dir goes out, every time, and ``run`` names it in the reply -- and the
+        scenario's tree, folded from the campaign directory rather than read in the pod, is the
+        tree of that run and no other. One ``find`` over the pod's own emptyDir per read, which is
+        nothing beside the reads it precedes.
 
         A discovery that finds nothing leaves ``/out`` in place: a job between starting and its
         first record is normal, and the readers' own "nothing here yet" is a better answer than a

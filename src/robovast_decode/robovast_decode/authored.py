@@ -25,7 +25,15 @@ table carrying a quaternion gets its heading as ``orientation.yaw``.
 * A ``#`` preamble before a CSV's header is skipped: it is how a producer states what its
   columns mean.
 * A JSONL file is read by the format its first record declares; the behaviour-tree log is the
-  one format known (:data:`JSONL_READERS`), and a file of another format is not a table.
+  one format known (:data:`JSONL_READERS`), and a file of another format is not a table. A
+  format may give more than one table from one file: the behaviour-tree log's metadata record
+  is the one-row table ``<name>_meta`` beside ``<name>`` (``behaviors_meta`` beside
+  ``behaviors``), so what the log says about itself -- the scenario, the clock its stamps are
+  in, when it started -- is read by the same query path as its rows.
+* A JSONL line is a record once it ends in a newline. The last line of a file still being
+  written may be a record half-written, which is dropped for that read and read whole once
+  the writer has finished it; a terminated line that is not JSON is a corrupt file and
+  refused.
 * Two files in one run claiming one table is refused for that table, naming both: appending
   both would double every count through it.
 * A CSV row with more fields than its header is refused for that file: the surplus has no
@@ -41,7 +49,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pyarrow as pa
 
@@ -79,53 +87,129 @@ def table_name(filename: str) -> str:
     return f"{head}_{digest}"
 
 
-def _behaviour_tree_rows(records: list) -> list:
-    """``behaviors`` rows from scenario-execution's behaviour-tree log.
+#: The suffix on a file's table naming the one-row table of its metadata record.
+META_SUFFIX = "_meta"
 
-    The first record is metadata; the rest are one row per status change already, and gain
-    the numeric ``status`` beside its name, the columns ``nav2_behaviors`` shares.
+
+def _behaviour_tree_tables(records: list) -> Dict[str, list]:
+    """The tables in scenario-execution's behaviour-tree log, by suffix on the file's name.
+
+    ``""`` is ``behaviors``: one row per record after the first, which is already one row per
+    status change, gaining the numeric ``status`` beside its name (the columns ``nav2_behaviors``
+    shares) and ``seq``, the record's position in the log. ``seq`` is what a fold over the
+    table orders by: a later record replaces an earlier one for the same node, and two records
+    of one node may share a ``timestamp``, so storage order is not a stand-in.
+
+    ``"_meta"`` is ``behaviors_meta``: the first record, whole, as the one row of a table whose
+    columns are its keys -- ``scenario``, ``clock``, ``started_at``, ``tick_period`` and
+    whatever else the writer put there.
     """
     rows = []
-    for record in records[1:]:
+    for seq, record in enumerate(records[1:], 1):
         row = dict(record)
         status_name = row.pop("status", None)
         row["status"] = _BT_STATUS_CODES.get(status_name)
         row["status_name"] = status_name
+        row["seq"] = seq
         rows.append(row)
-    return rows
+    return {"": rows, META_SUFFIX: [dict(records[0])]}
 
 
-#: JSONL ``format`` -> the function turning its records into rows. Both spellings: the log's
-#: format was renamed from ``behaviour_tree_log`` to ``behavior_tree_log``, and a run
-#: recorded with either is read.
-JSONL_READERS = {"behaviour_tree_log": _behaviour_tree_rows,
-                 "behavior_tree_log": _behaviour_tree_rows}
+@dataclass(frozen=True)
+class JsonlFormat:
+    """One JSONL layout: the tables a file of it gives, and how its records become their rows.
+
+    *tables* are suffixes on the file's table name, ``""`` for the file's own; *read* maps the
+    records to ``{suffix: rows}`` for every suffix in *tables*.
+    """
+    tables: Tuple[str, ...]
+    read: Callable[[list], Dict[str, list]]
+
+
+#: JSONL ``format`` -> its layout. Both spellings of the behaviour-tree log's format name one
+#: layout: scenario-execution has written either, and a run recorded with either is read.
+_BEHAVIOUR_TREE_LOG = JsonlFormat(("", META_SUFFIX), _behaviour_tree_tables)
+JSONL_READERS = {"behaviour_tree_log": _BEHAVIOUR_TREE_LOG,
+                 "behavior_tree_log": _BEHAVIOUR_TREE_LOG}
 
 
 class RaggedFile(ValueError):
     """A CSV row has more fields than its header."""
 
 
-def read_rows(path: str) -> list:
-    """A data file's rows as dicts; ``[]`` for a JSONL file of an unknown format.
+def _jsonl_records(path: str) -> list:
+    """Every record in a JSONL file, the last line held back while it is being written.
+
+    A line is a record once it ends in a newline. The file's writer appends a record per line
+    and a reader may arrive mid-write, so an unterminated last line is a record in progress
+    unless it already parses whole: then it is the last record of a file written without a
+    trailing newline. A terminated line that does not parse is a corrupt file, and raises.
+    """
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    lines = text.split("\n")
+    tail = lines.pop()
+    records = [json.loads(line) for line in lines if line.strip()]
+    if tail.strip():
+        try:
+            records.append(json.loads(tail))
+        except ValueError:
+            pass
+    return records
+
+
+def jsonl_format(path: str) -> Optional[str]:
+    """The ``format`` a JSONL file's first record declares, or ``None`` when it declares none.
+
+    Reads one line, so a run directory's files can be listed by the tables they give without
+    reading them.
+    """
+    with open(path, encoding="utf-8") as fh:
+        line = fh.readline()
+    if not line.endswith("\n"):
+        return None
+    try:
+        first = json.loads(line)
+    except ValueError:
+        return None
+    return first.get("format") if isinstance(first, dict) else None
+
+
+def read_tables(path: str) -> Dict[str, list]:
+    """A data file's tables, ``{table: rows}``; ``{}`` for a JSONL file of an unknown format.
+
+    A CSV gives the one table named after it. A JSONL file gives the tables its format
+    declares (:data:`JSONL_READERS`), each named by the file's table and the format's suffix.
 
     Raises :class:`RaggedFile` for a CSV with a row longer than its header, and ``OSError``
     or ``ValueError`` for a file that cannot be read at all.
     """
+    table = table_name(os.path.basename(path))
     if path.lower().endswith(".jsonl"):
-        with open(path, encoding="utf-8") as fh:
-            records = [json.loads(line) for line in fh if line.strip()]
+        records = _jsonl_records(path)
         if not records or not isinstance(records[0], dict):
-            return []
-        reader = JSONL_READERS.get(records[0].get("format"))
-        return reader(records) if reader else []
+            return {}
+        layout = JSONL_READERS.get(records[0].get("format"))
+        if layout is None:
+            return {}
+        return {table + suffix: rows for suffix, rows in layout.read(records).items()}
     with open(path, encoding="utf-8", newline="") as fh:
         reader = csv.DictReader(line for line in fh if not line.startswith("#"))
         rows = list(reader)
         if any(None in row for row in rows):
             raise RaggedFile(f"a row has more fields than its header "
                              f"({len(reader.fieldnames or ())} columns)")
-    return rows
+    return {table: rows}
+
+
+def read_rows(path: str, table: Optional[str] = None) -> list:
+    """The rows of *table* in a data file -- the file's own table when none is named.
+
+    ``[]`` for a JSONL file of an unknown format, or for a table the file's format does not
+    give. Raises as :func:`read_tables` does.
+    """
+    tables = read_tables(path)
+    return tables.get(table if table is not None else table_name(os.path.basename(path)), [])
 
 
 def header(path: str) -> Optional[List[str]]:
@@ -186,12 +270,24 @@ class RunFiles:
     refused: Dict[str, str] = field(default_factory=dict)     # table -> reason
 
 
+def _tables_of(path: str) -> List[str]:
+    """The tables *path* gives, by name: the file's own, and its format's companions."""
+    table = table_name(os.path.basename(path))
+    if not path.lower().endswith(".jsonl"):
+        return [table]
+    layout = JSONL_READERS.get(jsonl_format(path))
+    if layout is None:
+        return [table]
+    return [table + suffix for suffix in layout.tables]
+
+
 def run_files(run_dir: str, reserved=()) -> RunFiles:
     """Every ``*.csv`` and ``*.jsonl`` below *run_dir*, by table; conflicts refused.
 
-    *reserved* are tables something else builds for this run (a recording's tables, the
-    tables RoboVAST derives): a file claiming one is refused, because its rows and the built
-    ones would be the same table twice.
+    A file gives one table, or the several its format declares (:func:`read_tables`): each
+    is listed against the file. *reserved* are tables something else builds for this run (a
+    recording's tables, the tables RoboVAST derives): a file claiming one is refused, because
+    its rows and the built ones would be the same table twice.
     """
     found = RunFiles()
     paths = []
@@ -200,19 +296,19 @@ def run_files(run_dir: str, reserved=()) -> RunFiles:
         paths.extend(os.path.join(root, f) for f in sorted(files)
                      if f.lower().endswith((".csv", ".jsonl")))
     for path in sorted(paths):
-        table = table_name(os.path.basename(path))
         rel = os.path.relpath(path, run_dir)
-        if table in reserved:
-            found.refused[table] = (f"{rel} would be the table '{table}', which is built from "
-                                    f"the run's records; rename the file")
-        elif table in found.tables:
-            first = os.path.relpath(found.tables.pop(table), run_dir)
-            found.refused[table] = f"two files claim the table: {first} and {rel}"
-        elif table not in found.refused:
-            found.tables[table] = path
+        for table in _tables_of(path):
+            if table in reserved:
+                found.refused[table] = (f"{rel} would be the table '{table}', which is built "
+                                        f"from the run's records; rename the file")
+            elif table in found.tables:
+                first = os.path.relpath(found.tables.pop(table), run_dir)
+                found.refused[table] = f"two files claim the table: {first} and {rel}"
+            elif table not in found.refused:
+                found.tables[table] = path
     return found
 
 
-__all__ = ["JSONL_READERS", "MAX_TABLE_NAME_BYTES", "QUATERNION", "RaggedFile", "RunFiles",
-           "YAW", "YAW_NOTE", "header", "read_rows", "run_files", "table_name", "to_arrow",
-           "with_yaw"]
+__all__ = ["JSONL_READERS", "JsonlFormat", "MAX_TABLE_NAME_BYTES", "META_SUFFIX", "QUATERNION",
+           "RaggedFile", "RunFiles", "YAW", "YAW_NOTE", "header", "jsonl_format", "read_rows",
+           "read_tables", "run_files", "table_name", "to_arrow", "with_yaw"]
