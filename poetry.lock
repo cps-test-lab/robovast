@@ -4296,7 +4296,7 @@ url = "src/robovast_client"
 
 [[package]]
 name = "robovast-data"
-version = "2.1.0"
+version = "2.2.0"
 description = "A RoboVAST campaign's data in pandas and SQL, from its directory or its archive: tables built on first use, no service, no ROS."
 optional = false
 python-versions = ">=3.12,<3.14"

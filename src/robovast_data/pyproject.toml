@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-data"
-version = "2.1.0"
+version = "2.2.0"
 description = "A RoboVAST campaign's data in pandas and SQL, from its directory or its archive: tables built on first use, no service, no ROS."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
