@@ -14,10 +14,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
-from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from robovast_data import Campaign, QueryError, RemoteCampaign, open_data, read_table
 from robovast_data import remote as remote_module
+from tests.service.null_service import NullService
 
 from ..results_processing.conftest import write_campaign_db, write_results_tree
 from .conftest import TEST_TOKEN
