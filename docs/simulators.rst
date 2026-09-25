@@ -171,6 +171,38 @@ Hooks, all optional except as noted:
    lookup cannot drift apart.
 ``simulation_screenshot(cfg, execution, *, state, at, view, focus, camera, size)``
    Command that re-renders **one moment of one run** from a chosen viewpoint, or ``None``.
+``health_command(cfg, execution, *, run_dir)``
+   Command that prints, as JSON, whether a **live** run is healthy and where everything is,
+   or ``None``. A fixed read the service polls while somebody watches the campaign
+   (:ref:`what a running campaign says is wrong <mcp-health-findings>`).
+``tap_command(cfg, execution, *, run_dir, selection)``
+   Command whose stdout is a live run's present state, line by line, or ``None`` -- the
+   **tap**, below. Argv rather than a string, and the only hook with a default that is not
+   "nothing": in the ROS shape the base class answers ``ros2 topic echo`` of the selected
+   topics (``ros2 topic list`` for none), since the simulation container speaks ROS whatever
+   the simulator is; the stepped shape answers ``None``.
+
+Asking a live run: the health read and the tap
+``````````````````````````````````````````````
+
+Everything else on this page is read from what a run *wrote*. Two hooks ask the run itself,
+and both run inside its simulation container through the service's exec runner
+(``pods/exec``), so nothing is deployed for them. ``health_command`` is the service's own
+read: fixed, cheap to poll, answered as JSON ``findings`` that ride on the campaign's status.
+``tap_command`` is the reader's: the service starts it on demand (``tap_job`` on every
+surface -- ``GET /campaigns/{id}/job-tap``, ``vast campaign tap``, the MCP tool, the run
+view's **Now** toggle), relays its stdout for a bounded time and ends it. Because a process
+the service started is running in the simulator's container for as long as the tap lasts, a
+tap is recorded against the run as a probe, exactly as ``exec_in_job`` is; one tap per job at
+a time.
+
+``selection`` is whatever the backend's command takes -- topic names for the ROS answer, with
+``csv`` as a flag for one value per line. ``None`` is a normal answer and is reported as "no
+tap for" the backend, never as a tap that printed nothing: roqsim gives it in both shapes,
+because its CLI has no following command and its recording is chunk-flushed every wall
+second, so the live view the service already follows is within a second of the simulator.
+A backend with a tool of its own that follows the run names it here, as argv, and reads its
+records under ``run_dir``.
 
 Showing a run: two questions, two hooks
 ```````````````````````````````````````
@@ -327,6 +359,12 @@ Not roqsim's *own* published image: that one has the simulator but not the contr
 runner rejects it, and no workflow publishes that tag in any case. The family member is built
 by ``container/robovast/build.sh --image roqsim``; which registry it is pulled from is
 ``ROBOVAST_PROJECT`` (:doc:`images`), never a ``.vast`` field.
+
+It has no tap (``tap_command`` answers ``None`` in both shapes): the recording every run
+writes is chunk-flushed every wall second and the service follows it as it grows, so the run
+view, ``pose_track_view`` and ``get_job_state`` are already within a second of the
+simulator, and ``roqsim state`` reads a moment or a range of that recording rather than
+following anything.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
 ``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the

@@ -50,7 +50,8 @@ whole life and would otherwise never end the wait.
 
 The message names the diagnosis and the next call. Work through it cheapest-first —
 `get_job_state`, then `get_job_log(summarize=True)`, then reproduce in a copy with
-`exec_in_container`, and only then `exec_in_job`, which is recorded against the run. Then
+`exec_in_container`, and only then the two that enter the live run and are recorded against
+it: `tap_job` (what its simulator publishes now, a few seconds of it) and `exec_in_job`. Then
 **settle the campaign again**: background `vast campaign wait <campaign_id>` (it will not exit on the
 same thing twice, so resuming works), or `stop_campaign`.
 

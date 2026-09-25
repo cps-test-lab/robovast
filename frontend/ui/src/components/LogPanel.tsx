@@ -7,13 +7,12 @@ import Tooltip from '@mui/material/Tooltip'
 import { useLiveStream, type LiveState } from '@/lib/liveStream'
 import { containerColorer } from './containerColor'
 
-// The live text-log renderer: a campaign's log on the Monitor, and the service's own log on the
-// Admin page. Both are the same shape on the server (a `fetch(offset) -> LogChunk` behind one SSE
-// loop), so they are the same shape here. A job's log is rows, not text, and renders in
-// `runLog/RunLogView` through `runLog/useJobLogStream`.
+// The live text-log renderer: the service's own log on the Admin page, a `fetch(offset) ->
+// LogChunk` behind one SSE loop. A campaign's log and a job's are rows, not text, and render in
+// `runLog/RunLogView` through `runLog/useCampaignLogStream` and `runLog/useJobLogStream`.
 //
-// Kept out of StatusView so the lazily-loaded Admin page does not pull in the campaign-status
-// graph (BatchObjectiveChart, DetailsBox, the ETA maths) to get it.
+// Its own module, apart from StatusView, so the lazily-loaded Admin page does not pull in the
+// campaign-status graph (BatchObjectiveChart, DetailsBox, the ETA maths) to get it.
 
 // A line tagged `[container] …` gets its prefix coloured per container; the rest of the line
 // keeps the default text colour. Lines without a tag render unchanged.

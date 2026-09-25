@@ -53,7 +53,12 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast campaign wait <id>``
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
-     - Stop a campaign, kill one wedged job, read its infrastructure log.
+     - Stop a campaign, kill one wedged job, read its infrastructure log as rows
+       (``--follow`` keeps reading; ``--phase``, ``--min-level`` and ``--grep`` narrow it;
+       ``--json`` prints the rows as the interface names them).
+   * - ``vast campaign tap <job> [id]``
+     - Follow what one running job's simulator publishes now, for a bounded time (``--select
+       a,b``, ``--max-seconds``). Recorded against the run as a probe.
    * - ``vast campaign priority|pause|resume``
      - Which campaign the cluster queue admits first, and whether one admits at all. Orders
        what is queued; runs already started finish either way (:ref:`cluster-admission`).

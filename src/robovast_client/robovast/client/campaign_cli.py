@@ -22,7 +22,7 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
-from robovast.client.tail import tail_chunks
+from robovast.client.tail import tail_rows
 
 
 @click.group()
@@ -132,6 +132,53 @@ def stop_job(job_name, campaign, reason, namespace, context):
         handle_cli_exception(e)
 
 
+@campaign.command()
+@click.argument('job_name')
+@click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
+@click.option('--select', 'selection', default="", metavar='A,B',
+              help='What to follow -- topic names in the ROS shape; empty lists the topics')
+@click.option('--max-seconds', default=30, show_default=True, type=int,
+              help='How long to follow before the service ends the tap')
+@target_options
+def tap(job_name, campaign, selection, max_seconds, namespace, context):
+    """Follow what ONE running job's simulator publishes now, for a bounded time.
+
+    The stream form of the job's state: the simulator's own following command runs in the
+    job's simulation container and its lines are printed here as they arrive. In the ROS
+    shape that is ``ros2 topic echo`` of the selected topics, and ``ros2 topic list`` for an
+    empty selection so you learn what to select.
+
+    This is a probe and is recorded against the run, as ``exec_in_job`` is: a process the
+    service started runs in the simulator's container for as long as the tap does. One tap
+    per job at a time; a simulator with no following command is refused by name.
+    """
+    from robovast.service.interface import TapEnd
+    try:
+        with service_client(namespace, context) as (client, target):
+            _echo_target(target)
+            campaign_id = campaign or _sole_running_campaign(client)
+            if campaign_id is None:
+                click.echo("No running campaign found.")
+                return
+            names = [name for name in selection.split(",") if name.strip()]
+            for item in client.tap_job(campaign_id, job_name, names, max_seconds=max_seconds,
+                                       source="cli"):
+                if isinstance(item, TapEnd):
+                    if item.timed_out:
+                        click.echo(f"tap ended: the {max_seconds}s bound was reached", err=True)
+                    elif item.exit_code is None:
+                        click.echo("tap ended before the command did", err=True)
+                    else:
+                        click.echo(f"tap ended: exit code {item.exit_code}", err=True)
+                    break
+                click.echo(item.line)
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
                     what: str = "") -> None:
     """Shared body of the three scheduling verbs: one interface call, one line back.
@@ -207,19 +254,29 @@ def resume(campaign, namespace, context):
 @campaign.command()
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @click.option('--follow', '-f', is_flag=True,
-              help='Stream new output until the campaign finishes')
+              help='Keep printing rows as they are written, until the campaign finishes')
+@click.option('--phase', default=None, metavar='PHASE',
+              help='One phase only: import, build, plugin install, variation, run, '
+                   'postprocessing, share or tables')
+@click.option('--min-level', default=None, metavar='LEVEL',
+              help='Rows at least this severe: DEBUG, INFO, WARNING, ERROR or CRITICAL')
+@click.option('--grep', default=None, metavar='RE',
+              help='Rows whose message or logger matches this case-insensitive regex')
+@click.option('--json', 'as_json', is_flag=True,
+              help='One JSON object per row instead of the rendered line')
 @target_options
-def log(campaign, follow, namespace, context):
-    """Print a campaign's unified infrastructure log.
+def log(campaign, follow, phase, min_level, grep, as_json, namespace, context):
+    """Print a campaign's infrastructure log, as rows.
 
-    The same divider-separated stream the web UI and MCP show — the variation
-    (config-generation), run (controller) and postprocessing phases in order, each
-    under a ``===== PHASE =====`` divider.
+    The same rows the web UI and MCP show -- every phase of the campaign in the order it
+    ran, each row ``[PHASE] <time> <LEVEL> <logger>: <message>`` with a continuation line
+    indented under it. The filters narrow what is printed; ``--follow`` keeps the stream
+    open and prints rows as the service writes them.
 
-    One reader, over HTTP, and no fallback to assembling the log from a campaign
-    directory when no service answers -- that needs the core installed, takes a path
-    where every other verb takes a campaign id, and is a second implementation of
-    "read the log" that a client-only install could not reach anyway.
+    One reader, over HTTP, and no fallback to reading the log from a campaign directory
+    when no service answers -- that needs the core installed, takes a path where every
+    other verb takes a campaign id, and is a second implementation of "read the log" that
+    a client-only install could not reach anyway.
     """
     try:
         with service_client(namespace, context) as (client, target):
@@ -228,8 +285,12 @@ def log(campaign, follow, namespace, context):
             if campaign_id is None:
                 click.echo("No running campaign found; pass CAMPAIGN.")
                 return
-            tail_chunks(lambda o: client.get_campaign_logs(campaign_id, o),
-                        lambda text: click.echo(text, nl=False), follow=follow)
+            filters = {"phase": phase, "min_level": min_level, "grep": grep}
+            if follow:
+                chunks = client.iter_campaign_log(campaign_id, **filters)
+            else:
+                chunks = [client.get_campaign_logs(campaign_id, **filters)]
+            tail_rows(chunks, click.echo, as_json=as_json)
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
     # usage and setting the exit code, so they must pass the broad handler below rather than be
     # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints

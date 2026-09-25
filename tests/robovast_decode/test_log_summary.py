@@ -265,3 +265,16 @@ def test_a_line_with_no_stamp_at_all_still_falls_to_the_keyword_scan():
     parsed = peel_prefixes("cp: failed to copy 'x'")
     assert parsed.level == "" and parsed.wall_ts is None
     assert severity_of("cp: failed to copy 'x'") == "warn"
+def test_a_rendered_campaign_log_row_is_classified_by_its_own_level():
+    """``vast campaign log`` renders ``[PHASE] <date> <LEVEL> <logger>: <message>``; the level
+    is the row's own verdict and outranks any keyword in the message. The date is the writer's
+    local time, so it names no wall stamp."""
+    assert severity_of("[RUN] 2026-01-01 12:00:00 INFO robovast.x: error_code: 0") == "other"
+    assert severity_of("[RUN] 2026-01-01 12:00:00 ERROR robovast.x: fine") == "error"
+    assert severity_of("[PLUGIN INSTALL] 2026-01-01 12:00:00 WARNING pip: old") == "warn"
+    parsed = peel_prefixes("[RUN] 2026-01-01 12:00:00 WARN nav2: goal 3 failed")
+    assert (parsed.node, parsed.level, parsed.wall_ts, parsed.message) == (
+        "nav2", "WARN", None, "goal 3 failed")
+    # A NOTE row carries no level, so it is the unstamped line it renders and keyword-rated.
+    assert severity_of("[BUILD] NOTE: ERROR: failed to solve") == "warn"
+    assert severity_of("[BUILD] NOTE: #1 CACHED") == "other"

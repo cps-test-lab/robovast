@@ -961,16 +961,56 @@ class RunShareRequest(BaseModel):
 
 
 class LogChunk(BaseModel):
-    """An incremental slice of a campaign's ``controller.log``.
+    """An incremental slice of a byte-addressed log: the service's own, an image build's.
 
-    The controller runs in the driving process, so its log is a local file there
-    (the service). Clients poll from a byte
-    *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
-    the campaign has reached a terminal phase and no more will be written.
+    Clients poll from a byte *offset* and append — ``next_offset`` is where to resume;
+    ``eof`` is True once nothing more will be written.
     """
     text: str = ""
     next_offset: int = 0
     eof: bool = False
+
+
+class CampaignLogRow(BaseModel):
+    """One record of a campaign's infrastructure log.
+
+    A stamped line of a phase file (``<date> <level> <logger>: <message>``, or the
+    ``[<level>] [<t>] [<node>]:`` form a run's containers relay into ``controller.log``)
+    with the unstamped lines under it joined into ``message``; an unstamped line with no
+    record above it is its own row at level ``NOTE`` -- build and pip output, mostly.
+    """
+    #: The phase whose file holds the row: ``IMPORT``, ``BUILD``, ``PLUGIN INSTALL``,
+    #: ``VARIATION``, ``RUN``, ``POSTPROCESSING``, ``SHARE`` or ``TABLES``.
+    phase: str = ""
+    #: The row's position in the whole campaign log: phase order, then file order.
+    seq: int = 0
+    #: Epoch seconds from the line's own stamp; ``None`` for a ``NOTE`` row.
+    wall_ts: Optional[float] = None
+    #: The level as written (``INFO``, ``WARNING``, ...), ``NOTE`` for an unstamped line.
+    level: str = "NOTE"
+    #: The Python logger or the relaying node that wrote it; empty for a ``NOTE`` row.
+    logger: str = ""
+    #: The line's text; continuation lines are joined with ``\n``.
+    message: str = ""
+
+
+class CampaignLogChunk(BaseModel):
+    """The rows of a campaign's infrastructure log that arrived after *cursor*.
+
+    Read from the phase files under the campaign's ``_execution/`` (the archived runs of a
+    repeatable phase under ``sections/`` included), which grow while the campaign runs,
+    so a running campaign and a finished one answer alike. The filters a
+    read was given are applied while reading, so ``rows`` is what they kept and the
+    cursor still advances over what they skipped.
+    """
+    rows: list[CampaignLogRow] = Field(default_factory=list)
+    #: Opaque: pass it back to continue after these rows.
+    cursor: str = ""
+    #: The campaign's log is complete; nothing more will arrive.
+    eof: bool = False
+    #: Every phase the campaign's log has, in log order, whatever the filters kept -- so a
+    #: read narrowed to one phase still says which others exist.
+    phases: list[str] = Field(default_factory=list)
 
 
 class JobLogRow(BaseModel):
@@ -1004,6 +1044,30 @@ class JobLogChunk(BaseModel):
     cursor: str = ""
     #: The job's logs are complete; nothing more will arrive.
     eof: bool = False
+
+
+#: Longest a tap on a live job may run, in seconds. A tap holds an exec open in the run's
+#: simulation container and a request open on the service, so it is bounded by construction;
+#: a reader who wants longer opens another, which is recorded as another probe.
+TAP_MAX_S = 120
+
+
+class TapRow(BaseModel):
+    """One line a tap relayed from a live job's simulation container, as it was printed."""
+    #: Epoch seconds when the service received the line.
+    t_wall: float
+    line: str = ""
+
+
+class TapEnd(BaseModel):
+    """How a tap ended: the last item its stream yields.
+
+    ``exit_code`` is the tap command's, ``124`` with ``timed_out`` when its bound cut it, and
+    ``None`` when the reader closed the tap before the command ended -- there is no status to
+    report for a process that was cut off rather than waited for.
+    """
+    exit_code: Optional[int] = None
+    timed_out: bool = False
 
 
 class VersionInfo(BaseModel):
@@ -2665,9 +2729,10 @@ class Routes:
 
     @staticmethod
     def campaign_logs_stream(campaign_id: str) -> str:
-        # SSE transport over the same assembly seam as ``campaign_logs``: the browser
-        # streams live, resuming from the byte offset it carries in ``Last-Event-ID``.
-        # The pull endpoint above stays the authoritative read for MCP / the CLI.
+        # SSE transport over ``campaign_logs``: the same ``cursor``, ``phase``,
+        # ``min_level`` and ``grep`` query parameters, rows pushed as the phase files
+        # change, resumed from the cursor a client carries in ``Last-Event-ID``. The pull
+        # endpoint above stays the authoritative read for MCP.
         return f"/campaigns/{campaign_id}/logs/stream"
 
     @staticmethod
@@ -2700,6 +2765,13 @@ class Routes:
     def job_log_stream(campaign_id: str) -> str:
         # SSE transport over ``job_log``: the same ``job_name`` query param, resumed by cursor.
         return f"/campaigns/{campaign_id}/job-log/stream"
+
+    @staticmethod
+    def job_tap(campaign_id: str) -> str:
+        # SSE only, never a pull: a tap is a bounded live relay, not a record to page through.
+        # ``?job_name=&selection=a,b&max_seconds=``, the job as a query param for the same
+        # reason as ``job_log``. Not resumable: what a tap printed before a reconnect is gone.
+        return f"/campaigns/{campaign_id}/job-tap"
 
     #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
     #: because it also serves the "all campaigns" case).
@@ -3107,12 +3179,24 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0) -> LogChunk:
-        """Return the campaign's ``controller.log`` from byte *offset* onward.
+    def get_campaign_logs(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None) -> CampaignLogChunk:
+        """Return the campaign's infrastructure log rows after *cursor*, running or finished.
 
-        For streaming: poll from ``0``, append :attr:`LogChunk.text`, then poll
-        again from the returned :attr:`LogChunk.next_offset`. Serves the live file
-        while the campaign runs and the durable copy afterwards.
+        Read from the phase files under the campaign's ``_execution/`` (one per phase, the
+        archived runs of a repeatable phase under ``sections/``), which grow while the
+        campaign runs. Resume with :attr:`CampaignLogChunk.cursor`; stop at
+        :attr:`CampaignLogChunk.eof`.
+
+        The filters are applied while reading and a read still advances the cursor over
+        the rows they skipped: *phase* keeps one phase (its name, case-insensitively;
+        ``"all"`` and ``None`` keep every phase), *min_level* keeps rows at least that
+        severe (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``, ``CRITICAL`` -- ``WARN``,
+        ``warn`` and ``error`` are accepted spellings; a ``NOTE`` row ranks by the shared
+        keyword classifier), *grep* keeps rows whose message or logger matches that
+        case-insensitive regex. A filter value the service does not know raises
+        ``ValueError``; so does a cursor it did not issue.
         """
 
     @abstractmethod
@@ -3204,6 +3288,32 @@ class RobovastInterface(ABC):
         """
         del campaign_id, job_name, command, container, source
         raise UnsupportedOperation("exec_in_job", self.IMPLEMENTATION)
+
+    def tap_job(self, campaign_id: str, job_name: str, selection: Optional[list] = None, *,
+                max_seconds: int = TAP_MAX_S, source: str = "api"):
+        """Follow what a **running** job's simulator is publishing *now*, for a bounded time.
+
+        The stream form of :meth:`get_job_state`: that is a fixed read, this starts the
+        backend's own following command in the job's simulation container
+        (:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`) and relays its
+        stdout line by line. Yields :class:`TapRow` per line and one :class:`TapEnd` last.
+
+        *selection* is what the backend's command takes -- topic names in the ROS shape,
+        where an empty selection lists the topics once so a caller learns what to select.
+        *max_seconds* is capped at :data:`TAP_MAX_S`; closing the iterator ends the tap.
+
+        **A tap is a probe and is recorded** as one, before it starts, exactly as
+        :meth:`exec_in_job` is: a process the service started is running in the simulator's
+        container for as long as the tap lasts, and a run that carried one is marked
+        ``probed``. Refused when the job is not running (``KeyError`` / ``RuntimeError``),
+        when the backend has no tap (``ValueError`` naming it), and while another tap is open
+        on the same job (``RuntimeError``, one relay per job at a time).
+
+        Not abstract, for the reason :meth:`get_job_state` is not: a transport that cannot do
+        this inherits a refusal rather than being made to write one.
+        """
+        del campaign_id, job_name, selection, max_seconds, source
+        raise UnsupportedOperation("tap_job", self.IMPLEMENTATION)
 
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:

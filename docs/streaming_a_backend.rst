@@ -193,11 +193,19 @@ Level 4: now
 
 Everything above is read from files, which is why it needs no simulator installed where it
 is read. What a backend says about a run *before* anything is written goes through the
-backend itself. Today that is ``health_command(cfg, execution, *, run_dir)`` -- a fixed
-command the service runs in the running container and whose JSON ``findings`` ride on
-``get_campaign_status`` and ``get_job_state`` (:ref:`what a running campaign says is wrong <mcp-health-findings>`) -- and
-``simulation_screenshot``, which re-renders one moment of one run from a chosen viewpoint.
+backend itself, as two hooks the service runs inside the run's simulation container:
 
-A later change adds a ``tap_command`` hook beside them: the command a backend names to be
-asked for the run's present state. Its signature is settled when it lands; it is named here
-so a backend author knows that "now" is a hook of the backend, and everything else is a file.
+``health_command(cfg, execution, *, run_dir)``
+   A fixed command whose JSON ``findings`` ride on ``get_campaign_status`` and
+   ``get_job_state`` (:ref:`what a running campaign says is wrong <mcp-health-findings>`).
+   The service polls it while somebody watches.
+``tap_command(cfg, execution, *, run_dir, selection) -> list | None``
+   The command a reader starts on demand to follow the run's present state: its stdout is
+   relayed line by line for a bounded time (``tap_job`` on every surface, the run view's
+   **Now** toggle) and recorded against the run as a probe. Argv, never a shell string. The
+   ROS shape's default is ``ros2 topic echo`` of the selection; a backend whose recording is
+   already the live view answers ``None``, as roqsim does (:doc:`simulators`, "Asking a live
+   run").
+
+Beside them ``simulation_screenshot`` re-renders one moment of one run from a chosen
+viewpoint. "Now" is a hook of the backend, and everything else is a file.

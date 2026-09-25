@@ -14,7 +14,7 @@
 // Edit-visualization editor (Monaco, same style as the config editor) that saves the campaign's
 // `visualization:` block as a .vast override and reloads the panels.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useToasts } from '@/components/ToastProvider'
 import Editor from '@monaco-editor/react'
@@ -37,6 +37,7 @@ import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import CenterFocusStrongRoundedIcon from '@mui/icons-material/CenterFocusStrongRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import PodcastsRoundedIcon from '@mui/icons-material/PodcastsRounded'
 import SensorsRoundedIcon from '@mui/icons-material/SensorsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { robovast, hasRecordedRuns, isRunning, type CampaignSummary } from '@/lib/robovastClient'
@@ -57,6 +58,8 @@ import { ANY_TABLE } from '@/lib/panels/liveFeed'
 import { parsePanels } from '@/lib/panels/parsePanels'
 import { PanelHost } from '@/lib/panels/PanelHost'
 import { ResultsTree, runsQuery } from './ResultsTree'
+import { panelTopics, useTap } from './tap'
+import { jobNameOf } from '@/components/runLog/useJobLogStream'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
 import '@/panels/run_view' // registers the built-in panels
@@ -200,6 +203,66 @@ function LiveControl({ clock }: { clock: PlaybackClock }) {
   )
 }
 
+/** The header's Now control, for a run that is still recording: whether a tap on the run's
+ *  simulation container is open, relaying what it publishes at this moment into the tail below.
+ *
+ *  A toggle, off by default, because a tap is a probe: a process the service starts runs in the
+ *  simulator's container while it is on, and the run is recorded as probed. The panels already
+ *  follow the recording, which is the untouched view; this is for the moment the recording has not
+ *  reached yet, and only on the reader's word. */
+function NowControl({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <Tooltip
+      title={on
+        ? 'Following the simulator directly: a tap is open in the run\'s simulation container, '
+          + 'and the run is recorded as probed. Click to close it.'
+        : 'Open a tap on the run\'s simulation container and show what it publishes now. '
+          + 'Recorded against the run as a probe.'}
+    >
+      <Button
+        size="small"
+        variant={on ? 'contained' : 'outlined'}
+        color={on ? 'warning' : 'inherit'}
+        startIcon={<PodcastsRoundedIcon />}
+        onClick={onToggle}
+        sx={{ textTransform: 'none', whiteSpace: 'nowrap' }}
+      >
+        {on ? 'Now · tapping' : 'Now'}
+      </Button>
+    </Tooltip>
+  )
+}
+
+/** The tail the Now tap fills: the newest lines the simulator printed, and a note saying what is
+ *  followed and how the tap ended. */
+function TapTail({ tap }: { tap: ReturnType<typeof useTap> }) {
+  const endRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' })
+  }, [tap.tail.lines.length])
+  return (
+    <Paper variant="outlined" sx={{ display: 'flex', flexDirection: 'column', maxHeight: 220 }}>
+      <Box
+        sx={{
+          flexGrow: 1, overflow: 'auto', px: 1.5, py: 1,
+          fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap',
+        }}
+      >
+        {tap.isPending ? (
+          <CircularProgress size={16} />
+        ) : (
+          tap.tail.lines.map((l, i) => <div key={i}>{l.line}</div>)
+        )}
+        <div ref={endRef} />
+      </Box>
+      <Divider />
+      <Typography variant="caption" color="text.secondary" sx={{ px: 1.5, py: 0.5 }}>
+        {tap.note}
+      </Typography>
+    </Paper>
+  )
+}
+
 /** The widest time span the rows of a batch cover in `timeCol`, or null when none carries one. */
 function batchSpan(rows: DataRow[], timeCol: string): [number, number] | null {
   let lo = Infinity
@@ -329,6 +392,14 @@ export function RunView({
     () => (panels.data ? parsePanels(panels.data.panels) : []),
     [panels.data],
   )
+
+  // The Now tap: off by default and off again whenever the run on screen changes or stops being
+  // live, since a tap is recorded against the run it was opened on and nothing else.
+  const [nowOn, setNowOn] = useState(false)
+  useEffect(() => setNowOn(false), [runKey])
+  const tapJob = run && live ? jobNameOf(run.configName, run.runId) : null
+  const topics = useMemo(() => panelTopics(specs), [specs])
+  const tap = useTap(nowOn && live, campaignId, tapJob, topics)
   // The served list is never empty -- the playback transport is contributed for every campaign --
   // and the transport is not content: it is the clock the other panels follow. So "nothing to look
   // at here" is the service's `transport_only`, asked where the contributed panels are merged in
@@ -517,6 +588,9 @@ export function RunView({
         {/* Beside the transport's owner rather than in the playback bar: following is a state of
             the whole view, and the bar is a panel a campaign may position anywhere. */}
         {provider?.live ? <LiveControl clock={clock} /> : null}
+        {provider?.live ? (
+          <NowControl on={nowOn} onToggle={() => setNowOn((v) => !v)} />
+        ) : null}
         {/* Pushed to the far right: these govern the whole view rather than the run picker they
             would otherwise look attached to. */}
         <Box sx={{ flexGrow: 1 }} />
@@ -627,6 +701,7 @@ export function RunView({
               <b>Edit visualization</b> — to show anything else.
             </Alert>
           )}
+          {nowOn && live ? <TapTail tap={tap} /> : null}
           <Box
             // The panels are the point of this view, so they get the whole window rather than
             // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main

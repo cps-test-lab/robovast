@@ -189,10 +189,12 @@ It provides four views:
   Confirming asks for an optional reason, and the reason is worth giving —
   it is stored with the run and is what explains the kill to whoever reads the results
   later. The kill is permanent: the runs it cuts short are recorded as ``killed`` (see
-  :ref:`stopping-one-job`), counted as neither passes nor failures. The campaign **live log** panel below is the
-  campaign's unified *infrastructure* log — the variation (config generation), run
-  (controller) and postprocessing phases assembled into one stream with
-  ``===== PHASE =====`` dividers — streamed live and shown in full once it finishes.
+  :ref:`stopping-one-job`), counted as neither passes nor failures. The campaign **Log** tab is
+  the campaign's *infrastructure* log — every phase, from the import or build through the
+  run to postprocessing, as **rows** in the same viewer the run log uses: a phase facet in
+  the filter bar, the logger beside each row, warnings and errors coloured by the row's own
+  level and shown on their own on request, a text or regex search — streamed live and shown in full
+  once it finishes (the row shape: :ref:`results-execution-dir`).
   Both tails **follow the newest line only while you are at the newest line**, the same
   contract as the :ref:`run log <run-view>`: scroll back and the arriving lines are
   appended without moving the view, so a passage stays where you are reading it, and a
@@ -1546,6 +1548,18 @@ are re-read every few seconds, so a run that starts appears and one that ends ge
 verdict. Each run and configuration carries a status dot from the campaign's record -- pass,
 fail, or a pulsing *running* for a run still recording -- and a configuration shows its
 passed/total count.
+
+Beside the Live control, a **Now** toggle opens a *tap* on the run: the simulator's own
+following command (:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`), started
+by the service in the run's simulation container and relayed as server-sent events
+(``GET /campaigns/{id}/job-tap``) into a tail below the header. The selection is the topics
+the view's panels name -- a camera panel's ``topic`` -- and with none the tail lists what the
+run publishes. It is **off by default and off again when the run changes**, because a tap is
+recorded against the run as a probe: a process the service started runs in the simulator's
+container while the toggle is on. Each bound the service puts on a tap reopens it while the
+toggle stays on; turning it off closes the stream, which ends the tap. A simulator with no
+tap (roqsim, whose recording the panels already follow within a second) is refused by name
+in the tail.
 
 A live run has no verdict to trim to, so the :ref:`shutdown toggle <shutdown-toggle>` has
 nothing to apply to it, and **Edit visualization** is disabled while the campaign runs:

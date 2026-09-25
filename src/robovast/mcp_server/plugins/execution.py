@@ -27,6 +27,8 @@ serve.
 
 import logging
 import time
+from collections import Counter
+from urllib.parse import urlencode
 
 from fastmcp import FastMCP
 
@@ -297,9 +299,8 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         from_campaign: Re-run a past campaign from its own record: a NEW campaign, source
             untouched, **taking no other argument but ``force``** — the record supplies them,
             so a pilot stays a pilot. Re-expands, so stochastic generators redraw. Refused
-            when its pre-flight blocks (an image no host here can drive, a config no ladder
-            carries); ``get_campaign_summary``'s ``retrigger`` key says so beforehand and
-            costs nothing.
+            when its pre-flight blocks; ``get_campaign_summary``'s ``retrigger`` key says so
+            beforehand.
         force: Re-run despite a blocking pre-flight axis, for one you have decided you
             understand. With ``from_campaign`` only — a workspace launch has no pre-flight
             to override.
@@ -452,24 +453,17 @@ def get_campaign_status(campaign_id: str) -> dict:
     itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
     ``get_job_state`` is the fuller read.
 
-    ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
-    deliverable, so a campaign whose postprocessing failed still finishes, with
-    ``postprocessing_error``, no CSVs and nothing queryable. ``run_postprocessing`` fixes that
-    without re-running anything.
+    ``postprocessed`` — ``finished`` does not imply the campaign-end pass ran: one whose
+    postprocessing failed still finishes, with ``postprocessing_error``; its tables still
+    build on first use, and ``run_postprocessing`` reruns the pass without re-running anything.
 
-    **On a search**, three more fields answer "is it still improving, or am I burning compute?" —
-    which ``best_objective`` alone cannot, one number not saying whether it moved.
-    ``objective_history`` is one row per batch (the most recent 20) carrying that round's
-    ``min``/``max``/``mean`` and the ``best_so_far`` after it, and ``batches_since_improvement``
-    counts the rounds since the best last moved. Read the SPREAD, not just the best: a flat
-    best-so-far with a wide range means the search is still exploring, while a range that has
-    collapsed onto the best value means it is re-sampling one region and further batches will buy
-    little. Live during the run — the only route on the cluster, where SQL reads a
-    snapshot published only when the campaign ends.
-
-    Weigh it against ``budget`` before acting: a ``no_improvement`` or ``target_objective``
-    criterion may already be about to stop the search, and pre-empting a criterion the campaign
-    declared is how a search gets killed one batch before it would have converged. A search that
+    **On a search**, ``objective_history`` (one row per batch, the most recent 20:
+    ``min``/``max``/``mean`` and ``best_so_far``) and ``batches_since_improvement`` say whether
+    it is still improving, which ``best_objective`` alone cannot. Read the spread: a flat best
+    with a wide range is still exploring; a range collapsed onto the best is re-sampling one
+    region and further batches buy little. Live during the run. Weigh it against ``budget``: a
+    ``no_improvement`` or ``target_objective`` criterion may be about to stop it, and
+    pre-empting a declared criterion kills a search one batch before it converges; one that
     declares neither is one only you can stop.
 
     Args:
@@ -528,78 +522,83 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                      grep: str = "", tail: int = 0, min_severity: str = "",
                      summarize: bool = False, top: int = DEFAULT_TOP,
                      phase: str = "", hide_shutdown: bool = True) -> dict:
-    """What is the campaign doing? Its infrastructure log, in phases.
+    """What is the campaign doing? Its infrastructure log, as rows, phase by phase.
 
     **On a stalled or failed run, start with ``summarize=True``** — filtering cannot
     diagnose a flood, because the flood *is* the finding.
 
-    Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
-    default**: ``build`` (where a campaign that failed before it ever ran explains itself),
-    ``plugin install``, ``variation``, ``run`` (the controller),
-    ``postprocessing``. A build is large and comes first, so on a campaign that has run,
-    narrow instead of paging: ``phase="run"``, or ``phase="build", summarize=True``.
+    Phases, in the order they ran and **all read by default**: ``import``, ``build``,
+    ``plugin install``, ``variation``, ``run`` (the controller), ``postprocessing``,
+    ``share``, ``tables``. A build is large and comes first, so on a campaign that has run,
+    narrow: ``phase="run"``, or ``phase="build", summarize=True``. A row reads
+    ``[PHASE] <time> <LEVEL> <logger>: <message>``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         limit: Maximum lines to return. Ignored with ``summarize``.
         offset: First line to return (for paging the matches).
-        hide_shutdown: Stop at each run's scenario verdict — default true, and normally what
-            you want: past it a run is only tearing down, and the lifecycle/TF errors that
-            produces are noise. Applied first, so the other filters describe the trial;
+        hide_shutdown: Stop at each run's scenario verdict (past it a run only tears down);
             ``shutdown_dropped`` says what it cut.
-        grep: Keep lines matching this regex (case-insensitive), before offset/limit.
-        tail: Keep only the last N of what survived the filters. Ignored with ``summarize``.
-        min_severity: ``"warn"`` or ``"error"``, by RoboVAST's own classifier — the same
-            definition the campaign status uses, so prefer it to a severity ``grep``.
-        summarize: Return distinct **patterns with counts** instead of lines — timestamps,
-            coordinates and ids are normalized so equal shapes group.
+        grep: Keep rows whose message or logger matches this regex (case-insensitive).
+        tail: Keep only the last N lines of what survived. Ignored with ``summarize``.
+        min_severity: ``"warn"`` or ``"error"``: a row's own level, else the keyword
+            classifier; prefer it to a severity ``grep``.
+        summarize: Distinct **patterns with counts** instead of lines; timestamps,
+            coordinates and ids normalized so equal shapes group.
         top: With ``summarize``, maximum patterns (``0`` = all).
         phase: Read only one phase. Empty and ``"all"`` both read every phase.
 
     Returns:
         Lines: ``{file_name, phases, total_lines, matched_lines, returned_lines, offset,
-        content, dropped, shutdown_dropped, truncated}``. With ``summarize``: the same minus
+        content, shutdown_dropped, truncated}``. With ``summarize``: the same minus
         ``content``/``returned_lines``/``offset``/``truncated``, plus ``{patterns,
         patterns_total, severity_counts}``, each pattern ``{pattern, count, severity,
-        example}``. Or ``{error}``. ``phases`` always lists every section as ``{name, lines,
-        included}``, so what a read left out is stated.
-
-        ``total_lines`` is the log, ``matched_lines`` what survived the filters,
-        ``returned_lines`` this page (``offset``/``limit`` page through what ``tail``
-        left, which is all of ``matched_lines`` unless ``tail`` cut) —
-        ``total_lines == matched_lines + dropped + shutdown_dropped``. ``truncated``
-        says this page is not all of what matched, whether ``tail`` or the page window cut
-        it.
+        example}``. Or ``{error}``. ``phases`` lists every phase the log has as
+        ``{name, included}``, plus ``rows`` for an included one, so what a read left out is
+        stated. ``phase``, ``grep`` and ``min_severity`` are applied by the service as it
+        reads: ``total_lines`` is what they kept, ``matched_lines`` what survived
+        ``hide_shutdown``, ``returned_lines`` this page —
+        ``total_lines == matched_lines + shutdown_dropped``. ``truncated`` says this page
+        is not all of what matched.
     """
+    from robovast.client.tail import format_campaign_log_row  # noqa: PLC0415
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
+    from robovast.service.campaign_log import phase_filter  # noqa: PLC0415
+    from robovast_decode.log_summary import SEVERITIES, severity_rank  # noqa: PLC0415
 
-    # Ask the service, which knows where this campaign's log actually lives: its
-    # results tree, which is not on this filesystem when the service runs on another
-    # host. Reading the local results dir here reported an empty log for every such
-    # campaign. The local disk path stays as the serviceless fallback so an archived
-    # results tree is still readable with no service running.
-    client = service_access.service_client()
-    if client is not None:
-        try:
-            # The service pages by *byte* offset; this tool pages by lines, so take
-            # the whole text (offset 0) and slice lines below, as before.
-            text = client.get_campaign_logs(campaign_id, offset=0).text
-        except Exception as e:  # noqa: BLE001
-            return {"error": str(e)}
-    else:
-        from robovast.common.campaign_logs import assemble_log_from_dir  # noqa: PLC0415
-        try:
-            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-            text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
-        except ValueError as e:
-            return {"error": str(e)}
     try:
-        text, phases = _select_phases(text, phase)
+        # The shared severity vocabulary (``warn``/``error``), so this control means what it
+        # means on every log tool; the read takes the level it names.
+        min_level = _SEVERITY_LEVEL[SEVERITIES[severity_rank(min_severity)]] \
+            if min_severity else None
+        wanted = phase_filter(phase)
     except ValueError as e:
         return {"error": str(e)}
+    # Ask the service, which knows where this campaign's log actually lives: its results
+    # tree, which is not on this filesystem when the service runs on another host. With no
+    # service, an archived results tree on this host is read through the same reader.
+    client = service_access.service_client()
     try:
-        view = view_log(text, grep=grep, tail=tail, min_severity=min_severity,
-                        summarize=summarize, top=top, hide_shutdown=hide_shutdown)
+        if client is not None:
+            chunk = client.get_campaign_logs(campaign_id, phase=wanted, min_level=min_level,
+                                             grep=grep or None)
+            rows, present = chunk.rows, chunk.phases
+        else:
+            from robovast.service.campaign_log import read_rows  # noqa: PLC0415
+            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+            read = read_rows(campaign_dir, final=True, phase=wanted, min_level=min_level,
+                             grep=grep or None)
+            rows, present = read.rows, read.phases
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+    counts = Counter(row.phase for row in rows)
+    phases = [{"name": name, "included": wanted is None or name == wanted,
+               **({"rows": counts[name]} if wanted is None or name == wanted else {})}
+              for name in present]
+    text = "".join(format_campaign_log_row(row) + "\n" for row in rows)
+    try:
+        view = view_log(text, tail=tail, summarize=summarize, top=top,
+                        hide_shutdown=hide_shutdown)
     except ValueError as e:
         return {"error": str(e)}
     name = f"{campaign_id} (infrastructure log)"
@@ -610,29 +609,25 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                 "patterns_total": view["patterns_total"],
                 "severity_counts": view["severity_counts"],
                 "matched_lines": view["matched"],
-                "total_lines": view["lines_total"], "dropped": view["dropped"],
+                "total_lines": view["lines_total"],
                 **_shutdown_report(view)}
     all_lines = view["content"].splitlines()
     selected = all_lines[offset:offset + limit]
     # Three counts, because they answer three different questions and collapsing any two
-    # of them hides a cut: ``total_lines`` is the log (the same figure a summary reports,
-    # so the two shapes cannot disagree about how long it is), ``matched_lines`` is what
-    # survived the filters, and ``returned_lines`` is this page. ``offset``/``limit`` page
-    # through what ``tail`` left, which is ``matched_lines`` unless ``tail`` cut. They tie
-    # out:
-    # total_lines == matched_lines + dropped + shutdown_dropped.
+    # of them hides a cut: ``total_lines`` is what the read returned (the same figure a
+    # summary reports, so the two shapes cannot disagree about how long it is),
+    # ``matched_lines`` is what survived ``hide_shutdown``, and ``returned_lines`` is this
+    # page. ``offset``/``limit`` page through what ``tail`` left, which is
+    # ``matched_lines`` unless ``tail`` cut. They tie out:
+    # total_lines == matched_lines + shutdown_dropped.
     result = {
         "file_name": name,
         "phases": phases,
         "total_lines": view["lines_total"],
-        # What the filters kept, not what this page holds: with ``tail`` the two differ,
-        # and reporting the page size here said a 50-line tail of a 5000-line log had
-        # fifty matching lines -- which also broke the tie-out below.
         "matched_lines": view["matched"],
         "returned_lines": len(selected),
         "offset": offset,
         "content": "\n".join(selected),
-        "dropped": view["dropped"],
         # Whether this page is all of what matched. ``tail`` cuts before the page window
         # does, so without this a read that asked for the last N lines could not tell N
         # from "N is all there was".
@@ -651,52 +646,11 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     return result
 
 
-def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
-    """Narrow an assembled campaign log to *phase*; also describe every phase present.
+#: The level the campaign log read filters at for each severity a caller may name. The
+#: read ranks a stamped row by its level and an unstamped one by the keyword classifier,
+#: which is what ``min_severity`` means on every other log tool.
+_SEVERITY_LEVEL = {"other": None, "warn": "WARNING", "error": "ERROR"}
 
-    Returns ``(text, phases)`` where ``phases`` names each section with its line count
-    and whether this read includes it — so a section that was left out is *reported*,
-    which is the same contract ``view_log`` keeps for the lines it filters.
-
-    ``phase=""`` reads **every** phase, ``"all"`` is its explicit synonym, and a phase
-    name includes only that one. ``BUILD`` is included, not held back as an aside —
-    shared, content-addressed work rather than this campaign's narrative — because a
-    campaign still waiting for its image has no other section, and holding it back
-    answers "what is this campaign doing?" with nothing at all. Narrowing is the
-    caller's move (``phase="run"``), made with the same controls every other log tool
-    has, rather than a default that decides for them.
-
-    Raises:
-        ValueError: *phase* is not a known phase — a silently ignored selector would
-            read as "that phase produced nothing".
-    """
-    from robovast.common.campaign_logs import (INFRA_PHASES, phase_banner,  # noqa: PLC0415
-                                               split_phases)
-
-    known = {name.lower(): name for name, _ in INFRA_PHASES}
-    wanted = phase.strip().lower()
-    if wanted and wanted != "all" and wanted not in known:
-        raise ValueError(
-            f"unknown phase {phase!r}; use one of "
-            f"{', '.join(sorted(known))} — or 'all'")
-
-    out, phases = [], []
-    for name, section in split_phases(text):
-        if not name:
-            out.append(section)  # pre-divider remainder; never dropped
-            continue
-        # Empty and "all" both mean every phase; only a named one narrows.
-        included = not wanted or wanted == "all" or name.lower() == wanted
-        # Content lines only — the banner is a divider, not log output — so the count is
-        # what a caller would actually receive for this phase.
-        body = section.replace(phase_banner(name), "", 1)
-        phases.append({"name": name, "lines": len(body.strip("\n").splitlines()),
-                       "included": included})
-        if included:
-            out.append(section)
-    # The sections tile the input, so an all-included read returns it byte for byte:
-    # asking for the log must not change how many lines the log has.
-    return "".join(out), phases
 
 
 def list_campaign_jobs(campaign_id: str) -> dict:
@@ -860,6 +814,60 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
             return {"error": NO_SERVICE}
         result = client.exec_in_job(campaign_id, job_name, command, container, source="mcp")
         return result.model_dump()
+    except Exception as e:  # noqa: BLE001
+        return service_access.error_result(e)
+
+
+#: Longest a tap collects before this tool answers. A tool call holds its caller for the
+#: whole of it, so the bound is far under the service's own; a reader who wants longer follows
+#: the ``stream_url`` in the answer instead.
+_TAP_TOOL_MAX_S = 30
+
+
+def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
+            max_seconds: int = 10) -> dict:
+    """Follow what a **running** job's simulator publishes *now*, for a few seconds: its own
+    following command runs in the job's simulation container and the lines are collected.
+
+    ROS shape: ``ros2 topic echo`` of the selected topics; an empty selection is ``ros2 topic
+    list``; ``"csv"`` in the selection gives one value per line. roqsim has no tap (its
+    recording is the live view).
+
+    **Marks the run as probed**, as ``exec_in_job`` does. One tap per job at a time.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        job_name: A running ``job_name`` from ``list_campaign_jobs``.
+        selection: Topic names, or none for the topic list.
+        max_seconds: How long to collect; capped at 30 here.
+
+    Returns:
+        ``{lines, count, exit_code, timed_out, max_seconds, stream_url}`` (the tap as
+        server-sent events, for longer), or ``{error}``.
+    """
+    try:
+        client = service_access.service_client()
+        if client is None:
+            return {"error": NO_SERVICE}
+        if max_seconds < 1:
+            raise ValueError("max_seconds is at least 1")
+        seconds = min(int(max_seconds), _TAP_TOOL_MAX_S)
+        names = list(selection or [])
+        lines: list = []
+        end = None
+        for item in client.tap_job(campaign_id, job_name, names, max_seconds=seconds,
+                                   source="mcp"):
+            if hasattr(item, "exit_code"):
+                end = item
+                break
+            lines.append(item.line)
+        query = "?" + urlencode({"job_name": job_name, "selection": ",".join(names),
+                                 "max_seconds": seconds})
+        return {"lines": lines, "count": len(lines),
+                "exit_code": None if end is None else end.exit_code,
+                "timed_out": bool(end is not None and end.timed_out),
+                "max_seconds": seconds,
+                "stream_url": service_access.web_url(client, Routes.job_tap(campaign_id) + query)}
     except Exception as e:  # noqa: BLE001
         return service_access.error_result(e)
 
@@ -1252,8 +1260,8 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     **At most one container exists at a time**, so ``reused: false`` means a fresh one and
     whatever the previous ran is gone; ``stop_container`` ends it. A started scenario logs
     to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
-    ``command="tail -200 <log_path>"``. Reuse keys on the image *ref*, which does not change
-    when a floating tag is re-pushed — so ``fresh`` is how you ask whether new bytes landed.
+    ``command="tail -200 <log_path>"``. Reuse keys on the image ref, so ``fresh`` is how you
+    ask whether a re-pushed floating tag's bytes landed.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
@@ -1333,6 +1341,7 @@ _TOOLS = [
     get_job_log,
     get_job_state,
     exec_in_job,
+    tap_job,
     stop_campaign,
     stop_job,
     get_resource_usage,

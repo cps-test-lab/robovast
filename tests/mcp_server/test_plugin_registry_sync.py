@@ -489,6 +489,9 @@ _PARAMETER_VOCABULARY = {
     "archive_path", "occupancy",
     # how much, and from where
     "limit", "offset", "cursor", "top", "tail", "page", "size", "runs", "max_campaigns",
+    # A tap's bound in seconds, and what it follows: the backend's own vocabulary (topics in
+    # the ROS shape), so it is not "topic", which names one recorded image topic elsewhere.
+    "max_seconds", "selection",
     # how to match
     "query", "grep", "search", "pattern", "config_filter", "min_severity",
     "campaign_regex", "t0", "t1", "at", "time",
@@ -787,10 +790,12 @@ def test_a_tool_that_raises_says_so_where_a_model_reads_it():
 #: Still far below where it was: this sits on top of the merge above, which took the surface from
 #: ~15_490 to 15_125. The pair together is a net reduction of ~350.
 #:
-#: ``export_campaign`` and ``get_export_status`` were paid for by compression and nothing
-#: else, under the figure above: ``get_campaign_download``, ``run_share`` and
-#: ``build_campaign_tables`` each said the same thing twice and now say it once, and the
-#: export tool names what it is for rather than restating its parameters.
+#: ``export_campaign``, ``get_export_status`` and ``tap_job`` were paid for by compression
+#: and nothing else, under the figure above: ``get_campaign_download``, ``run_share`` and
+#: ``build_campaign_tables`` each said the same thing twice and now say it once, the export
+#: tool names what it is for rather than restating its parameters, ``get_campaign_status``
+#: stopped describing the snapshot the live tables replaced, and ``get_campaign_log`` and
+#: ``tap_job`` lost the asides their parameters already state.
 _SURFACE_TOKEN_BUDGET = 15_141
 
 

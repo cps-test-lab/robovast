@@ -533,7 +533,9 @@ passed — ``ExecRequest`` has no timeout field — and the result reports which
 so a ``timed_out`` result names its own remedy.
 
 The cluster-specific half is a small protocol (``ExecRunner``): ``KubeExecRunner`` runs an aux
-pod plus ``pods/exec``. Everything
+pod plus ``pods/exec``. Its ``exec_in`` captures a command's output once it is over;
+``stream_in`` relays a command's lines while it runs and stops on a predicate, which is what a
+tap on a live job is built on (:mod:`robovast.service.tap`). Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
 ``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
@@ -1137,8 +1139,10 @@ lives in the ``run_data`` MCP plugin):
   ``logs/system*.log`` files in the campaign directory, which grow while the job runs because
   the pod's file agent delivers their growth as it happens. It returns **rows** (one per log
   event, every container of the job in one stream) after an opaque cursor, and its SSE stream
-  pushes new rows as the files change. The campaign's own log is served by
-  ``get_campaign_logs``.
+  pushes new rows as the files change. The campaign's own log is served the same way by
+  ``get_campaign_logs`` (:mod:`robovast.service.campaign_log`): rows after a cursor, read
+  from the phase files under its ``_execution/``, with ``phase``, ``min_level`` and ``grep``
+  applied in the read.
   ``GET /campaigns/events`` is a **browser-only** Server-Sent-Events transport over
   the same ``list_campaigns`` pull (the same server-side-loop idiom as the campaign
   log stream, so there is no second enumeration to drift): it pushes the full list on

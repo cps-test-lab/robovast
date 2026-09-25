@@ -165,10 +165,22 @@ FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 Streaming
 =========
 
-Six routes stream instead of returning a body. The two ``.../stream`` log routes and
+Seven routes stream instead of returning a body. The two ``.../stream`` log routes and
 ``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
 drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
 than replaying the whole log.
+
+``GET /campaigns/{id}/job-tap?job_name=&selection=a,b&max_seconds=`` is server-sent events
+with no pull form: a **tap** on a running job, the simulator's own following command
+(:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`) started in the job's
+simulation container and its stdout relayed as ``line`` events (``{"t_wall", "line"}``) for
+at most ``max_seconds``, capped at the service's bound of two minutes. ``eof`` carries
+``{"exit_code", "timed_out"}`` -- ``124`` and true when the bound cut it, ``null`` when the
+reader closed the stream first, which ends the tap. A refusal is ``streamerror`` then
+``eof``: the job is not running, the simulator has no tap (named), or a tap is already open
+on that job. It is not resumable -- a relay of the moment, not a record -- and it is
+**recorded against the run as a probe** before it starts, exactly as ``POST .../job-exec``
+is: a process the service started runs in the simulator's container while it lasts.
 
 ``GET /data/campaigns/{id}/live?run=<config>/<run>&tables=a,b`` is server-sent events too: a
 run's tables as they are decoded while it records. A ``batch`` event carries ``{"table":

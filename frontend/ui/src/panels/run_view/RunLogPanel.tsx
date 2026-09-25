@@ -5,9 +5,9 @@
 // scope; the one thing only this host can supply is the clock. So the panel's whole job is:
 // read the clock, hand the cursor down, and let a click in the log seek it back.
 //
-// Named RunLogPanel, not LogPanel: `components/LogPanel.tsx` is the live text log of a campaign
-// or of the service, streamed over SSE. Two different questions -- what is happening now, versus
-// what happened at t=41.2 s.
+// Named RunLogPanel, not LogPanel: `components/LogPanel.tsx` is the live text log of the
+// service, streamed over SSE. Two different questions -- what is happening now, versus what
+// happened at t=41.2 s.
 //
 // Bindings (vast visualization.panels) -- all optional, since the table's name and columns are
 // fixed by the merge that writes it:

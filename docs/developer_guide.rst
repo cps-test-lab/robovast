@@ -1977,9 +1977,12 @@ Control operations
   campaign happens to be in does not decide how long the stop takes. Which work a stop
   lands on, and what each one leaves behind, is the
   :ref:`per-phase table <stopping-a-campaign>` in :doc:`architecture`.
-* ``get_campaign_logs`` — serves ``controller.log`` from a byte offset, the same file on
-  the service's results volume while the campaign runs and after. The web UI polls it to
-  stream the log; ``vast … monitor`` renders live status from ``get_status``.
+* ``get_campaign_logs`` — serves the campaign's infrastructure log as rows after a cursor,
+  read from the phase files under ``_execution/`` on the service's results volume while the
+  campaign runs and after (:mod:`robovast.service.campaign_log`); ``phase``, ``min_level``
+  and ``grep`` are applied in the read. The web UI and ``vast campaign log --follow`` read
+  the same rows over its SSE stream; ``vast … monitor`` renders live status from
+  ``get_status``.
 * ``upload_to_share`` (launch flag on ``create_campaign``) — when set, the driver
   streams a raw, pre-postprocessing archive of the campaign to the configured share
   the moment the runs finish, *before* analysis postprocessing. A share failure never
@@ -2111,24 +2114,30 @@ rank it as their peer. It is a field on the one ``TOPICS`` declaration in ``App.
 rather than a second prop, so navigation still resolves from one source and ``hashNav``
 needs no change — a leaf topic already falls out of the existing grammar.
 
-``components/LogPanel.tsx`` renders the two text logs, the campaign log and the service log.
+``components/LogPanel.tsx`` renders the one text log, the service's own, on the Admin page.
 It is its own module rather than part of ``StatusView.tsx``: reaching it through there would
 drag ``BatchObjectiveChart``, ``DetailsBox`` and the ETA maths into a lazily-loaded page that
-needs none of them. Both are a ``fetch(offset) -> LogChunk`` behind one SSE loop. A job's log
-is rows, not text, and is rendered by ``components/runLog/RunLogView.tsx`` -- the viewer the
-``run_log`` table uses -- fed by ``useJobLogStream``, which follows the newest row as it
-arrives.
+needs none of them. It is a ``fetch(offset) -> LogChunk`` behind one SSE loop. A campaign's
+log and a job's are rows, not text, and are rendered by
+``components/runLog/RunLogView.tsx`` -- the viewer the ``run_log`` table uses -- fed by
+``useCampaignLogStream`` and ``useJobLogStream``, which follow the newest row as it arrives.
+Both streams are one server-side loop, ``_sse_rows_stream`` in ``service/app.py``, over the
+pull their endpoint serves: frames of rows with the cursor as the event id, a wait on the
+files between reads, ``eof`` when the log is over. The campaign log's viewer maps the row's
+phase onto the view's container column and its logger onto the node column, and names the
+facets accordingly (``facetTitles``).
 
-**A log panel is a tail, and both ends of it are bounded.** A campaign's assembled
-infrastructure log reaches tens of megabytes, while the pane it is read through is a few
-hundred pixels tall — so the stream serves an over-long frame from its end
-(``_sse_log_frame_cap`` in ``service/app.py``, which leaves a note naming ``vast campaign
-log`` for the whole thing), and the panel keeps only a bounded tail of what it has received
-(``trimHead``). The second bound is not about memory: the body is rebuilt from the whole
-buffer on every delta, so an unbounded one re-renders a span per line of the entire log
-twice a second. Dropping the head costs the offset protocol nothing — ``next_offset`` is
-where the *log* continues, not how much was sent — so a resumed connection still resumes at
-the right byte.
+**A log panel is a tail, and both ends of it are bounded.** The service log's ring is
+bounded on the server, and the pane it is read through is a few hundred pixels tall — so
+the stream serves an over-long frame from its end (``_sse_log_frame_cap`` in
+``service/app.py``, which leaves a note naming ``vast service log`` for the whole thing),
+and the panel keeps only a bounded tail of what it has received (``trimHead``). The second
+bound is not about memory: the body is rebuilt from the whole buffer on every delta, so an
+unbounded one re-renders a span per line of the entire log twice a second. Dropping the
+head costs the offset protocol nothing — ``next_offset`` is where the *log* continues, not
+how much was sent — so a resumed connection still resumes at the right byte. The row
+viewers bound themselves the other way: they keep the newest ``MAX_LIVE_ROWS`` and say how
+many older rows they dropped.
 
 An open stream with nothing in it is ambiguous, and the panel must not resolve it by
 guessing: these servers flush the response headers before their first pull, and that pull is

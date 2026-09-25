@@ -157,6 +157,25 @@ class ExecRunner(Protocol):
         primitive serve the held diagnostic container *and* a live job's.
         """
 
+    def stream_in(self, target, argv: list, *, limit_s: float, on_line, should_stop,
+                  env: dict | None = None) -> tuple[int | None, bool]:
+        """Run *argv* in *target* and hand every line it prints to *on_line* as it appears.
+
+        :meth:`exec_in` for a command whose output is the point *while it runs* -- a tap on a
+        live run -- rather than a result read once it is over. Stdout and stderr both reach
+        *on_line*, without their newline: a tap whose tool complains on stderr must show the
+        complaint, or it reads as a stream that printed nothing.
+
+        *limit_s* bounds the command; past it the runner ends the exec and reports
+        ``(124, True)``, as :meth:`exec_in` does. *should_stop* is polled between reads and a
+        true answer ends the exec at once with ``(None, False)``: there is no exit status to
+        report for a process that was cut off rather than waited for.
+
+        **Ending the exec does not end the process in the container**: closing a
+        ``pods/exec`` stream signals nothing. A caller that needs the process gone wraps it in a bound of
+        its own (``timeout``), which is what the tap does.
+        """
+
     def exec_in_held(self, spec: "ExecSpec", limit_s: int, detach: bool,
                      slot: str = SLOT_USER) -> tuple[int, str, str, bool]:
         """Run the command inside *slot*'s container -- :meth:`exec_in` at its own target."""

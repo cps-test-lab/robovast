@@ -1242,6 +1242,12 @@ twice on the pod and nothing is buffered on the service.
   ``<results_root>/_staged/<slot>/``: scratch beside the campaigns, sharing their disk and
   their meter, and discarded with the work that used it.
 
+What a running job's simulator publishes *at this moment* is read the other way round: a
+**tap** (``tap_job``, ``vast campaign tap``, the run view's **Now** toggle) execs into the
+job's own pod through the same ``pods/exec`` the diagnostic exec uses, starts the
+backend's following command in the simulation container and relays its stdout for a bounded
+time. Nothing is deployed for it and nothing is written to the campaign but the probe record.
+
 What a pod is given
 ^^^^^^^^^^^^^^^^^^^
 

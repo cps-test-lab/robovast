@@ -42,6 +42,7 @@ it declares strings and container specs, and anything needing the simulator itse
 
 from __future__ import annotations
 
+import shlex
 from typing import Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
@@ -336,6 +337,36 @@ class SimulatorBackend:
         """
         return None
 
+    def tap_command(self, cfg, execution: dict, *, run_dir: str,
+                    selection: list) -> Optional[list]:
+        """Command whose stdout is a **live** run's present state, line by line, or ``None``.
+
+        The tap: the service starts it in the running simulation container on demand and
+        relays its stdout for a bounded time (``tap_job`` on every surface). Where
+        :meth:`health_command` is a fixed read the service polls, this one *follows*, so it
+        is asked only while somebody is watching and never by a poll.
+
+        The default is the **shape's** answer, because in the ROS shape the simulator's
+        container speaks ROS whatever the simulator is: *selection* names topics and the
+        command is :func:`ros_tap_command` -- ``ros2 topic echo`` per topic, ``ros2 topic
+        list`` for an empty selection so a caller learns what it can select. The stepped
+        shape has no process to ask beside the scenario's own, so it answers ``None``. A
+        backend overrides either way: to name a tool of its own, or to say ``None`` because
+        its recording is already the live view, as roqsim does.
+
+        ``None`` is a normal answer, reported by the service as "no tap for" this
+        simulator, never as a tap that printed nothing.
+
+        Returned as **argv**, never a shell string: the service runs it inside the run's own
+        environment (the ROS overlay sourced), and quoting it once there is what keeps a topic
+        name from being re-parsed by a shell on the way. *run_dir* is where this run's records
+        are inside the container, for a backend whose tool reads them.
+        """
+        del cfg, run_dir
+        if shape_for(execution.get("mode")) != SHAPE_ROS:
+            return None
+        return ros_tap_command(selection)
+
     def run_state_file(self, cfg, execution: dict) -> Optional[str]:
         """The run-relative recording :meth:`simulation_screenshot` renders from, or ``None``.
 
@@ -432,6 +463,54 @@ def health_command(execution: dict, *, run_dir: str, base_dir: str = "") -> Opti
     block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
     cfg = _validated_cfg(backend, block, name)
     return backend.health_command(cfg, execution, run_dir=run_dir)
+
+
+#: The word in a tap selection that asks for ``ros2 topic echo --csv``: one value per line
+#: rather than a YAML document per message, which is what a reader plotting a stream wants.
+TAP_CSV = "csv"
+
+
+def ros_tap_command(selection: list) -> list:
+    """``ros2 topic echo`` for every topic in *selection*, as argv; the topic list for none.
+
+    One command whatever the selection, so the exec starts exactly one process and stops
+    exactly one: a single topic is echoed directly, several are echoed side by side under one
+    shell with each line prefixed by its topic, since a stream of two interleaved YAML
+    documents cannot be read otherwise. :data:`TAP_CSV` in the selection is a flag, not a
+    topic. Empty is ``ros2 topic list`` once, which ends on its own.
+
+    ``PYTHONUNBUFFERED`` because ``ros2`` is Python and its stdout is a pipe here, not a
+    terminal: block-buffered, a tap of a slow topic would show nothing for its whole bounded
+    life and then everything as it was killed.
+    """
+    names = [str(name) for name in selection or [] if str(name) != TAP_CSV]
+    for name in names:
+        if not name.strip() or any(ch.isspace() for ch in name):
+            raise ValueError(f"a topic name has no whitespace: {name!r}")
+    if not names:
+        return ["ros2", "topic", "list"]
+    echo = ["ros2", "topic", "echo"] + (["--csv"] if TAP_CSV in (selection or []) else [])
+    if len(names) == 1:
+        return ["env", "PYTHONUNBUFFERED=1", *echo, names[0]]
+    tagged = [f"{shlex.join(echo + [name])} | while IFS= read -r line; do "
+              f"printf '%s %s\\n' {shlex.quote(name)} \"$line\"; done"
+              for name in names]
+    return ["env", "PYTHONUNBUFFERED=1", "/bin/bash", "-c", " & ".join(tagged) + " & wait"]
+
+
+def tap_command(execution: dict, *, run_dir: str, selection: list,
+                base_dir: str = "") -> Optional[list]:
+    """The configured backend's :meth:`SimulatorBackend.tap_command`, or ``None``.
+
+    Same seam as :func:`health_command`. A campaign with no backend at all gets the base
+    class's answer -- the shape's -- because the ROS shape's tap is a property of the shape
+    and a simulator RoboVAST merely launches still publishes topics.
+    """
+    name = backend_name(execution or {})
+    backend = resolve_backend(name, base_dir) if name else SimulatorBackend()
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    cfg = _validated_cfg(backend, block, name) if name else None
+    return backend.tap_command(cfg, execution, run_dir=run_dir, selection=list(selection or []))
 
 
 def simulation_screenshot_command(execution: dict, *, state: str, at: Optional[float],
@@ -1014,6 +1093,7 @@ __all__ = [
     "SIMULATION_CONTAINER",
     "SUT_CONTAINER",
     "SimulatorBackend",
+    "TAP_CSV",
     "apply_backend",
     "backend_name",
     "backend_own_keys",
@@ -1022,6 +1102,8 @@ __all__ = [
     "merge_sim_block",
     "resolve_backend",
     "resolve_sim_path",
+    "ros_tap_command",
     "shape_for",
     "sim_job_overlay",
+    "tap_command",
 ]

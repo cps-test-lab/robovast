@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """The campaign log may only ever grow at its end.
 
-A reader streams it by byte offset, so a repeatable phase run again must land *after*
-everything already written. A repeatable phase writes the same filename every time, so
-each finished run is archived under ``_execution/sections/<seq>-<phase>.log`` before the
-next one starts -- otherwise the new run replaces bytes behind an offset a live viewer
-has already consumed, and a shorter run makes the stream shrink under them.
+A reader holds a cursor into each phase file, so a repeatable phase run again must land
+*after* everything already written. A repeatable phase writes the same filename every time,
+so each finished run is archived under ``_execution/sections/<seq>-<phase>.log`` before the
+next one starts -- otherwise the new run replaces rows behind a position a live viewer has
+already read, and a shorter run makes the reader start the file over.
 """
 
 import pytest
 
-from robovast.common.campaign_logs import assemble_log_from_dir
+from robovast.service.campaign_log import read_rows
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 
@@ -92,28 +92,29 @@ def test_a_rerun_reads_after_the_phase_that_followed_it(transport):
     transport._archive_repeatable_sections("camp-1")  # noqa: SLF001
     (exec_dir / "postprocessing.log").write_text("second postprocess\n")
 
-    text, _, _ = assemble_log_from_dir(transport.campaign_dir("camp-1"),  # noqa: SLF001
-                                       offset=0, eof=True)
-    assert text.index("first postprocess") < text.index("the export")
-    assert text.index("the export") < text.index("second postprocess")
+    messages = [row.message for row in
+                read_rows(transport.campaign_dir("camp-1"), final=True).rows]
+    assert messages == ["ran the campaign", "first postprocess", "the export",
+                        "second postprocess"]
 
 
-def test_the_stream_never_shrinks_under_a_reader_watching_it(transport):
-    """The property the archiving exists for, asserted on the bytes: a shorter second run
-    must not make an offset already handed out point past the end."""
+def test_the_log_never_shrinks_under_a_reader_watching_it(transport):
+    """The property the archiving exists for, asserted on the rows: a shorter second run
+    must not make a reader lose what it had, nor read it twice."""
     exec_dir = _exec_dir(transport)
     (exec_dir / "controller.log").write_text("ran the campaign\n")
     (exec_dir / "postprocessing.log").write_text("a long first postprocess\n" * 5)
 
     campaign_dir = transport.campaign_dir("camp-1")  # noqa: SLF001
-    _, consumed, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
+    before = read_rows(campaign_dir, final=True)
 
     transport._archive_repeatable_sections("camp-1")  # noqa: SLF001
     (exec_dir / "postprocessing.log").write_text("short\n")
 
-    text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
-    assert len(text.encode()) >= consumed
-    assert "a long first postprocess" in text and "short" in text
+    after = read_rows(campaign_dir, before.cursor, final=True)
+    assert [row.message for row in after.rows] == ["short"]
+    assert [row.message for row in read_rows(campaign_dir, final=True).rows] == (
+        ["ran the campaign"] + ["a long first postprocess"] * 5 + ["short"])
 
 
 def test_a_campaign_with_no_directory_yet_is_not_an_error(transport):

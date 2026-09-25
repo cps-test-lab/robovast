@@ -492,87 +492,104 @@ def test_get_campaign_download_no_service_errors(monkeypatch):
     assert "error" in res and "no robovast-service" in res["error"]
 
 
-# -- get_campaign_log is served by the service, not by the local results dir ------
+# -- get_campaign_log is served by the service, which reads the campaign's phase files ----
+#
+# The tool reads rows: the service applies ``phase``, ``min_severity`` and ``grep`` as it
+# reads, and the tool renders what came back the way ``vast campaign log`` does before the
+# shared log view pages, tails or summarizes it. The fake service here holds a real campaign
+# directory and reads it through the one reader, so what the tool pushes down is exercised.
+
+_CID = "camp-2026-01-01-000000"
 
 
-def test_get_campaign_log_is_served_by_the_service(monkeypatch):
-    """The campaign log comes from the service, which knows where it lives.
+def _stamp(t, level, message, logger="robovast.execution.controller"):
+    return f"2026-01-01 00:{t // 60:02d}:{t % 60:02d} {level} {logger}: {message}\n"
 
-    Regression: this tool read the local results dir directly, so on a cluster
-    service -- where the durable log is in the object store and the live one is pod
-    scratch -- it reported an empty log even though
-    ``ClusterService.get_campaign_logs`` already served both.
-    """
 
-    class _Chunk:
-        text = "===== RUN =====\nline one\nline two\n"
+def _service_with_log(monkeypatch, tmp_path, files):
+    """A service whose campaign log is *files* (``_execution/`` name -> text); returns what
+    it was asked."""
+    from robovast.service.campaign_log import read_rows
+    from robovast.service.interface import CampaignLogChunk
+
+    root = tmp_path / _CID
+    for name, text in files.items():
+        path = root / "_execution" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    asked = []
 
     class _Fake:
-        def __init__(self):
-            self.asked = None
+        def get_campaign_logs(self, campaign_id, cursor="", *, phase=None, min_level=None,
+                              grep=None):
+            asked.append((campaign_id, cursor, phase, min_level, grep))
+            read = read_rows(root, cursor, final=True, phase=phase, min_level=min_level,
+                             grep=grep)
+            return CampaignLogChunk(rows=read.rows, cursor=read.cursor, eof=True,
+                                    phases=read.phases)
 
-        def get_campaign_logs(self, campaign_id, offset=0):
-            self.asked = (campaign_id, offset)
-            return _Chunk()
+    monkeypatch.setattr(service_access, "service_client", lambda: _Fake())
+    return asked
 
-    fake = _Fake()
-    monkeypatch.setattr(service_access, "service_client", lambda: fake)
-    # Would raise if the local disk path were taken: no such campaign anywhere.
+
+def test_get_campaign_log_is_served_by_the_service(monkeypatch, tmp_path):
+    """The campaign log comes from the service, which knows where it lives: its results
+    tree, which is not this host's when the service runs elsewhere."""
+    asked = _service_with_log(monkeypatch, tmp_path, {
+        "controller.log": _stamp(1, "INFO", "line one") + _stamp(2, "INFO", "line two")})
     monkeypatch.setattr(
         execution.results_resolver, "resolve_campaign_path",
         lambda *a, **k: pytest.fail("must not read the local results dir"))
 
-    out = execution.get_campaign_log("camp-2026-01-01-000000")
-    assert fake.asked == ("camp-2026-01-01-000000", 0)
-    assert "line one" in out["content"]
-    assert out["total_lines"] == 3
+    out = execution.get_campaign_log(_CID)
+    assert asked == [(_CID, "", None, None, None)]
+    assert out["content"] == (
+        "[RUN] 2026-01-01 00:00:01 INFO robovast.execution.controller: line one\n"
+        "[RUN] 2026-01-01 00:00:02 INFO robovast.execution.controller: line two")
+    assert out["total_lines"] == 2
+    assert out["phases"] == [{"name": "RUN", "included": True, "rows": 2}]
 
 
-def test_get_campaign_log_tail_reports_what_matched_not_the_page_size(monkeypatch):
-    """`matched_lines` is what survived the filters, not how many this page holds.
+def test_the_filters_are_pushed_into_the_read(monkeypatch, tmp_path):
+    """``phase``, ``min_severity`` and ``grep`` are the service's to apply, in the read --
+    the tool never takes the whole log to narrow it here. ``min_severity`` keeps the shared
+    vocabulary and names the level the read filters at."""
+    asked = _service_with_log(monkeypatch, tmp_path, {
+        "build.log": "#1 load\n",
+        "controller.log": _stamp(1, "INFO", "fine") + _stamp(2, "ERROR", "run 1 failed")})
 
-    Regression: it was the page size, so a `tail` of a long log reported that only the
-    tailed lines matched -- and the documented tie-out
-    (`total_lines == matched_lines + dropped + shutdown_dropped`) came apart on exactly
-    the reads a caller chasing a failure makes.
-    """
+    out = execution.get_campaign_log(_CID, phase="run", min_severity="error", grep="fail")
+    assert asked == [(_CID, "", "RUN", "ERROR", "fail")]
+    assert out["content"].endswith("ERROR robovast.execution.controller: run 1 failed")
+    assert out["total_lines"] == out["matched_lines"] == out["returned_lines"] == 1
+    assert out["phases"] == [{"name": "BUILD", "included": False},
+                             {"name": "RUN", "included": True, "rows": 1}]
 
-    class _Chunk:
-        text = "===== RUN =====\n" + "".join(f"line {i}\n" for i in range(20))
 
-    class _JobChunk:
-        """The job log's rows, parsed from *text* the way the service parses its files."""
-
-        def __init__(self, text):
-            self.rows = [_row(r) for _pos, r in _records(text.encode(), 0, "robovast")]
-
-        def model_dump(self):
-            return {"rows": [r.model_dump() for r in self.rows], "cursor": "c1", "eof": False}
-
-    class _Fake:
-        def get_campaign_logs(self, campaign_id, offset=0):
-            return _Chunk()
-
-    monkeypatch.setattr(service_access, "service_client", lambda: _Fake())
-    out = execution.get_campaign_log("camp-2026-01-01-000000", tail=3)
+def test_get_campaign_log_tail_reports_what_matched_not_the_page_size(monkeypatch, tmp_path):
+    """`matched_lines` is what survived the filters, not how many this page holds, so the
+    documented tie-out (`total_lines == matched_lines + shutdown_dropped`) holds on exactly
+    the reads a caller chasing a failure makes."""
+    _service_with_log(monkeypatch, tmp_path, {
+        "controller.log": "".join(_stamp(i, "INFO", f"line {i}") for i in range(20))})
+    out = execution.get_campaign_log(_CID, tail=3)
     assert out["returned_lines"] == 3
-    assert out["matched_lines"] == 21
-    assert (out["total_lines"]
-            == out["matched_lines"] + out["dropped"] + out["shutdown_dropped"])
+    assert out["matched_lines"] == 20
+    assert out["total_lines"] == out["matched_lines"] + out["shutdown_dropped"]
     assert out["truncated"] is True
 
 
-def test_get_campaign_log_falls_back_to_disk_with_no_service(monkeypatch, tmp_path):
-    """With no service, an archived results tree is still readable offline."""
-
-    campaign = tmp_path / "camp-2026-01-01-000000"
+def test_get_campaign_log_reads_the_disk_with_no_service(monkeypatch, tmp_path):
+    """With no service, an archived results tree on this host is still readable, through
+    the same reader the service uses."""
+    campaign = tmp_path / _CID
     (campaign / "_execution").mkdir(parents=True)
-    (campaign / "_execution" / "controller.log").write_text("from disk\n")
+    (campaign / "_execution" / "controller.log").write_text(_stamp(1, "INFO", "from disk"))
 
     monkeypatch.setattr(service_access, "service_client", lambda: None)
     monkeypatch.setattr(execution.results_resolver, "resolve_campaign_path",
                         lambda *a, **k: campaign)
-    assert "from disk" in execution.get_campaign_log("camp-2026-01-01-000000")["content"]
+    assert "from disk" in execution.get_campaign_log(_CID)["content"]
 
 
 # -- the hanging run, end to end -------------------------------------------------
@@ -584,24 +601,15 @@ def test_get_campaign_log_falls_back_to_disk_with_no_service(monkeypatch, tmp_pa
 
 
 def _flooded_log(n=18226):
-    """A campaign log dominated by one repeated warning, as in the incident."""
-    return "===== RUN =====\n" + "".join(
+    """A run's log dominated by one repeated warning, as in the incident -- the lines a
+    run's containers relay into ``controller.log`` locally."""
+    return "".join(
         f"robovast  | [WARN] [17850922{i:05d}.1] [tf_bridge]: TF_OLD_DATA ignoring "
         f"data from the past for frame base_link at time {i}.5\n"
         for i in range(n))
 
 
-def _service_with_log(monkeypatch, text):
-
-    class _Chunk:
-        def __init__(self, text):
-            self.text = text
-            self.next_offset = len(text)
-            self.eof = False
-
-        def model_dump(self):
-            return {"text": self.text, "next_offset": self.next_offset,
-                    "eof": self.eof}
+def _service_with_job_log(monkeypatch, text):
 
     class _JobChunk:
         """The job log's rows, parsed from *text* the way the service parses its files."""
@@ -613,24 +621,18 @@ def _service_with_log(monkeypatch, text):
             return {"rows": [r.model_dump() for r in self.rows], "cursor": "c1", "eof": False}
 
     class _Fake:
-        def get_campaign_logs(self, campaign_id, offset=0):
-            return _Chunk(text)
-
         def get_job_log(self, campaign_id, job_name, cursor=""):
             return _JobChunk(text)
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Fake())
 
 
-def test_a_flooded_campaign_log_summarizes_to_one_counted_line(monkeypatch):
+def test_a_flooded_campaign_log_summarizes_to_one_counted_line(monkeypatch, tmp_path):
     """18226 lines of noise for ~20 tokens, with the count as the finding."""
 
-    _service_with_log(monkeypatch, _flooded_log())
-    out = execution.get_campaign_log("camp-2026-01-01-000000", summarize=True)
-    # The flood, plus the ``===== RUN =====`` phase divider — which is a real line in
-    # the assembled stream and says which phase the flood is in, so it is counted
-    # rather than filtered.
-    assert out["patterns_total"] == 2
+    _service_with_log(monkeypatch, tmp_path, {"controller.log": _flooded_log()})
+    out = execution.get_campaign_log(_CID, summarize=True)
+    assert out["patterns_total"] == 1
     assert out["patterns"][0]["count"] == 18226
     assert "TF_OLD_DATA" in out["patterns"][0]["pattern"]
     assert out["severity_counts"]["warn"] == 18226
@@ -642,34 +644,35 @@ def test_a_flooded_job_log_summarizes_and_keeps_the_poll_cursor(monkeypatch):
     """The cursor marks the unfiltered log, so summarizing must not break an incremental
     poll loop."""
 
-    _service_with_log(monkeypatch, _flooded_log(50))
-    out = execution.get_job_log("camp-2026-01-01-000000", "job-0", summarize=True)
+    _service_with_job_log(monkeypatch, _flooded_log(50))
+    out = execution.get_job_log(_CID, "job-0", summarize=True)
     assert out["patterns"][0]["count"] == 50
     assert out["severity_counts"]["warn"] == 50
     assert out["cursor"] == "c1"
     assert "text" not in out
 
 
-def test_min_severity_uses_the_shared_classifier_not_a_hand_written_grep(monkeypatch):
-    """An INFO line mentioning "error" must not be returned as an error -- which is
-    exactly what the hand-written severity grep in the interim procedure did."""
+def test_min_severity_uses_the_shared_classifier_not_a_hand_written_grep(monkeypatch, tmp_path):
+    """An INFO line mentioning "error" must not be returned as an error -- a row's own level
+    is its verdict, in the read and in the summary alike."""
 
-    _service_with_log(monkeypatch, "===== RUN =====\n"
-                      "[INFO] [1.0] [nav2]: error_code: 0, goal reached\n"
-                      "[ERROR] [2.0] [ctrl]: Failed to make progress\n")
-    out = execution.get_campaign_log("camp-2026-01-01-000000", min_severity="error")
+    _service_with_log(monkeypatch, tmp_path, {"controller.log": (
+        "robovast  | [INFO] [1.0] [nav2]: error_code: 0, goal reached\n"
+        "robovast  | [ERROR] [2.0] [ctrl]: Failed to make progress\n")})
+    out = execution.get_campaign_log(_CID, min_severity="error")
     assert "Failed to make progress" in out["content"]
     assert "goal reached" not in out["content"]
+    summary = execution.get_campaign_log(_CID, summarize=True)
+    assert summary["severity_counts"] == {"other": 1, "warn": 0, "error": 1}
 
 
-def test_an_invalid_filter_is_reported_rather_than_silently_ignored(monkeypatch):
+def test_an_invalid_filter_is_reported_rather_than_silently_ignored(monkeypatch, tmp_path):
 
-    _service_with_log(monkeypatch, "===== RUN =====\nline\n")
-    cid = "camp-2026-01-01-000000"
+    _service_with_log(monkeypatch, tmp_path, {"controller.log": _stamp(1, "INFO", "line")})
     assert "unknown severity" in execution.get_campaign_log(
-        cid, min_severity="critical")["error"]
+        _CID, min_severity="critical")["error"]
     assert "not a valid regular expression" in execution.get_campaign_log(
-        cid, grep="[")["error"]
+        _CID, grep="[")["error"]
 
 
 # -- the status now carries the liveness signal ----------------------------------
@@ -710,85 +713,82 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
 #
 # A campaign that waits for an experiment image copies that build's output into its own
 # log, so it is reachable with the campaign id alone and survives the build Job's TTL.
-# It is part of a default read like every other phase: it was once held back as a copy of
-# shared work, which left a still-building campaign answering "what are you doing?" with
-# an empty log. Narrowing (``phase=``) is the caller's move, not the default's.
+# It is part of a default read like every other phase: held back as a copy of shared
+# work, it would leave a still-building campaign answering "what are you doing?" with an
+# empty log. Narrowing (``phase=``) is the caller's move, not the default's.
 
 def _log_with_build(build_lines=400):
-    from robovast.common.campaign_logs import phase_banner
-
     # Shaped like real BuildKit output: one repeated step whose only variation is
     # standalone numbers, so the summarizer collapses it the way it collapses a run's
     # flood. (A trailing token like ``pkg7`` would not normalize — numbers glued to a
     # word are part of the word.)
     build = "".join(f"#{i} {i}.5 Unpacking libfoo over ({i}) ...\n"
                     for i in range(build_lines))
-    return (phase_banner("BUILD") + f"waiting for image sim:v3 (build b-1)\n{build}"
-            + phase_banner("RUN") + "batch 0 starting\nrun 0 finished\n")
+    return {"build.log": f"waiting for image sim:v3 (build b-1)\n{build}",
+            "controller.log": _stamp(1, "INFO", "batch 0 starting")
+            + _stamp(2, "INFO", "run 0 finished")}
 
 
-def test_a_default_read_includes_the_build_section(monkeypatch):
+def test_a_default_read_includes_the_build_section(monkeypatch, tmp_path):
     """Every phase is in a default read, each announced with its size — so nothing is left
     out silently and no caller has to know a selector exists to see the whole log."""
 
-    _service_with_log(monkeypatch, _log_with_build())
-    out = execution.get_campaign_log("camp-2026-01-01-000000", limit=10_000)
+    _service_with_log(monkeypatch, tmp_path, _log_with_build())
+    out = execution.get_campaign_log(_CID, limit=10_000)
 
     assert "waiting for image sim:v3 (build b-1)" in out["content"]
     assert "batch 0 starting" in out["content"]
-    build = next(p for p in out["phases"] if p["name"] == "BUILD")
-    assert build["included"] is True and build["lines"] == 401
-    assert next(p for p in out["phases"] if p["name"] == "RUN")["included"] is True
+    assert out["phases"] == [{"name": "BUILD", "included": True, "rows": 401},
+                             {"name": "RUN", "included": True, "rows": 2}]
 
 
-def test_a_campaign_that_is_still_building_reads_its_build(monkeypatch):
-    """The reason the aside was dropped: BUILD is the *only* section a campaign waiting
-    for its image has, so holding it back answered "what is this doing?" with nothing."""
-    from robovast.common.campaign_logs import phase_banner
+def test_a_campaign_that_is_still_building_reads_its_build(monkeypatch, tmp_path):
+    """BUILD is the *only* section a campaign waiting for its image has, so holding it back
+    would answer "what is this doing?" with nothing."""
 
-    only_build = phase_banner("BUILD") + "waiting for image sim:v3 (build b-1)\n"
-    _service_with_log(monkeypatch, only_build)
-    out = execution.get_campaign_log("camp-2026-01-01-000000")
+    _service_with_log(monkeypatch, tmp_path,
+                      {"build.log": "waiting for image sim:v3 (build b-1)\n"})
+    out = execution.get_campaign_log(_CID)
 
-    assert "waiting for image sim:v3 (build b-1)" in out["content"]
-    assert next(p for p in out["phases"] if p["name"] == "BUILD")["included"] is True
+    assert out["content"] == "[BUILD] NOTE: waiting for image sim:v3 (build b-1)"
+    assert out["phases"] == [{"name": "BUILD", "included": True, "rows": 1}]
 
 
-def test_the_build_section_is_readable_on_request(monkeypatch):
+def test_the_build_section_is_readable_on_request(monkeypatch, tmp_path):
 
-    _service_with_log(monkeypatch, _log_with_build())
-    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="build")
+    asked = _service_with_log(monkeypatch, tmp_path, _log_with_build())
+    out = execution.get_campaign_log(_CID, phase="build")
 
+    assert asked == [(_CID, "", "BUILD", None, None)]
     assert "waiting for image sim:v3 (build b-1)" in out["content"]
     assert "batch 0 starting" not in out["content"]
-    assert next(p for p in out["phases"] if p["name"] == "RUN")["included"] is False
+    assert next(p for p in out["phases"] if p["name"] == "RUN") == {"name": "RUN",
+                                                                    "included": False}
 
 
-def test_a_noisy_build_composes_with_summarize(monkeypatch):
+def test_a_noisy_build_composes_with_summarize(monkeypatch, tmp_path):
     """400 near-identical layer lines for a handful of tokens — the intended read of a
     build that is misbehaving."""
 
-    _service_with_log(monkeypatch, _log_with_build())
-    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="build",
-                                     summarize=True)
+    _service_with_log(monkeypatch, tmp_path, _log_with_build())
+    out = execution.get_campaign_log(_CID, phase="build", summarize=True)
     top = max(out["patterns"], key=lambda p: p["count"])
     assert top["count"] == 400
 
 
-def test_phase_all_returns_the_stream_verbatim(monkeypatch):
+def test_phase_all_reads_every_phase(monkeypatch, tmp_path):
 
-    text = _log_with_build()
-    _service_with_log(monkeypatch, text)
-    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="all", limit=10_000)
-    # Sections tile the stream, so selecting them all reproduces it.
-    assert out["content"] == text.rstrip("\n")
+    asked = _service_with_log(monkeypatch, tmp_path, _log_with_build())
+    out = execution.get_campaign_log(_CID, phase="all", limit=10_000)
+    assert asked == [(_CID, "", None, None, None)]
+    assert out["total_lines"] == 403
 
 
-def test_an_unknown_phase_is_reported_not_ignored(monkeypatch):
+def test_an_unknown_phase_is_reported_not_ignored(monkeypatch, tmp_path):
     """A silently ignored selector would read as "that phase produced nothing"."""
 
-    _service_with_log(monkeypatch, _log_with_build())
-    out = execution.get_campaign_log("camp-2026-01-01-000000", phase="biuld")
+    _service_with_log(monkeypatch, tmp_path, _log_with_build())
+    out = execution.get_campaign_log(_CID, phase="biuld")
     assert "unknown phase" in out["error"]
 
 
@@ -817,39 +817,31 @@ def test_status_omits_the_killed_count_when_nothing_was_killed(service):
     assert "batch_runs_killed" not in execution.get_campaign_status("svc-campaign-1")
 
 
-def test_a_campaign_log_page_states_what_it_left_out(monkeypatch):
-    """Three counts, and they must tie out: the log, what matched, and this page.
+def test_a_campaign_log_page_states_what_it_left_out(monkeypatch, tmp_path):
+    """Three counts, and they must tie out: what the read returned, what survived the
+    shutdown cut, and this page. One ``total_lines`` for a page and a summary of the same
+    read, so the two shapes cannot disagree about how long the log is."""
+    lines = [_stamp(i, "WARNING", f"warn {i}") for i in range(20)]
+    lines += [_stamp(20 + i, "INFO", f"quiet {i}") for i in range(30)]
+    _service_with_log(monkeypatch, tmp_path, {"controller.log": "".join(lines)})
 
-    Reporting the filtered count as ``total_lines`` made the same key mean the whole log
-    in a summary and the matched subset here, so the two shapes disagreed about how long
-    the log is -- and with only one count a ``tail`` read could not be told from a log
-    that was that short.
-    """
-    lines = [f"robovast  | [WARN] [1785092240.{i:03d}] [n]: warn {i}" for i in range(20)]
-    lines += [f"robovast  | [INFO] [1785092241.{i:03d}] [n]: quiet {i}" for i in range(30)]
-    _service_with_log(monkeypatch, "===== RUN =====\n" + "".join(f"{l}\n" for l in lines))
-
-    out = execution.get_campaign_log("camp-2026-01-01-000000", min_severity="warn",
-                                     limit=5)
-    assert out["total_lines"] == 51            # the whole assembled log, divider included
-    assert out["matched_lines"] == 20          # what the severity filter kept
-    assert out["returned_lines"] == 5          # this page
+    out = execution.get_campaign_log(_CID, min_severity="warn", limit=5)
+    assert out["total_lines"] == 20             # what the read kept
+    assert out["matched_lines"] == 20           # nothing cut at a verdict
+    assert out["returned_lines"] == 5           # this page
     assert out["truncated"] is True
-    assert (out["total_lines"]
-            == out["matched_lines"] + out["dropped"] + out["shutdown_dropped"])
+    assert out["total_lines"] == out["matched_lines"] + out["shutdown_dropped"]
 
-    # And a summary of the same read reports the same log length, not a different one.
-    summary = execution.get_campaign_log("camp-2026-01-01-000000", min_severity="warn",
-                                         summarize=True)
+    summary = execution.get_campaign_log(_CID, min_severity="warn", summarize=True)
     assert summary["total_lines"] == out["total_lines"]
     assert summary["matched_lines"] == out["matched_lines"]
 
 
-def test_a_tail_that_cut_nothing_is_not_reported_as_truncated(monkeypatch):
-    _service_with_log(monkeypatch, "===== RUN =====\nrobovast  | [INFO] [1.0] [n]: one\n")
-    out = execution.get_campaign_log("camp-2026-01-01-000000", tail=10)
+def test_a_tail_that_cut_nothing_is_not_reported_as_truncated(monkeypatch, tmp_path):
+    _service_with_log(monkeypatch, tmp_path, {"controller.log": _stamp(1, "INFO", "one")})
+    out = execution.get_campaign_log(_CID, tail=10)
     assert out["truncated"] is False
-    assert out["matched_lines"] == out["returned_lines"] == 2
+    assert out["matched_lines"] == out["returned_lines"] == 1
 
 
 # -- "not postprocessed" is two states, needing opposite actions --------------

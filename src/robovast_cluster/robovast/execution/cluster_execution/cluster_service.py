@@ -2337,12 +2337,9 @@ class ClusterService(ServiceBase):
                              "only a live job to look at.")
         self._require_running_job(campaign_id, job_name)
         campaign_root = self._campaigns_root() / campaign_id
-        record_intervention(campaign_root, kind=KIND_PROBED,
-                            job_dir=self._job_artifact_dir(job_name), job_name=job_name,
-                            source=source, detail=command)
-        # Mirrored at once, for the reason the kill is: postprocessing runs as its own in-cluster
-        # Job before the campaign root is uploaded, so a probe recorded only on pod disk would be
-        # lost exactly when the results are assembled.
+        job_dir, runs = self._job_probe_dir(campaign_id, job_name)
+        record_intervention(campaign_root, kind=KIND_PROBED, job_dir=job_dir, job_name=job_name,
+                            source=source, detail=command, runs=runs)
         from robovast.service.service_base import _PROBE_LIMIT_S
         pod, pod_container = self._job_pod_target(campaign_id, job_name, container)
         exit_code, stdout, stderr, timed_out = self._exec_runner().exec_in(
@@ -2392,6 +2389,12 @@ class ClusterService(ServiceBase):
             ok=True,
             message=(f"deleted job {job_name}; the campaign continues with its remaining "
                      f"jobs and this job's unfinished runs are recorded as 'killed'"))
+
+    def _job_probe_dir(self, campaign_id: str, job_name: str) -> tuple:
+        """The Job's artifact dir off the Job itself, and no run hint: a Job may pack several
+        runs and the job-link manifest is what resolves them."""
+        del campaign_id
+        return self._job_artifact_dir(job_name), ()
 
     def _job_artifact_dir(self, job_name: str) -> str:
         """The Job's campaign-relative artifact dir, read off the Job itself.
