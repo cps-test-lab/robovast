@@ -4249,7 +4249,7 @@ url = "src/robovast_client"
 
 [[package]]
 name = "robovast-decode"
-version = "2.1.0"
+version = "2.2.0"
 description = "Tables from RoboVAST campaign recordings (ROS 2 bags and mcap), in plain Python: no ROS, no execution image."
 optional = false
 python-versions = ">=3.12,<3.14"
