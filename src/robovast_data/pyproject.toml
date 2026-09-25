@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "robovast-data"
+version = "2.2.0"
+description = "A RoboVAST campaign's data in pandas and SQL, from its directory or its archive: tables built on first use, no service, no ROS."
+authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+homepage = "https://cps-test-lab.github.io/robovast/"
+repository = "https://github.com/cps-test-lab/robovast"
+documentation = "https://cps-test-lab.github.io/robovast/"
+packages = [{include = "robovast_data"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+# The decoder builds a table the first time a query names it, into the campaign's own
+# .cache/, exactly as the service does -- so a notebook and the web UI read the same rows.
+# Named by version, as robovast-cluster names robovast: a path would reach the wheel as a
+# direct reference, which the index refuses.
+robovast-decode = "^2.1.0"
+# The engine: SQL over the parquet files a campaign's manifest names, in process.
+duckdb = "^1.5"
+pandas = "^2.2"
+pyarrow = ">=17"
+pyyaml = "^6.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

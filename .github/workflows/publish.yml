@@ -1,6 +1,6 @@
 name: Publish to PyPI
 
-# Six distributions from one tree, released as one set: a `v*` tag publishes them to PyPI,
+# Seven distributions from one tree, released as one set: a `v*` tag publishes them to PyPI,
 # and `workflow_dispatch` publishes the same set to TestPyPI, which is where every release is
 # tried by hand before it is real. Nothing but the tag reaches PyPI.
 #
@@ -28,7 +28,7 @@ permissions: read-all
 
 jobs:
   build:
-    name: Build and check all six wheels
+    name: Build and check all seven wheels
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       # One place for the version and the index: the tag without its `v` goes to PyPI, a
-      # dispatched version goes to TestPyPI. Stamped into all six distributions below, so
+      # dispatched version goes to TestPyPI. Stamped into all seven distributions below, so
       # the set requires itself at exactly this number.
       - name: Resolve the version and the index
         id: version
@@ -94,9 +94,9 @@ jobs:
       - name: Stage the web UI into the package
         run: make ui-stage
 
-      - name: Stamp the version into all six distributions
+      - name: Stamp the version into all seven distributions
         run: |
-          for dir in . src/robovast_client src/robovast_nav src/robovast_cluster src/robovast_sim_roqsim src/robovast_decode; do
+          for dir in . src/robovast_client src/robovast_nav src/robovast_cluster src/robovast_sim_roqsim src/robovast_decode src/robovast_data; do
             (cd "$dir" && poetry version "${{ steps.version.outputs.version }}")
           done
 
@@ -106,7 +106,7 @@ jobs:
       - name: Build the wheels
         run: |
           poetry build
-          for dir in src/robovast_client src/robovast_nav src/robovast_cluster src/robovast_sim_roqsim src/robovast_decode; do
+          for dir in src/robovast_client src/robovast_nav src/robovast_cluster src/robovast_sim_roqsim src/robovast_decode src/robovast_data; do
             (cd "$dir" && poetry build)
           done
 
@@ -129,6 +129,7 @@ jobs:
               "src/robovast_cluster": [],
               "src/robovast_sim_roqsim": [],
               "src/robovast_decode": [],
+              "src/robovast_data": [],
           }
           failed = False
           for root, files in expected_files.items():
@@ -175,6 +176,10 @@ jobs:
         with:
           name: dist-robovast-decode
           path: src/robovast_decode/dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-robovast-data
+          path: src/robovast_data/dist/
 
   # The publish jobs authenticate by OpenID Connect (PyPI's trusted publishing): each index
   # holds one publisher per distribution naming this repository, this workflow and the
@@ -184,8 +189,8 @@ jobs:
   #
   # Order follows the dependency edges: `robovast` requires `robovast-client` and pins
   # `robovast-sim-roqsim` at exactly this version, so both precede it; `robovast-decode`
-  # depends on nothing of ours and precedes it too; `robovast-nav` and `robovast-cluster`
-  # require `robovast ^2`, so they follow it.
+  # depends on nothing of ours and `robovast-data` on it alone, and both precede it too;
+  # `robovast-nav` and `robovast-cluster` require `robovast ^2`, so they follow it.
 
   publish-robovast-client:
     name: Publish robovast-client
@@ -244,9 +249,29 @@ jobs:
           repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
           skip-existing: true
 
+  publish-robovast-data:
+    name: Publish robovast-data
+    needs: [build, publish-robovast-decode]
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.build.outputs.target }}
+      url: ${{ needs.build.outputs.target == 'pypi' && 'https://pypi.org/p/robovast-data' || 'https://test.pypi.org/p/robovast-data' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-robovast-data
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: true
+
   publish-robovast:
     name: Publish robovast
-    needs: [build, publish-robovast-client, publish-robovast-sim-roqsim, publish-robovast-decode]
+    needs: [build, publish-robovast-client, publish-robovast-sim-roqsim, publish-robovast-decode,
+            publish-robovast-data]
     runs-on: ubuntu-latest
     environment:
       name: ${{ needs.build.outputs.target }}
@@ -325,7 +350,7 @@ jobs:
             if venv/bin/pip install --no-cache-dir \
                 --index-url "$INDEX" --extra-index-url https://pypi.org/simple/ \
                 "robovast[nav,roqsim]==$VERSION" "robovast-cluster==$VERSION" \
-                "robovast-decode==$VERSION"; then
+                "robovast-decode==$VERSION" "robovast-data==$VERSION"; then
               break
             fi
             test "$attempt" -lt 6 || exit 1
@@ -338,7 +363,7 @@ jobs:
 
           version = os.environ["VERSION"]
           for name in ("robovast", "robovast-client", "robovast-nav", "robovast-cluster",
-                       "robovast-sim-roqsim", "robovast-decode"):
+                       "robovast-sim-roqsim", "robovast-decode", "robovast-data"):
               assert m.version(name) == version, (name, m.version(name), version)
           assert r.files("robovast").joinpath("_ui/index.html").is_file(), "web UI missing"
           assert r.files("robovast_nav").joinpath("web/dist/remoteEntry.js").is_file(), \
@@ -346,9 +371,11 @@ jobs:
           groups = m.entry_points()
           assert "roqsim" in [e.name for e in groups.select(group="robovast.simulators")]
           assert "cluster" in [e.name for e in groups.select(group="robovast.execution_backends")]
-          print(f"robovast {version}: six distributions, both bundles, both entry points")
+          print(f"robovast {version}: seven distributions, both bundles, both entry points")
           EOF
       - name: The client answers
         run: venv/bin/vast --version && venv/bin/vast cluster setup --help >/dev/null
       - name: The decoder answers
         run: venv/bin/robovast-decode --version
+      - name: The query engine answers
+        run: venv/bin/python -c "import robovast_data; print('robovast-data', robovast_data.__version__)"

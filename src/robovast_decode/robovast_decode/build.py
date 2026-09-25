@@ -251,18 +251,21 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
             report.built.setdefault(RECORDING_TABLE, []).append(run.key)
         elif sources:
             report.skipped.setdefault(RECORDING_TABLE, []).append(run.key)
-        _build_files(campaign_dir, campaign_id, run, wanted_tables, force, report, known_tables,
-                     reserved=run_bag_tables | DERIVED_TABLES)
+        file_tables = _build_files(campaign_dir, campaign_id, run, wanted_tables, force,
+                                   report, known_tables,
+                                   reserved=run_bag_tables | DERIVED_TABLES)
         if wanted_tables is not None:
-            _record_absent(campaign_dir, run, wanted_tables, report, sizes)
+            _record_absent(campaign_dir, run, wanted_tables, report, sizes,
+                           known=run_bag_tables | file_tables | {RECORDING_TABLE})
     if wanted_tables is not None:
         report.unknown = [t for t in wanted_tables if t not in known_tables]
     return report
 
 
 def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, force: bool,
-                 report: BuildReport, known_tables: set, reserved) -> None:
-    """The run's own ``*.csv``/``*.jsonl`` files as tables (:mod:`robovast_decode.authored`)."""
+                 report: BuildReport, known_tables: set, reserved) -> set:
+    """The run's own ``*.csv``/``*.jsonl`` files as tables (:mod:`robovast_decode.authored`);
+    the tables its files are, built or refused."""
     files = run_files(run.path, reserved=reserved)
     for table, reason in files.refused.items():
         known_tables.add(table)
@@ -302,11 +305,16 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
                                  complete=complete)
                 report.built.setdefault(table, []).append(run.key)
             write_manifest(campaign_dir, fresh)
+    return set(files.tables) | set(files.refused)
 
 
 def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildReport,
-                   sizes: dict) -> None:
-    """Enter the asked-for tables *run* has no rows for, and why where a build failed."""
+                   sizes: dict, known: set) -> None:
+    """Enter the asked-for tables *run* has no rows for, and why where a build failed.
+
+    *known* are the tables the run's records can give at all: a table outside it is one this
+    run never had, which is a different answer from one it had and came out empty.
+    """
     have = {t for t, keys in report.built.items() if run.key in keys}
     have |= {t for t, keys in report.skipped.items() if run.key in keys}
     missing = [t for t in wanted_tables if t not in have]
@@ -318,7 +326,7 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
         for table in missing:
             reason = report.failed.get(table, {}).get(run.key)
             record_run_absent(manifest, table, run.key, sources=sizes, complete=complete,
-                              reason=reason)
+                              reason=reason, known=table in known)
         write_manifest(campaign_dir, manifest)
 
 

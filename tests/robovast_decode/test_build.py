@@ -150,6 +150,7 @@ def test_a_table_a_run_has_nothing_for_is_recorded_so_it_is_not_looked_for_again
     entry = _manifest(campaign)["tables"]["rosbag2_nope"]["runs"]["cfg/0"]
     assert entry["files"] == [] and entry["rows"] == 0 and entry["complete"] is True
     assert entry["reason"] is None
+    assert entry["known"] is False, "a table this run never had, not one that came out empty"
 
 
 def test_a_failed_table_is_recorded_with_its_reason_and_counted_as_failed(campaign):

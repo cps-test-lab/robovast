@@ -66,12 +66,17 @@ that matters — can decline what it does not.
        table from ``campaign.db``, parquet tables under the campaign's ``.cache/``; the
        ``robovast-decode`` command
      - ``mcap``, ``rosbags``, ``pyarrow`` -- pure Python, no ROS
+   * - ``robovast-data``
+     - SQL over campaign directories, and a campaign's data as pandas: the tables a query
+       names built on first use, the campaign's record, the views over both; ``Campaign``,
+       ``Corpus``, ``open_data`` for a notebook
+     - ``duckdb``, ``pandas``
 
 **The dependency direction is the design.** ``robovast-client`` and ``robovast-decode``
-depend on nothing of ours, ``robovast`` depends on both, and ``robovast-cluster`` depends
-on ``robovast``. ``robovast`` must never depend on ``robovast-cluster`` — that edge back is
-what would make the graph cyclic, and it is why it cannot be offered as an extra. Anywhere
-that installs it needs its own step.
+depend on nothing of ours, ``robovast-data`` depends on the decoder alone, ``robovast``
+depends on all three, and ``robovast-cluster`` depends on ``robovast``. ``robovast`` must
+never depend on ``robovast-cluster`` — that edge back is what would make the graph cyclic,
+and it is why it cannot be offered as an extra. Anywhere that installs it needs its own step.
 
 They share **one import namespace**: ``robovast/``, ``robovast/service/`` and
 ``robovast/execution/`` carry no ``__init__.py`` in any distribution, so they are PEP 420
