@@ -16,10 +16,10 @@ import os
 
 from robovast.common.campaign_logs import EXECUTION_DIR
 from robovast.service.app import build_app
-from tests.service.null_service import NullService
 from robovast.service.http_client import HTTPTransport
 from robovast.service.interface import Routes, ServiceError
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 #: Long enough for the stream's loop to deliver its frames, short enough that a stream which
 #: never sends one fails the test rather than hanging it.

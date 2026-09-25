@@ -12,7 +12,6 @@ already read, and a shorter run makes the reader start the file over.
 import pytest
 
 from robovast.service.campaign_log import read_rows
-from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 

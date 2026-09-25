@@ -18,8 +18,8 @@ import pytest
 from robovast.common.campaign_logs import EXECUTION_DIR, section_name
 from robovast.service import campaign_log
 from robovast.service.campaign_log import read_rows
-from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 CID = "campaign-2026-08-01-090000"
 
