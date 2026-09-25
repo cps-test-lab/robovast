@@ -36,6 +36,7 @@ from typing import Any
 
 import numpy as np
 
+from robovast.common.query_limits import query_limits
 from robovast_data import Engine, QueryError, Scope
 from robovast_data.views import pose_clock
 
@@ -105,7 +106,8 @@ def track_deviation(campaign_dir, config_name: str, run_id: int, *, path: dict,
     dims = 2 if planar else 3
     polyline = np.array([[float(v) for v in p[:dims]] for p in points])
 
-    engine = Engine([Scope(str(campaign_dir), config_name, int(run_id))], workers=1)
+    engine = Engine([Scope(str(campaign_dir), config_name, int(run_id))], workers=1,
+                    **query_limits())
     campaign_id = engine.scopes[0].campaign_id
     try:
         with engine.execute(f'SELECT * FROM "{source}" LIMIT 0') as (con, _problems):

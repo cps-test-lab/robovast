@@ -287,3 +287,11 @@ def test_run_view_lists_a_run_that_has_a_directory_and_no_verdict_yet(tmp_path):
         rows = con.fetchall()
     assert rows[0][:3] == (0, "passed", False)
     assert rows[1][:3] == (1, None, True) and '"wind"' in rows[1][3]
+
+
+def test_threads_and_memory_limit_bound_the_connection(campaign):
+    engine = Engine([Scope(str(campaign))], threads=1, memory_limit="256MiB")
+    with engine.connect() as con:
+        assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
+        limit = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+    assert limit.replace(" ", "") in ("256.0MiB", "256MiB", "268.4MB")

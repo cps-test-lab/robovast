@@ -45,6 +45,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import pyarrow as pa
 import yaml
 
+from robovast.common.query_limits import query_limits
 from robovast_data import Engine, Problem, QueryError, Scope
 from robovast_data.statement import parse
 from robovast_decode import __version__ as DECODER_VERSION
@@ -223,7 +224,7 @@ def build_tables(campaign_dir: str, tables: List[str], *,
     The plot tables go through the engine's own reading of a query -- a view names the tables
     it reads -- so a plot over ``pose_track_view`` builds what that view needs.
     """
-    engine = Engine([Scope(campaign_dir)], progress=progress)
+    engine = Engine([Scope(campaign_dir)], progress=progress, **query_limits())
     return engine.ensure(engine.tables_for(tables))
 
 
@@ -236,7 +237,7 @@ def replay_tables(campaign_dir: str, *,
     build everything again.
     """
     tables = sorted(available_tables(campaign_dir, decoder_config(campaign_dir)))
-    engine = Engine([Scope(campaign_dir)], progress=progress)
+    engine = Engine([Scope(campaign_dir)], progress=progress, **query_limits())
     return engine.ensure(tables)
 
 

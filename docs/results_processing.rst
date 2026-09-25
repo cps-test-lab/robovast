@@ -1459,7 +1459,8 @@ builds every run. What could not be built is reported with the answer, by table 
 
 **What a query may do.** One ``SELECT``, checked on DuckDB's own parse. File access is limited to
 the campaign's ``.cache/tables/``, external access is off, the configuration is locked, and a
-query that runs past its time is interrupted. **One campaign per query** by default; the HTTP
+query that runs past its time is interrupted. What one query may use in threads and memory is
+the operator's to bound (:ref:`bounding-a-query`). **One campaign per query** by default; the HTTP
 query route takes further campaign ids in ``campaigns``, and then every view is the union of
 theirs, with ``campaign_id`` in every row.
 
