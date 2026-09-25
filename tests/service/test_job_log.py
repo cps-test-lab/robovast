@@ -19,8 +19,8 @@ from fastapi.testclient import TestClient
 from robovast.common.execution import JOB_LINKS_MANIFEST, job_artifact_rel
 from robovast.service import job_log
 from robovast.service.app import build_app
-from tests.service.null_service import NullService
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service.null_service import NullService
 
 CID = "campaign-2026-07-17-122000"
 _XML = '<testsuite errors="0" failures="0" tests="1"><testcase time="1.0"/></testsuite>'
