@@ -485,7 +485,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 
     from robovast.service.project_push import _resolve_workspace_id
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
+        _echo_target(target, err=as_json)
         wid = _resolve_workspace_id(client, workspace)
         described = client.describe_world(wid, path, targets, entities)
         if as_json:
