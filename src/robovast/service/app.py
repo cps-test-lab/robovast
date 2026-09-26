@@ -1414,9 +1414,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
               tags=["workspaces"])
     def preview_configurations(
         workspace_id: str, max_configs: int = Body(0, embed=True),
-        path: str = Body("", embed=True),
+        path: str = Body("", embed=True), wait: bool = Body(True, embed=True),
     ) -> PreviewResponse:
-        return _guard(lambda: impl.preview_configurations(workspace_id, max_configs, path))
+        return _guard(lambda: impl.preview_configurations(workspace_id, max_configs, path, wait))
 
     @app.post(Routes.workspace_world("{workspace_id}"), response_model=WorldDescription,
               tags=["workspaces"])

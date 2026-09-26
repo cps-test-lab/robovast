@@ -189,6 +189,19 @@ def _fix_aux_images(result: dict) -> None:
 #: fork) — see ``_compose_isolated`` and the dispatch in that function.
 _ISOLATED_ENV = "ROBOVAST_ISOLATED_COMPOSE"
 
+#: Composition counts its steps -- one per variation of each configuration block -- on the
+#: same progress line as everything else it narrates, because that line is the one channel
+#: that also crosses the isolated worker's stdout. :func:`parse_composition_step` is its only
+#: reader.
+_STEP_LINE = "Composed variation {done} of {total}."
+_STEP_RE = re.compile(r"^Composed variation (\d+) of (\d+)\.$")
+
+
+def parse_composition_step(line):
+    """``(done, total)`` when *line* is composition's step counter, else ``None``."""
+    m = _STEP_RE.match(line.strip())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
 
 
 def _make_container_runner(spec, *, image_project=None, image_project_tag=None, purpose=""):
@@ -2195,7 +2208,18 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     campaign_input_files.extend(analysis_files)
 
+    def _steps(block):
+        # The same reading of `variations` as _get_variation_classes: anything but a list is none.
+        listed = block.get('variations')
+        return len(listed) if isinstance(listed, list) else 0
+
+    steps_total = sum(_steps(c) for c in configurations)
+    steps_done = 0
+    if steps_total:
+        progress_update_callback(_STEP_LINE.format(done=0, total=steps_total))
+
     for config in configurations:
+        block_end = steps_done + _steps(config)
         if variation_classes is None:
             # Read variation classes from the variation file
             variation_classes_and_parameters = _get_variation_classes(config, vast_dir)
@@ -2314,6 +2338,13 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 c["_variations"].append(entry)
 
             current_configs = result
+            steps_done += 1
+            progress_update_callback(_STEP_LINE.format(done=steps_done, total=steps_total))
+
+        if steps_done < block_end:
+            # The pipeline stopped early, so this block's remaining variations will not run.
+            steps_done = block_end
+            progress_update_callback(_STEP_LINE.format(done=steps_done, total=steps_total))
 
         for c in current_configs:
             c["_config_name"] = config.get("name")
