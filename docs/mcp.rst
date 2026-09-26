@@ -1295,6 +1295,13 @@ that made this rule — and then ``errors`` says why while the cheap half still 
 read ``dropped_transport``, which names the transport plugins left out of the build (a describe
 publishes nothing, so they contribute nothing but a way to fail).
 
+**The start state comes with the entities.** Asking for ``entities`` also resets the world, as a
+run does before each trial, and ``warnings`` lists what that state holds that is likely to make a
+run misbehave, each ``{check, message, hint}`` in the simulator's words -- two bodies placed inside
+one another, which the contact solver flings apart on the first steps. ``null`` means the world was
+not reset (no ``entities`` asked for, or ``errors.reset`` says why); ``[]`` means nothing to say.
+``validate_project`` reports the same warnings as advice.
+
 .. _mcp-container-exec:
 
 Testing a container and its setup

@@ -4991,6 +4991,7 @@ class ServiceBase(RobovastInterface):
             inputs=[str(p) for p in (payload.get("inputs") or [])],
             components=list(payload.get("components") or []),
             entities=payload.get("entities"),
+            warnings=payload.get("warnings"),
             overridable=dict(payload.get("overridable") or {}),
             # Both carry how the answer was arrived at, so dropping them here would hand a caller
             # a null `entities` with nothing to distinguish "compiles none" from "could not ask".
