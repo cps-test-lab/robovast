@@ -158,7 +158,7 @@ def test_the_arrow_query_streams_typed_rows_with_the_callers_tables(mounted, sta
     joined = _arrow(mounted.post(Routes.campaign_query_arrow(CID), json={
         "sql": """SELECT d.timestamp, d.seen, p."position.x" AS x FROM detections d
                   ASOF JOIN (SELECT * FROM poses WHERE frame = 'base_link') p
-                  ON p.timestamp <= d.timestamp""",
+                  ON p.timestamp <= d.timestamp ORDER BY d.timestamp""",
         "tables": {"detections": base64.b64encode(out.getvalue()).decode("ascii")}}))
     # The first frame precedes every pose and has no match; the rest join.
     assert joined.num_rows == 3 and joined.column("seen").to_pylist() == [0, 1, 1]

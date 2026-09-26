@@ -773,31 +773,19 @@ def _frame_from_recording(campaign_id: str, config_name: str, run_id: int,
 def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
                      time: Optional[float] = None,
                      topic: Optional[str] = None) -> Image:
-    """One frame of a camera recorded during the run, as a PNG.
-
-    Read from the run's recording -- the frame at or before ``time`` of an image topic it
-    recorded, no wider than 640 px -- or, for a run that recorded no image topic, from the
-    video it produced (``rosbags_to_webm``). The perspective is fixed by where that camera
-    was mounted; to pick your own viewpoint, use ``get_simulation_screenshot`` instead.
-
-    For a **human** to watch the run, prefer the file:
-    ``read_file('/results/<campaign>/<config>/<run>/<name>.webm')`` returns a URL.
-
-    Returns a PNG, so a failure **raises** rather than coming back as ``{error}``: no
-    camera and no video, an ambiguous ``topic``, or an unreadable recording.
+    """One frame of a camera the run recorded, as a PNG: the frame at or before ``time``
+    of an image topic, no wider than 640 px, or from the run's ``rosbags_to_webm`` video
+    when it recorded no image topic. The viewpoint is the camera's;
+    ``get_simulation_screenshot`` picks one. A failure **raises**: no camera and no video,
+    an ambiguous ``topic``, an unreadable recording.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
         run_id: Which run of that configuration.
-        time: Seconds on the run's timeline — the clock every results table uses, so a
-            moment found in SQL can be looked at directly. Default: the newest frame of the
-            recording, or the first frame of the video.
+        time: Seconds on the run's timeline, the clock every table uses. Default: the
+            newest frame of the recording, or the video's first.
         topic: Which camera, if the run recorded several. Omitted lists them.
-
-    Raises:
-        RunArtifactError: no camera and no video, ambiguous ``topic``, or the recording
-            could not be read.
     """
     png = _frame_from_recording(campaign_id, config_name, run_id, time, topic)
     if png is not None:
