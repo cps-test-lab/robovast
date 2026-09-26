@@ -198,7 +198,7 @@ export function LaunchBar() {
                 ? `could not list workspaces: ${(workspaces.error as Error).message}`
                 : workspaces.data?.workspaces.length
                   ? undefined
-                  : 'no workspaces found — enter an id (or empty for the CWD project)'
+                  : 'no workspaces found — create one in Config, or enter its id'
             }
             error={workspaces.isError}
             size="small"

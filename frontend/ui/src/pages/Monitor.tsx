@@ -1725,7 +1725,7 @@ export function Monitor({
         <CircularProgress size={24} />
       ) : !data.campaigns.length ? (
         <Alert severity="info" variant="outlined">
-          No campaigns yet — start one from the Launcher.
+          No campaigns yet — start one with the launcher above.
         </Alert>
       ) : !shown.length ? (
         // An empty list under a filter is not an empty deployment, and has to say which it is.

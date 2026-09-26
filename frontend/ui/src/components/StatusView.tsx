@@ -520,7 +520,7 @@ export function ringLabelWidth(label: string): number {
   return em * RING.fontSize
 }
 
-// Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
+// Renders one campaign's live Status — the browser analog of what `vast campaign status` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
