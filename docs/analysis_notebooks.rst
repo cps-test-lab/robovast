@@ -196,8 +196,35 @@ DuckDB directly --
    poses = pd.read_parquet("<campaign>-export-<id>/tables/poses.parquet")
    duckdb.sql("SELECT config_name, count(*) FROM '<campaign>-export-<id>/tables/runs.parquet' GROUP BY 1")
 
--- while the records it ships beside them (``<campaign_id>/``) are a campaign directory
-``Campaign`` opens as it opens the archive.
+-- and ``Campaign("<campaign>-export-<id>.tar.gz")`` opens the export itself: its tables are
+read as they are, nothing is built, and a table it does not carry is built from the records
+where they suffice.
+
+Images and point clouds never become rows (:ref:`data-contract`); a ``Campaign`` reads them
+from the run's recording as arrays, one message at a time, with stamps on the tables' clock:
+
+.. code-block:: python
+
+   for f in c.frames("cfg-3", 0, "/camera/image_raw", start=10.0, end=40.0, every=0.5):
+       f.t, f.image, f.encoding          # seconds; HxW[xC] ndarray in the encoding's own dtype (16UC1 -> uint16)
+       f.pil()                           # a picture to show
+   f = c.frame("cfg-3", 0, "/camera/image_raw", t=12.5)          # the frame at or before t
+
+   for pc in c.pointclouds("cfg-3", 0, "/points"):
+       pc.xyz                            # (N, 3) float32, NaN points dropped unless keep_nan=True
+       pc.fields["intensity"]            # every field of the message by name
+
+   detections = pd.DataFrame([(f.t, model(f.image)) for f in c.frames("cfg-3", 0, "/camera/image_raw")],
+                             columns=["timestamp", "n_people"])
+   c.sql("""SELECT d.timestamp, d.n_people, p."position.x", p."position.y"
+            FROM detections d ASOF JOIN (SELECT * FROM poses WHERE frame = 'base_link') p
+            ON p.timestamp <= d.timestamp""", tables={"detections": detections})
+
+``sql(tables=)`` registers your own DataFrames beside the campaign's tables for that query,
+so what a loop over frames produced joins ``poses`` by stamp. A copy of the campaign without
+the recording -- an export made without ``--bags`` -- raises naming that rather than
+answering. A campaign on a service (below) answers the same calls: one request per frame or
+cloud, whole, which is why a loop over a long run is what a download is for.
 
 A campaign on a service opens by its URL, without downloading it:
 
@@ -207,6 +234,11 @@ A campaign on a service opens by its URL, without downloading it:
    c.runs
    c.table("poses", config="cfg-3", run=0)
    c.sql("SELECT config_name, count(*) FROM poses GROUP BY 1")
+   c.frame("cfg-3", 0, "/camera/image_raw", t=12.5)
+
+The rows travel as an Arrow stream (``POST /campaigns/{id}/query.arrow``), so every column
+arrives in its type and a list column as a list, exactly as a local read gives them; a
+DataFrame passed as ``tables=`` travels with the query.
 
 The service builds what each call names from the campaign's records, as it does for the web UI,
 and sends the answer as CSV. ``vast service token`` prints the token it accepts. Three things

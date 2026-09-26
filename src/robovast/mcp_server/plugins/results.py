@@ -728,32 +728,80 @@ def _lit(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+_IMAGE_TYPES = ("sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage")
+
+
+def _image_topics(campaign_id: str, config_name: str, run_id: int) -> list:
+    """The image topics the run recorded, from its ``_recording`` report; ``[]`` when the
+    report is not built or names none."""
+    types = ", ".join(_lit(t) for t in _IMAGE_TYPES)
+    rows = data_access.rows(
+        campaign_id,
+        f"SELECT DISTINCT topic FROM _recording WHERE config_name = {_lit(config_name)} "
+        f"AND run_id = {_lit(run_id)} AND type IN ({types}) ORDER BY topic", max_rows=50)
+    return [str(r["topic"]) for r in rows]
+
+
+def _frame_from_recording(campaign_id: str, config_name: str, run_id: int,
+                          time: Optional[float], topic: Optional[str]) -> Optional[bytes]:
+    """The frame as PNG from the run's recording through the service's frame route, or
+    ``None`` when the run recorded no image topic (the video is then the source)."""
+    topics = _image_topics(campaign_id, config_name, run_id)
+    if topic is not None:
+        topics = [t for t in topics if t == topic]
+    if not topics:
+        return None
+    if len(topics) > 1:
+        raise run_artifacts.RunArtifactError(
+            f"run {run_id} of {config_name!r} recorded several cameras "
+            f"({', '.join(topics)}); pass topic= to choose one.")
+    client = service_access.service_client()
+    if client is None:
+        raise run_artifacts.RunArtifactError(service_access.NO_SERVICE)
+    try:
+        _stamp, jpeg = client.campaign_frame(campaign_id, f"{config_name}/{run_id}", topics[0],
+                                             None if time is None else float(time))
+    except KeyError as e:
+        raise run_artifacts.RunArtifactError(f"could not read a frame of {topics[0]}: {e}") from e
+    from PIL import Image as PILImage  # pylint: disable=import-outside-toplevel
+    import io  # pylint: disable=import-outside-toplevel
+    out = io.BytesIO()
+    PILImage.open(io.BytesIO(jpeg)).save(out, format="PNG")
+    return out.getvalue()
+
+
 def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
                      time: Optional[float] = None,
                      topic: Optional[str] = None) -> Image:
     """One frame of a camera recorded during the run, as a PNG.
 
-    Reads the video the run produced; the perspective is fixed by where that camera was
-    mounted. Cheap, and works on any backend that registered a video. To pick your own
-    viewpoint, use ``get_simulation_screenshot`` instead.
+    Read from the run's recording -- the frame at or before ``time`` of an image topic it
+    recorded, no wider than 640 px -- or, for a run that recorded no image topic, from the
+    video it produced (``rosbags_to_webm``). The perspective is fixed by where that camera
+    was mounted; to pick your own viewpoint, use ``get_simulation_screenshot`` instead.
 
     For a **human** to watch the run, prefer the file:
     ``read_file('/results/<campaign>/<config>/<run>/<name>.webm')`` returns a URL.
 
     Returns a PNG, so a failure **raises** rather than coming back as ``{error}``: no
-    video, an ambiguous ``topic``, or an unreadable recording.
+    camera and no video, an ambiguous ``topic``, or an unreadable recording.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
         run_id: Which run of that configuration.
         time: Seconds on the run's timeline — the clock every results table uses, so a
-            moment found in SQL can be looked at directly. Default: the first frame.
+            moment found in SQL can be looked at directly. Default: the newest frame of the
+            recording, or the first frame of the video.
         topic: Which camera, if the run recorded several. Omitted lists them.
 
     Raises:
-        RunArtifactError: no video, ambiguous ``topic``, or the recording could not be read.
+        RunArtifactError: no camera and no video, ambiguous ``topic``, or the recording
+            could not be read.
     """
+    png = _frame_from_recording(campaign_id, config_name, run_id, time, topic)
+    if png is not None:
+        return Image(data=png, format="png")
     row = _video_row(campaign_id, config_name, run_id, topic)
     name = str(row["file"])
     t_start = float(row["t_start"])

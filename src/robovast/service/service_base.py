@@ -1285,6 +1285,15 @@ class ServiceBase(RobovastInterface):
         """The stamps of a run's image topic's frames; the data plane's."""
         return self._data_plane().campaign_frame_index(campaign_id, run, topic)
 
+    def campaign_frame_full(self, campaign_id: str, run: str, topic: str, t=None):
+        """A run's camera frame at or before *t*, whole; the data plane's."""
+        return self._data_plane().campaign_frame_full(campaign_id, run, topic, t)
+
+    def campaign_points(self, campaign_id: str, run: str, topic: str, t=None,
+                        after: bool = False):
+        """A run's point cloud at or before *t* (after it, with *after*); the data plane's."""
+        return self._data_plane().campaign_points(campaign_id, run, topic, t, after)
+
     def _workspace_tar_members(self, workspace_id: str):
         """``(add_members, workspace_id)`` for tarring a workspace's project tree.
 
@@ -5062,6 +5071,11 @@ class ServiceBase(RobovastInterface):
         from robovast.results_processing.data_query import stream_query_csv
         return stream_query_csv(self.campaign_dir(campaign_id), sql,
                                 campaign_id=campaign_id)
+
+    def stream_campaign_query_arrow(self, campaign_id: str, sql: str, tables=None):
+        from robovast.results_processing.data_query import stream_query_arrow
+        return stream_query_arrow(self.campaign_dir(campaign_id), sql, tables,
+                                  campaign_id=campaign_id)
 
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         # Raw-load (not full validation) — reading declared plots must not depend on

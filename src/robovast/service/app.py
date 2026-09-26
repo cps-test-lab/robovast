@@ -45,7 +45,8 @@ from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageErro
                                     is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
-from robovast.service.interface import (ActionResult, BuildCampaignTablesRequest,
+from robovast.service.interface import (ActionResult, ArrowQueryRequest,
+                                        BuildCampaignTablesRequest,
                                         BuildImageRequest, CampaignTablesCleared,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
                                         CampaignVisualizationsResponse,
@@ -1967,6 +1968,29 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             rows, media_type="text/csv",
             headers={"Content-Disposition":
                      f'attachment; filename="{campaign_id}-query.csv"'})
+
+    @app.post(Routes.campaign_query_arrow("{campaign_id}"), tags=["results"])
+    def query_campaign_data_arrow(campaign_id: str, body: ArrowQueryRequest):
+        """Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.
+
+        The CSV twin spells every value as text and a list column as ``[...]``; this keeps
+        the types, which is what ``robovast-data`` reads a service's tables through. The
+        request's ``tables`` are the caller's own relations -- each an Arrow IPC stream in
+        base64 -- registered under their names for this query alone, so a DataFrame a
+        notebook made joins the campaign's tables on the service.
+        """
+        import base64  # pylint: disable=import-outside-toplevel
+
+        import pyarrow as pa  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
+        try:
+            tables = {name: pa.ipc.open_stream(base64.b64decode(data)).read_all()
+                      for name, data in (body.tables or {}).items()}
+        except (ValueError, pa.ArrowInvalid) as exc:
+            raise HTTPException(status_code=400,
+                                detail=f"tables: not an Arrow IPC stream: {exc}") from exc
+        batches = _guard(lambda: impl.stream_campaign_query_arrow(campaign_id, body.sql, tables))
+        return StreamingResponse(batches, media_type="application/vnd.apache.arrow.stream")
 
     @app.get(Routes.campaign_plots("{campaign_id}"), response_model=CampaignPlotsResponse,
              tags=["results"])

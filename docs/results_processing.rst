@@ -1394,9 +1394,19 @@ What it contains is the request's to decide:
   archive carries except the recordings and ``.cache``. With them, the export's
   ``<campaign_id>/`` directory is a campaign directory ``robovast-data`` opens.
 
-The tarball holds ``export.json`` -- the request, the decoder version, the row count and
-file of every table, the campaign id and when it was built -- then ``tables/`` and the
-campaign tree under ``<campaign_id>/``.
+The tarball holds ``export.json`` -- the request, the decoder version, the data contract
+(:ref:`data-contract`), the row count and file of every table, the campaign id and when it
+was built -- then ``tables/`` and the campaign tree under ``<campaign_id>/``. That layout is
+public: pandas and DuckDB read ``tables/<name>.parquet`` directly, and ``Campaign()`` opens
+the export as it opens the campaign, reading the tables it carries and building nothing
+(:ref:`evaluation-notebooks`).
+
+**Download or export.** ``vast campaign download`` is the campaign as the service holds it:
+records and recordings, no table, for a copy that builds its tables on first use, re-runs,
+or goes back into a service; ``--extract`` unpacks it as it streams into ``<id>/`` and keeps
+no archive. ``vast campaign export`` is the campaign to read: the tables built once, the
+records, and the recordings only when asked. Images and point clouds are read from the
+recordings alone, so an export made without ``--bags`` has tables and no frames, and says so.
 
 .. list-table::
    :header-rows: 1

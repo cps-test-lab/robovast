@@ -202,11 +202,19 @@ topic -- ``{"topic", "t", "jpeg_base64"}``, the newest frame, at most every 250 
 while it changes -- because a camera's messages never become rows. The frames themselves
 are two plain routes beside it: ``GET /data/campaigns/{id}/frame?run=&topic=[&t=]`` answers
 ``image/jpeg`` with the last frame at or before ``t`` (the newest without it), no wider
-than 640 px, its stamp in ``X-Frame-Time``; ``GET .../frame-index?run=&topic=`` lists every
-frame's stamp as ``{"topic", "times"}``. Both read the recording itself: a live run's through
-the watcher following it, a finished run's through an index built on first request and
-kept per run and topic. A run without the topic, or with no frame of it yet, is a ``404``
-that says so. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
+than 640 px, its stamp in ``X-Frame-Time``; with ``&full=1`` it answers the whole frame
+instead -- a raw image as its pixels in numpy's ``.npy`` format (``application/x-npy``, the
+encoding in ``X-Frame-Encoding``), a compressed image as recorded -- which is what
+``robovast-data`` reads. ``GET .../frame-index?run=&topic=`` lists every frame's stamp as
+``{"topic", "times"}``. ``GET .../points?run=&topic=[&t=][&after=1]`` answers one point
+cloud as an Arrow IPC stream, one column per field, the cloud at or before ``t`` or with
+``after`` the first one after it, so a reader steps through the topic. All of them read the
+recording itself: a live run's through the watcher following it, a finished run's through an
+index built on first request and kept per run and topic. A run without the topic, or with
+no frame of it yet, is a ``404`` that says so. Rows leave the control plane as
+``GET /campaigns/{id}/query.csv?sql=`` (text) or ``POST /campaigns/{id}/query.arrow`` (an
+Arrow IPC stream, typed, the request's ``tables`` -- Arrow streams in base64 -- registered
+under their names for the query). ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
 campaign, tarred from the campaign directory as it is read. Every service answers it:
 refusing because "the results are already on this host's filesystem" would assert
 something true of a caller on that host and false of everyone else.

@@ -884,15 +884,21 @@ def delete_cmd(campaigns, yes, namespace, context):
 @click.option('--output', '-o', 'output', default=None, type=click.Path(file_okay=False),
               help='Directory to write the archives into [default: the current directory]')
 @click.option('--force', '-f', is_flag=True,
-              help='Overwrite an archive of the same name that is already here')
+              help='Overwrite an archive (or, with --extract, a directory) of the same name '
+                   'that is already here')
+@click.option('--extract', '-x', 'extract', is_flag=True,
+              help='Extract while downloading into <output>/<campaign-id>/ and keep no '
+                   'archive: the tree robovast-data opens, in one step')
 @target_options
-def download_cmd(campaigns, output, force, namespace, context):
+def download_cmd(campaigns, output, force, extract, namespace, context):
     """Download campaign archives from the service, one ``.tar.gz`` each.
 
     That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing is
     extracted, no results directory is written into, and no state is kept about what you
     already have -- the archive is yours, to keep, copy, unpack, or hand back with ``vast
-    campaign import``.
+    campaign import``. With ``--extract`` you name the destination instead: the archive is
+    unpacked as it streams into ``<output>/<campaign-id>/`` and never written to disk, which
+    is the shape ``robovast-data`` and a notebook open.
 
     The archive is the campaign as the service holds it, postprocessing and all. The
     share's raw, pre-postprocess snapshot is a different system with different
@@ -915,8 +921,8 @@ def download_cmd(campaigns, output, force, namespace, context):
 
     from robovast.client.progress import (  # pylint: disable=import-outside-toplevel
         fmt_size, make_transfer_progress_callback)
-    from robovast.service.project_push import \
-        download_campaign_archive  # pylint: disable=import-outside-toplevel
+    from robovast.service.project_push import (  # pylint: disable=import-outside-toplevel
+        download_campaign_archive, extract_campaign_archive)
 
     out_dir = Path(output) if output else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -926,7 +932,7 @@ def download_cmd(campaigns, output, force, namespace, context):
         with service_client(namespace, context) as (client, label):
             click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
             for campaign_id in campaigns:
-                dest = out_dir / f"{campaign_id}.tar.gz"
+                dest = out_dir / (campaign_id if extract else f"{campaign_id}.tar.gz")
                 if dest.exists() and not force:
                     click.echo(f"  {dest.name}  already here, skipping "
                                "(use --force to re-download)")
@@ -937,10 +943,13 @@ def download_cmd(campaigns, output, force, namespace, context):
                     # The service may name it something else -- an incomplete campaign is
                     # marked in the name -- so what landed is what gets reported, not what
                     # was asked for.
-                    dest = Path(download_campaign_archive(
-                        client, campaign_id, str(dest),
-                        progress_callback=make_transfer_progress_callback(
-                            campaign_id, start)))
+                    progress = make_transfer_progress_callback(campaign_id, start)
+                    if extract:
+                        dest = Path(extract_campaign_archive(client, campaign_id, str(out_dir),
+                                                             progress_callback=progress))
+                    else:
+                        dest = Path(download_campaign_archive(client, campaign_id, str(dest),
+                                                              progress_callback=progress))
                 # Ahead of the broad handler below, which would otherwise swallow click's
                 # own control flow and report a usage error as an unexpected failure.
                 except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
@@ -952,7 +961,9 @@ def download_cmd(campaigns, output, force, namespace, context):
                 finally:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-                click.echo(f"  {campaign_id}  ✓  {fmt_size(dest.stat().st_size)} "
+                size = (sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
+                        if dest.is_dir() else dest.stat().st_size)
+                click.echo(f"  {campaign_id}  ✓  {fmt_size(size)} "
                            f"in {time.monotonic() - start:.0f}s  ->  {dest}")
                 written += 1
     # pylint: disable-next=try-except-raise
@@ -963,7 +974,7 @@ def download_cmd(campaigns, output, force, namespace, context):
         return
 
     click.echo()
-    parts = [f"✓ Downloaded {written} archive(s)"]
+    parts = [f"✓ Downloaded {written} {'campaign(s)' if extract else 'archive(s)'}"]
     if skipped:
         parts.append(f"{skipped} skipped")
     click.echo("  ".join(parts))

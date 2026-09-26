@@ -284,10 +284,15 @@ class Engine:
                 out.add(relation)
         return sorted(out)
 
-    def prepare(self, sql: str) -> Prepared:
-        """*sql* parsed and checked, and the tables it names built for the runs in scope."""
+    def prepare(self, sql: str, registered: Iterable[str] = ()) -> Prepared:
+        """*sql* parsed and checked, and the tables it names built for the runs in scope.
+
+        *registered* are relations the caller supplies itself (:meth:`execute`'s *tables*);
+        nothing is built for a name among them.
+        """
         statement = parse(sql)
-        tables = self.tables_for(statement.relations)
+        registered = set(registered)
+        tables = [t for t in self.tables_for(statement.relations) if t not in registered]
         narrowing = {t: n for t, n in statement.narrowing.items() if t in tables}
         return Prepared(statement, self.ensure(tables, narrowing))
 
@@ -390,13 +395,15 @@ class Engine:
         con.execute(f"CREATE TABLE {name} AS SELECT * FROM _incoming")
         con.unregister("_incoming")
 
-    def connect(self, relations: Iterable[str] = (), *,
-                writable: Optional[str] = None) -> duckdb.DuckDBPyConnection:
+    def connect(self, relations: Iterable[str] = (), *, writable: Optional[str] = None,
+                tables: Optional[Dict[str, object]] = None) -> duckdb.DuckDBPyConnection:
         """A locked-down connection defining *relations* (and what they read) for the scopes.
 
         *writable* is one directory a ``COPY ... TO`` on this connection may write into --
         what an export uses to write the tables as files. Every other path stays off limits:
         the connection reads the campaigns' table files and writes there and nowhere else.
+        *tables* are the caller's own relations (a DataFrame or an Arrow table each),
+        registered under their names; a campaign table of the same name is not defined.
         """
         config = {"threads": self.threads}
         if self.memory_limit:
@@ -408,9 +415,13 @@ class Engine:
             # ``runs`` first: ``run_view`` reads its ``live`` column.
             self._define_runs(con)
             self._define_record(con)
+            for name, rows in (tables or {}).items():
+                con.register(name, rows)
             relations = set(relations)
             columns: Dict[str, set] = {}
             for table in self.tables_for(relations):
+                if tables and table in tables:
+                    continue
                 found = self._define_table(con, table)
                 if found is not None:
                     columns[table] = found
@@ -438,15 +449,16 @@ class Engine:
     # -- queries ---------------------------------------------------------------------------
 
     @contextmanager
-    def execute(self, sql: str, params=None) -> Iterator[Tuple[duckdb.DuckDBPyConnection,
-                                                                List[Problem]]]:
+    def execute(self, sql: str, params=None, tables: Optional[Dict[str, object]] = None
+                ) -> Iterator[Tuple[duckdb.DuckDBPyConnection, List[Problem]]]:
         """Run *sql*; yields the connection holding its result and the build problems.
 
         The caller reads the result from the connection (``fetchmany``, ``fetch_arrow_table``,
-        ``df``) inside the ``with`` block; the connection is closed on the way out.
+        ``df``) inside the ``with`` block; the connection is closed on the way out. *tables*
+        are the caller's own relations the query may name (:meth:`connect`).
         """
-        prepared = self.prepare(sql)
-        con = self.connect(prepared.statement.relations)
+        prepared = self.prepare(sql, registered=tables or ())
+        con = self.connect(prepared.statement.relations, tables=tables)
         timer = None
         if self.timeout_s:
             timer = threading.Timer(self.timeout_s, con.interrupt)
@@ -493,6 +505,14 @@ class Engine:
                 in_scope = [k for k in recorded if keys is None or k in keys]
                 counts.setdefault(RECORDING_TABLE, {"runs": len(in_scope), "built": len(in_scope),
                                                     "failed": {}})
+            # A table the copy carries whole (an export's) is there for every run it holds,
+            # whether or not the records here could build it.
+            for table, table_entry in manifest.get("tables", {}).items():
+                whole = table_entry.get("campaign")
+                if whole and table not in counts:
+                    held = whole.get("runs")
+                    held = len(self._runs(scope)) if held is None else held
+                    counts[table] = {"runs": held, "built": held, "failed": {}}
             for table, count in counts.items():
                 entry = out.setdefault(table, {"kind": "table", "runs": 0, "built": 0,
                                                "failed": {}, "columns": None, "rows": 0})
@@ -503,8 +523,10 @@ class Engine:
                                      if keys is None or k in keys)
                 entry["failed"].update({f"{scope.campaign_id}/{k}": v
                                         for k, v in count["failed"].items()})
-                runs = manifest.get("tables", {}).get(table, {}).get("runs", {})
-                for run_entry in runs.values():
+                table_entry = manifest.get("tables", {}).get(table, {})
+                held_whole = table_entry.get("campaign")
+                for run_entry in list(table_entry.get("runs", {}).values()) + (
+                        [held_whole] if held_whole else []):
                     for name, kind in schema_of(manifest, run_entry):
                         columns = entry["columns"] = entry["columns"] or []
                         if [name, kind] not in columns and name not in {c for c, _ in columns}:
