@@ -389,7 +389,9 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             out["note"] = ref.note
         return out
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        # error_result rather than {"error": str(e)}: a launch refused for storage below
+        # the reserve names the command that frees it, and that hint is the refusal's.
+        return error_result(e)
 
 
 def _campaign_next_step(result: dict) -> str:

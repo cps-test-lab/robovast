@@ -97,7 +97,7 @@ def run_postprocessing(campaign_id: str, force: bool = False,
                 campaign_id=campaign_id, force=force, replay=replay,
                 skip=skip or [])).model_dump()
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return service_access.error_result(e)
 
 
 def build_campaign_tables(campaign_id: str, tables: list | None = None) -> dict:
@@ -220,7 +220,7 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
             force=force, rebuild_store=rebuild_store))
         return {"campaign_id": ref.campaign_id, "note": ref.note}
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return service_access.error_result(e)
 
 
 def get_campaign_download(campaign_id: str) -> dict:

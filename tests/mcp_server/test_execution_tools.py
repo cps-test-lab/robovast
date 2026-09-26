@@ -334,6 +334,41 @@ def test_stop_job_without_a_service_says_so(monkeypatch):
     assert "error" in execution.stop_job("svc-campaign-1", "cfgA/0")
 
 
+# -- a refusal that knows the next move hands it over ---------------------------------
+#
+# The service refuses new disk-consuming work below its storage reserve and, when clearing
+# its cache would free enough, says which command does that. The docs promise the same
+# ``next_step`` from every tool that takes on such work; dropping it leaves the caller
+# with a reason and no move.
+
+
+def _refusing(operation):
+    from robovast.common.errors import InsufficientStorageError
+
+    def _refuse(*_a, **_k):
+        raise InsufficientStorageError("Cannot launch a campaign. 3 GB free.",
+                                       next_step="vast service cache --clear")
+
+    class _Client(_FakeClient):
+        pass
+
+    setattr(_Client, operation, _refuse)
+    return _Client()
+
+
+@pytest.mark.parametrize("operation, call", [
+    ("create_campaign", lambda: execution.start_campaign(workspace_id="ws1")),
+    ("retrigger_campaign", lambda: execution.start_campaign(from_campaign="c1")),
+    ("import_campaign", lambda: results_lifecycle.import_campaign(archive_path="/a.tar.gz")),
+    ("run_postprocessing", lambda: results_lifecycle.run_postprocessing("c1")),
+], ids=["create_campaign", "retrigger_campaign", "import_campaign", "run_postprocessing"])
+def test_a_storage_refusal_carries_the_command_that_frees_space(monkeypatch, operation, call):
+    monkeypatch.setattr(service_access, "service_client", lambda: _refusing(operation))
+    out = call()
+    assert "3 GB free" in out["error"]
+    assert out["next_step"] == "vast service cache --clear"
+
+
 # -- fail loudly when no service is reachable (no local fallback) ------------
 
 
