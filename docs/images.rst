@@ -348,8 +348,9 @@ Moving a cluster's images
 
 ``upgrade`` is the command for this, not ``setup --force``. It recovers the cluster's own
 configuration and ingress host *from the cluster*, then touches only the Deployment's
-image, RBAC and the credential Secrets, and always restarts the pod — which is the only way
-``envFrom`` Secrets are re-read. ``setup`` **provisions**: it re-runs the GPU device-plugin
+image, RBAC and the credential Secrets, and restarts the pod — which is the only way
+``envFrom`` Secrets are re-read — unless ``--no-restart`` limits it to what a running pod
+picks up. ``setup`` **provisions**: it re-runs the GPU device-plugin
 install, the results volume and the registry storage, and it takes its options as arguments, so a re-run
 without the original flags re-provisions with different ones.
 
@@ -452,8 +453,8 @@ lock records what actually ran, so those specs can be replaced by exactly those 
 ``vast campaign rerun --check`` reports which recorded images carry a lock, because that is what
 decides whether a rebuild would install the same software or merely something compatible.
 
-A campaign's own ``_execution/image_build_refs`` records the same facts per container, read from
-the labels at composition time — plus, for a user-supplied image, the ``provenance:`` block its
+A campaign's own ``image_build_refs`` in ``_execution/execution.yaml`` records the same facts per
+container, read from the labels at composition time — plus, for a user-supplied image, the ``provenance:`` block its
 author declared. Those survive the image being deleted, which the labels do not.
 
 Which revision a deployment is running
@@ -482,13 +483,14 @@ The same helper bakes ``ROBOVAST_BUILD_DATE`` into the service image, reported a
 and printed by ``vast service info`` as ``built``. It answers the question a revision cannot —
 *how old is what is deployed?* — and it is baked rather than read from
 ``org.opencontainers.image.created`` because a container cannot read its own labels. Unlike the
-revision it changes on every build, so its ``ARG`` sits last in the Dockerfile, where only an
-``ENV`` and two ``LABEL``\ s follow it.
+revision it changes on every build, so its ``ARG`` sits after every install step in the
+Dockerfile, where only the ``ENV``, the labels and the compatibility-version ``ARG`` follow it.
 
 A build outside a git checkout bakes nothing, and ``code_revision`` is then **absent** rather
 than filled with something else. That is a deliberate answer — *this deployment cannot tell
 you* — and it has to stay distinguishable from "a revision that differs", which would send
 someone re-releasing over a service that is already current. Absence is also what an image
 built before the revision was baked in reports; re-release the family and ``upgrade`` to get
-the answer back. The package version is no substitute: it stays ``2.0.0`` across every edit, so
-a caller comparing it reads "same code" where the truth is "no information".
+the answer back. The package version is no substitute: it stays the same across every edit
+between releases, so a caller comparing it reads "same code" where the truth is "no
+information".
