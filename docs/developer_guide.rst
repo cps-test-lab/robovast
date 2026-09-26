@@ -1751,14 +1751,42 @@ Taking a campaign in
 :func:`~robovast.service.ingest.extract_archive` unpack an archive into a results root, as
 separate steps so the importer can open the campaign's ``import.log`` once the directory is
 claimed; :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
-**per stage** (``layout``, ``config``, ``completeness``, ``campaign_store``, ``tables``), since
-a campaign archive carries two version surfaces of its own (the ``.vast``'s and
-``campaign.db``'s) which can independently be older, newer, absent or corrupt. Neither
-re-implements a migration -- the config ladder is applied in memory and the store migrates on
-open, so this module observes and reports. The ``tables`` stage loads nothing: an archive
+**per stage** (``archive``, ``layout``, ``config``, ``completeness``, ``campaign_store``,
+``tables``), since a campaign archive carries three version surfaces of its own which can
+independently be older, newer, absent or corrupt: its **layout**, the ``.vast``'s version and
+``campaign.db``'s schema. This module re-implements none of their ladders -- it runs the layout
+ladder, the config ladder is applied in memory and the store migrates on open -- and reports
+what each did. The ``tables`` stage loads nothing: an archive
 carries the campaign's records and never ``.cache/``, and its tables are built from those
 records the first time something names them. The stage only says whether the records give any
 table at all.
+
+.. rubric:: The archive layout
+
+Everything in a campaign tree that carries no number of its own -- where its records sit, and
+the formats of ``_execution/outcome.json``, ``launch.yaml``, ``execution.yaml`` and the other
+records -- is versioned by one number, the **archive layout**
+(:mod:`robovast.common.migrations.archive`). It is the single source of truth for those
+formats: ``outcome.json`` carries no schema field of its own, because a field on ``Status``
+would number one record and leave the others beside it unnumbered, and a record's format
+changes by moving the layout with a step that rewrites it.
+
+Both archive streams (:mod:`robovast.execution.campaign_archive`: the download and the
+upload-to-share, on the service and on the cluster) add ``_execution/archive.json`` as they
+write -- the layout, the robovast that wrote it, and the numbers of the surfaces that carry
+their own -- and never copy a stamp already in the tree, so an archive always says what the
+robovast that wrote it wrote. The ``archive`` stage runs first, because every other stage reads
+records whose paths and formats the layout decides:
+
+* **no stamp** -- every archive written before the stamp -- is layout 0, and walks the ladder;
+* **older** runs the steps in order over the extracted tree, then rewrites the stamp to the
+  layout the tree is now at, with ``layout_from``;
+* **newer** is degraded, not blocking, naming the layout and the robovast that wrote it;
+* a stamp that states no layout, or a step that fails, **blocks**.
+
+A step is ``migrate(campaign_dir) -> None`` and rewrites the tree in place; like a config step
+it may not import the model its record is read with now. ``make new-archive-migration``
+scaffolds one, and ``test_every_step_is_tested`` fails until it has a test.
 
 Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
 reachable service), ``POST /campaigns/import`` behind the web UI's upload button, and the

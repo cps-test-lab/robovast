@@ -159,6 +159,10 @@ release-images-update-versions: ## Move the commits release-images bakes (roqsim
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
 	@python3 tools/new_config_migration.py
 
+.PHONY: new-archive-migration
+new-archive-migration: ## Scaffold a campaign archive layout step (see migrations/README.md)
+	@python3 tools/new_archive_migration.py
+
 .PHONY: config-fields
 config-fields: ## Regenerate compat/config_fields.json from the config models
 	@python3 tools/config_fields.py --write

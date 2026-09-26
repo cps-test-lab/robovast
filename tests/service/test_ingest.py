@@ -11,6 +11,7 @@ The two properties worth defending: a *degraded* ingest is still usable and must
 away to keep a boolean clean, and every non-ok stage has to name what to do about it.
 """
 
+import json
 import os
 import shutil
 import sqlite3
@@ -231,8 +232,8 @@ def test_the_tables_stage_builds_nothing(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
-                                     "tables"}
+    assert set(report["stages"]) == {"archive", "layout", "config", "completeness",
+                                     "campaign_store", "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -367,3 +368,54 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+# -- the archive layout ------------------------------------------------------
+
+def _stamp(campaign, **fields):
+    from robovast.common.migrations.archive import ARCHIVE_STAMP
+    (campaign / ARCHIVE_STAMP).write_text(json.dumps(fields), encoding="utf-8")
+
+
+def test_an_archive_without_a_stamp_is_the_layout_before_it_and_imports(campaign):
+    """Every archive written before the stamp has none: it is layout 0, walks the ladder,
+    and imports -- and the tree then says which layout it is at, and which it came from."""
+    from robovast.common.migrations.archive import (ARCHIVE_LAYOUT, BASELINE_ARCHIVE_LAYOUT,
+                                                    read_layout)
+    report = ingest_campaign(campaign)
+    assert report["ok"] is True
+    stage = report["stages"]["archive"]
+    assert stage["verdict"] == STAGE_MIGRATED
+    assert stage["version"] == BASELINE_ARCHIVE_LAYOUT
+    assert stage["steps"][0] == f"{BASELINE_ARCHIVE_LAYOUT}_to_{BASELINE_ARCHIVE_LAYOUT + 1}"
+    assert "no stamp" in stage["detail"]
+    layout, stamp = read_layout(campaign)
+    assert layout == ARCHIVE_LAYOUT and stamp["layout_from"] == BASELINE_ARCHIVE_LAYOUT
+
+
+def test_an_archive_at_the_current_layout_is_ok(campaign):
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT
+    _stamp(campaign, layout=ARCHIVE_LAYOUT)
+    report = ingest_campaign(campaign)
+    assert report["stages"]["archive"]["verdict"] == STAGE_OK
+    assert report["ok"] is True
+
+
+def test_an_archive_from_a_newer_layout_is_degraded_and_named(campaign):
+    """Somebody's data from a newer robovast still lists; the stage says which layout and
+    which robovast wrote it, rather than refusing or passing it silently."""
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT
+    _stamp(campaign, layout=ARCHIVE_LAYOUT + 1, robovast="99.0.0")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["archive"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    assert f"layout {ARCHIVE_LAYOUT + 1}" in stage["detail"] and "99.0.0" in stage["detail"]
+    assert f"up to {ARCHIVE_LAYOUT}" in stage["detail"]
+    assert report["ok"] is True
+
+
+def test_a_stamp_that_states_no_layout_blocks_the_import(campaign):
+    _stamp(campaign, layout="one")
+    report = ingest_campaign(campaign)
+    assert report["ok"] is False and report["blocking"] == ["archive"]
+    assert "'one'" in report["stages"]["archive"]["detail"]

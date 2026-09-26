@@ -3,10 +3,11 @@
 Everything about versioning and migration in robovast starts here. If you were asked to
 "add a migration step", this file tells you which surface you mean and exactly what to do.
 
-## The three version surfaces
+## The four version surfaces
 
 | surface | constant | where the steps live | migrates |
 |---|---|---|---|
+| campaign archive layout | `ARCHIVE_LAYOUT` (`archive/__init__.py`) | `archive/vN_to_vM.py` | forward, on import |
 | `.vast` config | `SUPPORTED_CONFIG_VERSION` (`config/__init__.py`) | `config/vN_to_vM.py` | forward, on read |
 | campaign store (`campaign.db`) | `SCHEMA_VERSION` (`../store.py`) | `../store.py`, beside `_SCHEMA` | forward, on open |
 | host ↔ container protocol | `COMPAT_VERSION` (`../execution.py`) | not a ladder — a supported window | n/a |
@@ -26,6 +27,33 @@ beside `_SCHEMA`: a new column must be mirrored into both *in the same order*, a
 `test_fresh_and_migrated_schemas_match` exists to catch a drift between them. Moving the
 ladder away from the schema would break the coupling that test protects. Finding everything
 in one place does not require moving everything into one place — so this file is the map.
+
+## Adding a campaign archive layout step
+
+The layout versions everything in a campaign tree that has no number of its own: where its
+records sit, and the formats of `_execution/outcome.json`, `launch.yaml`, `execution.yaml` and
+the rest. It is the one source of truth for those formats -- no record carries a schema field
+of its own. Move it when a record moves or its format changes in a way an older reader would
+misread.
+
+```sh
+make new-archive-migration       # scaffolds the step file and wires it into the ladder
+```
+
+Then implement `migrate(campaign_dir)` in the generated `archive/vN_to_vM.py`, and add its
+test to `_STEP_TESTS` in `tests/common/test_archive_migrations.py` --
+`test_every_step_is_tested` fails until you do.
+
+- **A step rewrites the extracted tree in place** and touches only paths inside the campaign
+  directory it is given.
+- **It never imports the model its record is read with now** (`robovast.client.status`,
+  `robovast.common.config`, `robovast.common.store`). Enforced by `test_no_step_reads_a_current_model`.
+- **Append only.** An edit changes what an archive already written becomes.
+
+Every archive carries `_execution/archive.json`, written by both streams in
+`robovast.execution.campaign_archive`. An archive with none is layout 0 -- every archive written
+before the stamp -- so absent is a version, not an error. An import (`ingest_campaign`'s
+`archive` stage) walks the ladder first; a newer layout is imported degraded, named.
 
 ## Adding a `.vast` config migration step
 

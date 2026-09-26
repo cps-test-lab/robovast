@@ -8,6 +8,7 @@ injection via a custom ``add_members``, and error propagation from the writer.
 """
 
 import io
+import json
 import os
 import tarfile
 from unittest import mock
@@ -179,3 +180,35 @@ def test_a_snapshot_says_so_inside_the_archive(tmp_path):
     assert facts["complete"] is False
     assert (facts["runs_completed"], facts["runs_total"]) == (3, 20)
     assert facts["campaign_id"] == "camp-2026-01-01-000000"
+
+
+@pytest.mark.parametrize("stream", ["download", "share"])
+def test_every_archive_carries_one_stamp_of_the_layout_it_was_written_in(tmp_path, stream):
+    """Both streams stamp what they write, and a stamp already in the tree -- the one an
+    import left, perhaps of an older layout -- is not copied beside it: the archive says
+    what this robovast wrote."""
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT, ARCHIVE_STAMP
+    root = tmp_path / "camp-2026-01-01-000000"
+    _make_campaign(str(root))
+    os.makedirs(root / "_execution")
+    (root / ARCHIVE_STAMP).write_text('{"layout": 0, "layout_from": 0}')
+    if stream == "download":
+        data = b"".join(campaign_archive.iter_campaign_tar(str(root)))
+    else:
+        with campaign_archive.campaign_tar_stream(str(root)) as fh:
+            data = fh.read()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+        stamps = [m for m in tf.getmembers() if m.name == f"{root.name}/{ARCHIVE_STAMP}"]
+        assert len(stamps) == 1
+        stamp = json.loads(tf.extractfile(stamps[0]).read())
+    assert stamp["layout"] == ARCHIVE_LAYOUT and "layout_from" not in stamp
+    assert stamp["campaign_id"] == root.name
+
+
+def test_the_progress_total_leaves_out_the_stamp_as_the_archive_does(tmp_path):
+    root = tmp_path / "camp-2026-01-01-000000"
+    _make_campaign(str(root))
+    before = campaign_archive.campaign_source_bytes(str(root))
+    os.makedirs(root / "_execution")
+    (root / "_execution" / "archive.json").write_text("{}" * 100)
+    assert campaign_archive.campaign_source_bytes(str(root)) == before
