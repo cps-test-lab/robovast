@@ -1405,6 +1405,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
             status={status.data}
             campaignId={id}
             jobs={jobs.data}
+            jobsError={jobs.error ? (jobs.error as Error).message : null}
             liveOnly
             newest={newest}
             quotaCpu={usage.data?.cpu_capacity ?? null}
