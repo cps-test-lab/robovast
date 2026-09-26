@@ -55,7 +55,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
-from . import __version__, run_slices
+from . import DATA_CONTRACT, __version__, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
 from .decode import channel_type, decode_bag, segments
 from .derived import DERIVED, INPUTS, JobRun, derive_job
@@ -521,10 +521,22 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
         write_manifest(campaign_dir, manifest)
 
 
+def _written_here(entry: Optional[dict]) -> bool:
+    """Whether *entry* was written by this decoder under the contract it follows now.
+
+    Two versions of the decoder can carry one package version -- every build of a branch
+    does -- so the contract number is checked beside it: a table laid out under an older
+    contract is not the table a reader was promised, whatever version wrote it.
+    """
+    return bool(entry) and (entry.get("decoder") == __version__
+                            and entry.get("contract") == DATA_CONTRACT)
+
+
 def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
-    """Whether the entry needs no build: same bytes by this decoder, or a live session's."""
+    """Whether the entry needs no build: same bytes by this decoder under this contract, or
+    a live session's."""
     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(run_key)
-    if not entry or entry.get("decoder") != __version__:
+    if not _written_here(entry):
         return False
     if entry.get("live") is not None:
         return live_owned(entry)
@@ -532,9 +544,9 @@ def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
 
 
 def _entry_current(entry: Optional[dict], sources: dict) -> bool:
-    """Whether a derived entry needs no build: the same *sources* by this decoder, or a
-    watcher's whose stamp is fresh."""
-    if not entry or entry.get("decoder") != __version__:
+    """Whether a derived entry needs no build: the same *sources* by this decoder under this
+    contract, or a watcher's whose stamp is fresh."""
+    if not _written_here(entry):
         return False
     if entry.get("live") is not None:
         return live_owned(entry)

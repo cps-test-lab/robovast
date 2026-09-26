@@ -62,6 +62,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 import duckdb
 import pyarrow as pa
 
+from robovast_decode import DATA_CONTRACT
 from robovast_decode import __version__ as DECODER_VERSION
 from robovast_decode.authored import header, run_files
 from robovast_decode.build import (CAMPAIGN_TABLES, DERIVED_TABLES, RECORDING_TABLE, Run,
@@ -209,7 +210,8 @@ class Engine:
                     demanded.append((scope, table, run.key))
                     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(
                         run.key)
-                    if entry and entry.get("decoder") == DECODER_VERSION and (
+                    if entry and entry.get("decoder") == DECODER_VERSION and entry.get(
+                            "contract") == DATA_CONTRACT and (
                             entry.get("complete") or live_owned(entry)):
                         # Final, or a live session is appending its parts as the run records:
                         # the query reads the parts written so far.
@@ -525,12 +527,17 @@ class Engine:
                                         for k, v in count["failed"].items()})
                 table_entry = manifest.get("tables", {}).get(table, {})
                 held_whole = table_entry.get("campaign")
+                # The first type seen for a name is the one listed; one pass per column,
+                # since a table can be thousands of columns wide.
+                seen = {c for c, _ in entry["columns"] or []}
                 for run_entry in list(table_entry.get("runs", {}).values()) + (
                         [held_whole] if held_whole else []):
                     for name, kind in schema_of(manifest, run_entry):
+                        if name in seen:
+                            continue
+                        seen.add(name)
                         columns = entry["columns"] = entry["columns"] or []
-                        if [name, kind] not in columns and name not in {c for c, _ in columns}:
-                            columns.append([name, kind])
+                        columns.append([name, kind])
         ready = [name for name, reads in views.VIEW_TABLES.items()
                  if all(out.get(t, {}).get("built", 0) >= out.get(t, {}).get("runs", 0)
                         for t in reads)]

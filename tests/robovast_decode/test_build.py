@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from robovast_decode import build as build_module
+from robovast_decode import DATA_CONTRACT
 from robovast_decode.build import (SharedJobError, available_tables, bag_information, build,
                                    find_runs, scenario_recording)
 from robovast_decode.cli import main
@@ -56,6 +57,19 @@ def test_a_grown_recording_is_built_again(campaign):
         fh.write(b"\x00")                                 # the bytes changed: stale
     assert build(str(campaign), tables=["rosbag2_collision"]).built == {
         "rosbag2_collision": ["cfg/0"], "_recording": ["cfg/0"]}
+
+
+def test_a_table_laid_out_under_another_contract_is_built_again(campaign):
+    build(str(campaign), tables=["rosbag2_collision"])
+    manifest = _manifest(campaign)
+    entry = manifest["tables"]["rosbag2_collision"]["runs"]["cfg/0"]
+    assert entry["contract"] == DATA_CONTRACT
+    entry["contract"] = DATA_CONTRACT - 1                # the same decoder version wrote it
+    (campaign / ".cache" / "MANIFEST.json").write_text(json.dumps(manifest))
+    report = build(str(campaign), tables=["rosbag2_collision"])
+    assert report.built == {"rosbag2_collision": ["cfg/0"]}
+    assert report.skipped == {"_recording": ["cfg/0"]}, "the report's own entry is current"
+    assert _manifest(campaign)["tables"]["rosbag2_collision"]["runs"]["cfg/0"]["contract"] == DATA_CONTRACT
 
 
 def test_a_required_frame_that_never_resolves_fails_its_table_only(campaign):
