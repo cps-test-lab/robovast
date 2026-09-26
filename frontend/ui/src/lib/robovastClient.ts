@@ -314,6 +314,7 @@ export interface VariationPreview {
 export type PreviewConfiguration = Schemas['PreviewConfiguration']
 
 export type PreviewResponse = Schemas['PreviewResponse']
+export type StepProgress = Schemas['StepProgress']
 export type WorldDescription = Schemas['WorldDescription']
 
 export type VariationTypeParam = Schemas['VariationTypeParam']
@@ -822,10 +823,13 @@ export const robovast = {
       path,
     }),
 
-  previewConfigurations: (id: string, maxConfigs = 0, path = '') =>
+  // With wait=false the service composes in the background: the first call answers `composing`;
+  // poll until `ready` or `failed`.
+  previewConfigurations: (id: string, maxConfigs = 0, path = '', wait = true) =>
     request<PreviewResponse>('POST', `/workspaces/${encodeURIComponent(id)}/preview`, {
       max_configs: maxConfigs,
       path,
+      wait,
     }),
 
   // What the simulator says this workspace's world offers. Runs a container in the campaign's

@@ -18,6 +18,7 @@ import {
   type ListJobsResponse,
   readUploadProgress,
   type Status,
+  type StepProgress,
   type UploadProgress,
 } from '@/lib/robovastClient'
 import {
@@ -58,6 +59,30 @@ import { MeterBar } from './MeterBar'
 // With no total (a provider that cannot say), the bar goes indeterminate rather
 // than showing a made-up 0%: a bar pinned at zero through a multi-hour upload is the
 // exact failure this replaced.
+// Composition's step counter while the campaign is in `variation`, the pre-run phase that can take
+// longest; null before its first step is counted and in every other phase.
+function variationProgress(status: Status): StepProgress | null {
+  const v = status.phase === 'variation' ? status.variation : null
+  return v && v.total > 0 ? v : null
+}
+
+const variationText = (v: StepProgress) => `${v.done}/${v.total} variations`
+
+function VariationMeter({ variation, height }: { variation: StepProgress; height?: number }) {
+  return (
+    <MeterBar
+      height={height}
+      fraction={variation.done / variation.total}
+      color="info.main"
+      text={
+        <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
+          {variationText(variation)}
+        </Box>
+      }
+    />
+  )
+}
+
 function UploadSection({ upload }: { upload: UploadProgress }) {
   const { percent, sourceDone, sourceTotal, sent, rate } = upload
   const meta = [
@@ -138,6 +163,7 @@ export function MiniRunMeter({
   const succeeded = Math.max(0, runs.completed - runs.failed)
   const noResult = noResultRuns(status, counts)
   const failedText = runMeterFailedText(status, counts)
+  const variation = variationProgress(status)
   return (
     // The ring's slot is reserved whether or not there is a ring, so this whole group is a
     // constant width. Without that, a search campaign's row pushed the time cell beside it 32px
@@ -149,6 +175,12 @@ export function MiniRunMeter({
           <SearchRing campaignId={campaignId} status={status} />
         ) : null}
       </Box>
+    {variation ? (
+      // Before the first run there are no runs to count; the bar counts composition instead.
+      <Box sx={{ width, flexShrink: 0 }} title={`composing: ${variationText(variation)} done`}>
+        <VariationMeter variation={variation} />
+      </Box>
+    ) : (
     <HoverFacts
       title="runs"
       facts={[
@@ -178,6 +210,7 @@ export function MiniRunMeter({
         />
       </Box>
     </HoverFacts>
+    )}
     </Stack>
   )
 }
@@ -607,9 +640,19 @@ export function StatusView({
   // the runs are over and their bar is frozen, while gigabytes move to somebody else's
   // storage. Rendered first because during `sharing` it is the only thing happening.
   const upload = status.phase === 'sharing' ? readUploadProgress(status) : null
+  // Composing the configurations comes before any run, so the same way it is drawn first.
+  const variation = variationProgress(status)
   return (
     <Stack spacing={1.5}>
       {upload ? <UploadSection upload={upload} /> : null}
+      {variation ? (
+        <Box>
+          <Typography variant="caption" color="text.secondary">
+            composing configurations
+          </Typography>
+          <VariationMeter variation={variation} />
+        </Box>
+      ) : null}
       <Box>
         <Stack direction="row" justifyContent="space-between">
           {/* Just "runs", and no batch counter -- `batch 2 (3 done)` -- riding along: it

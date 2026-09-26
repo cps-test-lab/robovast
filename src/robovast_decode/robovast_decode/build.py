@@ -50,6 +50,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
@@ -58,9 +59,9 @@ from . import __version__, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
 from .decode import channel_type, decode_bag, segments
 from .derived import DERIVED, INPUTS, JobRun, derive_job
-from .framing import Channel, McapTail, has_footer
+from .framing import Channel, McapTail, has_footer, summary_channels
 from .handlers import Videos
-from .layout import job_links, run_dirs
+from .layout import YAML_LOADER, job_links, run_dirs
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
 from .tables import (TableBuffer, fixed, live_owned, manifest_lock, read_manifest,
                      record_run_absent, record_run_table, remove_files, run_lock,
@@ -145,16 +146,38 @@ def scenario_recording(run: Run) -> Optional[str]:
         return None
 
     def start(path):
-        meta = os.path.join(path, "metadata.yaml")
-        if os.path.isfile(meta):
-            try:
-                with open(meta, encoding="utf-8") as fh:
-                    info = yaml.safe_load(fh)["rosbag2_bagfile_information"]
-                return (0, info["starting_time"]["nanoseconds_since_epoch"], path)
-            except (OSError, KeyError, TypeError, yaml.YAMLError):
-                pass
-        return (1, 0, path)
+        try:
+            return (0, bag_information(path)["starting_time"]["nanoseconds_since_epoch"], path)
+        except (KeyError, TypeError):
+            return (1, 0, path)
     return sorted(attempts, key=start)[-1]
+
+
+def bag_information(bag_dir: str) -> Optional[dict]:
+    """The ``rosbag2_bagfile_information`` of a closed recording's ``metadata.yaml``; ``None``
+    while it has none or it cannot be read.
+
+    rosbag2 writes the file once, when it closes the bag, so its size and modification time
+    name its content: a listing reads each recording's once per process, however often it is
+    asked, and a rewritten file is read again. Treat the answer as read-only; it is shared.
+    """
+    meta = os.path.join(bag_dir, BAG_METADATA)
+    try:
+        stat = os.stat(meta)
+    except OSError:
+        return None
+    return _read_bag_information(meta, stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=4096)
+def _read_bag_information(meta: str, mtime_ns: int, size: int) -> Optional[dict]:
+    del mtime_ns, size                    # the cache key: a changed file is a new entry
+    try:
+        with open(meta, encoding="utf-8") as fh:
+            info = yaml.load(fh, Loader=YAML_LOADER)["rosbag2_bagfile_information"]
+    except (OSError, KeyError, TypeError, yaml.YAMLError):
+        return None
+    return info if isinstance(info, dict) else None
 
 
 def roqsim_recording(run: Run) -> Optional[str]:
@@ -176,18 +199,23 @@ def recording_closed(role: str, bag_dir: str) -> bool:
 
 
 def recorded_topics(bag_dir: str) -> Dict[str, str]:
-    """``{topic: type}`` of a recording, from its ``metadata.yaml`` or its channel records."""
-    meta = os.path.join(bag_dir, BAG_METADATA)
-    if os.path.isfile(meta):
+    """``{topic: type}`` of a recording, from its ``metadata.yaml`` or its channel records:
+    a finished file's summary, else every record of it."""
+    info = bag_information(bag_dir)
+    if info is not None:
         try:
-            with open(meta, encoding="utf-8") as fh:
-                info = yaml.safe_load(fh)["rosbag2_bagfile_information"]
             return {t["topic_metadata"]["name"]: t["topic_metadata"]["type"]
                     for t in info.get("topics_with_message_count", [])}
-        except (OSError, KeyError, TypeError, yaml.YAMLError):
+        except (KeyError, TypeError):
             pass
     topics: Dict[str, str] = {}
     for path in segments(bag_dir):
+        summary = summary_channels(path)
+        if summary is not None:
+            schemas, channels = summary
+            for _, channel in sorted(channels.items()):
+                topics.setdefault(channel.topic, channel_type(channel, schemas))
+            continue
         tail = McapTail(path)
         for record in tail.read():
             if isinstance(record, Channel):
@@ -572,5 +600,6 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 
 
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
-           "Run", "SharedJobError", "available_tables", "build", "derived_sources", "find_runs",
-           "recorded_topics", "recording_closed", "roqsim_recording", "scenario_recording"]
+           "Run", "SharedJobError", "available_tables", "bag_information", "build",
+           "derived_sources", "find_runs", "recorded_topics", "recording_closed",
+           "roqsim_recording", "scenario_recording"]

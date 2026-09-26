@@ -271,6 +271,11 @@ It provides four views:
   toggles) and watches its live status. The browser equivalent of ``vast workspace run``. *Upload to share when done* streams a raw, pre-postprocessing
   ``tar.gz`` to the configured external share the moment the runs finish (off by
   default; the share destination comes from the service's ``.env``).
+  Once a ``.vast`` is selected the service composes it in the background, with a spinner and
+  how many variation steps are done, and the config filter then offers its configuration
+  names: pick one or several, or type a glob to narrow the list. A filter that matches none
+  of them keeps *Launch* disabled. While a launched campaign composes, its run bar counts the
+  variation steps instead.
 * **Config** — a workspace-based ``.vast`` editor with live validation, a
   generated-configuration preview, and a per-configuration view the ``.vast`` declares. It
   also serves, read-only, the configuration a campaign already ran — see

@@ -22,9 +22,10 @@ import os
 
 import yaml
 
-#: PyYAML's C parser where it is built: the job-link manifest is read on every query, and the
-#: pure-Python parser spends most of a query's own time on a campaign of hundreds of runs.
-_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+#: PyYAML's C parser where it is built: the job-link manifest is read on every query and every
+#: recording's ``metadata.yaml`` on every listing, and the pure-Python parser spends most of their
+#: time on a campaign of hundreds of runs.
+YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 #: What the main container is called. The runtime container is ``robovast`` (the pod's
 #: container) -- NOT ``scenario``, which is the container plan's
@@ -55,7 +56,7 @@ def job_links(campaign_dir: str) -> dict:
     if not os.path.isfile(path):
         return {}
     with open(path, encoding="utf-8") as fh:
-        return yaml.load(fh, Loader=_LOADER) or {}
+        return yaml.load(fh, Loader=YAML_LOADER) or {}
 
 
 def decoder_config(campaign_dir: str) -> dict:
@@ -64,7 +65,7 @@ def decoder_config(campaign_dir: str) -> dict:
     if not os.path.isfile(path):
         return {}
     with open(path, encoding="utf-8") as fh:
-        config = yaml.load(fh, Loader=_LOADER) or {}
+        config = yaml.load(fh, Loader=YAML_LOADER) or {}
     if not isinstance(config, dict):
         raise ValueError(f"{path}: expected a mapping with 'groups', got {type(config).__name__}")
     return config

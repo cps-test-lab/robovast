@@ -6,7 +6,7 @@ import os
 
 from mcap.writer import CompressionType, Writer
 
-from robovast_decode.framing import McapTail, Message
+from robovast_decode.framing import Channel, McapTail, Message, summary_channels
 
 
 def _writer(fh, chunked=False):
@@ -81,3 +81,34 @@ def test_compressed_chunks_are_opened(tmp_path):
             w.add_message(cid, log_time=i, publish_time=0, data=b"z" * 100, sequence=0)
         w.finish()
     assert [m.log_time for m in _messages(McapTail(path))] == list(range(500))
+
+
+def _channels_file(path, finish=True, **options):
+    with open(path, "wb") as fh:
+        w = Writer(fh, use_chunking=True, compression=CompressionType.ZSTD, **options)
+        w.start(profile="", library="test")
+        sid = w.register_schema("test/msg/Raw", "", b"")
+        cid = w.register_channel("/raw", "raw", sid)
+        w.register_channel("/quiet", "raw", 0)              # no schema and no message
+        w.add_message(cid, log_time=0, publish_time=0, data=b"x", sequence=0)
+        if finish:
+            w.finish()
+    return path
+
+
+def test_a_finished_files_channels_are_read_from_its_summary(tmp_path):
+    path = _channels_file(tmp_path / "done.mcap")
+    schemas, channels = summary_channels(path)
+    walked = McapTail(path)
+    seen = {r.id: r for r in walked.read() if isinstance(r, Channel)}
+    assert channels == seen and schemas == walked.schemas
+    assert {c.topic for c in channels.values()} == {"/raw", "/quiet"}
+
+
+def test_an_unfinished_file_has_no_summary_to_read(tmp_path):
+    assert summary_channels(_channels_file(tmp_path / "open.mcap", finish=False)) is None
+
+
+def test_a_summary_that_does_not_repeat_every_channel_is_not_taken_for_them(tmp_path):
+    path = _channels_file(tmp_path / "bare.mcap", repeat_channels=False)
+    assert summary_channels(path) is None

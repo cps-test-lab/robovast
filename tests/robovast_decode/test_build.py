@@ -3,11 +3,15 @@
 """A table is built for a run when something names it, once, and says what it could not do."""
 
 import json
+import shutil
 
 import pyarrow.parquet as pq
 import pytest
+import yaml
 
-from robovast_decode.build import SharedJobError, available_tables, build
+from robovast_decode import build as build_module
+from robovast_decode.build import (SharedJobError, available_tables, bag_information, build,
+                                   find_runs, scenario_recording)
 from robovast_decode.cli import main
 
 from .conftest import make_campaign
@@ -196,3 +200,34 @@ def test_naming_the_recording_report_builds_it_and_nothing_else(campaign):
     assert report.built == {"_recording": ["cfg/0"]}
     entry = _manifest(campaign)["tables"]["_recording"]["runs"]["cfg/0"]
     assert entry["files"] and entry["rows"] > 0
+
+
+def test_a_recordings_metadata_is_read_once_and_again_once_rewritten(campaign, monkeypatch):
+    bag = campaign / "cfg" / "0" / "rosbag2"
+    first = bag_information(str(bag))
+    assert first["starting_time"]["nanoseconds_since_epoch"] > 0
+    reads = []
+    monkeypatch.setattr(build_module.yaml, "load", lambda *a, **k: reads.append(a) or {})
+    assert bag_information(str(bag)) is first
+    assert reads == []
+    meta = bag / "metadata.yaml"
+    meta.write_text(meta.read_text() + "\n# rewritten\n")
+    assert bag_information(str(bag)) is None           # read again: the stub has no bag in it
+    assert len(reads) == 1
+
+
+def test_a_recording_without_readable_metadata_has_none(tmp_path):
+    assert bag_information(str(tmp_path)) is None
+    (tmp_path / "metadata.yaml").write_text("rosbag2_bagfile_information: [unclosed")
+    assert bag_information(str(tmp_path)) is None
+
+
+def test_the_last_attempt_of_a_restarted_recorder_is_the_latest_started(campaign):
+    run = campaign / "cfg" / "0"
+    meta = yaml.safe_load((run / "rosbag2" / "metadata.yaml").read_text())
+    earlier = run / "rosbag2_2026_01_01-00_00_00"        # named after a later wall clock
+    shutil.copytree(run / "rosbag2", earlier)
+    meta["rosbag2_bagfile_information"]["starting_time"]["nanoseconds_since_epoch"] -= 1
+    (earlier / "metadata.yaml").write_text(yaml.safe_dump(meta))
+    (found,) = find_runs(str(campaign))
+    assert scenario_recording(found) == str(run / "rosbag2")
