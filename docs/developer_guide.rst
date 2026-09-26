@@ -395,10 +395,9 @@ How to bump the version
 That is the whole procedure, because there is only one copy. The images take the
 value as a build arg that ``container/image_stamp.sh`` derives from that constant
 — the same way they take the git revision and the build date, and for the same
-reason: a constant copied by hand into each Dockerfile drifts, which is why it
-used to need a CI gate comparing the copies. ``image_stamp.sh`` refuses to build
-if it cannot read the constant, rather than producing an image that carries no
-protocol at all.
+reason: a constant copied by hand into each Dockerfile drifts. ``image_stamp.sh``
+refuses to build if it cannot read the constant, rather than producing an image
+that carries no protocol at all.
 
 ``image.yml`` still guards the shape: each Dockerfile must declare
 ``ARG ROBOVAST_COMPAT_VERSION`` and label from it, so a literal cannot creep back.
