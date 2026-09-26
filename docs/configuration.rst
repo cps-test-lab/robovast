@@ -1838,22 +1838,27 @@ the run's own, ``logs/rosout_bag`` for the job's infrastructure recording):
   gets this table without the entry.
 - ``rosbags_to_csv``: a ``rosbag2_<topic>`` table for each of the listed ``topics`` (``/cmd_vel``
   → ``rosbag2_cmd_vel``), one row per message with one column per scalar field, flattened, and
-  ``timestamp`` the receive time in nanoseconds. Every recorded topic gets such a table by
-  default; listing one also tabulates a topic that is otherwise left out, such as a
-  ``LaserScan``. A vendor's message (a robot stack's ``wheel_vels`` or ``hazard_detection``) needs
+  ``timestamp`` the receive time in nanoseconds. Every recorded topic that is not bulk data
+  (an image, a point cloud) gets such a table by default; the entry names the ones a query
+  depends on. A vendor's message (a robot stack's ``wheel_vels`` or ``hazard_detection``) needs
   no decoder of its own and no installed package: its definition travels in the recording and in
   the bag's ``message_definitions.json``. A topic whose type none of those define is reported in
-  the run's ``_recording`` table with that reason rather than skipped silently. A field
-  **declared** as an array of numbers — a ``LaserScan``'s ``ranges``, a covariance — is a single
-  column holding the whole array as ``num1:<dtype>:<count>:<base64 of the zlib-compressed
-  little-endian values>``; read it back with ``numpy.frombuffer(zlib.decompress(
-  base64.b64decode(payload)), dtype='<' + dtype)``. Such a cell is wider than the per-cell limit
-  of ordinary query results and comes back truncated there — the ``query.csv`` export
-  (``csv_url``) returns it whole. A non-finite float, which is how a laser spells "no return", is
-  stored as that number (:ref:`non-finite-values`), in a scalar column and inside a packed array
-  alike. A sequence of **sub-messages** (a ``Path``'s poses) is still a column per element per
-  field, so a topic carrying many of them is one to reduce to scalars in the run rather than to
-  record whole. For occupancy grids use ``rosbags_costmap_to_csv``.
+  the run's ``_recording`` table with that reason rather than skipped silently. The columns
+  follow the **message definition**, never what a run recorded (:ref:`data-contract`): a field
+  **declared** as an array — a ``LaserScan``'s ``ranges``, a covariance — is one ``LIST`` column
+  holding the whole array, a sequence of **sub-messages** (a ``Path``'s poses) is one ``LIST``
+  column per leaf field with the lists of a row aligned by index
+  (``poses.pose.position.x``, ``poses.pose.position.y``, …), and a byte array is a ``BLOB``. A
+  list reads as one array per cell in pandas and as a list in SQL::
+
+      SELECT timestamp, list_min(list_filter(ranges, r -> r > 0)) AS clearance FROM rosbag2_scan;
+      SELECT timestamp, unnest("poses.pose.position.x") AS x, unnest("poses.pose.position.y") AS y
+      FROM rosbag2_plan WHERE config_name = 'goal-1' AND run_id = 0;   -- one row per waypoint
+
+  Ordinary query results carry the first elements of a long list and say how many there were;
+  ``robovast-data`` and the ``query.csv`` export return it whole. A non-finite float, which is
+  how a laser spells "no return", is stored as that number (:ref:`non-finite-values`), in a
+  scalar column and inside a list alike. For occupancy grids use ``rosbags_costmap_to_csv``.
 - ``rosbags_costmap_to_csv``: the ``costmaps`` table from ``nav_msgs/msg/OccupancyGrid`` topics
   (nav2 costmaps, the static map), stored compactly and losslessly for the web
   :ref:`Run view <run-view>`: one row per message with its ``topic``, the geometry (resolution,

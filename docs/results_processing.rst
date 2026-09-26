@@ -409,12 +409,13 @@ that configures nothing gets, from its scenario recording:
 * every action's ``/<name>/_action/feedback`` and ``status`` → ``action_<name>_feedback`` and
   ``action_<name>_status``, flattened;
 * every other topic → ``rosbag2_<topic>`` (``/collision`` → ``rosbag2_collision``), one row per
-  message with its fields as columns — nested fields joined with ``.``, a numeric array as one
-  encoded cell — and ``timestamp`` in nanoseconds.
+  message with its fields as columns — nested fields joined with ``.``, an array as one
+  ``LIST`` column, a sequence of messages as one ``LIST`` column per leaf field
+  (:ref:`data-contract`) — and ``timestamp`` in nanoseconds.
 
-Not tabulated, with the reason in ``_recording``: images, compressed images, point clouds and
-laser scans, which are bulk data read from the recording where they are wanted; the scenario
-recording's ``/clock`` and ``/rosout``, which come from the infrastructure recording; and
+Not tabulated, with the reason in ``_recording``: images, compressed images and point clouds,
+which are bulk data read from the recording where they are wanted; the scenario recording's
+``/clock`` and ``/rosout``, which come from the infrastructure recording; and
 ``/parameter_events``. The ``videos`` table exists only where the campaign asks for it
 (``rosbags_to_webm``, see :ref:`results-decoder-config`), because encoding a camera costs far more
 than tabulating it.
@@ -1112,8 +1113,8 @@ recording keeps its defaults.
        ``csv_filename`` (the table's name, default ``poses``).
    * - ``rosbags_to_csv``
      - ``rosbag2``
-     - ``rosbag2_<topic>`` for the listed ``topics``, including one not tabulated by default —
-       a ``LaserScan``, say, whose ranges then become one encoded cell per message.
+     - ``rosbag2_<topic>`` for the listed ``topics``; every recorded topic that is not bulk
+       data gets such a table by default, so the entry is for a name a query depends on.
    * - ``rosbags_action_to_csv``
      - ``rosbag2``
      - ``action_<action>_feedback`` / ``_status`` for ``action``; ``filename_prefix`` renames

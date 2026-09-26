@@ -19,11 +19,11 @@
 Two flattenings exist because two table families have always been named two ways, and a
 table's column names are what every query, panel and notebook addresses it by:
 
-* :func:`column_values` -- a topic's own table: nested fields joined with ``.``, elements of a
-  sequence of messages or strings as ``name[i]``, and a field declared as an array of numbers
-  as **one** cell holding the whole array (:func:`encode_numeric_array`). A scan's ranges or a
-  covariance is one column, so a table's width follows the message definition and not what a
-  run recorded.
+* :func:`table_columns` + :func:`column_values` -- a topic's own table: nested fields joined
+  with ``.``, a field declared as an array as **one** list column holding the whole array, a
+  sequence of messages as one list column per leaf field. A scan's ranges, a covariance or a
+  path's x coordinates is one column, so a table's width follows the message definition and
+  not what a run recorded.
 * :func:`message_to_dict` + :func:`flatten` -- an action's feedback and status: every level
   joined with ``_``, arrays element by element, a goal id as its hex string and a time as
   seconds.
@@ -34,74 +34,68 @@ of the map, so it has one definition.
 
 from __future__ import annotations
 
-import base64
-import zlib
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pyarrow as pa
 from rosbags.typesys.msg import Nodetype
 
-# -- numeric array fields ---------------------------------------------------------------------
+# -- a topic's own table, from the message definition -----------------------------------------
 
-#: Opens an encoded cell, so a reader can tell one from a string a topic itself carried.
-ARRAY_CELL_TAG = "num1"
-
-#: A declared element type -> the numpy dtype code the cell carries. Byte order is written
-#: into the dtype at both ends, so the payload means the same on either kind of host.
-_ELEMENT_DTYPES = {
-    "float32": "f4", "float64": "f8",
-    "int8": "i1", "uint8": "u1", "byte": "u1",
-    "int16": "i2", "uint16": "u2",
-    "int32": "i4", "uint32": "u4",
-    "int64": "i8", "uint64": "u8",
-    "bool": "b1",
+#: A ROS 2 base type -> the Arrow type its column has. ``char``, ``byte`` and ``octet`` are
+#: the byte types; a scalar of one is a small integer, a sequence of one is a byte string.
+_BASE_TYPES = {
+    "bool": pa.bool_(),
+    "int8": pa.int8(), "uint8": pa.uint8(), "byte": pa.uint8(), "octet": pa.uint8(),
+    "char": pa.uint8(),
+    "int16": pa.int16(), "uint16": pa.uint16(),
+    "int32": pa.int32(), "uint32": pa.uint32(),
+    "int64": pa.int64(), "uint64": pa.uint64(),
+    "float32": pa.float32(), "float64": pa.float64(),
+    "string": pa.string(), "wstring": pa.string(),
 }
-_DTYPE_CODES = frozenset(_ELEMENT_DTYPES.values())
+_BYTE_TYPES = frozenset({"uint8", "byte", "octet", "char"})
 
 
-def numeric_array_dtype(node) -> Optional[str]:
-    """The dtype code of a field declared as an array of numbers, else ``None``."""
-    kind, info = node
-    if kind not in (Nodetype.ARRAY, Nodetype.SEQUENCE):
-        return None
-    sub_kind, sub_info = info[0]
-    if sub_kind != Nodetype.BASE:
-        return None
-    return _ELEMENT_DTYPES.get(sub_info[0])
+def table_columns(fields_of, typename: str, prefix: str = "") -> List[Tuple[str, pa.DataType]]:
+    """``[(column, type)]`` a message of *typename* gives, from its definition alone.
 
+    The rule, applied to each field and recursively:
 
-def encode_numeric_array(values, dtype: str) -> str:
-    """*values* as one cell: ``num1:<dtype>:<count>:<base64 of zlib of the raw values>``."""
-    if isinstance(values, (bytes, bytearray)):
-        values = np.frombuffer(values, dtype="<u1")
-    raw = np.asarray(values, dtype="<" + dtype).tobytes()
-    payload = base64.b64encode(zlib.compress(raw, 9)).decode("ascii")
-    return f"{ARRAY_CELL_TAG}:{dtype}:{len(values)}:{payload}"
+    * a scalar is one column, named ``a.b.c`` through the nested messages it sits in;
+    * a field declared as an array or sequence of numbers, booleans or strings is **one**
+      ``list`` column holding the whole array;
+    * an array or sequence of ``uint8``/``byte``/``char`` is one ``binary`` column;
+    * an array or sequence of messages is one ``list`` column **per leaf field** of the
+      element type, the lists of one row aligned by index (``poses.pose.position.x``);
+    * a sequence inside a sequence nests the lists.
 
-
-def is_numeric_array_cell(value) -> bool:
-    """Whether *value* is a cell :func:`encode_numeric_array` wrote."""
-    return isinstance(value, str) and value.startswith(ARRAY_CELL_TAG + ":")
-
-
-def decode_numeric_array(cell: str) -> "np.ndarray":
-    """The array back out of *cell*, in the dtype it was written with.
-
-    Raises :class:`ValueError` on anything else: a column read with the wrong expectation
-    says so, instead of answering with a plausible empty array.
+    So a table's width follows the message definition and never what a run recorded: every
+    run of a campaign shares one schema, and a column exists whether or not any message had
+    an element for it. *fields_of* maps a type name to its ``rosbags`` field definitions
+    (:meth:`~robovast_decode.definitions.TypeCatalog.fields`).
     """
-    if not is_numeric_array_cell(cell):
-        raise ValueError(f"not an encoded numeric array: {repr(cell)[:48]}")
-    parts = cell.split(":", 3)
-    if len(parts) != 4:
-        raise ValueError(f"truncated numeric array cell: {repr(cell)[:48]}")
-    _, dtype, count, payload = parts
-    if dtype not in _DTYPE_CODES:
-        raise ValueError(f"unknown element type {dtype!r}")
-    values = np.frombuffer(zlib.decompress(base64.b64decode(payload)), dtype="<" + dtype)
-    if len(values) != int(count):
-        raise ValueError(f"cell declares {count} values, payload holds {len(values)}")
-    return values
+    out: List[Tuple[str, pa.DataType]] = []
+    for name, node in fields_of(typename):
+        column = f"{prefix}.{name}" if prefix else name
+        out.extend(_columns_of(fields_of, column, node))
+    return out
+
+
+def _columns_of(fields_of, column: str, node) -> List[Tuple[str, pa.DataType]]:
+    kind, info = node
+    if kind == Nodetype.BASE:
+        base = info[0]
+        if base not in _BASE_TYPES:
+            raise ValueError(f"{column}: no column type for the base type {base!r}")
+        return [(column, _BASE_TYPES[base])]
+    if kind == Nodetype.NAME:
+        return table_columns(fields_of, info, column)
+    sub = info[0]
+    sub_kind, sub_info = sub
+    if sub_kind == Nodetype.BASE and sub_info[0] in _BYTE_TYPES:
+        return [(column, pa.binary())]
+    return [(c, pa.list_(t)) for c, t in _columns_of(fields_of, column, sub)]
 
 
 def _scalar(value):
@@ -112,29 +106,42 @@ def _scalar(value):
 
 
 def column_values(fields_of, msg, typename: str, prefix: str = "") -> Iterator[Tuple[str, Any]]:
-    """``(column, value)`` per field of *msg*, for a topic's own table.
+    """``(column, value)`` per column of :func:`table_columns`, for one message *msg*.
 
-    *fields_of* maps a type name to its ``rosbags`` field definitions
-    (:meth:`~robovast_decode.definitions.TypeCatalog.fields`).
+    A list column's value is the whole array (a numpy array or a list); a binary column's is
+    ``bytes``; a sequence of messages gives one list per leaf column, in element order.
     """
     for name, node in fields_of(typename):
-        value = getattr(msg, name)
         column = f"{prefix}.{name}" if prefix else name
-        dtype = numeric_array_dtype(node)
-        kind, info = node
-        if dtype is not None:
-            yield column, encode_numeric_array(value, dtype)
-        elif kind in (Nodetype.ARRAY, Nodetype.SEQUENCE):
-            sub_kind, sub_info = info[0]
-            for i, item in enumerate(value):
-                if sub_kind == Nodetype.NAME:
-                    yield from column_values(fields_of, item, sub_info, f"{column}[{i}]")
-                else:
-                    yield f"{column}[{i}]", _scalar(item)
-        elif kind == Nodetype.NAME:
-            yield from column_values(fields_of, value, info, column)
+        yield from _values_of(fields_of, column, node, getattr(msg, name))
+
+
+def _values_of(fields_of, column: str, node, value) -> Iterator[Tuple[str, Any]]:
+    kind, info = node
+    if kind == Nodetype.BASE:
+        yield column, _scalar(value)
+        return
+    if kind == Nodetype.NAME:
+        yield from column_values(fields_of, value, info, column)
+        return
+    sub = info[0]
+    sub_kind, sub_info = sub
+    if sub_kind == Nodetype.BASE:
+        if sub_info[0] in _BYTE_TYPES:
+            yield column, (bytes(value) if isinstance(value, (bytes, bytearray))
+                           else np.asarray(value, dtype=np.uint8).tobytes())
+        elif isinstance(value, np.ndarray):
+            yield column, value
         else:
-            yield column, _scalar(value)
+            yield column, [_scalar(v) for v in value]
+        return
+    # A sequence of messages, or of arrays: the leaf columns of one element, each a list over
+    # the elements. Empty when the sequence is, so the columns are there with no elements.
+    leaves: Dict[str, list] = {c: [] for c, _ in _columns_of(fields_of, column, sub)}
+    for item in value:
+        for leaf, leaf_value in _values_of(fields_of, column, sub, item):
+            leaves[leaf].append(leaf_value)
+    yield from leaves.items()
 
 
 def message_to_dict(fields_of, msg, typename: str) -> Any:
@@ -267,6 +274,5 @@ class ClockDecimator:
         return kept
 
 
-__all__ = ["ARRAY_CELL_TAG", "ClockDecimator", "DEFAULT_CLOCK_TOLERANCE_S", "column_values",
-           "decode_numeric_array", "encode_numeric_array", "flatten", "is_numeric_array_cell",
-           "message_to_dict", "numeric_array_dtype"]
+__all__ = ["ClockDecimator", "DEFAULT_CLOCK_TOLERANCE_S", "column_values", "flatten",
+           "message_to_dict", "table_columns"]

@@ -25,6 +25,8 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from robovast_decode import DATA_CONTRACT
+
 from .data import Campaign, ConfigFiles, Corpus, Data, open_data, read_runs, read_table, scope_of
 from .engine import Engine, Problem, Scope
 from .remote import RemoteCampaign
@@ -35,5 +37,6 @@ try:
 except PackageNotFoundError:  # a source tree that was never installed
     __version__ = "0+unknown"
 
-__all__ = ["Campaign", "ConfigFiles", "Corpus", "Data", "Engine", "Problem", "QueryError",
-           "RemoteCampaign", "Scope", "__version__", "open_data", "read_runs", "read_table", "scope_of"]
+__all__ = ["Campaign", "ConfigFiles", "Corpus", "DATA_CONTRACT", "Data", "Engine", "Problem",
+           "QueryError", "RemoteCampaign", "Scope", "__version__", "open_data", "read_runs",
+           "read_table", "scope_of"]

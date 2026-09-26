@@ -51,7 +51,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from . import __version__
+from . import DATA_CONTRACT, __version__
 
 #: The campaign-level directory every derived file lives under. RoboVAST already treats a
 #: ``.cache`` directory as rebuildable: archives and exports leave it out.
@@ -70,10 +70,16 @@ LIVE_STALE_S = 30.0
 
 
 class TableBuffer:
-    """One table's rows, accumulated column-wise."""
+    """One table's rows, accumulated column-wise.
 
-    def __init__(self, name: str):
+    *types* names the Arrow type of each column the table declares; a column with one is
+    written in that type, so a list column with no element in any row is still a list and
+    two runs' files share one schema. A column without one is typed from its values.
+    """
+
+    def __init__(self, name: str, types: Optional[Dict[str, pa.DataType]] = None):
         self.name = name
+        self.types: Dict[str, pa.DataType] = dict(types or {})
         self.columns: Dict[str, list] = {}
         self.count = 0
         self._plan: tuple = ()
@@ -111,12 +117,15 @@ class TableBuffer:
                 if key in context:
                     arrays[key] = pa.array([context[key]] * self.count)
         for name in names:
-            arrays[name] = _column_array(self.columns[name])
+            arrays[name] = _column_array(self.columns[name], self.types.get(name))
         return pa.table(arrays)
 
 
-def _column_array(values: list) -> pa.Array:
-    """One column as an Arrow array; a column mixing types falls back to text."""
+def _column_array(values: list, type_: Optional[pa.DataType] = None) -> pa.Array:
+    """One column as an Arrow array: in its declared type, else typed from its values, and
+    a column mixing types falls back to text."""
+    if type_ is not None:
+        return pa.array(values, type=type_)
     try:
         return pa.array(values)
     except (pa.ArrowInvalid, pa.ArrowTypeError):
@@ -302,6 +311,7 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
         "sources": sources,
         "complete": complete,
         "decoder": __version__,
+        "contract": DATA_CONTRACT,
     }
     if live is not None:
         record["live"] = live
@@ -341,6 +351,7 @@ def record_campaign_table(manifest: dict, table: str, *, files: List[str], rows:
         "sources": sources,
         "complete": True,
         "decoder": __version__,
+        "contract": DATA_CONTRACT,
     }
 
 
@@ -366,6 +377,7 @@ def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict
         "sources": sources,
         "complete": complete,
         "decoder": __version__,
+        "contract": DATA_CONTRACT,
         "reason": reason,
         "known": known or reason is not None,
     }

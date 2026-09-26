@@ -13,14 +13,16 @@ A pure-Python table that differed would be a different measurement, which is why
 compares every cell rather than a summary.
 """
 
+import base64
 import csv
 import math
+import zlib
 
+import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
 from robovast_decode.build import build
-from robovast_decode.values import decode_numeric_array, is_numeric_array_cell
 
 from .conftest import FIXTURE, NAV_CONFIG
 
@@ -53,10 +55,21 @@ def _norm(value):
         return value
 
 
+def _fixture_array(cell: str) -> np.ndarray:
+    """A numeric array as the converter's CSV spells it: ``num1:<dtype>:<count>:<base64 of the
+    zlib-compressed little-endian values>``."""
+    _, dtype, count, payload = cell.split(":", 3)
+    values = np.frombuffer(zlib.decompress(base64.b64decode(payload)), dtype="<" + dtype)
+    assert len(values) == int(count)
+    return values
+
+
 def _same(expected, actual) -> bool:
-    if is_numeric_array_cell(expected):
-        a, b = decode_numeric_array(expected), decode_numeric_array(actual)
-        return a.dtype == b.dtype and a.tobytes() == b.tobytes()
+    if isinstance(expected, str) and expected.startswith("num1:"):
+        want = _fixture_array(expected)
+        have = np.asarray(actual, dtype=want.dtype)
+        return have.shape == want.shape and (
+            np.array_equal(have, want, equal_nan=want.dtype.kind == "f"))
     x, y = _norm(expected), _norm(actual)
     if isinstance(x, float) and isinstance(y, float):
         if math.isnan(x) or math.isnan(y):
