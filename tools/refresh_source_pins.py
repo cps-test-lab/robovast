@@ -28,10 +28,10 @@ it, in any of the container Dockerfiles. Nothing is hardcoded here, so a fourth 
 same idiom is refreshed without touching this file -- and a source pinned in some *other* idiom is
 invisible to it, which is why the inline clones were promoted to ARGs.
 
-Note that a refreshed ``ROQSIM_REF`` only decides what a plain ``docker build`` clones:
-``container/release_images.sh`` defaults ``--roqsim-ref main``, and a caller naming a ref there
-overrides the pin. ``SCENARIO_EXECUTION_REF`` has no such override in the release path, so for
-that one this command is the only way the image moves.
+A refreshed ``ROQSIM_REF`` is what every build of the simulator image clones -- CI's,
+``container/robovast/build.sh`` and ``container/release_images.sh`` -- unless a caller names
+another ref for a one-off build (``--roqsim-ref``, ``ROQSIM_REF=``). ``SCENARIO_EXECUTION_REF``
+has no such override in the release path.
 """
 
 import argparse
