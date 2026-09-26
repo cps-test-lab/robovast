@@ -586,8 +586,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     """RoboVAST's documentation, and the simulator's and OpenSCENARIO DSL's alongside it.
 
     Args:
-        query: Case-insensitive search term. Returns matching excerpts with 2 lines of
-            context, grouped by page; adjacent matches share one excerpt.
+        query: Case-insensitive words, all required: pages are ranked by them, and an
+            excerpt is a line holding every one, with 2 lines of context; adjacent
+            matches share one excerpt.
         page: Read this page in full (a ``name`` from the listing).
         limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
             is megabytes). Narrow the term or read the page instead of raising this.
@@ -603,6 +604,7 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         ``matches`` are the excerpts returned and ``matching_lines`` is how many lines
         of that page matched at all. ``truncated`` marks a page whose excerpts were
         capped, so a narrowed read is never mistaken for the whole answer.
+        ``pages_without_a_matching_line`` names pages holding every word, never on one line.
         Page: ``{page, title, content}``. Or ``{error}``.
     """
     if not _doc_files:
@@ -649,13 +651,20 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     words = [w.lower() for w in query.split() if w]
 
     results = []
+    spread = []
     matching_lines_total = 0
     truncated = False
     for name in ranked:
         lines = texts[name].splitlines()
+        # A line is a hit when it holds EVERY word, as the ranking requires of a page. Any
+        # one word of "campaign wait" is on thousands of lines, so matching either would
+        # bury the few that answer the question under the ones that merely mention a word.
         hits = [i for i, line in enumerate(lines)
-                if any(w in line.lower() for w in words)]
+                if all(w in line.lower() for w in words)]
         if not hits:
+            # The page holds every word, just never on one line: named rather than
+            # dropped, so a reply with no excerpts from it does not read as "not there".
+            spread.append(name)
             continue
         matches, excerpts_total = _excerpts(lines, hits, limit)
         matching_lines_total += len(hits)
@@ -666,6 +675,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                         "truncated": cut})
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if spread:
+        out["pages_without_a_matching_line"] = spread[:_DIGEST_PAGES]
     if len(_json.dumps(out)) > _REPLY_BUDGET_CHARS:
         # Excerpts from every page that matched a common term are a sample, not an answer, and
         # the sample costs more than the pages it samples. Named instead, best first, so the

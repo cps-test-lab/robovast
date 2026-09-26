@@ -38,6 +38,47 @@ def test_a_page_with_no_match_is_absent(corpus):
     assert {r["page"] for r in result["results"]} == {"clustered", "scattered"}
 
 
+def test_an_excerpt_is_a_line_holding_every_word(monkeypatch):
+    """Two ordinary words are each on many lines, and a line holding one of them rarely
+    answers a question about both; matching either buried the few that do, until the
+    reply was too large to carry any excerpt at all."""
+    pages = {"guide": "\n".join(["campaign one", "wait here",
+                                   "use vast campaign wait <id>", "campaign two"])}
+    monkeypatch.setattr(docs, "_doc_files", {name: name for name in pages})
+    monkeypatch.setattr(docs, "_doc_content", pages)
+    monkeypatch.setattr(docs, "_doc_meta", {name: name.title() for name in pages})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
+    monkeypatch.setattr(docs, "_indexes", {})  # the ranking index is built per corpus key
+    page = docs.search_docs(query="campaign wait", limit=0)["results"][0]
+    assert page["matching_lines"] == 1
+    assert page["matches"][0]["line"] == 3
+
+
+def test_a_page_holding_the_words_apart_is_named_not_dropped(monkeypatch):
+    pages = {"apart": "campaign here\n\n\n\n\n\nwait there", "together": "campaign wait"}
+    monkeypatch.setattr(docs, "_doc_files", {name: name for name in pages})
+    monkeypatch.setattr(docs, "_doc_content", pages)
+    monkeypatch.setattr(docs, "_doc_meta", {name: name.title() for name in pages})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
+    monkeypatch.setattr(docs, "_indexes", {})
+    result = docs.search_docs(query="campaign wait")
+    assert [r["page"] for r in result["results"]] == ["together"]
+    assert result["pages_without_a_matching_line"] == ["apart"]
+
+
+def test_campaign_wait_is_answered_with_excerpts_from_the_real_docs(monkeypatch):
+    """The query that motivated the rule: on the whole corpus it came back as a list of
+    pages and no line of any of them."""
+    if not docs._doc_files:
+        pytest.skip("no documentation directory in this checkout")
+    monkeypatch.setattr(docs, "_indexes", {})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
+    result = docs.search_docs(query="campaign wait")
+    assert "digest" not in result
+    assert any("campaign wait" in m["excerpt"]
+               for r in result["results"] for m in r["matches"])
+
+
 def test_adjacent_matches_share_one_excerpt(corpus):
     """Six consecutive matching lines are one place in the document, not six. Returning
     a five-line window per match repeats the same lines and makes a page's reply grow
