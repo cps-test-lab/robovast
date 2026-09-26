@@ -52,8 +52,8 @@ def service_log(follow, namespace, context):
 
     Not a campaign's log -- this is the service process: what it decided, what it refused,
     and the reason behind a failure whose visible half was one terse line. Several failures
-    say so in as many words ("the real reason is only in the service log"), and until now
-    there was no way to read it short of ``kubectl logs``.
+    say so in as many words ("the real reason is only in the service log"); this prints it,
+    and ``kubectl logs`` is the only other way to it.
 
     The service keeps the last few hundred kilobytes in memory, so this covers what it has
     been doing recently, not its whole life, and a restart clears it. A container that has
@@ -86,8 +86,8 @@ def restart(yes, wait, namespace, context):
     """Roll the deployed service onto the newest image at its tag, and nothing else.
 
     Asks the service to restart itself, so this needs only a URL and a token -- which is the
-    point: ``vast service upgrade`` needs a kubeconfig, so somebody who reached the
-    deployment through ``vast login`` had the web UI's button and no command at all.
+    point: ``vast service upgrade`` needs a kubeconfig, and somebody who reaches the
+    deployment through ``vast login`` alone has none.
 
     \b
     restart  the image, by stamping the Deployment's restart annotation. With
@@ -226,7 +226,7 @@ def resources(namespace, context):
 
     ``pending`` is work the backend has accepted but is not executing, which is why it is
     counted apart from usage rather than folded into it -- counting queued work as *used*
-    reported more cores in use than the cluster had.
+    would report more cores in use than the cluster has.
     """
     try:
         with service_client(namespace, context) as (client, label):
