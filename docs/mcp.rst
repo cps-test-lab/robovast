@@ -677,6 +677,11 @@ run for days, and a blocking tool call would occupy its caller for the whole of
 it, where a command can be backgrounded and waited on. ``get_campaign_status``
 is the single-read version for a campaign you are not waiting on.
 
+``start_campaign``'s ``image_project_tag`` pins the tag RoboVAST's ``family:`` images are
+taken at for this run, as ``vast workspace run --image-project-tag`` does; left empty, they
+resolve to the service's own ``ROBOVAST_PROJECT_TAG``, which is often a floating ``latest``
+(see :doc:`images`). An image the ``.vast`` names is run as written either way.
+
 ``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
 when several are waiting, so an assistant told to start something out of the way of a
 running campaign can do it at launch. **Changing it afterwards, and pausing, are

@@ -500,6 +500,8 @@ _PARAMETER_VOCABULARY = {
     # how to behave
     "force", "recursive", "summarize", "group_by_run", "hide_shutdown", "keep_alive",
     "check_world", "check_scenario", "fresh", "priority", "executable",
+    # The request field and the CLI's --image-project-tag, spelled as both spell it.
+    "image_project_tag",
     "running_only", "preflight_only",
     "stats_only", "failed_only", "allow_opaque_image", "upload_to_share", "view",
     "focus", "layers", "figsize", "title", "show_legend", "wait", "follow",
