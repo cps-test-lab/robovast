@@ -211,3 +211,25 @@ def test_a_pull_token_is_never_presented_for_a_push(sessions):
     keys = [k[-1] for k in registry_client._TOKENS]  # noqa: SLF001
     assert "pull" in keys and "push" in keys, \
         f"pull and push share one cache entry: {sorted(registry_client._TOKENS)}"  # noqa: SLF001
+
+
+def test_a_push_challenge_asks_for_its_whole_scope():
+    """A push challenge's scope carries a comma inside its quotes (``pull,push``).
+
+    Split on every comma, the token endpoint was asked for ``pull`` alone and the push that
+    followed was refused although the credential could push.
+    """
+    asked = {}
+
+    class _Session:
+        def get(self, url, params=None, **_kw):
+            asked.update(params or {}, url=url)
+            return types.SimpleNamespace(status_code=200, json=lambda: {"token": "t"})
+
+    challenge = ('Bearer realm="https://auth.example.com/token",service="repo.example.com",'
+                 'scope="repository:robovast/sut:pull,push"')
+    token, _ttl = registry_client._bearer_token(_Session(), challenge, None)
+
+    assert token == "t"
+    assert asked == {"url": "https://auth.example.com/token", "service": "repo.example.com",
+                     "scope": "repository:robovast/sut:pull,push"}
