@@ -4795,6 +4795,21 @@
             "title": "Packaged",
             "type": "boolean"
           },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          },
           "world": {
             "default": "",
             "title": "World",
@@ -4812,6 +4827,7 @@
           "inputs",
           "overridable",
           "packaged",
+          "warnings",
           "world"
         ],
         "title": "WorldDescription",
