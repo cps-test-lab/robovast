@@ -546,14 +546,17 @@ def test_every_tool_returns_a_dict_or_an_image():
     The three image tools are the stated exception — an ``Image`` has nowhere to put an
     ``error`` key, so they raise. That they SAY so is
     :func:`test_a_tool_that_raises_says_so_where_a_model_reads_it`, because a docstring
-    section is not the same thing as text a model receives.
+    section is not the same thing as text a model receives. An image tool that also says
+    where the image is kept returns a ``ToolResult`` holding the ``Image`` and that dict,
+    and raises the same way.
     """
+    from fastmcp.tools import ToolResult
     from fastmcp.utilities.types import Image
     wrong = {}
     for path, mod in _registered_plugin_modules().items():
         for fn in getattr(mod, "_TOOLS", []):
             annotation = inspect.signature(fn).return_annotation
-            if annotation not in (dict, "dict", Image, "Image"):
+            if annotation not in (dict, "dict", Image, "Image", ToolResult, "ToolResult"):
                 wrong[f"{path}.{fn.__name__}"] = str(annotation)
     assert not wrong, f"tools whose return type is neither dict nor Image: {wrong}"
 

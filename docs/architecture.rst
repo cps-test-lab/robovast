@@ -1037,7 +1037,10 @@ a caller's viewpoint, so its key would be a camera pose and a time and would nev
 no cache, no thread, one synchronous ``POST`` that returns the image or the reason. That second
 part matters as much as the first — an asynchronous render would have to stash its failure
 somewhere the caller could find later, which is exactly the in-memory dictionary that makes a
-failed scene build visible to nothing but ``get_run_scene_status``.
+failed scene build visible to nothing but ``get_run_scene_status``. A render is still *kept*,
+under a fresh name the response's ``Content-Location`` carries: not for reuse, but so a caller
+can pass it on by address. The store is bounded by age and count rather than cached, and pruned
+each time a render is kept.
 
 **Costmap delivery.** A grid needs a table of its own. The generic topic flatten packs an
 array field into one cell and the read path caps a cell at 2 KB, so a run view reading SQL
