@@ -2007,6 +2007,12 @@ class WorldDescription(BaseModel):
     components: list[dict] = Field(default_factory=list)
     #: The entities the world compiles — ``None`` unless asked for, since it costs a build.
     entities: Optional[list[str]] = None
+    #: What the world's start state holds that will not stop it from loading but is likely to
+    #: make a run misbehave, as the simulator words it: ``{"check", "message", "hint"}`` each
+    #: (roqsim: two bodies placed inside one another). Comes with ``entities``, from the reset
+    #: that follows the same build; ``None`` when the world was not reset, ``[]`` when its start
+    #: state has nothing to say. ``validate_project`` reports each one as advice.
+    warnings: Optional[list[dict]] = None
     #: ``{"fields": [...], "targets": {...}}``: the model values a run may change, and (when a
     #: target glob was given) the objects that can be named with their current values.
     overridable: dict = Field(default_factory=dict)
@@ -2015,9 +2021,9 @@ class WorldDescription(BaseModel):
     #: because ``entities`` was arrived at without them.
     dropped_transport: list[str] = Field(default_factory=list)
     #: Why a half of the answer is missing, when the simulator could produce only part of it
-    #: (``{"build": "..."}`` with ``entities`` left ``None``). Empty when the reply is complete —
-    #: and a caller must read it before concluding that a null ``entities`` means the world
-    #: compiles none.
+    #: (``{"build": "..."}`` with ``entities`` left ``None``, or ``{"reset": "..."}`` with
+    #: ``warnings`` left ``None``). Empty when the reply is complete — and a caller must read it
+    #: before concluding that a null ``entities`` means the world compiles none.
     errors: dict = Field(default_factory=dict)
 
 

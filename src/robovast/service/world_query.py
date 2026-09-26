@@ -230,6 +230,7 @@ def _problem(message: str, config=None, field: str = "",
     ``severity`` carries the distinction this module exists to keep: ``error`` for a world
     that does not load, ``unchecked`` for a question nothing here could ask. Both are
     reported, neither is a pass, and a caller can tell them apart without reading English.
+    ``advice`` is the third answer: a finding about a world that does load.
     """
     return {"stage": "world", "config": config,
             "field": field or "execution.containers.simulation.config",
@@ -339,13 +340,15 @@ def _unchecked(reason, step: str = "") -> str:
 
 def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: str,
                    vast_dir: str, parameters: dict) -> list:
-    """Does this campaign's world load, does its model compile, and does its image know its keys?
+    """Does this campaign's world load, compile and reset, and does its image know its keys?
 
-    One problem per distinct world that does not load or compile, in the flat shape the rest of
-    ``validate_project`` returns -- plus an ``advice`` problem for each world component that sets
-    a config key the image's own plugin does not publish (:mod:`robovast.service.world_keys`).
-    *resolve_call* is the transport's ``resolve_image``: the key check reads the image's plugin
-    catalog through the cache that is keyed by the image's resolved identity.
+    One problem per distinct world that does not load, compile or reset, in the flat shape the
+    rest of ``validate_project`` returns -- plus an ``advice`` problem for each world component
+    that sets a config key the image's own plugin does not publish
+    (:mod:`robovast.service.world_keys`), and one for each warning the simulator reports about the
+    state a trial starts from (:func:`_start_state_advice`). *resolve_call* is the transport's
+    ``resolve_image``: the key check reads the image's plugin catalog through the cache that is
+    keyed by the image's resolved identity.
 
     An empty list means every world was asked and answered cleanly — **not** that nothing
     was checked: a campaign with no simulator backend returns early, and anything that could
@@ -445,6 +448,16 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
             problems.append(_problem(
                 f"{world} loads but its model does not compile in {image}: "
                 f"{build_error}", config=config_name))
+        reset_error = errors.get("reset")
+        if reset_error:
+            # A world whose reset raises cannot start a trial: every run of it fails before its
+            # first step, so it is an error exactly as a model that does not compile is.
+            problems.append(_problem(
+                f"{world} compiles but does not reset in {image}: {reset_error}",
+                config=config_name))
+        advice += [_start_state_advice(warning, world, config_name)
+                   for warning in (payload or {}).get("warnings") or []
+                   if isinstance(warning, dict)]
         advice += unknown_key_advice(
             payload or {}, image=image, exec_call=exec_call, resolve_call=resolve_call,
             request_kwargs={"workspace_id": workspace_id, "config_path": config_path},
@@ -452,6 +465,23 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
     # Advice is kept out of the collapse: that folds one exec failure repeated per world, and an
     # advisory about a checked world is neither.
     return _collapse_identical(problems, len(blocks)) + _merge_repeated(advice)
+
+
+def _start_state_advice(warning: dict, world: str, config) -> dict:
+    """One simulator warning about a world's start state, as advice.
+
+    The simulator resets the world it describes, as a run does before each trial, and reports what
+    that state holds that will not stop the world from loading but is likely to make a run
+    misbehave -- two bodies placed inside one another, which the contact solver flings apart on the
+    first steps. Advice rather than an error because the simulator itself does not refuse it: the
+    world starts, and an overlap may be meant. The check's name, message and hint are the
+    simulator's own, carried verbatim; nothing here knows which checks exist.
+    """
+    check = warning.get("check") or "warning"
+    message = str(warning.get("message") or "").rstrip(".")
+    hint = warning.get("hint")
+    return _problem(f"{world} [{check}]: {message}." + (f" Next: {hint}" if hint else ""),
+                    config=config, severity="advice")
 
 
 def _merge_repeated(advice: list) -> list:
