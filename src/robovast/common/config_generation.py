@@ -246,7 +246,8 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
             "execution-backend container runner was installed for this composition, and "
             "there is no local 'docker' to fall back on. That is a property of where this "
             "ran, not of the .vast -- the same file composes wherever a runner is arranged, "
-            "which a campaign and a preview through the service both do.",
+            "which a campaign, a preview and an exec of a configuration through the "
+            "service all do.",
             next_step=("compose it where a runner exists: preview_configurations or "
                        "start_campaign against a service, rather than in a process that has "
                        "neither a backend nor docker. If this IS such a service, it reached "

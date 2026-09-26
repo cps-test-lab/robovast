@@ -3026,12 +3026,22 @@ class ServiceBase(RobovastInterface):
                                                      stage, validate)
         validate(request)
         vast_file = self._exec_vast_file(request)
-        spec, _campaign_data, limit_s, limit_source = stage(
-            # The staged entrypoint is rendered for this exec; a campaign's rendered
-            # entrypoint is never copied across.
-            vast_file, request.config_name,
-            cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
-            command=request.command, archived=bool(request.campaign_id))
+        # Staging a configuration composes the file, and composition reaches whatever it asks
+        # a container for -- a variation's helper image, a generator's, the simulator's
+        # input-files query. So it runs inside the service's aux-runner context, held and
+        # keyed on the source as preview is: the same file previewed and then exec'd reuses
+        # one warm container. A bare-image exec composes nothing, and so starts nothing.
+        # The hook is given no project: a campaign source has none, only its ``_config/``.
+        with self._aux_runner_context(
+                _preview_tag(request.workspace_id or request.campaign_id,
+                             request.config_path),
+                None, hold=True):
+            spec, _campaign_data, limit_s, limit_source = stage(
+                # The staged entrypoint is rendered for this exec; a campaign's rendered
+                # entrypoint is never copied across.
+                vast_file, request.config_name,
+                cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
+                command=request.command, archived=bool(request.campaign_id))
         # Ownership of spec's staging tree passes to the manager: a held container mounts
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
