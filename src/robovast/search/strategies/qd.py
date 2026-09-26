@@ -27,7 +27,7 @@ extra to use it.
 """
 
 import logging
-import math
+
 from typing import Literal, Optional
 
 import numpy as np
@@ -160,12 +160,15 @@ class QDStrategy(SearchStrategy):
 
         x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
-        n_emitters = max(1, params.emitters)
-        batch = max(1, math.ceil(cfg.per_batch / n_emitters))
+        # The emitters' batches sum to exactly per_batch -- ceil(per_batch / emitters) each
+        # overspent every batch of the budget by up to emitters - 1 draws -- and no emitter
+        # gets an empty batch, so there are at most per_batch of them.
+        n_emitters = max(1, min(params.emitters, cfg.per_batch))
+        base, extra = divmod(cfg.per_batch, n_emitters)
         seed = cfg.seed
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x0, sigma0=sigma0, bounds=bounds,
-                                     batch_size=batch,
+                                     batch_size=base + (1 if i < extra else 0),
                                      seed=None if seed is None else seed + i)
             for i in range(n_emitters)
         ]
@@ -179,6 +182,13 @@ class QDStrategy(SearchStrategy):
         self._direction = self.single_objective.direction
 
     def ask(self, n: int) -> list[ParamSet]:
+        """At most *n* proposals: a generation, or the first *n* of one.
+
+        The emitters draw a whole generation (``per_batch``) at once, and pyribs offers no
+        way to ask for fewer. A caller wanting less -- a preview capped at a few draws -- gets
+        the first *n*; the rest stay in the outstanding generation, so a ``tell`` of what was
+        proposed closes it through :meth:`_tell_incomplete` rather than mismatching it.
+        """
         solutions = self.scheduler.ask()
         self._ask = []
         proposals = []
@@ -187,8 +197,8 @@ class QDStrategy(SearchStrategy):
             ps = ParamSet(values=values)
             proposals.append(ps)
             self._ask.append((ps.id, np.asarray(sol)))
-        logger.debug("QD proposed %d solution(s)", len(proposals))
-        return proposals
+        logger.debug("QD proposed %d solution(s), %d asked for", len(proposals), n)
+        return proposals[:n]
 
     def tell(self, evaluations: list[Evaluation]) -> None:
         by_id = {ev.params.id: ev for ev in evaluations}
