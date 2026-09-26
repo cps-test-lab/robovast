@@ -104,6 +104,20 @@ def shortfall(label: str, free_bytes: int, capacity_bytes: int) -> Optional[str]
             f"reserve ({how}).")
 
 
+def room_bytes(path) -> int:
+    """Bytes that can be written under *path* before its filesystem falls below the reserve.
+
+    Measured like :func:`disk_shortfall`, at the nearest existing ancestor; never negative.
+    """
+    import psutil  # pylint: disable=import-outside-toplevel
+
+    target = Path(path)
+    while not target.exists() and target != target.parent:
+        target = target.parent
+    usage = psutil.disk_usage(str(target))
+    return max(0, usage.free - reserve_bytes(usage.used + usage.free))
+
+
 def disk_shortfall(path, label: str = "the service's disk") -> Optional[str]:
     """The sentence saying the filesystem holding *path* is below the reserve, else ``None``.
 

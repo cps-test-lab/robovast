@@ -413,6 +413,22 @@ def test_a_name_that_is_not_campaign_shaped_is_refused(env, tmp_path):
         "the refusal has to say why, or it reads as an arbitrary rule"
 
 
+def test_an_archive_that_would_not_fit_is_a_507_before_anything_is_extracted(
+        env, tmp_path, monkeypatch):
+    """What an archive unpacks to is held to the room above the reserve on the POST, so the
+    caller gets the refusal rather than a ref for an import that would fill the volume."""
+    client, transport, _ = env
+    fixture = _fixtures()[0]
+    archive = _archive(fixture, tmp_path / "a.tar.gz")
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 0)
+
+    refused = _import(client, _upload(client, archive))
+
+    assert refused.status_code == 507, refused.text
+    assert "unpacks to" in refused.json()["detail"]
+    assert not (transport._campaigns_root() / fixture.name).exists()
+
+
 def test_a_missing_path_is_a_404(env, tmp_path):
     client, _, _ = env
     assert _import(client, str(tmp_path / "nope.tar.gz")).status_code == 404

@@ -1555,8 +1555,8 @@ class ServiceBase(RobovastInterface):
                 owned = archive.resolve().parent == staged_root
             except OSError:
                 owned = False
-            return (read_campaign_id(archive), lambda _log: (archive, owned),
-                    not _archive_has_metrics(archive))
+            return (read_campaign_id(archive, fits_in=self._campaigns_root()),
+                    lambda _log: (archive, owned), not _archive_has_metrics(archive))
 
         object_name, campaign_id, variant = self._find_share_archive(request.share_archive)
 
@@ -1672,7 +1672,9 @@ class ServiceBase(RobovastInterface):
             # and reports `config, layout` -- the archive's own symptom -- under an id that
             # is not the one that failed. Reading the id costs the tar's index, which the
             # upload path already pays (`_resolve_import_source`); this closes the other.
-            inner = read_campaign_id(archive)
+            # With the room to unpack it: a share archive's size is known only now, and a
+            # staged upload's free space may have been taken since the request admitted it.
+            inner = read_campaign_id(archive, fits_in=self._campaigns_root())
             if inner != campaign_id:
                 raise RuntimeError(
                     f"the archive fetched for {campaign_id} holds campaign {inner!r}. "
