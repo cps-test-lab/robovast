@@ -666,12 +666,12 @@ deployment on this machine and one across the room.
 
 ``start_campaign`` validates and launches through the service and returns
 immediately — the campaign has barely started. Wait for it with
-``vast campaign wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
-elapsed), which returns only once the campaign is genuinely over, past
-postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
-run for days, and a blocking tool call would occupy its caller for the whole of
-it, where a command can be backgrounded and waited on. ``get_campaign_status``
-is the single-read version for a campaign you are not waiting on.
+``vast campaign wait <campaign-id>``, which returns once the campaign is over, past
+postprocessing, or earlier on a stall or a simulator-reported fault with the campaign still
+running; its exit code says which (:ref:`client-wait-exit-codes`). Deliberately a
+**command and not an MCP tool**: a campaign can run for days, and a blocking tool call would
+occupy its caller for the whole of it, where a command can be backgrounded and waited on.
+``get_campaign_status`` is the single-read version for a campaign you are not waiting on.
 
 ``start_campaign``'s ``image_project_tag`` pins the tag RoboVAST's ``family:`` images are
 taken at for this run, as ``vast workspace run --image-project-tag`` does; left empty, they
@@ -892,7 +892,7 @@ owns, with no log reading at all:
    passing the budget there says only that the phase outlasted a single run. Converting a
    large campaign's rosbags always does, and asserting a stall over it reported a healthy
    campaign as wedged — pointing the reader at a job that had already finished, and ending
-   ``vast campaign wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
+   ``vast campaign wait`` as ``STALLED``. Read ``progress_age_s`` as the age of the phase, and
    ``get_campaign_log`` for what the phase is doing.
 
 That backstop is not wasted — it is simply a different job. The cluster *enforces* a per-job
@@ -926,9 +926,10 @@ against its memory, and a probe that was not asked would size the simulator with
 
 .. code-block:: json
 
-   {"level": "error", "check": "sim-time-rate", "detail": "sim advanced 3.1s in 60s of wall time"}
+   {"level": "error", "check": "sim-time-stuck", "detail": "sim time has not advanced for 75 s of wall time, since sim 4.20 s; the limit was 60 s"}
 
-RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast campaign wait`` (exit 5);
+RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast campaign wait`` (as
+``HEALTH_FINDING``, :ref:`client-wait-exit-codes`);
 ``warn`` never does, and surfaces on ``get_job_state`` and the campaign's own exit.
 ``check`` is a stable slug the simulator owns — carried through untouched, so it is matched
 and reported, never interpreted — and ``detail`` is its observation in its own words. There
@@ -1152,8 +1153,8 @@ exposes:
   registry manifest probe (or one ``docker image inspect``) when nothing changed, and
   ``cached_builds`` is the answer per container. Nothing else answers that without a
   ``build_id`` already in hand.
-* ``vast image wait <build-id>…`` — block until every build is done (exit 0 built,
-  1 failed, 2 stopped waiting: ``--timeout``, or the service stopped answering). Takes
+* ``vast image wait <build-id>…`` — block until every build is done; the exit code says how
+  they ended (:ref:`its codes <client-image-wait-exit-codes>`). Takes
   several ids because a project builds one image per container that adds packages, and
   waiting for the first says nothing about the rest.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus a **structured**

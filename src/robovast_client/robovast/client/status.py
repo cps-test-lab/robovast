@@ -190,8 +190,8 @@ class HealthFinding(BaseModel):
     ``level`` decides what happens, and only these two mean anything here:
 
     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
-      (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-      still holds ``running`` for its whole life.
+      (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator
+      is wedged still holds ``running`` for its whole life.
     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
       ``get_job_state`` and on the campaign's own exit.
 
@@ -492,10 +492,11 @@ NO_STALL_VERDICT = ("cannot judge: the .vast declares no execution.timeout, so t
 #: ``ControllerState._progress_signal``) — neither of which a phase that runs no runs can move.
 #: So the clock could only ever run out: converting a large campaign's rosbags legitimately
 #: outlasts any single run, and judging that against the per-run budget reported every such
-#: campaign as stalled while it was healthily postprocessing — and ended ``vast campaign wait`` at exit 4
-#: with the advice to go inspect a job that had already succeeded. ``{phase}`` is named because
-#: the useful next read differs per phase, and the age is re-described because ``set_phase``
-#: restarts ``progress_since`` on every phase change: outside ``running`` it *is* the phase's age.
+#: campaign as stalled while it was healthily postprocessing — and ended ``vast campaign wait``
+#: as STALLED with the advice to go inspect a job that had already succeeded. ``{phase}`` is
+#: named because the useful next read differs per phase, and the age is re-described because
+#: ``set_phase`` restarts ``progress_since`` on every phase change: outside ``running`` it *is*
+#: the phase's age.
 NO_STALL_VERDICT_QUEUED = (
     "cannot judge: every job of the current batch is queued for cluster capacity, so no run "
     "of this campaign is running and none can complete. The no-progress deadline is a "

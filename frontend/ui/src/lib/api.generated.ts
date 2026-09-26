@@ -2694,8 +2694,8 @@ export interface components {
          *     ``level`` decides what happens, and only these two mean anything here:
          *
          *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
-         *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-         *       still holds ``running`` for its whole life.
+         *       (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator
+         *       is wedged still holds ``running`` for its whole life.
          *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
          *       ``get_job_state`` and on the campaign's own exit.
          *
