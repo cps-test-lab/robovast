@@ -15,6 +15,7 @@ thing a campaign can be created from, named after its source exactly as ``worksp
 is.
 """
 
+import json
 import sys
 
 import click
@@ -592,8 +593,11 @@ def wait(campaign, interval, timeout, namespace, context):
 @click.option('--desc/--asc', 'descending', default=True, show_default=True,
               help='Newest or largest first, or the reverse. A campaign with no size is '
                    'listed last either way.')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the listing as one JSON object, the fields the MCP '
+                   'list_campaigns tool returns.')
 @target_options
-def list_cmd(limit, sort_key, descending, namespace, context):
+def list_cmd(limit, sort_key, descending, as_json, namespace, context):
     """List campaigns this service knows about: live ones first, then newest first.
 
     The size column is what the results occupy, measured once when the campaign ended;
@@ -602,6 +606,8 @@ def list_cmd(limit, sort_key, descending, namespace, context):
     why the launch verbs ask for one. A live campaign's standing with the queue follows its
     phase when it is not the default -- ``prio +2``, ``paused`` -- because a held campaign
     making no progress is otherwise indistinguishable here from a wedged one.
+
+    ``--json`` prints ``{campaigns, total, offset}`` on stdout and the target on stderr.
     """
     from robovast.client.progress import fmt_size  # pylint: disable=import-outside-toplevel
     try:
@@ -609,10 +615,15 @@ def list_cmd(limit, sort_key, descending, namespace, context):
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
 
         with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            listed = client.list_campaigns(ListCampaignsRequest(
-                limit=limit, sort=sort_key,
-                order='desc' if descending else 'asc')).campaigns
+            _echo_target(label, err=as_json)
+            request = ListCampaignsRequest(limit=limit, sort=sort_key,
+                                           order='desc' if descending else 'asc')
+            if as_json:
+                from robovast.client.campaign_report import \
+                    campaign_listing  # pylint: disable=import-outside-toplevel
+                click.echo(json.dumps(campaign_listing(client, request)))
+                return
+            listed = client.list_campaigns(request).campaigns
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
@@ -654,20 +665,31 @@ def _queue_standing(summary) -> str:
 
 @campaign.command('status')
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the status as one JSON object, the fields the MCP '
+                   'get_campaign_status tool returns.')
 @target_options
-def status_cmd(campaign, namespace, context):  # pylint: disable=redefined-outer-name
+def status_cmd(campaign, as_json, namespace, context):  # pylint: disable=redefined-outer-name
     """Print a campaign's phase and progress once, and exit.
 
     The single-read counterpart to ``vast campaign wait``: use this for a campaign you are
     not waiting on. Waiting is a separate verb because it can take days, and holding a
     request open for that is a different thing from asking once.
+
+    ``--json`` prints the fuller report on stdout -- stall verdict, health findings,
+    postprocessing, ``next_step`` -- and the target on stderr.
     """
     try:
         with service_client(namespace, context) as (client, label):
-            _echo_target(label)
+            _echo_target(label, err=as_json)
             campaign_id = campaign or _sole_running_campaign(client)
             if not campaign_id:
                 raise ValueError("no campaign is running; pass CAMPAIGN.")
+            if as_json:
+                from robovast.client.campaign_report import \
+                    status_report  # pylint: disable=import-outside-toplevel
+                click.echo(json.dumps(status_report(client, campaign_id)))
+                return
             status = client.get_status(campaign_id)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)

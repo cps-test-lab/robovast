@@ -244,7 +244,7 @@ export function isFractionableBudget(b: BudgetItem): boolean {
  *
  * The binding criterion, because the campaign stops at whichever fires first — so the row with the
  * greatest share is the one describing when this campaign actually ends, and any other describes a
- * moment it will never reach. The same rule the MCP's `_progress_from_status` applies server-side
+ * moment it will never reach. The same rule `robovast.client.campaign_report.progress_from_status` applies server-side
  * (`max(current / limit)` over the budget) and the same rule `campaignEtaSeconds` below expresses
  * in time units, where "fires first" means the SMALLER duration. Three readers, one rule; a change
  * to any of them must be made looking at the other two.
