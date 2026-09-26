@@ -116,7 +116,8 @@ def test_a_frame_loops_result_joins_the_tables_by_stamp(tmp_path):
                               columns=["timestamp", "seen"])
     joined = c.sql("""SELECT d.timestamp, d.seen, p."position.x" AS x FROM detections d
                       ASOF JOIN (SELECT * FROM poses WHERE frame = 'base_link') p
-                      ON p.timestamp <= d.timestamp""", tables={"detections": detections})
+                      ON p.timestamp <= d.timestamp ORDER BY d.timestamp""",
+                   tables={"detections": detections})
     # The first frame precedes every pose, so it has no match; the rest join.
     assert len(joined) == len(stamps) - 1 and joined.x.notna().all()
     assert joined.seen.tolist() == [0, 0, 1]

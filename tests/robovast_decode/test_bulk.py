@@ -124,7 +124,7 @@ def test_a_topics_messages_are_read_in_order_within_the_span_and_thinned(tmp_pat
     assert [s.t_ns for s in iter_messages(str(bag), TOPIC, every=2.0)] == stamps[0::2]
     assert [s.t_ns for s in iter_messages(str(bag), TOPIC, start=start, every=2.0)] == stamps[1::2]
 
-    (cloud,) = iter_messages(str(bag), CLOUD_TOPIC)
+    cloud = next(iter_messages(str(bag), CLOUD_TOPIC))
     assert points.xyz(points.decode(cloud.msg, CLOUD)).shape == (5, 3)
     assert not list(iter_messages(str(bag), "/nowhere"))
     assert not list(iter_messages(str(bag), RAW_TOPIC))

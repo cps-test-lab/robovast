@@ -57,9 +57,12 @@ def _served(tmp_path, monkeypatch):
     def _open(request, timeout):
         del timeout
         url = urllib.parse.urlsplit(request.full_url)
-        headers = dict(request.header_items()) or {"Authorization": "Bearer "}
-        resp = client.get(f"{url.path}?{url.query}" if url.query else url.path,
-                          headers=headers)
+        headers = dict(request.header_items())
+        path = f"{url.path}?{url.query}" if url.query else url.path
+        if request.data is not None:
+            resp = client.post(path, content=request.data, headers=headers)
+        else:
+            resp = client.get(path, headers=headers)
         if resp.status_code >= 400:
             raise urllib.error.HTTPError(request.full_url, resp.status_code, "", {},
                                          _Response(resp.content))

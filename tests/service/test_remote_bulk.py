@@ -22,6 +22,7 @@ from robovast_data import Campaign, RemoteCampaign
 from robovast_data import remote as remote_module
 from tests.service.null_service import NullService
 
+from .conftest import TEST_TOKEN
 from .test_bulk_routes import CID, CLOUD_TOPIC, RAW_TOPIC, TOPIC, campaign_with_bulk
 
 URL = f"http://robovast.example.org/campaigns/{CID}"
@@ -60,7 +61,7 @@ def _both(tmp_path, monkeypatch):
         del timeout
         url = urllib.parse.urlsplit(request.full_url)
         path = f"{url.path}?{url.query}" if url.query else url.path
-        headers = dict(request.header_items()) or {"Authorization": "Bearer "}
+        headers = dict(request.header_items())
         if request.data is not None:
             resp = client.post(path, content=request.data, headers=headers)
         else:
@@ -71,7 +72,7 @@ def _both(tmp_path, monkeypatch):
         return _Response(resp)
 
     monkeypatch.setattr(remote_module, "_open", _open)
-    return Campaign(str(root / CID), workers=1), RemoteCampaign(URL), stamps
+    return Campaign(str(root / CID), workers=1), RemoteCampaign(URL, token=TEST_TOKEN), stamps
 
 
 def test_tables_arrive_in_their_types_with_lists_as_lists(both):
