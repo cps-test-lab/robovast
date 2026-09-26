@@ -45,10 +45,15 @@ The interface
 
 **What a job needs, and what a node has.** Both frozen, both plain numbers::
 
-    JobSizing(cpu: float, memory: int, gpu: int = 0)      # summed over a pod's containers
-    Capacity(cpu, memory, gpu)                            # what one node holds when empty
-    NodeBudget(node_id, free_cpu, free_memory, free_gpu)  # what one node has free NOW
+    JobSizing(cpu: float, memory: int, gpu: int = 0, ephemeral: int = 0)  # summed over a pod's containers
+    Capacity(cpu, memory, gpu, node_id, ephemeral)                        # what one node holds when empty
+    NodeBudget(node_id, free_cpu, free_memory, free_gpu, free_ephemeral, pinnable)  # what one node has free NOW
     Budget(nodes: tuple[NodeBudget], counted_jobs: frozenset, growable: bool)
+
+``ephemeral`` is ``ephemeral-storage`` in bytes, placed like cpu and memory so a pin cannot
+send a pod to a node without the disk; ``pinnable`` is false for a node a ``nodeSelector``
+cannot name, which still holds work — the job is created unpinned and kube-scheduler settles
+it.
 
 ``counted_jobs`` is the double-counting fix: the provider reports which Jobs its reading
 already saw, so a reservation stops being subtracted the instant the real pod starts being
@@ -76,12 +81,15 @@ headroom off: a reserve that is never spendable is not part of either answer.
 
    * - Call
      - Meaning
-   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None)``
+   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None, reserves=True)``
      - Enqueue a whole plan. ``items`` are ``(key, JobSizing, create_fn)``; ``create_fn``
        takes the chosen ``node_id`` (or ``None`` when unpinned). ``started_at`` is the
        **campaign's** start, not the batch's. ``campaign`` is whose rank the items take and
        defaults to ``owner``; a sub-scope owner (``<campaign>#probes``) must name it, or its
-       work ranks as a stranger to the campaign it belongs to.
+       work ranks as a stranger to the campaign it belongs to. ``reserves`` is whether a
+       pinned item that does not fit holds its node open against lower-ranked work;
+       ``False`` for a campaign confined to one node, which would otherwise hold it for
+       its whole life.
    * - ``drain(*, limit=None) -> int``
      - Create as many globally-highest-ranked items as currently fit. Returns how many. A
        **paused** campaign's items are not candidates at all.
@@ -106,8 +114,9 @@ headroom off: a reserve that is never spendable is not part of either answer.
    * - ``forget_scheduling(campaign)``
      - Drop both, once the campaign is over. Runs per **campaign**, beside
        ``forget_calibration`` and never merged with it.
-   * - ``preflight(sizing)``
-     - Raise ``AdmissionRefused`` when no node could *ever* hold it.
+   * - ``preflight(sizing, node_id=None)``
+     - Raise ``AdmissionRefused`` when no node could *ever* hold it — or, with ``node_id``,
+       when that one node could not, for a campaign confined to it.
    * - ``states(owner) -> dict``
      - ``key -> PLANNED | CREATED``, for progress reporting.
    * - ``refusal(owner) -> str``
@@ -131,7 +140,7 @@ Workflows
     submit(campaign, plan, started_at=..., priority=0)
     while True:
         reap     -> finished(key) for each vanished CREATED job
-        exit     -> if every plan entry is FINISHED: break
+        exit     -> if states() holds nothing PLANNED or CREATED of its own: break
         drain()  -> may create OTHER campaigns' jobs; that is the point
         probes   -> nothing PLANNED of its own left: drop_planned(campaign#probes)
         publish  -> waiting_for_capacity from states(), not from pods
@@ -140,8 +149,8 @@ Workflows
         cancel(campaign)                # and cancel(campaign#probes)
         delete every probe Job still outstanding
 
-Step 4 is what makes ordering global without a controller thread: whichever campaign happens
-to be awake advances everybody, in ``(priority, campaign rank, campaign start)`` order.
+The ``drain()`` step is what makes ordering global without a controller thread: whichever
+campaign happens to be awake advances everybody, in ``(priority, campaign rank, campaign start)`` order.
 
 **A campaign's rank and its hold.** ``priority`` above is the order *within* a campaign --
 a probe before the work it gates, postprocessing before both -- and it stays the leading key.
