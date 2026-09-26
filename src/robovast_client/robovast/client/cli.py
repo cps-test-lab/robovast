@@ -99,9 +99,9 @@ def cli(ctx):
     results go. A campaign runs a *workspace's* project (``vast workspace run``); the
     local verbs take the file as an argument (``vast config list my.vast``).
 
-    Every command reads ``./.env`` first, so anything RoboVAST takes from the
-    environment (share credentials, registry, ntfy, ``ROBOVAST_*_IMAGE``, …) can
-    be kept there instead of exported by hand.
+    Every command reads ``./.env`` first, then ``~/.config/robovast/env``, so anything
+    RoboVAST takes from the environment (share credentials, registry, ntfy,
+    ``ROBOVAST_*_IMAGE``, …) can be kept there instead of exported by hand.
 
     \b
     Examples:
@@ -410,14 +410,14 @@ def workspace_update(workspace, directory, excludes, prune, include_results, nam
 
 
 @workspace.command('download')
-@click.argument('workspace_id')
+@click.argument('workspace_id', metavar='WORKSPACE')
 @click.argument('directory', type=click.Path(file_okay=False))
 @click.option('--overwrite', is_flag=True,
               help='Replace local files that already exist. Off by default: pulling over an '
                    'edited copy of the same project would lose those edits irrecoverably.')
 @target_options
 def workspace_download(workspace_id, directory, overwrite, namespace, context):
-    """Fetch every file in WORKSPACE_ID into DIRECTORY.
+    """Fetch every file in WORKSPACE (an id or a name) into DIRECTORY.
 
     The other direction of ``workspace init`` / ``update``, so a project can be taken off a
     remote service and worked on locally -- and so a workspace somebody else authored can be
@@ -467,7 +467,7 @@ def workspace_list(namespace, context):
 @click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
 @target_options
 def workspace_world(workspace, path, targets, entities, as_json, namespace, context):  # pylint: disable=redefined-outer-name
-    """Describe the world this campaign's simulator will load.
+    """Describe the world a campaign of this workspace's project will load.
 
     The other half of authoring a ``sim:`` override: ``vast workspace world`` says what the
     world *offers* — which components an override can address, and with ``--targets`` which model
@@ -1008,7 +1008,7 @@ def install_completion():
 def image():
     """Build the derived images a project's containers declare.
 
-    Mirrors the ``build_experiment_image`` MCP tools and drives the same interface.
+    Mirrors the ``build_experiment_image`` MCP tool and drives the same interface.
     Registry-free: you name a project; the service builds every container in
     ``execution.containers`` that adds ``system_packages``, ``python_packages`` or
     ``ros_packages``,
