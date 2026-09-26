@@ -823,6 +823,35 @@ def test_no_tool_description_carries_its_own_args_or_returns_section():
         "section, which is sent verbatim to every caller on every request.")
 
 
+#: A passage this long that appears twice in one description is a paragraph pasted twice,
+#: not a phrase two sentences share: an address template or a tool name is far shorter.
+_REPEATED_PASSAGE = 80
+
+
+def test_no_tool_description_says_the_same_thing_twice():
+    """A description is sent on every request, so a paragraph that survives in two
+    versions is paid for twice per turn -- and the two drift, so a reader is told two
+    things about one field."""
+    import asyncio
+
+    async def _tools():
+        return await create_server().list_tools()
+
+    repeated = {}
+    for tool in asyncio.run(_tools()):
+        text = re.sub(r"\s+", " ", tool.description or "")
+        first_seen: dict[str, int] = {}
+        for start in range(max(0, len(text) - _REPEATED_PASSAGE)):
+            passage = text[start:start + _REPEATED_PASSAGE]
+            earlier = first_seen.setdefault(passage, start)
+            if start - earlier >= _REPEATED_PASSAGE:
+                repeated[tool.name] = passage
+                break
+    assert not repeated, (
+        f"descriptions that repeat a passage: {repeated}. Keep the one version that is "
+        "complete and delete the other.")
+
+
 def test_the_tool_surface_stays_within_its_token_budget():
     import asyncio
     import json

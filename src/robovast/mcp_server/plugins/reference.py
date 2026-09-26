@@ -174,11 +174,6 @@ def get_service_info() -> dict:
     expect instead. ``package_version`` is the release, unchanged across edits, and no
     substitute.
 
-    **Check ``can_build_images`` before authoring a container that adds packages**, or the
-    refusal arrives at ``start_campaign``, after the push and the workspace;
-    ``build_unavailable`` then carries the reason. Absent is not ``false``, and it reports
-    the infrastructure a build needs rather than that a given build will be published.
-
     ``backend`` is the execution backend, fixed at startup; ``get_resource_usage()``
     actually touches it.
     On a cluster, ``in_pod: false`` means campaigns are driven from outside it: fine for a
