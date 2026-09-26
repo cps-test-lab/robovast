@@ -474,25 +474,24 @@ class ObstacleVariation(NavVariation):
                 ):
                     attempt += 1
 
-                    try:
-                        placed_pairs = placer.place_obstacles(
-                            path,
-                            obstacle_config.max_distance,
-                            effective_amount,
-                            obstacle_config.model,
-                            obstacle_config.rendered_xacro_arguments(),
-                            entity_prefix=self.parameters.entity_prefix,
-                            robot_diameter=self.parameters.robot_diameter,
-                            waypoints=waypoints,
-                            min_arc_length=self._min_arc_length_for_config(i),
-                            shape=obstacle_config.shape,
-                            size=obstacle_config.size,
-                            keepout=keepout,
-                            map_obj=placement_map,
-                        )
-                    except Exception as e:
-                        self.progress_update(f"Error placing obstacles: {e}")
-                        placed_pairs = []
+                    # Not guarded: the placer says "no room" by returning fewer pairs, so
+                    # anything it raises is a fault, and a fault retried into
+                    # VariationInfeasibleError is a bug a search then drops as a bad draw.
+                    placed_pairs = placer.place_obstacles(
+                        path,
+                        obstacle_config.max_distance,
+                        effective_amount,
+                        obstacle_config.model,
+                        obstacle_config.rendered_xacro_arguments(),
+                        entity_prefix=self.parameters.entity_prefix,
+                        robot_diameter=self.parameters.robot_diameter,
+                        waypoints=waypoints,
+                        min_arc_length=self._min_arc_length_for_config(i),
+                        shape=obstacle_config.shape,
+                        size=obstacle_config.size,
+                        keepout=keepout,
+                        map_obj=placement_map,
+                    )
 
                     placed_obstacles = [obj for obj, _ in placed_pairs]
                     placed_anchor_pts = [anchor for _, anchor in placed_pairs]
@@ -545,7 +544,11 @@ class ObstacleVariation(NavVariation):
                                         f"Attempt {attempt}/{max_attempts}: obstacles block navigation, retrying..."
                                     )
 
-                            except Exception as e:
+                            except ValueError as e:
+                                # The planner refusing a waypoint (inside an obstacle, off
+                                # the map) is this placement's fault; any other exception is
+                                # the planner's, and propagates.
+                                last_failure = 'blocked'
                                 self.progress_update(
                                     f"Attempt {attempt}/{max_attempts}: validation error: {str(e)}, retrying..."
                                 )
