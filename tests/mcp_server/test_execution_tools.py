@@ -355,6 +355,30 @@ def test_stop_without_service_fails_loudly(no_service):
     assert "no robovast-service" in execution.stop_campaign("x")["error"]
 
 
+def _dummy_arguments(fn) -> dict:
+    """One value per required parameter, by its annotation."""
+    import inspect
+    by_type = {str: "x", int: 1, float: 1.0, bool: False}
+    return {name: by_type[param.annotation]
+            for name, param in inspect.signature(fn).parameters.items()
+            if param.default is inspect.Parameter.empty}
+
+
+@pytest.mark.parametrize("tool", [fn for fn in execution._TOOLS
+                                  if fn is not execution.get_campaign_log],
+                         ids=lambda fn: fn.__name__)
+def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service, tool):
+    """The server instructions promise that every control tool says so when no service
+    answers, and the sentence they say is the one that tells the caller what not to do
+    instead. A tool with a sentence of its own sends a caller to bring a service up by
+    hand, which is the workaround the shared one refuses.
+
+    ``get_campaign_log`` is the exception, and reads an archived campaign on this host.
+    """
+    from robovast.mcp_server.service_access import NO_SERVICE
+    assert tool(**_dummy_arguments(tool)) == {"error": NO_SERVICE}
+
+
 # -- the download link does not depend on where a campaign ran -------------------------
 
 
