@@ -1870,7 +1870,7 @@ cached for the campaign):
   batch creates a Job.
 
 Each is written into ``_execution/launch.yaml`` the moment it is fixed
-(:ref:`campaign-launch-record`), and every container carries an explicit
+(:ref:`the launch record <campaign-launch-record>`), and every container carries an explicit
 ``imagePullPolicy``, ``IfNotPresent`` for the digest refs a campaign runs.
 
 Both halves matter, and the second is the one that bites. Kubernetes defaults the policy

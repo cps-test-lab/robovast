@@ -414,7 +414,6 @@ def test_a_restart_seen_after_the_last_job_finished_still_lands(monkeypatch, tmp
 def test_a_batch_whose_every_job_lost_a_container_still_fails(monkeypatch, tmp_path):
     """Not a flake but a fault they share -- a missing world file, an image that cannot run
     here. Carrying on would spend the rest of the budget producing cells with no sample."""
-    from robovast.execution.backends import CampaignConfigError
 
     runner = _restart_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
@@ -507,7 +506,6 @@ def test_a_dropped_blocked_job_is_recorded_with_kubernetes_own_reason(monkeypatc
 def test_a_whole_batch_that_cannot_start_still_fails_fast(monkeypatch, tmp_path):
     """Every job of a batch runs the same images with the same reservation, so a whole
     batch blocked is the campaign, not the cluster -- and no batch of it will ever run."""
-    from robovast.execution.backends import CampaignConfigError
 
     runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
@@ -551,7 +549,6 @@ def test_a_blocked_job_inside_its_grace_is_left_alone(monkeypatch, tmp_path):
 def test_a_batch_whose_every_job_was_dropped_still_fails(monkeypatch, tmp_path):
     """The backstop for dropping one at a time: losing part of a batch is survivable,
     losing all of it is a verdict -- whatever mix of causes got it there."""
-    from robovast.execution.backends import CampaignConfigError
 
     runner = _blocked_runner(
         monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
