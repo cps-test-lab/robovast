@@ -92,3 +92,12 @@ def test_threads_parsing_at_once_each_get_their_own_statement():
     for sql, result in zip(queries * 8, results):
         number = sql.split()[1]
         assert f"value_{number}" in result, (sql, result)
+
+
+def test_an_integer_cast_of_text_still_binds():
+    """A TEXT column is what a mixed CSV column becomes, and ``CAST(col AS INTEGER)`` is
+    the SQLite idiom on one. DuckDB has no ``trunc(VARCHAR)``, so the truncation is applied
+    to the value read as a DOUBLE."""
+    row = duckdb.sql(parse("SELECT CAST(c AS INTEGER) AS v, CAST(d AS INT) AS w "
+                           "FROM (SELECT '12' AS c, '8.6' AS d)").sql).fetchone()
+    assert row == (12, 8)
