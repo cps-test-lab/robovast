@@ -1280,6 +1280,40 @@ def test_a_refusing_drain_is_linear_in_the_queue(monkeypatch):
     assert large < 10 * small, f"8x the queue cost {large / small:.1f}x the reads"
 
 
+def test_a_drain_reads_the_cluster_without_holding_the_lock():
+    """The reading is a round trip to the API server, and every campaign's poll and status
+    read waits on the queue's lock. A drain holding it across the reading makes every one of
+    them as slow as the cluster's API."""
+    import threading
+    answered = []
+
+    class ProbingProvider(FakeProvider):
+        def budget(self):
+            reader = threading.Thread(target=lambda: answered.append(c.refusal("a")))
+            reader.start()
+            reader.join(timeout=5)
+            return super().budget()
+
+    c = _controller(ProbingProvider())
+    made = _items(c, "a", 1)
+    c.drain()
+    assert answered == [""], "a status read waited behind the drain's cluster reading"
+    assert made == ["a-0"]
+
+
+def test_a_drain_with_nothing_to_place_does_not_read_the_cluster():
+    """Every campaign polls until its last job ends, long after its queue is empty. A
+    reading per poll for a pass with nothing to place is load on the API server for no
+    answer."""
+    p = FakeProvider()
+    c = _controller(p)
+    _items(c, "a", 1)
+    c.drain()
+    reads = p.reads
+    c.drain()
+    assert p.reads == reads
+
+
 def test_the_refusal_names_the_size_the_fit_test_actually_used():
     """`need` was left at the DECLARED sizing whenever nothing fit, so a calibrated campaign
     was told its job needs the declared figure while the nodes it was being tested against had
