@@ -75,7 +75,29 @@ def _print_version(ctx, param, value):  # pylint: disable=unused-argument
     ctx.exit()
 
 
-@click.group()
+class _RootGroup(click.Group):
+    """The root group, which reports a verb's failure when the verb did not.
+
+    Every verb that reaches a service can fail on the way -- a connection refused, a
+    workspace name that matches nothing -- and a verb with no handler of its own would
+    let that escape as a raw interpreter traceback. One handler here, over every verb any
+    distribution attaches, reports the failure the way :func:`handle_cli_exception`
+    reports it everywhere else: a refusal as its message, a bug with its type and frames,
+    and exit code 1 either way. Click's own exceptions and exits pass through, as they are
+    click's to render.
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (click.ClickException, click.Abort, click.exceptions.Exit):
+            raise
+        except Exception as e:  # noqa: BLE001 - every verb's failure, reported once
+            handle_cli_exception(e)
+            return None
+
+
+@click.group(cls=_RootGroup)
 @click.option('--log-level', '-l',
               type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
               help='Set logging level (overrides project configuration)',
