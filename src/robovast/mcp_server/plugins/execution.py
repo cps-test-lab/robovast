@@ -33,6 +33,7 @@ from fastmcp import FastMCP
 from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
                                     error_findings, stall_report, stopping_soon_report)
 from robovast.common.log_summary import DEFAULT_TOP
+from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
@@ -197,8 +198,8 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     # this is that judgement.
     result.update(stopping_soon_report(st))
     # Only when a running job's simulator reported one, but then always: an error-level finding
-    # is what stops `vast campaign wait` (exit 5), so a reader of this tool has to be shown the same thing
-    # the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
+    # is what stops `vast campaign wait` (HEALTH_FINDING), so a reader of this tool has to be
+    # shown the same thing the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
     # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
     findings = error_findings(st)
     if findings:
@@ -271,7 +272,7 @@ def _wait_next_step(campaign_id: str) -> str:
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
     return (f"run in the background: vast campaign wait {campaign_id} "
-            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
+            f"({CampaignWaitExit.summary()})")
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
@@ -454,7 +455,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
-    itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
+    itself; what ends a ``vast campaign wait`` early, and it needs no declared timeout.
     ``get_job_state`` is the fuller read.
 
     ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
@@ -1030,7 +1031,7 @@ def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
         return ("every image is built — start_campaign(...) to run it, or "
                 "exec_in_container(...) to look inside it")
     return (f"run in the background: vast image wait {' '.join(ids)} --interval 5 "
-            f"(exit 0 built, 1 failed). A builder pod that cannot start -- its own image "
+            f"({ImageWaitExit.summary()}). A builder pod that cannot start -- its own image "
             f"unpullable, or nowhere to schedule it -- fails within a minute rather than "
             f"hanging; get_image_build_status says which")
 
@@ -1121,7 +1122,7 @@ def _status_next_step(status) -> str:
                 "involved, and the build fails on its own shortly if this does not clear")
     if not status.done:
         return (f"run in the background: vast image wait {status.build_id} --interval 5 "
-                f"(exit 0 built, 1 failed)")
+                f"({ImageWaitExit.summary()})")
     if status.phase == "failed":
         return (f"read error_detail above, then "
                 f"get_image_build_log(build_id='{status.build_id}', summarize=True) "
