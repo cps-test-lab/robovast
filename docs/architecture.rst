@@ -815,6 +815,34 @@ page's table-cache entry, and ``force`` on a postprocessing re-run. An archive (
 share) carries the records and never ``.cache/``, so an imported campaign builds its tables
 from its records on first use like any other.
 
+.. _data-contract:
+
+The data contract
+^^^^^^^^^^^^^^^^^
+
+What a reader addresses is public and versioned; where it is stored is private and free to
+change. The public part — the **data contract**, numbered by ``robovast_decode.DATA_CONTRACT``
+and reported by ``describe`` — is the table names, the column names and types, the views and
+``runs``, reached through ``robovast-data``, SQL, the HTTP routes and the MCP tools, and the
+export's layout (``export.json``, the records, ``tables/<name>.parquet``). The private part is
+``.cache/`` — its layout, ``MANIFEST.json``, the parts a live run writes, how a frame is found
+— and the recordings' own formats: a change there bumps the decoder's version and the cache
+rebuilds, and nothing outside notices. No documentation, example, notebook or route names a
+``.cache`` path.
+
+Two rules keep the public part stable while the private part moves:
+
+* **Columns follow the message definition, never the recording.** A field declared as an
+  array is one ``LIST`` column; a sequence of messages is one ``LIST`` column per leaf field,
+  aligned by index; a byte array is a ``BLOB``. A table's schema is a function of the
+  recorded types and the contract number, so every run of a campaign shares it and a column
+  exists whether or not any message had an element for it.
+* **Bulk data is addressed, never copied into rows.** An image or a point cloud is read from
+  the recording by run, topic and time; ``_recording`` names the topic and says so.
+
+A change to a name or a type a reader addresses moves the contract number, with a changelog
+entry naming the tables; a compatibility view under the old name is added where one can be.
+
 What goes in a table, and what stays a file
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

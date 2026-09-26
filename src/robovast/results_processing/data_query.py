@@ -40,6 +40,7 @@ from pathlib import Path
 from robovast.common.query_limits import query_limits
 from robovast_data import Engine, QueryError, Scope, scope_of
 from robovast_data.notes import notes_for
+from robovast_decode import DATA_CONTRACT
 
 logger = logging.getLogger(__name__)
 
@@ -653,17 +654,42 @@ _TYPE_NAMES = {
     "UBIGINT": "INTEGER", "HUGEINT": "INTEGER", "BOOLEAN": "INTEGER",
     "DOUBLE": "REAL", "FLOAT": "REAL", "DECIMAL": "REAL",
     "VARCHAR": "TEXT", "NULL": "TEXT", "string": "TEXT", "large_string": "TEXT",
-    "int64": "INTEGER", "int32": "INTEGER", "bool": "INTEGER", "double": "REAL",
-    "float": "REAL", "null": "TEXT",
+    "int64": "INTEGER", "int32": "INTEGER", "int16": "INTEGER", "int8": "INTEGER",
+    "uint64": "INTEGER", "uint32": "INTEGER", "uint16": "INTEGER", "uint8": "INTEGER",
+    "UINTEGER": "INTEGER", "USMALLINT": "INTEGER", "UTINYINT": "INTEGER",
+    "bool": "INTEGER", "double": "REAL", "float": "REAL", "null": "TEXT",
 }
 
 
 def _described_type(name: str) -> str:
+    """A column's type as the catalog shows it: SQLite's three names for scalars, and
+    ``LIST<...>`` / ``BLOB`` for a list or a byte column, whichever side named the type."""
+    if name.endswith("[]"):                                    # DuckDB: DOUBLE[]
+        return f"LIST<{_described_type(name[:-2])}>"
+    if name.startswith("list<item: ") and name.endswith(">"):  # Arrow: list<item: double>
+        return f"LIST<{_described_type(name[len('list<item: '):-1])}>"
+    if name in ("binary", "large_binary", "BLOB"):
+        return "BLOB"
     return _TYPE_NAMES.get(name.split("(")[0], name)
 
 
+#: What every topic's own table shares, so an agent reads a list column as a list.
+_TOPIC_TABLE_DESCRIPTION = (
+    "One row per recorded message of the topic; timestamp is the receive time in "
+    "NANOSECONDS. Columns follow the message definition: nested fields joined with '.', a "
+    "field declared as an array is ONE list cell (LIST<...>: len(col), col[1] is the first "
+    "element, list_avg(col), unnest(col) for one row per element), a sequence of messages is "
+    "one list per leaf field with the lists of a row aligned by index "
+    "(unnest(\"poses.pose.position.x\") with unnest(\"poses.pose.position.y\") walks a path), "
+    "and a byte array is a BLOB.")
+
+
 def _description(schema: str, table: str):
-    return _TABLE_DESCRIPTIONS.get((schema, table)) or _TABLE_DESCRIPTIONS.get(("main", table))
+    described = (_TABLE_DESCRIPTIONS.get((schema, table))
+                 or _TABLE_DESCRIPTIONS.get(("main", table)))
+    if described is None and schema == "main" and table.startswith("rosbag2_"):
+        return _TOPIC_TABLE_DESCRIPTION
+    return described
 
 
 def describe_data_db(campaign_dir, campaign_id: str | None = None) -> dict:
@@ -698,13 +724,23 @@ def describe_data_db(campaign_dir, campaign_id: str | None = None) -> dict:
         if notes:
             item["column_notes"] = notes
         entries.append(item)
-    return {"tables": entries, "note": _DESCRIBE_NOTE}
+    return {"tables": entries, "data_contract": DATA_CONTRACT, "note": _DESCRIBE_NOTE}
+
+
+#: How many elements of a list cell a reply carries; the rest is said, not sent.
+_MAX_LIST_ITEMS = 64
 
 
 def _cap_cell(value):
-    """Bound a single cell's width. BLOBs are masked; oversized text is truncated."""
+    """Bound a single cell's width. BLOBs are masked; oversized text is truncated; a list is
+    cut to its first elements with a note saying how many there were."""
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"<BLOB {len(bytes(value))} bytes>"
+    if isinstance(value, list):
+        kept = [_cap_cell(v) for v in value[:_MAX_LIST_ITEMS]]
+        if len(value) > _MAX_LIST_ITEMS:
+            kept.append(f"…<truncated, {len(value)} items total>")
+        return kept
     if isinstance(value, str) and len(value.encode("utf-8", "replace")) > _MAX_CELL_BYTES:
         return value.encode("utf-8", "replace")[:_MAX_CELL_BYTES].decode(
             "utf-8", "ignore") + f"…<truncated, {len(value)} chars total>"

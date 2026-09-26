@@ -14,7 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tables from a campaign's recordings, in plain Python: no ROS, no execution image."""
+"""Tables from a campaign's recordings, in plain Python: no ROS, no execution image.
+
+What a reader may rely on -- table names, column names and types, the views -- is the
+**data contract**, numbered by :data:`DATA_CONTRACT`. Where and how the tables are stored
+(``.cache/``, its manifest, the parquet layout) is private to this package and changes
+without notice; the contract number moves only when a name or a type a reader addresses
+does, and the changelog names the tables.
+"""
 
 from importlib.metadata import PackageNotFoundError, version
 
@@ -22,3 +29,8 @@ try:
     __version__ = version("robovast-decode")
 except PackageNotFoundError:  # a source tree that was never installed
     __version__ = "0+unknown"
+
+#: The version of what a reader addresses: table names, column names and types, views.
+#: 2: a field declared as an array is a list column; a sequence of messages is one list per
+#: leaf field; laser scans are tables.
+DATA_CONTRACT = 2

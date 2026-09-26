@@ -67,11 +67,11 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pyarrow as pa
 
-from .tables import TableBuffer, fixed, leading_then_sorted
+from .tables import TableBuffer, fixed
 from .tf import TransformBuffer, TransformError
 from .types import json_text
 from .values import (DEFAULT_CLOCK_TOLERANCE_S, ClockDecimator, column_values, flatten,
-                     message_to_dict)
+                     message_to_dict, table_columns)
 
 
 class HandlerError(RuntimeError):
@@ -84,6 +84,7 @@ class Handler:
     def __init__(self):
         self.buffers: Dict[str, TableBuffer] = {}
         self.orders: Dict[str, Callable] = {}
+        self.types: Dict[str, Dict[str, pa.DataType]] = {}
         self.fields_of = None      # set by the decoder: type name -> rosbags field definitions
 
     def topics(self) -> List[str]:
@@ -122,15 +123,18 @@ class Handler:
         out = {}
         for table, buf in self.buffers.items():
             out[table] = buf.to_arrow(self.orders.get(table), context=context)
-            self.buffers[table] = TableBuffer(table)
+            self.buffers[table] = TableBuffer(table, self.types.get(table))
         return out
 
-    def _buffer(self, table: str, order: Optional[Callable] = None) -> TableBuffer:
+    def _buffer(self, table: str, order: Optional[Callable] = None,
+                types: Optional[Dict[str, pa.DataType]] = None) -> TableBuffer:
         buf = self.buffers.get(table)
         if buf is None:
-            buf = self.buffers[table] = TableBuffer(table)
+            buf = self.buffers[table] = TableBuffer(table, types)
             if order is not None:
                 self.orders[table] = order
+            if types is not None:
+                self.types[table] = types
         return buf
 
 
@@ -247,7 +251,10 @@ class TopicTable(Handler):
 
     Named ``<bag>_<topic>`` (``rosbag2_collision`` for ``/collision`` in ``rosbag2/``).
     ``timestamp`` is the receive time in nanoseconds and ``type`` the message's type name,
-    then the fields: nested ones joined with ``.``, a numeric array as one encoded cell.
+    then the columns :func:`~robovast_decode.values.table_columns` derives from the message
+    definition: nested fields joined with ``.``, an array as one list column, a sequence of
+    messages as one list column per leaf field. The columns and their types are fixed by the
+    type before the first row, so every run's table has the same schema.
     """
 
     def __init__(self, topics: Iterable[str], bag_name: str = "rosbag2"):
@@ -269,9 +276,16 @@ class TopicTable(Handler):
         return TopicTable(topics, bag_name=self._bag)
 
     def message(self, topic, msg, typename, log_time):
+        table = self.table_for(topic)
+        buf = self.buffers.get(table)
+        if buf is None:
+            columns = table_columns(self.fields_of, typename)
+            types = {"timestamp": pa.int64(), "type": pa.string(), **dict(columns)}
+            buf = self._buffer(table, fixed(["timestamp", "type"] + sorted(c for c, _ in columns)),
+                               types)
         row = {"timestamp": log_time, "type": typename.rsplit("/", 1)[-1]}
         row.update(column_values(self.fields_of, msg, typename))
-        self._buffer(self.table_for(topic), leading_then_sorted("timestamp", "type")).add(row)
+        buf.add(row)
 
 
 # -- nav2's behaviour tree --------------------------------------------------------------------

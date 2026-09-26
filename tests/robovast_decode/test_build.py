@@ -23,11 +23,10 @@ def _manifest(campaign):
 
 def test_every_recorded_topic_is_a_table_unless_there_is_a_reason(campaign):
     tables = available_tables(str(campaign))
-    for name in ("poses", "nav2_behavior_tree", "costmaps", "rosbag2_collision",
+    for name in ("poses", "nav2_behavior_tree", "costmaps", "rosbag2_collision", "rosbag2_scan",
                  "action_navigate_to_pose_feedback", "action_navigate_to_pose_status",
                  "rosout", "clock_map"):
         assert name in tables, name
-    assert "rosbag2_scan" not in tables                   # a laser scan is bulk: not rows
     assert all(counts["built"] == 0 for counts in tables.values())
 
 
@@ -35,8 +34,8 @@ def test_the_recording_report_says_what_was_not_tabulated_and_why(campaign):
     build(str(campaign), tables=["rosbag2_collision"])
     rows = pq.read_table(campaign / ".cache" / "tables" / "_recording" / "cfg" / "0.parquet")
     by_topic = {r["topic"]: r for r in rows.to_pylist()}
-    assert by_topic["/scan"]["table"] is None
-    assert "bulk" in by_topic["/scan"]["reason"]
+    assert by_topic["/scan"]["table"] == "rosbag2_scan"    # a scan's ranges are one list cell
+    assert by_topic["/scan"]["reason"] is None
     assert by_topic["/collision"]["table"] == "rosbag2_collision"
     assert by_topic["/collision"]["messages"] == 40 and by_topic["/collision"]["bytes"] > 0
     assert by_topic["/rosout"]["recording"] == "logs/rosout_bag"

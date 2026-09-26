@@ -34,7 +34,7 @@ nothing gets:
 What is recorded and *not* tabulated is said, per topic, with the reason
 (:data:`BULK_TYPES`, :data:`NOT_TABULATED`, :data:`ROQSIM_NOT_TABULATED`): a camera image or a
 point cloud is read from the recording itself, never copied into rows, and roqsim's raw
-``state`` is read by roqsim.
+``state`` is read by roqsim. A laser scan is rows: its ranges are one list cell per message.
 
 **A campaign's own configuration refines the defaults**, in the shape the ``.vast`` has always
 written it -- ``{"groups": [{"bag_dir": ..., "plugins": [{"type": ..., ...}]}]}``: a configured
@@ -60,10 +60,12 @@ INFRA_BAG = "logs/rosout_bag"
 #: the scenario recording.
 ROQSIM_BAG = "roqsim_bag"
 
-#: Types whose payload is bulk: read from the recording where they are wanted, never rows.
+#: Types whose payload is bulk: read from the recording where they are wanted, never rows. A
+#: laser scan is not among them: its ranges are a numeric array like a covariance, one list
+#: cell per message.
 BULK_TYPES = frozenset({
     "sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/PointCloud2",
-    "sensor_msgs/msg/LaserScan", "sensor_msgs/msg/PointCloud",
+    "sensor_msgs/msg/PointCloud",
 })
 
 #: Topics of the scenario recording that other tables already cover, or that are noise.
