@@ -463,7 +463,8 @@ def workspace_list(namespace, context):
               help='Also report the objects matching GLOB whose model values a run may '
                    'override, with their current values. Costs a model build.')
 @click.option('--entities', is_flag=True,
-              help='Also list the entities the world compiles. Costs a model build.')
+              help='Also list the entities the world compiles, and what its start state '
+                   'warns about. Costs a model build and a reset.')
 @click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
 @target_options
 def workspace_world(workspace, path, targets, entities, as_json, namespace, context):  # pylint: disable=redefined-outer-name
@@ -496,9 +497,15 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
         click.echo(f"asked:   {described.backend} in {described.image} "
                    f"({described.duration_s:.1f}s)")
         for plugin in described.components:
-            click.echo(f"  plugin {plugin.get('key')}  ({len(plugin.get('paths') or [])} paths)")
+            click.echo(f"  plugin {plugin.get('address')}  ({len(plugin.get('paths') or [])} paths)")
         if described.entities is not None:
             click.echo(f"  entities: {', '.join(described.entities) or '(none)'}")
+        for warning in described.warnings or []:
+            click.echo(f"  WARN [{warning.get('check')}] {warning.get('message')}")
+            if warning.get("hint"):
+                click.echo(f"       hint: {warning['hint']}")
+        for stage, reason in (described.errors or {}).items():
+            click.echo(f"  ERROR [{stage}] {reason}")
         fields = (described.overridable or {}).get("fields") or []
         if fields:
             click.echo(f"  overridable fields: {', '.join(f['field'] for f in fields)}")

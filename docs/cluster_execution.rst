@@ -66,7 +66,8 @@ them. Internally:
    scenario. (A composition that reaches for an auxiliary container — a variation, an
    input generator, the simulator's own world query — gets a pod per container, created
    when it asks and deleted when the campaign ends; a composition that asks for none
-   creates nothing. Composing *outside* a campaign — ``preview_configurations`` — gets
+   creates nothing. Composing *outside* a campaign — ``validate_project``,
+   ``preview_configurations``, and ``exec_in_container`` for one configuration — gets
    the same pod held by the container-exec manager instead, so an authoring loop reuses
    one warm pod and idleness reaps it.)
 3. **Queueing** — a Job is created only when sufficient CPU/memory is available,

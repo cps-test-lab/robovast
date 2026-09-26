@@ -34,6 +34,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
@@ -537,17 +538,33 @@ class AdmissionController:
         created = 0
         with self._lock:
             self._record_paused_refusals_locked()
-            pending = self._pending_in_order()
-            if not pending:
+            if not any(self._pending_locked()):
                 return 0
             short = self._check_space_locked()
             if short:
-                for owner in {item.owner for item in pending}:
+                for owner in {item.owner for item in self._pending_locked()}:
                     self._refusals[owner] = f"{DISK_WAIT}{short}"
                 return 0
-            nodes, growable = self._effective_free_locked(force=True)
+        # The cluster is read with the lock released: the reading is a round trip to the API
+        # server, and every campaign's poll and every status read waits on this lock. The
+        # ledger is applied to it afterwards, under the lock, so a job another pass created
+        # meanwhile is still charged through ``_held``, and one released meanwhile is at worst
+        # still charged by this reading.
+        asked_at = self._clock()
+        reading = self._provider.budget()
+        with self._lock:
+            pending = self._pending_in_order()
+            if not pending:
+                return 0
+            self._take_budget_locked(reading, asked_at)
+            nodes, growable = self._effective_free_locked()
             by_id = {n.node_id: n for n in nodes}
             unpinned = self._unpinned_outstanding_locked()
+            # Each owner's PLANNED count, kept current as items are created. Counted once per
+            # pass rather than per refused item: a recount per refusal walks the queue once for
+            # every item it refuses, and a full cluster refuses nearly all of them -- a pass
+            # quadratic in the queue, held under the lock every campaign's poll needs.
+            planned_by_owner = Counter(item.owner for item in pending)
             failed: "List[WorkItem]" = []
             # Nodes a pinned item is waiting for. Built as the pass walks the queue in
             # priority order, so it only ever shuts out work that ranks BELOW the item
@@ -587,11 +604,9 @@ class AdmissionController:
                     # so a campaign with a handful of jobs queued was told the whole cluster's
                     # queue depth, reported into its own log as though it were its own.
                     # The refusal SLOT was made per owner for exactly this confusion; the
-                    # number inside the string was not. `state` is mutated as items are
-                    # created, so counting PLANNED here is accurate mid-pass.
-                    own = sum(1 for i in pending
-                              if i.owner == item.owner and i.state == PLANNED)
-                    waiting = f"{own} job(s) waiting"
+                    # number inside the string was not. The count drops as this pass creates
+                    # the owner's items, so it is accurate mid-pass.
+                    waiting = f"{planned_by_owner[item.owner]} job(s) waiting"
                     # Which of the two filters emptied the list, because they need opposite
                     # responses and the message is the only thing an operator sees. A node
                     # excluded by `may_use` is being measured, or is outside the configured
@@ -680,6 +695,7 @@ class AdmissionController:
                                        CREATE_ATTEMPT_LIMIT, exc_info=True)
                     continue
                 item.state = CREATED
+                planned_by_owner[item.owner] -= 1
                 # The node the grant is CHARGED to, which is not the same question as the
                 # node the pod was pinned to: an unpinnable node still gets the charge, so
                 # the rest of this pass does not hand its cores out twice. ``None`` here is
@@ -833,12 +849,14 @@ class AdmissionController:
         ever be pinned to.
         """
         with self._lock:
+            self._refresh_budget_locked()
             nodes, _ = self._effective_free_locked()
             return sorted(n.node_id for n in nodes if n.pinnable)
 
     def growable(self) -> bool:
         """Whether the cluster can add nodes. See :attr:`Budget.growable`."""
         with self._lock:
+            self._refresh_budget_locked()
             _, growable = self._effective_free_locked()
             return growable
 
@@ -1024,13 +1042,12 @@ class AdmissionController:
         is admitting would be indistinguishable from a campaign the cluster is too full for.
         Those need opposite responses: one is waiting for a machine, the other for a person.
         """
-        for owner in {i.owner for i in self._items.values()
-                      if i.state == PLANNED and i.ranks_under in self._paused}:
-            own = sum(1 for i in self._items.values()
-                      if i.owner == owner and i.state == PLANNED)
+        planned = [i for i in self._items.values() if i.state == PLANNED]
+        planned_by_owner = Counter(i.owner for i in planned)
+        for owner in {i.owner for i in planned if i.ranks_under in self._paused}:
             self._refusals[owner] = (
-                f"paused: {own} job(s) held, and nothing is admitted until it is resumed. "
-                f"Jobs already running are unaffected.")
+                f"paused: {planned_by_owner[owner]} job(s) held, and nothing is admitted "
+                f"until it is resumed. Jobs already running are unaffected.")
 
     def _unpinned_outstanding_locked(self) -> int:
         """How many created-but-unplaced unpinned jobs the queue is carrying.
@@ -1068,22 +1085,38 @@ class AdmissionController:
         A paused campaign is absent entirely: it is not a low rank but no rank, so nothing of
         it is created however idle the cluster is.
         """
-        return sorted((i for i in self._items.values()
-                       if i.state == PLANNED and i.ranks_under not in self._paused),
+        return sorted(self._pending_locked(),
                       key=lambda i: (-i.priority,
                                      -self._priorities.get(i.ranks_under, 0),
                                      i.started_at, i.seq))
 
-    def _effective_free_locked(self, *, force: bool = False):
+    def _pending_locked(self) -> "Iterable[WorkItem]":
+        """The items a drain may create, unordered: planned, and of no paused campaign."""
+        return (i for i in self._items.values()
+                if i.state == PLANNED and i.ranks_under not in self._paused)
+
+    def _take_budget_locked(self, reading: Budget, asked_at: float) -> None:
+        """Keep *reading* unless a reading asked for later is already held.
+
+        Readings are taken outside the lock, so two passes can store theirs out of order; the
+        later question is the fresher answer whichever of them returned first.
+        """
+        if self._budget is None or asked_at >= self._budget_at:
+            self._budget = reading
+            self._budget_at = asked_at
+
+    def _refresh_budget_locked(self) -> None:
+        """Read the cluster again if the held reading is older than the TTL."""
+        now = self._clock()
+        if self._budget is None or (now - self._budget_at) >= self._budget_ttl:
+            self._take_budget_locked(self._provider.budget(), now)
+
+    def _effective_free_locked(self):
         """``([NodeBudget], growable)`` with in-flight reservations already subtracted.
 
         The ledger is applied **per node**, to the node each reservation was granted on: a
         job promised room on one machine must not appear to free capacity on another.
         """
-        now = self._clock()
-        if force or self._budget is None or (now - self._budget_at) >= self._budget_ttl:
-            self._budget = self._provider.budget()
-            self._budget_at = now
         budget = self._budget
         free = {n.node_id: [n.free_cpu, n.free_memory, n.free_gpu, n.free_ephemeral,
                             n.pinnable]
