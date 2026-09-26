@@ -21,7 +21,7 @@ bindings:
 
 * the **service** HTTP endpoints (:mod:`robovast.service.app`, FastAPI, OpenAPI
   at ``/docs``);
-* the **client** :class:`robovast.service.client.RobovastClient`;
+* the **client** :func:`robovast.service.client.RobovastClient`;
 * the **MCP tools** and **``vast`` CLI** commands, which wrap the client.
 
 Campaign status reuses :class:`robovast.client.status.Status` verbatim — the live state
@@ -55,7 +55,7 @@ that matters — can decline what it does not.
    * - ``robovast-cluster``
      - the service implementation (Kubernetes), its cluster-config plugins, the deploy and operator
        commands
-     - ``kubernetes``, ``boto3``, ``google-cloud-storage``
+     - ``kubernetes``, ``bcrypt``
    * - ``robovast-nav`` / ``robovast-sim-roqsim``
      - navigation variation types and panels; the roqsim simulator backend
      - per package
@@ -236,8 +236,8 @@ tables stay queryable in the meantime: a query builds what it names from the rec
 or not the campaign has been postprocessed.
 
 Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
-handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
-clock starts, and the layers that would otherwise fight the teardown consult it. The
+handler raises a process-wide flag (uvicorn's ``should_exit``, on ``app.state``) *before*
+the clock starts, and the layers that would otherwise fight the teardown consult it. The
 SSE streams do not *wait* for their
 next pull either: a watchdog closes the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
@@ -410,8 +410,7 @@ imported in a process that may have no kubeconfig. Reaching for one belongs insi
 
 That indirection is what lets the cluster implementation ship as its own distribution,
 ``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
-install without it carries no ``kubernetes``, ``boto3`` or ``google-cloud-storage`` at
-all, and still validates, composes, stores workspaces and processes results. Declining
+install without it carries no ``kubernetes`` at all, and still validates, composes, stores workspaces and processes results. Declining
 it is a supported configuration for everything but running a service.
 
 .. _refuse-by-name:
@@ -538,8 +537,8 @@ pod plus ``pods/exec``. Its ``exec_in`` captures a command's output once it is o
 tap on a live job is built on (:mod:`robovast.service.tap`). Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
-``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
-engine may not import ``robovast.service``).
+``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live beside the
+execution engine because it may not import ``robovast.service``).
 
 **The diagnostic stages the way a run stages.** In-cluster, ``/config`` is written as a
 staged tree on the service's disk and fetched from its data plane by an init container on
@@ -1045,7 +1044,7 @@ three:
   rather than in the UI, so the served list and the view cannot disagree; a campaign that
   declares the type itself keeps its own entry. The frontend normalizes the result against each
   panel type's registry defaults (``frontend/ui/src/lib/panels/parsePanels.ts``).
-* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/dashboard/registry.ts``);
+* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/panels/registry.ts``);
   ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
   panel is one ``registerPanel`` call.
 * **Shared panel kit** — ``@robovast/panel-kit`` (``frontend/panel-kit/``) holds the panel contract
@@ -1063,12 +1062,13 @@ three:
   rest subscribe. It is an external store, so the ~display-rate ``t`` updates while playing
   don't re-render the tree.
 * **Data seam** — ``DataProvider`` (declared in ``frontend/panel-kit/src/dataProvider.ts``, implemented
-  by ``dbDataProvider`` in ``frontend/ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
+  by ``dbDataProvider`` in ``frontend/ui/src/lib/panels/dataProvider.ts``) is how a panel gets
   rows/frames by table + time, decoupled from transport. It reads one run's rows through the
   ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
-  ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
-  drops in without touching any panel.
+  ``has`` / ``fetchRun``) is shaped so ``LiveDataProvider`` — the same interface over a
+  running run's feed, which a panel asks for with ``isLiveProvider`` — drops in without
+  touching any panel.
 
 **Camera delivery.** A recorded video is the one panel input that never passes through the data
 seam: the panel resolves a ``videos`` row to a URL (``DataProvider.runFileUrl``) and puts it in a
@@ -1133,7 +1133,7 @@ The interface surface
 ---------------------
 
 The operation contract (Phase 0 + workspaces + postprocessing shown; data-query
-lives in the ``run_data`` MCP plugin):
+lives in the ``results`` MCP plugin):
 
 * **Workspaces** — ``create_workspace`` / ``list_workspaces`` / ``get_workspace``
   / ``delete_workspace`` / ``create_upload``. A workspace's *files* are not separate
@@ -1193,13 +1193,13 @@ lives in the ``run_data`` MCP plugin):
   ``*_panels_source`` visualization editor). Both overwrite the edited block in the
   campaign's own ``_config/<name>.vast`` in place. ``run_postprocessing`` dispatches the
   re-run in the background and returns at once (watch the campaign view for progress).
-* **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
+* **Data query** (MCP ``results``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
 
 **New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
 ``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
 ``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (``ClusterService``'s
-own ``build_image`` and ``run_postprocessing`` call it too). It reads
+own ``build_image`` calls it too). It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
 refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
@@ -1339,7 +1339,7 @@ concurrent with the build itself — at submit. A campaign that builds inherits 
 those fire points are on the build and not on the caller.
 
 The **family** images are warmed from a different place and for a different reason:
-``vast cluster setup`` / ``upgrade``, which is both the moment every node is cold for the
+``vast cluster setup`` / ``vast service upgrade``, which is both the moment every node is cold for the
 whole family — a tag bump or a moved project means the next campaign pays a full pull of
 ``robovast-roqsim``, the largest image there is — and the moment it is free, since the pod is
 being restarted anyway so nothing is mid-campaign. It resolves from the caller's own
