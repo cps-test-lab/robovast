@@ -254,6 +254,8 @@ KNOWN: dict[str, Known] = {
         _STORAGE, "Root holding image build contexts.", Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE": Known(
         _STORAGE, "Root of the shared generated-scene cache.", Sensitivity.HOST_PATH),
+    "ROBOVAST_SCREENSHOTS": Known(
+        _STORAGE, "Root holding kept simulation screenshots.", Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE_BYTES": Known(
         _STORAGE, "Ceiling the scene cache is trimmed to.",
         default=str(DEFAULT_MAX_CACHE_BYTES)),

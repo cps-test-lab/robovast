@@ -26,6 +26,14 @@ directory, an eviction policy and a status a viewer polls. A screenshot is keyed
 pose and a moment, so the key space is unbounded and every call is a run. Caching it would
 grow a directory nobody ever hits twice.
 
+**A render is kept, though, under a name of its own.** Not so a second request can reuse it —
+none would — but so the one that asked for it can pass it on: an image that exists only inline
+in a reply cannot be attached, saved or shown to someone else. :func:`keep` moves each render
+into :func:`kept_root` under a fresh name, which the service serves at
+``Routes.campaign_screenshot_frame``. The store is bounded rather than cached: a render is kept
+for :data:`KEEP_S` after it was made, and at most :data:`KEEP_MAX` renders are kept, the oldest
+removed first.
+
 **So this is synchronous, and that is the point.** An asynchronous render would have to stash
 its failure reason somewhere the caller could find after the request returned — which is
 exactly the in-memory dictionary that made a failed scene build invisible to everything but a
@@ -37,8 +45,12 @@ warm image renders in seconds; a cold one pays for the pull first, inside the re
 
 import logging
 import os
+import re
 import shutil
 import tempfile
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +58,21 @@ logger = logging.getLogger(__name__)
 
 #: Written by the backend's command into the entry's output directory.
 FRAME_NAME = "frame.png"
+
+#: How long a kept render stays addressable after it was made.
+KEEP_S = 24 * 3600
+
+#: How many renders are kept at most, across every campaign; the oldest go first.
+KEEP_MAX = 200
+
+#: What a kept render is named: a fresh random hex id. A name is matched in full before it
+#: reaches the filesystem, so a request cannot address anything outside the store.
+_KEPT_NAME = re.compile(r"[0-9a-f]{32}\.png")
+
+#: A campaign id as a directory of the store: one path segment, never ``.`` or ``..``.
+_KEPT_CAMPAIGN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+
+_prune_lock = threading.Lock()
 
 #: Where a campaign-file world is mounted back, so the world resolves its own references
 #: exactly as it did during the run. The same path :mod:`scene_cache` uses, for the same reason.
@@ -185,3 +212,80 @@ def discard(frame: Path) -> None:
     root = frame.parent.parent
     if os.path.basename(root).startswith("robovast-screenshot-"):
         shutil.rmtree(root, ignore_errors=True)
+
+
+def kept_root() -> Path:
+    """Where kept renders live: ``ROBOVAST_SCREENSHOTS``, else ``~/.robovast/cache/screenshots``."""
+    root = os.environ.get("ROBOVAST_SCREENSHOTS")
+    if not root:
+        root = os.path.join(os.path.expanduser("~"), ".robovast", "cache", "screenshots")
+    return Path(root)
+
+
+def keep(campaign_id: str, frame: Path, *, now: Optional[float] = None) -> Path:
+    """Move *frame*, fresh from :func:`render`, into the store; return where it is now.
+
+    Its request directory is removed on the way, and the store is pruned, so keeping a render
+    never grows the store past its bounds. The kept file's name is its name on the route.
+    """
+    if not _KEPT_CAMPAIGN.fullmatch(campaign_id):
+        raise ScreenshotUnavailable(
+            f"campaign id {campaign_id!r} cannot name a directory of the screenshot store")
+    target = kept_root() / campaign_id / f"{uuid.uuid4().hex}.png"
+    try:
+        # Under the prune lock: a prune running between creating the campaign's directory and
+        # writing into it would remove the directory as empty.
+        with _prune_lock:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(frame, target)
+            _prune(now)
+    finally:
+        discard(frame)
+    return target
+
+
+def kept(campaign_id: str, name: str, *, now: Optional[float] = None) -> Path:
+    """The kept render *name* of *campaign_id*, or ``KeyError`` saying it is not kept."""
+    if not (_KEPT_CAMPAIGN.fullmatch(campaign_id) and _KEPT_NAME.fullmatch(name)):
+        raise KeyError(f"no screenshot {name!r} of campaign {campaign_id!r}")
+    path = kept_root() / campaign_id / name
+    now = time.time() if now is None else now
+    try:
+        made = path.stat().st_mtime
+    except OSError:
+        made = None
+    if made is None or now - made > KEEP_S:
+        raise KeyError(
+            f"screenshot {name} of campaign {campaign_id} is not kept: a render is kept for "
+            f"{KEEP_S // 3600} h and at most {KEEP_MAX} are kept. Render it again with "
+            "get_simulation_screenshot.")
+    return path
+
+
+def prune(*, now: Optional[float] = None) -> None:
+    """Remove every kept render past :data:`KEEP_S`, then the oldest beyond :data:`KEEP_MAX`."""
+    with _prune_lock:
+        _prune(now)
+
+
+def _prune(now: Optional[float]) -> None:
+    """:func:`prune`, for a caller already holding the lock."""
+    root = kept_root()
+    now = time.time() if now is None else now
+    entries = []
+    for path in root.glob("*/*.png"):
+        try:
+            entries.append((path.stat().st_mtime, path))
+        except OSError:
+            continue                # removed by someone else since the glob saw it
+    entries.sort()
+    stale = [p for made, p in entries if now - made > KEEP_S]
+    fresh = [p for made, p in entries if now - made <= KEEP_S]
+    for path in stale + fresh[:max(0, len(fresh) - KEEP_MAX)]:
+        path.unlink(missing_ok=True)
+    for directory in root.glob("*"):
+        try:
+            if directory.is_dir() and not any(directory.iterdir()):
+                directory.rmdir()
+        except OSError:
+            continue
