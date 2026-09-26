@@ -49,6 +49,8 @@ import tarfile
 import threading
 import time
 
+from robovast.client.safe_path import check_relative
+
 logger = logging.getLogger(__name__)
 
 #: Excluded from every campaign archive by default: ``.cache`` holds the tables built from
@@ -479,6 +481,12 @@ def iter_inputs_tar(campaign_root: str, job_tags, config_files=None,
             raise ValueError(f"a job tag is one path segment, got {tag!r}")
         if not os.path.isfile(os.path.join(transient, job_documents(tag)[0])):
             raise KeyError(f"no parameter document for job {tag!r} in this campaign")
+    for config_name, rel in (config_files or ()):
+        # A cell is one directory of this campaign; a name with a separator, or a step
+        # up, would read a file of another campaign under the token of this one.
+        if not config_name or "/" in config_name or config_name in (".", ".."):
+            raise ValueError(f"a configuration name is one path segment, got {config_name!r}")
+        check_relative(rel)
 
     def _keep(arc: str) -> bool:
         tag = None if "/" in arc else _job_document_tag(arc)
