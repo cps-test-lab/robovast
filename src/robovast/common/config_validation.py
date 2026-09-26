@@ -985,7 +985,7 @@ def _unresolved_variation_problem(exc, vast_dir, declared_plugins, config_name):
       is real and composition will resolve it. This is not a problem with the file, so none
       is reported. It is deliberately not *confirmed* either: knowing the class behind the
       name is a valid ``Variation`` needs the import, and validation must not import plugin
-      code into this long-lived process (see ``config_plugins._prepend_sys_path``).
+      code into this long-lived process (see :mod:`robovast.common.config_plugins`).
     * **``plugins:`` declares specs that are not staged yet.** The name cannot be resolved
       *here* -- and the generic message's advice, "declare that package in ``plugins:``", is
       advice the author has already taken, so it reads as a wrong declaration or a missing

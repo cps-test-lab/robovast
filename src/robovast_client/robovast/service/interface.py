@@ -186,8 +186,8 @@ class ImageBuildError(BaseModel):
     registry-qualified ref (see the zero-registry-knowledge invariant).
     """
 
-    #: base-pull | base-image | apt | pip | source-build | push | resource | validate |
-    #: builder-pod
+    #: base-pull | base-image | apt | pip | source-build | build | push | resource |
+    #: validate | builder | builder-pod
     #:
     #: ``base-image`` is distinct from ``base-pull``: the image was fetched fine, it
     #: simply does not contain something the project's own packages depend on.

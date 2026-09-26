@@ -16,7 +16,7 @@
 
 """What an experiment image's own catalogs say, asked in the image and cached per image.
 
-Two readers share this: the ``image_catalog`` MCP tools (``list_roqsim_plugins`` and friends),
+Two readers share this: the ``image_catalog`` MCP tools (``list_image_catalog`` and friends),
 which answer a caller's question about an image, and the world check in ``validate_project``
 (:mod:`robovast.service.world_keys`), which compares a world's config keys with what the image's
 plugins publish. One cache, keyed by the image's resolved identity
