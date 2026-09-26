@@ -28,6 +28,34 @@
         "title": "ActionResult",
         "type": "object"
       },
+      "ArrowQueryRequest": {
+        "description": "A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).\n\nThe typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in\nits type, with no row cap. What ``robovast-data`` reads a service's tables through.",
+        "properties": {
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "ArrowQueryRequest",
+        "type": "object"
+      },
       "BatchObjective": {
         "description": "One search batch's objective figures.\n\n``min``/``max``/``mean`` are RAW and direction-free, so no reader has to know whether the\ncampaign maximizes before it can read a field name; ``best_so_far`` is the one figure that\napplies the direction. ``None`` statistics with ``n_scored == 0`` mark a batch that measured\nnothing \u2014 a gap, never a zero \u2014 and ``best_so_far`` carries forward across it.",
         "properties": {
@@ -7517,6 +7545,57 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/query.arrow": {
+      "post": {
+        "description": "Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.\n\nThe CSV twin spells every value as text and a list column as ``[...]``; this keeps\nthe types, which is what ``robovast-data`` reads a service's tables through. The\nrequest's ``tables`` are the caller's own relations -- each an Arrow IPC stream in\nbase64 -- registered under their names for this query alone, so a DataFrame a\nnotebook made joins the campaign's tables on the service.",
+        "operationId": "query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArrowQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Campaign Data Arrow",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/query.csv": {
       "get": {
         "description": "Stream the same read-only ``SELECT`` as CSV, with no row cap.\n\nThe JSON query clamps at 5000 rows and says ``truncated``; this is where the rest\nof the result lives. Streamed, so a result larger than memory is fine at both\nends, and an MCP tool can hand over this URL instead of spending context on rows.",
@@ -8616,7 +8695,7 @@
     },
     "/data/campaigns/{campaign_id}/frame": {
       "get": {
-        "description": "One camera frame of a run as ``image/jpeg``, no wider than 640 px.\n\nThe last frame at or before ``t``, the first when none is; the newest without\n``t``. Its stamp, in the seconds every table of the run uses, is the\n``X-Frame-Time`` header. A live run's frame comes from the watcher following its\nrecording, a finished run's from an index built on first request. ``404`` for a\nrun without the topic or with no frame of it yet, with the reason.",
+        "description": "One camera frame of a run: as ``image/jpeg`` no wider than 640 px, or whole.\n\nThe last frame at or before ``t``, the first when none is; the newest without\n``t``. Its stamp, in the seconds every table of the run uses, is the\n``X-Frame-Time`` header. With ``full`` the frame is what the camera produced --\n``application/x-npy`` holding the pixels in the encoding's own dtype (the encoding\nin ``X-Frame-Encoding``), or a compressed image's own bytes -- and its frame is\n``X-Frame-Id``. A live run's frame comes from the watcher following its recording,\na finished run's from an index built on first request. ``404`` for a run without\nthe topic or with no frame of it yet, with the reason.",
         "operationId": "get_campaign_frame_data_campaigns__campaign_id__frame_get",
         "parameters": [
           {
@@ -8667,12 +8746,26 @@
               "description": "a moment in seconds of the run's clock; the newest frame without it",
               "title": "T"
             }
+          },
+          {
+            "description": "the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded",
+            "in": "query",
+            "name": "full",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded",
+              "title": "Full",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
             "content": {
-              "image/jpeg": {}
+              "application/x-npy": {},
+              "image/jpeg": {},
+              "image/png": {}
             },
             "description": "Successful Response"
           },
@@ -8940,6 +9033,100 @@
           }
         },
         "summary": "Upload Campaign Outputs",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/points": {
+      "get": {
+        "description": "One point cloud of a run as an Arrow IPC stream, one column per field.\n\nThe cloud at or before ``t`` (the last without it), or with ``after`` the first one\nafter ``t``. Its stamp is ``X-Frame-Time``, its frame ``X-Frame-Id``. ``404`` for a\nrun or topic that is not here, a topic that is not a point cloud, and a step past\nthe last cloud, with the reason.",
+        "operationId": "get_campaign_points_data_campaigns__campaign_id__points_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run, as <config>/<run_id>",
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "description": "the run, as <config>/<run_id>",
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the point cloud topic",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "the point cloud topic",
+              "title": "Topic",
+              "type": "string"
+            }
+          },
+          {
+            "description": "a moment in seconds of the run's clock; the last cloud without it",
+            "in": "query",
+            "name": "t",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a moment in seconds of the run's clock; the last cloud without it",
+              "title": "T"
+            }
+          },
+          {
+            "description": "the first cloud strictly after t (the run's first without t), to step through the topic",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "the first cloud strictly after t (the run's first without t), to step through the topic",
+              "title": "After",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.apache.arrow.stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign Points",
         "tags": [
           "data"
         ]
