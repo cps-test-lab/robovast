@@ -75,3 +75,20 @@ def test_a_qualified_predicate_narrows_only_its_own_table():
 ])
 def test_anything_less_plain_narrows_nothing(sql):
     assert "poses" not in parse(sql).narrowing
+
+
+def test_threads_parsing_at_once_each_get_their_own_statement():
+    """A service parses every request's query on the request's thread. A parser shared between
+    threads handed one request another's result, or none at all."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    queries = [f"SELECT {n} AS value_{n} FROM runs" for n in range(64)]
+
+    def rewritten(sql):
+        return parse(sql).sql
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(rewritten, queries * 8))
+    for sql, result in zip(queries * 8, results):
+        number = sql.split()[1]
+        assert f"value_{number}" in result, (sql, result)
