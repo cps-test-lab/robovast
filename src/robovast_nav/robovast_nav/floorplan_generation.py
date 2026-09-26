@@ -65,6 +65,26 @@ def _stage_input_dir(src_dir, dst_dir):
                 pass
 
 
+#: The file types scenery_builder reads: a model, and the files a model ``import``s.
+_MODEL_SUFFIXES = (".fpm", ".variation")
+
+
+def cache_inputs(model_file_path):
+    """Every file a build of *model_file_path* reads, for the cache key.
+
+    The model plus every model file beside it: a ``.variation`` imports sibling ``.fpm``
+    files, which is why the whole directory is staged for the container, and a key that
+    covered only the entry file served the previous map after an import was edited. Every
+    sibling rather than the ones an import names, so the key needs no parser of its own.
+    """
+    directory = os.path.dirname(model_file_path)
+    siblings = sorted(
+        os.path.join(directory, name) for name in os.listdir(directory)
+        if name.endswith(_MODEL_SUFFIXES)
+        and os.path.isfile(os.path.join(directory, name)))
+    return [model_file_path] + [f for f in siblings if f != model_file_path]
+
+
 def get_scenery_builder_version():
     """Return the docker image digest/ID of the scenery_builder image.
 
@@ -240,7 +260,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
         file_cache = FileCache(base_path, "floorplan_variation",
                                [variation_file, num_variations, seed_value, mesh_format, laser_height])
-        files_for_hash = [variation_file_path]  # TODO: add fpm
+        files_for_hash = cache_inputs(variation_file_path)
         strings_for_hash = [str(num_variations), str(seed_value), mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
@@ -436,7 +456,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         # campaign's map to another.
         file_cache = FileCache(base_path, "floorplan_generation",
                                [floorplan_file, mesh_format, laser_height])
-        files_for_hash = [floorplan_file_path]
+        files_for_hash = cache_inputs(floorplan_file_path)
         strings_for_hash = [mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
