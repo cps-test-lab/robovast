@@ -365,8 +365,9 @@ def resolve_family_image(image: str, *, project: str | None = None,
     which run concurrently with campaigns configured differently.
     """
     member = family_member(image)
-    resolved = f"{project or default_image_project()}/{member}:{tag or default_image_tag()}"
-    if warn and resolved.endswith(f":{FLOATING_IMAGE_TAG}"):
+    tag = tag or default_image_tag()
+    resolved = f"{project or default_image_project()}/{member}:{tag}"
+    if warn and is_floating_image_tag(tag):
         # A run whose image is a floating tag is not reproducible, and the person who has
         # to know that is the one starting it. Not an error -- a floating tag is the right
         # answer for a dev loop and for an editable install, which has no release tag to
