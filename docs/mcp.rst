@@ -532,6 +532,15 @@ response has no dict to carry one. And for a *human* who wants to watch a run, n
 answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
 through this interface one frame at a time.
 
+A screenshot is also **kept**, so it can be attached, saved or handed on without rendering it
+again: beside the image the tool returns ``{url, kept_for_s}``, the address the service
+serves that render at (``GET /campaigns/<campaign_id>/screenshots/<name>``) and how long it
+stays there. The service keeps a render for 24 hours after it was made and at most 200 renders
+in all, the oldest removed first; after that the address answers 404 and the render has to be
+made again. They are kept under ``ROBOVAST_SCREENSHOTS`` (default
+``~/.robovast/cache/screenshots``) on the service's host. ``url`` is omitted when the service
+declares no origin to reach it on, as ``read_file``'s is.
+
 An aggregate over a distance needs a square root, and SQLite's own ``sqrt`` is a
 compile-time option, so a query could work on the MCP host and fail in the service.
 ``SQRT(x)`` is therefore registered alongside ``STDDEV``/``MEDIAN``/``PERCENTILE`` and is
@@ -664,6 +673,11 @@ Deliberately a **command and not an MCP tool**: a campaign can run for days, and
 blocking tool call would occupy its caller for the whole of it, where a command can be
 backgrounded and waited on. ``get_campaign_status``
 is the single-read version for a campaign you are not waiting on.
+
+``start_campaign``'s ``image_project_tag`` pins the tag RoboVAST's ``family:`` images are
+taken at for this run, as ``vast workspace run --image-project-tag`` does; left empty, they
+resolve to the service's own ``ROBOVAST_PROJECT_TAG``, which is often a floating ``latest``
+(see :doc:`images`). An image the ``.vast`` names is run as written either way.
 
 ``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
 when several are waiting, so an assistant told to start something out of the way of a
@@ -847,11 +861,13 @@ owns, with no log reading at all:
      - **Tri-state.** ``true`` once ``progress_age_s`` passes ``progress_deadline_s``
        (the declared ``execution.timeout`` scaled by ``runs_per_job``); ``false``
        inside it; ``null`` when no verdict is possible — the ``.vast`` declares no
-       timeout, ``status`` is not ``running`` (see below), or every job of the current
-       batch is queued for cluster capacity, so no run is running and none can complete.
-       That last case is the second one's argument applied inside ``running``: the budget
-       is per-run, and a queue the campaign does not control is not a stalled run.
-       ``stall_verdict`` then says which.
+       timeout, ``status`` is not ``running`` (see below), every run of the current batch
+       has finished (``batch_runs_done`` plus ``batch_runs_no_result`` reaches
+       ``batch_runs_total``) while the campaign collects them and moves on, or every job of the current batch is queued for cluster
+       capacity, so no run is running and none can complete. The last two cases are the
+       second one's argument applied inside ``running``: the budget is per-run, and neither
+       the work after a batch's last run nor a queue the campaign does not control is a
+       stalled run. ``stall_verdict`` then says which.
    * - ``stall_reason``
      - Present only when ``stalled`` is ``true``. Names the comparison *and the next
        call*, so the follow-up is not something to remember.
@@ -1267,6 +1283,13 @@ that made this rule — and then ``errors`` says why while the cheap half still 
 ``errors`` before concluding that a ``null`` ``entities`` means the world compiles none; and
 read ``dropped_transport``, which names the transport plugins left out of the build (a describe
 publishes nothing, so they contribute nothing but a way to fail).
+
+**The start state comes with the entities.** Asking for ``entities`` also resets the world, as a
+run does before each trial, and ``warnings`` lists what that state holds that is likely to make a
+run misbehave, each ``{check, message, hint}`` in the simulator's words -- two bodies placed inside
+one another, which the contact solver flings apart on the first steps. ``null`` means the world was
+not reset (no ``entities`` asked for, or ``errors.reset`` says why); ``[]`` means nothing to say.
+``validate_project`` reports the same warnings as advice.
 
 .. _mcp-container-exec:
 

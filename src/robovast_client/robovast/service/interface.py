@@ -2007,6 +2007,12 @@ class WorldDescription(BaseModel):
     components: list[dict] = Field(default_factory=list)
     #: The entities the world compiles — ``None`` unless asked for, since it costs a build.
     entities: Optional[list[str]] = None
+    #: What the world's start state holds that will not stop it from loading but is likely to
+    #: make a run misbehave, as the simulator words it: ``{"check", "message", "hint"}`` each
+    #: (roqsim: two bodies placed inside one another). Comes with ``entities``, from the reset
+    #: that follows the same build; ``None`` when the world was not reset, ``[]`` when its start
+    #: state has nothing to say. ``validate_project`` reports each one as advice.
+    warnings: Optional[list[dict]] = None
     #: ``{"fields": [...], "targets": {...}}``: the model values a run may change, and (when a
     #: target glob was given) the objects that can be named with their current values.
     overridable: dict = Field(default_factory=dict)
@@ -2015,9 +2021,9 @@ class WorldDescription(BaseModel):
     #: because ``entities`` was arrived at without them.
     dropped_transport: list[str] = Field(default_factory=list)
     #: Why a half of the answer is missing, when the simulator could produce only part of it
-    #: (``{"build": "..."}`` with ``entities`` left ``None``). Empty when the reply is complete —
-    #: and a caller must read it before concluding that a null ``entities`` means the world
-    #: compiles none.
+    #: (``{"build": "..."}`` with ``entities`` left ``None``, or ``{"reset": "..."}`` with
+    #: ``warnings`` left ``None``). Empty when the reply is complete — and a caller must read it
+    #: before concluding that a null ``entities`` means the world compiles none.
     errors: dict = Field(default_factory=dict)
 
 
@@ -2115,6 +2121,23 @@ class DataQueryResult(BaseModel):
     # filter/JOIN-key mismatch (see ``data_query._empty_result_note``). Carried on
     # the model so the hint survives the HTTP path, not just the in-process one.
     note: Optional[str] = None
+
+
+class ScreenshotFrame(BaseModel):
+    """A rendered screenshot, as :meth:`RobovastInterface.campaign_screenshot` returns it.
+
+    Two things, because a render has two lives: the bytes this caller holds now, and the copy
+    the service keeps so the render can be fetched again -- by this caller later, or by anyone
+    it hands the address to. ``robovast.service.screenshot`` states how long it is kept.
+    """
+
+    #: A local file holding the PNG. Remove it with ``robovast.service.screenshot.discard``,
+    #: which removes a transient copy and leaves a kept render alone, so the caller need not
+    #: know which of the two it was given.
+    path: str
+    #: The render's name under :meth:`Routes.campaign_screenshot_frame`. Empty when the
+    #: service kept no copy, so there is nothing to address.
+    name: str = ""
 
 
 class SceneStatus(BaseModel):
@@ -2652,6 +2675,13 @@ class Routes:
         # A POST: it *runs* the simulator, in the campaign's own image. No status sibling —
         # the render is synchronous, so its result and its reason arrive in the response.
         return f"/campaigns/{campaign_id}/screenshot"
+
+    @staticmethod
+    def campaign_screenshot_frame(campaign_id: str, name: str) -> str:
+        # A kept render, fetched again by a GET. Its own segment rather than a child of the POST
+        # above, so the route that runs the simulator and the one that only serves bytes cannot
+        # be mistaken for each other.
+        return f"/campaigns/{campaign_id}/screenshots/{name}"
 
     @staticmethod
     def campaign_scene_asset(campaign_id: str, path: str) -> str:
@@ -3669,8 +3699,8 @@ class RobovastInterface(ABC):
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
                             at: Optional[float] = None, view: Optional[dict] = None,
                             focus: Optional[list] = None, camera: Optional[str] = None,
-                            size: str = "960x720") -> str:
-        """Re-render one moment of a run from a chosen viewpoint; return the image's path.
+                            size: str = "960x720") -> ScreenshotFrame:
+        """Re-render one moment of a run from a chosen viewpoint; return the image.
 
         The counterpart of :meth:`campaign_scene_status` for *pixels* rather than geometry, and
         unlike it this one **does** work: it runs the simulator in the campaign's own pinned
@@ -3680,8 +3710,18 @@ class RobovastInterface(ABC):
         Needs a simulator that can re-render (``SimulatorBackend.simulation_screenshot``) and a
         run that recorded its state. Raises with the reason when either is missing.
 
-        The caller owns the returned path and removes it with
-        ``robovast.service.screenshot.discard``; the route does that once the response is sent.
+        The service keeps each render for a while and serves it at
+        :meth:`Routes.campaign_screenshot_frame` under the returned ``name``, so it can be
+        fetched again without rendering it again. The caller removes the returned ``path``
+        with ``robovast.service.screenshot.discard``, which leaves the kept copy alone.
+        """
+
+    @abstractmethod
+    def resolve_campaign_screenshot(self, campaign_id: str, name: str) -> str:
+        """Absolute path of a render :meth:`campaign_screenshot` kept under *name*.
+
+        Raises ``KeyError`` when it is not, or no longer, kept -- the contract
+        :meth:`resolve_campaign_scene_asset` has, so the route serves both the same way.
         """
 
     @abstractmethod
