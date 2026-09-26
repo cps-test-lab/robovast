@@ -1972,23 +1972,28 @@ check what else is running and whether the queue admits more than the nodes can 
 or, for a pull reason, run fewer jobs at once than the registry will serve.
 
 
-Selecting a Cluster Context
----------------------------
+Which cluster a campaign runs on
+--------------------------------
 
-RoboVAST uses **kubeconfig contexts** to address different clusters.  Pass
-the ``--context`` flag to any cluster sub-command to select a specific context
-(as listed by ``kubectl config get-contexts``):
+A campaign runs on the cluster its **service** is deployed into: the service drives the
+Jobs from inside that cluster, so the cluster is chosen when you choose a service — the one
+answering on the conventional local port, else the one ``vast login`` stored — and not by
+the launch command. ``vast service info`` prints the kubeconfig context that service
+resolves to (``context``), which is the name the per-cluster lists below are matched
+against.
+
+``--context`` selects a **kubeconfig context** for the operator verbs that talk to a
+cluster directly — ``vast cluster setup``, ``cluster cleanup``, ``cluster jobs-cleanup``,
+``cluster monitor``, ``vast service upgrade`` and ``service token`` — as listed by
+``kubectl config get-contexts``:
 
 .. code-block:: bash
 
-   # Use the currently active context (default)
-   vast workspace run my-experiment
+   # The currently active context (default)
+   vast cluster setup rke2
 
    # Explicitly target a context
-   vast workspace run my-experiment --context gcp-c4
-
-The ``--context`` flag is available on ``workspace run``, ``cluster setup``,
-``cluster monitor``, ``cluster jobs-cleanup``, and ``cluster cleanup``.
+   vast cluster setup rke2 --context gcp-c4
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -2033,19 +2038,22 @@ Rules:
 
 * **Scalars take precedence** — a plain integer/string is used unchanged on
   every cluster.
-* For per-cluster lists the entry whose key matches the active context is
-  used.  If no entry matches, RoboVAST raises a ``ValueError``.
+* For per-cluster lists the entry whose key matches the **service's** context is
+  used.  If no entry matches, the launch is refused, naming the keys the list has.
 * Fields can be mixed: ``cpu`` as a scalar and ``memory`` as a per-cluster list
   is valid.
-* If a per-cluster list is present and no ``--context`` is supplied, RoboVAST
-  will ask you to provide one.
+* The operator verbs that read a ``.vast`` (``cluster cleanup``, ``cluster jobs-cleanup``
+  and ``cluster monitor`` with ``--vast``) refuse to pick a cluster by accident: when the
+  file lists several contexts and ``--context`` was not given, they ask for one.
 
-Running the same config on two clusters:
+Running the same config on two clusters means launching it on each cluster's service:
 
 .. code-block:: bash
 
-   vast workspace run my-experiment --context gcp-c4
-   vast workspace run my-experiment --context local
+   vast login https://robovast-gcp.example.org
+   vast workspace run my-experiment
+   vast login https://robovast-lab.example.org
+   vast workspace run my-experiment
 
 
 Cloud Provider Configurations
