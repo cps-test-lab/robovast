@@ -290,6 +290,31 @@ class ResourcesConfig(BaseModel):
             check(v)
         return v
 
+    @field_validator('memory', 'memory_limit')
+    @classmethod
+    def validate_memory_quantity(cls, v):
+        """Reject a memory value that is not a memory quantity.
+
+        The annotation alone accepts any string, and a spelling Kubernetes does not read
+        (``"4GB"`` for ``4G``) reached the manifest, where the API server refused every Job
+        of the batch.
+        """
+        def check(value):
+            if to_bytes(value) is None:
+                raise ValueError(
+                    f'memory {value!r} is not a memory quantity: use bytes with a binary '
+                    '("16Gi", "512Mi") or decimal ("4G") unit')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
+
     @model_validator(mode="after")
     def validate_limits_are_not_below_requests(self):
         """A ceiling under its own reservation is refused here rather than by the cluster.

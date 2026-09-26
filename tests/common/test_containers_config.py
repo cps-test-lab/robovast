@@ -453,3 +453,17 @@ def test_a_stepped_simulator_keeps_the_calibration_of_the_block_it_folds():
     main = next(c for c in plan.containers if c.name == "scenario")
 
     assert main.calibration == {"headroom": {"memory": 4.0}}
+
+
+@pytest.mark.parametrize("memory", ["4GB", "lots", ""])
+def test_memory_that_is_not_a_memory_quantity_is_refused_here(memory):
+    """``memory`` was only typed as a string, so ``"4GB"`` (Kubernetes spells it ``4G``)
+    reached the manifest, where the API server rejected every Job of the batch."""
+    with pytest.raises(ValueError, match="is not a memory quantity"):
+        validate_config(_cfg(scenario={"image": "a", "resources": {"memory": memory}}))
+
+
+def test_a_per_cluster_memory_list_is_checked_entry_by_entry():
+    with pytest.raises(ValueError, match="is not a memory quantity"):
+        validate_config(_cfg(scenario={"image": "a", "resources": {
+            "memory_limit": [{"gcp-c4": "16Gi"}, {"local": "16GB"}]}}))
