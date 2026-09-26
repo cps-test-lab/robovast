@@ -123,6 +123,7 @@ def service_client(namespace='default', context=None):
     # made every client command need the core installed -- while still failing only at
     # call time, so an import check could not see it.
     from robovast.service.http_client import RobovastClient
+    from robovast.service.interface import ServiceUnreachable
 
     url = detected_service_url()
     if not url:
@@ -132,7 +133,17 @@ def service_client(namespace='default', context=None):
             "Start one here ('vast serve'), or point at the deployed one "
             "('vast login https://robovast.<domain>').")
 
-    yield RobovastClient(url), f"service ({url}) [detected]"
+    try:
+        yield RobovastClient(url), f"service ({url}) [detected]"
+    except ServiceUnreachable as e:
+        # The transport says what did not answer; this side says where that address
+        # came from, which is the thing to fix -- a stored login pointing at a service
+        # that is gone looks, from the socket, exactly like a typo.
+        raise click.ClickException(
+            f"{e}\nThat is the service this machine resolves to: one on the "
+            f"conventional local port if it answers, else the one 'vast login' stored. "
+            f"Start one here ('vast serve'), or log in to the right one; "
+            f"'vast doctor' checks both.") from e
 
 
 def echo_target(label):

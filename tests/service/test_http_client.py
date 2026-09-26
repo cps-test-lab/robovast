@@ -214,3 +214,21 @@ def test_byte_reads_report_the_detail_too(monkeypatch):
         HTTPTransport("http://svc").read_file_bytes("/results/camp-1/nope.bin")
 
     assert "no file at" in str(excinfo.value)
+
+
+def test_a_service_that_does_not_answer_is_one_sentence():
+    """A refused connection arrives from ``requests`` as a paragraph of pool and retry
+    bookkeeping; what a caller needs is the address and the socket's reason, as a refusal
+    rather than a bug."""
+    from robovast.service.interface import ServiceUnreachable
+
+    with pytest.raises(ServiceUnreachable) as raised:
+        HTTPTransport("http://127.0.0.1:1").version()
+    message = str(raised.value)
+    assert message.startswith("no robovast-service answered at http://127.0.0.1:1: ")
+    assert "Connection refused" in message
+    assert "\n" not in message
+    assert "HTTPConnectionPool" not in message
+    assert raised.value.include_traceback is False
+    assert isinstance(raised.value, OSError)
+    assert isinstance(raised.value.__cause__, requests.exceptions.ConnectionError)
