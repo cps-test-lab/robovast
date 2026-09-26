@@ -33,6 +33,7 @@ behaviours
 bookkept
 boto
 boxplot
+bringup
 bt
 buildable
 buildkit
@@ -61,6 +62,7 @@ colourless
 colours
 combinatorially
 compat
+composable
 computable
 config
 ConfigDict
