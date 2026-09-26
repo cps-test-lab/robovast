@@ -50,6 +50,13 @@ function EventRow({ event }: { event: ServiceEvent }) {
             · HTTP {String(event.payload.status)}
           </Typography>
         ) : null}
+        {/* An identical refusal inside a minute is counted onto the row already there rather
+            than recorded again; the count is what says the caller is still trying. */}
+        {typeof event.payload?.repeated === 'number' && event.payload.repeated > 0 ? (
+          <Typography variant="caption" color="text.secondary">
+            · repeated {String(event.payload.repeated)}×
+          </Typography>
+        ) : null}
       </Stack>
       {event.message ? (
         // The service's own words, in the same monospace treatment a failure gets everywhere
