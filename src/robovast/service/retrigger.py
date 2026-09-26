@@ -219,21 +219,24 @@ def _check_images(source_dir: Path, source_id: str, build_lock) -> dict:
     from robovast.common.campaign_data import campaign_images
 
     images = campaign_images(source_dir)
+    pins = images.pins
+    # Reported on both verdicts, and most of all on the blocking one: the way on from there
+    # is a rebuild, and the lock is what says it would install the versions that ran.
+    locks = _available_locks(source_dir, pins.containers, build_lock)
     if images.missing:
         return _axis(AXIS_BLOCKED,
                      "a re-run replays the digests its source recorded and resolves nothing "
                      "again, and this campaign's launch record fixes none for "
                      + "; ".join(f"{what} ({why})"
                                  for what, why in sorted(images.missing.items()))
-                     + ". " + _FRESH_LAUNCH.format(source_id=source_id),
-                     missing=dict(images.missing))
-    pins = images.pins
+                     + ". " + _FRESH_LAUNCH.format(source_id=source_id)
+                     + _lock_note(locks),
+                     missing=dict(images.missing), locks=locks)
     return _axis(AXIS_OK,
                  f"{len(pins.containers)} container image(s), the sidecar and "
-                 f"{len(pins.aux)} auxiliary image(s) recorded as digests"
-                 + _lock_note(source_dir, pins.containers, build_lock),
+                 f"{len(pins.aux)} auxiliary image(s) recorded as digests." + _lock_note(locks),
                  images=dict(pins.containers), sidecar=pins.sidecar, aux=dict(pins.aux),
-                 locks=_available_locks(source_dir, pins.containers, build_lock))
+                 locks=locks)
 
 
 def _available_locks(source_dir: Path, pinned: dict, build_lock) -> dict:
@@ -257,12 +260,12 @@ def _available_locks(source_dir: Path, pinned: dict, build_lock) -> dict:
     return out
 
 
-def _lock_note(source_dir: Path, pinned: dict, build_lock) -> str:
-    locks = _available_locks(source_dir, pinned, build_lock)
+def _lock_note(locks: dict) -> str:
+    """The images axis's sentence about *locks* (:func:`_available_locks`), or ``""``."""
     if not locks:
         return ""
-    return (f"; {len(locks)} carry a build lock, so a rebuild could install the same "
-            f"package versions")
+    return (f" {len(locks)} image(s) carry a build lock, so a rebuild could install the same "
+            f"package versions.")
 
 
 def _check_host(images_axis: dict, image_labels) -> dict:

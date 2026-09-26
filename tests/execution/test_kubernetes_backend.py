@@ -661,7 +661,8 @@ def test_a_registry_that_will_not_answer_refuses_the_launch(monkeypatch):
         _pinning_runner(monkeypatch, "")
 
     message = str(e.value)
-    assert _TAG in message and "the scenario container" in message
+    # The scenario container is a planned one, so it is named as the plan names it.
+    assert f"{_TAG} (container 'scenario')" in message
     assert "the sidecar" in message
     assert "did not answer" in message
     assert "before any pod was created" in message
@@ -689,14 +690,16 @@ def test_every_planned_container_and_the_sidecar_are_fixed(monkeypatch):
 
 
 def test_the_campaigns_own_sidecar_is_the_one_fixed(monkeypatch):
-    """The service fixes the sidecar once per campaign, before its first pod; a batch runs
-    that one rather than the deployment's own."""
+    """The service fixes the sidecar once per campaign, before its first pod; a batch keeps
+    that one rather than the deployment's own, and asks the registry nothing about it. Which
+    containers of a Job run it is ``test_job_manifest``'s: the data-plane containers are added
+    per Job, so the base manifest here carries none of them."""
+    calls = []
     sidecar = "repo.example.com/dev/robovast-sidecar@sha256:" + "ee" * 32
-    runner = _pinning_runner(monkeypatch, _DIGEST, sidecar_image=sidecar)
+    runner = _pinning_runner(monkeypatch, _DIGEST, calls=calls, sidecar_image=sidecar)
 
     assert runner._sidecar_image == sidecar
-    uploader = [c for c in _containers_of(runner.manifest) if c["image"] == sidecar]
-    assert uploader, "no container of the pod runs the campaign's sidecar"
+    assert sidecar not in calls
 
 
 def test_a_replay_asks_the_registry_nothing(monkeypatch):

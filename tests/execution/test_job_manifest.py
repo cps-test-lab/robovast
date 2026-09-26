@@ -24,12 +24,17 @@ class _FakeClusterConfig:
 
 
 def _pinned(ref):
-    """What the stubbed registry fixes *ref* to: its repository, at one fixed digest."""
+    """What the stubbed registry fixes *ref* to: its repository, at one fixed digest.
+
+    A ref that is a digest already is its own answer, as it is to the real resolver.
+    """
+    if "@sha256:" in ref:
+        return ref
     return ref.rsplit(":", 1)[0] + "@sha256:" + "0" * 64
 
 
 def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast",
-            cluster_gpus=0, runtime_class=None):
+            cluster_gpus=0, runtime_class=None, sidecar_image=None):
     """Build a BatchJobRunner via for_batch with external calls stubbed.
 
     ``cluster_gpus``/``runtime_class`` stand in for the live cluster probe, which is the
@@ -75,7 +80,7 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
     return BatchJobRunner.for_batch(
         campaign_data=campaign_data, campaign_id="camp-2026-07-17-120000",
         batch_tag="batch-0", runs=1, cluster_config=_FakeClusterConfig(),
-        namespace="ns", image="img:test", kube_context=None)
+        namespace="ns", image="img:test", kube_context=None, sidecar_image=sidecar_image)
 
 
 def _env_dict(container):
@@ -125,6 +130,21 @@ def test_create_job_manifest_shape(monkeypatch):
     # The behaviour tree is recorded unless a campaign opts out, so a cluster run is
     # explainable afterwards without anyone having remembered to ask for it.
     assert main_env["BT_LOG"] == "true"
+
+
+def test_every_data_plane_container_runs_the_campaigns_own_sidecar(monkeypatch):
+    """The service fixes the sidecar once per campaign, before its first pod and from the
+    campaign's own image project; every Job of it runs that digest in each container the
+    sidecar image serves, rather than the deployment's own."""
+    sidecar = "registry.example.com/dev/robovast-sidecar@sha256:" + "e" * 64
+    r = _runner(monkeypatch, sidecar_image=sidecar)
+    m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+
+    spec = m["spec"]["template"]["spec"]
+    images = {c["name"]: c for c in spec["initContainers"] + spec["containers"]}
+    for name in ("fetch-inputs", pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER):
+        assert images[name]["image"] == sidecar, name
+        assert images[name]["imagePullPolicy"] == "IfNotPresent", name
 
 
 def test_the_pod_is_told_which_node_it_landed_on(monkeypatch):
