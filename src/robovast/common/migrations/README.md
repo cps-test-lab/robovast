@@ -11,7 +11,7 @@ Everything about versioning and migration in robovast starts here. If you were a
 | campaign store (`campaign.db`) | `SCHEMA_VERSION` (`../store.py`) | `../store.py`, beside `_SCHEMA` | forward, on open |
 | host ↔ container protocol | `COMPAT_VERSION` (`../execution.py`) | not a ladder — a supported window | n/a |
 
-`registry.py` enumerates them programmatically, so nothing has to be kept in sync by hand.
+`registry.py` enumerates the two ladders programmatically, so nothing about them has to be kept in sync by hand; the protocol window is not a ladder and is not listed there.
 
 **A campaign's built tables have no ladder, on purpose.** They are *derived* from the
 campaign's records into its `.cache/`, and building them again is the definition of correct:
@@ -102,7 +102,7 @@ would be refused.
 
 ## Reading an old config
 
-Three policies, all in `__init__.py`. Pick by what the caller is doing, not by convenience:
+Three policies, all in `robovast.common.common` (`load_config` and its helpers). Pick by what the caller is doing, not by convenience:
 
 | policy | used by | old version |
 |---|---|---|
