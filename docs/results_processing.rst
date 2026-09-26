@@ -1966,7 +1966,8 @@ Original campaign-directories are not modified.
 
 .. option:: -r, --results-dir PATH
 
-   Source directory containing campaign directories.
+   Directory holding the campaign directories to merge. Required: there is no default
+   results directory.
 
 
 .. _results-postprocess-commands:
