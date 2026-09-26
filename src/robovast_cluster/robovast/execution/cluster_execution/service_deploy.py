@@ -238,30 +238,22 @@ DEFAULT_RESULTS_SIZE = "500Gi"
 #: Kubernetes quantity suffixes, as multiples of a byte. Both series, because a
 #: StorageClass takes either and an operator who writes ``500G`` must not be told it is
 #: smaller than the ``500Gi`` already deployed without the comparison being true.
-_QUANTITY_UNITS = {"": 1, "k": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15,
-                   "Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Pi": 2**50}
-
-
 def parse_quantity(value: str) -> int:
     """A Kubernetes storage quantity in bytes, or ``ValueError`` naming what was read.
 
-    Only enough of the grammar to compare two claim sizes, which is the one question asked
-    of it: a decimal number and an optional binary or decimal suffix. Refusing what it
-    cannot read rather than guessing is what keeps a typo from being read as a shrink --
-    the one outcome a provider rejects after the claim is already patched.
+    Read with the Kubernetes client's own quantity grammar, so what compares here is what
+    the claim accepts. Refusing what it cannot read rather than guessing is what keeps a
+    typo from being read as a shrink -- the one outcome a provider rejects after the claim
+    is already patched.
     """
-    text = (value or "").strip()
-    for suffix in sorted(_QUANTITY_UNITS, key=len, reverse=True):
-        if suffix and not text.endswith(suffix):
-            continue
-        number = text[:len(text) - len(suffix)] if suffix else text
-        try:
-            return int(float(number) * _QUANTITY_UNITS[suffix])
-        except ValueError:
-            break
-    raise ValueError(
-        f"{value!r} is not a storage size: write a number and an optional unit, "
-        f"e.g. '500Gi', '2Ti' or '750G'.")
+    from kubernetes.utils.quantity import \
+        parse_quantity as read_quantity  # pylint: disable=import-outside-toplevel
+    try:
+        return int(read_quantity((value or "").strip()))
+    except ValueError as exc:
+        raise ValueError(
+            f"{value!r} is not a storage size: write a number and an optional unit, "
+            f"e.g. '500Gi', '2Ti' or '750G'.") from exc
 
 
 def results_pvc_manifest(namespace, storage_class, size=""):
