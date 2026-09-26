@@ -214,3 +214,39 @@ def test_byte_reads_report_the_detail_too(monkeypatch):
         HTTPTransport("http://svc").read_file_bytes("/results/camp-1/nope.bin")
 
     assert "no file at" in str(excinfo.value)
+
+
+def _screenshot_post(monkeypatch, headers):
+    def post(self, url, params=None, timeout=None, **kw):
+        del self, url, params, timeout, kw
+        resp = _Resp()
+        resp.content = b"png"
+        resp.headers = headers
+        return resp
+    monkeypatch.setattr(requests.Session, "post", post)
+
+
+def test_a_kept_screenshot_s_name_is_read_off_its_content_location(monkeypatch):
+    from pathlib import Path
+
+    from robovast.service import screenshot
+    _screenshot_post(monkeypatch, {
+        "Content-Location": "/campaigns/camp-1/screenshots/" + "a" * 32 + ".png"})
+    frame = HTTPTransport("http://svc").campaign_screenshot("camp-1", "cfg", "0")
+    try:
+        assert frame.name == "a" * 32 + ".png"
+        with open(frame.path, "rb") as handle:
+            assert handle.read() == b"png"
+    finally:
+        screenshot.discard(Path(frame.path))
+
+
+def test_a_screenshot_nobody_kept_has_no_name(monkeypatch):
+    """No header, no name: an address that was never given is not guessed."""
+    from pathlib import Path
+
+    from robovast.service import screenshot
+    _screenshot_post(monkeypatch, {})
+    frame = HTTPTransport("http://svc").campaign_screenshot("camp-1", "cfg", "0")
+    screenshot.discard(Path(frame.path))
+    assert frame.name == ""

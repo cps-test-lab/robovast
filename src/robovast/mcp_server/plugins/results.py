@@ -38,6 +38,7 @@ from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 from fastmcp import Context, FastMCP
+from fastmcp.tools import ToolResult
 from fastmcp.utilities.types import Image
 
 from robovast.mcp_server import data_access, run_artifacts, service_access
@@ -786,7 +787,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
                               view: Optional[list] = None,
                               focus: Optional[list] = None,
                               camera: Optional[str] = None,
-                              size: str = "960x720") -> Image:
+                              size: str = "960x720") -> ToolResult:
     """Re-render one moment of a run from a viewpoint you choose, as a PNG.
 
     Renders the world again, so the camera is yours. Needs a simulator that can re-render
@@ -795,8 +796,12 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     the node, minutes if it must be pulled. For a camera *mounted in the world during the run*
     use ``get_camera_frame`` instead — a cheap read of a recorded video, on any backend.
 
-    Returns a PNG, so a failure **raises** rather than coming back as ``{error}``: no such
-    capability, no recorded state, or a render that failed.
+    Returns the PNG inline, and beside it ``{url, kept_for_s}``: the service keeps the render
+    and serves it at ``url``, so it can be attached, saved or handed on without rendering it
+    again. Kept for ``kept_for_s`` after it was made, fewer if newer renders displace it.
+    ``url`` is absent when the service kept no copy or declares no origin to reach it on.
+    A failure **raises** rather than coming back as ``{error}``: no such capability, no
+    recorded state, or a render that failed.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -814,6 +819,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     """
     from robovast.common.simulators import parse_view  # pylint: disable=import-outside-toplevel
     from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
+    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
     client = service_access.service_client()
     if client is None:
@@ -830,13 +836,19 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     except Exception as e:  # noqa: BLE001 - the reason is the whole value of this failing
         raise run_artifacts.RunArtifactError(str(e)) from e
 
-    path = Path(frame)
+    path = Path(frame.path)
     try:
-        return Image(data=path.read_bytes(), format="png")
+        image = Image(data=path.read_bytes(), format="png")
     finally:
-        # Ours to remove whichever client produced it: an in-process service renders into a
-        # temp dir and the HTTP client writes the bytes into the same shape for exactly this.
+        # Ours to remove whichever client produced it: the HTTP client writes the bytes into a
+        # temp dir of the shape render() makes, and discard leaves a kept render alone.
         screenshot.discard(path)
+    # The same helper read_file's `url` comes from: omitted rather than guessed when nobody can
+    # name an origin, since a link the caller cannot follow is worse than none.
+    url = service_access.web_url(
+        client, Routes.campaign_screenshot_frame(campaign_id, frame.name)) if frame.name else ""
+    kept = {"url": url, "kept_for_s": screenshot.KEEP_S} if url else {}
+    return ToolResult(content=[image, kept] if kept else [image])
 
 
 # -- Plugin class ------------------------------------------------------------

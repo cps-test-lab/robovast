@@ -532,6 +532,15 @@ response has no dict to carry one. And for a *human* who wants to watch a run, n
 answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
 through this interface one frame at a time.
 
+A screenshot is also **kept**, so it can be attached, saved or handed on without rendering it
+again: beside the image the tool returns ``{url, kept_for_s}``, the address the service
+serves that render at (``GET /campaigns/<campaign_id>/screenshots/<name>``) and how long it
+stays there. The service keeps a render for 24 hours after it was made and at most 200 renders
+in all, the oldest removed first; after that the address answers 404 and the render has to be
+made again. They are kept under ``ROBOVAST_SCREENSHOTS`` (default
+``~/.robovast/cache/screenshots``) on the service's host. ``url`` is omitted when the service
+declares no origin to reach it on, as ``read_file``'s is.
+
 An aggregate over a distance needs a square root, and SQLite's own ``sqrt`` is a
 compile-time option, so a query could work on the MCP host and fail in the service.
 ``SQRT(x)`` is therefore registered alongside ``STDDEV``/``MEDIAN``/``PERCENTILE`` and is
