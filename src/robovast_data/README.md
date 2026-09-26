@@ -46,8 +46,9 @@ c = Campaign("https://<service>/campaigns/<campaign_id>", token="<token>")
 c.table("poses", config="<config>", run=0)
 ```
 
-The service builds what each call names and sends the rows as CSV, so pandas types the
-columns. A query to a service takes no parameters, and `config()` needs the campaign on disk.
+The service builds what each call names and sends the rows as an Arrow stream, so every
+column arrives in its type. A query to a service takes no parameters, and `config()` needs
+the campaign on disk.
 
 ## Queries
 
