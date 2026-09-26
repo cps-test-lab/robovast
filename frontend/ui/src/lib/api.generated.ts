@@ -4761,6 +4761,10 @@ export interface components {
              * @default false
              */
             packaged: boolean;
+            /** Warnings */
+            warnings: {
+                [key: string]: unknown;
+            }[] | null;
             /**
              * World
              * @default
