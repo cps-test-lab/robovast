@@ -51,8 +51,8 @@ bounded by `runs:`.
 ### Computing them: `analysis/compare.py`
 
 Each campaign's notebook is scoped to one campaign, so none of the pairings above is
-something this directory could previously *compute* — they were prose. `analysis/compare.py`
-is that missing half. It reads each campaign's own `campaign.db`, which carries the scored
+something a notebook can compute. `analysis/compare.py` is the half that does. It reads
+each campaign's own `campaign.db`, which carries the scored
 cells **and** the `.vast` that produced them, so nothing about what a campaign is gets
 passed in on the command line: the strategy, its budget and its seed come from the record,
 and a comparison cannot be labelled with a strategy the campaign did not run.
