@@ -21,11 +21,12 @@ An mcap file is a magic string followed by records, each an opcode byte, a littl
 a file front to back, and it is what makes a file readable while it grows: every record
 before the last complete one is final, and the incomplete tail is simply not read yet.
 
-The summary section at the end of a finished file is an index for random access and is not
-needed here, which is why this reader handles a recording that was cut off -- a killed
-recorder, a segment still open -- as ordinary input: it yields every complete record and
-stops at the cut. ``offset`` is the byte after the last complete top-level record, so a
-caller that stores it can resume exactly where it stopped.
+Walking needs nothing from the summary section at the end of a finished file, which is why
+this reader handles a recording that was cut off -- a killed recorder, a segment still open --
+as ordinary input: it yields every complete record and stops at the cut. ``offset`` is the
+byte after the last complete top-level record, so a caller that stores it can resume exactly
+where it stopped. What a file's channels are is the one question the summary answers without
+a walk (:func:`summary_channels`).
 
 Chunks are opened and their records yielded in order. A chunk is only yielded once it is
 complete, so a chunked file is readable while it grows at chunk granularity, and a file
@@ -47,10 +48,14 @@ OP_SCHEMA = 0x03
 OP_CHANNEL = 0x04
 OP_MESSAGE = 0x05
 OP_CHUNK = 0x06
+OP_STATISTICS = 0x0B
 OP_METADATA = 0x0C
 OP_DATA_END = 0x0F
 
 _READ_SIZE = 4 * 1024 * 1024
+
+#: The size of the footer record, its opcode and length included.
+_FOOTER_SIZE = 1 + 8 + 20
 
 
 @dataclass(frozen=True)
@@ -209,6 +214,57 @@ def has_footer(path) -> bool:
         return False
 
 
+def summary_channels(path) -> Optional[tuple]:
+    """``(schemas, channels)`` of a finished file, from its summary section; ``None`` when the
+    file has no footer, no summary, or a summary that does not say it holds them all.
+
+    A writer may repeat every schema and channel in the summary, and its Statistics record
+    counts both. The answer is taken only when the counts match, so a summary that repeats
+    some or none of them is never mistaken for the file's channels: the caller walks it.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            if size < len(MAGIC) + _FOOTER_SIZE + len(MAGIC):
+                return None
+            fh.seek(size - _FOOTER_SIZE - len(MAGIC))
+            tail = fh.read(_FOOTER_SIZE + len(MAGIC))
+            if tail[-len(MAGIC):] != MAGIC or tail[0] != OP_FOOTER:
+                return None
+            summary_start, offsets_start = struct.unpack_from("<QQ", tail, 9)
+            end = offsets_start or size - _FOOTER_SIZE - len(MAGIC)
+            if not len(MAGIC) <= summary_start < end:
+                return None
+            fh.seek(summary_start)
+            section = fh.read(end - summary_start)
+    except OSError:
+        return None
+    schemas, channels, counts = {}, {}, None
+    pos = 0
+    while pos + 9 <= len(section):
+        op = section[pos]
+        (n,) = struct.unpack_from("<Q", section, pos + 1)
+        body = section[pos + 9:pos + 9 + n]
+        if len(body) < n:
+            return None
+        if op == OP_STATISTICS:
+            if n < 14:
+                return None
+            _, schema_count, channel_count = struct.unpack_from("<QHI", body)
+            counts = (schema_count, channel_count)
+        else:
+            record = _parse(op, body) if op in (OP_SCHEMA, OP_CHANNEL) else None
+            if isinstance(record, Schema):
+                schemas[record.id] = record
+            elif isinstance(record, Channel):
+                channels[record.id] = record
+        pos += 9 + n
+    if counts != (len(schemas), len(channels)):
+        return None
+    return schemas, channels
+
+
 class McapTail:
     """The records of one mcap file, read from where the last read stopped.
 
@@ -289,4 +345,4 @@ class McapTail:
 
 
 __all__ = ["Channel", "McapFormatError", "McapTail", "Message", "Metadata", "Schema",
-           "has_footer"]
+           "has_footer", "summary_channels"]
