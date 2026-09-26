@@ -1399,7 +1399,10 @@ The tarball holds ``export.json`` -- the request, the decoder version, the data 
 was built -- then ``tables/`` and the campaign tree under ``<campaign_id>/``. That layout is
 public: pandas and DuckDB read ``tables/<name>.parquet`` directly, and ``Campaign()`` opens
 the export as it opens the campaign, reading the tables it carries and building nothing
-(:ref:`evaluation-notebooks`).
+(:ref:`evaluation-notebooks`). It opens only an export written under its own data contract:
+a table the export carries is never rebuilt, so one laid out under another contract is
+refused by number rather than read as the table its name promises -- export the campaign
+again from a current service, or read the files directly.
 
 **Download or export.** ``vast campaign download`` is the campaign as the service holds it:
 records and recordings, no table, for a copy that builds its tables on first use, re-runs,
