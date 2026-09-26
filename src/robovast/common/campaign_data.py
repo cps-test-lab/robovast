@@ -23,7 +23,7 @@ used by both MCP plugins and the FAIR metadata generator.
 import json
 import os
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -346,10 +346,14 @@ class CampaignImageRecord:
     #: the digest beside it, with no per-role maps at all, so a reader that looks only at
     #: ``images`` sees nothing.
     campaign_image: str
-    #: A launch record existed. Its absence predates the record; it is not "built nothing".
+    #: A launch record existed. Without one, nothing fixes which bytes the campaign ran.
     launch_recorded: bool
-    #: Whether the campaign built any of its own images -- see :func:`campaign_images`.
-    built: Optional[bool]
+    #: ``launch.yaml``'s ``sidecar_image``: the digest every pod of the campaign ran its
+    #: data-plane containers from.
+    launched_sidecar: str
+    #: ``launch.yaml``'s ``aux_images``, ``{aux container name: digest}``: the helper images
+    #: composition ran.
+    launched_aux: dict
 
     def role(self, name: str) -> Optional[RoleImageRecord]:
         return self.roles.get(name)
@@ -398,124 +402,124 @@ def campaign_image_record(campaign_dir) -> CampaignImageRecord:
         campaign_digest=str(meta.get("image_revision") or ""),
         campaign_image=str(meta.get("image") or ""),
         launch_recorded=launch is not None,
-        built=None if launch is None else bool(launched),
+        launched_sidecar=str((launch or {}).get(LAUNCH_SIDECAR_KEY) or ""),
+        launched_aux={str(k): str(v or "") for k, v in
+                      ((launch or {}).get(LAUNCH_AUX_KEY) or {}).items()},
     )
 
 
+#: ``launch.yaml`` keys holding what a campaign runs besides its planned containers, which
+#: are under ``images``. Named once, because the writer and every reader must agree on them.
+LAUNCH_SIDECAR_KEY = "sidecar_image"
+LAUNCH_AUX_KEY = "aux_images"
+
+
+@dataclass(frozen=True)
+class LaunchImages:
+    """Every image a campaign runs, as the digests its launch fixed before any pod started.
+
+    What ``_execution/launch.yaml`` records and what every replay -- a retrigger, and an
+    adoption after a service restart -- runs from, resolving nothing again. Three parts,
+    because a campaign's pods run three kinds of image:
+
+    Attributes:
+        containers: ``{role or container name: digest}`` for every planned container --
+            scenario, simulation, sut and any other declared one (``images``).
+        sidecar: the data-plane image of every pod: a Job's ``fetch-inputs``, ``uploader``
+            and ``agent``, and an aux pod's ``transfer`` (``sidecar_image``).
+        aux: ``{aux container name: digest}`` for the helper images composition ran in its
+            ``aux-<member>`` pods (``aux_images``).
+    """
+
+    containers: dict = field(default_factory=dict)
+    sidecar: str = ""
+    aux: dict = field(default_factory=dict)
+
+
 class CampaignImageUnpinnable(ValueError):
-    """A campaign's built image cannot be named as something a new run could start."""
+    """A campaign's records do not fix a digest for everything it runs."""
 
 
 @dataclass(frozen=True)
 class CampaignImages:
-    """What a campaign recorded about the images it ran -- data, not a verdict.
-
-    Deliberately not a yes/no: the two callers ask different questions of the same record and
-    are both right. A **resume** needs every container pinned, because its second half must run
-    the bytes its first half did or it is two experiments wearing one name. A **retrigger** is
-    starting over, so a container whose image the campaign never built can legitimately be
-    re-resolved at launch -- which is exactly what relaunching from the workspace would do.
-    Folding that policy in here would force one of them to be wrong.
+    """What a campaign's launch record fixes, and what it runs that the record does not.
 
     Attributes:
-        pins: ``{container: image}`` that a new run can start from.
-        unpinnable: ``{container: why}`` for each recorded container that has no such image.
-            The value is a full diagnostic naming every source tried, because the reader has to
-            be able to tell "recorded nothing" from "recorded a tag that cannot be started
-            elsewhere".
-        built: whether this campaign built any of its own images -- ``True`` when the launch
-            record named built refs, ``False`` when a launch record exists and named none, and
-            ``None`` when there is no launch record at all (a campaign predating it), where the
-            caller has to fall back to reading the frozen ``.vast``.
+        pins: the digests the launch record holds, ready for a replay.
+        missing: ``{what: why}`` for everything the campaign runs that has no recorded digest.
+            The value names the record and what was in it, because the reader has to be able
+            to tell "recorded nothing" from "recorded a tag".
     """
 
-    pins: dict[str, str]
-    unpinnable: dict[str, str]
-    built: Optional[bool]
+    pins: LaunchImages
+    missing: dict[str, str]
 
 
 def campaign_images(campaign_dir) -> CampaignImages:
-    """Which of a campaign's containers a NEW RUN could start from, and which it could not.
+    """Which of the images a campaign runs its launch record fixes to a digest.
 
-    One policy over :func:`campaign_image_record`, and the strictest of the four: the bytes have
-    to be obtainable somewhere other than the machine that produced them.
+    ``launch.yaml`` is the one authority: the launch writes every image into it as a digest
+    before the pod that runs it exists. ``execution.yaml`` contributes only the NAMES of the
+    containers that ran (its ``images``, written after ``apply_backend``), so a container the
+    launch record lacks is reported rather than passed over; its digests are never a
+    substitute: ``execution.yaml`` holds no sidecar and no aux helper, so a record pieced
+    together from the two may be missing an image nobody knows about.
 
-    * ``launch.yaml``'s ``images`` win outright when present. They are the refs the launch
-      itself resolved, written before the first job existed and concrete by construction, so
-      they answer earlier and better than ``execution.yaml`` -- which is only written once a
-      batch has run. That earlier answer is what makes a campaign that died *before* its first
-      batch re-runnable at all, which is the usual shape of a failure.
-    * a **digest** always counts: it names the same bytes everywhere, which is the
-      property a tag lacks.
-    * a declared **tag** counts only for a campaign recorded with execution_type ``local``,
-      whose tags name images on the machine that ran it. Otherwise ``images`` holds
-      whatever the ``.vast`` declared -- a base
-      image, or the symbolic ``build:<tag>`` itself -- and starting that would run the base
-      without the campaign's own code.
-    * the campaign-level ``image_revision`` is the scenario container's and nothing else's.
-      Handing it to a container that owns its own is the substitution this refuses: it would
-      run the wrong bytes rather than fail.
+    A digest is the only thing that counts. A tag names whatever was pushed there last, so a
+    replay that ran it would be a different experiment wearing the source's name.
     """
-    from robovast.common.config import SCENARIO_CONTAINER  # pylint: disable=import-outside-toplevel
-
     record = campaign_image_record(campaign_dir)
-    launched = {name: role.launched for name, role in record.roles.items() if role.launched}
-    if launched:
-        # No pullability screen: these are what the campaign's own jobs were created with, so
-        # "can a new run start from them?" was answered when they ran.
-        return CampaignImages(pins=launched, unpinnable={}, built=True)
+    if not record.launch_recorded:
+        return CampaignImages(pins=LaunchImages(), missing={
+            "every image": "no _execution/launch.yaml, so nothing fixes which bytes it ran"})
 
-    is_local = record.execution_type == "local"
-    pins: dict[str, str] = {}
-    unpinnable: dict[str, str] = {}
-    # The containers that ran, post-fold, as the campaign itself recorded them. Derived from the
-    # record rather than from the `.vast`: re-deriving it would need the campaign's plugins
-    # installed only to learn that a stepped simulator's `simulation` block is really the
-    # scenario container, and getting that wrong pins a separate container to the scenario's
-    # image -- which runs, and measures the wrong thing.
-    for name in sorted(n for n, r in record.roles.items() if r.declared):
-        role = record.roles[name]
-        candidates = [role.recorded]
-        if name == SCENARIO_CONTAINER:
-            candidates.append(record.campaign_digest)
-        pin = next((c for c in candidates if image_is_pullable(c)), "")
-        if not pin and role.declared and (image_is_pullable(role.declared) or is_local):
-            pin = role.declared
-        if pin:
-            pins[name] = pin
-            continue
-        # Name every source and what was in it: the reader has to be able to tell "recorded
-        # nothing" from "recorded a tag or a local id that cannot be started elsewhere".
-        unpinnable[name] = (
-            f"{name!r} (execution.yaml image_revisions[{name!r}]={role.recorded or None!r}, "
-            f"image_revision={record.campaign_digest or None!r}, "
-            f"images[{name!r}]={role.declared or None!r}, "
-            f"execution_type={record.execution_type or None!r})")
-
-    return CampaignImages(pins=pins, unpinnable=unpinnable, built=record.built)
+    missing: dict[str, str] = {}
+    containers: dict[str, str] = {}
+    # Names from the launch record and from execution.yaml's `images`, which holds every
+    # container composition planned. Not `image_revisions`: it also carries what a pod read
+    # reported -- the data-plane containers and the scenario pod's own name -- which the
+    # sidecar entry already covers.
+    for name in sorted(n for n, r in record.roles.items() if r.launched or r.declared):
+        launched = record.roles[name].launched
+        if image_is_pullable(launched):
+            containers[name] = launched
+        else:
+            missing[f"container {name!r}"] = f"launch.yaml images[{name!r}]={launched or None!r}"
+    if not containers and not missing:
+        missing["every container"] = "launch.yaml records no images"
+    if not image_is_pullable(record.launched_sidecar):
+        missing["the sidecar image"] = (
+            f"launch.yaml {LAUNCH_SIDECAR_KEY}={record.launched_sidecar or None!r}")
+    aux = {}
+    for name, ref in sorted(record.launched_aux.items()):
+        if image_is_pullable(ref):
+            aux[name] = ref
+        else:
+            missing[f"auxiliary container {name!r}"] = (
+                f"launch.yaml {LAUNCH_AUX_KEY}[{name!r}]={ref or None!r}")
+    return CampaignImages(
+        pins=LaunchImages(containers=containers, sidecar=record.launched_sidecar, aux=aux),
+        missing=missing)
 
 
-def campaign_pinned_images(campaign_dir) -> dict[str, str]:
-    """``{container: image}`` a new run can start from, refusing on any gap.
+def campaign_pinned_images(campaign_dir) -> LaunchImages:
+    """The digests a replay of this campaign runs, refusing when any is missing.
 
-    The strict reading of :func:`campaign_images`, for the caller whose question really is
-    all-or-nothing: a **resume** continues one campaign, so a container it cannot pin means its
-    second half might not run the bytes its first half did. A retrigger is starting over and
-    asks :func:`campaign_images` directly, because for it a container the campaign never built
-    is not a gap at all.
+    Asked by every replay: a retrigger, which is a new campaign that must run the bytes its
+    source ran, and an adoption after a service restart, whose second half must run the bytes
+    its first half did. Neither resolves anything again, so a record lacking a digest for
+    something the campaign runs cannot be replayed at all.
 
     Raises:
-        CampaignImageUnpinnable: a recorded container has no ref a new run could start. The
-            message names it and every source tried, because a campaign's build context is not
-            archived in its results, so this is unrecoverable rather than a retry.
+        CampaignImageUnpinnable: naming every container or image without a recorded digest.
     """
     images = campaign_images(campaign_dir)
-    if images.unpinnable:
+    if images.missing:
         raise CampaignImageUnpinnable(
-            "this campaign never recorded a usable image for "
-            + "; ".join(images.unpinnable[k] for k in sorted(images.unpinnable)) +
-            ". A campaign's build context (wheels, sources) is not archived in its results, "
-            "so the image cannot be rebuilt from them either.")
+            "its launch record fixes no digest for "
+            + "; ".join(f"{what} ({why})" for what, why in sorted(images.missing.items()))
+            + ". A replay runs only the digests its source recorded, never a tag resolved "
+              "again.")
     return images.pins
 
 
@@ -1093,13 +1097,31 @@ _LAUNCH_FILENAME = "launch.yaml"
 #: kept on the campaign row as ``origin_*`` (see ``common/store.py``) -- a record of the past,
 #: which nothing reads back to run anything. This file is the replay; that is the provenance.
 #:
-#: The written record carries one field beyond these: the resolved ``images``. See
-#: :func:`write_launch_record` for why it belongs with the replay rather than the provenance.
+#: The written record carries more than these: the digest of every image the campaign runs
+#: (:class:`LaunchImages`). See :func:`write_launch_record` for why they belong with the replay
+#: rather than the provenance.
 _LAUNCH_FIELDS = ("config_filter", "campaign_name", "runs", "postprocess",
                   "upload_to_share", "priority", "paused")
 
 
-def write_launch_record(campaign_root: Path, request, images: dict | None = None) -> None:
+def _launch_image_fields(images: LaunchImages) -> dict:
+    """*images* as ``launch.yaml`` holds them: only the parts that are known.
+
+    A null would be indistinguishable from "this campaign runs no such image", which is a
+    different (and, for a replay, unusable) statement.
+    """
+    fields = {}
+    if images.containers:
+        fields["images"] = dict(images.containers)
+    if images.sidecar:
+        fields[LAUNCH_SIDECAR_KEY] = images.sidecar
+    if images.aux:
+        fields[LAUNCH_AUX_KEY] = dict(images.aux)
+    return fields
+
+
+def write_launch_record(campaign_root: Path, request,
+                        images: LaunchImages | None = None) -> None:
     """Persist what the campaign is **asked to run** to ``_execution/launch.yaml``.
 
     The campaign's *standing* request, not a frozen record of the moment it was launched:
@@ -1113,66 +1135,70 @@ def write_launch_record(campaign_root: Path, request, images: dict | None = None
     ("3 because the ``.vast`` says 3" vs "3 because someone overrode a ``.vast`` saying 25").
     Neither number answers that alone.
 
-    ``images`` is ``{container name: image ref}`` as the launch **resolved** them, and is the
-    one thing here that is not a request field. It widens this record from "what was asked
-    for" to "…and what that resolved to", which is deliberate: a re-launch that re-resolves
-    would pick up a base image that moved since, and swap the image under half the runs of a
-    campaign already in flight. A symbolic ``build:<tag>`` is not an answer to "which bytes
-    ran"; the concrete ref is. Omitted (``None``) at the first write, because the build has
-    not happened yet — the launch path writes again once it has.
+    ``images`` are the digests the campaign runs, and are the one thing here that is not a
+    request field. They widen this record from "what was asked for" to "...and which bytes
+    that is", which is what makes it replayable: a replay that resolved a tag again would run
+    whatever was pushed there since, and swap the image under half the runs of a campaign
+    already in flight. A fresh launch passes none -- its digests are fixed later, by
+    :func:`update_launch_images`, each before the pod that runs it exists -- and a replay
+    passes the ones it replays, so its record states them from the first write.
 
     Best-effort by the same reasoning as :func:`write_execution_outcome`'s caller: a campaign
     must not fail because a record could not be written.
     """
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
-    record = {field: getattr(request, field) for field in _LAUNCH_FIELDS}
-    # Only when known: a null would be indistinguishable from "this campaign resolved no
-    # images", which is a different (and, for a re-launch, unusable) statement.
-    if images:
-        record["images"] = dict(images)
+    record = {name: getattr(request, name) for name in _LAUNCH_FIELDS}
+    record.update(_launch_image_fields(images or LaunchImages()))
     with open(exec_dir / _LAUNCH_FILENAME, "w", encoding="utf-8") as f:
         yaml.dump(record, f, default_flow_style=False, sort_keys=False)
 
 
-def update_launch_images(campaign_dir: Path, images: dict) -> None:
-    """Merge resolved image refs into ``_execution/launch.yaml``'s ``images``.
+def update_launch_images(campaign_dir: Path, *, containers: dict | None = None,
+                         sidecar: str = "", aux: dict | None = None) -> None:
+    """Merge digests the launch has just fixed into ``_execution/launch.yaml``.
 
-    The launch path writes the record before the images are concrete, and writes it again
-    once the builds have resolved -- but a build resolves only the containers this campaign
-    *builds*. A container whose image the campaign does not build is never in that map at
-    all: a simulator the backend supplies, or one the ``.vast`` names outright. This closes
-    that by role, adding what the record lacks and replacing what it has with the more
-    concrete ref, so the record covers every container the campaign actually starts.
+    A campaign's images become known at three moments, and each is recorded at its moment,
+    before the pod that runs it exists: the sidecar as the campaign's first pod is planned,
+    a helper image as composition first asks for its aux container, and the planned
+    containers once composition has decided what they are. That makes this file the one
+    record of everything the campaign runs, and the only one that survives a campaign dying
+    before its first batch -- ``execution.yaml`` is written with the batch.
 
-    It matters because the record is the only place a digest survives a campaign that dies
-    before its first batch finishes -- ``execution.yaml`` is written after one -- and that
-    is the usual shape of a cluster failure. Without it a retrigger re-resolves a family
-    tag, which is how a campaign gets re-run against a *different* simulator than the one
-    it was launched against, silently and while looking like a faithful repeat.
-
-    Merged rather than overwritten: the caller knows the containers it planned, not the
+    *containers* is ``{role or container name: digest}``, *sidecar* the sidecar's digest and
+    *aux* ``{aux container name: digest}``; each is merged into the part of the record it
+    names. Merged rather than overwritten: the caller knows the images it fixed, not the
     request fields beside them, and a whole-file write would drop what it did not pass.
 
-    Best-effort, by the same reasoning as :func:`write_launch_record`: a campaign must not
-    fail because a record could not be improved. A missing record is left missing -- it is
-    written by the launch path, and creating a bare one here would produce a launch record
-    with no request in it, which every reader would take for a campaign that asked for
-    nothing.
+    Raises:
+        ValueError: a ref that is not a digest. The record is what every replay runs from, so
+            a tag here would be re-resolved by the replay it exists to prevent.
+
+    A missing record is left missing -- it is written by the launch path, and creating a bare
+    one here would produce a launch record with no request in it, which every reader would
+    take for a campaign that asked for nothing.
     """
-    if not images:
+    fixed = LaunchImages(containers=dict(containers or {}), sidecar=sidecar or "",
+                         aux=dict(aux or {}))
+    refs = {**{f"images[{k!r}]": v for k, v in fixed.containers.items()},
+            **({LAUNCH_SIDECAR_KEY: fixed.sidecar} if fixed.sidecar else {}),
+            **{f"{LAUNCH_AUX_KEY}[{k!r}]": v for k, v in fixed.aux.items()}}
+    tags = sorted(f"{where}={ref!r}" for where, ref in refs.items() if not image_is_pullable(ref))
+    if tags:
+        raise ValueError(f"the launch record holds digests only, and was handed {', '.join(tags)}")
+    if not refs:
         return
     record = read_launch_record(campaign_dir)
     if record is None:
         return
-    merged = dict(record.get("images") or {})
-    merged.update({role: ref for role, ref in images.items() if ref})
-    if merged == (record.get("images") or {}):
+    merged = dict(record)
+    for key, part in _launch_image_fields(fixed).items():
+        merged[key] = ({**(record.get(key) or {}), **part} if isinstance(part, dict) else part)
+    if merged == record:
         return
-    record["images"] = merged
     path = Path(campaign_dir) / "_execution" / _LAUNCH_FILENAME
     with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(record, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(merged, f, default_flow_style=False, sort_keys=False)
 
 
 def update_launch_scheduling(campaign_dir: Path, *, priority=None, paused=None) -> bool:

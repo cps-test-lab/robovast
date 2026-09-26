@@ -1877,6 +1877,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
         evaluator=Evaluator(search_cfg, vast_dir),
         compose=Compose(vast_file, image_project=opts.image_project,
                         image_project_tag=opts.image_project_tag,
+                        image_pins=_replayed_pins(opts),
                         should_stop=stop_checker(state, scope=STOP_RUNS)),
         per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
         stop_conditions=build_stop_conditions(search_cfg),
@@ -1952,9 +1953,19 @@ def filter_configs_by_name(configs, config_filter):
     return matched
 
 
+def _replayed_pins(opts: RunOptions) -> "dict | None":
+    """The digests composition resolves ``family:`` refs to, or ``None`` to resolve them.
+
+    A replay's (``RunOptions.images_fixed``) recorded container digests: it runs the bytes its
+    source ran, and a ``family:`` ref resolved from the project and tag would name whatever was
+    pushed since. A fresh launch composes from its project, and its digests are fixed after.
+    """
+    return dict(opts.images) if opts.images_fixed else None
+
+
 def build_campaign_data(vast_file, output_dir, config_filter=None,
                         progress_update_callback=None, image_project=None,
-                        image_project_tag=None, should_stop=None):
+                        image_project_tag=None, should_stop=None, image_pins=None):
     """Generate the batch campaign data and apply the optional ``--config`` filter.
 
     Shared by :func:`run_batch_campaign` and the host-side ``cluster run``
@@ -1973,13 +1984,17 @@ def build_campaign_data(vast_file, output_dir, config_filter=None,
 
     *should_stop* ends a composition the campaign no longer needs; the pre-flight, which
     composes for a caller waiting on the answer, leaves it unset.
+
+    *image_pins* are a replay's recorded digests (see :func:`_replayed_pins`), which its
+    ``family:`` refs resolve to instead of *image_project*.
     """
     from robovast.common.config_generation import generate_scenario_variations
 
     campaign_data = generate_scenario_variations(
         variation_file=vast_file, progress_update_callback=progress_update_callback,
         output_dir=output_dir, image_project=image_project,
-        image_project_tag=image_project_tag, should_stop=should_stop)
+        image_project_tag=image_project_tag, should_stop=should_stop,
+        image_pins=image_pins)
     if not campaign_data["configs"]:
         raise CampaignConfigError("No configs found in vast-file")
     if config_filter:
@@ -2041,7 +2056,8 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
                 progress_update_callback=variation_logger.info,
                 image_project=opts.image_project,
                 image_project_tag=opts.image_project_tag,
-                should_stop=stop_checker(state, scope=STOP_RUNS))
+                should_stop=stop_checker(state, scope=STOP_RUNS),
+                image_pins=_replayed_pins(opts))
         finally:
             remove_campaign_log_handler(var_handler)
         # The boundary after composition, which the predicate above ends from within: a

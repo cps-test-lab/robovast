@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Old campaigns stay readable and re-runnable — checked, not claimed.
+"""Old campaigns stay readable, and their configs re-runnable — checked, not claimed.
 
 Every guarantee built for archived campaigns (the migration ladder, the three read policies,
 the container-protocol window, the retrigger pre-flight) degrades silently the moment nobody
@@ -10,6 +10,12 @@ construct configs at the *current* version, which is precisely the case that can
 So this runs against committed campaign directories frozen at the versions robovast has
 actually shipped. See ``tests/fixtures/historic_campaigns/README.md`` for what each is and why
 neither carries provenance records.
+
+None of them records a digest for every image it ran -- their launch records predate that --
+so a re-run of one as it is archived is refused on the images axis, naming what is missing.
+The config half of a re-run is exercised on a copy given the launch record a campaign
+launched now leaves (:func:`_with_fixed_images`), because what is under test there is the
+migration, and the fixtures must stay at the versions they were written at.
 
 What is deliberately NOT asserted here is a real run: that needs Docker and a built image, so
 it lives in the image workflow's integration test, which retriggers the campaign it just ran.
@@ -28,6 +34,27 @@ from robovast.service.retrigger import AXIS_BLOCKED, AXIS_OK, AXIS_UNKNOWN, AXIS
 from tests.service.conftest import CreateCampaignRequestStub
 
 _FIXTURES = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
+_DIGEST = "registry.example.com/robovast/robovast@sha256:" + "7" * 64
+_SIDECAR = "registry.example.com/robovast/robovast-sidecar@sha256:" + "8" * 64
+
+
+def _with_fixed_images(source: pathlib.Path) -> pathlib.Path:
+    """Give a COPY of a historic campaign the launch record a launch writes now.
+
+    Every container its ``execution.yaml`` names gets a digest, and the sidecar one too; the
+    request fields it recorded are kept, and a campaign that recorded none gets the defaults.
+    """
+    launch_path = source / "_execution" / "launch.yaml"
+    record = (yaml.safe_load(launch_path.read_text(encoding="utf-8"))
+              if launch_path.exists() else None) or {
+        "config_filter": "", "campaign_name": None, "runs": 0, "postprocess": True,
+        "upload_to_share": False, "priority": 0, "paused": False}
+    execution = yaml.safe_load(
+        (source / "_execution" / "execution.yaml").read_text(encoding="utf-8")) or {}
+    record["images"] = {name: _DIGEST for name in (execution.get("images") or {"scenario": ""})}
+    record["sidecar_image"] = _SIDECAR
+    launch_path.write_text(yaml.safe_dump(record), encoding="utf-8")
+    return source
 
 
 def _campaigns():
@@ -76,20 +103,43 @@ def test_the_strict_policy_still_refuses_an_old_config(campaign):
 
 
 @pytest.mark.parametrize("campaign", _campaigns(), ids=lambda d: d.name)
-def test_the_preflight_reports_every_axis_and_stays_runnable(campaign):
+def test_the_preflight_blocks_an_archived_campaign_only_on_its_images(campaign):
     """These campaigns predate plugins.yaml and providers.yaml, so those axes are `unknown` --
-    and `unknown` must not block. Refusing a campaign for lacking a record nobody wrote would
-    refuse exactly the campaigns this exists to rescue."""
-    report = retrigger.check(campaign, campaign.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
+    and `unknown` must not block. What does block is the images axis: their launch records
+    fix no digest for the sidecar, and a re-run resolves nothing again. The detail says where
+    to go instead."""
+    report = retrigger.check(campaign, campaign.name, image_labels=lambda _ref: None,
+                             build_lock=lambda _ref: {})
 
     assert set(report["axes"]) == {"config", "host", "images", "plugins", "providers"}
     assert all(axis["detail"] for axis in report["axes"].values()), "every axis needs a detail"
 
     assert report["axes"]["config"]["verdict"] in (AXIS_OK, AXIS_UPGRADABLE)
-    assert report["axes"]["images"]["verdict"] == AXIS_OK, report["axes"]["images"]["detail"]
     for axis in ("plugins", "providers"):
         assert report["axes"][axis]["verdict"] == AXIS_UNKNOWN
+    assert report["blocking"] == ["images"]
+    assert "--to-workspace" in report["axes"]["images"]["detail"]
+
+
+@pytest.mark.parametrize("campaign", _campaigns(), ids=lambda d: d.name)
+def test_given_its_digests_the_preflight_stays_runnable(campaign, tmp_path):
+    source = tmp_path / campaign.name
+    shutil.copytree(campaign, source)
+    report = retrigger.check(_with_fixed_images(source), source.name,
+                             image_labels=lambda _ref: None, build_lock=lambda _ref: {})
+
+    assert report["axes"]["images"]["verdict"] == AXIS_OK, report["axes"]["images"]["detail"]
     assert report["runnable"] is True, report["blocking"]
+
+
+@pytest.mark.parametrize("campaign", _campaigns(), ids=lambda d: d.name)
+def test_an_archived_campaign_as_it_is_is_refused_naming_the_gap(campaign, tmp_path):
+    source = tmp_path / campaign.name
+    shutil.copytree(campaign, source)
+    with pytest.raises(retrigger.RetriggerRefused) as e:
+        retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
+                          description_limit=200, request_model=CreateCampaignRequestStub)
+    assert "the sidecar image" in str(e.value) or "launch.yaml" in str(e.value)
 
 
 @pytest.mark.parametrize("campaign", _campaigns(), ids=lambda d: d.name)
@@ -98,6 +148,7 @@ def test_an_archived_campaign_can_be_prepared_for_relaunch(campaign, tmp_path):
     the current version, and the source is untouched."""
     source = tmp_path / campaign.name
     shutil.copytree(campaign, source)
+    _with_fixed_images(source)
     before = next(source.glob("_config/*.vast")).read_bytes()
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
@@ -105,7 +156,7 @@ def test_an_archived_campaign_can_be_prepared_for_relaunch(campaign, tmp_path):
     try:
         staged = yaml.safe_load(pathlib.Path(plan.config_path).read_text(encoding="utf-8"))
         assert staged["version"] == SUPPORTED_CONFIG_VERSION
-        assert plan.pinned_images, "the recorded image should be pinnable"
+        assert plan.pinned_images.containers, "the recorded images should be replayed"
         assert next(source.glob("_config/*.vast")).read_bytes() == before
     finally:
         plan.discard()
@@ -120,6 +171,7 @@ def test_the_plan_states_which_config_version_the_relaunch_reads(campaign, tmp_p
     """
     source = tmp_path / campaign.name
     shutil.copytree(campaign, source)
+    _with_fixed_images(source)
     declared = config_version(yaml.safe_load(
         next(source.glob("_config/*.vast")).read_text(encoding="utf-8")))
 
@@ -140,6 +192,7 @@ def test_a_migrated_relaunch_keeps_the_authors_comments(tmp_path):
     campaign = next(d for d in _campaigns() if d.name.startswith("v1-"))
     source = tmp_path / campaign.name
     shutil.copytree(campaign, source)
+    _with_fixed_images(source)
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
                              description_limit=200, request_model=CreateCampaignRequestStub)
@@ -159,6 +212,7 @@ def test_a_recorded_pilot_stays_a_pilot(tmp_path):
     campaign = next(d for d in _campaigns() if (d / "_execution" / "launch.yaml").exists())
     source = tmp_path / campaign.name
     shutil.copytree(campaign, source)
+    _with_fixed_images(source)
     recorded = yaml.safe_load((campaign / "_execution" / "launch.yaml").read_text(
         encoding="utf-8"))
 

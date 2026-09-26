@@ -344,12 +344,12 @@ container, so it answers for an image that exists only in the registry.
   its registry; an image the registry will not answer for is reported as unknown.
 
 The cluster check **fails closed**: if the registry will not say what protocol the
-image speaks, the campaign is refused rather than started.  Pinning, right beside
-it, does the opposite and is right to — pinning is an optimisation, and not applying
-it leaves exactly what would have run anyway, whereas a compat check that could not
-read the image has established nothing.  Set
+image speaks, the campaign is refused rather than started.  Set
 ``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK=1`` to run anyway; that is the right move only
-when the registry is unreachable and you know the image.
+when the registry is unreachable and you know the image.  It waives this label read
+and nothing else: the digest pin right beside it refuses a launch whose digests cannot
+be read whatever the switch says, because a campaign running a tag is one no replay
+can repeat (:ref:`image-digest-pinning`).
 
 Only the campaign's own image is checked.  The sidecar sets no label and a
 system-under-test image is not a robovast image at all, so an absent label on those

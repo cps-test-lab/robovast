@@ -58,7 +58,8 @@ from robovast.client.safe_path import safe_join
 from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
-from robovast.common.campaign_data import (campaign_has_runs, read_campaign_finished_at,
+from robovast.common.campaign_data import (LaunchImages, campaign_has_runs,
+                                           read_campaign_finished_at,
                                            read_campaign_results_bytes)
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
@@ -473,11 +474,13 @@ class WorkspaceTarget:
     #: materialized tree that nothing deletes is a disk leak per launch; the launch path knows
     #: when the tree stops being needed, and the target knows what deleting it means.
     discard: Optional[Callable[[], None]] = None
-    #: ``{container name: image ref}`` to run verbatim, skipping the image build entirely.
-    #: Data rather than a callback: it is resolved in the request handler, so a campaign whose
-    #: image cannot be named fails the *request* with the reason instead of becoming a failed
-    #: campaign someone has to go and inspect.
-    pinned_images: Optional[dict] = None
+    #: The launch record's digests (``campaign_data.LaunchImages``) to replay: every image the
+    #: campaign runs -- its containers, the sidecar and the aux helpers -- comes from here,
+    #: nothing is built and nothing is resolved again. ``None`` for a launch that fixes its
+    #: own. Data rather than a callback: it is read in the request handler, so a campaign
+    #: whose record lacks a digest fails the *request* with the reason instead of becoming a
+    #: failed campaign someone has to go and inspect.
+    pinned_images: Optional[LaunchImages] = None
     #: Adopt this campaign id rather than minting a fresh one. Set only when re-entering a
     #: campaign that already exists and is still owed work -- one whose driver a service
     #: restart took away (see ``cluster_execution.campaign_resume``).
@@ -2228,7 +2231,7 @@ class ServiceBase(RobovastInterface):
         this service.
         """
 
-    def _campaign_context(self, campaign_id: str, project, should_stop=None):
+    def _campaign_context(self, campaign_id: str, project, should_stop=None, options=None):
         """Per-campaign setup entered *inside* the worker thread.
 
         A context manager, so anything thread-scoped is established where the composition
@@ -2240,14 +2243,24 @@ class ServiceBase(RobovastInterface):
         *should_stop* is the campaign's own stop flag as a predicate, for the waits inside
         the span that are long enough for an operator to give up on — a helper image being
         pulled, most of all. A preview has no campaign and passes none.
+
+        *options* are the campaign's :class:`~robovast.execution.backends.RunOptions`: which
+        image project it resolves from, and the digests it has fixed or replays. The images
+        its auxiliary containers run are the campaign's, so they are fixed and recorded like
+        every other image it runs. A preview has no campaign and passes none.
         """
-        return self._aux_runner_context(campaign_id, project, should_stop=should_stop)
+        return self._aux_runner_context(campaign_id, project, should_stop=should_stop,
+                                        options=options)
 
     @abstractmethod
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
-                            should_stop=None):
+                            should_stop=None, options=None):
         """A context yielding the runner a variation plugin's auxiliary container is started
         through, or ``None`` where each call starts an ephemeral one.
+
+        *options* are given for a campaign's span only: its auxiliary containers and the
+        sidecar beside them then run digests the campaign's launch record holds, fixed before
+        the first pod on a fresh launch and taken from the record on a replay.
         """
 
     def _record_campaign_failure(self, campaign_id, results_dir, state, exc, backend):
@@ -2649,8 +2662,11 @@ class ServiceBase(RobovastInterface):
             try:
                 # How the campaign was ASKED FOR, recorded next to it. Here rather than in the
                 # request handler for the same reason as the line above: a record written later
-                # would be missing from exactly the campaigns someone comes looking at.
-                self._record_launch(campaign_id, results_dir, request)
+                # would be missing from exactly the campaigns someone comes looking at. A replay
+                # states the digests it replays from this first write on; a fresh launch adds
+                # each as it fixes it, before the pod that runs it exists.
+                self._record_launch(campaign_id, results_dir, request,
+                                    images=target.pinned_images)
                 if target.materialize is not None:
                     state.set_phase(Phase.STARTING, stage="staging the project")
                     target.materialize()
@@ -2667,7 +2683,13 @@ class ServiceBase(RobovastInterface):
                     # never touches the build context, which is absent here by definition.
                     self._build_specs_for(target, campaign_config,
                                           should_stop=stop_checker(state, scope=STOP_RUNS))
-                    options.images = dict(target.pinned_images)
+                    # Every image the replay runs, and the flag that makes anything else a
+                    # refusal: composition, the aux pods and the batch runner read these and
+                    # resolve nothing from the environment.
+                    options.images = dict(target.pinned_images.containers)
+                    options.sidecar_image = target.pinned_images.sidecar
+                    options.aux_images = dict(target.pinned_images.aux)
+                    options.images_fixed = True
                     state.raise_if_stopped("stopped while installing the campaign's plugins")
                 else:
                     # Build (or join a sibling's build of) the experiment image and pin the
@@ -2691,19 +2713,13 @@ class ServiceBase(RobovastInterface):
                             image_project=options.image_project,
                             image_project_tag=options.image_project_tag,
                             should_stop=stop_checker(state, scope=STOP_RUNS))
-                # Re-record the launch, now that the symbolic image refs have become
-                # concrete ones. Written here rather than merged in later because this is
-                # the last moment before the campaign starts spending compute, and the
-                # record is what a re-launch after a restart pins its images from -- a
-                # re-resolve would silently pick up a base that moved in the meantime.
-                self._record_launch(campaign_id, results_dir, request,
-                                    images=options.images)
                 state.set_phase(Phase.STARTING)
                 # The last boundary before the backend's own pre-flight -- a project push, a
                 # registry read, the object-store tunnel -- none of which reads the flag.
                 state.raise_if_stopped("stopped before the campaign's runs began")
                 with self._campaign_context(campaign_id, target,
-                                            should_stop=lambda: state.stop_requested):
+                                            should_stop=lambda: state.stop_requested,
+                                            options=options):
                     backend = self._build_backend(state)
                     if is_search:
                         run_search_campaign(
@@ -3302,10 +3318,12 @@ class ServiceBase(RobovastInterface):
         without this "was this the full sweep or a one-config pilot?" cannot be answered about
         any campaign in the results root, by a retrigger or by a human.
 
-        Called at the top of the worker so it lands before anything that can fail, and
-        **again** once the launch has resolved its images — see ``write_launch_record``'s
-        ``images``. Never fatal: a campaign that runs correctly must not be failed by an
-        unwritable record.
+        Called at the top of the worker so it lands before anything that can fail. *images* are
+        a replay's digests, stated from this first write; a fresh launch passes none and
+        records each image as it fixes it (``update_launch_images``). Not fatal here, because
+        what makes the record replayable comes next: the digests are written before any pod
+        exists, and that write is fatal -- a campaign whose record cannot take them stops
+        before it runs anything.
         """
         from robovast.common.campaign_data import write_launch_record
         campaign_root = Path(results_dir) / campaign_id

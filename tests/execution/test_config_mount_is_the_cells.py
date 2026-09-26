@@ -75,7 +75,8 @@ def _init_command(monkeypatch, configs, runs=1, also_reads=()):
 
     monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
                         _no_such_secret)
-    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
+    monkeypatch.setattr(BatchJobRunner, "_resolve_digest",
+                        lambda self, ref: ref.rsplit(":", 1)[0] + "@sha256:" + "0" * 64)
     runner = BatchJobRunner.for_batch(
         campaign_data={"configs": configs,
                        "execution": {},

@@ -66,6 +66,17 @@ def _vast(search=None):
     return doc
 
 
+_SCENARIO = "reg.example.com/e@sha256:" + "a" * 64
+_SIDECAR = "reg.example.com/robovast-sidecar@sha256:" + "b" * 64
+_AUX = "reg.example.com/robovast-roqsim@sha256:" + "c" * 64
+
+
+def _launch(**fields):
+    """A launch record as a launch writes it now: the request, and every image a digest."""
+    return {"images": {"scenario": _SCENARIO}, "sidecar_image": _SIDECAR,
+            "aux_images": {"aux-robovast-roqsim": _AUX}, **fields}
+
+
 #: Ids are campaign-shaped because discovery recognises a campaign by its name.
 _A = "camp-a-2026-07-17-120000"
 _B = "camp-b-2026-07-18-120000"
@@ -149,16 +160,50 @@ def test_a_fault_in_discovery_is_reported_as_an_error(tmp_path, monkeypatch, cap
 
 def test_a_batch_campaign_with_its_records_is_picked_up(tmp_path):
     root = _campaign(tmp_path, _A,
-                     launch={"runs": 2, "config_filter": "pilot*", "postprocess": True,
-                             "images": {"scenario": "reg.example.com/e@sha256:a"}})
+                     launch=_launch(runs=2, config_filter="pilot*", postprocess=True))
     svc = _FakeService(tmp_path)
 
     target, request, refusal = campaign_resume.plan_for(svc, _A, root)
 
     assert refusal is None
     assert target.campaign_id == _A               # adopted, not minted
-    assert target.pinned_images == {"scenario": "reg.example.com/e@sha256:a"}
     assert request.runs == 2 and request.config_filter == "pilot*"
+
+
+def test_an_adoption_replays_every_recorded_digest(tmp_path, monkeypatch):
+    """Containers, the sidecar and the aux helpers, whatever the restarted service's
+    environment says now: the second half runs the bytes the first half did."""
+    from robovast.common.campaign_data import LaunchImages
+
+    monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example.com/elsewhere")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "moved-on")
+    root = _campaign(tmp_path, _A, launch=_launch(runs=2))
+
+    target, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
+
+    assert refusal is None
+    assert target.pinned_images == LaunchImages(
+        containers={"scenario": _SCENARIO}, sidecar=_SIDECAR,
+        aux={"aux-robovast-roqsim": _AUX})
+
+
+def test_a_record_lacking_the_sidecar_is_left_alone_naming_it(tmp_path):
+    """The shape of a campaign launched before the record held every image. Adopting it would
+    mean resolving the sidecar from the restarted service's environment."""
+    root = _campaign(tmp_path, _A, launch={"runs": 2, "images": {"scenario": _SCENARIO}})
+
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
+
+    assert refusal is not None and "the sidecar image" in refusal
+
+
+def test_a_record_with_no_container_digests_is_not_resolved_afresh(tmp_path):
+    """An empty pin set is a gap, not a licence to resolve every container again."""
+    root = _campaign(tmp_path, _A, launch={"runs": 2, "sidecar_image": _SIDECAR})
+
+    _, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
+
+    assert refusal is not None and "every container" in refusal
 
 
 def test_a_campaign_with_no_launch_record_is_left_alone(tmp_path):
@@ -186,7 +231,7 @@ def _search(seed=7, strategy="random"):
 
 def test_a_seeded_search_is_picked_up(tmp_path):
     """It resumes by re-driving its strategy through the batches its store recorded."""
-    root = _campaign(tmp_path, _A, launch={"runs": 2}, vast=_vast(search=_search()))
+    root = _campaign(tmp_path, _A, launch=_launch(runs=2), vast=_vast(search=_search()))
 
     target, _, refusal = campaign_resume.plan_for(_FakeService(tmp_path), _A, root)
 
@@ -225,8 +270,7 @@ def test_a_strategy_that_declares_itself_unresumable_is_left_alone(tmp_path, mon
 def test_a_live_campaign_with_its_records_is_not_lost_by_a_roll(tmp_path):
     """The verdict before the roll has to be the one the successor reaches afterwards, so it
     plans through the same ``plan_for`` over the same campaign directory."""
-    _campaign(tmp_path, _A, launch={"runs": 2,
-                                    "images": {"scenario": "reg.example.com/e@sha256:a"}})
+    _campaign(tmp_path, _A, launch=_launch(runs=2))
 
     assert campaign_resume.would_be_lost(_FakeService(tmp_path), _A) is None
 
@@ -243,7 +287,7 @@ def test_a_campaign_with_no_records_is_reported_as_lost(tmp_path):
 def test_a_campaign_is_re_launched_under_its_own_id(tmp_path, endings):
     """Adopted rather than minted: the campaign directory is the working directory the
     controller and the batch runner read, so the jobs that already finished are adopted."""
-    _campaign(tmp_path, _A, launch={"runs": 1})
+    _campaign(tmp_path, _A, launch=_launch(runs=1))
     svc = _FakeService(tmp_path)
 
     outcomes = campaign_resume.resume_all(svc)
@@ -254,9 +298,9 @@ def test_a_campaign_is_re_launched_under_its_own_id(tmp_path, endings):
 
 def test_a_refused_campaign_does_not_stop_the_others(tmp_path, endings):
     good, bad = "good-2026-07-10-120000", "bad-2026-07-20-120000"
-    _campaign(tmp_path, good, launch={"runs": 1})
+    _campaign(tmp_path, good, launch=_launch(runs=1))
     # A launch record is what discovery reads; without a frozen config the plan refuses.
-    bad_root = _campaign(tmp_path, bad, launch={"runs": 1})
+    bad_root = _campaign(tmp_path, bad, launch=_launch(runs=1))
     (bad_root / "_config" / "pilot.vast").unlink()
     svc = _FakeService(tmp_path)
 

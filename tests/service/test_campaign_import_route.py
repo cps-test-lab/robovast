@@ -14,9 +14,10 @@ directory. What this file defends is the part only the wire and the worker can s
   campaign that extracted but did not register lists blank -- which looks like success to
   everything except the person reading it.
 * **What arrives can be re-run.** Importing an old result is worth doing because the campaign
-  becomes one of ours: listable, readable, and launchable again. The retrigger pre-flight is
-  tested against fixture directories elsewhere; only here does it meet a directory the import
-  itself produced, which is the one a user would actually re-run.
+  becomes one of ours: listable, readable, and launchable again -- replayed as it ran when its
+  launch record fixes every image's digest, and refused naming what it lacks when not. The
+  retrigger pre-flight is tested against fixture directories elsewhere; only here does it meet
+  a directory the import itself produced, which is the one a user would actually re-run.
 * **A refusal happens before any bytes move.** A bad archive, a name that is not a campaign
   id, and a collision with a campaign already here are all synchronous errors on the POST. If
   any of them slipped into the worker instead, the caller would get a ref for an import that
@@ -208,6 +209,16 @@ def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_p
 
     imported = transport._campaigns_root() / fixture.name
     report = retrigger.check(imported, fixture.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
+    # As archived, its launch record fixes no digest for every image it ran, so the images
+    # axis is the one thing that blocks -- and it says where to go instead.
+    assert report["blocking"] == ["images"], report["blocking"]
+    assert "--to-workspace" in report["axes"]["images"]["detail"]
+
+    # Given the record a launch writes now, the imported layout stages like any other.
+    from tests.service.test_historic_campaigns import _with_fixed_images
+    _with_fixed_images(imported)
+    report = retrigger.check(imported, fixture.name, image_labels=lambda _ref: None,
+                             build_lock=lambda _ref: {})
     assert report["runnable"] is True, report["blocking"]
 
     plan = retrigger.prepare(imported, fixture.name,

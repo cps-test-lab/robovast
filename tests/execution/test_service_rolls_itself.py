@@ -112,7 +112,8 @@ def test_a_campaign_that_survives_the_roll_is_not_a_reason_to_refuse(svc, tmp_pa
     results = tmp_path / "results"
     (results / _CAMPAIGN / "_execution").mkdir(parents=True)
     (results / _CAMPAIGN / "_execution" / "launch.yaml").write_text(yaml.dump(
-        {"runs": 2, "images": {"scenario": "reg.example.com/e@sha256:a"}}))
+        {"runs": 2, "images": {"scenario": "reg.example.com/e@sha256:a"},
+         "sidecar_image": "reg.example.com/robovast-sidecar@sha256:b"}))
     (results / _CAMPAIGN / "_config").mkdir(parents=True)
     (results / _CAMPAIGN / "_config" / "pilot.vast").write_text(yaml.safe_dump(_VAST))
     (results / _CAMPAIGN / "_config" / "scenario.osc").write_text("scenario pilot:\n")

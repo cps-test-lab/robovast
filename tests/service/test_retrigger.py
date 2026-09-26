@@ -4,9 +4,10 @@
 
 Three things here can fail silently, and each has tests that would catch it:
 
-- **the image.** A campaign's build context is not archived, so a retrigger cannot rebuild and
-  must reuse the recorded ref. Falling back to a declared tag would run the base image without
-  the campaign's own code — a campaign that finishes and measured nothing.
+- **the images.** A retrigger runs exactly the digests the source's launch record holds -- every
+  container, the sidecar and the aux helpers -- and resolves none of them again. A tag resolved
+  at re-run time would run whatever was pushed there since, and a record missing a digest is
+  refused, naming it, rather than filled in from the environment.
 - **the config.** ``execution.run_files`` is a list of globs, and a glob matching nothing is
   only a *warning* during config generation. A ``_config/`` missing a params file would produce
   a campaign that runs, runs differently, and says so nowhere.
@@ -22,7 +23,7 @@ import threading
 import pytest
 import yaml
 
-from robovast.common.campaign_data import write_launch_record
+from robovast.common.campaign_data import LaunchImages, write_launch_record
 from robovast.service import retrigger
 from robovast.service.interface import CreateCampaignRequest
 from robovast.service.service_base import WorkspaceTarget
@@ -30,6 +31,13 @@ from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 
 DIGEST = "harbor.example/robovast/exp@sha256:" + "9" * 64
+SIDECAR = "harbor.example/robovast/robovast-sidecar@sha256:" + "5" * 64
+AUX = "harbor.example/robovast/robovast-roqsim@sha256:" + "6" * 64
+#: What a campaign launched now records: every image it runs, as a digest.
+PINS = LaunchImages(containers={"scenario": DIGEST}, sidecar=SIDECAR,
+                    aux={"aux-robovast-roqsim": AUX})
+#: ``launch=`` default: a launch record from an ordinary request.
+_ASKED = object()
 
 
 def _vast(containers=None):
@@ -47,8 +55,13 @@ BUILT = {"runs": 3, "execution_type": "cluster", "images": {"scenario": "build:p
 
 
 def _source_campaign(root, campaign_id="pilot-2026-08-08-120000", *, vast=None,
-                     execution=None, launch=None, run_files=(), extra_config=(), recorded=None):
-    """A campaign directory shaped like one a real run leaves behind."""
+                     execution=None, launch=_ASKED, images=PINS, run_files=(), extra_config=(),
+                     recorded=None):
+    """A campaign directory shaped like one a real run leaves behind.
+
+    *launch* is the request its launch record holds, ``None`` for no launch record at all;
+    *images* the digests that record fixes.
+    """
     campaign = root / campaign_id
     (campaign / "_config").mkdir(parents=True)
     (campaign / "_config" / "pilot.vast").write_text(yaml.safe_dump(vast or _vast()))
@@ -64,8 +77,10 @@ def _source_campaign(root, campaign_id="pilot-2026-08-08-120000", *, vast=None,
     (campaign / "_transient").mkdir(exist_ok=True)
     (campaign / "_transient" / "configurations.yaml").write_text(yaml.safe_dump(
         {"configs": [{"name": "config1"}], "_run_files": list(run_files), **(recorded or {})}))
+    if launch is _ASKED:
+        launch = CreateCampaignRequest(workspace_id="ws-gone")
     if launch is not None:
-        write_launch_record(campaign, launch)
+        write_launch_record(campaign, launch, images=images)
     return campaign
 
 
@@ -113,25 +128,26 @@ def test_the_new_campaign_names_the_one_it_came_from(svc, tmp_path):
     assert plan.request.workspace_id == ""
 
 
-def test_a_campaign_predating_the_launch_record_says_the_filter_is_unknown(svc, tmp_path):
-    """It runs everything, because the filter cannot be recovered — but it must not do that
-    silently, since the source may have been a pilot."""
-    _source_campaign(tmp_path / "results", execution={
+def test_a_campaign_predating_the_launch_record_is_refused(svc, tmp_path):
+    """No launch record, so nothing fixes which bytes it ran -- a re-run would have to resolve
+    every image again, which is a different experiment under the source's name."""
+    _source_campaign(tmp_path / "results", launch=None, execution={
         "runs": 7, "execution_type": "cluster", "image_revision": DIGEST})
-    plan = _prepare(svc, "pilot-2026-08-08-120000")
-    assert plan.request.config_filter == ""
-    assert plan.request.runs == 7          # the effective count from execution.yaml
-    assert "no launch record" in plan.request.description
+    with pytest.raises(retrigger.RetriggerRefused) as e:
+        _prepare(svc, "pilot-2026-08-08-120000")
+    assert "launch.yaml" in str(e.value)
+    assert "--to-workspace" in str(e.value)
 
 
-# -- the image is pinned, never rebuilt --------------------------------------------
+# -- every image is replayed, never resolved again ---------------------------------
 
 
-def test_a_built_container_is_pinned_to_the_recorded_image(svc, tmp_path):
+def test_every_recorded_digest_is_replayed(svc, tmp_path):
+    """Containers, the sidecar and the aux helpers: the plan carries all of them."""
     _source_campaign(tmp_path / "results", execution=BUILT, vast=_vast(
         {"scenario": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}))
     plan = _prepare(svc, "pilot-2026-08-08-120000")
-    assert plan.pinned_images == {"scenario": DIGEST}
+    assert plan.pinned_images == PINS
 
 
 def test_a_folded_simulation_block_is_pinned_as_the_scenario_container(svc, tmp_path):
@@ -144,83 +160,81 @@ def test_a_folded_simulation_block_is_pinned_as_the_scenario_container(svc, tmp_
     _source_campaign(tmp_path / "results", execution=BUILT, vast=_vast(
         {"simulation": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}))
     plan = _prepare(svc, "pilot-2026-08-08-120000")
-    assert plan.pinned_images == {"scenario": DIGEST}
+    assert plan.pinned_images.containers == {"scenario": DIGEST}
 
 
-def test_a_campaign_that_builds_nothing_pins_nothing(svc, tmp_path):
-    """Its containers run their declared images, so there is nothing to pin and no refusal."""
+def test_a_campaign_that_builds_nothing_replays_its_digests_too(svc, tmp_path):
+    """Whether the campaign built its images makes no difference: a declared tag resolved
+    again is as much a different experiment as a rebuilt image."""
     _source_campaign(tmp_path / "results")
-    assert _prepare(svc, "pilot-2026-08-08-120000").pinned_images == {}
+    assert _prepare(svc, "pilot-2026-08-08-120000").pinned_images == PINS
 
 
-def test_a_built_container_with_no_recorded_image_is_refused(svc, tmp_path):
-    """The common shape of a failed cluster campaign: ``_config/`` frozen, no execution.yaml.
-    Rebuilding is not an option — the wheels are not in the results."""
-    campaign = _source_campaign(tmp_path / "results", vast=_vast(
-        {"scenario": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}))
-    (campaign / "_execution" / "execution.yaml").unlink()
+def test_a_record_lacking_the_sidecar_is_refused_naming_it(svc, tmp_path):
+    """The shape of a campaign launched before its record held every image."""
+    _source_campaign(tmp_path / "results", images=LaunchImages(containers={"scenario": DIGEST}))
     with pytest.raises(retrigger.RetriggerRefused) as e:
         _prepare(svc, "pilot-2026-08-08-120000")
-    assert "build context" in str(e.value)
+    assert "the sidecar image" in str(e.value)
+    assert "--to-workspace" in str(e.value)
     assert e.value.include_traceback is False       # self-contained: no stack wanted
 
 
-def test_a_build_free_campaign_with_only_tags_recorded_is_retriggered(svc, tmp_path):
-    """The regression this whole change is about.
-
-    A cluster campaign that built nothing records mutable tags in ``images`` and, if its
-    per-container digests were lost (a resume whose pods were already reaped), nothing pinnable
-    at all. It used to be refused for failing to pin images it never built — while the refusal
-    told you to relaunch from the workspace, which resolves exactly the same tags. Now it
-    proceeds and says what it re-resolved.
-    """
+def test_a_build_free_campaign_with_only_tags_recorded_is_refused(svc, tmp_path):
+    """Its containers ran tags nothing fixed, so a re-run has nothing to replay -- resolving
+    them now is a fresh launch, which is what the refusal points at."""
     _source_campaign(
         tmp_path / "results",
         vast=_vast({"simulation": {"image": "sim:1"}, "sut": {"image": "sut:1"}}),
         execution={"runs": 3, "execution_type": "cluster",
                    "images": {"simulation": "reg.example/sim:latest",
                               "sut": "reg.example/sut:latest"}},
-        launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
-    plan = _prepare(svc, "pilot-2026-08-08-120000")
-    assert plan.pinned_images == {}     # nothing pinned, and that is not an error
+        launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3),
+        images=LaunchImages(sidecar=SIDECAR))
+    with pytest.raises(retrigger.RetriggerRefused) as e:
+        _prepare(svc, "pilot-2026-08-08-120000")
+    assert "container 'simulation'" in str(e.value)
+    assert "container 'sut'" in str(e.value)
 
 
-def test_a_build_free_campaign_is_not_blocked_by_the_preflight(svc, tmp_path):
-    """``check`` and ``prepare`` must agree; they answered this differently once."""
+def test_the_preflight_blocks_what_prepare_refuses(svc, tmp_path):
+    """``check`` and ``prepare`` must agree; they read one record through one function."""
     _source_campaign(
         tmp_path / "results",
         vast=_vast({"simulation": {"image": "sim:1"}, "sut": {"image": "sut:1"}}),
         execution={"runs": 3, "execution_type": "cluster",
                    "images": {"simulation": "reg.example/sim:latest",
                               "sut": "reg.example/sut:latest"}},
-        launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3))
+        launch=CreateCampaignRequest(workspace_id="ws-gone", runs=3),
+        images=LaunchImages(sidecar=SIDECAR))
     report = retrigger.check(
         str(svc.campaign_dir("pilot-2026-08-08-120000")),   # noqa: SLF001
         "pilot-2026-08-08-120000", image_labels=svc._image_labels,  # noqa: SLF001
         build_lock=svc._image_build_lock)  # noqa: SLF001
-    assert "images" not in report["blocking"]
-    assert report["axes"]["images"]["reresolved"] == ["simulation", "sut"]
+    assert "images" in report["blocking"]
+    assert sorted(report["axes"]["images"]["missing"]) == ["container 'simulation'",
+                                                           "container 'sut'"]
+    assert "--to-workspace" in report["axes"]["images"]["detail"]
 
 
-def test_a_built_container_that_recorded_only_a_tag_is_still_refused(svc, tmp_path):
-    """The half that must not be lost: it BUILT this image, so a tag is not a substitute."""
+def test_a_container_that_recorded_only_a_tag_is_refused(svc, tmp_path):
     _source_campaign(
         tmp_path / "results",
         vast=_vast({"scenario": {"image": "base:1", "python_packages": ["wheels/x.whl"]}}),
-        execution={"runs": 3, "execution_type": "cluster",
-                   "images": {"scenario": "reg.example/exp:latest"}})
+        images=LaunchImages(containers={"scenario": "reg.example/exp:latest"},
+                            sidecar=SIDECAR))
     with pytest.raises(retrigger.RetriggerRefused) as e:
         _prepare(svc, "pilot-2026-08-08-120000")
-    assert "build context" in str(e.value)
+    assert "reg.example/exp:latest" in str(e.value)
 
 
-def test_no_execution_yaml_is_fine_when_nothing_builds(svc, tmp_path):
-    """Refusing here would rule out relaunching any campaign that died early, which is most
-    of what someone wants to relaunch."""
+def test_no_execution_yaml_is_fine_when_the_launch_record_is_complete(svc, tmp_path):
+    """The launch record is written before the first job, so a campaign that died before its
+    first batch -- most of what someone wants to relaunch -- is replayable from it alone."""
     campaign = _source_campaign(tmp_path / "results")
     (campaign / "_execution" / "execution.yaml").unlink()
     plan = _prepare(svc, "pilot-2026-08-08-120000")
-    assert plan.pinned_images == {}
+    assert plan.pinned_images == PINS
 
 
 def test_a_campaign_with_no_frozen_config_is_refused(svc, tmp_path):
@@ -479,6 +493,36 @@ def test_a_pinned_launch_skips_the_build_and_uses_the_recorded_images(svc, tmp_p
             entry.thread.join(5)
     assert started == []                    # nothing was built
     assert used == {"scenario": DIGEST}     # the recorded bytes ran
+
+
+def test_a_retrigger_replays_every_digest_whatever_the_environment_says(svc, tmp_path,
+                                                                         monkeypatch):
+    """The requirement end to end: the project and its tag moved after the source ran, and the
+    re-run still runs the source's bytes -- containers, sidecar and aux helpers -- with every
+    one of them fixed, so nothing downstream may resolve an image from the environment."""
+    _source_campaign(tmp_path / "results")
+    monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example.com/elsewhere")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "moved-on")
+    seen = {}
+    monkeypatch.setattr(NullService, "_build_specs_for",
+                        lambda self, t, c, **kw: ({}, None))
+    monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
+                        lambda *a, **k: seen.update(options=k["options"]))
+
+    new = svc.retrigger_campaign("pilot-2026-08-08-120000")
+    for entry in list(svc._campaigns.values()):        # noqa: SLF001
+        if entry.thread:
+            entry.thread.join(5)
+
+    options = seen["options"]
+    assert options.images_fixed is True
+    assert options.images == {"scenario": DIGEST}
+    assert options.sidecar_image == SIDECAR
+    assert options.aux_images == {"aux-robovast-roqsim": AUX}
+    # And the new campaign's own record states them from its first write, so a re-run of the
+    # re-run replays the same bytes again.
+    from robovast.common.campaign_data import campaign_pinned_images
+    assert campaign_pinned_images(svc.campaign_dir(new.campaign_id)) == PINS
 
 
 def test_a_workspace_launch_is_unaffected(svc):

@@ -84,8 +84,8 @@ class NullService(ServiceBase):
         self._refuse("postprocessing")
 
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
-                            should_stop=None):
-        del tag, project, hold, should_stop
+                            should_stop=None, options=None):
+        del tag, project, hold, should_stop, options
         return contextlib.nullcontext(None)
 
     def _scene_runner_context(self, identity: dict, on_wait=None):

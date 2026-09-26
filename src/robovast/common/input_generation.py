@@ -432,6 +432,7 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
         cached = stamps.get_json(key)
         if cached is not None and cached.get("outputs") == _output_fingerprint(out_dir, vast_dir):
             progress(f"Input generator '{name}' is up to date ({out}).")
+            _fix_declared_container(generator_cls, params)
             return {"name": name, "params": params, "out": out,
                     "outputs": collect_output_files(out_dir, vast_dir),
                     "inputs": cached.get("inputs", []), "cached": True, "duration": 0.0}
@@ -526,6 +527,21 @@ def _swap_in(staging, out_dir):
             os.rename(previous, out_dir)
         raise
     shutil.rmtree(previous, ignore_errors=True)
+
+
+def _fix_declared_container(generator_cls, params):
+    """Fix the image of the container an up-to-date generator would have run.
+
+    None runs for a cached entry, but a replay of the campaign regenerates -- a generator's
+    cache is not archived with it -- and runs one, so the campaign fixes and records its image
+    here exactly as it would a started one's (``config_generation.fix_aux_image``).
+    """
+    spec = generator_cls.get_required_container(params)
+    if spec is None:
+        return
+    from robovast.common.config_generation import \
+        fix_aux_image  # pylint: disable=import-outside-toplevel
+    fix_aux_image(spec)
 
 
 def _make_runner(generator_cls, params, container_runner_factory, name):

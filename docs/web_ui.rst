@@ -221,19 +221,18 @@ It provides four views:
   that campaign also has a copy on the share, **Copy share link** (omitted for a share
   provider that has no link a browser could open — SFTP has none). Below those,
   **Retrigger campaign** starts a **new** campaign from
-  what this one recorded — its frozen ``_config/`` and the image its runs actually
-  used — rather than from the workspace it was launched from, which may be gone or
+  what this one recorded — its frozen ``_config/`` and the digests its launch fixed
+  — rather than from the workspace it was launched from, which may be gone or
   may have moved on. The source campaign is untouched, so this works whatever state
   it ended in, and the new campaign appears at the top of the list with a description
   naming the one it came from. It replays the recorded launch
   (``_execution/launch.yaml``), so re-running a one-config pilot stays a one-config
-  pilot. A campaign that built its own image and never recorded a usable ref for it is
-  refused rather than rebuilt from a guess: a campaign's build context is not archived
-  in its results, so the refusal names the container and points back at the workspace.
-  A container the campaign did *not* build is not refused — its declared ref is
-  resolved again at launch, exactly as a fresh launch from the workspace would, and the
-  new campaign says which containers that applied to, because it will not be running
-  the same bytes.
+  pilot. It runs exactly the digests the source's launch record holds for every image —
+  containers, sidecar and auxiliary helpers — and resolves none of them again, so the
+  re-run is the same bytes whatever the image project or its tags say now. A campaign
+  whose record lacks any of those digests is refused, naming each one, and the refusal
+  points at rebuilding it as a workspace (``vast campaign rerun <id> --to-workspace``),
+  which launches afresh.
   Every re-run goes through the **pre-flight** (:ref:`the same five axes
   <results-retrigger-preflight>` the CLI's ``vast campaign rerun --check`` prints), and
   the service refuses on a blocking one — a config no migration step carries forward, an
@@ -241,7 +240,9 @@ It provides four views:
   in the backend is answered before it launches. The browser reads that report first and
   says which axis blocks, in a dialog whose **Re-run anyway** starts the campaign
   regardless: the override belongs to whoever has decided they understand the axis. A
-  refusal that arrives anyway is the service's own sentence, in a sticky error notice.
+  missing image digest is the one axis without that button — there is nothing to replay —
+  and its dialog only says what is missing and where to go instead. A refusal that arrives
+  anyway is the service's own sentence, in a sticky error notice.
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt

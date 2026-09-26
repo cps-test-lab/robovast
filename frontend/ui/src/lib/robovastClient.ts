@@ -673,9 +673,10 @@ export const robovast = {
       )}&source=webui${reason ? `&reason=${encodeURIComponent(reason)}` : ''}`,
     ),
 
-  // Launch a NEW campaign from this one's frozen config and pinned image — the source is
-  // untouched, and the returned id is the new campaign's, not this one's. The service runs the
-  // pre-flight and refuses (400) on a blocking axis, naming each one; `force` launches anyway.
+  // Launch a NEW campaign from this one's frozen config and the image digests its launch
+  // recorded — the source is untouched, and the returned id is the new campaign's, not this
+  // one's. The service runs the pre-flight and refuses (400) on a blocking axis, naming each
+  // one; `force` launches anyway, except past a record lacking a digest.
   retriggerCampaign: (campaignId: string, force = false) =>
     request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`, {
       force,

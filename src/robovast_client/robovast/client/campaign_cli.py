@@ -350,24 +350,30 @@ def _report_rerunnable(client, label, campaign_id, *, exit_when_blocked):
                    'non-zero when an axis is genuinely blocked.')
 @click.option('--force', is_flag=True,
               help='Ask the service to launch even though the pre-flight reports a blocking '
-                   'axis. What is being overridden is printed before the launch.')
+                   'axis. What is being overridden is printed before the launch. A launch '
+                   'record lacking an image digest is not overridden: see --to-workspace.')
 @click.option('--to-workspace', 'to_workspace', default='', metavar='NAME',
               help='Do not launch. Materialise the campaign as a workspace with its config '
                    'migrated as far as it could be and a marker at every decision left, to '
-                   'finish by hand. For a config no ladder step can carry forward.')
+                   'finish by hand. For a config no ladder step can carry forward, or a '
+                   'campaign whose launch record lacks an image digest: launched from the '
+                   'workspace, it resolves and records its images afresh.')
 @target_options
 def rerun(campaign_id, check_only, force, to_workspace,  # pylint: disable=redefined-outer-name
           namespace, context):
     """Launch a NEW campaign from what CAMPAIGN_ID recorded. The source is not modified.
 
-    Reuses the frozen config and the image the source recorded, so it runs the same code rather
-    than today's. A config older than the current version is migrated into the staging copy;
-    the archived one is left exactly as its author wrote it.
+    Reuses the frozen config and exactly the image digests the source's launch recorded --
+    every container, the sidecar and the auxiliary helpers -- resolving none of them again, so
+    it runs the same code rather than today's. A source whose record lacks any of those
+    digests is refused, naming each; --to-workspace rebuilds it for a fresh launch. A config
+    older than the current version is migrated into the staging copy; the archived one is left
+    exactly as its author wrote it.
 
     The service runs the pre-flight itself and refuses on a blocking axis, naming what is
     missing -- so a re-run that could only fail in the backend is answered before the launch.
     ``--force`` tells it to proceed anyway, which is worth having for an axis you have decided
-    you understand.
+    you understand -- every axis but a missing image digest, which leaves nothing to replay.
     """
     try:
         with service_client(namespace, context) as (client, label):

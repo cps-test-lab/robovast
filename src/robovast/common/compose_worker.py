@@ -30,7 +30,7 @@ Invoked by ``config_generation._compose_isolated`` as::
 
 where ``job.json`` is ``{variation_file, output_dir, use_cache, tolerate_infeasible,
 container_queries,
-image_project, image_project_tag, result_path, container_runner_socket}``. The
+image_project, image_project_tag, image_pins, result_path, container_runner_socket}``. The
 parent sets ``ROBOVAST_ISOLATED_COMPOSE=1`` in this process's environment so the
 ``generate_scenario_variations`` call composes in-process (it does not re-fork).
 
@@ -87,6 +87,7 @@ def main(argv) -> int:
         container_queries=job.get("container_queries", True),
         image_project=job.get("image_project"),
         image_project_tag=job.get("image_project_tag"),
+        image_pins=job.get("image_pins"),
         # Stream progress to stdout so the parent can forward it live.
         progress_update_callback=lambda m: print(m, flush=True),
     )

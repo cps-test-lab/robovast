@@ -387,7 +387,8 @@ def resolve_family_image(image: str, *, project: str | None = None,
 
 def resolve_family_images_in_containers(containers: dict | None, *,
                                         project: str | None = None,
-                                        tag: str | None = None) -> dict | None:
+                                        tag: str | None = None,
+                                        pins: dict | None = None) -> dict | None:
     """Resolve every ``family:`` ref in an ``execution.containers`` mapping, in place.
 
     Called once per campaign, right after a simulator backend has filled its container
@@ -399,13 +400,31 @@ def resolve_family_images_in_containers(containers: dict | None, *,
     Only ``family:`` refs are touched. A ref the ``.vast`` states is left byte-identical,
     digest and all: that field names the campaign's own image, and rewriting it would run
     something the author did not ask for.
+
+    *pins* is the ``{container or role: digest}`` of a launch record the campaign replays.
+    Given, a ``family:`` ref resolves to the digest recorded for its container and never to
+    *project* and *tag*: a replay runs the bytes its source ran, whatever the family's tags
+    point at now. A family container the record fixes no digest for is refused, naming every
+    such container, rather than resolved from the environment.
     """
+    unpinned = []
     for name, block in (containers or {}).items():
         if not isinstance(block, dict) or not is_family_image_ref(block.get("image")):
+            continue
+        if pins is not None:
+            if pins.get(name):
+                block["image"] = pins[name]
+            else:
+                unpinned.append(f"{name} ({block['image']})")
             continue
         block["image"] = resolve_family_image(
             block["image"], project=project, tag=tag,
             role=f"image for container '{name}'")
+    if unpinned:
+        raise CampaignConfigError(
+            f"the launch record this campaign replays fixes no digest for "
+            f"{', '.join(sorted(unpinned))}, and a replay runs only recorded digests -- "
+            f"resolving the family ref now could run bytes the source campaign never ran.")
     return containers
 
 
@@ -518,16 +537,20 @@ def resolve_controller_image(explicit: str | None = None,
 GIT_TOKEN_SECRET_ID = "git_token"
 
 
-def resolve_sidecar_image(explicit: str | None = None) -> str:
+def resolve_sidecar_image(explicit: str | None = None, *, project: str | None = None,
+                          tag: str | None = None) -> str:
     """Resolve the robovast-sidecar image: the data-plane transfers of every pod.
 
-    Resolved *inside* the service (a campaign Job's ``fetch-inputs`` and ``uploader``
-    containers, an aux pod's transfer container, the postprocessing Job's ``stage``, and
-    the image-build Job's context fetch all call this from there), so the project it uses
-    is the one carried into the service pod's environment — see
-    :func:`~...service_deploy.service_manifests`.
+    Resolved *inside* the service: a campaign Job's ``fetch-inputs``, ``uploader`` and
+    ``agent`` containers, an aux pod's transfer container, a held exec pod's fetch and the
+    image-build Job's context fetch all call this from there. *project* and *tag* are a
+    campaign's own (``--image-project``), for the pods of that campaign; without them the
+    project is the one carried into the service pod's environment -- see
+    :func:`~...service_deploy.service_manifests`. A campaign fixes the result to a digest
+    once, before any of its pods exists, and every one of its pods runs that digest.
     """
-    return _resolve_image(MEMBER_SIDECAR, explicit=explicit, role="sidecar image")
+    return _resolve_image(MEMBER_SIDECAR, explicit=explicit, project=project, tag=tag,
+                          role="sidecar image")
 
 
 #: Env var carrying the revision this code was built from, set into the image at build

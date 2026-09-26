@@ -934,13 +934,41 @@ class ClusterService(ServiceBase):
         from robovast.execution.backends import RunOptions
 
         # postprocess travels in the options (not the process env): one process
-        # drives many campaigns, and an env var could not tell them apart.
+        # drives many campaigns, and an env var could not tell them apart. The image project
+        # for the same reason: composition, the scenario image, the sidecar and the aux
+        # helpers of THIS campaign resolve from it, and the launch then fixes their digests.
         return RunOptions(postprocess=bool(request.postprocess),
                           upload_to_share=bool(getattr(request, "upload_to_share", False)),
-                          namespace=self.namespace)
+                          namespace=self.namespace,
+                          image_project=request.image_project or None,
+                          image_project_tag=request.image_project_tag or None)
+
+    def _read_image_digest(self, ref: str) -> "tuple[str, str]":
+        """``(digest, "")`` for what *ref* names in this deployment's registry now, or
+        ``("", why)``.
+
+        With the pull credential, because the question is what the kubelet will pull. A ref
+        that is a digest already is its own answer and asks nobody.
+        """
+        from robovast.common.campaign_data import image_is_pullable  # noqa: PLC0415
+
+        from .registry_client import digest_unread_reason, manifest_digest  # noqa: PLC0415
+
+        if image_is_pullable(ref):
+            return ref, ""
+        try:
+            args = self._registry_read_args()
+        except Exception as exc:  # noqa: BLE001 - the failure IS the reason
+            return "", f"this deployment's registry could not be asked ({exc})"
+        try:
+            digest = manifest_digest(ref, **args)
+            return (digest, "") if digest else ("", digest_unread_reason(ref, **args))
+        except Exception as exc:  # noqa: BLE001 - the failure IS the reason
+            return "", f"reading it failed: {exc}"
 
     @contextlib.contextmanager
-    def _aux_runner_context(self, tag, project, *, hold=False, should_stop=None):
+    def _aux_runner_context(self, tag, project, *, hold=False, should_stop=None,
+                            options=None):
         """The container-runner factory for this thread, over *tag*'s span.
 
         Entered inside the thread that composes, so the factory (a ContextVar) is scoped to
@@ -964,12 +992,22 @@ class ClusterService(ServiceBase):
         was waiting. That wait is the longest thing composition does — a
         helper image is pulled inside it — so without it a stop is not seen until the pull
         either finishes or times out, minutes later. A held span has no campaign to stop.
+
+        *options* are the campaign's own :class:`~robovast.execution.backends.RunOptions`,
+        given for a campaign's span and for no other. With them every pod the span creates
+        runs digests the launch record holds (:class:`.container_runner.CampaignImagePins`),
+        a step served from a cache has the helper images it would have started fixed the same
+        way (``config_generation.set_aux_image_fixer``), and the sidecar is fixed here, on
+        entry: every pod of the campaign runs it, so one digest serves the aux pods
+        composition starts and the Jobs after them, and a launch whose sidecar digest cannot
+        be read is refused before anything is composed.
         """
         del project
-        from robovast.common.config_generation import set_container_runner_factory
+        from robovast.common.config_generation import (set_aux_image_fixer,
+                                                       set_container_runner_factory)
         from robovast.service.world_query import _reset_factory
 
-        from .container_runner import AuxPodSession
+        from .container_runner import AuxPodSession, CampaignImagePins
 
         if hold:
             with self._held_aux_runners(tag) as factory:
@@ -979,16 +1017,24 @@ class ClusterService(ServiceBase):
                 finally:
                     _reset_factory(token)
             return
+        pins = None
+        if options is not None:
+            pins = CampaignImagePins(self.campaign_dir(tag), options, self._read_image_digest)
+            pins.sidecar()
         with AuxPodSession(tag, self.namespace, core_v1=self._k8s(),
                            kube_context=self.kube_context,
                            pull_secret=self._registry_pull_secret(),
                            on_pending=_aux_pending_logger(tag),
-                           should_stop=should_stop,
+                           should_stop=should_stop, image_pins=pins,
                            **self._aux_staging_kwargs()) as session:
             token = set_container_runner_factory(session.runner_factory())
+            # A step served from a cache starts no helper; its images are fixed and recorded
+            # all the same, since a replay recomposes and runs them.
+            fixer_token = set_aux_image_fixer(pins.aux if pins is not None else None)
             try:
                 yield
             finally:
+                fixer_token.var.reset(fixer_token)
                 _reset_factory(token)
 
     @contextlib.contextmanager

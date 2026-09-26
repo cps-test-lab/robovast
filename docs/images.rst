@@ -180,11 +180,14 @@ Three uses, three layers
      - the digest recorded per run
      - immutable
 
-The third one is the reason no digest belongs in a ``.vast``. RoboVAST records the digest
-each pod actually pulled and can replay a campaign against exactly those images
-(``start_campaign(from_campaign=...)``), so reproducibility comes from what the run
-recorded rather than from a ref someone pasted in beforehand — which describes an
-intention, not a fact.
+The third one is the reason no digest belongs in a ``.vast``. A campaign launch fixes every
+image the campaign runs — its containers, the sidecar of every pod and the helper images
+composition runs — to the digest it names, before the pod that runs it is created, and records
+them in ``_execution/launch.yaml``; a launch whose digests cannot be read is refused. A re-run
+(``start_campaign(from_campaign=...)``, ``vast campaign rerun``) runs exactly those digests,
+whatever the project, the tags or the composition cache say by then, so reproducibility comes
+from what the run recorded rather than from a ref someone pasted in beforehand — which describes
+an intention, not a fact.
 
 Where the settings are read
 ---------------------------
@@ -205,7 +208,9 @@ easy to miss because everything else keeps working.
 
 On a cluster the images are resolved **inside** the service, so a client's environment
 cannot reach them; that is what the per-campaign request fields are for, and why moving a
-cluster's default needs an ``upgrade``.
+cluster's default needs an ``upgrade``. A campaign's ``--image-project`` / ``--image-project-tag``
+reaches every image of that campaign: composition's ``family:`` refs, the scenario image, the
+sidecar of its pods and its auxiliary helpers, each fixed to a digest at launch.
 
 Publishing your own set
 -----------------------

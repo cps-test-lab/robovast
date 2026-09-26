@@ -160,7 +160,8 @@ class Compose:
     """Turns parameter sets into ``campaign_data`` using a base ``.vast``."""
 
     def __init__(self, vast_file: str, image_project: str | None = None,
-                 image_project_tag: str | None = None, should_stop=None):
+                 image_project_tag: str | None = None, should_stop=None,
+                 image_pins: dict | None = None):
         self.vast_file = os.path.abspath(vast_file)
         # Held for the same reason the image project is: a search composes once per
         # generation over the campaign's whole life, and every one of those must be
@@ -173,6 +174,9 @@ class Compose:
         # campaign that chose the project.
         self.image_project = image_project
         self.image_project_tag = image_project_tag
+        # A replay's recorded digests, which every batch's `family:` refs resolve to instead
+        # of the project -- see `controller._replayed_pins`. `None` for a fresh campaign.
+        self.image_pins = image_pins
         self.base = load_config(self.vast_file)
         # The variation/parameter template lives in the search: block. Each param
         # set fills it in; unreferenced search dims fall back to scenario params.
@@ -242,6 +246,7 @@ class Compose:
                 progress_update_callback=variation_logger.info,
                 image_project=self.image_project,
                 image_project_tag=self.image_project_tag,
+                image_pins=self.image_pins,
                 container_queries=container_queries,
                 should_stop=self.should_stop,
             )

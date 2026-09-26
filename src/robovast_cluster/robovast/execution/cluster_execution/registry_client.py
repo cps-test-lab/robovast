@@ -542,9 +542,8 @@ def manifest_digest(image_ref: str, *, dockerconfigjson: str = "",
     already names the bytes, and re-resolving it could only introduce a difference.
 
     Empty on every uncertainty -- an unreachable registry, a tag that is not there, a
-    registry that omits the header. The caller keeps the tag it had, which is what it
-    would have used anyway; a digest is an improvement to make when it is available, never
-    a reason to refuse to run.
+    registry that omits the header. A campaign launch refuses on an empty answer, and asks
+    :func:`digest_unread_reason` for the words to refuse with.
     """
     if "@sha256:" in image_ref:
         return image_ref
@@ -560,6 +559,26 @@ def manifest_digest(image_ref: str, *, dockerconfigjson: str = "",
     except ValueError:
         return ""
     return f"{host}/{repository}@{digest}"
+
+
+def digest_unread_reason(image_ref: str, *, dockerconfigjson: str = "",
+                         insecure: bool = False, ca_path: str = "") -> str:
+    """Why :func:`manifest_digest` gave no digest for *image_ref*, as a refusal can say it.
+
+    Asked only after the digest read came back empty, so it costs a round trip on the path
+    that is refusing anyway and nothing on the path that launches. The three
+    :func:`manifest_state` verdicts read differently to whoever has to act: a 404 means the
+    image was never pushed, a 200 without a digest header means the registry will not name
+    the bytes, and no answer means the registry could not be asked at all.
+    """
+    state = manifest_state(image_ref, dockerconfigjson=dockerconfigjson,
+                           insecure=insecure, ca_path=ca_path)
+    if state == ABSENT:
+        return "the registry does not have it"
+    if state == PRESENT:
+        return "the registry has it but sent no Docker-Content-Digest for it"
+    return ("the registry did not answer for it: unreachable, or no credential this "
+            "deployment holds reaches it")
 
 
 #: Where an image records when it was built. The OCI label first: robovast stamps it from

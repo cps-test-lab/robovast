@@ -13,7 +13,8 @@ import types
 
 import pytest
 
-from robovast.execution.backends import RunOptions
+from robovast.execution.backends import CampaignConfigError, RunOptions
+from robovast.execution.cluster_execution.registry_client import UNKNOWN
 from robovast.execution.cluster_execution.kubernetes_backend import (BatchJobRunner,
                                                                      KubernetesBackend)
 from robovast.execution.control_server import ControllerState
@@ -152,6 +153,8 @@ def test_a_stopped_batch_sweeps_up_jobs_created_after_the_teardown(monkeypatch, 
     backend._state.request_stop()
 
     class _Runner:
+        _sidecar_image = None
+
         def run_batch_in_pod(self, campaign_root, token):
             raise CampaignStopped("stopped")
 
@@ -177,6 +180,8 @@ def test_a_batch_nobody_stopped_sweeps_nothing(monkeypatch, tmp_path):
     backend = _backend()
 
     class _Runner:
+        _sidecar_image = None
+
         def run_batch_in_pod(self, campaign_root, token):
             return None
 
@@ -229,7 +234,7 @@ def test_run_batch_records_execution_yaml_before_finalize(monkeypatch, tmp_path)
         classmethod(lambda cls, **kw: types.SimpleNamespace(
             run_batch_in_pod=lambda campaign_root, token: None,
             # What the record asks a real runner for: which machines the campaign left out.
-            skipped_nodes=dict)))
+            skipped_nodes=dict, _sidecar_image=None)))
 
     # The declared image is enough: resolution needs no env when the campaign names one.
     _backend().run_batch(
@@ -582,24 +587,32 @@ def _fake_cluster_config():
     )
 
 
-def _pinning_runner(monkeypatch, digest, *, cache=None, calls=None):
-    """A runner built the real way (`for_batch`), with the registry answering *digest*."""
+def _pinning_runner(monkeypatch, digest, *, cache=None, calls=None, state=UNKNOWN,
+                    sidecar_image=None, images_fixed=False, execution=None, image=_TAG):
+    """A runner built the real way (`for_batch`), with the registry answering *digest*.
+
+    *state* is what the registry says of a ref it gave no digest for, which is what a refusal
+    reports.
+    """
     def _digest(ref, **kw):
         if calls is not None:
             calls.append(ref)
         return digest(ref) if callable(digest) else digest
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.registry_client.manifest_digest", _digest)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.registry_client.manifest_state",
+        lambda ref, **kw: state)
     # Unrelated to what these test, and it costs a list_node() that waits out its timeout
     # wherever there is no cluster to answer it.
     monkeypatch.setattr(BatchJobRunner, "_discover_gpu_support",
                         lambda self: (setattr(self, "_gpu_capacity", 0),
                                       setattr(self, "_gpu_runtime_class", None)))
     return BatchJobRunner.for_batch(
-        campaign_data={"configs": [{"name": "cfgA"}], "execution": {}},
+        campaign_data={"configs": [{"name": "cfgA"}], "execution": execution or {}},
         campaign_id="camp-2026-08-24-000000", batch_tag="batch-0", runs=1,
-        cluster_config=_fake_cluster_config(), namespace="ns", image=_TAG,
-        image_digest_cache=cache)
+        cluster_config=_fake_cluster_config(), namespace="ns", image=image,
+        image_digest_cache=cache, sidecar_image=sidecar_image, images_fixed=images_fixed)
 
 
 def _containers_of(manifest):
@@ -624,7 +637,7 @@ def test_a_digest_ref_is_pulled_only_when_absent():
 def test_every_container_of_a_scenario_pod_states_its_pull_policy(monkeypatch):
     """Never left to the default: that default is what depends on the tag reading
     'latest', which is the whole defect."""
-    runner = _pinning_runner(monkeypatch, "")     # registry silent: refs stay tags
+    runner = _pinning_runner(monkeypatch, _DIGEST)
     containers = _containers_of(runner.manifest)
 
     assert containers, "a scenario pod has containers"
@@ -643,16 +656,77 @@ def test_a_pinned_campaign_pulls_only_what_the_node_lacks(monkeypatch):
         assert container["imagePullPolicy"] == "IfNotPresent", container["name"]
 
 
-def test_a_registry_that_will_not_answer_leaves_the_campaign_runnable(monkeypatch):
-    """Fail-soft: a campaign must not fail to start because an optimisation could not be
-    applied. The ref stays as it was -- which is what would have run anyway -- and keeps
-    the policy that is correct for a name that may move."""
-    runner = _pinning_runner(monkeypatch, "")
+def test_a_registry_that_will_not_answer_refuses_the_launch(monkeypatch):
+    """A tag run in place of a digest is bytes nothing recorded, and a campaign no replay can
+    repeat -- so an unreadable digest refuses the launch, before any pod, naming each ref and
+    what runs it rather than logging a warning and running the tag."""
+    with pytest.raises(CampaignConfigError) as e:
+        _pinning_runner(monkeypatch, "")
 
-    assert runner.plan.main.image in (None, _TAG)
+    message = str(e.value)
+    assert _TAG in message and "the scenario container" in message
+    assert "the sidecar" in message
+    assert "did not answer" in message
+    assert "before any pod was created" in message
+
+
+def test_an_unreadable_digest_is_not_waived_by_the_compat_escape_hatch(monkeypatch):
+    """``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK`` waives the protocol label read, and nothing else."""
+    monkeypatch.setenv("ROBOVAST_SKIP_IMAGE_COMPAT_CHECK", "1")
+    with pytest.raises(CampaignConfigError):
+        _pinning_runner(monkeypatch, "")
+
+
+def test_every_planned_container_and_the_sidecar_are_fixed(monkeypatch):
+    """Scenario, sut and the data-plane containers of the pod -- every image."""
+    runner = _pinning_runner(
+        monkeypatch, lambda ref: f"{ref.rsplit(':', 1)[0]}@sha256:{'ab' * 32}",
+        execution={"containers": {"scenario": {"image": _TAG},
+                                  "sut": {"image": "repo.example.com/sut:1"}}})
+
+    assert runner.image.endswith("@sha256:" + "ab" * 32)
+    assert all("@sha256:" in c.image for c in runner.plan.containers if c.image)
+    assert runner._sidecar_image.endswith("@sha256:" + "ab" * 32)
     for container in _containers_of(runner.manifest):
-        assert "@sha256:" not in container["image"]
-        assert container["imagePullPolicy"] == "Always"
+        assert "@sha256:" in container["image"], container["name"]
+
+
+def test_the_campaigns_own_sidecar_is_the_one_fixed(monkeypatch):
+    """The service fixes the sidecar once per campaign, before its first pod; a batch runs
+    that one rather than the deployment's own."""
+    sidecar = "repo.example.com/dev/robovast-sidecar@sha256:" + "ee" * 32
+    runner = _pinning_runner(monkeypatch, _DIGEST, sidecar_image=sidecar)
+
+    assert runner._sidecar_image == sidecar
+    uploader = [c for c in _containers_of(runner.manifest) if c["image"] == sidecar]
+    assert uploader, "no container of the pod runs the campaign's sidecar"
+
+
+def test_a_replay_asks_the_registry_nothing(monkeypatch):
+    """Every ref of a replay is a recorded digest: it is its own answer."""
+    calls = []
+    sidecar = "repo.example.com/robovast-sidecar@sha256:" + "ee" * 32
+    runner = _pinning_runner(monkeypatch, "", calls=calls, sidecar_image=sidecar,
+                             images_fixed=True, image=_DIGEST)
+
+    assert calls == []
+    assert runner.image == _DIGEST and runner._sidecar_image == sidecar
+
+
+def test_a_replay_refuses_a_ref_its_record_does_not_fix(monkeypatch):
+    """A tag on a replay is a gap in the launch record, and resolving it now could run bytes
+    the source never ran -- refused, naming it, without asking the registry."""
+    calls = []
+    sidecar = "repo.example.com/robovast-sidecar@sha256:" + "ee" * 32
+    with pytest.raises(CampaignConfigError) as e:
+        _pinning_runner(monkeypatch, _DIGEST, calls=calls, sidecar_image=sidecar,
+                        images_fixed=True, image=_DIGEST,
+                        execution={"containers": {"scenario": {"image": _DIGEST},
+                                                  "sut": {"image": "repo.example.com/sut:1"}}})
+
+    assert "container 'sut'" in str(e.value)
+    assert "repo.example.com/sut:1" in str(e.value)
+    assert calls == []
 
 
 def test_the_digest_is_asked_for_once_per_campaign_not_once_per_batch(monkeypatch):

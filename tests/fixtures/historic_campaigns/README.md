@@ -1,8 +1,10 @@
 # Historic campaign fixtures
 
 Six complete campaign directories, frozen at the config versions robovast has actually
-shipped, kept so that "an old campaign is still readable and re-runnable" is a property
-CI checks rather than a claim someone made once.
+shipped, kept so that "an old campaign is still readable, and its configuration
+re-runnable" is a property CI checks rather than a claim someone made once. None of them fixes
+a digest for every image it ran, so a retrigger of one as archived is refused on its images;
+the tests give a copy that record to exercise the rest.
 
 Every guarantee built for old campaigns — the migration ladder, the three read policies, the
 container-protocol window, the retrigger pre-flight — decays the moment nobody exercises it

@@ -23,6 +23,11 @@ class _FakeClusterConfig:
         return types.SimpleNamespace(pull_secret_name="")
 
 
+def _pinned(ref):
+    """What the stubbed registry fixes *ref* to: its repository, at one fixed digest."""
+    return ref.rsplit(":", 1)[0] + "@sha256:" + "0" * 64
+
+
 def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast",
             cluster_gpus=0, runtime_class=None):
     """Build a BatchJobRunner via for_batch with external calls stubbed.
@@ -56,13 +61,11 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
 
     monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
                         _no_such_secret)
-    # And the registry, which `for_batch` dials through `_pin_image_refs`: it resolves
-    # every image ref to the digest it names right now, one HEAD each. The same
-    # fail-soft shape as the Secret read -- an unreachable registry leaves the ref as it
-    # was -- so it too cost time rather than correctness. It stayed hidden while the
-    # Secret read above was costing thirty-five seconds a test, which is a good reason
-    # to state both here rather than leave the next reader to find the second one.
-    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
+    # And the registry, which `for_batch` dials through `_pin_image_refs`: it fixes every
+    # image ref to the digest it names right now, one HEAD each, and refuses the campaign
+    # when it cannot. Answered here with a fixed digest per repository (`_pinned`), so the
+    # manifests under test carry what a launch writes and no test waits on a socket.
+    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: _pinned(ref))
     campaign_data = {
         "configs": configs or [{"name": "cfgA"}],
         "execution": execution or {},
@@ -177,7 +180,7 @@ def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
     m = r.create_job_manifest(job, total_jobs=1)
 
     sut = _sidecar(m, "sut")
-    assert sut["image"] == "nav2:humble"
+    assert sut["image"] == _pinned("nav2:humble")
     # No command declared -> the scenario-execution server, so a scenario can drive it
     # with remote("ipc:///ipc/sut").
     assert sut["command"][-1].endswith("secondary_entrypoint.sh")
