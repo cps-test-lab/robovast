@@ -11,9 +11,11 @@ The two properties worth defending: a *degraded* ingest is still usable and must
 away to keep a boolean clean, and every non-ok stage has to name what to do about it.
 """
 
+import io
 import os
 import shutil
 import sqlite3
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -21,8 +23,8 @@ import yaml
 
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-                                     STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
-                                     missing_for_import, missing_for_import_in)
+                                     STAGE_NEWER, STAGE_OK, blocking_summary, extract_archive,
+                                     ingest_campaign, missing_for_import, missing_for_import_in)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -367,3 +369,101 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+# -- extraction stays inside the campaign ------------------------------------
+
+def _results_with_victim(tmp_path):
+    """A results tree holding another campaign, whose files an archive must not reach."""
+    results = tmp_path / "results"
+    victim = results / "victim-2026-01-01-000000"
+    (victim / "_config").mkdir(parents=True)
+    (victim / "campaign.db").write_bytes(b"original")
+    return results, victim
+
+
+def _archive_of(tmp_path, campaign_id, members) -> Path:
+    """An archive of the version-1 fixture under *campaign_id*, plus *members* after it.
+
+    Each member is ``(name, payload)`` for a file, ``(name, ("symlink", target))`` or
+    ``(name, ("hardlink", target))``.
+    """
+    out = tmp_path / "archive.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500", arcname=campaign_id)
+        for name, what in members:
+            info = tarfile.TarInfo(name)
+            if isinstance(what, tuple):
+                info.type = tarfile.SYMTYPE if what[0] == "symlink" else tarfile.LNKTYPE
+                info.linkname = what[1]
+                tar.addfile(info)
+            else:
+                info.size = len(what)
+                tar.addfile(info, io.BytesIO(what))
+    return out
+
+
+@pytest.mark.parametrize("members", [
+    pytest.param([("camp-2026-02-02-000000/../victim-2026-01-01-000000/campaign.db", b"x")],
+                 id="dot-dot-at-the-top"),
+    pytest.param([("camp-2026-02-02-000000/_config/../../victim-2026-01-01-000000/campaign.db",
+                   b"x")], id="dot-dot-below"),
+    pytest.param([("camp-2026-02-02-000000/aside", ("symlink", "../victim-2026-01-01-000000")),
+                  ("camp-2026-02-02-000000/aside/campaign.db", b"x")],
+                 id="through-a-symlink-to-a-sibling"),
+    pytest.param([("camp-2026-02-02-000000/twin",
+                   ("hardlink", "camp-2026-02-02-000000/../victim-2026-01-01-000000/campaign.db"))],
+                 id="hard-link-to-a-sibling"),
+    pytest.param([("other-2026-03-03-000000/campaign.db", b"x")], id="another-campaign"),
+])
+def test_a_member_that_leaves_its_campaign_directory_is_refused_by_name(tmp_path, members):
+    """The archive is extracted beside every other campaign, so "inside the results tree"
+    is not confinement: a member that resolves to a sibling campaign would overwrite its
+    records, and Python's data filter allows it. Every member is held to the campaign's own
+    directory instead, and the extraction fails naming the one that left it."""
+    results, victim = _results_with_victim(tmp_path)
+    campaign_id = "camp-2026-02-02-000000"
+    (results / campaign_id / "_execution").mkdir(parents=True)
+    archive = _archive_of(tmp_path, campaign_id, members)
+
+    with pytest.raises(ValueError, match="outside the") as refused:
+        extract_archive(archive, results, campaign_id)
+
+    assert "victim-2026-01-01-000000" in str(refused.value) or "other-2026" in str(refused.value)
+    assert (victim / "campaign.db").read_bytes() == b"original"
+    assert not (results / "other-2026-03-03-000000").exists()
+
+
+def test_links_within_the_campaign_survive_the_confinement(tmp_path):
+    """The ``job`` symlinks beside a campaign's runs and a hard link to one of its own files
+    are what an archive of one campaign carries, and both land."""
+    results, _ = _results_with_victim(tmp_path)
+    campaign_id = "camp-2026-02-02-000000"
+    (results / campaign_id / "_execution").mkdir(parents=True)
+    archive = _archive_of(tmp_path, campaign_id, [
+        (f"{campaign_id}/cfg/0/job", ("symlink", "../../_execution")),
+        (f"{campaign_id}/twin", ("hardlink", f"{campaign_id}/_config/campaign.vast")),
+    ])
+
+    extract_archive(archive, results, campaign_id)
+
+    landed = results / campaign_id
+    assert (landed / "cfg" / "0" / "job").is_symlink()
+    assert (landed / "cfg" / "0" / "job" / "execution.yaml").is_file()
+    assert (landed / "twin").read_bytes() == (landed / "_config" / "campaign.vast").read_bytes()
+
+
+def test_a_dot_rooted_archive_extracts_under_its_campaign_name(tmp_path):
+    """``tar -C <dir> .`` names every member under ``./``; that root writes nothing and the
+    campaign lands under its own name."""
+    results, _ = _results_with_victim(tmp_path)
+    campaign_id = "v1-campaign-2025-03-04-101500"
+    staging = tmp_path / "staging"
+    shutil.copytree(_FIXTURES / campaign_id, staging / campaign_id)
+    archive = tmp_path / "dotted.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staging, arcname=".")
+
+    extract_archive(archive, results, campaign_id)
+
+    assert (results / campaign_id / "_config" / "campaign.vast").is_file()

@@ -51,6 +51,7 @@ re-implementing the sequence.
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tarfile
@@ -173,8 +174,61 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
     return target
 
 
-def extract_archive(archive_path, results_root, *, remove_archive: bool = False) -> None:
-    """Unpack a campaign archive into *results_root*.
+class MemberOutsideCampaign(tarfile.FilterError):
+    """A member of a campaign archive that would land outside the campaign it holds."""
+
+    def __init__(self, member_name: str, campaign_id: str, where: str):
+        super().__init__(
+            f"member {member_name!r} would land at {where!r}, outside the campaign "
+            f"directory {campaign_id}/. Every member of a campaign archive sits under the "
+            f"campaign's name; one that does not is refused rather than written where it "
+            f"points.")
+
+
+def _confined_to(campaign_id: str, results_root: Path):
+    """An extraction filter keeping every member inside ``<results_root>/<campaign_id>``.
+
+    ``tarfile.data_filter`` confines a member to the *extraction root*, and an archive is
+    extracted beside every other campaign: a member named ``<id>/../<other>/campaign.db``
+    resolves inside that root and is written -- over another campaign's store. So each
+    member is checked against the campaign directory itself, with its leading segment taken
+    off: a ``..`` that leaves it, a symlink pointing at a sibling campaign, a member written
+    *through* such a link and a hard link to a file of another campaign are each refused by
+    name. A hard link to a file of the same campaign is kept, which is what one means in an
+    archive of one campaign. The ``./`` root of a ``tar -C <dir> .`` archive writes nothing.
+    """
+    campaign_root = str(Path(results_root) / campaign_id)
+    prefix = campaign_id + "/"
+
+    def _filter(member, _dest):
+        rel = os.path.normpath(member.name.lstrip("/"))
+        if rel == ".":
+            return None
+        if rel != campaign_id and not rel.startswith(prefix):
+            raise MemberOutsideCampaign(member.name, campaign_id, rel)
+        inner = {"name": rel[len(prefix):] or "."}
+        if member.islnk():
+            link = os.path.normpath(member.linkname.lstrip("/"))
+            if not link.startswith(prefix):
+                raise MemberOutsideCampaign(member.name, campaign_id, link)
+            inner["linkname"] = link[len(prefix):]
+        checked = tarfile.data_filter(member.replace(**inner), campaign_root)
+        restored = {"name": rel}
+        if member.islnk():
+            restored["linkname"] = prefix + checked.linkname
+        return checked.replace(**restored)
+
+    return _filter
+
+
+def extract_archive(archive_path, results_root, campaign_id: str, *,
+                    remove_archive: bool = False) -> None:
+    """Unpack the archive of *campaign_id* into *results_root*.
+
+    An archive from elsewhere is untrusted input: every member is confined to the
+    campaign's own directory (:func:`_confined_to`), and one that would land anywhere else
+    fails the extraction naming the member. A campaign's ``job`` symlinks point within the
+    campaign, so they survive it.
 
     *remove_archive* deletes *archive_path* afterwards. It is for a copy the service staged
     -- from an upload, or from the share -- and now owns; a path the caller named is never
@@ -184,10 +238,8 @@ def extract_archive(archive_path, results_root, *, remove_archive: bool = False)
     archive_path = Path(archive_path)
     try:
         with tarfile.open(archive_path, 'r:*') as tar:
-            # `filter='data'` refuses absolute paths and ../ escapes. An archive from elsewhere is
-            # untrusted input, and the default became an error in newer Pythons for that reason.
-            # A campaign's `job` symlinks point within the campaign, so they survive it.
-            tar.extractall(path=Path(results_root), filter='data')
+            tar.extractall(path=Path(results_root),
+                           filter=_confined_to(campaign_id, Path(results_root)))
     except (tarfile.TarError, OSError) as e:
         raise ValueError(f"could not read {archive_path.name}: {e}") from e
 
