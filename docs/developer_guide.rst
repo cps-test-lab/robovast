@@ -47,7 +47,7 @@ This is the same path every campaign takes, differing only in which service answ
     vast workspace run <workspace> my.vast --filter config1 --runs 1
 
 ``vast workspace list`` names the workspace; ``vast workspace update . <workspace>`` pushes
-an edit. Before a campaign, ``vast container run`` (or the MCP ``exec_in_container``) runs
+an edit. Before a campaign, ``vast container exec`` (or the MCP ``exec_in_container``) runs
 a command or one configuration's scenario in the image, which is where an import error or
 a missing package shows up in seconds rather than after a pull.
 
@@ -742,16 +742,13 @@ front of whoever is authoring the plugin.
      publish your own set (``make release-images PROJECT=docker.io/<you> PUSH=1``)
      and point ``ROBOVAST_PROJECT`` at it to iterate. This applies
      only to the built-in sources; independent plugins are handled by
-     ``discover_plugin_installs`` above (installed into the workspace, no image
-     rebuild needed).
+     ``config_plugins.ensure_workspace_plugins`` above (installed into the workspace, no
+     image rebuild needed).
 
    If your plugin's package pulls in a dependency that itself needs system
-   shared libraries (e.g. ``robovast-nav`` hard-depends on
-   ``pyside6-essentials``, whose bundled Qt6 libs need ``libGL.so.1`` and
-   friends to even *import*, regardless of whether any GUI is ever shown), the
-   controller image needs those apt packages too — see the
-   ``container/controller/Dockerfile`` apt-get block for the list verified
-   against ``robovast-nav``. A missing system lib shows up the same way as a
+   shared libraries to even *import*, the controller image needs those apt packages
+   too — see the ``container/controller/Dockerfile`` apt-get block for what it
+   carries. A missing system lib shows up the same way as a
    missing extra: the plugin's entry point fails to load and the variation
    type is reported as unknown.
 
@@ -769,7 +766,7 @@ Example plugin registration:
 
 .. code-block:: toml
 
-    [tool.poetry.plugins."vast.plugins"]
+    [tool.poetry.plugins."robovast.cli_plugins"]
     variation = "variation_utils.cli:variation"
 
 
@@ -840,13 +837,13 @@ configured in the ``.vast`` file under ``results_processing.metadata_processing`
            param1: value1
            param2: value2
 
-Each plugin must subclass ``robovast.common.metadata.MetadataProcessor`` and
+Each plugin must subclass ``robovast.results_processing.metadata.MetadataProcessor`` and
 implement the ``process_metadata`` method:
 
 .. code-block:: python
 
    from pathlib import Path
-   from robovast.common.metadata import MetadataProcessor
+   from robovast.results_processing.metadata import MetadataProcessor
 
    class MyMetadataPlugin(MetadataProcessor):
 
@@ -980,7 +977,7 @@ graph.
    ``collect_prov_metadata`` receives ``rdflib.Namespace`` objects
    (``campaign_namespace``, ``config_namespace``) so you can construct
    campaign-relative IRIs with ``campaign_namespace["some/path"]``.
-   ``rdflib`` is a required dependency of the core ``robovast`` package.
+   ``rdflib`` comes with the core package's ``fair`` extra.
 
 
 .. _extending-simulators:
@@ -1278,7 +1275,7 @@ operate on the full results directory.
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To add a new cluster configuration option for RoboVAST, create a class that inherits from `robovast.execution.cluster_config.base.BaseConfig`.
+To add a new cluster configuration option for RoboVAST, create a class that inherits from `robovast.execution.cluster_config.base_config.BaseConfig`.
 Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugins."robovast.cluster_configs"]`. The key is the name used to select the configuration, and the value is the import path to your configuration class.
 
 .. code-block:: toml
@@ -1287,7 +1284,7 @@ Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugin
     "YourClusterConfig" = "robovast_<yourplugin>.your_cluster_config:YourClusterConfig"
 
 To test your cluster configuration, call
-:meth:`~robovast.execution.cluster_config.base_config.BaseClusterConfig.prepare_setup_cluster`
+:meth:`~robovast.execution.cluster_config.base_config.BaseConfig.prepare_setup_cluster`
 with an output directory. It writes the files and the instructions for performing the setup
 steps by hand, without applying anything. There is no CLI verb for it — ``vast cluster setup``
 is the applying path.
@@ -1634,7 +1631,7 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over five tables::
+``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables — the four below, plus ``job``, ``node`` and ``container_failure``::
 
     campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
@@ -1846,6 +1843,10 @@ Status: phase and stage
    * - ``sharing``
      - Streaming the raw pre-postprocessing archive to the configured share (only when
        ``upload_to_share`` was set).
+   * - ``importing``
+     - A campaign taken in from an archive or from the share, entering here and, when
+       what arrived was raw, rolling straight on into ``postprocessing``. In the enum so
+       that everything that knows "live" treats an import as work in progress.
    * - ``postprocessing``
      - Chained analysis postprocessing running in the service process: the campaign's own
        steps, then the campaign-end pass (the tables it declares, its health checks, its
@@ -2224,10 +2225,10 @@ is the app-wide way to state a passing fact — mounted once in ``main.tsx``, us
 question and blocks on the answer, this one states a fact and gets out of the way. Three rules
 travel with it.
 
-*Failures do not go through it.* The ``Severity`` union in ``lib/toasts.ts`` has no ``error``
-member, which is the rule expressed as a type: a refusal or an error carries backend text worth
-reading twice and keeps its inline ``Alert`` with ``ErrorText``. Only successes and dispatches
-become transient.
+*A failure stays longer.* The ``Severity`` union in ``lib/toasts.ts`` has an ``error`` member
+held for ``ERROR_DURATION_MS`` rather than the passing notice's clock, because a refusal or an
+error carries backend text worth reading twice; hovering holds it for as long as the reader
+needs.
 
 *It is not a notifier.* The provider draws a rectangle and nothing else. A caller that also
 wants an OS-level notification — the campaign lifecycle watcher in ``CampaignStreamProvider``,
@@ -2413,7 +2414,7 @@ Built-ins ship no assets; a type with neither shows just the resolved parameters
 
 **Results viewer** (``frontend/ui/src/pages/results/``): pick a
 campaign, browse its results schema, run read-only SQL, and chart the result with
-**Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
+**Vega-Lite** (``frontend/ui/src/components/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
 The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — are
 ``RobovastInterface`` operations; the SQL goes through one shared, directory-based helper,
 :mod:`robovast.results_processing.data_query`, which hands it to the DuckDB engine of
@@ -2426,10 +2427,10 @@ identically, and while a campaign is still running. User-declared plots (``visua
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
 the same Vega-Lite component.
 
-**Run view panel framework** (``frontend/ui/src/lib/dashboard/``) — the Run view (user guide:
-:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so a
-future **live view** (watching a running system instead of replaying a rosbag) slots in
-without touching any panel:
+**Run view panel framework** (``frontend/ui/src/lib/panels/``) — the Run view (user guide:
+:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so the
+**live view** (watching a running system instead of replaying a rosbag) slots in without
+touching any panel:
 
 * **Panels** are plugins with **two delivery mechanisms behind one contract**. A
   ``PanelPlugin`` = manifest (type name + layout defaults) + React component implementing
@@ -2486,8 +2487,8 @@ without touching any panel:
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a
   specialized endpoint without the generic seam knowing about it, e.g. the costmap panel's
   nav grids), and ``runFileUrl`` for per-run artifact files — today implemented over the
-  read-only data-query endpoints (``dbDataProvider``); a live implementation would wrap a
-  rosbridge buffer. ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
+  read-only data-query endpoints (``dbDataProvider``), and by ``LiveDataProvider`` over a
+  running run's feed (``liveFeed.ts``). ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
   (``at(t)``/``upTo(t)``).
 * **Time** comes only from the shared ``PlaybackClock`` (``clock.ts``), an external store
   (not React state) so display-rate updates don't re-render the tree; canvas panels
@@ -2497,7 +2498,7 @@ without touching any panel:
 at runtime by exactly the seam the variation-preview path uses (above) — the two now share
 their machinery. Server side, ``_resolve_plugin_asset(group, name, rel, asset_attr)`` (in
 ``service/app.py``) and ``_plugin_remotes(group, asset_attr, url_builder, module_attr)`` (in
-``service/client.py``) are the generalized forms of the old variation-only helpers;
+``service/service_base.py``) are the generalized forms of the variation-only helpers;
 ``_variation_remotes`` and ``_panel_remotes`` are thin wrappers. A **package panel** is a
 class in the ``robovast.panel_types`` entry-point group declaring ``WEB_PANEL`` (its built
 bundle dir, shipped as package data) + ``PANEL_MODULE``; the service serves it at
@@ -2573,7 +2574,7 @@ table in an existing schema still gets a type of its own, but derives the panel.
 :mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data
 endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
 edit and no frontend change** (the run view already reaches any such endpoint via
-``data.fetchRun(name, params)``, ``frontend/ui/src/lib/dashboard/dataProvider.ts``). This closes the last
+``data.fetchRun(name, params)``, ``frontend/ui/src/lib/panels/dataProvider.ts``). This closes the last
 core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
 run-level data file, which is a table), a **service endpoint** (serves it), and a **panel**
 (renders it) — all via entry points; a table the decoder already builds needs only the last two. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
@@ -2607,7 +2608,7 @@ sizes the frustum each frame to enclose the world's bounding sphere — measured
 from the pivot, which the wheel now carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
-robovast-specific wiring lives in the consumer, ``frontend/ui/src/panels/Scene3DPanel.tsx``, which
+robovast-specific wiring lives in the consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx`` and ``panels/config/Scene3DPanel.tsx``, which
 binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
 (``GET /results/<campaign>/<config>/<run>/<path>`` — the address is the run's real
 directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in
@@ -2822,7 +2823,7 @@ Two entry points share one implementation:
   the campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
 
 The **upload-to-share** step mirrors this: a failure records ``share_error`` (durable) instead of
-being swallowed, and :meth:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_share` re-triggers it (web *Retrigger upload-to-share*,
+being swallowed, and :meth:`~robovast.service.service_base.ServiceBase.run_share` re-triggers it (web *Retrigger upload-to-share*,
 MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via ``_dispatch_background``
 (``sharing`` phase). Both re-triggers need no live in-memory campaign entry, so they work after a
 service restart. An archive — a share, ``vast campaign download``, the web UI's download — carries
@@ -2849,7 +2850,7 @@ Load the metadata graph
   from rdflib import Graph
 
   g = Graph()
-  g.parse("metadata.prov.json)
+  g.parse("metadata.prov.json")
 
 
 
