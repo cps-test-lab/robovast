@@ -337,16 +337,18 @@ def campaign_table_path(table: str) -> str:
 
 
 def record_campaign_table(manifest: dict, table: str, *, files: List[str], rows: int,
-                          schema: pa.Schema, sources: dict) -> None:
+                          schema: pa.Schema, sources: dict, runs: Optional[int] = None) -> None:
     """Enter a table written for the whole campaign at once in *manifest* (in memory).
 
     Its rows carry ``config_name`` and ``run_id`` like any table's, so a reader scoped to one
-    run reads that run's rows of it.
+    run reads that run's rows of it. Such a table is served whole and never built per run.
+    *runs* is how many runs it holds rows for, where the writer knows.
     """
     entry = manifest["tables"].setdefault(table, {"runs": {}})
     entry["campaign"] = {
         "files": files,
         "rows": rows,
+        "runs": runs,
         "schema": _schema_id(manifest, schema),
         "sources": sources,
         "complete": True,

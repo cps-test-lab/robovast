@@ -29,17 +29,24 @@ service uses (:mod:`robovast_data.engine`); the second use reads it.
 from __future__ import annotations
 
 import glob
+import json
 import os
+import shutil
 import tarfile
 import warnings
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional
 
 import pandas as pd
+import pyarrow.parquet as pq
 import yaml
 
 from robovast_decode.layout import STORE
 from robovast_decode.runs import RUNS_TABLE
+from robovast_decode.tables import (cache_root, campaign_table_path, manifest_lock, read_manifest,
+                                    record_campaign_table, write_manifest)
 
+from . import bulk
+from .bulk import Frame, PointCloud
 from .engine import Engine, Problem, Scope
 from .statement import QueryError
 
@@ -49,18 +56,70 @@ LARGE_TABLE_ROWS = 5_000_000
 _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar")
 _GLOB_CHARS = set("*?[")
 
+#: The file at an export's root that says what it holds (``vast campaign export``).
+EXPORT_FILE = "export.json"
+
 
 def _campaign_root(path: str) -> str:
-    """The campaign directory at or above *path*: the one holding ``campaign.db``."""
+    """The campaign directory at or above *path*: the one holding ``campaign.db``, or the
+    campaign an export at or above *path* holds."""
     current = os.path.abspath(path)
     while True:
         if os.path.isfile(os.path.join(current, STORE)):
             return current
+        if os.path.isfile(os.path.join(current, EXPORT_FILE)):
+            return _exported_campaign(current)
         parent = os.path.dirname(current)
         if parent == current:
             raise FileNotFoundError(f"{path} is not inside a campaign directory (no {STORE} "
                                     "in it or above it)")
         current = parent
+
+
+def _exported_campaign(export_dir: str) -> str:
+    """The campaign an export holds, its tables entered as that campaign's own.
+
+    An export is the campaign's records under ``<campaign_id>/`` and one parquet file per
+    table under ``tables/``: the tables were built once, on the service, and ship so a reader
+    needs no recording. On first use each is entered in the campaign's cache as a
+    campaign-level table -- linked, not copied -- and from then on the export reads exactly
+    as the campaign directory it came from does: nothing is built for a table the export
+    carries, and a table it does not carry is built from the records where they suffice.
+    """
+    with open(os.path.join(export_dir, EXPORT_FILE), encoding="utf-8") as fh:
+        export = json.load(fh)
+    campaign_dir = os.path.join(export_dir, export["campaign_id"])
+    if not os.path.isfile(os.path.join(campaign_dir, STORE)):
+        raise FileNotFoundError(
+            f"{export_dir} is an export without the campaign's records (made with "
+            f"--no-records); nothing can be read from it without {export['campaign_id']}/{STORE}")
+    with manifest_lock(campaign_dir):
+        manifest = read_manifest(campaign_dir)
+        changed = False
+        for table, entry in export.get("tables", {}).items():
+            if table == RUNS_TABLE or "campaign" in manifest["tables"].get(table, {}):
+                continue
+            source = os.path.join(export_dir, entry["file"])
+            if not source.endswith(".parquet") or not os.path.isfile(source):
+                continue                    # a CSV export's tables are for pandas, not here
+            rel = campaign_table_path(table)
+            target = os.path.join(cache_root(campaign_dir), rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if not os.path.exists(target):
+                try:
+                    os.link(source, target)
+                except OSError:
+                    shutil.copy2(source, target)
+            held = pq.read_table(target, columns=["config_name", "run_id"])
+            record_campaign_table(
+                manifest, table, files=[rel], rows=int(entry.get("rows", 0)),
+                schema=pq.read_schema(target),
+                sources={f"export:{export.get('export_id', '')}": int(entry.get("rows", 0))},
+                runs=held.group_by(["config_name", "run_id"]).aggregate([]).num_rows)
+            changed = True
+        if changed:
+            write_manifest(campaign_dir, manifest)
+    return campaign_dir
 
 
 def _extracted(archive: str) -> str:
@@ -79,7 +138,8 @@ def _extracted(archive: str) -> str:
         with open(marker, "w", encoding="utf-8") as fh:
             fh.write(os.path.abspath(archive) + "\n")
     entries = [e for e in os.listdir(target) if not e.startswith(".")]
-    if not os.path.isfile(os.path.join(target, STORE)) and len(entries) == 1:
+    if (not os.path.isfile(os.path.join(target, STORE))
+            and not os.path.isfile(os.path.join(target, EXPORT_FILE)) and len(entries) == 1):
         return os.path.join(target, entries[0])
     return target
 
@@ -134,7 +194,8 @@ class ConfigFiles:
 class Reader:
     """``table()`` over whatever answers ``_frame(sql)``: a campaign on disk or on a service."""
 
-    def _frame(self, sql: str, params=None) -> pd.DataFrame:
+    def _frame(self, sql: str, params=None, tables: Optional[Dict[str, pd.DataFrame]] = None
+               ) -> pd.DataFrame:
         raise NotImplementedError
 
     def table(self, name: str, config: Optional[str] = None, run: Optional[int] = None,
@@ -183,8 +244,9 @@ class Data(Reader):
         more = f", ... {len(self.scopes) - 3} more" if len(self.scopes) > 3 else ""
         return f"<{type(self).__name__} {names}{more}>"
 
-    def _frame(self, sql: str, params=None) -> pd.DataFrame:
-        with self.engine.execute(sql, params) as (con, problems):
+    def _frame(self, sql: str, params=None, tables: Optional[Dict[str, pd.DataFrame]] = None
+               ) -> pd.DataFrame:
+        with self.engine.execute(sql, params, tables=tables) as (con, problems):
             frame = con.df()
         _report(problems)
         return frame
@@ -205,17 +267,65 @@ class Data(Reader):
                 for name, entry in sorted(self.engine.catalog().items())]
         return pd.DataFrame(rows)
 
-    def sql(self, query: str, params=None) -> pd.DataFrame:
-        """Any ``SELECT`` over the tables and views here, as a DataFrame."""
-        return self._frame(query, params)
+    def sql(self, query: str, params=None,
+            tables: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
+        """Any ``SELECT`` over the tables and views here, as a DataFrame.
+
+        *tables* are DataFrames of your own the query may name beside the campaign's, so what
+        a loop over frames or clouds produced joins the tables by ``timestamp``::
+
+            c.sql("SELECT d.timestamp, d.n, p.\"position.x\" FROM detections d "
+                  "ASOF JOIN poses p ON p.timestamp <= d.timestamp", tables={"detections": det})
+        """
+        return self._frame(query, params, tables)
 
     def config(self, name: str) -> ConfigFiles:
         """The resolved files configuration *name* ran with."""
+        return ConfigFiles(self._one_campaign("config()"), name)
+
+    # -- images and point clouds: read from the recording, never from a table -----------------
+
+    def frames(self, config: str, run: int, topic: str, start: Optional[float] = None,
+               end: Optional[float] = None, every: Optional[float] = None) -> Iterator[Frame]:
+        """Every frame of *topic* of run *config*/*run*, in order, one at a time.
+
+        Each :class:`~robovast_data.bulk.Frame` holds its pixels as a numpy array in the
+        encoding's own type and its stamp on the tables' clock. *start* and *end* bound the
+        stamps in seconds; *every* keeps one frame per that many seconds. One pass over the
+        run's recording, whatever the span; a copy of the campaign without the recording
+        (an export made without ``--bags``) says so rather than answering.
+        """
+        return bulk.frames(self._recording(config, run), topic, start, end, every)
+
+    def frame(self, config: str, run: int, topic: str, t: Optional[float] = None) -> Frame:
+        """The frame of *topic* at or before *t* seconds (the first when none is; the last
+        for ``None``)."""
+        return bulk.frame(self._recording(config, run), topic, t)
+
+    def pointclouds(self, config: str, run: int, topic: str, start: Optional[float] = None,
+                    end: Optional[float] = None, every: Optional[float] = None,
+                    keep_nan: bool = False) -> Iterator[PointCloud]:
+        """Every point cloud of *topic* of run *config*/*run*, in order, one at a time: one
+        array per field, and ``xyz`` stacked. *keep_nan* keeps the points a cloud spells "no
+        return" with."""
+        return bulk.pointclouds(self._recording(config, run), topic, start, end, every,
+                                keep_nan)
+
+    def pointcloud(self, config: str, run: int, topic: str, t: Optional[float] = None,
+                   keep_nan: bool = False) -> PointCloud:
+        """The cloud of *topic* at or before *t* seconds (the first when none is; the last
+        for ``None``)."""
+        return bulk.pointcloud(self._recording(config, run), topic, t, keep_nan)
+
+    def _recording(self, config: str, run: int) -> str:
+        return bulk.run_recording(self._one_campaign("frames() and pointclouds()"), config,
+                                  int(run))
+
+    def _one_campaign(self, what: str) -> str:
         campaigns = {s.campaign_dir for s in self.scopes}
         if len(campaigns) != 1:
-            raise ValueError("config() reads one campaign's configuration; use it on a "
-                             "Campaign")
-        return ConfigFiles(campaigns.pop(), name)
+            raise ValueError(f"{what} reads one campaign; use it on a Campaign")
+        return campaigns.pop()
 
 
 def _describe(scope: Scope) -> str:

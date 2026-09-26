@@ -42,31 +42,18 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
-import numpy as np
 from PIL import Image as PILImage
 
 from .decode import channel_type, segments
 from .definitions import TypeCatalog
 from .framing import Channel, McapTail, Message, Schema
-
-#: The message types a frame can be read from.
-IMAGE_TYPES = frozenset({"sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/Image"})
+from .images import IMAGE_TYPES, decode, to_pil
 
 #: Widest a frame is served: a wider one is downscaled, keeping its aspect ratio.
 MAX_WIDTH = 640
 
 #: JPEG quality of a frame that has to be encoded.
 JPEG_QUALITY = 85
-
-#: ``sensor_msgs/msg/Image`` encodings this renders, as Pillow's raw modes.
-_RAW_MODES = {
-    "rgb8": ("RGB", "RGB"), "bgr8": ("RGB", "BGR"), "rgba8": ("RGBA", "RGBA"),
-    "bgra8": ("RGBA", "BGRA"), "mono8": ("L", "L"), "8UC1": ("L", "L"), "8UC3": ("RGB", "BGR"),
-}
-
-#: 16-bit and float single-channel encodings (depth cameras): scaled to 8 bits by their range.
-_DEPTH_DTYPES = {"mono16": "u2", "16UC1": "u2", "32FC1": "f4"}
-
 
 @dataclass(frozen=True)
 class FrameRef:
@@ -132,7 +119,11 @@ class Frames:
         The one message is read from its record and deserialized; nothing else of the
         recording is touched.
         """
-        return to_jpeg(self._deserialize(self._message_data(ref)), self.typename)
+        return to_jpeg(self.read_message(ref), self.typename)
+
+    def read_message(self, ref: FrameRef):
+        """The image message at *ref*, deserialized and nothing else of the recording read."""
+        return self._deserialize(self._message_data(ref))
 
     def newest_frame(self) -> Optional[Tuple[float, bytes]]:
         """``(stamp, JPEG)`` of the newest frame; ``None`` before the first."""
@@ -287,29 +278,10 @@ def to_jpeg(msg, typename: str) -> bytes:
         if ("jpeg" in fmt or "jpg" in fmt) and image.format == "JPEG" and image.width <= MAX_WIDTH:
             return data
     elif typename == "sensor_msgs/msg/Image":
-        image = _raw_image(msg)
+        image = to_pil(*decode(msg, typename))
     else:
         raise ValueError(f"{typename} is not an image type")
     return _encode(image)
-
-
-def _raw_image(msg) -> PILImage.Image:
-    encoding = msg.encoding
-    width, height, step = int(msg.width), int(msg.height), int(msg.step)
-    data = bytes(msg.data)
-    if encoding in _RAW_MODES:
-        mode, raw_mode = _RAW_MODES[encoding]
-        return PILImage.frombuffer(mode, (width, height), data, "raw", raw_mode, step, 1)
-    if encoding in _DEPTH_DTYPES:
-        dtype = np.dtype((">" if msg.is_bigendian else "<") + _DEPTH_DTYPES[encoding])
-        row = step // dtype.itemsize
-        values = np.frombuffer(data, dtype=dtype)[:height * row].reshape(height, row)[:, :width]
-        values = values.astype(np.float64)
-        finite = np.isfinite(values)
-        top = float(values[finite].max()) if finite.any() else 0.0
-        scaled = np.where(finite, values / top if top > 0 else 0.0, 0.0)
-        return PILImage.fromarray((scaled * 255).astype(np.uint8), "L")
-    raise ValueError(f"cannot render a sensor_msgs/msg/Image in encoding {encoding!r}")
 
 
 def _encode(image: PILImage.Image) -> bytes:
