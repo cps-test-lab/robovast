@@ -675,9 +675,10 @@ def status_cmd(campaign, namespace, context):  # pylint: disable=redefined-outer
 
     click.echo(f"  campaign  {campaign_id}")
     click.echo(f"  phase     {status.phase}")
-    if getattr(status, "total_runs", 0):
-        click.echo(f"  runs      {getattr(status, 'completed_runs', 0)}"
-                   f" / {status.total_runs}")
+    # The current batch's counter, as the status carries it: a phase alone says nothing
+    # about how far a running campaign has got.
+    if status.runs.total:
+        click.echo(f"  runs      {status.runs.completed} / {status.runs.total}")
     # Only when it happened. A campaign short of a machine is slower than its plan and says so
     # nowhere else while it runs, so the one-read status is where a reader meets it.
     for node_id, why in sorted((getattr(status, "nodes_skipped", None) or {}).items()):
