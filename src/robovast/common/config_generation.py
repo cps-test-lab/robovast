@@ -1595,6 +1595,9 @@ def _build_generate_cache_key(
     ``relpath(file, vast_dir)`` rather than basename, preventing collisions
     between different files that share the same name.
     """
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        default_image_project, default_image_tag)
+
     key = CacheKey()
 
     # Cache format version — bumped whenever the stored structure changes.
@@ -1605,11 +1608,13 @@ def _build_generate_cache_key(
     key.add("tolerate_infeasible", tolerate_infeasible)
 
     # Same reason: the composed data carries the *resolved* family image refs, so an entry
-    # composed against one project must not satisfy a request for another. Without this a
-    # dev run against a second registry would silently reuse the first campaign's images —
-    # the one failure mode a per-campaign override must not have.
-    key.add("image_project", image_project or "")
-    key.add("image_project_tag", image_project_tag or "")
+    # composed against one project must not satisfy a request for another. The key holds
+    # the project and tag the refs are resolved with -- the campaign's own when it names
+    # one, the environment's otherwise, exactly as resolve_family_image falls back -- so a
+    # deployment moved to another project or tag composes afresh too, not only a campaign
+    # that overrides them.
+    key.add("image_project", image_project or default_image_project())
+    key.add("image_project_tag", image_project_tag or default_image_tag())
 
     # .vast file itself
     key.add_file(variation_file, base_dir=vast_dir)
