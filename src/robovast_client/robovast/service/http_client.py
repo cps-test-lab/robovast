@@ -740,13 +740,17 @@ class HTTPTransport(RobovastInterface):
 
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
                             at=None, view=None, focus=None, camera=None,
-                            size: str = "960x720") -> str:
+                            size: str = "960x720") -> "ScreenshotFrame":
         """POST the render and land the PNG in a temp dir, keeping the local contract.
 
         The interface returns a *path* because the service builds one, and a path means
         nothing across HTTP — so the bytes are written into the same directory shape
         ``screenshot.render`` produces, and ``screenshot.discard`` removes it either way. One
         cleanup rule for both, rather than a caller that has to know which implementation answered.
+
+        The name the service kept the render under is read off the response's
+        ``Content-Location``, the one place it travels. A response without one kept nothing,
+        and the name is left empty rather than guessed.
 
         **A long timeout, deliberately.** This is the one call that may pull a 2 GB image
         before it can start, inside the request; the default would give up on a cold node and
@@ -756,6 +760,7 @@ class HTTPTransport(RobovastInterface):
         from pathlib import Path
         from urllib.parse import urlencode
 
+        from robovast.service.interface import ScreenshotFrame
 
         params = [("config_name", config_name), ("run_id", str(run_id)), ("size", size)]
         if at is not None:
@@ -772,7 +777,19 @@ class HTTPTransport(RobovastInterface):
         out.mkdir()
         frame = out / "frame.png"
         frame.write_bytes(resp.content)
-        return str(frame)
+        prefix = Routes.campaign_screenshot_frame(campaign_id, "")
+        kept = resp.headers.get("Content-Location", "")
+        name = kept[len(prefix):] if kept.startswith(prefix) else ""
+        return ScreenshotFrame(path=str(frame), name=name)
+
+    def resolve_campaign_screenshot(self, campaign_id: str, name: str) -> str:
+        # A path on the service's disk means nothing here; the kept render is fetched over HTTP
+        # from the route its name addresses.
+        del campaign_id, name
+        raise UnsupportedOperation(
+            "resolve_campaign_screenshot", self.IMPLEMENTATION,
+            hint="a kept screenshot is fetched over HTTP from "
+                 "Routes.campaign_screenshot_frame, not resolved to a local path")
 
     def workspace_scene_status(self, workspace_id: str, path: str = "") -> "SceneStatus":
         from robovast.service.interface import SceneStatus

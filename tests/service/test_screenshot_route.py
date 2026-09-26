@@ -8,6 +8,8 @@ What is pinned here is the *shape*, because each part copies an existing pattern
 would be silent: a POST because it runs the simulator, **synchronous** because a screenshot is
 keyed on a camera and a moment and so is never a cache hit, and every refusal a 400 carrying
 the reason — a simulator that does not render is a statement about the request, not a 500.
+And a render is **kept**, under a name the response carries, so it can be fetched again — for
+a bounded time and count, and never from outside the store.
 
 Only the *command* is faked, as in ``test_scene_routes``: the generator framework, the identity
 resolution, the cleanup and the routes are the real thing.
@@ -39,6 +41,7 @@ PNG = bytes.fromhex(
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch):
     results = tmp_path / "results"
+    monkeypatch.setenv("ROBOVAST_SCREENSHOTS", str(tmp_path / "screenshots"))
     run = results / CAMPAIGN / "hexagon-1" / "0"
     # The recording is both the world identity (its ``sim_recording`` row) and the state a
     # render replays; ``campaign.db`` is what makes the run's tables queryable.
@@ -107,16 +110,45 @@ def test_a_screenshot_comes_back_as_an_image(env):
 
 
 def test_the_render_directory_does_not_survive_the_response(env):
-    """Nothing here is cacheable, so nothing here is kept.
+    """The render moves into the store; the directory it was made in goes.
 
-    The cleanup runs as a background task *after* the body is sent, which is why it is worth a
-    test: a leak would be invisible until a service filled its disk with frames nobody can
-    name.
+    A leak would be invisible until a service filled its disk with frames nobody can name.
     """
     client, _ = env
     assert _post(client).status_code == 200
     leftover = list(Path("/tmp").glob("robovast-screenshot-*"))  # noqa: S108 - mkdtemp's root
     assert not leftover, leftover
+
+
+def test_a_render_is_kept_and_fetched_again_by_its_name(env):
+    """The response names where the render is kept, and that address serves the same bytes."""
+    client, _ = env
+    resp = _post(client)
+    assert resp.status_code == 200, resp.text
+    kept = resp.headers["content-location"]
+    assert kept.startswith(f"/campaigns/{CAMPAIGN}/screenshots/")
+    again = client.get(kept)
+    assert again.status_code == 200, again.text
+    assert again.headers["content-type"] == "image/png"
+    assert again.content == PNG
+    # A name is never reused for other bytes, so a client may keep what it fetched.
+    assert "immutable" in again.headers["cache-control"]
+
+
+def test_two_renders_are_kept_under_two_names(env):
+    """A name addresses one render: the same request made twice is two renders."""
+    client, _ = env
+    first = _post(client).headers["content-location"]
+    second = _post(client).headers["content-location"]
+    assert first != second
+
+
+@pytest.mark.parametrize("name", ["missing", "0" * 32 + ".png", "..%2F..%2Fetc%2Fpasswd"])
+def test_a_render_that_is_not_kept_is_a_404(env, name):
+    """Unknown, never made, or reaching outside the store: all the same answer."""
+    client, _ = env
+    resp = client.get(f"/campaigns/{CAMPAIGN}/screenshots/{name}")
+    assert resp.status_code == 404
 
 
 def test_an_unknown_view_key_names_the_valid_ones(env):
