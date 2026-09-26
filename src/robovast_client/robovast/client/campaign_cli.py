@@ -37,10 +37,10 @@ def campaign():
 
 
 def _sole_running_campaign(client):
-    """The one running campaign's id, or None; errors if several are running.
+    """The one running campaign's id, or None; refuses when several are running.
 
-    Campaigns run in parallel now, so a bare ``stop`` is only unambiguous when
-    exactly one is live.
+    Campaigns run in parallel, so a bare ``stop`` is only unambiguous when exactly one
+    is live. A refusal, not a bug: the caller's next move is to name the campaign.
     """
     from robovast.client.status import is_running
     from robovast.service.interface import ListCampaignsRequest
@@ -50,7 +50,7 @@ def _sole_running_campaign(client):
         return None
     if len(live) > 1:
         names = ", ".join(c.campaign_id for c in live)
-        raise ValueError(
+        raise click.ClickException(
             f"{len(live)} campaigns are running ({names}); pass CAMPAIGN to choose one.")
     return live[0].campaign_id
 
@@ -667,7 +667,7 @@ def status_cmd(campaign, namespace, context):  # pylint: disable=redefined-outer
             _echo_target(label)
             campaign_id = campaign or _sole_running_campaign(client)
             if not campaign_id:
-                raise ValueError("no campaign is running; pass CAMPAIGN.")
+                raise click.ClickException("no campaign is running; pass CAMPAIGN.")
             status = client.get_status(campaign_id)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
@@ -774,7 +774,7 @@ def postprocess_cmd(campaign, force, replay, skip_plugins, namespace, context):
             _echo_target(label)
             campaign_id = campaign or _sole_running_campaign(client)
             if not campaign_id:
-                raise ValueError("no campaign is running; pass CAMPAIGN.")
+                raise click.ClickException("no campaign is running; pass CAMPAIGN.")
             res = client.run_postprocessing(RunPostprocessingRequest(
                 campaign_id=campaign_id, force=force, replay=replay, skip=list(skip_plugins)))
     except Exception as e:  # noqa: BLE001
