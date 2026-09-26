@@ -117,9 +117,7 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
         tail = McapTail(path)
         for record in tail.read():
             if isinstance(record, Schema):
-                if record.encoding in ("ros2msg", "ros2idl") and record.data:
-                    catalog.add_definition(record.name, record.encoding,
-                                           record.data.decode("utf-8", errors="replace"))
+                catalog.add_schema(record)
                 continue
             if isinstance(record, Channel):
                 typename = channel_type(record, tail.schemas)
