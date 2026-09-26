@@ -54,6 +54,19 @@ The message names the diagnosis and the next call. Work through it cheapest-firs
 **settle the campaign again**: background `vast campaign wait <campaign_id>` (it will not exit on the
 same thing twice, so resuming works), or `stop_campaign`.
 
+## A check the world trips by design is not a fault
+
+If the finding is one this campaign is *expected* to produce — its world trips that check on
+every run — do not re-issue the wait per check. Name it once:
+
+```text
+Bash(command="vast campaign wait <campaign_id> --ignore-check <slug>", run_in_background=true)
+```
+
+or declare it for every waiter in the `.vast`, before launch: `execution.advisory_checks:
+[<slug>]`. Its findings are still printed, marked `[ignored: …]`, and the wait then exits on the
+campaign's own phase (0 or 1) — or with 5 on any other new check.
+
 ## Or say you are not waiting
 
 A sweep can legitimately run for days, and no in-session wait survives a closed session.

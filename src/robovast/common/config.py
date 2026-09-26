@@ -1095,6 +1095,11 @@ class ExecutionConfig(BaseModel):
     # actually enforce at (a Job's activeDeadlineSeconds), so the number is
     # used as declared rather than reconstructed from a per-run figure.
     timeout: Optional[int] = None
+    #: Health-check slugs whose ``error``-level findings this campaign expects: each is still
+    #: reported, marked as ignored, but never ends a ``vast campaign wait``. For a check the
+    #: world trips on every run by design -- the slug is the simulator's own and is matched,
+    #: never interpreted. Published on the campaign's status, so every waiter agrees.
+    advisory_checks: Optional[list[str]] = None
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
     simulation: Optional[str] = None
@@ -1143,6 +1148,19 @@ class ExecutionConfig(BaseModel):
             raise ValueError("execution.local is not a setting: campaigns run on a cluster, "
                              "where these overrides apply to nothing. Remove the block.")
         return data
+
+    @field_validator("advisory_checks")
+    @classmethod
+    def validate_advisory_checks(cls, value):
+        """A blank slug matches no check, so a list carrying one reads as configured and is not."""
+        if value is None:
+            return value
+        blank = [i for i, slug in enumerate(value) if not slug.strip()]
+        if blank:
+            raise ValueError(
+                f"execution.advisory_checks entries must be check slugs, as a simulator's health "
+                f"findings name them; entry {blank[0]} is blank")
+        return [slug.strip() for slug in value]
 
     @model_validator(mode="after")
     def resolve_sizing(self):

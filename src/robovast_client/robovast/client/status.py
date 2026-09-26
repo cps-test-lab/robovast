@@ -33,7 +33,7 @@ Status`` keeps working.
 
 import time
 from enum import StrEnum
-from typing import Optional
+from typing import Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -191,7 +191,9 @@ class HealthFinding(BaseModel):
 
     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-      still holds ``running`` for its whole life.
+      still holds ``running`` for its whole life. Unless its ``check`` is one the campaign
+      declares advisory (``execution.advisory_checks``) or the waiter was told to ignore
+      (``--ignore-check``): then it is reported as ignored and the wait goes on.
     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
       ``get_job_state`` and on the campaign's own exit.
 
@@ -390,6 +392,12 @@ class Status(BaseModel):
     # and the first reads as a clean bill of health. A robot-motion check with no roster is exactly
     # that case: nothing is wrong, and nothing looked.
     health_skipped: list[str] = Field(default_factory=list)
+    # The check slugs this campaign's ``.vast`` declares advisory (``execution.advisory_checks``):
+    # an ``error``-level finding under one of them is still reported, but never ends a
+    # ``vast campaign wait``. Published by the controller, like ``progress_deadline_s``, because
+    # only it reads the ``.vast`` -- and carried on the status rather than left to each waiter's
+    # flags, so every waiter and every reader of this campaign draws the same line.
+    advisory_checks: list[str] = Field(default_factory=list)
     # ``{node_id: why}`` for machines this campaign has left out: their calibration probe never
     # ran, so nothing may be placed there -- work sized from the seed beside work sized from a
     # measurement is the one thing calibration exists to prevent.
@@ -703,19 +711,45 @@ def stopping_soon_report(status: "Status") -> dict:
     return report
 
 
-def error_findings(status: "Status") -> list["HealthFinding"]:
-    """The ``error``-level findings on a live campaign, in report order.
+def _error_level(status: "Status") -> list["HealthFinding"]:
+    """Every ``error``-level finding on a live campaign; none on a terminal one."""
+    if is_terminal(status.phase):
+        return []
+    return [f for f in (status.health or []) if f.level == HEALTH_ERROR]
+
+
+def _advisory_slugs(status: "Status", ignore: Iterable[str]) -> set[str]:
+    """The slugs that do not end a wait: the campaign's declared ones plus the caller's."""
+    return set(status.advisory_checks or ()) | set(ignore or ())
+
+
+def error_findings(status: "Status", ignore: Iterable[str] = ()) -> list["HealthFinding"]:
+    """The ``error``-level findings on a live campaign that end a wait, in report order.
 
     One derivation, shared by the waiter and the MCP for the reason :func:`stall_report`
     is shared: two surfaces deciding separately what counts as bad enough to act on is how
     they come to disagree about the same campaign.
 
+    A finding whose ``check`` the campaign declares advisory (``Status.advisory_checks``), or
+    that the caller names in *ignore*, is :func:`advisory_findings`' instead. The slug is
+    matched and never interpreted, so this adds no per-check knowledge to RoboVAST.
+
     A terminal campaign gets none, as with a stall: what a run reported while it was wedged
     is history once it is over, and the results are the record then.
     """
-    if is_terminal(status.phase):
-        return []
-    return [f for f in (status.health or []) if f.level == HEALTH_ERROR]
+    skip = _advisory_slugs(status, ignore)
+    return [f for f in _error_level(status) if f.check not in skip]
+
+
+def advisory_findings(status: "Status", ignore: Iterable[str] = ()) -> list["HealthFinding"]:
+    """The ``error``-level findings on a live campaign that are expected, in report order.
+
+    The complement of :func:`error_findings`: a check the campaign declares advisory, or that
+    the caller names in *ignore*. Reported wherever the others are -- a finding nobody sees was
+    not expected, it was hidden -- but never the reason a wait ends.
+    """
+    skip = _advisory_slugs(status, ignore)
+    return [f for f in _error_level(status) if f.check in skip]
 
 
 def finding_summary(finding: "HealthFinding") -> str:

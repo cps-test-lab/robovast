@@ -138,3 +138,29 @@ def test_a_time_budget_without_an_origin_keeps_its_published_value():
                           "done": False, "kind": "time"}])
     d = cc._status_to_dict("camp", "local", st)
     assert d["budget"][0]["current"] == 600.0
+
+
+# -- health findings the campaign declares advisory ------------------------------------------
+
+
+def _finding(check):
+    return {"job_name": "nav-1/1", "level": "error", "check": check, "detail": "observed"}
+
+
+def test_an_advisory_finding_is_reported_apart_from_the_ones_that_end_a_wait():
+    """``health_findings`` is what ends a ``vast campaign wait`` and what the turn guard re-arms
+    on; a check the ``.vast`` declares expected must be visible here but under its own key, or a
+    reader acting on ``health_findings`` acts on a check nobody wants acted on."""
+    st = _status(phase="running", advisory_checks=["sim-time-rate"],
+                 health=[_finding("sim-time-rate"), _finding("robot-motion")])
+    d = cc._status_to_dict("camp", "cluster", st)
+    assert [f["check"] for f in d["health_findings"]] == ["robot-motion"]
+    assert [f["check"] for f in d["health_findings_advisory"]] == ["sim-time-rate"]
+
+
+def test_only_advisory_findings_carry_no_next_step():
+    st = _status(phase="running", advisory_checks=["sim-time-rate"],
+                 health=[_finding("sim-time-rate")])
+    d = cc._status_to_dict("camp", "cluster", st)
+    assert "health_findings" not in d and "health_next_step" not in d
+    assert d["health_findings_advisory"][0]["check"] == "sim-time-rate"

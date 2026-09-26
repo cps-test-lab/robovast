@@ -297,7 +297,8 @@ class CampaignController:
             created_by=self.created_by, origin=self.origin)
         if self.state is not None:
             self.state.update(mode=self.mode, campaign_id=self.campaign_id,
-                              progress_deadline_s=self._progress_deadline())
+                              progress_deadline_s=self._progress_deadline(),
+                              advisory_checks=self._advisory_checks())
             self.state.set_phase(Phase.RUNNING)
         self._start_progress_poller()
         self.notifier.start_heartbeat(status_fn=self._notify_status)
@@ -365,6 +366,16 @@ class CampaignController:
         """
         execution = (self.campaign_config_dump or {}).get("execution") or {}
         return declared_job_seconds(execution)
+
+    def _advisory_checks(self) -> list[str]:
+        """The health-check slugs the ``.vast`` declares advisory (``execution.advisory_checks``).
+
+        Published on the status for the reason :meth:`_progress_deadline` is: only the
+        controller can see the ``.vast``, and a waiter that learned the list from its own
+        flags alone would disagree with every other waiter on the same campaign.
+        """
+        execution = (self.campaign_config_dump or {}).get("execution") or {}
+        return list(execution.get("advisory_checks") or [])
 
     def _record_container_failures(self, campaign_id: int) -> None:
         """Lift ``_execution/container_failures.json`` into the ``container_failure`` table.

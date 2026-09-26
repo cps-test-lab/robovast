@@ -1337,7 +1337,7 @@
         "type": "object"
       },
       "HealthFinding": {
-        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast campaign wait``\n  (exit 5), because nobody would otherwise be told: a run whose simulator is wedged\n  still holds ``running`` for its whole life.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
+        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast campaign wait``\n  (exit 5), because nobody would otherwise be told: a run whose simulator is wedged\n  still holds ``running`` for its whole life. Unless its ``check`` is one the campaign\n  declares advisory (``execution.advisory_checks``) or the waiter was told to ignore\n  (``--ignore-check``): then it is reported as ignored and the wait goes on.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
         "properties": {
           "check": {
             "title": "Check",
@@ -3466,6 +3466,13 @@
       "StatusResponse": {
         "description": ":class:`Status` as the HTTP API serves it: the state, plus the stall verdict.\n\nThe verdict is derived per read (as ``health`` is) and exists only on the wire. It is\ndeliberately NOT a field on :class:`Status`, which is the controller's mutable state and\nis persisted verbatim as the campaign's durable outcome\n(``campaign_data.write_execution_outcome`` / ``read_execution_outcome``): a stored verdict\nwould be read back later as a live accusation against a campaign that has long since\nfinished, which is the one error mode the tri-state exists to prevent.\n\nEvery added field is optional and absent unless :func:`stall_report` produced it, so a\nterminal campaign carries no verdict rather than a null one \u2014 the same shape the MCP\nreturns, for the same reason: a field present on every campaign is one readers learn to\nskip.",
         "properties": {
+          "advisory_checks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Advisory Checks",
+            "type": "array"
+          },
           "batch": {
             "default": 0,
             "title": "Batch",
@@ -3749,6 +3756,7 @@
           }
         },
         "required": [
+          "advisory_checks",
           "batch",
           "batch_since",
           "batches_done",

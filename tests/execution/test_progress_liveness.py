@@ -167,6 +167,25 @@ def test_the_controller_publishes_a_progress_deadline_scaled_by_packing(tmp_path
     assert _controller({})._progress_deadline() is None
 
 
+def test_the_controller_publishes_the_advisory_checks_its_vast_declares(tmp_path):
+    """Published rather than left to each waiter's flags, so every waiter on the campaign agrees
+    on which checks end a wait."""
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+    from robovast.execution.backends import RunOptions
+    from robovast.execution.controller import CampaignController
+
+    def _controller(execution):
+        return CampaignController(
+            campaign_id="camp", results_dir=str(tmp_path), runs=1,
+            backend=_Inert(), options=RunOptions(),
+            store=CampaignStore(tmp_path / "camp" / STORE_FILENAME),
+            campaign_config_dump={"execution": execution}, vast_dir=str(tmp_path))
+
+    assert _controller({"advisory_checks": ["sim-time-rate"]})._advisory_checks() == \
+        ["sim-time-rate"]
+    assert _controller({})._advisory_checks() == []
+
+
 def test_the_job_budget_has_exactly_one_definition():
     """Enforcement and reporting read the same declared value; only the fallback
     differs. A second copy of the value would eventually drift, and then a Job could be

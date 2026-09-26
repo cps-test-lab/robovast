@@ -2672,7 +2672,9 @@ export interface components {
          *
          *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
          *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-         *       still holds ``running`` for its whole life.
+         *       still holds ``running`` for its whole life. Unless its ``check`` is one the campaign
+         *       declares advisory (``execution.advisory_checks``) or the waiter was told to ignore
+         *       (``--ignore-check``): then it is reported as ignored and the wait goes on.
          *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
          *       ``get_job_state`` and on the campaign's own exit.
          *
@@ -4087,6 +4089,8 @@ export interface components {
          *     skip.
          */
         StatusResponse: {
+            /** Advisory Checks */
+            advisory_checks: string[];
             /**
              * Batch
              * @default 0

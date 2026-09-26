@@ -137,7 +137,9 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    campaign is genuinely over, past postprocessing, and leaves you free meanwhile. **4 and 5
    mean the campaign is still running and nothing is waiting on it**, so they are a hand-off
    to you, not an ending: diagnose, then either background the waiter again or
-   `stop_campaign`. You do not have to remember to check for a wedge — the waiter tells you. Never end a turn on a campaign you started without
+   `stop_campaign`. A check the world trips by design is not a fault: declare its slug in
+   `execution.advisory_checks` (or pass `--ignore-check <slug>` to the wait) and it is
+   reported without ending the wait. You do not have to remember to check for a wedge — the waiter tells you. Never end a turn on a campaign you started without
    either waiting for it or saying you are not: an unwatched campaign's end goes
    unnoticed, which is what ntfy (`ROBOVAST_NTFY_TOPIC`) is for. Then check what it
    actually produced — `status: finished` does not imply results, and a campaign whose

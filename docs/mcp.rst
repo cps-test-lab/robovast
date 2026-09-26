@@ -657,10 +657,12 @@ deployment on this machine and one across the room.
 ``start_campaign`` validates and launches through the service and returns
 immediately — the campaign has barely started. Wait for it with
 ``vast campaign wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
-elapsed), which returns only once the campaign is genuinely over, past
-postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
-run for days, and a blocking tool call would occupy its caller for the whole of
-it, where a command can be backgrounded and waited on. ``get_campaign_status``
+elapsed, 4 stalled, 5 a health finding — both still running), which returns only once the
+campaign is genuinely over, past postprocessing, or once something about it needs a
+decision; ``start_campaign``'s ``next_step`` spells it out with the id filled in.
+Deliberately a **command and not an MCP tool**: a campaign can run for days, and a
+blocking tool call would occupy its caller for the whole of it, where a command can be
+backgrounded and waited on. ``get_campaign_status``
 is the single-read version for a campaign you are not waiting on.
 
 ``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
@@ -913,6 +915,14 @@ against its memory, and a probe that was not asked would size the simulator with
 
 RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast campaign wait`` (exit 5);
 ``warn`` never does, and surfaces on ``get_job_state`` and the campaign's own exit.
+
+An ``error`` whose ``check`` is **expected** does not end the wait either: one the ``.vast``
+declares in :ref:`execution.advisory_checks <config-advisory-checks>`, which every waiter
+reads from the campaign's status and ``get_campaign_status`` reports under
+``health_findings_advisory``, or one a single waiter names with ``--ignore-check``. It is
+still printed by the waiter, marked as ignored — a check a world trips by design is expected,
+not hidden.
+
 ``check`` is a stable slug the simulator owns — carried through untouched, so it is matched
 and reported, never interpreted — and ``detail`` is its observation in its own words. There
 is therefore no per-check knowledge anywhere in RoboVAST, and any simulator shipping a

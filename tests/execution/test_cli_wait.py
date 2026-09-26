@@ -303,3 +303,76 @@ def test_a_stall_and_a_finding_together_report_the_finding(statuses):
     result = _run("c1", "--timeout", "5")
     assert result.exit_code == 5
     assert "NOT touched" in result.output
+
+
+# -- an expected check: reported, never an exit ------------------------------------------------
+
+
+def test_an_ignored_check_does_not_end_the_wait_and_the_phase_decides(statuses):
+    """A world that trips a check on every run by design must not make a healthy campaign read as
+    a dead one: with the check named, the wait runs on to the campaign's own terminal phase and
+    returns that phase's code."""
+    statuses([_finding_status("c1", []), _finding_status("c1", [_finding()]),
+              _finding_status("c1", [_finding(job="nav-2/1")]),
+              Status(phase=Phase.FINISHED, campaign_id="c1")])
+    result = _run("c1", "--ignore-check", "sim-time-rate", "--timeout", "5")
+    assert result.exit_code == 0
+    assert "NOT touched" not in result.output
+
+
+def test_an_ignored_check_on_a_failed_campaign_still_exits_one(statuses):
+    """Ignoring a check changes what ends the wait, never what the campaign's end means."""
+    statuses([_finding_status("c1", []), _finding_status("c1", [_finding()]),
+              Status(phase=Phase.FAILED, campaign_id="c1", error="runs failed")])
+    result = _run("c1", "--ignore-check", "sim-time-rate", "--timeout", "5")
+    assert result.exit_code == 1
+
+
+def test_an_ignored_finding_is_still_printed_once_and_marked(statuses):
+    """Expected is not hidden: the waiter's line is the only place it shows an ignored check, so
+    it is printed -- once per check, however many jobs report it."""
+    statuses([_finding_status("c1", []), _finding_status("c1", [_finding()]),
+              _finding_status("c1", [_finding(), _finding(job="nav-2/1")]),
+              Status(phase=Phase.FINISHED, campaign_id="c1")])
+    result = _run("c1", "--ignore-check", "sim-time-rate", "--timeout", "5")
+    assert result.exit_code == 0
+    lines = [line for line in result.output.splitlines() if "sim-time-rate" in line]
+    assert len(lines) == 1, result.output
+    assert "sim advanced 3.1s" in lines[0]
+    assert "[ignored: --ignore-check]" in lines[0]
+
+
+def test_an_unignored_new_check_still_exits_five(statuses):
+    """Naming one expected check must not blind the waiter to every other fault."""
+    statuses([_finding_status("c1", []),
+              _finding_status("c1", [_finding(), _finding(check="robot-motion")])])
+    result = _run("c1", "--ignore-check", "sim-time-rate", "--timeout", "5")
+    assert result.exit_code == 5
+    assert "robot-motion" in result.output
+    assert "[ignored: --ignore-check]" in result.output
+    # The way back keeps the waiter's own flags, and offers the new check as one.
+    assert "vast campaign wait c1 --ignore-check sim-time-rate" in result.output
+    assert "--ignore-check robot-motion" in result.output
+
+
+def test_a_check_the_campaign_declares_advisory_needs_no_flag(statuses):
+    """``execution.advisory_checks`` reaches every waiter through the status, so a waiter started
+    without flags agrees with one started with them."""
+    def declared(findings):
+        status = _finding_status("c1", findings)
+        status.advisory_checks = ["sim-time-rate"]
+        return status
+
+    statuses([declared([]), declared([_finding()]),
+              Status(phase=Phase.FINISHED, campaign_id="c1")])
+    result = _run("c1", "--timeout", "5")
+    assert result.exit_code == 0
+    assert "[ignored: execution.advisory_checks]" in result.output
+
+
+def test_a_blank_check_slug_is_refused(statuses):
+    """A blank slug matches no check, so accepting it would read as configured and do nothing."""
+    statuses([_finding_status("c1", [])])
+    result = _run("c1", "--ignore-check", " ")
+    assert result.exit_code != 0
+    assert "cannot be blank" in result.output

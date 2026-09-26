@@ -1142,6 +1142,34 @@ A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadline
    execution:
      timeout: 3600   # 1 hour for the job
 
+.. _config-advisory-checks:
+
+advisory_checks
+^^^^^^^^^^^^^^^
+
+**Type:** List of strings (health-check slugs)
+
+**Required:** No
+
+Health checks this campaign **expects** to fire. A running job's simulator reports
+findings about itself (:ref:`mcp-health-findings`), and an ``error``-level one ends
+``vast campaign wait`` with exit ``5``. Declare a check here when the world trips it on
+every run by design — an expensive world running below a simulator's real-time floor, for
+instance — and its findings are still reported, marked as ignored, but never end a wait:
+the waiter returns the campaign's own exit code, and still stops early on any *other* new
+check.
+
+The slug is the simulator's own, matched exactly and never interpreted; look it up in the
+simulator's documentation. The list is published on the campaign's status, so every waiter
+and every ``get_campaign_status`` reader agrees on it — ``get_campaign_status`` reports these
+findings under ``health_findings_advisory`` rather than ``health_findings``. For one waiter
+only, pass ``vast campaign wait --ignore-check <slug>`` instead.
+
+.. code-block:: yaml
+
+   execution:
+     advisory_checks: [sim-time-rate]   # this world runs below real time by design
+
 scenario_file
 ^^^^^^^^^^^^^
 

@@ -30,8 +30,9 @@ import time
 
 from fastmcp import FastMCP
 
-from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
-                                    error_findings, stall_report, stopping_soon_report)
+from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, advisory_findings,
+                                    budget_positions, error_findings, stall_report,
+                                    stopping_soon_report)
 from robovast.common.log_summary import DEFAULT_TOP
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
@@ -204,10 +205,16 @@ def _status_to_dict(campaign_id: str, backend, st) -> dict:
     if findings:
         result["health_findings"] = [f.model_dump() for f in findings]
         result["health_next_step"] = HEALTH_NEXT_STEP
+    # The error-level findings the campaign declares advisory (``execution.advisory_checks``):
+    # shown, because the waiter shows them too, and under their own key, because they do not end
+    # a wait and a reader acting on ``health_findings`` must not act on them.
+    advisory = advisory_findings(st)
+    if advisory:
+        result["health_findings_advisory"] = [f.model_dump() for f in advisory]
     # Beside the findings and only with them: a check that reached no verdict matters precisely
     # when something else did fire, because that is when a reader starts treating the rest of the
     # run as fine. On its own it is noise on every healthy campaign.
-    if findings and st.health_skipped:
+    if (findings or advisory) and st.health_skipped:
         result["health_checks_not_run"] = list(st.health_skipped)
     # Only when it happened, but then always, and NOT gated on a finding: a campaign running on
     # fewer machines than the cluster has is slower than its plan and says so nowhere else while
@@ -271,7 +278,8 @@ def _wait_next_step(campaign_id: str) -> str:
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
     return (f"run in the background: vast campaign wait {campaign_id} "
-            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
+            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running, "
+            f"5 a simulator health finding and still running)")
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
@@ -450,7 +458,8 @@ def get_campaign_status(campaign_id: str) -> dict:
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
     itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
-    ``get_job_state`` is the fuller read.
+    ``get_job_state`` is the fuller read. ``health_findings_advisory`` holds the ones the
+    ``.vast`` declares expected (``execution.advisory_checks``): reported, never a wait's end.
 
     ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
     deliverable, so a campaign whose postprocessing failed still finishes, with
@@ -489,7 +498,8 @@ def get_campaign_status(campaign_id: str) -> dict:
         out -- its probe never ran, so nothing may be placed there; the campaign is smaller and
         slower than its plan, and ``_execution/execution.yaml`` records the same fact for a
         reader who arrives after it ends), plus
-        ``stall_reason`` or ``stall_verdict``, ``health_findings``, ``next_step``, and the
+        ``stall_reason`` or ``stall_verdict``, ``health_findings``,
+        ``health_findings_advisory``, ``next_step``, and the
         search fields (``best_objective``, ``budget``, ``batches_done``, ``stop``) when each
         applies; or ``{error}``.
 

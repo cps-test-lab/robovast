@@ -247,6 +247,18 @@ waiter that stopped only on a terminal phase never returned, and nobody was ever
 is what the caller was just told about, and exiting on it would make "re-run this after
 diagnosing" an infinite loop rather than the way back.
 
+**A check you expect never ends the wait.** Where a world trips a check on every run by
+design, name it — for this waiter with ``--ignore-check`` (repeatable), or for every waiter
+on the campaign with :ref:`execution.advisory_checks <config-advisory-checks>` in the
+``.vast``:
+
+.. code-block:: bash
+
+   vast campaign wait basic-nav-2026-08-16-101500 --ignore-check sim-time-rate
+
+Its findings are still printed, once per check and marked ``[ignored: …]``, and the wait
+ends on the campaign's own phase — or with ``5`` on any other new check.
+
 Run it as the **whole** command, unwrapped and unchained. Anything appended makes the
 shell report the wrapper's status instead, which turns a failed campaign into a reported
 success — a real incident, not a hypothetical one.

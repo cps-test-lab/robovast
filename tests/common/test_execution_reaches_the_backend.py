@@ -46,6 +46,8 @@ _DECLARED = {
     # Read by the cluster to confine jobs to one registered node; it must arrive, or a
     # pinned campaign would silently use the whole pool.
     "kubernetes": {"jobs": {"node": "bench-a"}},
+    # Published on the campaign's status by the controller; carried like every other key.
+    "advisory_checks": ["seam-check"],
 }
 
 #: Carried, but not an ``ExecutionConfig`` field -- ``containers`` is rewritten by

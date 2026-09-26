@@ -373,8 +373,12 @@ def _materialize_work_order(client, campaign_id: str, workspace_name: str):
               help='Seconds between status polls.')
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
+@click.option('--ignore-check', 'ignore_check', multiple=True, metavar='SLUG',
+              help='A health check whose error-level findings are expected: reported, marked '
+                   'ignored, and never an exit 5. Repeatable. For every waiter at once, '
+                   'declare it in execution.advisory_checks instead.')
 @target_options
-def wait(campaign, interval, timeout, namespace, context):
+def wait(campaign, interval, timeout, ignore_check, namespace, context):
     """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
     waiting: --timeout, or the service stopped answering), 3 (no phase), 4 (stalled --
     still running, but no longer being waited on), 5 (a running job's simulator reported
@@ -408,21 +412,50 @@ def wait(campaign, interval, timeout, namespace, context):
     says to re-run it after diagnosing, and a fresh waiter would exit immediately, forever. So
     the first observation is recorded and only a rising edge stops the wait; for findings the
     edge is per ``check``, so one check firing repeatedly is one exit and not a stream.
+
+    **An expected check never ends it.** A world can trip a check on every run by design, and
+    a waiter that exited 5 on it would make a healthy campaign read as a dead one to anything
+    branching on the exit code. ``--ignore-check SLUG`` names such a check for this waiter, and
+    ``execution.advisory_checks`` in the ``.vast`` names it for every waiter on the campaign;
+    either way its findings are printed once per check, marked ignored, and the wait ends on
+    the campaign's own phase -- or on any other new check.
     """
-    from robovast.client.status import (HEALTH_NEXT_STEP, Phase, error_findings,
+    from robovast.client.status import (HEALTH_NEXT_STEP, Phase, advisory_findings, error_findings,
                                         finding_summary, is_terminal, stall_report)
     from robovast.execution.campaign_wait import wait_for_campaign_status
     from robovast.execution.poll_health import PollsStopped
 
+    ignored = {slug.strip() for slug in ignore_check}
+    if "" in ignored:
+        raise click.BadParameter("a check slug cannot be blank", param_hint="--ignore-check")
+    # The way back from an exit 4 or 5 carries this waiter's own flags, or re-running it would
+    # quietly drop them and the next exit would be on a check the caller already named.
+    again = " ".join([f"vast campaign wait {campaign}",
+                      *(f"--ignore-check {slug}" for slug in sorted(ignored))])
+
     seen = {"stalled": None, "checks": None}
+    announced: set = set()
     fired: dict = {}
+
+    def announce(current):
+        # Once per check, like the exit it replaces: this line is the only place an expected
+        # check is ever shown by the waiter, so it cannot be silent -- and a check firing on
+        # every run would otherwise be a stream.
+        for finding in advisory_findings(current, ignore=ignored):
+            if finding.check in announced:
+                continue
+            announced.add(finding.check)
+            why = ("--ignore-check" if finding.check in ignored
+                   else "execution.advisory_checks")
+            click.echo(f"{campaign}: {finding_summary(finding)} [ignored: {why}]")
 
     def stop_when(current):
         # Both edges are taken every poll, whichever ends up firing: a baseline that moved only on
         # the branch that was reached would let the other one exit on a condition it inherited.
         stalled = stall_report(current).get("stalled") is True
         previous, seen["stalled"] = seen["stalled"], stalled
-        findings = error_findings(current)
+        announce(current)
+        findings = error_findings(current, ignore=ignored)
         baseline = seen["checks"]
         if baseline is None:
             # The baseline poll. Whatever a simulator is already complaining about is the state the
@@ -476,9 +509,15 @@ def wait(campaign, interval, timeout, namespace, context):
                        err=True)
         click.echo(
             f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
-            f"When you are done diagnosing, background `vast campaign wait {campaign}` again, or "
+            f"When you are done diagnosing, background `{again}` again, or "
             f"end it with stop_campaign.", err=True)
         if finding is not None:
+            # Offered, never assumed: only the caller knows whether this world trips the check
+            # by design. Both spellings, because the flag answers for one waiter and the
+            # declaration for every waiter on the campaign.
+            click.echo(f"{campaign}: if {finding.check} is expected for this campaign, add "
+                       f"`--ignore-check {finding.check}` to the wait, or declare it in "
+                       f"execution.advisory_checks.", err=True)
             # A check the simulator says it did NOT run, reported here and only here in the wait:
             # this exit means one check fired, and a reader is entitled to know which others
             # reached no verdict before concluding that the rest of the run is fine.
