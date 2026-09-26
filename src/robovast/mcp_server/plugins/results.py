@@ -131,7 +131,7 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         sort: ``size`` orders by ``results_bytes``, unknown last; live ones lead.
 
     Returns:
-        ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
+        ``{campaigns, total, offset}`` — each campaign ``{campaign_id, status,
         mode, started_at, postprocessed, num_runs, num_passed, num_failed,
         num_composition_failed, num_no_sample}`` plus ``description``, ``finished_at`` and
         ``results_bytes`` where recorded, and ``paused``/``priority`` where either is not the default (a
@@ -141,9 +141,8 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         ``description`` is what its launcher said the run was for, and is usually the
         only thing telling two same-day ``campaign-<timestamp>`` ids apart.
         ``postprocessed`` says whether the metric tables exist; per-run *outcomes* are
-        queryable either way (``run_view``). ``source`` names who answered — the service,
-        or this host's results root when none is reachable, since "no campaigns" means
-        different things from the two.
+        queryable either way (``run_view``). The service is the only source: with none
+        reachable this is ``{error}``, never a listing of this host's disk.
     """
     from pydantic import ValidationError
 
@@ -156,7 +155,6 @@ def list_campaigns(limit: int = 20, offset: int = 0,
     client = service_access.service_client()
     if client is None:
         return {"error": service_access.NO_SERVICE}
-    source = "service"
     try:
         if running_only:
             from robovast.execution.control_server import is_running
@@ -174,7 +172,6 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         "campaigns": [_summary_to_dict(c) for c in window],
         "total": total,
         "offset": offset,
-        "source": source,
     }
 
 
