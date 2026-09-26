@@ -1807,10 +1807,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.post(Routes.campaign_retrigger("{campaign_id}"), response_model=CampaignRef,
               tags=["campaigns"],
-              description="Launch a new campaign from an existing one's frozen config and "
-                          "pinned image. The source campaign is not modified. Refused (400) "
-                          "when the pre-flight blocks on an axis, naming each one; force "
-                          "launches anyway.")
+              description="Launch a new campaign from an existing one's frozen config, "
+                          "running exactly the image digests its launch record holds and "
+                          "resolving none again. The source campaign is not modified. Refused "
+                          "(400) when the pre-flight blocks on an axis, naming each one; force "
+                          "launches anyway, except past a record lacking a digest for "
+                          "something the campaign runs.")
     def retrigger_campaign(campaign_id: str,
                            force: bool = Body(False, embed=True)) -> CampaignRef:
         return _guard(lambda: impl.retrigger_campaign(campaign_id, force))

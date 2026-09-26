@@ -342,16 +342,17 @@ def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
     seen = []
     monkeypatch.setattr(
         NullService, "_aux_runner_context",
-        lambda self, tag, project, *, hold=False, should_stop=None: (
-            seen.append((tag, hold, should_stop)) or contextlib.nullcontext()))
-    stop = object()
+        lambda self, tag, project, *, hold=False, should_stop=None, options=None: (
+            seen.append((tag, hold, should_stop, options)) or contextlib.nullcontext()))
+    stop, options = object(), object()
     with NullService._campaign_context(
-            object.__new__(NullService), "camp-7", None, should_stop=stop):
+            object.__new__(NullService), "camp-7", None, should_stop=stop, options=options):
         pass
     # The campaign's own id, and *not* held: its span owns the container, which is what
     # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits the
-    # span makes that are long enough for an operator to give up on.
-    assert seen == [("camp-7", False, stop)]
+    # span makes that are long enough for an operator to give up on, and so do its options,
+    # which fix the images its aux pods run.
+    assert seen == [("camp-7", False, stop, options)]
 
 
 def test_composition_reports_the_aux_container_it_used():

@@ -190,6 +190,24 @@ def test_run_options_carry_upload_to_share(cs):
     assert default.upload_to_share is False
 
 
+def test_run_options_carry_the_campaigns_image_project(cs):
+    """``vast workspace run --image-project`` reaches the campaign it names.
+
+    Dropped here, composition, the scenario image, the sidecar and the aux helpers of that
+    campaign all resolved from the service's own project, and the flag did nothing on a cluster
+    while reading as if it had.
+    """
+    opts = cs._run_options(CreateCampaignRequest(
+        workspace_id="ws-x", image_project="registry.example.com/dev",
+        image_project_tag="feature-x"))
+    assert opts.image_project == "registry.example.com/dev"
+    assert opts.image_project_tag == "feature-x"
+
+    # Not asked for: the service's own, which the resolvers read when they get None.
+    default = cs._run_options(CreateCampaignRequest(workspace_id="ws-x"))
+    assert default.image_project is None and default.image_project_tag is None
+
+
 # -- a build the service cannot do is a config error, not a crash ------------
 
 def _project_needing_a_build(tmp_path, python_packages=None):

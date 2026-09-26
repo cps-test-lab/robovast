@@ -45,16 +45,18 @@ the service but not your filesystem — ``create_workspace`` + ``write_file`` co
 ``.vast``/``.osc``, and ``create_upload`` covers a single file of any other kind.
 
 The one exception is a **retrigger**: ``start_campaign(from_campaign=<campaign-id>)``
-runs a *previous campaign's* frozen configuration and the image its runs actually used,
-with no workspace involved at all. Campaigns are workspace-independent, and the workspace
+runs a *previous campaign's* frozen configuration and exactly the image digests its launch
+recorded — containers, sidecar and auxiliary helpers, none resolved again — with no workspace
+involved at all. Campaigns are workspace-independent, and the workspace
 one came from may be gone — its own ``_config/`` is the durable source of truth. It
 produces a new campaign and leaves the source untouched, so it works whatever state that
 campaign ended in, and it replays the recorded launch, so re-running a one-config pilot
 stays a one-config pilot. It takes no other argument but ``force`` (passing one is an error
-rather than being ignored), and the service refuses it when the pre-flight blocks — a campaign
-that recorded no usable image, whose build context is not archived either, has to be launched
-from its workspace instead. ``get_campaign_summary``'s ``retrigger`` key reports the same
-verdict without launching, and ``force`` re-runs despite it
+rather than being ignored), and the service refuses it when the pre-flight blocks. A campaign
+whose launch record lacks a digest for anything it runs is refused whatever ``force`` says,
+naming each missing one; ``create_workspace(from_campaign=<campaign-id>)`` rebuilds its project
+for a fresh launch instead. ``get_campaign_summary``'s ``retrigger`` key reports the same
+verdict without launching, and ``force`` re-runs despite any other blocking axis
 (:ref:`results-retrigger-preflight`).
 
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a

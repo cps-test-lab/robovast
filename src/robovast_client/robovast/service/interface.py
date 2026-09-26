@@ -3112,12 +3112,15 @@ class RobovastInterface(ABC):
         written to; this produces a separate campaign with its own timestamped id, so it
         works whatever state the source ended in.
 
-        Reproduces the configuration and **pins the image the source recorded** — a
-        campaign's build context is not archived in its results, so the image cannot be
-        rebuilt from them and a campaign that never recorded one is refused rather than
-        rebuilt from a guess. The recorded ``_execution/launch.yaml`` replays the
-        ``config_filter`` and requested ``runs``, so re-running a one-config pilot stays a
-        one-config pilot.
+        Reproduces the configuration and **runs exactly the image digests the source's launch
+        record holds** — every container, the sidecar and every auxiliary helper image — and
+        resolves none of them again, whatever the image project, its tags or the composition
+        cache say now. A source whose record lacks a digest for anything it runs is refused,
+        naming each one, whatever ``force`` says: there is nothing to replay, and
+        :meth:`materialize_retrigger_workspace` / ``create_workspace(from_campaign=...)``
+        rebuild its project for a fresh launch instead. The recorded
+        ``_execution/launch.yaml`` also replays the ``config_filter`` and requested ``runs``,
+        so re-running a one-config pilot stays a one-config pilot.
 
         Everything downstream of the configuration is **re-expanded**: ``execution.generate``
         generators re-run (their cache is not archived), so a stochastic generator draws new

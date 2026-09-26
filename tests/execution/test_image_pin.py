@@ -41,7 +41,7 @@ def test_resolve_image_digest_none_when_unpinnable():
     assert resolve_image_digest([], "sut:latest") is None
 
 
-def test_every_planned_container_reaches_the_launch_record(tmp_path):
+def test_every_planned_container_and_the_sidecar_reach_the_launch_record(tmp_path):
     """Keyed by container name AND by every role it backs, roles first so a name wins.
 
     A role is how a reader asks the question ("which simulator ran?"); the name is what the
@@ -63,7 +63,7 @@ def test_every_planned_container_reaches_the_launch_record(tmp_path):
                               roles=("scenario", "simulation")),
         # No image: nothing to record, and it must not write a null.
         types.SimpleNamespace(name="sidecar", image=None, roles=()),
-    )))
+    )), _sidecar_image="r.example.com/robovast-sidecar@sha256:c")
 
     KubernetesBackend._record_launch_images(str(tmp_path), runner)
 
@@ -72,6 +72,9 @@ def test_every_planned_container_reaches_the_launch_record(tmp_path):
     assert images["simulation"] == "r.example.com/sc@sha256:b"
     assert images["scenario"] == "r.example.com/sc@sha256:b"
     assert "sidecar" not in images
+    # The data-plane image of every pod, beside the containers it serves.
+    assert read_launch_record(tmp_path)["sidecar_image"] == \
+        "r.example.com/robovast-sidecar@sha256:c"
     # Idempotent: a search re-runs this per batch against an unchanged plan.
     before = dict(images)
     KubernetesBackend._record_launch_images(str(tmp_path), runner)
@@ -120,21 +123,17 @@ def test_the_plan_names_the_bytes_before_any_pod_has_run():
     assert _planned_images(runner)["simulation"] == "ghcr.io/o/roqsim@sha256:aaa"
 
 
-def test_an_unpinnable_ref_is_left_out_rather_than_recorded_as_a_revision():
-    """Pinning is fail-soft, so a ref that could not be resolved is still a tag.
+def test_a_record_that_cannot_hold_the_digests_fails_the_launch(tmp_path):
+    """Not best-effort: the launch record is what every replay runs from, so a campaign whose
+    record could not take its digests would run bytes no replay can name."""
+    from robovast.common.campaign_data import write_launch_record
+    from robovast.execution.cluster_execution.kubernetes_backend import KubernetesBackend
+    from robovast.service.interface import CreateCampaignRequest
 
-    A tag in ``image_revisions`` would claim an identity it does not have — the same name can
-    be re-pushed between one batch and the next. It is left out, and the write after the batch
-    fills it in from the pod that actually ran it.
-    """
-    from robovast.common.campaign_data import image_identifies_bytes
-    from robovast.execution.cluster_execution.kubernetes_backend import _planned_images
+    write_launch_record(tmp_path, CreateCampaignRequest(workspace_id="ws"))
+    runner = types.SimpleNamespace(
+        plan=types.SimpleNamespace(containers=(_container("sut", "r.example.com/sut:1"),)),
+        _sidecar_image="r.example.com/robovast-sidecar@sha256:c")
 
-    images = _planned_images(_runner([
-        _container("roqsim", "ghcr.io/o/roqsim:latest", roles=("simulation",)),
-        _container("robovast", "ghcr.io/o/rv@sha256:bbb", roles=("scenario",)),
-    ]))
-    named = {k: v for k, v in images.items() if image_identifies_bytes(v)}
-
-    assert "simulation" not in named
-    assert named["scenario"] == "ghcr.io/o/rv@sha256:bbb"
+    with pytest.raises(ValueError, match="digests only"):
+        KubernetesBackend._record_launch_images(str(tmp_path), runner)

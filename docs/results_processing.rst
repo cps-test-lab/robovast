@@ -49,8 +49,9 @@ Campaign-Level Directories
 A copy of all input files used during execution — and the source a **retrigger** reconstructs the
 campaign from. To run a campaign again exactly as it ran, use **Retrigger campaign** in the web UI's
 campaign actions menu, ``start_campaign(from_campaign=<id>)`` over MCP, or
-``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image recorded in
-``_execution/`` and start a new campaign, leaving this one untouched.
+``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image digests
+recorded in ``_execution/launch.yaml`` and start a new campaign that runs exactly those digests,
+leaving this one untouched.
 
 Doing it by hand instead pushes the snapshot as a workspace and runs that:
 
@@ -60,8 +61,10 @@ Doing it by hand instead pushes the snapshot as a workspace and runs that:
    vast workspace run replay <config-name>.vast
 
 That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
-sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
-the recorded image is gone; otherwise prefer the retrigger, which reuses the exact bytes.
+sources the ``build:`` section names — which are *not* archived here — and resolves and records
+every image afresh. It is the escape hatch for when the recorded image is gone, or the campaign's
+launch record lacks a digest a retrigger needs (``vast campaign rerun <id> --to-workspace <name>``
+does the push for you); otherwise prefer the retrigger, which reuses the exact bytes.
 All three launches are gated by the same pre-flight over these records; see
 :ref:`results-retrigger-preflight`.
 
@@ -134,18 +137,34 @@ extraction rather than by it, so the import's account of itself covers the downl
 - ``execution_type``: ``cluster`` or ``local``
 - ``image``: the configured execution image reference (may be a floating tag such as
   ``…:latest``)
-- ``image_revision``: the **immutable digest** the run pods actually used
-  (``repo@sha256:…``), captured at run time on the cluster backend, which is what a retrigger
-  starts the new campaign from.
+- ``images``: every container's image as composition resolved it, keyed by container name
+- ``image_revision``: the **immutable digest** the scenario container ran (``repo@sha256:…``)
+- ``image_revisions``: the digest each container ran, keyed by container name and role — the
+  same digests ``launch.yaml`` holds, since both are written from the one pinned plan
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
 
 .. _campaign-launch-record:
 
 ``launch.yaml`` records the **request**, where ``execution.yaml`` records what happened:
 ``config_filter``, ``campaign_name``, ``runs`` (as *requested*), ``postprocess``,
-``upload_to_share`` and ``backend``. It answers "was this the full sweep or a one-config
-pilot?" about a finished campaign, for a person and for a retrigger — ``config_filter`` in
-particular is consumed during config expansion and recorded nowhere else.
+``upload_to_share``, ``priority`` and ``paused``. It answers "was this the full sweep or a
+one-config pilot?" about a finished campaign, for a person and for a retrigger —
+``config_filter`` in particular is consumed during config expansion and recorded nowhere else.
+
+It also records **every image the campaign runs, as a digest**, and is the one authority for
+them:
+
+``images``
+   each planned container's digest, keyed by container name and by every role it backs.
+``sidecar_image``
+   the data-plane image of every pod — a Job's ``fetch-inputs``, ``uploader`` and ``agent``, an
+   aux pod's ``transfer``.
+``aux_images``
+   the helper images composition ran in its ``aux-<member>`` pods, keyed by aux container name.
+
+Each is fixed to a digest, and written here, before the pod that runs it is created; an image
+whose digest cannot be read refuses the launch (:ref:`image-digest-pinning`). A re-run and an
+adoption after a service restart run these digests and resolve nothing again.
 
 Read the two together for ``runs``: ``launch.yaml``'s ``runs: 0`` means "take the ``.vast``'s
 ``execution.runs``", so ``0`` beside ``execution.yaml``'s ``runs: 3`` says the ``.vast`` asked for 3,
@@ -1808,9 +1827,14 @@ which fail independently and are all reported together:
 ``host``
    this robovast still speaks the recorded image's container protocol.
 ``images``
-   a new run can start from the images the campaign recorded. A container whose image the campaign
-   *built* cannot be replaced, since the build context is not archived; one it merely declared is
-   resolved again at launch.
+   ``launch.yaml`` fixes a digest for everything the campaign runs — every container, the
+   sidecar and every aux helper image. A re-run runs exactly those digests, whatever
+   ``ROBOVAST_PROJECT``, ``ROBOVAST_PROJECT_TAG``, the family's floating tags or the composition
+   cache say now: nothing is built, and composition resolves ``family:`` refs to the recorded
+   digests. A record lacking any of them — a campaign launched before the record held every
+   image, or cut short before it did — cannot be re-run; the refusal names every missing one and
+   points at ``vast campaign rerun <id> --to-workspace <name>`` (MCP:
+   ``create_workspace(from_campaign=...)``), which rebuilds the project for a fresh launch.
 ``plugins``
    third-party ``plugins:`` resolved to something re-installable.
 ``providers``
@@ -1824,7 +1848,8 @@ Read the report without launching anything — it stages nothing and starts no c
 ``vast campaign rerun --check <id>``, ``get_campaign_summary``'s ``retrigger`` key, or
 ``GET /campaigns/<id>/retrigger/check``. Override it, for an axis you have decided you understand,
 with ``vast campaign rerun <id> --force``, ``start_campaign(from_campaign=<id>, force=True)``,
-**Re-run anyway** in the web UI's dialog, or ``force`` on the POST body.
+**Re-run anyway** in the web UI's dialog, or ``force`` on the POST body. A missing digest is not
+overridden: a re-run with nothing to replay has no images to run.
 
 
 .. _results-publish:

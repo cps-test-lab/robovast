@@ -22,18 +22,17 @@ the workspace a campaign came from is not linked to it and may be gone: a campai
 ``_config/`` is already the single source of truth for its configuration (it is what the
 postprocessing dialog edits in place), so it is also the honest thing to relaunch from.
 
-**A BUILT image is pinned, never rebuilt.** A campaign's build context -- the wheels and
-sources its ``build:`` section names -- is not archived in its results, and the built ref is a
-hash over that context. So a retrigger reuses the exact image the campaign recorded and refuses
-when a container whose image the campaign *built* has none.
-
-**A container the campaign did not build is a different question,** and answering it the same
-way was a bug: its image was never this campaign's to keep, so re-resolving the declared ref at
-launch is exactly what relaunching from the workspace does -- which is what the refusal told
-you to go and do by hand. :func:`~robovast.common.campaign_data.campaign_images` reports what
-was recorded and what was not; :func:`_unpinned_is_fatal` is the one place that decides which
-gaps matter, so the pre-flight and the launch cannot disagree about it. A re-run that
-re-resolves says so, because it will not be the same bytes.
+**Every image is replayed, never resolved again.** A campaign's launch fixes every image it
+runs to a digest -- its containers, the sidecar of every pod and the helper images composition
+ran -- and records them in ``_execution/launch.yaml`` before the pod that runs each exists. A
+retrigger runs exactly those digests, whatever ``ROBOVAST_PROJECT``, the family's floating tags
+or the composition cache say now: nothing is built, and composition resolves ``family:`` refs to
+the recorded digests. A record lacking a digest for anything the campaign runs -- one written
+before the rule, or cut short -- cannot be replayed, and the refusal names every gap. What is
+left is a fresh launch of the same configuration, which ``vast campaign rerun <id>
+--to-workspace <name>`` (``create_workspace(from_campaign=...)``) sets up.
+:func:`~robovast.common.campaign_data.campaign_images` is the one reading of the record, so the
+pre-flight and the launch cannot disagree about it.
 
 **A retrigger replays the launch, but re-expands the campaign.** The recorded
 ``_execution/launch.yaml`` gives back the ``config_filter`` and the requested ``runs``, so
@@ -92,8 +91,9 @@ class RetriggerPlan:
     #: said the opposite of what was meant -- that only base-class attributes exist -- and
     #: every read of a field on it was a true positive against the annotation.
     request: Any
-    #: ``{container: image}`` for the containers that build; empty when none do.
-    pinned_images: dict
+    #: Every digest the source's launch record fixes (``campaign_data.LaunchImages``): what
+    #: the new campaign runs, resolving nothing again.
+    pinned_images: Any
     #: Finish staging the tree (called on the worker).
     materialize: Callable[[], None]
     #: Delete the staged tree. Idempotent, so the failure paths can call it freely.
@@ -161,7 +161,7 @@ def check(source_dir, source_id: str, *, image_labels: Callable[[str], "dict | N
     source_dir = Path(source_dir)
     axes = {
         "config": _check_config(source_dir),
-        "images": _check_images(source_dir, build_lock),
+        "images": _check_images(source_dir, source_id, build_lock),
         "plugins": _check_plugins(source_dir),
         "providers": _check_providers(source_dir),
     }
@@ -207,75 +207,36 @@ def _check_config(source_dir: Path) -> dict:
     return _axis(AXIS_BLOCKED, found.message, version=found.version)
 
 
-def _unpinned_is_fatal(images, campaign_config) -> bool:
-    """Whether the containers this campaign could not pin make a re-run impossible.
-
-    The policy both callers share, in one place because they answered it differently once and
-    the difference was a bug: a container whose image the campaign **built** cannot be replaced,
-    because the build context is not archived in the results. A container that ran a ref the
-    campaign merely *declared* can be resolved again at launch -- which is exactly what
-    relaunching from the workspace does, and what the refusal used to tell you to do by hand.
-
-    ``images.built`` answers it from the launch record. Only when there is no launch record at
-    all does this fall back to reading the configuration, which is the older and coarser
-    question -- it can say *that* something builds, never *which* container, because naming them
-    needs the post-``apply_backend`` fold and therefore the simulator plugin.
-    """
-    if not images.unpinnable:
-        return False
-    if images.built is None:
-        return _builds_an_image(campaign_config)
-    return images.built
+#: Where a campaign that cannot be replayed goes instead: a workspace rebuilt from its frozen
+#: configuration, launched afresh. Stated in every refusal about images.
+_FRESH_LAUNCH = ("Rebuild it as a workspace and launch that, which resolves and records its "
+                 "images afresh: 'vast campaign rerun {source_id} --to-workspace <name>' "
+                 "(MCP: create_workspace(from_campaign=...)).")
 
 
-def _check_images(source_dir: Path, build_lock) -> dict:
-    """Whether a new run can start from the images this campaign recorded."""
+def _check_images(source_dir: Path, source_id: str, build_lock) -> dict:
+    """Whether the launch record fixes a digest for every image the campaign runs."""
     from robovast.common.campaign_data import campaign_images
 
     images = campaign_images(source_dir)
-    if _unpinned_is_fatal(images, _read_vast_or_empty(source_dir)):
+    pins = images.pins
+    # Reported on both verdicts, and most of all on the blocking one: the way on from there
+    # is a rebuild, and the lock is what says it would install the versions that ran.
+    locks = _available_locks(source_dir, pins.containers, build_lock)
+    if images.missing:
         return _axis(AXIS_BLOCKED,
-                     "this campaign built its own image and never recorded a usable ref for "
-                     + "; ".join(images.unpinnable[k] for k in sorted(images.unpinnable)) +
-                     ". A campaign's build context (wheels, sources) is not archived in its "
-                     "results, so the image cannot be rebuilt from them either. Launch it "
-                     "again from the workspace it came from, which still has the sources the "
-                     "image is built out of.")
-    if images.unpinnable:
-        # Not a blocker: nothing here was built, so the backend resolves these at launch exactly
-        # as a fresh launch from the workspace would. Reported rather than passed over in
-        # silence, because the re-run will not be the same bytes.
-        return _axis(AXIS_OK,
-                     f"{len(images.pins)} image(s) pinnable; "
-                     f"{', '.join(sorted(images.unpinnable))} re-resolved at launch (the "
-                     f"campaign built neither, so this runs the current ref, not the recorded "
-                     f"bytes)" + _lock_note(source_dir, images.pins, build_lock),
-                     images=dict(images.pins),
-                     reresolved=sorted(images.unpinnable),
-                     locks=_available_locks(source_dir, images.pins, build_lock))
-    if not images.pins:
-        return _axis(AXIS_UNKNOWN,
-                     "no container image recorded (no usable _execution/execution.yaml). If "
-                     "the campaign builds its own image there is nothing to reuse; otherwise "
-                     "the backend supplies one at launch.")
-    return _axis(AXIS_OK, f"{len(images.pins)} image(s) recorded and pinnable"
-                          + _lock_note(source_dir, images.pins, build_lock), images=dict(images.pins),
-                 locks=_available_locks(source_dir, images.pins, build_lock))
-
-
-def _read_vast_or_empty(source_dir: Path) -> dict:
-    """The campaign's frozen config as a raw mapping, or ``{}`` when it cannot be read.
-
-    The pre-flight must survive a campaign whose config is missing or unreadable -- that is a
-    separate axis with its own verdict, and this one must not raise on its way to reporting.
-    """
-    from robovast.common.migrations import read_vast
-    from robovast.common.results_utils import campaign_vast
-
-    try:
-        return read_vast(campaign_vast(Path(source_dir)))
-    except Exception:  # pylint: disable=broad-except
-        return {}
+                     "a re-run replays the digests its source recorded and resolves nothing "
+                     "again, and this campaign's launch record fixes none for "
+                     + "; ".join(f"{what} ({why})"
+                                 for what, why in sorted(images.missing.items()))
+                     + ". " + _FRESH_LAUNCH.format(source_id=source_id)
+                     + _lock_note(locks),
+                     missing=dict(images.missing), locks=locks)
+    return _axis(AXIS_OK,
+                 f"{len(pins.containers)} container image(s), the sidecar and "
+                 f"{len(pins.aux)} auxiliary image(s) recorded as digests." + _lock_note(locks),
+                 images=dict(pins.containers), sidecar=pins.sidecar, aux=dict(pins.aux),
+                 locks=locks)
 
 
 def _available_locks(source_dir: Path, pinned: dict, build_lock) -> dict:
@@ -299,12 +260,12 @@ def _available_locks(source_dir: Path, pinned: dict, build_lock) -> dict:
     return out
 
 
-def _lock_note(source_dir: Path, pinned: dict, build_lock) -> str:
-    locks = _available_locks(source_dir, pinned, build_lock)
+def _lock_note(locks: dict) -> str:
+    """The images axis's sentence about *locks* (:func:`_available_locks`), or ``""``."""
     if not locks:
         return ""
-    return (f"; {len(locks)} carry a build lock, so a rebuild could install the same "
-            f"package versions")
+    return (f" {len(locks)} image(s) carry a build lock, so a rebuild could install the same "
+            f"package versions.")
 
 
 def _check_host(images_axis: dict, image_labels) -> dict:
@@ -410,11 +371,11 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
         request_model: the ``CreateCampaignRequest`` class, injected for the same reason.
 
     Raises:
-        RetriggerRefused: the campaign froze no config, or runs a built image it never
-            recorded.
+        RetriggerRefused: the campaign froze no config, or its launch record lacks a digest
+            for something it runs.
     """
-    from robovast.common.campaign_data import (campaign_images,
-                                               read_execution_metadata, read_launch_record)
+    from robovast.common.campaign_data import (CampaignImageUnpinnable, campaign_pinned_images,
+                                               read_launch_record)
     from robovast.common.common import load_config
     from robovast.common.config import validate_config
     from robovast.common.migrations import UnmigratableConfig
@@ -431,12 +392,11 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
             f"workspace it came from.") from e
 
     # `upgrade=True`, and BEFORE validate_config -- this is correctness, not convenience.
-    # Everything below reads the loaded config: `_builds_an_image` inspects
-    # execution.containers, and stage_project/reconstruct_project walk it. A version-1 config
-    # has no execution.containers at all (it carried a top-level `build:`), so reading it with
-    # post-v1 expectations silently answers "builds nothing" and the retrigger takes the wrong
-    # branch. Strict loading would instead refuse outright, making every campaign older than
-    # the current version un-retriggerable -- which is the case this exists for.
+    # Everything below reads the loaded config: stage_project/reconstruct_project walk it, and
+    # a version-1 config has no execution.containers at all (it carried a top-level `build:`),
+    # so reading it with post-v1 expectations answers wrongly and silently. Strict loading
+    # would instead refuse outright, making every campaign older than the current version
+    # un-retriggerable -- which is the case this exists for.
     # Lenient, like the archive read inside `load_config`: `load_config` returns the raw
     # document, and validating that strictly would refuse a key the campaign ran without.
     try:
@@ -454,31 +414,16 @@ def prepare(source_dir, source_id: str, *, workspaces_root, description_limit: i
     config_migration = _config_migration_of(vast_path)
 
     # The images first: it is the refusal most likely to fire, and it needs no directory.
-    images = campaign_images(source_dir)
-    pinned = images.pins
-    if _unpinned_is_fatal(images, campaign_config):
-        # It built an image and cannot name it. There is nothing to reuse and nothing to rebuild
-        # from: the build context (wheels, sources) is not archived in a campaign's results.
+    try:
+        pinned = campaign_pinned_images(source_dir)
+    except CampaignImageUnpinnable as e:
         raise RetriggerRefused(
-            f"cannot retrigger {source_id!r}: it builds its own image and recorded no usable "
-            f"ref for " + "; ".join(images.unpinnable[k] for k in sorted(images.unpinnable)) +
-            f". A campaign's build context (wheels, sources) is not archived in its results, "
-            f"so the image cannot be rebuilt from them either. Launch it again from the "
-            f"workspace it came from, which still has the sources the image is built out of.")
-    if not pinned and _builds_an_image(campaign_config):
-        # It built something and recorded no container image at all — the shape of a campaign
-        # that died before its first batch, which records no containers to be unpinnable.
-        raise RetriggerRefused(
-            f"cannot retrigger {source_id!r}: it builds its own image and recorded none "
-            f"(no usable _execution/execution.yaml — it failed before its first batch "
-            f"finished). A campaign's build context (wheels, sources) is not archived in its "
-            f"results, so the image cannot be rebuilt from them either. Launch it again from "
-            f"the workspace it came from.")
+            f"cannot retrigger {source_id!r}: {e} " + _FRESH_LAUNCH.format(source_id=source_id)
+        ) from e
 
     request = _replay_request(source_dir, source_id, request_model=request_model,
                               description_limit=description_limit,
-                              read_launch_record=read_launch_record,
-                              read_execution_metadata=read_execution_metadata)
+                              read_launch_record=read_launch_record)
 
     staging_dir = _make_staging_dir(workspaces_root, source_id)
     staged_vast = staging_dir / vast_path.name
@@ -567,36 +512,6 @@ def _config_migration_of(vast_path: Path) -> dict:
     return {"from": config_version(raw), "to": SUPPORTED_CONFIG_VERSION, "steps": applied}
 
 
-def _builds_an_image(campaign_config) -> bool:
-    """Whether any container declares packages, i.e. whether this campaign builds at all.
-
-    A boolean rather than the container names on purpose. Naming them would mean resolving
-    *which* container each declaration ends up on, and that fold is only known after
-    ``apply_backend``, which loads the simulator plugin — not installed in this process, so for
-    any plugin-backed project (every campaign naming a ``backend``) it raises "Unknown
-    robovast.simulators plugin". The build path gets away with it because ``_build_specs_for``
-    installs the
-    plugins first; this runs in the request handler, where a pip install does not belong.
-
-    The fold is not needed here anyway: the campaign already recorded which containers it ran
-    (``campaign_pinned_images``), so all this has to answer is whether an empty pin set means
-    "nothing to pin" or "the record is missing something it should have had".
-    """
-    # Model or raw mapping: `prepare` has a validated config, the pre-flight deliberately has
-    # only the unvalidated first document (a campaign may be too old to validate, and refusing
-    # there would turn the answer into the failure it was asked about).
-    execution = (campaign_config.get("execution") if isinstance(campaign_config, dict)
-                 else getattr(campaign_config, "execution", None)) or {}
-    containers = (execution.get("containers") if isinstance(execution, dict)
-                  else getattr(execution, "containers", None)) or {}
-    for block in containers.values():
-        block = block if isinstance(block, dict) else block.model_dump()
-        if (block.get("system_packages") or block.get("python_packages")
-                or block.get("ros_packages")):
-            return True
-    return False
-
-
 def _make_staging_dir(workspaces_root, source_id: str) -> Path:
     """A fresh staged-tree directory named after the campaign it came from.
 
@@ -612,33 +527,17 @@ def _make_staging_dir(workspaces_root, source_id: str) -> Path:
 
 
 def _replay_request(source_dir: Path, source_id: str, *, request_model, description_limit,
-                    read_launch_record, read_execution_metadata):
+                    read_launch_record):
     """Rebuild the launch request from what the campaign recorded.
 
-    ``launch.yaml`` is the answer when it is there. When it is not -- a campaign from before
-    that record existed -- ``runs`` still comes from ``execution.yaml``'s effective count, but
-    the ``config_filter`` is simply unrecoverable, and this says so in the description rather
-    than quietly turning a one-config pilot into a full sweep. Whoever reads the new campaign
-    can then see which it was.
+    ``launch.yaml`` is the answer, and :func:`prepare` has already established that there is
+    one: a campaign without it cannot be replayed at all, since nothing fixes its images.
     """
     from robovast.common.store import read_campaign_description
 
     launch = read_launch_record(source_dir) or {}
-    try:
-        meta = read_execution_metadata(source_dir)
-    except FileNotFoundError:
-        # A campaign that failed before its first batch. Not fatal: `runs` falls back to the
-        # .vast's own execution.runs, which is what runs=0 means downstream.
-        meta = {}
-
-    note = ""
-    if launch:
-        runs = int(launch.get("runs") or 0)
-        config_filter = str(launch.get("config_filter") or "")
-    else:
-        runs = int(meta.get("runs") or 0)
-        config_filter = ""
-        note = " [no launch record: running every configuration]"
+    runs = int(launch.get("runs") or 0)
+    config_filter = str(launch.get("config_filter") or "")
 
     # The description lives in campaign.db, not in the launch record -- it is not a launch
     # parameter, and it is already what listings show.
@@ -646,7 +545,7 @@ def _replay_request(source_dir: Path, source_id: str, *, request_model, descript
     original = (read_campaign_description(source_dir) or "").strip()
     if original:
         description = f"{description}: {original}"
-    description = (description + note)[:description_limit]
+    description = description[:description_limit]
 
     return request_model(
         workspace_id="",

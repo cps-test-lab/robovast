@@ -20,7 +20,6 @@ from robovast.common.containers import (containers_without_a_resolvable_image, p
                                         ros_repo_name)
 from robovast.common.execution import IMAGE_TIER_BUILT, image_provenance_tier
 from robovast.service.image_build import extract_build_specs, validate_build_spec
-from robovast.service.retrigger import _builds_an_image
 
 PX4_MSGS = {"git": "https://github.com/PX4/px4_msgs.git",
             "ref": "598c7aad7b2386f9406ebd2a2f841619fddc3c78"}
@@ -124,11 +123,6 @@ def test_ros_packages_alone_is_a_built_image_tier():
 def test_ros_packages_alone_supplies_a_container_its_image():
     assert containers_without_a_resolvable_image(
         {"containers": {"scenario": {}, "sut": {"ros_packages": [PX4_MSGS]}}}) == []
-
-
-def test_a_retrigger_knows_the_campaign_builds_images():
-    assert _builds_an_image(
-        {"execution": {"containers": {"sut": {"ros_packages": [PX4_MSGS]}}}})
 
 
 def test_an_empty_packages_list_is_refused():

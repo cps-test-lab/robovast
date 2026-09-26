@@ -1275,14 +1275,14 @@ written once, and asked of the store rather than assumed. Two rules the ABC carr
   allowed out, rather than a rule to remember at each return.
 
 **One reader, several policies.** Four things ask a campaign's records which image it ran, and
-they want different answers: a re-run needs bytes it can obtain *elsewhere*, a cache needs
-anything that identifies bytes (a bare local id will do), postprocessing needs something it can
-run *here* and is right to accept a mutable tag, and the publication gate asks whether an
-outsider could obtain or rebuild them. Each of those is correct for its question.
+they want different answers: a re-run needs the digest its launch recorded for every image, a
+cache needs anything that identifies bytes (a bare local id will do), postprocessing needs
+something it can run *here* and is right to accept a mutable tag, and the publication gate asks
+whether an outsider could obtain or rebuild them. Each of those is correct for its question.
 
-They used to re-derive the record separately, with the precedence baked into each — and drifted,
-visibly: the publication gate called a campaign opaque that the retrigger pre-flight called
-pinnable, about one file on one disk. So ``campaign_image_record`` reads the record once and
+Re-deriving the record separately, with the precedence baked into each, drifts: the
+publication gate and the retrigger pre-flight come to disagree about one file on one disk.
+So ``campaign_image_record`` reads the record once and
 returns facts with no verdict attached, and each policy stays with the caller that owns it. The
 two predicates the policies differ on — ``image_is_pullable`` against ``image_identifies_bytes``,
 which differ by exactly the bare-local-id case — are named rather than spelled out at each site.
@@ -1413,9 +1413,11 @@ unpinned ref and warns, rather than refusing a mutable default outright so that 
 campaign runs is always pinned by its author. That rule aims at the right thing from the
 wrong layer: it makes every ``.vast`` carry a registry-specific string, which is how a
 shipped example comes to pin a private registry only one site could pull. What makes a run
-reproducible is the digest captured *from* it (``pullable_digest`` /
-``_capture_image_digest``, replayed by ``from_campaign``) — a fact about what happened, not
-an intention recorded beforehand.
+reproducible is the digests its launch fixed for every image it runs, before any of its pods
+existed, and recorded in ``_execution/launch.yaml`` — a fact about what ran, not an intention
+recorded beforehand. A launch whose digests cannot be read is refused, and every replay
+(``from_campaign``, and the adoption of a running campaign after a restart) runs the recorded
+digests and resolves nothing again.
 
 The default tag is ``latest`` and not this installation's version. Deriving it reads well
 and is wrong: it assumes every version has a published tag, and CI publishes semver tags

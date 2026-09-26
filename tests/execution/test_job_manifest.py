@@ -23,8 +23,18 @@ class _FakeClusterConfig:
         return types.SimpleNamespace(pull_secret_name="")
 
 
+def _pinned(ref):
+    """What the stubbed registry fixes *ref* to: its repository, at one fixed digest.
+
+    A ref that is a digest already is its own answer, as it is to the real resolver.
+    """
+    if "@sha256:" in ref:
+        return ref
+    return ref.rsplit(":", 1)[0] + "@sha256:" + "0" * 64
+
+
 def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast",
-            cluster_gpus=0, runtime_class=None):
+            cluster_gpus=0, runtime_class=None, sidecar_image=None):
     """Build a BatchJobRunner via for_batch with external calls stubbed.
 
     ``cluster_gpus``/``runtime_class`` stand in for the live cluster probe, which is the
@@ -56,13 +66,11 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
 
     monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
                         _no_such_secret)
-    # And the registry, which `for_batch` dials through `_pin_image_refs`: it resolves
-    # every image ref to the digest it names right now, one HEAD each. The same
-    # fail-soft shape as the Secret read -- an unreachable registry leaves the ref as it
-    # was -- so it too cost time rather than correctness. It stayed hidden while the
-    # Secret read above was costing thirty-five seconds a test, which is a good reason
-    # to state both here rather than leave the next reader to find the second one.
-    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
+    # And the registry, which `for_batch` dials through `_pin_image_refs`: it fixes every
+    # image ref to the digest it names right now, one HEAD each, and refuses the campaign
+    # when it cannot. Answered here with a fixed digest per repository (`_pinned`), so the
+    # manifests under test carry what a launch writes and no test waits on a socket.
+    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: _pinned(ref))
     campaign_data = {
         "configs": configs or [{"name": "cfgA"}],
         "execution": execution or {},
@@ -72,7 +80,7 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
     return BatchJobRunner.for_batch(
         campaign_data=campaign_data, campaign_id="camp-2026-07-17-120000",
         batch_tag="batch-0", runs=1, cluster_config=_FakeClusterConfig(),
-        namespace="ns", image="img:test", kube_context=None)
+        namespace="ns", image="img:test", kube_context=None, sidecar_image=sidecar_image)
 
 
 def _env_dict(container):
@@ -122,6 +130,21 @@ def test_create_job_manifest_shape(monkeypatch):
     # The behaviour tree is recorded unless a campaign opts out, so a cluster run is
     # explainable afterwards without anyone having remembered to ask for it.
     assert main_env["BT_LOG"] == "true"
+
+
+def test_every_data_plane_container_runs_the_campaigns_own_sidecar(monkeypatch):
+    """The service fixes the sidecar once per campaign, before its first pod and from the
+    campaign's own image project; every Job of it runs that digest in each container the
+    sidecar image serves, rather than the deployment's own."""
+    sidecar = "registry.example.com/dev/robovast-sidecar@sha256:" + "e" * 64
+    r = _runner(monkeypatch, sidecar_image=sidecar)
+    m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+
+    spec = m["spec"]["template"]["spec"]
+    images = {c["name"]: c for c in spec["initContainers"] + spec["containers"]}
+    for name in ("fetch-inputs", pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER):
+        assert images[name]["image"] == sidecar, name
+        assert images[name]["imagePullPolicy"] == "IfNotPresent", name
 
 
 def test_the_pod_is_told_which_node_it_landed_on(monkeypatch):
@@ -177,7 +200,7 @@ def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
     m = r.create_job_manifest(job, total_jobs=1)
 
     sut = _sidecar(m, "sut")
-    assert sut["image"] == "nav2:humble"
+    assert sut["image"] == _pinned("nav2:humble")
     # No command declared -> the scenario-execution server, so a scenario can drive it
     # with remote("ipc:///ipc/sut").
     assert sut["command"][-1].endswith("secondary_entrypoint.sh")

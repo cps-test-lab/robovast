@@ -1505,10 +1505,16 @@ campaign is re-launched rather than discovered halfway through its second half:
 ``search.seed`` is set (an unseeded strategy re-seeds from entropy, so the replay would
 rebuild a different search) and the strategy does not declare ``RESUMABLE = False``.
 
+A re-launched campaign runs the digests its launch record holds for every image -- its
+containers, the sidecar and the auxiliary helpers -- and resolves none of them from the new
+process's environment (:ref:`image-digest-pinning`).
+
 Campaigns are deliberately **left alone** when nothing says what to run (no launch record,
-or no frozen ``_config/``), when the frozen config cannot be read unchanged (resuming would
-mean migrating it mid-campaign, making the second half a different experiment from the
-first), or when a search fails either condition above. Each says which it is in the service
+or no frozen ``_config/``), when the launch record lacks a digest for an image the campaign
+runs (its second half could not be shown to run the bytes its first half did), when the
+frozen config cannot be read unchanged (resuming would mean migrating it mid-campaign, making
+the second half a different experiment from the first), or when a search fails either
+condition above. Each says which it is in the service
 log, keeps the ``crashed`` phase ``reconstruct_status_from_disk`` gives it, and its data
 stays recoverable with ``vast campaign import``.
 
@@ -1846,14 +1852,26 @@ against it reports that the default does not fit rather than anything about the 
    or pinned and its jobs run at the declared sizing beside calibrated ones. See
    :ref:`cluster-cloud-limits`.
 
+.. _image-digest-pinning:
+
 Which image bytes a run uses
 ----------------------------
 
-Before the first batch creates a Job, every image ref the campaign's pods will run is
-resolved against the registry to the digest it names right now (one ``HEAD`` per distinct
-ref, cached for the campaign), and each container carries an explicit
-``imagePullPolicy``: ``IfNotPresent`` for a digest ref, ``Always`` for anything still a
-tag.
+Every image a campaign runs is fixed to the digest it names right now before the pod that
+runs it is created, with the pull credential the kubelet uses (one ``HEAD`` per distinct ref,
+cached for the campaign):
+
+- the **sidecar** — every pod's data-plane containers — once, as the campaign's span begins;
+- each **auxiliary helper image** (a composition's ``aux-<member>`` pod), when composition
+  first asks for it — the pod and its ``transfer`` container run digests. A step served from
+  a cache — a composition, an up-to-date input generator — starts no helper, and has the ones
+  it would have started fixed all the same, because a replay recomposes and runs them;
+- every **planned container** (scenario, simulation, sut, any declared one) before the first
+  batch creates a Job.
+
+Each is written into ``_execution/launch.yaml`` the moment it is fixed
+(:ref:`the launch record <campaign-launch-record>`), and every container carries an explicit
+``imagePullPolicy``, ``IfNotPresent`` for the digest refs a campaign runs.
 
 Both halves matter, and the second is the one that bites. Kubernetes defaults the policy
 to ``IfNotPresent`` — *except* for a ``:latest`` tag, where it silently becomes
@@ -1870,19 +1888,22 @@ batch 1 and batch 50, and a system under test that changes underneath a sweep in
 the comparison the sweep exists to make. ``_execution/execution.yaml`` then records what
 ran rather than what was asked for.
 
-The pin covers the pods a batch creates. A composition's **auxiliary pod** is created
-before there is a batch to pin, so its image is the ref the spec names -- resolved if it
-is a ``family:`` member -- and it carries the policy that ref implies, ``Always`` for a
-tag. It therefore runs the bytes the tag names when the composition asks for them, which
-is what a campaign's own pods pin moments later; a tag re-pushed inside that window is the
-one case where the container that described the world and the ones that run it differ.
-Pin ``ROBOVAST_PROJECT_TAG`` for a campaign that must not depend on that.
+A ``family:`` ref resolves from the campaign's own image project when it was launched with one
+(``vast workspace run --image-project`` / ``--image-project-tag``), and from the service's
+``ROBOVAST_PROJECT`` / ``ROBOVAST_PROJECT_TAG`` otherwise — composition, the scenario image, the
+sidecar and the auxiliary helpers alike — and the digests are fixed from there.
 
-Resolution is **fail-soft**. An unreachable registry, a ref this deployment holds no
-credential for, or a registry that omits the digest header leaves the ref exactly as it
-was — which is what would have run anyway — and it keeps ``Always``, correct for a name
-that may move. A campaign never fails to start because this could not be applied; the log
-says which refs stayed unpinned.
+**A digest that cannot be read refuses the launch.** A registry that does not have the image,
+one that does not answer or holds no credential this deployment can use, and one that will not
+name the bytes all refuse it, before any pod exists, with one message naming each image and the
+registry's answer for it. Running the tag instead would leave the campaign running bytes nothing
+recorded, and every re-run of it unable to say what it repeats. ``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK``
+waives the container-protocol label read only, never this.
+
+A **replay** — a re-run from a campaign's results, or the adoption of a running campaign after a
+service restart — runs the digests its launch record holds and asks the registry for nothing:
+composition resolves ``family:`` refs to the recorded digests, the aux pods and the sidecar run
+the recorded ones, and an image the record does not fix is refused rather than resolved.
 
 
 Waiting, blocked, and merely busy

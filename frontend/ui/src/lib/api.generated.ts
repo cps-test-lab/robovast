@@ -877,7 +877,7 @@ export interface paths {
         put?: never;
         /**
          * Retrigger Campaign
-         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.
+         * @description Launch a new campaign from an existing one's frozen config, running exactly the image digests its launch record holds and resolving none again. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway, except past a record lacking a digest for something the campaign runs.
          */
         post: operations["retrigger_campaign_campaigns__campaign_id__retrigger_post"];
         delete?: never;

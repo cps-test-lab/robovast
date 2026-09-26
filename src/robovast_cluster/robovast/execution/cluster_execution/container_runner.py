@@ -88,7 +88,7 @@ import threading
 from pathlib import Path
 from urllib.parse import quote
 
-from robovast.common.errors import ExecTargetGone
+from robovast.common.errors import CampaignConfigError, ExecTargetGone
 
 from . import pod_access
 
@@ -232,25 +232,30 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     return deleted
 
 
-def _aux_image(image: str) -> str:
+def _aux_image(image: str, *, project: str | None = None, tag: str | None = None) -> str:
     """An aux container's image as a Pod may carry it: a ``family:`` ref resolved, anything else
     left exactly as written.
 
     Left verbatim on purpose when it is not a family ref: an image a campaign names is used as
     written everywhere else in RoboVAST, and an aux container is no place to start rewriting one.
+
+    *project* and *tag* are the campaign's (``--image-project``); without them the family
+    resolves from the service's environment, which is what a preview's held pod wants.
     """
     from robovast.common.execution import is_family_image_ref, resolve_family_image
 
     if not is_family_image_ref(image):
         return image
-    return resolve_family_image(image, role="image for an auxiliary container")
+    return resolve_family_image(image, project=project, tag=tag,
+                                role="image for an auxiliary container")
 
 
 def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
                            stage_dir, token_for,
                            deadline_seconds: int = DEFAULT_AUX_DEADLINE_SECONDS,
                            pull_secret: str = "", pod_name: str = "",
-                           container_names=None, extra_labels: dict | None = None) -> dict:
+                           container_names=None, extra_labels: dict | None = None,
+                           images: dict | None = None, sidecar_image: str | None = None) -> dict:
     """Manifest for an aux Pod: one kept-alive container per spec, plus the transfer one.
 
     Each container runs the aux image with its one-shot entrypoint overridden by
@@ -269,6 +274,11 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
 
     *container_names* maps a spec's ``container_name()`` to the name to use instead;
     unnamed specs keep their own.
+
+    *images* (``{container_name(): ref}``) and *sidecar_image* are what a campaign's pod runs:
+    the digests its launch fixed (:class:`CampaignImagePins`), so the pod runs what the launch
+    record names. Left out -- a held pod, which serves no campaign -- the spec's image and the
+    sidecar are resolved from the service's environment.
 
     *owner_ref* should be the **service pod** so Kubernetes garbage-collects this
     pod when the service is replaced — the same "dies with its parent" guarantee
@@ -305,22 +315,22 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
 
     containers = []
     for spec in specs:
-        image = _aux_image(spec.image)
+        image = (images[spec.container_name()] if images is not None
+                 else _aux_image(spec.image))
         container = {
             "name": (container_names or {}).get(spec.container_name(),
                                                 spec.container_name()),
             # A `family:<member>` ref is SYMBOLIC and must be resolved before it reaches a Pod --
             # kubelet reads an unresolved one as `docker.io/library/family:<member>` and fails the
             # pull with `insufficient_scope`, which reads like a credentials problem rather than an
-            # unresolved reference. Resolved here, in the service, for the same reason the
-            # transfer container below calls resolve_sidecar_image(): this process is the one
-            # carrying the deployment's project and tag. ``config_generation``'s own runner
-            # resolves at runner-creation time instead, which is why a family ref worked
-            # there and not here.
+            # unresolved reference. For a campaign it is the digest its launch fixed
+            # (*images*); for a held pod it is resolved here, in the service, for the same
+            # reason the transfer container below is: this process is the one carrying the
+            # deployment's project and tag.
             "image": image,
             # From the ref, like every other pod this package writes: see
-            # ``pull_policy_for``. A tag is what a spec names in the ordinary case, and it
-            # is the deployment's own floating one whenever the spec is a `family:` member.
+            # ``pull_policy_for``. A campaign's pod runs digests; a held pod runs what the spec
+            # names, the deployment's own floating tag whenever it is a `family:` member.
             "imagePullPolicy": pull_policy_for(image),
             "command": list(spec.keep_alive_command),
             "volumeMounts": list(shared_mounts),
@@ -340,7 +350,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
     # nobody in particular. Done by the transfer container as it starts, which is before
     # anything execs into the pod.
     chmods = " && ".join(f"chmod 0777 {shlex.quote(path)}" for path in shared_paths)
-    sidecar = resolve_sidecar_image()
+    sidecar = sidecar_image if sidecar_image is not None else resolve_sidecar_image()
     containers.append({
         "name": TRANSFER_CONTAINER, "image": sidecar,
         "imagePullPolicy": pull_policy_for(sidecar),
@@ -408,6 +418,82 @@ def service_pod_owner_reference(core_v1, namespace):
     }
 
 
+class CampaignImagePins:
+    """The images one campaign's pods run, fixed to digests before the first of them exists.
+
+    One per campaign, entered with its span (``ClusterService._aux_runner_context``), and
+    reading and writing the campaign's own :class:`~robovast.execution.backends.RunOptions`:
+    the sidecar and the helper images it fixes land in ``options.sidecar_image`` and
+    ``options.aux_images``, which the batch runner reads too, so every pod of the campaign --
+    aux or Job, first batch or fiftieth -- runs the same bytes. Each is recorded in the launch
+    record the moment it is fixed, which is before the pod that runs it is created.
+
+    On a replay (``options.images_fixed``) nothing is resolved: the record's digests are
+    what the options already hold, and an image they do not fix is refused, naming it.
+
+    *read_digest* is ``ref -> (digest, why)``: the deployment's registry, asked with the pull
+    credential, since that is what the kubelet will pull with.
+    """
+
+    def __init__(self, campaign_root, options, read_digest):
+        self._root = Path(campaign_root)
+        self._options = options
+        self._read_digest = read_digest
+        # A composition may ask for two helper images from two threads, and the sidecar is
+        # asked by every pod: one resolution each, never two that could disagree.
+        self._lock = threading.Lock()
+
+    def sidecar(self) -> str:
+        """The sidecar's digest, fixed and recorded on the first ask."""
+        from robovast.common.campaign_data import update_launch_images
+        from robovast.common.execution import resolve_sidecar_image
+
+        with self._lock:
+            if self._options.sidecar_image:
+                return self._options.sidecar_image
+            if self._options.images_fixed:
+                raise CampaignConfigError(
+                    "the launch record this campaign replays fixes no digest for the sidecar "
+                    "image, and a replay runs only recorded digests.")
+            digest = self._fix(resolve_sidecar_image(
+                project=self._options.image_project, tag=self._options.image_project_tag),
+                "the sidecar image")
+            update_launch_images(self._root, sidecar=digest)
+            self._options.sidecar_image = digest
+            return digest
+
+    def aux(self, spec) -> str:
+        """The digest *spec*'s aux container runs, fixed and recorded on the first ask."""
+        from robovast.common.campaign_data import update_launch_images
+
+        name = spec.container_name()
+        with self._lock:
+            if self._options.aux_images.get(name):
+                return self._options.aux_images[name]
+            if self._options.images_fixed:
+                raise CampaignConfigError(
+                    f"the launch record this campaign replays fixes no digest for its "
+                    f"auxiliary container {name!r} ({spec.image}), and a replay runs only "
+                    f"recorded digests. Its source never asked for that container, so the "
+                    f"replay is not composing what its source composed.")
+            digest = self._fix(_aux_image(spec.image, project=self._options.image_project,
+                                          tag=self._options.image_project_tag),
+                               f"auxiliary container {name!r}")
+            update_launch_images(self._root, aux={name: digest})
+            self._options.aux_images[name] = digest
+            return digest
+
+    def _fix(self, ref: str, what: str) -> str:
+        digest, why = self._read_digest(ref)
+        if not digest:
+            raise CampaignConfigError(
+                f"refusing to launch: every image a campaign runs is fixed to a digest before "
+                f"any pod starts, and the digest of {what} {ref} could not be read: {why}. An "
+                f"image the registry does not have has never been pushed; one it did not answer "
+                f"for is retried by launching again.")
+        return digest
+
+
 class AuxPodSession:
     """Provides a span's auxiliary containers on demand, and deletes them after.
 
@@ -436,8 +522,12 @@ class AuxPodSession:
     def __init__(self, campaign_id, namespace, core_v1=None, *, stage_dir, discard_staged,
                  token_for, ready_timeout: float = 300.0, pull_secret: str = "",
                  kube_context: str | None = None, on_pending=None,
-                 should_stop=None):
+                 should_stop=None, image_pins=None):
         self.campaign_id = campaign_id
+        # The campaign's :class:`CampaignImagePins`: every pod this span creates runs the
+        # digests they fix, recorded before the pod exists. ``None`` for a span that serves no
+        # campaign -- a scene build -- whose pod resolves its images as they are named.
+        self._image_pins = image_pins
         self.pull_secret = pull_secret
         self.namespace = namespace
         self._core_v1 = core_v1
@@ -556,11 +646,16 @@ class AuxPodSession:
 
         from .kube_client import wait_pod_gone, wait_pod_ready
         core = self._client()
+        fixed = {}
+        if self._image_pins is not None:
+            # Before the create: a campaign's pod runs only digests its launch record holds.
+            fixed = {"images": {spec.container_name(): self._image_pins.aux(spec)},
+                     "sidecar_image": self._image_pins.sidecar()}
         manifest = build_aux_pod_manifest(
             self.campaign_id, [spec], self.namespace,
             owner_ref=service_pod_owner_reference(core, self.namespace),
             stage_dir=self._stage_dir, token_for=self._token_for,
-            pull_secret=self.pull_secret, pod_name=pod_name)
+            pull_secret=self.pull_secret, pod_name=pod_name, **fixed)
         try:
             core.create_namespaced_pod(self.namespace, manifest)
         except ApiException as e:

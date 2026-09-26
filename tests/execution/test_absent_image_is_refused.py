@@ -1,18 +1,15 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""A campaign whose image the registry does not have is refused, not scheduled.
+"""A campaign whose image digest cannot be read is refused, not scheduled.
 
-Pinning asks the registry, with the pull credential, what each ref resolves to -- the same
-question the kubelet asks a moment later. A ref it could not resolve was treated as a missed
-optimisation and the campaign went ahead. When the reason was that the image does not exist,
-every job of the batch then died at once on ``ErrImagePull ... NotFound``, already scheduled,
-and the campaign reported "none of this batch's jobs could start" -- a message about the
-cluster for a fact about the registry, which was in hand one step earlier.
+Every image a campaign runs is fixed to a digest before any pod starts, with the pull credential
+the kubelet uses a moment later. A ref that could not be fixed would leave the campaign running
+bytes nothing recorded, and every replay of it unable to say what it repeats -- so the launch
+is refused, whatever the reason: a registry that does not have the image, one that does not
+answer, and one that will not name the bytes.
 
-The distinction this turns on is the one the module's own verdicts are built around: a 404 is
-an answer, and an unreachable registry is not. Refusing on the second would blame the artifact
-for a problem reaching it, which is the mistake the image store's ``present`` exists to
-prevent -- so only a definite absence refuses.
+The reasons still differ in what the reader has to do, so the refusal carries the registry's
+own answer for each ref, and names every one at once.
 """
 
 import pytest
@@ -24,6 +21,7 @@ from robovast.execution.cluster_execution.registry_client import ABSENT, PRESENT
 def _runner(monkeypatch, states):
     """A runner stubbed to just what the refusal reads."""
     runner = kb.BatchJobRunner.__new__(kb.BatchJobRunner)
+    runner.campaign = "camp-2026-09-26-120000"
     runner.cluster_config = type("C", (), {"get_registry_config": staticmethod(lambda: object())})()
     runner._registry_ca_file = ""
     monkeypatch.setattr(kb.BatchJobRunner, "_registry_dockerconfig", lambda self, r: "")
@@ -33,68 +31,85 @@ def _runner(monkeypatch, states):
     return runner
 
 
+def _refusal(runner, refs):
+    with pytest.raises(kb.CampaignConfigError) as excinfo:
+        runner._refuse_unpinned_images({ref: [f"container {ref.split('/')[-1]!r}"]
+                                        for ref in refs})
+    return str(excinfo.value)
+
+
 def test_an_image_the_registry_does_not_have_refuses_the_campaign(monkeypatch):
     runner = _runner(monkeypatch, {"reg.example.com/sut:abc123": ABSENT})
 
-    with pytest.raises(kb.CampaignConfigError) as excinfo:
-        runner._refuse_absent_images(["reg.example.com/sut:abc123"])
+    message = _refusal(runner, ["reg.example.com/sut:abc123"])
 
-    message = str(excinfo.value)
     assert "reg.example.com/sut:abc123" in message
+    assert "does not have it" in message
     # It has to say what to DO. The failure it replaces sent readers to the cluster.
     assert "rebuild" in message.lower()
     assert "before any pod was created" in message
 
 
-def test_an_unreachable_registry_does_not_refuse(monkeypatch):
-    """The mistake this must not make. ``UNKNOWN`` is not a synonym for absent: refusing on it
-    would stop every campaign whenever the registry blinks, and blame the image for it."""
+def test_an_unreachable_registry_refuses_too(monkeypatch):
+    """No digest, no launch: a tag run in its place names nothing a replay could repeat. The
+    message says the registry did not answer, so the image is not blamed for it."""
     runner = _runner(monkeypatch, {"reg.example.com/sut:abc123": UNKNOWN})
 
-    runner._refuse_absent_images(["reg.example.com/sut:abc123"])
+    message = _refusal(runner, ["reg.example.com/sut:abc123"])
+
+    assert "did not answer" in message
+    assert "does not have it" not in message
 
 
-def test_a_ref_that_is_there_does_not_refuse(monkeypatch):
-    """A ref can be unpinnable and present -- a registry that omits the digest header. That
-    is the missed optimisation the warning is for, not a reason to refuse."""
+def test_a_registry_that_will_not_name_the_bytes_refuses(monkeypatch):
+    """Present, but no ``Docker-Content-Digest``: there is still no digest to record."""
     runner = _runner(monkeypatch, {"reg.example.com/sut:abc123": PRESENT})
 
-    runner._refuse_absent_images(["reg.example.com/sut:abc123"])
+    assert "Docker-Content-Digest" in _refusal(runner, ["reg.example.com/sut:abc123"])
 
 
-def test_every_absent_ref_is_named(monkeypatch):
-    """One refusal listing them all, so a reader fixes both rather than relaunching to find
-    the second."""
+def test_every_unfixed_ref_is_named_with_what_runs_it(monkeypatch):
+    """One refusal listing them all, so a reader fixes every one rather than relaunching to
+    find the next."""
     runner = _runner(monkeypatch, {"reg.example.com/a:1": ABSENT,
                                    "reg.example.com/b:2": ABSENT,
                                    "ghcr.example.com/c:3": UNKNOWN})
 
-    with pytest.raises(kb.CampaignConfigError) as excinfo:
-        runner._refuse_absent_images(["reg.example.com/a:1", "reg.example.com/b:2",
-                                      "ghcr.example.com/c:3"])
+    message = _refusal(runner, ["reg.example.com/a:1", "reg.example.com/b:2",
+                                "ghcr.example.com/c:3"])
 
-    message = str(excinfo.value)
-    assert "reg.example.com/a:1" in message and "reg.example.com/b:2" in message
-    # The one that could not be asked about must not be reported as missing.
-    assert "ghcr.example.com/c:3" not in message
+    for ref in ("reg.example.com/a:1", "reg.example.com/b:2", "ghcr.example.com/c:3"):
+        assert ref in message
+    assert "container 'c:3'" in message
 
 
 def test_nothing_unresolved_asks_the_registry_nothing(monkeypatch):
-    """The ordinary case: every ref pinned. This must add no round trips to it."""
+    """The ordinary case: every ref fixed. This must add no round trips to it."""
     asked = []
     runner = _runner(monkeypatch, {})
     monkeypatch.setattr("robovast.execution.cluster_execution.registry_client.manifest_state",
                         lambda ref, **kw: asked.append(ref) or PRESENT)
 
-    runner._refuse_absent_images([])
+    runner._refuse_unpinned_images({})
 
     assert asked == []
 
 
-def test_a_registry_that_raises_never_refuses(monkeypatch):
-    """Not knowing is not a refusal, however the not-knowing arrives."""
+def test_a_registry_that_raises_still_refuses_and_says_so(monkeypatch):
+    """Not knowing is not a digest, however the not-knowing arrives."""
     runner = _runner(monkeypatch, {})
     monkeypatch.setattr("robovast.execution.cluster_execution.registry_client.manifest_state",
                         lambda ref, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
 
-    runner._refuse_absent_images(["reg.example.com/sut:abc123"])
+    assert "boom" in _refusal(runner, ["reg.example.com/sut:abc123"])
+
+
+def test_no_registry_configured_refuses_and_says_so(monkeypatch):
+    runner = _runner(monkeypatch, {})
+
+    def _none():
+        raise RuntimeError("no registry configured")
+
+    runner.cluster_config = type("C", (), {"get_registry_config": staticmethod(_none)})()
+
+    assert "no registry to ask" in _refusal(runner, ["reg.example.com/sut:abc123"])

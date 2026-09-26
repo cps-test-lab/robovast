@@ -309,7 +309,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   }, [terminal, id, qc])
 
   // Declared above the mutations because their onError/onSuccess handlers report through it.
-  const { confirm, prompt } = useDialogs()
+  const { choose, confirm, prompt } = useDialogs()
   const { notify } = useToasts()
 
   // Every action below reports its own outcome. A failure goes to a STICKY toast rather than an
@@ -529,6 +529,21 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
       axes = report.axes
     } catch {
       blocking = []
+    }
+    if (blocking.includes('images')) {
+      // Not offered as an override: a re-run runs only the digests its source recorded, and the
+      // service refuses one with a digest missing whatever `force` says -- there is nothing to
+      // replay. The detail names the way to a fresh launch instead.
+      await choose({
+        title: 'This campaign cannot be re-run',
+        message: (
+          <>
+            {axes.images?.detail} <code>{id}</code> is untouched.
+          </>
+        ),
+        choices: [{ label: 'Close', value: 'close', primary: true }],
+      })
+      return
     }
     if (blocking.length) {
       const ok = await confirm({

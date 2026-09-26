@@ -298,9 +298,12 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             project. There is no server-side "current project".
         from_campaign: Re-run a past campaign from its own record: a NEW campaign, source
             untouched, **taking no other argument but ``force``** — the record supplies them,
-            so a pilot stays a pilot. Re-expands, so stochastic generators redraw. Refused
-            when its pre-flight blocks; ``get_campaign_summary``'s ``retrigger`` key says so
-            beforehand.
+            so a pilot stays a pilot. Runs exactly the image digests the source recorded,
+            resolving none again. Re-expands, so stochastic generators redraw. Refused when
+            its pre-flight blocks; ``get_campaign_summary``'s ``retrigger`` key says so
+            beforehand. A source recording no digest for something it runs is refused even
+            with ``force``: ``create_workspace(from_campaign=...)`` rebuilds it to launch
+            afresh.
         force: Re-run despite a blocking pre-flight axis, for one you have decided you
             understand. With ``from_campaign`` only — a workspace launch has no pre-flight
             to override.

@@ -36,6 +36,17 @@ def _campaign(tmp_path: pathlib.Path, *, config: dict | None = None,
     return root
 
 
+def _fixed(root: pathlib.Path, containers: dict | None = None) -> pathlib.Path:
+    """Give *root* the launch record a campaign launched now leaves: every image a digest."""
+    (root / "_execution").mkdir(parents=True, exist_ok=True)
+    (root / "_execution" / "launch.yaml").write_text(yaml.safe_dump({
+        "config_filter": "", "campaign_name": None, "runs": 0,
+        "images": containers or {"scenario": "reg.example/y@sha256:" + "a" * 64},
+        "sidecar_image": "reg.example/robovast-sidecar@sha256:" + "b" * 64}),
+        encoding="utf-8")
+    return root
+
+
 def test_a_campaign_with_no_frozen_config_is_blocked_and_says_where_to_go(tmp_path):
     report = check(_campaign(tmp_path), "c-2026-01-01-000000")
     assert report["axes"]["config"]["verdict"] == AXIS_BLOCKED
@@ -62,7 +73,7 @@ def test_an_old_config_is_upgradable_and_names_the_steps(tmp_path):
     assert axis["verdict"] == AXIS_UPGRADABLE
     assert axis["steps"] == ["1_to_2", "2_to_3", "3_to_4", "4_to_5", "5_to_6"]
     assert "not modified" in axis["detail"]
-    assert check(root, root.name)["runnable"] is True
+    assert "config" not in check(root, root.name)["blocking"]
 
 
 def test_a_config_from_a_newer_robovast_is_blocked(tmp_path):
@@ -105,7 +116,8 @@ def test_missing_records_are_unknown_and_do_not_block(tmp_path):
     feature exists for; refusing it would be refusing the requirement."""
     from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
 
-    root = _campaign(tmp_path, config={"version": SUPPORTED_CONFIG_VERSION, "execution": {}})
+    root = _fixed(_campaign(tmp_path, config={"version": SUPPORTED_CONFIG_VERSION,
+                                              "execution": {}}))
     report = check(root, root.name)
     for axis in ("plugins", "providers"):
         assert report["axes"][axis]["verdict"] == AXIS_UNKNOWN
@@ -148,6 +160,7 @@ def test_the_host_axis_answers_from_the_registry_labels(tmp_path):
     root = _campaign(tmp_path, config={"version": SUPPORTED_CONFIG_VERSION, "execution": {}},
                      execution={"images": {"sut": "reg.example/img:1"},
                                 "image_revisions": {"sut": "reg.example/img@sha256:" + "a" * 64}})
+    _fixed(root, {"sut": "reg.example/img@sha256:" + "a" * 64})
     host = check(root, root.name,
                  labels={COMPAT_VERSION_LABEL: str(COMPAT_VERSION)})["axes"]["host"]
     assert host["verdict"] == AXIS_OK
@@ -172,10 +185,9 @@ def test_a_version_1_campaign_can_be_prepared_at_all(tmp_path):
     """The headline: before this, prepare() refused every campaign older than the current
     config version, because it loaded the frozen .vast through the strict policy.
 
-    Also pins the two consequences. The staged copy is migrated -- so `_builds_an_image` and
-    stage_project read a shape they understand, rather than silently answering "builds nothing"
-    for a v1 config that has no execution.containers at all. And the ARCHIVED copy is
-    byte-identical afterwards, because it is the record of what its author wrote.
+    Also pins the two consequences. The staged copy is migrated -- so stage_project reads a
+    shape it understands, where a v1 config has no execution.containers at all. And the ARCHIVED
+    copy is byte-identical afterwards, because it is the record of what its author wrote.
     """
 
     class Request:  # the interface model, injected so this module never imports it
@@ -195,6 +207,7 @@ def test_a_version_1_campaign_can_be_prepared_at_all(tmp_path):
                    "images": {"scenario": "ghcr.io/x/y:1"},
                    "image_revisions": {"scenario": "ghcr.io/x/y@sha256:" + "a" * 64}})
     (source / "_config" / "scenario.osc").write_text("# scenario\n", encoding="utf-8")
+    _fixed(source)
     archived = (source / "_config" / "campaign.vast").read_text(encoding="utf-8")
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
@@ -240,6 +253,7 @@ def test_the_staged_migration_keeps_the_authors_comments(tmp_path):
         yaml.safe_dump({"execution_type": "local", "images": {"scenario": "ghcr.io/x/y:1"},
                         "image_revisions": {"scenario": "ghcr.io/x/y@sha256:" + "a" * 64}}),
         encoding="utf-8")
+    _fixed(source)
 
     plan = retrigger.prepare(source, source.name, workspaces_root=tmp_path / "ws",
                              description_limit=200, request_model=Request)
@@ -249,3 +263,30 @@ def test_the_staged_migration_keeps_the_authors_comments(tmp_path):
         assert f"version: {SUPPORTED_CONFIG_VERSION}" in text
     finally:
         plan.discard()
+
+
+def test_the_images_axis_blocks_a_record_missing_a_digest_and_names_it(tmp_path):
+    """Every gap at once, with what the record held and where to go instead."""
+    from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
+
+    root = _campaign(tmp_path, config={"version": SUPPORTED_CONFIG_VERSION, "execution": {}},
+                     execution={"images": {"scenario": "reg.example/y:1",
+                                           "sut": "reg.example/sut:1"}})
+    _fixed(root)   # a scenario digest and the sidecar, and nothing for `sut`
+    report = check(root, root.name)
+
+    images = report["axes"]["images"]
+    assert images["verdict"] == AXIS_BLOCKED and "images" in report["blocking"]
+    assert list(images["missing"]) == ["container 'sut'"]
+    assert f"vast campaign rerun {root.name} --to-workspace" in images["detail"]
+
+
+def test_a_complete_record_reports_every_image_it_replays(tmp_path):
+    from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
+
+    root = _fixed(_campaign(tmp_path, config={"version": SUPPORTED_CONFIG_VERSION,
+                                              "execution": {}}))
+    images = check(root, root.name)["axes"]["images"]
+    assert images["verdict"] == AXIS_OK
+    assert images["images"] == {"scenario": "reg.example/y@sha256:" + "a" * 64}
+    assert images["sidecar"] == "reg.example/robovast-sidecar@sha256:" + "b" * 64
