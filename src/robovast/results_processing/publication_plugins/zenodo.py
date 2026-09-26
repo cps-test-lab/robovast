@@ -43,8 +43,8 @@ Credentials are read from the ``.env`` file adjacent to the ``.vast`` file
 Set ``sandbox: true`` to test against ``sandbox.zenodo.org`` instead of the
 production instance.
 
-See ``docs/zenodo.rst`` for instructions on creating an access token with the
-``deposit:write`` scope.
+The token needs the ``deposit:write`` scope; ``docs/configuration.rst`` lists the plugin
+beside ``zip`` under the publication plugins.
 """
 
 import json
