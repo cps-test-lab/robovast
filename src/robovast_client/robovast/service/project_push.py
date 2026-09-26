@@ -236,8 +236,10 @@ def _safe_target(root: Path, rel: str) -> Path:
     An archive is the one input here that came from another machine, so a member naming
     ``..`` or an absolute path is refused rather than written.
     """
+    base = root.resolve()
     target = (root / rel).resolve()
-    if not str(target).startswith(str(root.resolve())):
+    # Compared by path components, not as strings: ``pulled2`` begins with ``pulled``.
+    if base not in target.parents:
         raise ValueError(f"{rel!r} would be written outside {root}, so the archive is refused")
     return target
 
