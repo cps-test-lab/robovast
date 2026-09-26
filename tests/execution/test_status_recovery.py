@@ -4,7 +4,7 @@
 
 from pathlib import Path
 
-from robovast.common.campaign_data import write_execution_outcome
+from robovast.common.campaign_data import write_execution_outcome, write_import_marker
 from robovast.execution.control_server import TERMINAL_PHASES, Phase, Status, is_terminal
 from robovast.execution.status_recovery import reconstruct_status_from_disk
 
@@ -314,3 +314,17 @@ def test_a_re_trigger_reports_a_crashed_campaign_as_crashed(tmp_path):
     assert written.phase == Phase.CRASHED
     assert is_terminal(written.phase)
     assert reconstruct_status_from_disk(campaign).phase == Phase.CRASHED
+
+
+def test_an_interrupted_import_is_failed_whatever_the_archived_outcome_says(tmp_path):
+    """An archive carries the archived campaign's own finished ``outcome.json``, and it lands
+    before the runs do. A tree the importing process died in reconstructs from the marker
+    the import left, not from that record: failed, naming the interruption."""
+    campaign = tmp_path / "camp-2026-01-01-000002"
+    campaign.mkdir()
+    write_execution_outcome(
+        campaign, Status(phase=Phase.FINISHED, campaign_id=campaign.name))
+    write_import_marker(campaign)
+    st = reconstruct_status_from_disk(campaign)
+    assert st.phase == Phase.FAILED
+    assert "interrupted" in st.error and campaign.name in st.error

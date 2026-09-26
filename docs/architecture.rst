@@ -887,6 +887,10 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
        (``read_config_channels``), so the two cannot say different things
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
+   * - ``_execution/importing.json``
+     - File — present only while an import of the campaign is under way, or after the
+       process importing it died: a tree that carries it reconstructs as a failed import,
+       whatever the archived ``outcome.json`` beside it says
    * - ``_execution/interventions.json``
      - File — what was done to a campaign's runs *other than running them*, keyed by job
        artifact dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a

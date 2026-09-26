@@ -1750,7 +1750,12 @@ Taking a campaign in
 :func:`~robovast.service.ingest.claim_campaign_dir` and
 :func:`~robovast.service.ingest.extract_archive` unpack an archive into a results root, as
 separate steps so the importer can open the campaign's ``import.log`` once the directory is
-claimed; :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
+claimed. Claiming also marks the directory as an import under way
+(``_execution/importing.json``), and the importer clears the mark once the import has
+concluded either way; :func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`
+reports a tree still carrying it as a failed import, ahead of the archived ``outcome.json``
+that would otherwise describe the whole campaign over a partial tree.
+:func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
 **per stage** (``layout``, ``config``, ``completeness``, ``campaign_store``, ``tables``), since
 a campaign archive carries two version surfaces of its own (the ``.vast``'s and
 ``campaign.db``'s) which can independently be older, newer, absent or corrupt. Neither

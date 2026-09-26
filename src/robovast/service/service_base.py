@@ -1649,6 +1649,8 @@ class ServiceBase(RobovastInterface):
         """
         from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
             add_campaign_log_handler, remove_campaign_log_handler)
+        from robovast.common.campaign_data import \
+            clear_import_marker  # pylint: disable=import-outside-toplevel
         from robovast.service.ingest import (  # pylint: disable=import-outside-toplevel
             blocking_summary, claim_campaign_dir, extract_archive, ingest_campaign,
             read_campaign_id)
@@ -1709,6 +1711,9 @@ class ServiceBase(RobovastInterface):
             state.set_phase(Phase.FAILED)
             return
         finally:
+            # Concluded either way: what landed is the campaign, or the failure is
+            # recorded. Only a process that dies before this leaves the marker behind.
+            clear_import_marker(target)
             remove_campaign_log_handler(handler)
 
         self._postprocess_after_import(state, campaign_id, target)

@@ -100,7 +100,8 @@ The structure inside is domain-specific, but typically includes:
    ├── share.log                             # ``share`` phase (export to share, when re-run)
    ├── sections/                             # earlier runs of the repeatable phases
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
-   └── import.json                           # per-stage import report (only on an imported campaign)
+   ├── import.json                           # per-stage import report (only on an imported campaign)
+   └── importing.json                        # left only by an import that never concluded
 
 Each pre-/post-run **phase** writes its own log file here, and the files are the record. The
 service reads them in phase order as one campaign log of **rows** -- ``vast campaign log``, the
@@ -1280,6 +1281,13 @@ missing rather than which check noticed. Registering the campaign is what makes 
 while it arrives, so the entry outlives the failure, and keeping the directory keeps the
 ``import.log`` and ``import.json`` that explain it. Remove it with ``vast campaign delete``, or
 import again with ``--force``.
+
+An import the service **died in the middle of** is kept the same way and reads as failed
+too: the directory is marked as an import under way (``_execution/importing.json``) from
+the moment it is claimed until the import has concluded, and a tree still carrying the
+marker is reported as the interrupted import it is -- not as the campaign whose
+``outcome.json`` the archive brought, which lands before the runs do and would otherwise
+describe a finished campaign over a partial tree.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no
 frozen ``_config/`` instead of writing an archive whose only possible future is an ingest

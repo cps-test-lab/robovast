@@ -158,7 +158,17 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
     Creates the campaign's ``_execution/`` directory, because the importer's log lives there
     and it must be open before the slow part starts -- an import whose account of itself only
     begins after the download is an import with no account of the download.
+
+    Marks the directory as an import under way (``_execution/importing.json``), for the
+    importer to clear once the import has concluded. An archive carries the archived
+    campaign's own ``outcome.json``, so a tree an import died in the middle of would
+    otherwise reconstruct as that campaign -- finished, with every run the record counts
+    -- while holding whichever members had landed. The marker is what makes such a tree
+    read as the failed import it is (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`).
     """
+    from robovast.common.campaign_data import \
+        write_import_marker  # pylint: disable=import-outside-toplevel
+
     root = Path(results_root)
     root.mkdir(parents=True, exist_ok=True)
     target = root / _checked_campaign_name(campaign_id)
@@ -170,6 +180,7 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
                 f"with force to replace it.")
         shutil.rmtree(target)
     (target / "_execution").mkdir(parents=True, exist_ok=True)
+    write_import_marker(target)
     return target
 
 
