@@ -1298,6 +1298,26 @@ cheaper way to ask.
 * named — that configuration staged exactly as a campaign stages it, so an empty
   ``command`` starts its scenario.
 
+``config_name`` is never a file. The *source* says which ``.vast``: ``workspace_id`` with
+``config_path`` for one in a workspace, ``campaign_id`` for the project that campaign recorded.
+``config_name`` then picks one of the configurations that ``.vast`` expands into after its
+variations — the names ``preview_configurations`` lists, which are also the directory names
+under ``/results/<campaign_id>/``:
+
+.. code-block:: text
+
+   preview_configurations(workspace_id=ws, config_path="press.vast")
+   # -> configurations: [{name: "nominal-1", parameters: {...}}, {name: "stiff-1", ...}, ...]
+
+   exec_in_container(workspace_id=ws, config_path="press.vast", config_name="stiff-1",
+                     command="cd /config && roqsim check world/world.yaml")
+   # -> that configuration's project, staged under /config with its parameters in
+   #    /config/scenario.config, checked in the image a campaign would use
+
+   exec_in_container(campaign_id=cid, config_name="stiff-1",
+                     command="cd /config && roqsim check world/world.yaml")
+   # -> the same, against what that campaign actually ran
+
 **Both sources are projects.** ``workspace_id`` + ``config_path`` names a workspace's
 ``.vast``; ``campaign_id`` uses an existing campaign's ``_config/``, which *is* a project.
 Nothing about the campaign case is special — same staging, same environment. The image
