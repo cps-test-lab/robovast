@@ -231,7 +231,8 @@ def test_the_tables_stage_builds_nothing(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
+    assert set(report["stages"]) == {"layout", "config", "completeness", "environment",
+                                     "campaign_store",
                                      "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
@@ -367,3 +368,47 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+# -- what the configuration needs from this deployment -----------------------
+
+def _vast(campaign) -> Path:
+    return next((campaign / "_config").glob("*.vast"))
+
+
+def _declare(campaign, **sections):
+    """Add *sections* to the campaign's frozen ``.vast`` (the version-1 fixture's)."""
+    vast = _vast(campaign)
+    raw = yaml.safe_load(vast.read_text(encoding="utf-8"))
+    for key, value in sections.items():
+        if key == "variations":
+            raw.setdefault("configuration", [{"name": "cfg"}])[0]["variations"] = value
+        elif key == "postprocessing":
+            raw.setdefault("results_processing", {})["postprocessing"] = value
+        else:
+            raw[key] = value
+    vast.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+def test_what_the_configuration_names_and_this_deployment_lacks_is_degraded_by_name(campaign):
+    """A raw import chains postprocessing straight away, so an entry point or a plugin package
+    this service does not have is named at import rather than met as a postprocessing
+    failure after it. Named, and never blocking: the campaign lists without any of it."""
+    _declare(campaign,
+             variations=[{"NoSuchVariation": {}}, {"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv", {"no_such_command": {}},
+                             "./missing.py:Step"],
+             plugins=["robovast-no-such-plugin==1.0"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("NoSuchVariation", "no_such_command", "./missing.py:Step",
+                 "robovast-no-such-plugin==1.0"):
+        assert name in stage["detail"]
+    for present in ("ParameterVariationList", "rosbags_tf_to_csv"):
+        assert present not in stage["detail"]
+
+
+def test_a_configuration_this_deployment_can_run_is_ok(campaign):
+    _declare(campaign, variations=[{"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv"])
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_OK

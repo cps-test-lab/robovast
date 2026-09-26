@@ -265,7 +265,8 @@ def test_the_stage_report_is_written_where_a_client_can_read_it(env, tmp_path):
     _settle(client, fixture.name)
 
     report = _report(transport, fixture.name)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
+    assert set(report["stages"]) == {"layout", "config", "completeness", "environment",
+                                     "campaign_store",
                                      "tables"}
     assert report["campaign_id"] == fixture.name
     # Served over the file route too, which is how the web UI reads it.

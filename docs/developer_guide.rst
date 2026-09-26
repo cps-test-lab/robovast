@@ -1751,11 +1751,16 @@ Taking a campaign in
 :func:`~robovast.service.ingest.extract_archive` unpack an archive into a results root, as
 separate steps so the importer can open the campaign's ``import.log`` once the directory is
 claimed; :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
-**per stage** (``layout``, ``config``, ``completeness``, ``campaign_store``, ``tables``), since
+**per stage** (``layout``, ``config``, ``completeness``, ``environment``, ``campaign_store``,
+``tables``), since
 a campaign archive carries two version surfaces of its own (the ``.vast``'s and
 ``campaign.db``'s) which can independently be older, newer, absent or corrupt. Neither
 re-implements a migration -- the config ladder is applied in memory and the store migrates on
-open, so this module observes and reports. The ``tables`` stage loads nothing: an archive
+open, so this module observes and reports. The ``environment`` stage names what the
+configuration needs that this deployment lacks -- variation types and postprocessing commands
+not installed, ``./file.py:Class`` plugins not in the archive, ``plugins:`` packages not
+installed -- and is degraded, never blocking: the campaign lists without them, and only
+postprocessing and a re-run need them. The ``tables`` stage loads nothing: an archive
 carries the campaign's records and never ``.cache/``, and its tables are built from those
 records the first time something names them. The stage only says whether the records give any
 table at all.
