@@ -223,6 +223,26 @@ def manifest_lock(campaign_dir: str):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
+@contextmanager
+def run_lock(campaign_dir: str, run_key: str):
+    """Serialise the builds of one run's tables, across threads and processes.
+
+    Two requests that name the same run -- a run view opens several panels at once -- would
+    otherwise both decode its recordings and both write its tables. Holding this, the second
+    finds what the first wrote current and reads it. Runs lock separately, so building one
+    run does not wait for another.
+    """
+    root = os.path.join(cache_root(campaign_dir), ".locks")
+    os.makedirs(root, exist_ok=True)
+    name = run_key.replace(os.sep, "__") + ".lock"
+    with open(os.path.join(root, name), "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def read_manifest(campaign_dir: str) -> dict:
     path = os.path.join(cache_root(campaign_dir), MANIFEST)
     if not os.path.isfile(path):

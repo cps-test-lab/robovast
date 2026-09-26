@@ -63,8 +63,8 @@ from .handlers import Videos
 from .layout import job_links, run_dirs
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
 from .tables import (TableBuffer, fixed, live_owned, manifest_lock, read_manifest,
-                     record_run_absent, record_run_table, remove_files, run_table_path,
-                     write_manifest, write_table)
+                     record_run_absent, record_run_table, remove_files, run_lock,
+                     run_table_path, write_manifest, write_table)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
@@ -239,90 +239,99 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
 
     known_tables: set = set()
     for run in selected:
-        sources = _sources(run)
-        manifest = read_manifest(campaign_dir)
-        sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b in sources}
-        report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
-                                                   sum(sizes.values()))
-        recording_rows = TableBuffer(RECORDING_TABLE)
-        run_bag_tables: set = set()
-        run_key = run.key
-        # {table: role} of what an earlier recording of the run already gives, so a later one
-        # does not fill the same table.
-        claimed: Dict[str, str] = {}
-        for role, bag_dir in sources:
-            recorded = recorded_topics(bag_dir)
-            plan = plan_for(role, recorded, groups.get(role), taken=claimed)
-            claimed.update({t: role for t in plan.tables})
-            known_tables.update(plan.tables)
-            run_bag_tables.update(plan.tables)
-            handlers, _unknown = narrow(plan, wanted_tables)
-            for handler in handlers:
-                if isinstance(handler, Videos):
-                    handler.output_dir = run.path
-                    handler.bag_name = os.path.basename(bag_dir)
-            size = sizes[os.path.relpath(bag_dir, campaign_dir)]
-            todo = []
-            for handler in handlers:
-                current = [t for t in handler.tables()
-                           if not force and _is_current(manifest, t, run_key, size)]
-                for table in current:
-                    report.skipped.setdefault(table, []).append(run_key)
-                if len(current) < len(handler.tables()):
-                    todo.append(handler)
-            # The recording report covers every topic, so a recording whose tables are all
-            # current is still framed -- cheaply, nothing is deserialized -- when it is stale.
-            decoded = decode_bag(bag_dir, todo) if (todo or not report_current) else None
-            complete = _complete(run, role, bag_dir)
-            written = []
-            for handler in todo:
-                name = type(handler).__name__
-                if name in decoded.failed:
-                    for table in handler.tables():
-                        if wanted_tables is None or table in wanted_tables:
-                            report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
-                    continue
-                for table, buf in handler.buffers.items():
-                    if wanted_tables is not None and table not in wanted_tables:
-                        continue
-                    arrow = with_yaw(buf.to_arrow(handler.orders.get(table), context={
-                        "campaign_id": campaign_id, "config_name": run.config_name,
-                        "run_id": run.run_id}))
-                    rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
-                    write_table(campaign_dir, rel, arrow)
-                    written.append((table, rel, arrow))
-            if decoded and not report_current:
-                _recording_rows(recording_rows, role, decoded, plan)
-            with manifest_lock(campaign_dir):
-                fresh = read_manifest(campaign_dir)
-                superseded = []
-                for table, rel, arrow in written:
-                    superseded += record_run_table(
-                        fresh, table, run_key, files=[rel], rows=arrow.num_rows,
-                        schema=arrow.schema,
-                        sources={os.path.relpath(bag_dir, campaign_dir): size},
-                        complete=complete)
-                    report.built.setdefault(table, []).append(run_key)
-                write_manifest(campaign_dir, fresh)
-                # The parts an abandoned live session left: named by no manifest now.
-                remove_files(campaign_dir, superseded)
-        if not report_current and sources:
-            _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
-            report.built.setdefault(RECORDING_TABLE, []).append(run.key)
-        elif sources:
-            report.skipped.setdefault(RECORDING_TABLE, []).append(run.key)
-        file_tables = _build_files(campaign_dir, campaign_id, run, wanted_tables, force,
-                                   report, known_tables,
-                                   reserved=run_bag_tables | DERIVED_TABLES)
-        if wanted_tables is not None:
-            _record_absent(campaign_dir, run, wanted_tables, report, sizes,
-                           known=run_bag_tables | file_tables | {RECORDING_TABLE})
+        with run_lock(campaign_dir, run.key):
+            _build_run(campaign_dir, campaign_id, run, groups, wanted_tables, force, report,
+                       known_tables)
     if derived_wanted:
         _build_derived(campaign_dir, campaign_id, selected, derived_wanted,
                        (config or {}).get("containers"), force, report)
     if wanted_tables is not None:
         report.unknown = [t for t in wanted_tables if t not in known_tables]
     return report
+
+
+def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, list],
+               wanted_tables: Optional[List[str]], force: bool, report: BuildReport,
+               known_tables: set) -> None:
+    """One run's tables from its recordings and its own files; the caller holds its lock."""
+    sources = _sources(run)
+    manifest = read_manifest(campaign_dir)
+    sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b in sources}
+    report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
+                                               sum(sizes.values()))
+    recording_rows = TableBuffer(RECORDING_TABLE)
+    run_bag_tables: set = set()
+    run_key = run.key
+    # {table: role} of what an earlier recording of the run already gives, so a later one
+    # does not fill the same table.
+    claimed: Dict[str, str] = {}
+    for role, bag_dir in sources:
+        recorded = recorded_topics(bag_dir)
+        plan = plan_for(role, recorded, groups.get(role), taken=claimed)
+        claimed.update({t: role for t in plan.tables})
+        known_tables.update(plan.tables)
+        run_bag_tables.update(plan.tables)
+        handlers, _unknown = narrow(plan, wanted_tables)
+        for handler in handlers:
+            if isinstance(handler, Videos):
+                handler.output_dir = run.path
+                handler.bag_name = os.path.basename(bag_dir)
+        size = sizes[os.path.relpath(bag_dir, campaign_dir)]
+        todo = []
+        for handler in handlers:
+            current = [t for t in handler.tables()
+                       if not force and _is_current(manifest, t, run_key, size)]
+            for table in current:
+                report.skipped.setdefault(table, []).append(run_key)
+            if len(current) < len(handler.tables()):
+                todo.append(handler)
+        # The recording report covers every topic, so a recording whose tables are all
+        # current is still framed -- cheaply, nothing is deserialized -- when it is stale.
+        decoded = decode_bag(bag_dir, todo) if (todo or not report_current) else None
+        complete = _complete(run, role, bag_dir)
+        written = []
+        for handler in todo:
+            name = type(handler).__name__
+            if name in decoded.failed:
+                for table in handler.tables():
+                    if wanted_tables is None or table in wanted_tables:
+                        report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
+                continue
+            for table, buf in handler.buffers.items():
+                if wanted_tables is not None and table not in wanted_tables:
+                    continue
+                arrow = with_yaw(buf.to_arrow(handler.orders.get(table), context={
+                    "campaign_id": campaign_id, "config_name": run.config_name,
+                    "run_id": run.run_id}))
+                rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
+                write_table(campaign_dir, rel, arrow)
+                written.append((table, rel, arrow))
+        if decoded and not report_current:
+            _recording_rows(recording_rows, role, decoded, plan)
+        with manifest_lock(campaign_dir):
+            fresh = read_manifest(campaign_dir)
+            superseded = []
+            for table, rel, arrow in written:
+                superseded += record_run_table(
+                    fresh, table, run_key, files=[rel], rows=arrow.num_rows,
+                    schema=arrow.schema,
+                    sources={os.path.relpath(bag_dir, campaign_dir): size},
+                    complete=complete)
+                report.built.setdefault(table, []).append(run_key)
+            write_manifest(campaign_dir, fresh)
+            # The parts an abandoned live session left: named by no manifest now.
+            remove_files(campaign_dir, superseded)
+    if not report_current and sources:
+        _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
+        report.built.setdefault(RECORDING_TABLE, []).append(run.key)
+    elif sources:
+        report.skipped.setdefault(RECORDING_TABLE, []).append(run.key)
+    file_tables = _build_files(campaign_dir, campaign_id, run, wanted_tables, force,
+                               report, known_tables,
+                               reserved=run_bag_tables | DERIVED_TABLES)
+    if wanted_tables is not None:
+        _record_absent(campaign_dir, run, wanted_tables, report, sizes,
+                       known=run_bag_tables | file_tables | {RECORDING_TABLE})
 
 
 def _sources(run: Run) -> List[Tuple[str, str]]:
@@ -365,48 +374,55 @@ def derived_sources(campaign_dir: str, run: Run, manifest: dict) -> Dict[str, in
     return sources
 
 
+def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str],
+                containers, force: bool, report: BuildReport) -> None:
+    """One run's derived tables, from its job's records; the caller holds its lock."""
+    manifest = read_manifest(campaign_dir)
+    sources = derived_sources(campaign_dir, run, manifest)
+    entries = {t: manifest.get("tables", {}).get(t, {}).get("runs", {}) for t in tables}
+    # Current: the same sources by this decoder, or a live derivation's whose stamp is
+    # fresh (a watcher rebuilds it whole as the run goes and finalises it); one whose
+    # stamp went stale is the abandoned watcher's, whatever it was built from.
+    if not force and all(_entry_current(entries[t].get(run.key), sources) for t in tables):
+        for table in tables:
+            report.skipped.setdefault(table, []).append(run.key)
+        return
+    derivation = derive_job(campaign_dir, campaign_id, run.job_dir,
+                            JobRun(run.key, run.config_name, run.run_id, run.path),
+                            tables, manifest, containers)
+    report.notes.extend(derivation.notes)
+    complete = os.path.isfile(os.path.join(run.path, "test.xml"))
+    written = []
+    for table in tables:
+        rows = derivation.tables.get(table)
+        if rows is None:
+            continue
+        rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
+        write_table(campaign_dir, rel, rows)
+        written.append((table, rel, rows))
+    with manifest_lock(campaign_dir):
+        fresh = read_manifest(campaign_dir)
+        done = set()
+        for table, rel, rows in written:
+            record_run_table(fresh, table, run.key, files=[rel], rows=rows.num_rows,
+                             schema=rows.schema, sources=sources, complete=complete)
+            report.built.setdefault(table, []).append(run.key)
+            done.add(table)
+        for table in tables:
+            if table not in done:
+                # A run with no verdict line has no scenario_timestamps row: a table
+                # it has, and that came out empty.
+                record_run_absent(fresh, table, run.key, sources=sources,
+                                  complete=complete, known=True)
+        write_manifest(campaign_dir, fresh)
+
+
 def _build_derived(campaign_dir: str, campaign_id: str, selected: List[Run],
                    tables: List[str], containers, force: bool, report: BuildReport) -> None:
     """The derived tables of every selected run, from its job's records."""
     for run in selected:
-        manifest = read_manifest(campaign_dir)
-        sources = derived_sources(campaign_dir, run, manifest)
-        entries = {t: manifest.get("tables", {}).get(t, {}).get("runs", {}) for t in tables}
-        # Current: the same sources by this decoder, or a live derivation's whose stamp is
-        # fresh (a watcher rebuilds it whole as the run goes and finalises it); one whose
-        # stamp went stale is the abandoned watcher's, whatever it was built from.
-        if not force and all(_entry_current(entries[t].get(run.key), sources) for t in tables):
-            for table in tables:
-                report.skipped.setdefault(table, []).append(run.key)
-            continue
-        derivation = derive_job(campaign_dir, campaign_id, run.job_dir,
-                                JobRun(run.key, run.config_name, run.run_id, run.path),
-                                tables, manifest, containers)
-        report.notes.extend(derivation.notes)
-        complete = os.path.isfile(os.path.join(run.path, "test.xml"))
-        written = []
-        for table in tables:
-            rows = derivation.tables.get(table)
-            if rows is None:
-                continue
-            rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
-            write_table(campaign_dir, rel, rows)
-            written.append((table, rel, rows))
-        with manifest_lock(campaign_dir):
-            fresh = read_manifest(campaign_dir)
-            done = set()
-            for table, rel, rows in written:
-                record_run_table(fresh, table, run.key, files=[rel], rows=rows.num_rows,
-                                 schema=rows.schema, sources=sources, complete=complete)
-                report.built.setdefault(table, []).append(run.key)
-                done.add(table)
-            for table in tables:
-                if table not in done:
-                    # A run with no verdict line has no scenario_timestamps row: a table
-                    # it has, and that came out empty.
-                    record_run_absent(fresh, table, run.key, sources=sources,
-                                      complete=complete, known=True)
-            write_manifest(campaign_dir, fresh)
+        with run_lock(campaign_dir, run.key):
+            _derive_run(campaign_dir, campaign_id, run, tables, containers, force, report)
 
 
 def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, force: bool,
