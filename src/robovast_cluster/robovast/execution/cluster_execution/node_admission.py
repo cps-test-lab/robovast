@@ -441,6 +441,10 @@ class AdmissionController:
         #: campaign's item happened to be next -- and campaign B would have read campaign A's
         #: job sizes as the reason for its own wait.
         self._refusals: "Dict[str, str]" = {}
+        #: ``owner -> {key: cause}`` for items a drain gave up creating (``CREATE_ATTEMPT_LIMIT``).
+        #: Kept until the owner is cancelled: a dropped item leaves ``states`` and would
+        #: otherwise read as "nothing planned", which is what a finished batch looks like.
+        self._given_up: "Dict[str, Dict[str, str]]" = {}
 
     # -- queue -------------------------------------------------------------------------
 
@@ -669,6 +673,7 @@ class AdmissionController:
                     item.last_error = f"{exc.__class__.__name__}: {exc}"
                     if item.attempts >= CREATE_ATTEMPT_LIMIT:
                         failed.append(item)
+                        self._given_up.setdefault(item.owner, {})[item.key] = item.last_error
                         self._refusals[item.owner] = (
                             f"could not create {item.key} after {item.attempts} attempts: "
                             f"{item.last_error}")
@@ -738,6 +743,7 @@ class AdmissionController:
         :meth:`forget_calibration` is what ends it, at the end of the campaign.
         """
         with self._lock:
+            self._given_up.pop(owner, None)
             keys = [k for k, i in self._items.items() if i.owner == owner]
             planned = sum(1 for k in keys if self._items[k].state == PLANNED)
             for key in keys:
@@ -978,6 +984,16 @@ class AdmissionController:
         """Why nothing is admitted for want of disk space, as of the last drain, or ``None``."""
         with self._lock:
             return self._space_short
+
+    def given_up(self, owner: str) -> "Dict[str, str]":
+        """``key -> cause`` for *owner*'s items no drain will try to create again.
+
+        The owner's verdict, not a wait: an item here was dropped from the queue after
+        ``CREATE_ATTEMPT_LIMIT`` consecutive failures, so its Job will never exist. Kept
+        until :meth:`cancel`, because the drop also removes it from :meth:`states`.
+        """
+        with self._lock:
+            return dict(self._given_up.get(owner, {}))
 
     def refusal(self, owner: str) -> str:
         """Why nothing was created for *owner* last time, for its campaign's log.
