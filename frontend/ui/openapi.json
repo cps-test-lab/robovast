@@ -4795,6 +4795,21 @@
             "title": "Packaged",
             "type": "boolean"
           },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          },
           "world": {
             "default": "",
             "title": "World",
@@ -4812,6 +4827,7 @@
           "inputs",
           "overridable",
           "packaged",
+          "warnings",
           "world"
         ],
         "title": "WorldDescription",
@@ -7385,6 +7401,56 @@
           }
         },
         "summary": "Campaign Screenshot",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/screenshots/{name}": {
+      "get": {
+        "description": "A render ``POST .../screenshot`` kept, fetched again by the name it was kept under.\n\nKept for a bounded time and count (``robovast.service.screenshot``); a 404 once it is\ngone. Its bytes never change under its name, so it is served as immutable.",
+        "operationId": "campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Screenshot Frame",
         "tags": [
           "results"
         ]

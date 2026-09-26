@@ -279,6 +279,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    description: str = "", priority: int = 0,
+                   image_project_tag: str = "",
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
@@ -314,6 +315,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             ``provenance:``. Refused by default: nothing in the results could then say what
             ran. Prefer fixing it — add ``provenance: {source, revision}`` there, or declare
             ``system_packages`` and drop the image so robovast builds it. Exemption recorded.
+        image_project_tag: Tag the RoboVAST ``family:`` images are taken at, this run only
+            (``vast workspace run --image-project-tag``). Pin a release (``2.2.0``) for a run
+            that must be reproducible; default is the service's, often a floating ``latest``.
+            An image the ``.vast`` names is run as written.
         description: **Set this every time.** One line (≤200 chars) saying what the run is
             *for* — what tells two same-day ids apart. Good: "pilot: 5 reps DWB vs MPPI on
             open_space, new inflation radius".
@@ -354,7 +359,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
                 ("description", description),
-                ("priority", priority)) if value]
+                ("priority", priority), ("image_project_tag", image_project_tag)) if value]
             if supplied:
                 return {"error":
                         f"from_campaign={from_campaign!r} replays what that campaign "
@@ -378,7 +383,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
             allow_opaque_image=allow_opaque_image, priority=priority,
-            upload_to_share=upload_to_share))
+            upload_to_share=upload_to_share, image_project_tag=image_project_tag))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
