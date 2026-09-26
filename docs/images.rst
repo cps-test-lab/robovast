@@ -314,7 +314,10 @@ because nobody was there to say no.
 Each pin is re-resolved with ``git ls-remote`` against the branch (``BRANCH=`` to use one
 other than ``main``), so what lands is by construction a commit on a durable ref — a pin
 taken from a feature branch stops resolving the moment that branch is deleted, and every
-clean build then fails with ``fatal: reference is not a tree``.
+clean build then fails with ``fatal: reference is not a tree``. ``BRANCH=`` takes a branch
+for every source, or ``SOURCE=BRANCH`` for one: ``BRANCH=roqsim=next`` is how RoboVAST's
+``next`` bakes roqsim's ``next`` while scenario-execution stays on ``main``. A source name
+that matches no pin is refused.
 
 Named after ``release-images`` because that is the flow it belongs to: these pins are what
 decide which sources that command bakes. Distinct from ``make refresh-build-pins``, which
