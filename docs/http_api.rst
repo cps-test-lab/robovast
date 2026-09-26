@@ -45,11 +45,8 @@ a restart forgets nothing, and a scope stops mattering the moment nothing answer
 Handing a pod the shared secret instead would let any container in the cluster start
 campaigns.
 
-Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
-``sources_root`` for any caller that is not on the same machine, because those are
-filesystem paths only useful — and only safe — to one that is; a forwarded request
-counts as remote, since behind a proxy the peer address is the proxy. And the file routes
-serve real paths on the service host, which is the point of the address space below.
+One consequence shows up in the table: the file routes serve real paths on the service
+host, which is the point of the address space below.
 
 Addressing files
 ================

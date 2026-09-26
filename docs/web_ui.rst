@@ -389,7 +389,8 @@ secret shows as ``set`` and its value never leaves the service, because RoboVAST
 per-route authorization: anything a response carries is available to every logged-in
 caller. Two other kinds of value are held back for narrower reasons: registry endpoints and
 refs never cross the client interface at all, and a path on the service's own disk is shown
-only to a caller on that machine — the same rule ``/version`` applies to its roots.
+only to a caller on that machine; a forwarded request counts as remote, since behind a
+proxy the peer address is the proxy.
 
 The list comes from the environment rather than from a catalogue in the code, so a setting
 added to RoboVAST appears here without anyone maintaining a list. The cost is that a key

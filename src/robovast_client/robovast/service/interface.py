@@ -1268,7 +1268,7 @@ class ServiceSetting(BaseModel):
     #: Why THIS caller got no value though the setting is set: ``"secret"`` (a credential;
     #: never shown to anyone, in any form), ``"server_only"`` (registry details, which do
     #: not cross this interface -- see ``RegistryConfig``), ``"host_path"`` (shown to a
-    #: loopback caller only, as ``VersionInfo.results_root`` is), or ``"unclassified"``.
+    #: loopback caller only), or ``"unclassified"``.
     #: ``None`` when :attr:`value` stands, and when the setting is simply unset.
     withheld: Optional[str] = None
 
