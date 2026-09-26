@@ -204,7 +204,8 @@ Keeping it running
 .. code-block:: bash
 
    vast service upgrade          # new version: image + RBAC, nobody logged out
-   vast cluster setup --force    # rotate credentials from .env (logs everyone out)
+   vast cluster setup --force    # re-provision, rebuilding the credential Secrets from .env
+   vast cluster setup --force --rotate-token   # also mint a new access token (logs everyone out)
    vast cluster cleanup          # remove it; the results volume is kept unless --delete-data
 
 If the Ingress itself breaks, ``kubectl port-forward svc/robovast-service 8800:8800`` puts
