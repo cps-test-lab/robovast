@@ -273,7 +273,9 @@ def _wait_next_step(campaign_id: str) -> str:
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
     return (f"run in the background: vast campaign wait {campaign_id} "
-            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
+            f"(exit 0 finished, 1 failed/stopped, 2 stopped waiting, 3 no such campaign, "
+            f"4 stalled, 5 its simulator reported a fault; on 4 and 5 the campaign is "
+            f"still running and nothing is waiting on it)")
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
