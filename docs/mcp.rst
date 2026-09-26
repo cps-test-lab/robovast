@@ -88,8 +88,10 @@ Pass ``--no-mcp`` to ``vast serve`` to serve the API without the tools.
 Claude Code plugin
 ------------------
 
-The repository ships a small Claude Code plugin (``.claude-plugin/``) with one job:
-**never end a turn silently in the middle of a campaign.** ``start_campaign`` returns as
+The repository ships a small Claude Code plugin (``.claude-plugin/``) with two jobs: the
+``changelog`` skill under ``skills/`` writes a release's section of ``CHANGELOG.md``, and
+its hook exists to **never end a turn silently in the middle of a campaign.**
+``start_campaign`` returns as
 soon as the campaign is *named*, so an agent that reads one status and stops has told the
 user a campaign finished when it had barely begun.
 

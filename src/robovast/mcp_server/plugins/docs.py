@@ -148,8 +148,10 @@ _DIRECTIVE_RE = re.compile(
     re.MULTILINE,
 )
 
+# The bare form, as docs/_ext/mcp_tools.py declares it: the listing is registry-driven, so
+# the directive names nothing.
 _MCP_TOOLS_RE = re.compile(
-    r"^\.\.\s+mcp-tools::\s+(\S+)\s*$",
+    r"^\.\.\s+mcp-tools::\s*$",
     re.MULTILINE,
 )
 
@@ -213,20 +215,26 @@ def _strip_inline_roles(text: str) -> str:
     return _INLINE_ROLE_RE.sub(_repl, text)
 
 
-def _resolve_mcp_tools_directive(target: str) -> str:
-    """Expand a ``.. mcp-tools::`` directive into a plain-text tool listing."""
+def _resolve_mcp_tools_directive() -> str:
+    """Expand ``.. mcp-tools::`` into a plain-text listing of every registered tool.
+
+    The same registry the Sphinx directive renders, so the page an agent reads through
+    ``search_docs`` lists what the server it is talking to registers.
+    """
     try:
-        module_path, attr = target.rsplit(".", 1)
-        mod = importlib.import_module(module_path)
-        tools = getattr(mod, attr)
+        from robovast.mcp_server.registry import \
+            load_registered_tool_details  # pylint: disable=import-outside-toplevel
         lines = []
-        for fn in tools:
-            doc = (fn.__doc__ or "").strip().split("\n")[0]
-            lines.append(f"- ``{fn.__name__}``: {doc}")
+        for plugin_name, tools in sorted(load_registered_tool_details().items()):
+            if not tools:
+                continue
+            lines += [f"**{plugin_name}**", ""]
+            lines += [f"- ``{t['name']}``: {t['summary']}" for t in tools]
+            lines.append("")
         return "\n".join(lines)
     except Exception as e:
-        logger.debug("mcp-tools resolution failed for %s: %s", target, e)
-        return f"*[mcp-tools:: {target} — could not resolve: {e}]*"
+        logger.debug("mcp-tools resolution failed: %s", e)
+        return f"*[mcp-tools:: — could not resolve: {e}]*"
 
 
 def _resolve_directives(text: str, base_dir: Path) -> str:
@@ -239,7 +247,7 @@ def _resolve_directives(text: str, base_dir: Path) -> str:
     directory the document lives in, used to resolve ``literalinclude`` paths.
     """
     def _replace_mcp_tools(m: re.Match) -> str:
-        return _resolve_mcp_tools_directive(m.group(1)) + "\n"
+        return _resolve_mcp_tools_directive() + "\n"
 
     text = _MCP_TOOLS_RE.sub(_replace_mcp_tools, text)
 
