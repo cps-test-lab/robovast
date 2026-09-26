@@ -48,10 +48,6 @@ logger = logging.getLogger(__name__)
 #: faster than campaigns do, and a build is minutes rather than days.
 DEFAULT_POLL_INTERVAL_S = 5.0
 
-#: Phases meaning the image exists. Anything else terminal is a failure.
-SUCCESS_PHASES = ("succeeded", "cached")
-
-
 def wait_for_image_builds(build_ids: Iterable[str], *, client=None,
                           service_url: str = "",
                           interval: float = DEFAULT_POLL_INTERVAL_S,

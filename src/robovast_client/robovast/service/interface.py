@@ -242,6 +242,13 @@ class ImageBuildStatus(BaseModel):
     cache_ref: str = ""
 
 
+#: The :attr:`ImageBuildStatus.phase` values meaning the image exists: built by this build,
+#: or found already built for the same inputs. Every other terminal phase is a failure. One
+#: definition, so the wait, the launch that depends on the build and the refusal that names
+#: it cannot list it differently.
+IMAGE_BUILT_PHASES: frozenset[str] = frozenset({"succeeded", "cached"})
+
+
 class ExecRequest(BaseModel):
     """Run one command in the experiment image — a diagnostic, never a campaign.
 
