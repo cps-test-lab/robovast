@@ -843,17 +843,10 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     """Re-render one moment of a run from a viewpoint you choose, as a PNG.
 
     Renders the world again, so the camera is yours. Needs a simulator that can re-render
-    (roqsim can; Gazebo cannot) and a run that recorded its state — written on a clean stop
-    only. It runs a container in the campaign's simulation image: seconds if that image is on
-    the node, minutes if it must be pulled. For a camera *mounted in the world during the run*
-    use ``get_camera_frame`` instead — a cheap read of a recorded video, on any backend.
-
-    Returns the PNG inline, and beside it ``{url, kept_for_s}``: the service keeps the render
-    and serves it at ``url``, so it can be attached, saved or handed on without rendering it
-    again. Kept for ``kept_for_s`` after it was made, fewer if newer renders displace it.
-    ``url`` is absent when the service kept no copy or declares no origin to reach it on.
-    A failure **raises** rather than coming back as ``{error}``: no such capability, no
-    recorded state, or a render that failed.
+    (roqsim can; Gazebo cannot) and a run that recorded its state, written on a clean stop
+    only; it runs a container in the campaign's simulation image, seconds when the image is
+    on the node. For a camera the run itself carried, ``get_camera_frame`` is the cheap read.
+    A failure **raises**: no such capability, no recorded state, a render that failed.
 
     Args:
         campaign_id: The id from ``start_campaign``.
