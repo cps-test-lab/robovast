@@ -82,7 +82,7 @@ them. Internally:
    and the service streams downloads straight out of it
    (``vast campaign download`` / ``--wait-and-download``), so no external share is
    required. Pushing a copy to an external ``tar.gz`` **share** is opt-in **at
-   launch** — enable *Upload to share when done* in the web UI launcher (or
+   launch** — enable *Upload to share* in the web UI launcher (or
    ``--upload-to-share`` / the MCP ``upload_to_share`` flag). When set, the driver
    streams a **raw, pre-postprocessing** archive to the configured share the moment
    the runs finish, *before* analysis postprocessing adds derived data — so the
@@ -704,7 +704,7 @@ service, ``vast campaign import <archive>``.
 
 The share's raw, pre-postprocessing copy is a different system, reached through
 ``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it
-**at launch** (*Upload to share when done* in the web UI, ``--upload-to-share`` on
+**at launch** (*Upload to share* in the web UI, ``--upload-to-share`` on
 ``vast workspace run``, or the MCP ``upload_to_share`` flag) or export a
 finished campaign with ``vast share export -i <campaign-id>``.
 
@@ -2278,7 +2278,7 @@ passed — including the results volume, which is where finished campaigns live.
 * The results survive the service pod being restarted or upgraded and a
   ``vast cluster cleanup``, but they are one directory on one node and no more: archive
   anything that must outlive the machine with ``vast share``, or launch with *Upload to
-  share when done*.
+  share*.
 * ``vast cluster cleanup --delete-data`` is what empties this deployment's directories,
   and nothing else does.
 * The directories draw from the node filesystem and declare no bound, so watch the web
@@ -2426,8 +2426,8 @@ not a fraction of it.
 How it works
 ^^^^^^^^^^^^
 
-Pushing at launch is an opt-in step run **in the driver**: enable *Upload to share
-when done* in the web UI, pass ``--upload-to-share`` to ``vast workspace run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
+Pushing at launch is an opt-in step run **in the driver**: enable *Upload to share*
+in the web UI, pass ``--upload-to-share`` to ``vast workspace run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
 no separate archiver pod is involved.
 
 When the toggle is set, the driver — the moment the scenario runs finish and

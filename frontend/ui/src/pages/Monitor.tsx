@@ -312,11 +312,11 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const { choose, confirm, prompt } = useDialogs()
   const { notify } = useToasts()
 
-  // Every action below reports its own outcome. A failure goes to a STICKY toast rather than an
-  // Alert on this card: the card's Alert had nothing that ever cleared it -- no mutation is
-  // reset and the card does not unmount -- so a refusal sat there until the tab was reloaded,
-  // outliving the thing it was about. A sticky toast still waits for the reader; it just does
-  // not become part of the campaign.
+  // Every action below reports its own outcome. A failure goes to an error toast (held for
+  // ERROR_DURATION_MS, longer under the pointer) rather than an Alert on this card: an Alert
+  // here has nothing that ever clears it -- no mutation is reset and the card does not
+  // unmount -- so a refusal would sit there until the tab was reloaded, outliving the thing it
+  // was about. A toast waits long enough to be read; it does not become part of the campaign.
   const failed = (what: string, key: string) => (e: unknown) => notify({
     severity: 'error', key, message: what, note: (e as Error).message,
   })
