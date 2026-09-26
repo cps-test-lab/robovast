@@ -23,6 +23,8 @@ its objectives + measures into an :class:`Evaluation`. The framework counts
 """
 
 import logging
+import math
+import numbers
 from pathlib import Path
 
 from robovast.common.config import SearchConfig
@@ -109,6 +111,15 @@ class Evaluator:
         # because this is the one place that knows what the campaign declared; every reader
         # downstream then gets a dict that means what its name says.
         objectives = {n: result.objectives[n] for n in self.objective_names}
+        # A NaN or an infinity is refused where it enters, because nothing downstream can
+        # compare it: a NaN best-so-far is never replaced, stops a search that is improving,
+        # and sorts a report arbitrarily.
+        non_finite = {n: v for n, v in objectives.items()
+                      if isinstance(v, numbers.Real) and not math.isfinite(v)}
+        if non_finite:
+            raise ValueError(
+                f"Extractor returned non-finite objective value(s) {non_finite} for "
+                f"{config_dir}; an objective must be a finite number to be compared.")
         extras = {n: v for n, v in result.objectives.items() if n not in objectives}
         clashing = sorted(set(extras) & set(result.measures))
         if clashing:
