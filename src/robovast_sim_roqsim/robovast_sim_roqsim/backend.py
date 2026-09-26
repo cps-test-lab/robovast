@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import shlex
 from typing import Optional
 
@@ -48,12 +49,21 @@ def _config_in_container(config: str) -> str:
     the image pull and the pod schedule, so the cost is a whole cell.
 
     A package ref is left alone: it travels inside the image and has no path at all.
+
+    A relative path that leaves the ``.vast``'s directory is refused: only that directory is
+    staged, so the file would not be in the container under any name.
     """
     if _is_package_ref(config):
         return config
     if config.startswith("/"):
         return config
-    return f"{CONFIG_MOUNT}/{config.lstrip('./')}"
+    relative = posixpath.normpath(config)
+    if relative == ".." or relative.startswith("../"):
+        raise ValueError(
+            f"roqsim config {config!r} is outside the .vast's directory, which is all a "
+            f"campaign stages into {CONFIG_MOUNT}; move it beside the .vast or name it as a "
+            "package ref")
+    return f"{CONFIG_MOUNT}/{relative}"
 
 
 class RoqsimConfig(BaseModel):
