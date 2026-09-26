@@ -177,6 +177,14 @@ class RunProgress(BaseModel):
     outcomes_counted: bool = False
 
 
+class StepProgress(BaseModel):
+    """How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per
+    variation of each configuration block. A step can expand into any number of
+    configurations, so this counts work, not configurations."""
+    done: int = 0
+    total: int = 0
+
+
 class HealthFinding(BaseModel):
     """One thing a run's **simulator** reported wrong about itself, while it was running.
 
@@ -328,6 +336,9 @@ class Status(BaseModel):
     # reconstructed from disk -- the same caveat ``batch_since`` carries.
     search_since: Optional[float] = None
     stage: Optional[str] = None
+    # Composition's step counter while ``phase == "variation"``; ``None`` until the first step
+    # is counted, and for a campaign whose composition was served from the cache.
+    variation: Optional[StepProgress] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None
     batch: int = 0                       # current batch index (0-based)

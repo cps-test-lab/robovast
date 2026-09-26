@@ -2390,6 +2390,15 @@ every client reaches them; ``ServiceBase`` wraps ``validate_project_file`` /
 ``robovast.variation_types`` entry points, and ``validate_project`` swallows unexpected errors into
 a structured problem so the editor's live validation never 500s on in-progress YAML.
 
+**Config names for the launcher.** ``list_config_names`` is the non-blocking sibling of
+``preview_configurations``: ``ServiceBase`` composes the ``.vast`` on a thread of its own, keyed by
+workspace and path, and each call answers ``composing`` (with a ``StepProgress``), ``ready`` (the
+names) or ``failed`` at once; a landed result is served until the ``.vast``'s mtime moves. Both
+it and a campaign's ``variation`` phase read their step counter from the composition progress
+line through ``config_generation.parse_composition_step``, which a campaign publishes as
+``Status.variation``. The launcher checks its filter against the names with
+``frontend/ui/src/lib/configFilter.ts``, which matches as ``filter_configs_by_name`` does.
+
 **Per-variation previews.** ``preview_configurations`` returns, per configuration, a ``previews``
 list (``{variation_type, params, remote}``) read from the config's declared ``variations``. The
 editor (``frontend/ui/src/preview/``) renders **built-in** variation types host-native — ``builtins.tsx``

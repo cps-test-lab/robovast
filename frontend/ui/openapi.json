@@ -148,6 +148,20 @@
         "title": "Body_edit_sources_file_sources__workspace_id___path__post",
         "type": "object"
       },
+      "Body_list_config_names_workspaces__workspace_id__config_names_post": {
+        "properties": {
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "Body_list_config_names_workspaces__workspace_id__config_names_post",
+        "type": "object"
+      },
       "Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post": {
         "properties": {
           "workspace_name": {
@@ -898,6 +912,50 @@
           "workloads"
         ],
         "title": "CampaignVisualizationsResponse",
+        "type": "object"
+      },
+      "ConfigNames": {
+        "description": "Result of :meth:`RobovastInterface.list_config_names`: the configuration names a\n``.vast`` expands to, composed in the background.\n\n``state`` is ``composing`` while the expansion runs (``progress`` then counts its steps once\nthe first is counted), ``ready`` once ``names`` holds every name, and ``failed`` when the\nexpansion raised, with ``error`` saying why. ``names`` is empty in every state but\n``ready``.",
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "composing",
+              "ready",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "names",
+          "progress",
+          "state"
+        ],
+        "title": "ConfigNames",
         "type": "object"
       },
       "CreateCampaignRequest": {
@@ -4127,6 +4185,16 @@
             "title": "Updated At",
             "type": "number"
           },
+          "variation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "waiting_for_capacity": {
             "default": false,
             "title": "Waiting For Capacity",
@@ -4166,9 +4234,31 @@
           "stopping_soon",
           "stopping_verdict",
           "updated_at",
+          "variation",
           "waiting_for_capacity"
         ],
         "title": "StatusResponse",
+        "type": "object"
+      },
+      "StepProgress": {
+        "description": "How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per\nvariation of each configuration block. A step can expand into any number of\nconfigurations, so this counts work, not configurations.",
+        "properties": {
+          "done": {
+            "default": 0,
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "StepProgress",
         "type": "object"
       },
       "TrackDeviation": {
@@ -10285,6 +10375,57 @@
           }
         },
         "summary": "Download Workspace Archive",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/workspaces/{workspace_id}/config-names": {
+      "post": {
+        "operationId": "list_config_names_workspaces__workspace_id__config_names_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_list_config_names_workspaces__workspace_id__config_names_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigNames"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Config Names",
         "tags": [
           "workspaces"
         ]

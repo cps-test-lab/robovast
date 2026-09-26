@@ -181,7 +181,11 @@ Then check it, and run it:
 
    vast workspace validate my-experiment my.vast   # every problem at once
    vast workspace preview  my-experiment my.vast   # how many configurations is that?
+   vast workspace config-names my-experiment my.vast   # the names --filter selects from
    vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
+
+``run --filter`` takes a name or glob, or several separated by commas (``--filter
+'config1-1-1,config2-*'``), and runs every configuration any of them matches.
 
 ``validate`` prints each problem with its severity and exits non-zero unless every check it
 covers ran and passed — including the two that need a container: the world check, and parsing

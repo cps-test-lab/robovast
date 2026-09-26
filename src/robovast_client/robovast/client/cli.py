@@ -605,6 +605,45 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
         handle_cli_exception(e)
 
 
+@workspace.command('config-names')
+@click.argument('workspace', metavar='WORKSPACE')
+@click.argument('vast_path', metavar='[VAST]', required=False, default='')
+@target_options
+def workspace_config_names(workspace, vast_path, namespace, context):  # pylint: disable=redefined-outer-name
+    """List the configuration names the sweep expands to — what `run --filter` selects from.
+
+    The service composes the file in the background; this waits for it, showing how many
+    variation steps are done.
+    """
+    import time  # pylint: disable=import-outside-toplevel
+    try:
+        from robovast.service.project_push import \
+            _resolve_workspace_id  # pylint: disable=import-outside-toplevel
+
+        with service_client(namespace, context) as (client, target):
+            _echo_target(target)
+            workspace_id = _resolve_workspace_id(client, workspace)
+            shown = None
+            while True:
+                result = client.list_config_names(workspace_id, path=vast_path)
+                if result.state != "composing":
+                    break
+                if result.progress and result.progress != shown:
+                    shown = result.progress
+                    click.echo(f"composing: {shown.done} of {shown.total} variation(s) done",
+                               err=True)
+                time.sleep(1)
+            if result.state == "failed":
+                raise click.ClickException(result.error)
+            for name in result.names:
+                click.echo(name)
+    # pylint: disable-next=try-except-raise
+    except (click.UsageError, click.ClickException):
+        raise
+    except Exception as e:
+        handle_cli_exception(e)
+
+
 @workspace.command('run')
 @click.argument('workspace', metavar='WORKSPACE')
 @click.argument('vast_path', metavar='[VAST]', required=False, default='')
@@ -614,7 +653,9 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
                    'it does not exist. The two-step form (workspace init/update, then '
                    'run) is the same thing spelled out.')
 @click.option('--filter', 'config_filter', default='', metavar='GLOB',
-              help='Run only configurations matching this name or glob (e.g. hall*).')
+              help='Run only configurations matching this name or glob (e.g. hall*); '
+                   'several comma-separated globs select every configuration any matches. '
+                   '`vast workspace config-names` lists the names.')
 @click.option('--runs', '-r', type=int, default=None,
               help="Override execution.runs (default: the value in the .vast).")
 @click.option('--campaign-name', default=None,

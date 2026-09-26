@@ -314,6 +314,8 @@ export interface VariationPreview {
 export type PreviewConfiguration = Schemas['PreviewConfiguration']
 
 export type PreviewResponse = Schemas['PreviewResponse']
+export type ConfigNames = Schemas['ConfigNames']
+export type StepProgress = Schemas['StepProgress']
 export type WorldDescription = Schemas['WorldDescription']
 
 export type VariationTypeParam = Schemas['VariationTypeParam']
@@ -827,6 +829,11 @@ export const robovast = {
       max_configs: maxConfigs,
       path,
     }),
+
+  // The names a workspace .vast expands to, composed by the service in the background: the first
+  // call starts it and answers `composing`; poll until `ready` or `failed`.
+  listConfigNames: (id: string, path = '') =>
+    request<ConfigNames>('POST', `/workspaces/${encodeURIComponent(id)}/config-names`, { path }),
 
   // What the simulator says this workspace's world offers. Runs a container in the campaign's
   // own image, so it is only ever called from an explicit button.

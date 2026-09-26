@@ -50,7 +50,7 @@ from robovast.client import file_address
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
-from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401  # pylint: disable=unused-import
+from robovast.client.status import (Phase, Status, StatusResponse, StepProgress,  # noqa: F401  # pylint: disable=unused-import
                                     status_response)
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ class CreateCampaignRequest(BaseModel):
 
     workspace_id: str
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
-    config_filter: str = ""          # optional glob to run only matching configs
+    config_filter: str = ""          # optional comma-separated globs; run only matching configs
     campaign_name: str = ""          # override the campaign name (id = <name>-<timestamp>); "" = metadata.name
     # Free text about *this* launch ("pilot: 5 reps, DWB vs MPPI"), recorded in the
     # campaign's store and shown in listings. Capped so it stays a listing-sized label
@@ -2100,6 +2100,21 @@ class PreviewResponse(BaseModel):
     config_panels: list[dict] = Field(default_factory=list)
 
 
+class ConfigNames(BaseModel):
+    """Result of :meth:`RobovastInterface.list_config_names`: the configuration names a
+    ``.vast`` expands to, composed in the background.
+
+    ``state`` is ``composing`` while the expansion runs (``progress`` then counts its steps once
+    the first is counted), ``ready`` once ``names`` holds every name, and ``failed`` when the
+    expansion raised, with ``error`` saying why. ``names`` is empty in every state but
+    ``ready``."""
+
+    state: Literal["composing", "ready", "failed"]
+    progress: Optional[StepProgress] = None
+    names: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
 class WorldDescription(BaseModel):
     """What a campaign's world offers — :meth:`RobovastInterface.describe_world`.
 
@@ -2587,6 +2602,10 @@ class Routes:
     @staticmethod
     def workspace_preview(workspace_id: str) -> str:
         return f"/workspaces/{workspace_id}/preview"
+
+    @staticmethod
+    def workspace_config_names(workspace_id: str) -> str:
+        return f"/workspaces/{workspace_id}/config-names"
 
     @staticmethod
     def workspace_world(workspace_id: str) -> str:
@@ -3820,6 +3839,17 @@ class RobovastInterface(ABC):
         Wraps ``config_generation.generate_scenario_variations(output_dir=None)``;
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
+        """
+
+    @abstractmethod
+    def list_config_names(self, workspace_id: str, path: str = "") -> ConfigNames:
+        """The configuration names a workspace ``.vast`` expands to, without waiting for them.
+
+        The first call starts composing the file in the background and returns at once in
+        state ``composing``; the caller polls the same call until it is ``ready`` or
+        ``failed``. A result stays until the ``.vast`` changes, and the next call after that
+        composes again. ``path`` selects which ``.vast`` (empty = the sole one). Raises
+        ``ValueError`` for a search ``.vast``, whose configurations are drawn while it runs.
         """
 
     @abstractmethod

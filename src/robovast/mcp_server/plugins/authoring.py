@@ -379,6 +379,33 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         return service_access.error_result(e)
 
 
+def list_config_names(address: str) -> dict:
+    """The configuration names a workspace ``.vast`` expands to, for ``config_filter``.
+
+    Non-blocking: ``composing`` (with ``progress``) until ``ready`` (``names``) or ``failed``
+    (``error``); call again to poll.
+
+    Args:
+        address: ``/sources/<workspace_id>/<path>`` of the ``.vast``.
+
+    Returns:
+        ``{state, progress, names, error}``; or ``{error}``.
+    """
+    from robovast.service.project_push import _resolve_workspace_id
+    try:
+        target = _address_route(address)
+        if target is None:
+            raise ValueError(
+                f"{address!r} is not a /sources/<workspace_id>/<path> address; names are "
+                "composed by the service. preview_configurations lists them for a host path.")
+        client = service_access.require_service()
+        workspace_id, rel_path = target
+        return client.list_config_names(
+            _resolve_workspace_id(client, workspace_id), rel_path).model_dump()
+    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
+        return service_access.error_result(e)
+
+
 def describe_world(address: str, targets: str = "", entities: bool = False) -> dict:
     """What does this campaign's world offer an override? Asked of the simulator itself.
 
@@ -544,6 +571,7 @@ _TOOLS = [
     create_upload,
     validate_project,
     preview_configurations,
+    list_config_names,
     describe_world,
     describe_scenario,
     get_world_body_tree,

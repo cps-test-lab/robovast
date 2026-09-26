@@ -1878,6 +1878,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workspaces/{workspace_id}/config-names": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List Config Names */
+        post: operations["list_config_names_workspaces__workspace_id__config_names_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspaces/{workspace_id}/preview": {
         parameters: {
             query?: never;
@@ -2087,6 +2104,14 @@ export interface components {
              * @default
              */
             old_string: string;
+        };
+        /** Body_list_config_names_workspaces__workspace_id__config_names_post */
+        Body_list_config_names_workspaces__workspace_id__config_names_post: {
+            /**
+             * Path
+             * @default
+             */
+            path: string;
         };
         /** Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post */
         Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post: {
@@ -2561,6 +2586,31 @@ export interface components {
             campaign_id: string;
             /** Workloads */
             workloads: components["schemas"]["CampaignVisualization"][];
+        };
+        /**
+         * ConfigNames
+         * @description Result of :meth:`RobovastInterface.list_config_names`: the configuration names a
+         *     ``.vast`` expands to, composed in the background.
+         *
+         *     ``state`` is ``composing`` while the expansion runs (``progress`` then counts its steps once
+         *     the first is counted), ``ready`` once ``names`` holds every name, and ``failed`` when the
+         *     expansion raised, with ``error`` saying why. ``names`` is empty in every state but
+         *     ``ready``.
+         */
+        ConfigNames: {
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Names */
+            names: string[];
+            progress: components["schemas"]["StepProgress"] | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "composing" | "ready" | "failed";
         };
         /**
          * CreateCampaignRequest
@@ -4615,11 +4665,30 @@ export interface components {
             stopping_verdict: string | null;
             /** Updated At */
             updated_at: number;
+            variation: components["schemas"]["StepProgress"] | null;
             /**
              * Waiting For Capacity
              * @default false
              */
             waiting_for_capacity: boolean;
+        };
+        /**
+         * StepProgress
+         * @description How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per
+         *     variation of each configuration block. A step can expand into any number of
+         *     configurations, so this counts work, not configurations.
+         */
+        StepProgress: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
         };
         /**
          * TrackDeviation
@@ -8333,6 +8402,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_config_names_workspaces__workspace_id__config_names_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_list_config_names_workspaces__workspace_id__config_names_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigNames"];
                 };
             };
             /** @description Validation Error */

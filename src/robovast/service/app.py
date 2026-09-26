@@ -68,7 +68,7 @@ from robovast.service.interface import (ActionResult, BuildCampaignTablesRequest
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
                                         PanelsSource, ServiceCache,
                                         UpgradeInfo, UsageHistory, UsageSample,
-                                        PostprocessingSource, PreviewResponse, ResourceUsage,
+                                        PostprocessingSource, PreviewResponse, ResourceUsage, ConfigNames,
                                         RetriggerReport, RobovastInterface, Routes,
                                         RunPostprocessingRequest,
                                         RunShareRequest, SceneStatus, SearchHistory,
@@ -1417,6 +1417,13 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         path: str = Body("", embed=True),
     ) -> PreviewResponse:
         return _guard(lambda: impl.preview_configurations(workspace_id, max_configs, path))
+
+    @app.post(Routes.workspace_config_names("{workspace_id}"), response_model=ConfigNames,
+              tags=["workspaces"])
+    def list_config_names(
+        workspace_id: str, path: str = Body("", embed=True),
+    ) -> ConfigNames:
+        return _guard(lambda: impl.list_config_names(workspace_id, path))
 
     @app.post(Routes.workspace_world("{workspace_id}"), response_model=WorldDescription,
               tags=["workspaces"])

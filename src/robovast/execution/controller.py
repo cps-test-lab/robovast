@@ -1935,16 +1935,19 @@ def _record_controller_outcome(campaign_root, campaign_id, state, backend):
 def filter_configs_by_name(configs, config_filter):
     """Select campaign configs whose expanded name matches ``config_filter``.
 
-    Matching is a glob against the expanded variation name (e.g.
-    ``config1-1-1-1``), so a bare config-block name like ``config1`` matches
-    nothing — use ``config1*`` to select the whole block.
+    ``config_filter`` is one or more comma-separated globs, and a config is selected when
+    any of them matches its expanded variation name (e.g. ``config1-1-1-1``), so a bare
+    config-block name like ``config1`` matches nothing — use ``config1*`` to select the
+    whole block, or ``config1-1-1-1,config2-*`` to pick several.
 
     Raises ``CampaignConfigError`` listing the available config names when nothing
     matches, so a typo is reported with actionable choices (and no stack trace).
     """
     import fnmatch
 
-    matched = [c for c in configs if fnmatch.fnmatch(c["name"], config_filter)]
+    patterns = [p.strip() for p in config_filter.split(",") if p.strip()]
+    matched = [c for c in configs
+               if any(fnmatch.fnmatchcase(c["name"], p) for p in patterns)]
     if not matched:
         available = "\n".join(f"  - {c['name']}" for c in configs)
         raise CampaignConfigError(
@@ -1961,6 +1964,20 @@ def _replayed_pins(opts: RunOptions) -> "dict | None":
     pushed since. A fresh launch composes from its project, and its digests are fixed after.
     """
     return dict(opts.images) if opts.images_fixed else None
+
+
+def _variation_progress(state):
+    """A composition ``progress_update_callback`` that logs each line to ``variation.log`` and
+    publishes composition's step counter as ``Status.variation``."""
+    from robovast.client.status import StepProgress
+    from robovast.common.config_generation import parse_composition_step
+
+    def _callback(line):
+        variation_logger.info(line)
+        step = parse_composition_step(line)
+        if step is not None and state is not None:
+            state.update(variation=StepProgress(done=step[0], total=step[1]))
+    return _callback
 
 
 def build_campaign_data(vast_file, output_dir, config_filter=None,
@@ -2053,7 +2070,7 @@ def run_batch_campaign(vast_file, campaign_config, results_dir, runs, config_fil
         try:
             campaign_data = build_campaign_data(
                 vast_file, tmp, config_filter,
-                progress_update_callback=variation_logger.info,
+                progress_update_callback=_variation_progress(state),
                 image_project=opts.image_project,
                 image_project_tag=opts.image_project_tag,
                 should_stop=stop_checker(state, scope=STOP_RUNS),
