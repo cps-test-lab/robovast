@@ -1251,7 +1251,8 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         workspace_id, config_path: A workspace and which ``.vast`` in it.
         campaign_id: An existing campaign's ``_config/`` as the project — exactly one
             source, this or ``workspace_id``. A running campaign's container is never touched.
-        config_name: Stage this config. Omitted always means the bare image.
+        config_name: One configuration the ``.vast`` expands to, as
+            ``preview_configurations`` names it — not a file. Omitted: the bare image.
         container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
             Naming one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.

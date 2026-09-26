@@ -324,6 +324,57 @@ def test_validation_composes_inside_the_service_s_aux_runner_context(monkeypatch
     assert entered == [(_preview_tag("ws-1", "x.vast"), True)]
 
 
+@pytest.mark.parametrize("source, expected_key", [
+    ({"workspace_id": "ws-1", "config_path": "x.vast"}, ("ws-1", "x.vast")),
+    ({"campaign_id": "camp-7"}, ("camp-7", "")),
+])
+def test_exec_stages_a_configuration_inside_the_service_s_aux_runner_context(
+        monkeypatch, source, expected_key):
+    """Staging a configuration composes the file, so exec is a place a runner is arranged.
+
+    Composition reaches the simulator's input-files query, a variation's helper image and a
+    generator's, and a service pod has no ``docker`` to fall back on -- so without the hook
+    an exec of a campaign's or a workspace's configuration refuses on the service for a
+    property of where it ran. Held and keyed like preview, so a file previewed and then
+    exec'd reuses one warm container.
+    """
+    from robovast.service import container_exec
+    from robovast.service.interface import ExecRequest
+    from robovast.service.service_base import _preview_tag
+    from tests.service.null_service import NullService
+
+    entered, inside = [], []
+
+    @contextlib.contextmanager
+    def _record(self, tag, project, *, hold=False):
+        entered.append((tag, hold))
+        inside.append(True)
+        try:
+            yield
+        finally:
+            inside.pop()
+
+    class _Staged(Exception):
+        pass
+
+    def _stage(vast_file, config_name, **_kw):
+        # The assertion that matters: composition runs while the runner is installed.
+        assert inside, "stage() composed outside the aux-runner context"
+        assert config_name == "cell"
+        raise _Staged
+
+    monkeypatch.setattr(NullService, "_aux_runner_context", _record)
+    monkeypatch.setattr(NullService, "_exec_vast_file", lambda self, request: "/p/x.vast")
+    monkeypatch.setattr(container_exec, "stage", _stage)
+
+    with pytest.raises(_Staged):
+        NullService.exec_in_container(
+            object.__new__(NullService), ExecRequest(config_name="cell", **source))
+
+    assert entered == [(_preview_tag(*expected_key), True)]
+    assert not inside
+
+
 def test_the_preview_tag_is_stable_per_project_and_name_safe():
     """Stable or the pod is never reused; name-safe or it cannot be a pod name at all."""
     from robovast.service.service_base import _preview_tag
