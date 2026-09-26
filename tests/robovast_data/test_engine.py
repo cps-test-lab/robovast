@@ -295,3 +295,17 @@ def test_threads_and_memory_limit_bound_the_connection(campaign):
         assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
         limit = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
     assert limit.replace(" ", "") in ("256.0MiB", "256MiB", "268.4MB")
+
+
+def test_ensure_rebuilds_a_table_laid_out_under_another_contract(campaign):
+    from robovast_decode import DATA_CONTRACT
+    from robovast_decode.tables import read_manifest, write_manifest
+    engine = Engine([Scope(str(campaign))], workers=1)
+    assert engine.ensure(["poses"]) == []
+    manifest = read_manifest(str(campaign))
+    for entry in manifest["tables"]["poses"]["runs"].values():
+        entry["contract"] = DATA_CONTRACT - 1
+    write_manifest(str(campaign), manifest)
+    engine.ensure(["poses"])
+    assert all(e["contract"] == DATA_CONTRACT
+               for e in read_manifest(str(campaign))["tables"]["poses"]["runs"].values())
