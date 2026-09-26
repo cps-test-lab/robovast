@@ -50,6 +50,22 @@ def test_members_land_with_their_mode_and_directories(tmp_path):
     assert os.access(tmp_path / "cfg" / "run.sh", os.X_OK)
 
 
+def test_a_member_under_a_path_of_another_shape_is_refused_and_the_rest_kept(tmp_path):
+    """A file, or a symlink to nothing, where a member needs a directory is that member's
+    conflict with the tree: it is refused by name, and the members after it still land."""
+    (tmp_path / "flat.txt").write_text("a file\n")
+    out = tar_io.extract_stream(_tar([
+        ("dangling", "->missing", 0o777),
+        ("dangling/under-a-link.txt", b"x", 0o644),
+        ("flat.txt/under-a-file.txt", b"x", 0o644),
+        ("kept.txt", b"y", 0o644),
+    ]), tmp_path)
+    assert out.refused == ["dangling/under-a-link.txt", "flat.txt/under-a-file.txt"]
+    assert (tmp_path / "kept.txt").read_bytes() == b"y"
+    assert (tmp_path / "flat.txt").read_text() == "a file\n"
+    assert not (tmp_path / "missing").exists()
+
+
 def test_a_member_leaving_the_tree_is_refused_and_the_rest_kept(tmp_path):
     out = tar_io.extract_stream(_tar([
         ("../escape.txt", b"x", 0o644),
