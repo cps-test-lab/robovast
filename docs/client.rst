@@ -71,6 +71,14 @@ Every group is named after what it acts on, so the group tells you what you are 
        line. Exits non-zero if any was not fully deleted; a running one is refused.
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
+   * - ``vast campaign import <archive>``
+     - Upload an archive from this machine into the service as a campaign, postprocessing
+       it when it arrives raw (``--force`` replaces one of the same id).
+   * - ``vast campaign postprocess <id>``
+     - (Re)run a campaign's postprocessing on the service; the web UI's "Retrigger
+       postprocessing" and the MCP ``run_postprocessing`` tool drive the same operation.
+   * - ``vast campaign tables build|clear <id>``
+     - Build a campaign's tables ahead of an analysis, or clear them to free storage.
    * - ``vast campaign export <id>``
      - Have the service build an export -- the tables as parquet or CSV files, the records,
        the bags if asked (``--tables``, ``--format``, ``--bags``, ``--no-records``) -- wait
@@ -111,9 +119,10 @@ and long waits here, results queries and diff-based authoring there.
 What is absent, and what is only partly here
 ============================================
 
-**Absent:** ``vast serve``, ``vast config``, ``vast results``, ``vast ui``. They are not
-hidden or disabled — the distribution does not register them, so ``vast --help`` on a
-client install lists exactly what it can run. That is the point of installing it alone.
+**Absent:** ``vast serve``, ``vast config``, ``vast results``, ``vast share``, ``vast ui``.
+They are not hidden or disabled — the distribution does not register them, so
+``vast --help`` on a client install lists exactly what it can run. That is the point of
+installing it alone.
 
 **Partly here:** ``vast service``, and ``vast cluster`` as an empty group. The rule is the
 same one, applied a level down — a subcommand exists exactly when something that can
