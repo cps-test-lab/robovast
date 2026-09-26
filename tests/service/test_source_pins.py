@@ -75,3 +75,46 @@ def test_a_pinned_repo_url_is_written_once(path):
         if url:
             assert text.count(url.group(1)) == 1, \
                 f"{url.group(1)} appears more than once in {path.name}"
+
+
+def _pin_tool():
+    """``tools/refresh_source_pins.py``, loaded by path with its sibling ``pin_prompt`` importable."""
+    import importlib.util
+    import sys
+
+    tools = pathlib.Path(__file__).resolve().parents[2] / "tools"
+    sys.path.insert(0, str(tools))
+    try:
+        spec = importlib.util.spec_from_file_location("refresh_source_pins",
+                                                      tools / "refresh_source_pins.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(tools))
+    return module
+
+
+def test_a_bare_branch_is_every_source_s_and_a_named_one_wins_for_its_source():
+    """How RoboVAST's next bakes roqsim's next while scenario-execution stays on main."""
+    tool = _pin_tool()
+    assert tool.branches([]) == ("main", {})
+    assert tool.branches(["release"]) == ("release", {})
+    assert tool.branches(["roqsim=next"]) == ("main", {"roqsim": "next"})
+    assert tool.branches(["release", "SCENARIO_EXECUTION=next"]) == (
+        "release", {"scenario-execution": "next"})
+    assert tool.source_name("SCENARIO_EXECUTION_SERVER") == "scenario-execution-server"
+
+
+@pytest.mark.parametrize("spec", ["=next", "roqsim=", "="])
+def test_a_branch_spec_with_half_missing_is_refused(spec):
+    with pytest.raises(SystemExit):
+        _pin_tool().branches([spec])
+
+
+def test_every_pinned_source_has_a_name_a_caller_can_give():
+    """A caller names a source by its pin; the ones pinned today must stay nameable."""
+    tool = _pin_tool()
+    names = {tool.source_name(m.group("name"))
+             for rel in tool._DOCKERFILES if (tool._REPO / rel).exists()
+             for m in tool._REF_PIN.finditer((tool._REPO / rel).read_text(encoding="utf-8"))}
+    assert "roqsim" in names and "scenario-execution" in names, names

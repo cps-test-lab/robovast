@@ -140,7 +140,8 @@ refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives 
 # The source-side counterpart of the target above, separate because the two refresh different kinds
 # of ground: that one takes whatever a third party published, this one moves the image onto a new
 # commit of code we write, which is a release decision and wants its own diff. BRANCH= to resolve
-# something other than main.
+# something other than main: a bare branch for every source, or SOURCE=BRANCH for one of them
+# (BRANCH=roqsim=next); several, space-separated.
 #
 # Named after `release-images` rather than after its sibling above, because it is the release flow
 # it belongs to: what these pins decide is which sources that command bakes. One name for it, and
@@ -152,7 +153,7 @@ refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives 
 # having no idea those checkouts exist.
 .PHONY: release-images-update-versions
 release-images-update-versions: ## Move the commits release-images bakes (roqsim, scenario-execution) onto their branch heads (asks first; WRITE=1 to skip the question)
-	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(if $(BRANCH),--branch $(BRANCH),)
+	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(foreach b,$(BRANCH),--branch $(b))
 
 .PHONY: new-config-migration
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)

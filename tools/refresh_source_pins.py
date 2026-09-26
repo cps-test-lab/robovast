@@ -10,6 +10,7 @@ record of that decision.
     python3 tools/refresh_source_pins.py            # report what would change
     python3 tools/refresh_source_pins.py --ask      # report, then offer to apply it
     python3 tools/refresh_source_pins.py --write    # rewrite the Dockerfile ARGs, no question asked
+    python3 tools/refresh_source_pins.py --branch roqsim=next   # roqsim from next, the rest main
 
 ``--ask`` is what the Makefile uses, because the decision needs the diff in front of it: the report
 IS the question, and answering it from a flag means committing to the answer before seeing what it
@@ -76,13 +77,40 @@ def _resolve_head(url: str, branch: str) -> "str | None":
     return None
 
 
+def source_name(pin: str) -> str:
+    """The name a caller gives a pin's source: ``ROQSIM`` is ``roqsim``, ``SCENARIO_EXECUTION``
+    is ``scenario-execution``."""
+    return pin.lower().replace("_", "-")
+
+
+def branches(specs: "list[str]") -> "tuple[str, dict[str, str]]":
+    """``(every source's branch, {source: its own branch})`` from ``--branch`` values.
+
+    A bare ``BRANCH`` is every source's; ``SOURCE=BRANCH`` is one source's and wins over it. A
+    source's own branch is how its next release is taken while the others stay where they are:
+    one repository's ``next`` does not mean every repository has one.
+    """
+    default, own = "main", {}
+    for spec in specs:
+        source, sep, branch = spec.partition("=")
+        if not sep:
+            default = spec
+        elif not source or not branch:
+            raise SystemExit(f"--branch {spec!r}: expected BRANCH or SOURCE=BRANCH")
+        else:
+            own[source_name(source)] = branch
+    return default, own
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     pin_prompt.add_arguments(parser)
-    parser.add_argument("--branch", default="main",
-                        help="Branch to resolve in every source repo (default: main).")
+    parser.add_argument("--branch", action="append", default=[], metavar="[SOURCE=]BRANCH",
+                        help="Branch to resolve: BRANCH for every source, SOURCE=BRANCH for one "
+                             "(roqsim, scenario-execution, ...); repeatable. Default: main.")
     args = parser.parse_args()
+    default_branch, own_branches = branches(args.branch)
 
     changes, current, unresolved = [], [], []
     # path -> rewritten text, held back until the decision below: with --ask the report has to be
@@ -90,7 +118,8 @@ def main() -> int:
     edits: "dict[pathlib.Path, str]" = {}
     # One repo can be pinned in more than one Dockerfile, and two ls-remote calls could straddle a
     # push -- which would bake two different commits of one source into one image family.
-    resolved: "dict[str, str | None]" = {}
+    resolved: "dict[tuple[str, str], str | None]" = {}
+    pinned: "set[str]" = set()
 
     for rel in _DOCKERFILES:
         path = _REPO / rel
@@ -100,24 +129,34 @@ def main() -> int:
 
         for match in _REF_PIN.finditer(original):
             name, old = match.group("name"), match.group("sha")
+            pinned.add(source_name(name))
+            branch = own_branches.get(source_name(name), default_branch)
             url = _repo_url(original, name)
             if url is None:
                 unresolved.append(f"{rel}: {name}_REF has no {name}_REPO beside it")
                 continue
-            if url not in resolved:
-                resolved[url] = _resolve_head(url, args.branch)
-            new = resolved[url]
+            if (url, branch) not in resolved:
+                resolved[(url, branch)] = _resolve_head(url, branch)
+            new = resolved[(url, branch)]
             if new is None:
-                unresolved.append(f"{rel}: could not resolve {args.branch} in {url}")
+                unresolved.append(f"{rel}: could not resolve {branch} in {url}")
             elif new == old:
-                current.append(f"{name}_REF is already {args.branch}: {old}")
+                current.append(f"{name}_REF is already {branch}: {old}")
             else:
-                changes.append(f"{rel}: {name}_REF ({url}, {args.branch})\n"
+                changes.append(f"{rel}: {name}_REF ({url}, {branch})\n"
                                f"    {old}\n -> {new}")
                 text = text.replace(f"ARG {name}_REF={old}", f"ARG {name}_REF={new}")
 
         if text != original:
             edits[path] = text
+
+    unknown = sorted(set(own_branches) - pinned)
+    if unknown:
+        # A misspelt source would otherwise leave that pin on its default branch while the
+        # command reports success.
+        print(f"--branch names no pinned source: {', '.join(unknown)} "
+              f"(pinned: {', '.join(sorted(pinned))})", file=sys.stderr)
+        return 1
 
     for line in current:
         print(line)
@@ -127,7 +166,7 @@ def main() -> int:
         print(f"unresolved: {problem}", file=sys.stderr)
 
     if not changes:
-        print(f"every source pin already carries {args.branch}")
+        print("every source pin already carries its branch's head")
     elif pin_prompt.apply_or_ask(edits, len(changes), args):
         print(f"\nrewrote {len(changes)} pin(s). Commit the diff, then build: the pin is only real "
               f"once it is committed, and 'make release-images' bakes what is committed here.")
