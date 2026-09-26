@@ -270,9 +270,10 @@ remember and map onto their situation:
   only the counts. The composition is cached either way, so a following ``start_campaign``
   reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
-  span by ``ServiceBase._aux_runner_context``: a campaign gets one for its run, a preview
-  gets one held by the container-exec manager, idle only once every holder has released it
-  and reaped after that. When neither applies — composing in a process with no backend —
+  span by ``ServiceBase._aux_runner_context``: a campaign gets one for its run; a preview,
+  a validation and an ``exec_in_container`` that stages a configuration get one held by the
+  container-exec manager, keyed on the project so the three share a warm container, idle
+  only once every holder has released it and reaped after that. When neither applies — composing in a process with no backend —
   the refusal is
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
   container, rather than a ``docker run`` that dies with a bare ``FileNotFoundError``. It says

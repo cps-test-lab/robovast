@@ -196,8 +196,9 @@ class AuxContainerUnavailable(ActionableError):
     """A variation needs an auxiliary container and nothing can provide one here.
 
     A runner for a *variation's* helper image is arranged **per span** by whoever is about
-    to compose (``ServiceBase._aux_runner_context``): a campaign gets one for the run and
-    a preview gets one held by the exec manager. This is raised when a composition
+    to compose (``ServiceBase._aux_runner_context``): a campaign gets one for the run, and
+    a preview, a validation or an exec that stages a configuration gets one held by the exec
+    manager. This is raised when a composition
     reached a variation that wants one and neither applied -- a process with no backend,
     or a caller that composed without arranging anything.
 
