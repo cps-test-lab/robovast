@@ -10,9 +10,10 @@ RoboVAST ships a small **web frontend** — a browser client of the
 server use, so it works identically against a one-node deployment on your own machine
 or a published one.
 
-It provides four views:
+It provides four pages — **Config**, **Campaigns**, **Results** and **Admin** — described
+here by what they do:
 
-* **Monitor** — lists campaigns and shows each one's live progress (phase, per-batch
+* **Campaigns**, the list — lists campaigns and shows each one's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
   **live log** panel. **Every** campaign is listed **folded**: one row carrying its phase,
   id, description, its results size, a time, and a **compact run meter**, with the jobs list, the Details
@@ -125,12 +126,13 @@ It provides four views:
   reports as ``can_schedule`` in ``/version``. A change is confirmed by a
   notice carrying the service's own answer, the priority the campaign now has and that runs
   already started are unaffected.
-  The phase reflects the whole lifecycle, including its two pre-run steps:
+  The phase reflects the whole lifecycle, including its pre-run steps: ``initializing``,
   ``building`` (the campaign is **waiting for its experiment image** —
   builds are content-addressed and shared, so it may be waiting on one another campaign
-  triggered) and ``variation`` (the campaign's configurations are being expanded), then
-  ``running`` → ``finishing`` → ``postprocessing`` → ``finished`` (or ``failed`` /
-  ``stopped``). A build that fails is shown as a ``failed`` campaign in the list rather
+  triggered), ``starting``, ``plugin install`` and ``variation`` (the campaign's
+  configurations are being expanded), then ``running`` → ``finishing`` (→ ``sharing``, when
+  an upload was asked for) → ``postprocessing`` → ``finished`` (or ``failed`` / ``stopped``
+  / ``crashed``). A build that fails is shown as a ``failed`` campaign in the list rather
   than vanishing, and its builder output is in that campaign's own log under a ``BUILD``
   divider. The per-batch run bar also distinguishes **finished** runs (the
   solid fill) from those **currently running** (a lighter segment on top), with the
@@ -242,7 +244,8 @@ It provides four views:
   regardless: the override belongs to whoever has decided they understand the axis. A
   missing image digest is the one axis without that button — there is nothing to replay —
   and its dialog only says what is missing and where to go instead. A refusal that arrives
-  anyway is the service's own sentence, in a sticky error notice.
+  anyway is the service's own sentence, in an error notice that stays thirty seconds
+  (hovering holds it).
   A finished campaign also carries a collapsed **Details** box — what it cost, how it
   behaved, and what the next one should reserve; see `The Details panel`_.
   The same menu offers **Retrigger postprocessing**, which opens a dialog to *adapt
@@ -266,9 +269,9 @@ It provides four views:
   campaign itself, and once postprocessing has written into its tree the raw campaign no
   longer exists to export. A campaign ends up on the share as *both* by being uploaded at
   campaign end (before postprocessing, hence raw) and exported again afterwards.
-* **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
-  runs per configuration, *Postprocess when done* and *Upload to share when done*
-  toggles) and watches its live status. The browser equivalent of ``vast workspace run``. *Upload to share when done* streams a raw, pre-postprocessing
+* **Campaigns**, the launch bar atop the list — starts a campaign from a workspace (which ``.vast``, config filter,
+  runs per configuration, *Postprocess* and *Upload to share*
+  toggles) and watches its live status. The browser equivalent of ``vast workspace run``. *Upload to share* streams a raw, pre-postprocessing
   ``tar.gz`` to the configured external share the moment the runs finish (off by
   default; the share destination comes from the service's ``.env``).
   Once a ``.vast`` is selected the service composes it in the background, with a spinner and
@@ -435,7 +438,7 @@ pod; these survive a restart, which is when they are most worth having.
 
 What they carry is the two things this app otherwise shows once and forgets. **Refusals**:
 an action the service would not do — a retrigger it could not accept — was composed in the
-request that refused it and shown for ten seconds. And **campaign lifecycle**: the same
+request that refused it and shown for thirty seconds. And **campaign lifecycle**: the same
 starts, endings and failures the toasts and the OS notifications announce, which until they
 scrolled away were held by nothing. Each row carries the service's own words, the time, the
 severity, who was refused where they said, and the status the caller got.
@@ -1467,7 +1470,7 @@ built there and kept for the next query.
 
    The Results tab lists a campaign as soon as it has results -- runs recorded, or trials under
    way; what postprocessing adds (the derived tables, the notebooks) appears once it has run.
-   Launching with **Postprocess when done** (the default) postprocesses it automatically;
+   Launching with **Postprocess** (the default) postprocesses it automatically;
    otherwise run ``vast campaign postprocess <id>``, or use **Retrigger postprocessing** in the
    campaign's actions menu, which is also how to *change* the postprocessing parameters and
    re-run. Postprocessing runs the campaign's own steps and builds the tables it declares
