@@ -47,10 +47,21 @@ How to run
    :prog: vast service token
    :nested: full
 
+.. click:: robovast.client.cli:files
+   :prog: vast files
+   :nested: full
+
+.. click:: robovast.client.cli:image
+   :prog: vast image
+   :nested: full
+
+.. click:: robovast.execution.share_cli:share
+   :prog: vast share
+   :nested: full
+
 .. click:: robovast.results_processing.cli:results
    :prog: vast results
    :nested: full
-   :commands: postprocess, merge-campaigns, postprocess-commands
 
 
 Environment variables

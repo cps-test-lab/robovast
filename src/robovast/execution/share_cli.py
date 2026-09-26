@@ -607,7 +607,7 @@ def _read_archive_identity(tarfile_mod, path):
 
 @share.command(name='remove')
 @click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Campaign to remove (globs such as "nav-2026-03-09-*" are allowed). '
+              help='Campaign to remove (globs such as ``nav-2026-03-09-*`` are allowed). '
                    'Repeatable.')
 @click.option('--workspace', '-w', 'workspaces', multiple=True,
               help='Workspace slug to remove (globs allowed). Repeatable.')
