@@ -118,24 +118,15 @@ easier to lose than the code.
 
 
 
-* A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
-  ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
-  every postprocessed artifact was present -- the campaign-level counters were never
-  populated. **Traced** to the backend's ``count_run_artifacts`` answering ``None``,
-  which made ``_start_progress_poller`` return early, so nothing ever wrote the counters
-  and a live campaign also published a ``progress`` that could not move.
-  ``ExecutionBackend.count_run_artifacts`` now counts the per-run ``test.xml`` files under
-  the campaign root, where a run's results land, and a backend that genuinely cannot
-  count is logged rather than passed over. What is still unverified is whether a search's
-  per-batch record and the campaign row's aggregate agree with those counters over
-  a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
-  from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``
-  this used to name is gone; the per-batch record now lives in ``campaign.db``'s ``batch``
-  and ``unit`` tables, read by ``read_batch_objectives``.)
+* Whether a search's per-batch record (``campaign.db``'s ``batch`` and ``unit`` tables,
+  read by ``read_batch_objectives``) and the campaign row's aggregate agree with the run
+  counters ``ExecutionBackend.count_run_artifacts`` produces over a multi-batch run is
+  unverified. That aggregate is where a sweep's flakiness rate would be read from, so it
+  wants one deliberate check before it is trusted.
 
 **10. The cloud instance-type commands are untested.**
-``get_instance_type_command`` is now wired into the generated entrypoint, so a run records
-the node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
+``get_instance_type_command`` runs in the generated entrypoint, so a run records the
+node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
 Only the bare-metal implementations have actually run: ``rke2`` and ``minikube`` return
 ``uname -m``, which is verifiable locally. The **GCP and Azure** commands query a cloud
 metadata service —
@@ -255,7 +246,7 @@ tick instead of once per (item, node), which is also the fix above. Separately,
 scheduler: the queue stores an object it never reads, purely because it is the only thing
 whose lifetime is the campaign's rather than the batch's. An owner-scoped registry outside the
 queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
-one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
+one thing.
 
 **Three constants are a nav2 trial's dimensions, and should be derived.**
 
