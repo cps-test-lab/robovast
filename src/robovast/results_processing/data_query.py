@@ -841,6 +841,54 @@ def stream_query_csv(campaign_dir, sql: str, campaign_id: str | None = None):
     return _csv_batches(con, stack)
 
 
+#: Rows per Arrow record batch a streamed query answers in.
+_ARROW_BATCH_ROWS = 8192
+
+
+def stream_query_arrow(campaign_dir, sql: str, tables: dict | None = None,
+                       campaign_id: str | None = None):
+    """The same ``SELECT`` as an Arrow IPC stream, batch by batch and with **no row cap**.
+
+    The typed twin of :func:`stream_query_csv`: every column arrives in its type, and a
+    ``LIST`` column as a list rather than as text, which is what ``robovast-data`` reads a
+    service's tables through. *tables* are the caller's own relations (``{name:
+    pyarrow.Table}``) the query may name beside the campaign's. The stream's schema metadata
+    carries ``problems``: what could not be built for some run, as a JSON list of sentences,
+    for the reader to say beside its answer as a local read does. Checked and started before
+    this returns, as the CSV stream is.
+    """
+    engine = _engine(campaign_dir, campaign_id)
+    stack = ExitStack()
+    try:
+        con, problems = stack.enter_context(engine.execute(sql, tables=tables))
+    except (QueryError, FileNotFoundError) as exc:
+        stack.close()
+        raise DataQueryError(str(exc)) from exc
+    return _arrow_batches(con, problems, stack)
+
+
+def _arrow_batches(con, problems, stack: ExitStack):
+    import pyarrow as pa  # pylint: disable=import-outside-toplevel
+    with stack:
+        reader = con.fetch_record_batch(_ARROW_BATCH_ROWS)
+        schema = reader.schema.with_metadata(
+            {"problems": json.dumps([str(p) for p in problems])})
+        buffer = io.BytesIO()
+
+        def _flush() -> bytes:
+            data = buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate(0)
+            return data
+
+        with pa.ipc.new_stream(buffer, schema) as writer:
+            yield _flush()
+            for batch in reader:
+                writer.write_batch(pa.RecordBatch.from_arrays(batch.columns, schema=schema))
+                yield _flush()
+        yield _flush()
+
+
 def _csv_batches(con, stack: ExitStack):
     with stack:
         buffer = io.StringIO()
@@ -863,4 +911,4 @@ def _csv_batches(con, stack: ExitStack):
 
 
 __all__ = ["CampaignConnection", "DataQueryError", "Row", "campaign_id_of", "describe_data_db",
-           "open_data_db", "query_data_db", "stream_query_csv"]
+           "open_data_db", "query_data_db", "stream_query_arrow", "stream_query_csv"]

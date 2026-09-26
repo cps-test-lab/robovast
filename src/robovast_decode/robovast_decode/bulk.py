@@ -97,9 +97,12 @@ def iter_messages(bag_dir: str, topic: str, start: Optional[float] = None,
                          catalog.deserialize(record.data, typename, channel.message_encoding))
 
 
-def nearest_message(bag_dir: str, topic: str, t: Optional[float] = None) -> Optional[Sample]:
+def nearest_message(bag_dir: str, topic: str, t: Optional[float] = None,
+                    after: bool = False) -> Optional[Sample]:
     """The message of *topic* at or before *t* (the first when none is; the last for
-    ``None``), deserialized; ``None`` when the recording has none of the topic.
+    ``None``), deserialized; ``None`` when the recording has none of the topic. With
+    *after*, the first message strictly after *t* instead, and ``None`` when there is none:
+    how a reader steps through a topic one message at a time.
 
     One walk over the headers, one deserialization: what a viewer's "the frame at this
     moment" costs, which is why it does not go through :func:`iter_messages`.
@@ -121,6 +124,11 @@ def nearest_message(bag_dir: str, topic: str, t: Optional[float] = None) -> Opti
                     channel_id = record.id
                 continue
             if not isinstance(record, Message) or record.channel_id != channel_id:
+                continue
+            if after:
+                if t is None or record.log_time / 1e9 > t:
+                    chosen = (record.log_time, tail.channels[channel_id], tail.schemas, record.data)
+                    break
                 continue
             if t is not None and record.log_time / 1e9 > t:
                 if chosen is None:

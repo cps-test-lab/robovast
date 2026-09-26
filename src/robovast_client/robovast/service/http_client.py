@@ -709,6 +709,18 @@ class HTTPTransport(RobovastInterface):
     def ingest_staged(self, slot: str, stream):
         return self._upload(Routes.staged(slot), stream)
 
+    def campaign_frame(self, campaign_id: str, run: str, topic: str,
+                       t: "float | None" = None) -> "tuple[float, bytes]":
+        params = {"run": run, "topic": topic}
+        if t is not None:
+            params["t"] = repr(float(t))
+        resp = self.session.get(f"{self.base_url}{Routes.campaign_frame(campaign_id)}",
+                                params=params, timeout=self.timeout)
+        if resp.status_code == 404:
+            raise KeyError(resp.json().get("detail", "no such frame"))
+        self.raise_for_status(resp)
+        return float(resp.headers["X-Frame-Time"]), resp.content
+
     def campaign_scene_status(self, campaign_id: str, config_name: str,
                               run_id: str) -> "SceneStatus":
         # The default timeout: this is the cheap probe, and it never builds.

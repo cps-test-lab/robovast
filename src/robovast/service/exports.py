@@ -461,6 +461,7 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
     what stays under the export's directory is the tarball and its manifest.
     """
     from robovast_data import Engine, Scope  # pylint: disable=import-outside-toplevel
+    from robovast_decode import DATA_CONTRACT  # pylint: disable=import-outside-toplevel
     from robovast_decode import __version__ as decoder_version  # pylint: disable=import-outside-toplevel
 
     path = export_dir(campaign_dir, export_id)
@@ -489,6 +490,7 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
         "export_id": export_id,
         "request": request.model_dump(),
         "decoder": decoder_version,
+        "data_contract": DATA_CONTRACT,
         "tables": written,
         "bags": [b.rel for b in bags],
         "records": request.records,

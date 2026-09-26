@@ -64,7 +64,7 @@ def decode(msg, typename: str) -> Tuple[np.ndarray, str]:
     ``ValueError`` names an encoding this cannot decode; there is no blank frame.
     """
     if typename == "sensor_msgs/msg/CompressedImage":
-        return _decode_compressed(bytes(msg.data))
+        return decode_compressed(bytes(msg.data))
     if typename != "sensor_msgs/msg/Image":
         raise ValueError(f"{typename} is not an image type")
     encoding = msg.encoding
@@ -83,7 +83,9 @@ def decode(msg, typename: str) -> Tuple[np.ndarray, str]:
             else pixels.reshape(height, width, channels)), encoding
 
 
-def _decode_compressed(data: bytes) -> Tuple[np.ndarray, str]:
+def decode_compressed(data: bytes) -> Tuple[np.ndarray, str]:
+    """``(pixels, encoding)`` of an encoded image (JPEG, PNG, ...), as :func:`decode` reports
+    a ``CompressedImage``."""
     image = PILImage.open(io.BytesIO(data))
     image.load()
     if image.mode in ("I;16", "I;16B", "I;16L", "I"):
@@ -115,4 +117,4 @@ def to_pil(pixels: np.ndarray, encoding: str) -> PILImage.Image:
     return PILImage.fromarray((scaled * 255).astype(np.uint8), "L")
 
 
-__all__ = ["ENCODINGS", "IMAGE_TYPES", "decode", "to_pil"]
+__all__ = ["ENCODINGS", "IMAGE_TYPES", "decode", "decode_compressed", "to_pil"]

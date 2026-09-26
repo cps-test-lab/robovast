@@ -493,6 +493,72 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
                             progress_callback=progress_callback)
 
 
+def extract_campaign_archive(client, campaign_id: str, out_dir: str,
+                             progress_callback=None) -> str:
+    """Stream the campaign's archive through *client* and extract it under *out_dir*;
+    return the campaign directory it made.
+
+    What :func:`download_campaign_archive` leaves to ``tar``, done off the socket because
+    the caller asked for a directory (``--extract``): the transfer and the unpacking
+    overlap, and no archive is kept beside the tree. The archive's one top-level directory
+    is the campaign's, named by the service (``<id>.incomplete`` for one still running), so
+    the tree lands at ``<out_dir>/<that name>``; it is extracted into a sibling
+    ``.<name>.incoming`` and moved into place when the last member is read, so a cut transfer
+    leaves no half campaign under the real name.
+    """
+    import shutil  # pylint: disable=import-outside-toplevel
+    import tarfile  # pylint: disable=import-outside-toplevel
+
+    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
+
+    logger.info("Downloading and extracting %s from robovast-service ...", campaign_id)
+    url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
+    os.makedirs(out_dir, exist_ok=True)
+    incoming = None
+    try:
+        with client.session.get(url, timeout=600, stream=True) as resp:
+            client.raise_for_status(resp)
+            served = _served_filename(resp.headers.get("Content-Disposition")) or f"{campaign_id}.tar.gz"
+            name = served[:-len(".tar.gz")] if served.endswith(".tar.gz") else served
+            incoming = os.path.join(out_dir, f".{name}.incoming")
+            shutil.rmtree(incoming, ignore_errors=True)
+            os.makedirs(incoming)
+            stream = _Counting(resp.raw, progress_callback)
+            with tarfile.open(fileobj=stream, mode="r|gz") as tar:
+                tar.extractall(incoming, filter="data")
+        entries = os.listdir(incoming)
+        if len(entries) != 1:
+            raise RuntimeError(f"the archive of {campaign_id} holds {len(entries)} top-level "
+                               "entries, not the one campaign directory")
+        target = os.path.join(out_dir, name)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.replace(os.path.join(incoming, entries[0]), target)
+        os.rmdir(incoming)
+        return target
+    except BaseException:
+        if incoming:
+            shutil.rmtree(incoming, ignore_errors=True)
+        raise
+
+
+class _Counting:
+    """A read-only wrapper over a response's raw stream that reports the bytes read."""
+
+    def __init__(self, raw, progress_callback):
+        self._raw = raw
+        self._callback = progress_callback
+        self._received = 0
+        raw.decode_content = False        # the tar reader undoes the gzip itself
+
+    def read(self, size=-1):
+        chunk = self._raw.read(size) if size is not None and size >= 0 else self._raw.read()
+        self._received += len(chunk)
+        if self._callback is not None:
+            self._callback(self._received, 0)
+        return chunk
+
+
 def download_campaign_export(client, campaign_id: str, export_id: str, dest_path: str,
                              progress_callback=None) -> str:
     """Stream a finished export's ``tar.gz`` through *client* into *dest_path*; return it.

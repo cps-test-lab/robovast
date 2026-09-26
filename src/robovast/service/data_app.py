@@ -292,6 +292,84 @@ class DataPlane:
         """
         return self._frames(campaign_id, run, topic).times
 
+    def campaign_frame_full(self, campaign_id: str, run: str, topic: str,
+                           t: "float | None" = None) -> "tuple[float, str, str, str, bytes]":
+        """``(stamp, encoding, frame_id, media type, payload)`` of the frame at or before *t*,
+        whole: what analysis reads, where :meth:`campaign_frame` is a viewer's preview.
+
+        A raw ``Image`` is its pixels in numpy's ``.npy`` format, in the encoding's own dtype
+        (``application/x-npy``); a ``CompressedImage`` is its bytes as recorded, JPEG or PNG.
+        The same sources and errors as :meth:`campaign_frame`.
+        """
+        import io  # pylint: disable=import-outside-toplevel
+
+        import numpy as np  # pylint: disable=import-outside-toplevel
+        from robovast_decode import images  # pylint: disable=import-outside-toplevel
+        frames = self._frames(campaign_id, run, topic)
+        ref = frames.nearest(t)
+        if ref is None:
+            raise KeyError(f"no frame of {topic} in run {run!r} yet")
+        msg = frames.read_message(ref)
+        frame_id = str(getattr(getattr(msg, "header", None), "frame_id", ""))
+        if frames.typename == "sensor_msgs/msg/CompressedImage":
+            fmt = (msg.format or "").lower()
+            media = ("image/jpeg" if "jpeg" in fmt or "jpg" in fmt
+                     else "image/png" if "png" in fmt else "application/octet-stream")
+            return ref.t, str(msg.format), frame_id, media, bytes(msg.data)
+        pixels, encoding = images.decode(msg, frames.typename)
+        out = io.BytesIO()
+        np.save(out, pixels, allow_pickle=False)
+        return ref.t, encoding, frame_id, "application/x-npy", out.getvalue()
+
+    def campaign_points(self, campaign_id: str, run: str, topic: str,
+                        t: "float | None" = None, after: bool = False
+                        ) -> "tuple[float, str, bytes]":
+        """``(stamp, frame_id, Arrow IPC stream)`` of the point cloud of *topic* at or before
+        *t* (the last without it), or with *after* the first strictly after *t* (the first
+        of the run without it). One column per field of the cloud, a field of several
+        values per point as a fixed-size list. ``KeyError`` for a run or topic that is not
+        here, a topic that is not a point cloud, and a step past the last cloud.
+        """
+        import io  # pylint: disable=import-outside-toplevel
+
+        import pyarrow as pa  # pylint: disable=import-outside-toplevel
+        from robovast_decode import points  # pylint: disable=import-outside-toplevel
+        from robovast_decode.bulk import nearest_message  # pylint: disable=import-outside-toplevel
+        sample = nearest_message(self._recording(campaign_id, run), topic, t, after=after)
+        if sample is None:
+            raise KeyError(f"no point cloud of {topic} in run {run!r}"
+                           + (f" after {t:g} s" if after and t is not None else ""))
+        if sample.typename not in points.POINT_CLOUD_TYPES:
+            raise KeyError(f"{topic} of run {run!r} carries {sample.typename}, not a point cloud")
+        fields = points.decode(sample.msg, sample.typename)
+        columns = {}
+        for name, values in fields.items():
+            if values.ndim == 1:
+                columns[name] = pa.array(values)
+            else:
+                columns[name] = pa.FixedSizeListArray.from_arrays(
+                    pa.array(values.reshape(-1)), values.shape[1])
+        table = pa.table(columns)
+        out = io.BytesIO()
+        with pa.ipc.new_stream(out, table.schema) as writer:
+            writer.write_table(table)
+        frame_id = str(getattr(getattr(sample.msg, "header", None), "frame_id", ""))
+        return sample.t, frame_id, out.getvalue()
+
+    def _recording(self, campaign_id: str, run: str) -> str:
+        """The scenario recording of *run*; ``KeyError`` for a run that is not here or has
+        none."""
+        from robovast.service.live import parse_run  # pylint: disable=import-outside-toplevel
+        from robovast_decode.build import find_runs, scenario_recording  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        config_name, run_id = parse_run(run)
+        key = f"{config_name}/{run_id}"
+        match = [r for r in find_runs(str(campaign_dir)) if r.key == key]
+        bag_dir = scenario_recording(match[0]) if match else None
+        if bag_dir is None:
+            raise KeyError(f"run {run!r} of campaign {campaign_id!r} has no scenario recording")
+        return bag_dir
+
     def _frames(self, campaign_id: str, run: str, topic: str):
         """The :class:`~robovast_decode.frames.Frames` of *topic* of *run*: the watcher's tap
         while the run is live, a kept index once it is not."""
@@ -612,24 +690,62 @@ def data_router(source):
                                  media_type="text/event-stream", headers=SSE_HEADERS)
 
     @router.get(Routes.campaign_frame("{campaign_id}"), response_class=Response,
-                responses={200: {"content": {"image/jpeg": {}}}, 404: {}})
+                responses={200: {"content": {"image/jpeg": {}, "image/png": {},
+                                             "application/x-npy": {}}}, 404: {}})
     def get_campaign_frame(
             campaign_id: str,
             run: str = Query(description="the run, as <config>/<run_id>"),
             topic: str = Query(description="the image topic"),
             t: "float | None" = Query(default=None, description="a moment in seconds of "
-                                      "the run's clock; the newest frame without it")):
-        """One camera frame of a run as ``image/jpeg``, no wider than 640 px.
+                                      "the run's clock; the newest frame without it"),
+            full: bool = Query(default=False, description="the whole frame instead of the "
+                               "JPEG preview: a raw image as its pixels in numpy's .npy "
+                               "format, a compressed one as recorded")):
+        """One camera frame of a run: as ``image/jpeg`` no wider than 640 px, or whole.
 
         The last frame at or before ``t``, the first when none is; the newest without
         ``t``. Its stamp, in the seconds every table of the run uses, is the
-        ``X-Frame-Time`` header. A live run's frame comes from the watcher following its
-        recording, a finished run's from an index built on first request. ``404`` for a
-        run without the topic or with no frame of it yet, with the reason.
+        ``X-Frame-Time`` header. With ``full`` the frame is what the camera produced --
+        ``application/x-npy`` holding the pixels in the encoding's own dtype (the encoding
+        in ``X-Frame-Encoding``), or a compressed image's own bytes -- and its frame is
+        ``X-Frame-Id``. A live run's frame comes from the watcher following its recording,
+        a finished run's from an index built on first request. ``404`` for a run without
+        the topic or with no frame of it yet, with the reason.
         """
+        if full:
+            stamp, encoding, frame_id, media, payload = _guard(
+                lambda: source.campaign_frame_full(campaign_id, run, topic, t))
+            return Response(content=payload, media_type=media,
+                            headers={"X-Frame-Time": repr(float(stamp)),
+                                     "X-Frame-Encoding": encoding, "X-Frame-Id": frame_id,
+                                     "Cache-Control": "no-cache"})
         stamp, jpeg = _guard(lambda: source.campaign_frame(campaign_id, run, topic, t))
         return Response(content=jpeg, media_type="image/jpeg",
                         headers={"X-Frame-Time": repr(float(stamp)),
+                                 "Cache-Control": "no-cache"})
+
+    @router.get(Routes.campaign_points("{campaign_id}"), response_class=Response,
+                responses={200: {"content": {"application/vnd.apache.arrow.stream": {}}},
+                           404: {}})
+    def get_campaign_points(
+            campaign_id: str,
+            run: str = Query(description="the run, as <config>/<run_id>"),
+            topic: str = Query(description="the point cloud topic"),
+            t: "float | None" = Query(default=None, description="a moment in seconds of "
+                                      "the run's clock; the last cloud without it"),
+            after: bool = Query(default=False, description="the first cloud strictly after "
+                                "t (the run's first without t), to step through the topic")):
+        """One point cloud of a run as an Arrow IPC stream, one column per field.
+
+        The cloud at or before ``t`` (the last without it), or with ``after`` the first one
+        after ``t``. Its stamp is ``X-Frame-Time``, its frame ``X-Frame-Id``. ``404`` for a
+        run or topic that is not here, a topic that is not a point cloud, and a step past
+        the last cloud, with the reason.
+        """
+        stamp, frame_id, payload = _guard(
+            lambda: source.campaign_points(campaign_id, run, topic, t, after))
+        return Response(content=payload, media_type="application/vnd.apache.arrow.stream",
+                        headers={"X-Frame-Time": repr(float(stamp)), "X-Frame-Id": frame_id,
                                  "Cache-Control": "no-cache"})
 
     @router.get(Routes.campaign_frame_index("{campaign_id}"), response_model=FrameTimes)

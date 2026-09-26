@@ -2247,6 +2247,19 @@ class TrackDeviation(BaseModel):
     efficiency: Optional[float] = None
 
 
+class ArrowQueryRequest(BaseModel):
+    """A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).
+
+    The typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in
+    its type, with no row cap. What ``robovast-data`` reads a service's tables through.
+    """
+
+    sql: str
+    #: The caller's own relations the query may name beside the campaign's tables: each an
+    #: Arrow IPC stream, base64-encoded, registered under its name for this query alone.
+    tables: Optional[dict[str, str]] = None
+
+
 class DataQueryResult(BaseModel):
     """Rows from a read-only ``query_campaign_data_sql``."""
 
@@ -2729,6 +2742,18 @@ class Routes:
         return f"{Routes.DATA}/campaigns/{campaign_id}/frame-index"
 
     @staticmethod
+    def campaign_points(campaign_id: str) -> str:
+        """One point cloud of a run as an Arrow IPC stream, one column per field:
+        ``?run=<config>/<run_id>&topic=<topic>[&t=<s>][&after=1]``.
+
+        The cloud at or before ``t`` (the last without it), or with ``after`` the first one
+        strictly after ``t`` (the first of the run without it), which is how a reader steps
+        through a topic. Its stamp is the ``X-Frame-Time`` header. Beside ``frame`` on the
+        data plane: the bytes come from the recording.
+        """
+        return f"{Routes.DATA}/campaigns/{campaign_id}/points"
+
+    @staticmethod
     def staged(slot: str) -> str:
         # A scratch tree the control plane stages for one pod, by its slot name.
         return f"{Routes.DATA}/staged/{slot}"
@@ -2891,6 +2916,12 @@ class Routes:
         # The uncapped, streamed twin of ``campaign_query``. A GET (not the POST the JSON
         # query uses) so the whole thing is one URL a browser or curl can follow.
         return f"/campaigns/{campaign_id}/query.csv"
+
+    @staticmethod
+    def campaign_query_arrow(campaign_id: str) -> str:
+        # The typed twin of ``campaign_query_csv``: an Arrow IPC stream, so a LIST column
+        # arrives as a list. A POST, so the caller's own tables travel with the query.
+        return f"/campaigns/{campaign_id}/query.arrow"
 
     @staticmethod
     def campaign_plots(campaign_id: str) -> str:
@@ -3913,6 +3944,15 @@ class RobovastInterface(ABC):
         which left a caller who wanted the whole result with nowhere to go. This is that
         somewhere: streamed, so neither end holds it, and cheap enough for an MCP tool to
         hand over the URL rather than spend context on rows.
+        """
+
+    @abstractmethod
+    def campaign_frame(self, campaign_id: str, run: str, topic: str,
+                       t: "float | None" = None) -> "tuple[float, bytes]":
+        """``(stamp, JPEG)`` of the camera frame of *topic* of *run* (``<config>/<run_id>``)
+        at or before *t* seconds, the newest without *t*: what ``GET /data/…/frame`` serves.
+
+        ``KeyError`` for a run without the topic or with no frame of it yet.
         """
 
     @abstractmethod
