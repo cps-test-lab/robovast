@@ -625,9 +625,7 @@ record a figure is drawn over, and a rewritten one is a figure nobody can check.
 writes accept only ``.vast``/``.osc``; everything else goes through ``create_upload``,
 so its bytes never enter the token stream.
 
-``get_service_info`` reports the two address templates, and — when the service runs on
-your own machine — ``results_root`` / ``sources_root``, so you can read files with your
-own tools rather than through the interface.
+``get_service_info`` reports the two address templates.
 
 .. _mcp-origin:
 

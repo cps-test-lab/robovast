@@ -1642,10 +1642,6 @@ and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
 cluster service the read serves that one file off the service's results volume, not the
 campaign.
 
-If the service runs on your own machine, ``get_service_info`` also reports a
-``results_root`` you can open directly with your own tools; it is absent whenever
-that would be a path you cannot actually read.
-
 
 .. _results-metadata:
 
