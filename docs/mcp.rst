@@ -672,10 +672,11 @@ deployment on this machine and one across the room.
 immediately — the campaign has barely started. Wait for it with
 ``vast campaign wait <campaign-id>``, which returns only once the campaign is genuinely
 over, past postprocessing -- or once a stall or a simulator's own finding has ended the
-wait while the campaign still runs; the exit code says which (:ref:`client`). Deliberately a **command and not an MCP tool**: a campaign can
-run for days, and a blocking tool call would occupy its caller for the whole of
-it, where a command can be backgrounded and waited on. ``get_campaign_status``
-is the single-read version for a campaign you are not waiting on.
+wait while the campaign still runs; the exit code says which (:ref:`client`).
+Deliberately a **command and not an MCP tool**: a campaign can run for days, and a
+blocking tool call would occupy its caller for the whole of it, where a command can be
+backgrounded and waited on. ``get_campaign_status`` is the single-read version for a
+campaign you are not waiting on.
 
 ``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
 when several are waiting, so an assistant told to start something out of the way of a
