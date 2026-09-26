@@ -590,14 +590,11 @@ def test_a_sample_above_the_containers_own_quota_is_discarded():
     """A cgroup cannot exceed its quota: CFS enforces it per ~100ms period and these are
     one-second samples, so a sample above the limit is measurement error, not a peak.
 
-    They are real and they are large. The monitor's CSV covers the container's whole life
-    including bring-up, where psutil reports a newly-seen process's average since it STARTED
-    rather than since the last sample -- and a ROS stack spawns dozens at once. Measured on a
-    3-core container: 10.4 "cores" outside the trial window against 2.82 inside it.
-
-    Every other consumer filters on in_window, which postprocessing adds and the raw file does
-    not carry, so calibration is the one reader that meets the artifact -- and it takes the
-    MAX. Unclamped it sized a node at 14.4 cores for a 3-core container, and 35 on another.
+    They are real and they are large: psutil reports a newly-seen process's average since it
+    STARTED rather than since the last sample, and a ROS stack spawns dozens at once. The
+    trial window leaves the container's own bring-up out, but a stack the scenario launches
+    comes up inside the trial and meets the same artifact there -- and a peak-sized container
+    is read at the MAX, the worst statistic to hand it.
     """
     from robovast.execution.cluster_execution.node_calibration import container_cpu_profile
 
@@ -974,6 +971,154 @@ def test_the_tolerance_is_tied_to_the_percentile_it_protects():
 
     assert probe_refuse_ratio(95.0) == pytest.approx(0.05)
     assert probe_refuse_ratio(100.0) < probe_refuse_ratio(95.0)
+
+
+# -- a probe is judged over its trial, not over its containers' lives ---------------------
+
+
+def _test_xml(start, duration):
+    return (f'<?xml version="1.0" encoding="utf-8"?>\n'
+            f'<testsuite errors="0" failures="0" name="scenario_execution" tests="1" '
+            f'time="{duration}"><testcase classname="tests.scenario" name="test_scenario" '
+            f'time="{duration}"><properties><property name="start_time" value="{start}"/>'
+            f'</properties></testcase></testsuite>').encode()
+
+
+def _billing_csv(ticks, t0=1000.0):
+    """``system_usage_`` rows from ``[(cores, throttled_periods)]``, one tick a second.
+
+    Ten CFS enforcement periods per tick, as the kernel's default 100 ms period gives.
+    """
+    lines = ["timestamp,cpu_usage_usec,nr_periods,nr_throttled"]
+    usec = periods = throttled = 0
+    lines.append(f"{t0},{usec},{periods},{throttled}")
+    for i, (cores, thr) in enumerate(ticks, 1):
+        usec += int(cores * 1e6)
+        periods += 10
+        throttled += thr
+        lines.append(f"{t0 + i},{usec},{periods},{throttled}")
+    return ("\n".join(lines) + "\n").encode()
+
+
+#: A short probe of a system under test read at p99 against a 5-core ceiling: 96 one-second
+#: ticks, idle while the image boots, a stack bring-up that throttles 12 periods, a clean
+#: trial at about 3 cores, and a teardown that throttles 3 more. Over the whole life that is
+#: 15 of 960 periods -- past the 1% a p99 absorbs -- though nothing inside the trial was
+#: throttled at all.
+_SHORT_PROBE = ([(0.01, 0)]
+                + [(4.3, 5), (4.5, 7)]              # bring-up, before the trial starts
+                + [(0.2, 0)]
+                + [(2.9 + 0.1 * (i % 3), 0) for i in range(89)]   # the trial
+                + [(1.0, 0), (3.5, 3), (0.5, 0)])   # teardown, after the verdict
+_SHORT_PROBE_WINDOW = (1004.0, 89.0)                # start_time, duration: ticks 4..93
+
+
+def _probe_files(ticks, window):
+    # The per-process file is what names the container; the billing sibling beside it wins.
+    files = {"p/resource_usage_sut.csv": b"timestamp,pid,name,cpu_percent\n1000.0,1,a,1.0\n",
+             "p/system_usage_sut.csv": _billing_csv(ticks)}
+    if window is not None:
+        files["p/test.xml"] = _test_xml(*window)
+    return files
+
+
+def _record_probe(files, percentile):
+    read = files.get
+    window = nc.read_trial_window(read, "p/")
+    measured = nc.read_probe_measurement(
+        read, "p/", {"sut": "resource_usage_sut.csv"}, percentiles={"sut": percentile},
+        windows=None if window is None else [window])
+    c = NodeCalibration()
+    c.claim_probe("n1", "probe-1")
+    stored = c.record("n1", "probe-1", measured, percentiles={"sut": percentile})
+    return stored, measured, c
+
+
+def test_a_short_probe_is_not_refused_for_its_bring_up_and_teardown():
+    """Bring-up throttles for a roughly fixed number of periods, so against the whole life
+    it weighs more the shorter the trial -- and a probe would be refused for how long its
+    trial ran rather than for anything that clipped its figure. Read over the trial, the
+    same probe is clean."""
+    stored, measured, c = _record_probe(_probe_files(_SHORT_PROBE, _SHORT_PROBE_WINDOW), 99.0)
+    assert measured["sut"]["throttled_ratio"] == 0.0
+    assert stored is True, c.outcome()["refused"]
+
+
+def test_its_figure_is_read_over_the_trial_too():
+    """The ratio is evidence about the figure, so both come from the same ticks: a figure
+    that still read the bring-up would be one the throttle check never looked at."""
+    _, measured, _ = _record_probe(_probe_files(_SHORT_PROBE, _SHORT_PROBE_WINDOW), 99.0)
+    assert measured["sut"]["cores"] == pytest.approx(3.1)
+    assert measured["sut"]["samples"] == 89, "ticks inside the trial, not the whole life"
+
+
+def test_a_probe_throttled_inside_its_trial_is_still_refused():
+    """The window takes out the container's bring-up and teardown, not the tolerance: a
+    ceiling that binds while the trial runs clipped the figure and is refused as before."""
+    steady = [(4.8, 2 if i % 4 == 0 else 0) for i in range(89)]      # 2.2% of the trial
+    ticks = _SHORT_PROBE[:4] + steady + _SHORT_PROBE[-3:]
+    stored, measured, c = _record_probe(_probe_files(ticks, _SHORT_PROBE_WINDOW), 99.0)
+    assert measured["sut"]["throttled_ratio"] > nc.probe_refuse_ratio(99.0)
+    assert stored is False
+    assert "throttled" in c.outcome()["refused"]["n1"]
+
+
+def test_a_probe_with_no_window_is_read_over_its_whole_life():
+    """No start time in its verdict, no window: the reading falls back to the containers'
+    whole lives -- the stricter reading, never a looser one -- and the same short probe is
+    then refused for its bring-up and teardown."""
+    files = _probe_files(_SHORT_PROBE, None)
+    files["p/test.xml"] = (b'<testsuite errors="0" failures="0" tests="1">'
+                           b'<testcase name="t" time="89.0"/></testsuite>')
+    assert nc.read_trial_window(files.get, "p/") is None
+    stored, measured, _ = _record_probe(files, 99.0)
+    assert measured["sut"]["throttled_ratio"] == pytest.approx(15 / 960)
+    assert stored is False
+
+
+def test_the_trial_window_is_the_one_postprocessing_marks():
+    """One definition of the trial, read from the same ``test.xml`` fields, so a probe's
+    figure covers the stretch ``in_window = 1`` covers for every other reader."""
+    import tempfile
+    from pathlib import Path
+
+    from robovast.results_processing import run_slices
+
+    raw = _test_xml(1004.0, 89.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "test.xml").write_bytes(raw)
+        assert run_slices._read_window(Path(tmp)) == (1004.0, 1093.0)
+    assert nc.read_trial_window({"p/test.xml": raw}.get, "p/") == (1004.0, 1093.0)
+    assert nc.read_trial_window({}.get, "p/") is None
+
+
+def test_a_tick_straddling_the_window_edge_is_left_out():
+    """A tick is one interval, so it belongs to the trial only when both its ends do."""
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "0"},
+            {"timestamp": "1.0", "cpu_usage_usec": "9000000"},     # straddles the start
+            {"timestamp": "2.0", "cpu_usage_usec": "10000000"}]
+    got = nc.container_cpu_profile_from_billing(rows, percentile=100.0, windows=[(0.5, 2.0)])
+    assert got["samples"] == 1 and got["cores"] == pytest.approx(1.0)
+
+
+def test_memory_and_kills_are_read_over_the_whole_life():
+    """A memory limit has to clear bring-up as well: a container killed there loses its run."""
+    rows = [{"timestamp": "0.0", "cpu_usage_usec": "0", "memory_peak": "900",
+             "memory_events_oom_kill": "0"},
+            {"timestamp": "1.0", "cpu_usage_usec": "1000000", "memory_peak": "900",
+             "memory_events_oom_kill": "1"},
+            {"timestamp": "2.0", "cpu_usage_usec": "2000000", "memory_peak": "900",
+             "memory_events_oom_kill": "1"}]
+    got = nc.container_cpu_profile_from_billing(rows, windows=[(1.0, 2.0)])
+    assert got["memory_peak"] == 900 and got["oom_kills"] == 1
+
+
+def test_the_per_process_reader_keeps_to_the_window_too():
+    rows = [{"timestamp": "1.0", "cpu_percent": "800"},     # bring-up
+            {"timestamp": "5.0", "cpu_percent": "150"},
+            {"timestamp": "6.0", "cpu_percent": "250"}]
+    got = nc.container_cpu_profile(rows, percentile=100.0, windows=[(4.0, 6.0)])
+    assert got["samples"] == 2 and got["cores"] == pytest.approx(2.5)
 
 
 # -- the scenario runner's own report, on probes only -----------------------------------
