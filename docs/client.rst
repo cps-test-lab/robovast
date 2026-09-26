@@ -238,7 +238,8 @@ merely past its last run:
    * - ``1``
      - Failed, or stopped.
    * - ``2``
-     - ``--timeout`` elapsed. The campaign is unaffected and can be waited on again.
+     - Stopped waiting: ``--timeout`` elapsed, or the service stopped answering. The
+       campaign is unaffected and can be waited on again.
    * - ``3``
      - No such campaign — the service knows no phase for that id. A typo, or a campaign
        that died before recording one. Distinct from ``1`` on purpose: those send you

@@ -23,7 +23,7 @@ campaign then reports success.
 |---|---|
 | 0 | finished, past postprocessing |
 | 1 | failed or stopped |
-| 2 | `--timeout` elapsed; the campaign is still running |
+| 2 | stopped waiting: `--timeout` elapsed, or the service stopped answering; the campaign is still running |
 | 3 | the service has no phase for that id — a typo, or it died before recording one |
 | 4 | **stalled** — nothing completed for longer than one run may take |
 | 5 | a running job's **simulator** reported a fault (sim time not advancing, and the like) |
