@@ -292,9 +292,8 @@ def monitor(interval, once, kube_context, namespace, vast):
     Displays progress per run: how many jobs have finished (completed or failed),
     how many are running, and how many are pending for each run.
 
-    By default, monitors only the contexts referenced in the .vast config file.
-    Falls back to the active kubeconfig context when no per-cluster config is
-    defined. Use --context to restrict monitoring to a single cluster.
+    Watches the active kubeconfig context. ``--context`` names another one;
+    ``--vast`` watches every context that file's per-cluster configuration names.
     Only contexts with active or past jobs are shown.
 
     This is intended for monitoring jobs created by
@@ -612,7 +611,7 @@ def _echo_job_node_aliases(changes, *, whole=False):
 @click.option('--list', 'list_configs', is_flag=True,
               help='List available cluster configuration plugins')
 @click.option('--namespace', '-n', default='default', show_default=True,
-              help='Kubernetes namespace for execution (used by cluster run)')
+              help='Kubernetes namespace the service is deployed into.')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--force', '-f', is_flag=True,
