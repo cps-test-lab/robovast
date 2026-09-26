@@ -842,6 +842,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/query.arrow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query Campaign Data Arrow
+         * @description Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.
+         *
+         *     The CSV twin spells every value as text and a list column as ``[...]``; this keeps
+         *     the types, which is what ``robovast-data`` reads a service's tables through. The
+         *     request's ``tables`` are the caller's own relations -- each an Arrow IPC stream in
+         *     base64 -- registered under their names for this query alone, so a DataFrame a
+         *     notebook made joins the campaign's tables on the service.
+         */
+        post: operations["query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/query.csv": {
         parameters: {
             query?: never;
@@ -1272,13 +1298,16 @@ export interface paths {
         };
         /**
          * Get Campaign Frame
-         * @description One camera frame of a run as ``image/jpeg``, no wider than 640 px.
+         * @description One camera frame of a run: as ``image/jpeg`` no wider than 640 px, or whole.
          *
          *     The last frame at or before ``t``, the first when none is; the newest without
          *     ``t``. Its stamp, in the seconds every table of the run uses, is the
-         *     ``X-Frame-Time`` header. A live run's frame comes from the watcher following its
-         *     recording, a finished run's from an index built on first request. ``404`` for a
-         *     run without the topic or with no frame of it yet, with the reason.
+         *     ``X-Frame-Time`` header. With ``full`` the frame is what the camera produced --
+         *     ``application/x-npy`` holding the pixels in the encoding's own dtype (the encoding
+         *     in ``X-Frame-Encoding``), or a compressed image's own bytes -- and its frame is
+         *     ``X-Frame-Id``. A live run's frame comes from the watcher following its recording,
+         *     a finished run's from an index built on first request. ``404`` for a run without
+         *     the topic or with no frame of it yet, with the reason.
          */
         get: operations["get_campaign_frame_data_campaigns__campaign_id__frame_get"];
         put?: never;
@@ -1388,6 +1417,31 @@ export interface paths {
          *     source resolves the directory before it reads the stream.
          */
         put: operations["upload_campaign_outputs_data_campaigns__campaign_id__outputs_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/points": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Campaign Points
+         * @description One point cloud of a run as an Arrow IPC stream, one column per field.
+         *
+         *     The cloud at or before ``t`` (the last without it), or with ``after`` the first one
+         *     after ``t``. Its stamp is ``X-Frame-Time``, its frame ``X-Frame-Id``. ``404`` for a
+         *     run or topic that is not here, a topic that is not a point cloud, and a step past
+         *     the last cloud, with the reason.
+         */
+        get: operations["get_campaign_points_data_campaigns__campaign_id__points_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -2025,6 +2079,21 @@ export interface components {
              * @default true
              */
             ok: boolean;
+        };
+        /**
+         * ArrowQueryRequest
+         * @description A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).
+         *
+         *     The typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in
+         *     its type, with no row cap. What ``robovast-data`` reads a service's tables through.
+         */
+        ArrowQueryRequest: {
+            /** Sql */
+            sql: string;
+            /** Tables */
+            tables?: {
+                [key: string]: string;
+            } | null;
         };
         /**
          * BatchObjective
@@ -6642,6 +6711,41 @@ export interface operations {
             };
         };
     };
+    query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArrowQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     query_campaign_data_csv_campaigns__campaign_id__query_csv_get: {
         parameters: {
             query: {
@@ -7305,6 +7409,8 @@ export interface operations {
                 topic: string;
                 /** @description a moment in seconds of the run's clock; the newest frame without it */
                 t?: number | null;
+                /** @description the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded */
+                full?: boolean;
             };
             header?: never;
             path: {
@@ -7320,7 +7426,9 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/x-npy": unknown;
                     "image/jpeg": unknown;
+                    "image/png": unknown;
                 };
             };
             /** @description Not Found */
@@ -7468,6 +7576,53 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OutputsIngested"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_points_data_campaigns__campaign_id__points_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the point cloud topic */
+                topic: string;
+                /** @description a moment in seconds of the run's clock; the last cloud without it */
+                t?: number | null;
+                /** @description the first cloud strictly after t (the run's first without t), to step through the topic */
+                after?: boolean;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apache.arrow.stream": unknown;
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
