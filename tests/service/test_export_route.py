@@ -300,6 +300,40 @@ def test_an_export_lost_to_a_restart_reads_as_failed(tmp_path, campaign):
             _CAMPAIGN, "0123456789ab")).status_code == 404
 
 
+def test_a_finished_export_is_kept_a_day_and_removed_when_the_next_one_starts(
+        client, transport, campaign):
+    from datetime import datetime, timedelta, timezone
+
+    from robovast.service.exports import EXPORT_KEEP_S, sweep_exports
+
+    old_id, _ = _create(client, transport, {"tables": []})
+    young_id, _ = _create(client, transport, {"tables": []})
+    old = export_dir(campaign, old_id)
+    manifest = json.loads((old / EXPORT_FILE).read_text())
+    manifest["created_at"] = (datetime.now(timezone.utc)
+                              - timedelta(seconds=EXPORT_KEEP_S + 60)).isoformat()
+    (old / EXPORT_FILE).write_text(json.dumps(manifest))
+
+    lost = export_dir(campaign, "0123456789ab")           # a build the service died in, long ago
+    lost.mkdir(parents=True)
+    (lost / REQUEST_FILE).write_text(json.dumps({"started_at": "2026-01-01T00:00:00+00:00"}))
+    building = export_dir(campaign, "0123456789ac")       # one this process is building
+    building.mkdir(parents=True)
+    (building / REQUEST_FILE).write_text(json.dumps({"started_at": "2026-01-01T00:00:00+00:00"}))
+
+    assert sorted(sweep_exports(campaign, running={"0123456789ac"})) == ["0123456789ab", old_id]
+    assert not old.exists() and not lost.exists()
+    assert building.exists() and export_dir(campaign, young_id).exists()
+    assert client.get(Routes.campaign_export(_CAMPAIGN, old_id)).status_code == 404
+    assert client.get(Routes.campaign_export(_CAMPAIGN, young_id)).json()["done"]
+
+    # The next export's start is where the sweep runs on the service.
+    (old / EXPORT_FILE).parent.mkdir(parents=True)
+    (old / EXPORT_FILE).write_text(json.dumps(manifest))
+    _create(client, transport, {"tables": []})
+    assert not old.exists()
+
+
 # -- the table cache ----------------------------------------------------------------------------
 
 

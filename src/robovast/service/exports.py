@@ -86,6 +86,11 @@ _ROSOUT_BAG = "rosout_bag"
 #: Read size for the download generator.
 _CHUNK = 1024 * 1024
 
+#: How long a finished export is kept after it finished. An export is built for one
+#: request and downloaded once; what it holds is rebuilt on request, and a campaign's
+#: exports would otherwise grow by the size of its tables every time one is asked for.
+EXPORT_KEEP_S = 24 * 3600
+
 #: The rosbag2 metadata version the rewritten bags are written in.
 _ROSBAG2_VERSION = 9
 
@@ -158,6 +163,49 @@ def export_file(campaign_dir, campaign_id: str, export_id: str) -> Path:
     if not (path / EXPORT_FILE).is_file() or not file.is_file():
         raise KeyError(f"export {export_id} of {campaign_id} is not done yet")
     return file
+
+
+def _finished_at(path: Path) -> Optional[str]:
+    """When the export at *path* finished, or when it started for one whose builder is gone;
+    ``None`` for one still building (its request alone on disk cannot say)."""
+    for name, key in ((EXPORT_FILE, "created_at"), (ERROR_FILE, "finished_at")):
+        if (path / name).is_file():
+            with open(path / name, encoding="utf-8") as fh:
+                return json.load(fh).get(key)
+    return None
+
+
+def sweep_exports(campaign_dir, running: "set[str]", keep_for_s: float = EXPORT_KEEP_S,
+                  now: Optional[datetime] = None) -> List[str]:
+    """Remove the campaign's exports that finished more than *keep_for_s* ago; their ids.
+
+    *running* are the ids this process is building, left alone whatever their age. An export
+    whose builder stopped with the service has no finishing time and is removed once its
+    request is that old. A status read of a removed export answers as for one that never
+    was: the export is disposable, and is built again on request.
+    """
+    root = exports_root(campaign_dir)
+    if not root.is_dir():
+        return []
+    now = now or datetime.now(timezone.utc)
+    removed = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or not _EXPORT_ID.match(path.name) or path.name in running:
+            continue
+        stamp = _finished_at(path)
+        if stamp is None and (path / REQUEST_FILE).is_file():
+            with open(path / REQUEST_FILE, encoding="utf-8") as fh:
+                stamp = json.load(fh).get("started_at")
+        if stamp is None:
+            continue
+        try:
+            finished = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if (now - finished).total_seconds() > keep_for_s:
+            shutil.rmtree(path, ignore_errors=True)
+            removed.append(path.name)
+    return removed
 
 
 def iter_file(path, chunk_size: int = _CHUNK) -> Iterator[bytes]:
@@ -397,6 +445,11 @@ class ExportStore:
         was checked against the catalog before this is called.
         """
         export_id = secrets.token_hex(6)
+        with self._lock:
+            running = {key[1] for key in self._running if key[0] == campaign_id}
+        for gone in sweep_exports(campaign_dir, running):
+            logger.info("Removed export %s of %s: kept %d h after it finished",
+                        gone, campaign_id, EXPORT_KEEP_S // 3600)
         path = export_dir(campaign_dir, export_id)
         path.mkdir(parents=True, exist_ok=False)
         started_at = _now()
