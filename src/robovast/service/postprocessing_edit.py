@@ -40,21 +40,57 @@ from robovast.common.results_utils import campaign_vast
 logger = logging.getLogger(__name__)
 
 
-def _load(vast_path: Path) -> dict:
-    return yaml.safe_load(vast_path.read_text(encoding="utf-8")) or {}
+def _yaml():
+    """A round-trip loader: the file is rewritten as a person wrote it.
+
+    ``ruamel.yaml`` keeps the comments, the quoting and every document of the file, so an
+    edit changes the block it is about and nothing else. ``vast campaign rerun
+    --to-workspace`` hands this file to a person, and its comments carry the reasons
+    (which image, which world) an edit of the analysis has no business dropping.
+    """
+    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
+    loader = YAML()
+    loader.preserve_quotes = True
+    # Left at the default, ruamel reflows a flow mapping past ~80 columns, untouched ones
+    # included, and the diff no longer shows what the edit did.
+    loader.width = 4096
+    return loader
 
 
-def _write(vast_path: Path, data: dict) -> None:
-    vast_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+def _load(vast_path: Path) -> list:
+    """Every document of the file, the configuration first; a file with none holds ``{}``."""
+    with open(vast_path, encoding="utf-8") as handle:
+        documents = list(_yaml().load_all(handle))
+    if not documents or documents[0] is None:
+        documents = [{}] + documents[1:]
+    return documents
+
+
+def _write(vast_path: Path, documents: list) -> None:
+    with open(vast_path, "w", encoding="utf-8") as handle:
+        _yaml().dump_all(documents, handle)
     logger.info("Updated campaign config %s", vast_path)
+
+
+def _plain(value):
+    """*value* as plain ``dict``/``list``/scalars: what a round-trip load returns carries
+    its comments and quoting as subclasses, which the JSON and text views cannot show."""
+    if isinstance(value, dict):
+        return {_plain(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    for base in (bool, int, float, str):
+        if isinstance(value, base):
+            return base(value)
+    return value
 
 
 def get_postprocessing(campaign_dir: Path) -> dict:
     """Return the campaign's ``results_processing.postprocessing`` entries."""
     vast_path = campaign_vast(campaign_dir)
-    data = _load(vast_path)
+    data = _load(vast_path)[0]
     entries = (data.get("results_processing") or {}).get("postprocessing", [])
-    return {"campaign_dir": str(campaign_dir), "entries": entries}
+    return {"campaign_dir": str(campaign_dir), "entries": _plain(entries)}
 
 
 def update_postprocessing(campaign_dir: Path, entries: list) -> dict:
@@ -76,13 +112,14 @@ def update_postprocessing(campaign_dir: Path, entries: list) -> dict:
                          "; ".join(p["message"] for p in problems))
 
     vast_path = campaign_vast(campaign_dir)
-    data = _load(vast_path)
+    documents = _load(vast_path)
+    data = documents[0]
     section = data.get("results_processing")
     if not isinstance(section, dict):
         section = {}
         data["results_processing"] = section
     section["postprocessing"] = entries
-    _write(vast_path, data)
+    _write(vast_path, documents)
     return {"campaign_dir": str(campaign_dir), "entries": entries}
 
 
@@ -132,8 +169,8 @@ def update_postprocessing_source(campaign_dir: Path, content: str) -> dict:
 
 def get_visualization(campaign_dir: Path) -> dict:
     """Return the campaign's ``visualization:`` block as editable YAML text."""
-    data = _load(campaign_vast(campaign_dir))
-    section = data.get("visualization") or {}
+    data = _load(campaign_vast(campaign_dir))[0]
+    section = _plain(data.get("visualization") or {})
     return {"campaign_dir": str(campaign_dir),
             "content": yaml.safe_dump({"visualization": section}, sort_keys=False)}
 
@@ -151,7 +188,7 @@ def update_visualization(campaign_dir: Path, content: str) -> dict:
         raise ValueError("'visualization' must be a mapping")
 
     vast_path = campaign_vast(campaign_dir)
-    data = _load(vast_path)
-    data["visualization"] = section
-    _write(vast_path, data)
+    documents = _load(vast_path)
+    documents[0]["visualization"] = section
+    _write(vast_path, documents)
     return {"campaign_dir": str(campaign_dir)}
