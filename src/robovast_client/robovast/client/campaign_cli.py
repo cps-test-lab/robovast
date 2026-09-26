@@ -886,7 +886,7 @@ def delete_cmd(campaigns, yes, namespace, context):
 @click.option('--force', '-f', is_flag=True,
               help='Overwrite an archive (or, with --extract, a directory) of the same name '
                    'that is already here')
-@click.option('--extract', '-x', 'extract', is_flag=True,
+@click.option('--extract', 'extract', is_flag=True,
               help='Extract while downloading into <output>/<campaign-id>/ and keep no '
                    'archive: the tree robovast-data opens, in one step')
 @target_options
