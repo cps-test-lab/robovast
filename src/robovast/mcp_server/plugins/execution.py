@@ -310,7 +310,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         priority: Which campaign the cluster queue admits first: higher first, ``0`` normal,
             negative last. Orders what is queued; never stops a running run. Cluster only.
         config_path: Which ``.vast``, when the workspace holds several.
-        config_filter: Glob selecting which configurations to run.
+        config_filter: Glob selecting which configurations to run; comma-separate several.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.

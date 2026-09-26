@@ -173,11 +173,17 @@
             "default": "",
             "title": "Path",
             "type": "string"
+          },
+          "wait": {
+            "default": true,
+            "title": "Wait",
+            "type": "boolean"
           }
         },
         "required": [
           "max_configs",
-          "path"
+          "path",
+          "wait"
         ],
         "title": "Body_preview_configurations_workspaces__workspace_id__preview_post",
         "type": "object"
@@ -2788,7 +2794,7 @@
         "type": "object"
       },
       "PreviewResponse": {
-        "description": "Result of :meth:`RobovastInterface.preview_configurations`.",
+        "description": "Result of :meth:`RobovastInterface.preview_configurations`.\n\n``state`` is ``ready`` for a preview that waited for the expansion (the default). A\npreview asked for with ``wait=False`` answers ``composing`` while the expansion runs in\nthe background (``progress`` then counts its steps once the first is counted), ``ready``\nonce every other field holds, and ``failed`` when the expansion raised, with ``error``\nsaying why; the counts and ``configurations`` are empty in every state but ``ready``.",
         "properties": {
           "aux_containers": {
             "items": {
@@ -2817,10 +2823,35 @@
             "title": "Configurations",
             "type": "array"
           },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "runs_per_config": {
             "default": 0,
             "title": "Runs Per Config",
             "type": "integer"
+          },
+          "state": {
+            "default": "ready",
+            "enum": [
+              "composing",
+              "ready",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
           },
           "total_trials": {
             "default": 0,
@@ -2838,7 +2869,10 @@
           "config_panels",
           "configs",
           "configurations",
+          "error",
+          "progress",
           "runs_per_config",
+          "state",
           "total_trials",
           "truncated"
         ],
@@ -4127,6 +4161,16 @@
             "title": "Updated At",
             "type": "number"
           },
+          "variation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "waiting_for_capacity": {
             "default": false,
             "title": "Waiting For Capacity",
@@ -4166,9 +4210,31 @@
           "stopping_soon",
           "stopping_verdict",
           "updated_at",
+          "variation",
           "waiting_for_capacity"
         ],
         "title": "StatusResponse",
+        "type": "object"
+      },
+      "StepProgress": {
+        "description": "How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per\nvariation of each configuration block. A step can expand into any number of\nconfigurations, so this counts work, not configurations.",
+        "properties": {
+          "done": {
+            "default": 0,
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "StepProgress",
         "type": "object"
       },
       "TrackDeviation": {

@@ -598,11 +598,11 @@ class HTTPTransport(RobovastInterface):
                        timeout=COMMAND_LIMIT_S))
 
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
         return PreviewResponse.model_validate(self._post(
             Routes.workspace_preview(workspace_id),
-            json={"max_configs": max_configs, "path": path}))
+            json={"max_configs": max_configs, "path": path, "wait": wait}))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False) -> WorldDescription:

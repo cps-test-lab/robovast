@@ -614,7 +614,9 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
                    'it does not exist. The two-step form (workspace init/update, then '
                    'run) is the same thing spelled out.')
 @click.option('--filter', 'config_filter', default='', metavar='GLOB',
-              help='Run only configurations matching this name or glob (e.g. hall*).')
+              help='Run only configurations matching this name or glob (e.g. hall*); '
+                   'several comma-separated globs select every configuration any matches. '
+                   '`vast workspace preview` lists the names.')
 @click.option('--runs', '-r', type=int, default=None,
               help="Override execution.runs (default: the value in the .vast).")
 @click.option('--campaign-name', default=None,

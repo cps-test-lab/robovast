@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
+import Autocomplete from '@mui/material/Autocomplete'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Checkbox from '@mui/material/Checkbox'
+import CircularProgress from '@mui/material/CircularProgress'
 import Collapse from '@mui/material/Collapse'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import MenuItem from '@mui/material/MenuItem'
@@ -13,6 +15,7 @@ import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import { useActiveView } from '@/lib/activeView'
+import { isGlob, matchConfigs, matchesPattern } from '@/lib/configFilter'
 import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
 import { ErrorText } from '@/components/StatusView'
 
@@ -47,7 +50,10 @@ function runsFromVast(content: string): number | null {
 export function LaunchBar() {
   const qc = useQueryClient()
   const [workspaceId, setWorkspaceId] = useState('')
-  const [configFilter, setConfigFilter] = useState('')
+  // The config filter as chips (picked names, or globs entered with Enter) plus whatever is still
+  // being typed; together they are the comma-separated filter the service reads.
+  const [filterTokens, setFilterTokens] = useState<string[]>([])
+  const [filterInput, setFilterInput] = useState('')
   const [campaignName, setCampaignName] = useState('')
   const [description, setDescription] = useState('')
   const [runs, setRuns] = useState(1)
@@ -111,6 +117,47 @@ export function LaunchBar() {
     if (declared != null) setRuns(declared)
   }, [configFile.data?.content])
 
+  // The names the selected .vast expands to, for the filter's dropdown. Composing can take long, so
+  // the service does it in the background and this polls until it lands. Keyed on the file's
+  // content, so an edit made elsewhere asks again.
+  const configNames = useQuery({
+    queryKey: ['configNames', workspaceId, configPath, configFile.data?.content],
+    queryFn: () => robovast.previewConfigurations(workspaceId, 0, configPath, false),
+    enabled: active && !!workspaceId && !!configPath && configFile.isSuccess,
+    refetchInterval: (q) => (q.state.data?.state === 'composing' ? 1000 : false),
+  })
+  const names =
+    configNames.data?.state === 'ready' ? configNames.data.configurations.map((c) => c.name) : []
+  const composing = configNames.isLoading || configNames.data?.state === 'composing'
+
+  // A filter picked for one .vast means nothing for the next.
+  useEffect(() => {
+    setFilterTokens([])
+    setFilterInput('')
+  }, [workspaceId, configPath])
+
+  const configFilter = [...filterTokens, filterInput.trim()].filter(Boolean).join(',')
+  const matched = configNames.data?.state === 'ready' ? matchConfigs(names, configFilter) : null
+  // Launching this would only produce a campaign that fails composing its configurations.
+  const noMatch = !!configFilter && matched?.length === 0
+
+  const progress = configNames.data?.progress
+  const filterHelp = configNames.isError
+    ? (configNames.error as Error).message
+    : configNames.data?.state === 'failed'
+      ? `could not list configurations: ${configNames.data.error.split('\n')[0]}`
+      : composing
+        ? progress
+          ? `composing: ${progress.done} of ${progress.total} variations done`
+          : 'composing configurations…'
+        : matched
+          ? noMatch
+            ? `matches none of the ${names.length} configurations`
+            : configFilter
+              ? `${matched.length} of ${names.length} configurations`
+              : `${names.length} configurations`
+          : undefined
+
   const create = useMutation({
     mutationFn: () =>
       robovast.createCampaign({
@@ -127,7 +174,7 @@ export function LaunchBar() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
   })
 
-  const canLaunch = !!workspaceId && !create.isPending
+  const canLaunch = !!workspaceId && !create.isPending && !noMatch
 
   return (
     <Paper sx={{ p: 2 }}>
@@ -239,14 +286,41 @@ export function LaunchBar() {
               sx={{ width: 140 }}
               slotProps={{ htmlInput: { min: 1 } }}
             />
-            <TextField
-              label="Config filter (glob, optional)"
-              value={configFilter}
-              onChange={(e) => setConfigFilter(e.target.value)}
-              placeholder="run only matching configs"
+            <Autocomplete
+              multiple
+              freeSolo
               size="small"
-              sx={{ minWidth: 240 }}
-              slotProps={{ inputLabel: { shrink: true } }}
+              sx={{ minWidth: 320 }}
+              options={names}
+              value={filterTokens}
+              onChange={(_, v) => setFilterTokens(v)}
+              inputValue={filterInput}
+              onInputChange={(_, v) => setFilterInput(v)}
+              // A glob narrows the list to what it selects; plain text to the names containing it.
+              filterOptions={(options, { inputValue }) => {
+                const q = inputValue.trim()
+                if (!q) return options
+                return options.filter((n) => (isGlob(q) ? matchesPattern(n, q) : n.includes(q)))
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Config filter (optional)"
+                  placeholder={filterTokens.length ? undefined : 'names or globs, e.g. config1-*'}
+                  helperText={filterHelp}
+                  error={noMatch || configNames.isError || configNames.data?.state === 'failed'}
+                  InputLabelProps={{ ...params.InputLabelProps, shrink: true }}
+                  InputProps={{
+                    ...params.InputProps,
+                    endAdornment: (
+                      <>
+                        {composing ? <CircularProgress size={16} /> : null}
+                        {params.InputProps.endAdornment}
+                      </>
+                    ),
+                  }}
+                />
+              )}
             />
             <FormControlLabel
               control={
@@ -265,6 +339,12 @@ export function LaunchBar() {
             />
           </Stack>
         </Collapse>
+
+        {noMatch && !showOptions ? (
+          <Alert severity="warning">
+            The config filter matches none of the {names.length} configurations.
+          </Alert>
+        ) : null}
 
         {create.isError ? (
           <Alert severity="error">

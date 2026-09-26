@@ -50,7 +50,7 @@ from robovast.client import file_address
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
-from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401  # pylint: disable=unused-import
+from robovast.client.status import (Phase, Status, StatusResponse, StepProgress,  # noqa: F401  # pylint: disable=unused-import
                                     status_response)
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ class CreateCampaignRequest(BaseModel):
 
     workspace_id: str
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
-    config_filter: str = ""          # optional glob to run only matching configs
+    config_filter: str = ""          # optional comma-separated globs; run only matching configs
     campaign_name: str = ""          # override the campaign name (id = <name>-<timestamp>); "" = metadata.name
     # Free text about *this* launch ("pilot: 5 reps, DWB vs MPPI"), recorded in the
     # campaign's store and shown in listings. Capped so it stays a listing-sized label
@@ -2083,8 +2083,18 @@ class PreviewConfiguration(BaseModel):
 
 
 class PreviewResponse(BaseModel):
-    """Result of :meth:`RobovastInterface.preview_configurations`."""
+    """Result of :meth:`RobovastInterface.preview_configurations`.
 
+    ``state`` is ``ready`` for a preview that waited for the expansion (the default). A
+    preview asked for with ``wait=False`` answers ``composing`` while the expansion runs in
+    the background (``progress`` then counts its steps once the first is counted), ``ready``
+    once every other field holds, and ``failed`` when the expansion raised, with ``error``
+    saying why; the counts and ``configurations`` are empty in every state but ``ready``.
+    """
+
+    state: Literal["composing", "ready", "failed"] = "ready"
+    progress: Optional[StepProgress] = None
+    error: str = ""
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
@@ -3813,13 +3823,21 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
         """Expand a workspace ``.vast`` into resolved configurations (no run).
 
         Wraps ``config_generation.generate_scenario_variations(output_dir=None)``;
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
+
+        With ``wait=False`` the call never waits on the expansion: the first call starts
+        it in the background and answers at once in state ``composing``; the caller polls
+        the same call until it is ``ready`` or ``failed``. A landed answer is served until
+        the ``.vast`` changes, and the next call after that composes again. That is how the
+        launcher learns the names its filter selects from without blocking on a helper
+        container. A search ``.vast`` draws its configurations while it runs, so it is
+        refused in that mode (``ValueError``); waiting for it previews a sample as before.
         """
 
     @abstractmethod

@@ -2108,6 +2108,11 @@ export interface components {
              * @default
              */
             path: string;
+            /**
+             * Wait
+             * @default true
+             */
+            wait: boolean;
         };
         /** Body_put_sources_file_sources__workspace_id___path__put */
         Body_put_sources_file_sources__workspace_id___path__put: {
@@ -3808,6 +3813,12 @@ export interface components {
         /**
          * PreviewResponse
          * @description Result of :meth:`RobovastInterface.preview_configurations`.
+         *
+         *     ``state`` is ``ready`` for a preview that waited for the expansion (the default). A
+         *     preview asked for with ``wait=False`` answers ``composing`` while the expansion runs in
+         *     the background (``progress`` then counts its steps once the first is counted), ``ready``
+         *     once every other field holds, and ``failed`` when the expansion raised, with ``error``
+         *     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
          */
         PreviewResponse: {
             /** Aux Containers */
@@ -3824,10 +3835,22 @@ export interface components {
             /** Configurations */
             configurations: components["schemas"]["PreviewConfiguration"][];
             /**
+             * Error
+             * @default
+             */
+            error: string;
+            progress: components["schemas"]["StepProgress"] | null;
+            /**
              * Runs Per Config
              * @default 0
              */
             runs_per_config: number;
+            /**
+             * State
+             * @default ready
+             * @enum {string}
+             */
+            state: "composing" | "ready" | "failed";
             /**
              * Total Trials
              * @default 0
@@ -4615,11 +4638,30 @@ export interface components {
             stopping_verdict: string | null;
             /** Updated At */
             updated_at: number;
+            variation: components["schemas"]["StepProgress"] | null;
             /**
              * Waiting For Capacity
              * @default false
              */
             waiting_for_capacity: boolean;
+        };
+        /**
+         * StepProgress
+         * @description How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per
+         *     variation of each configuration block. A step can expand into any number of
+         *     configurations, so this counts work, not configurations.
+         */
+        StepProgress: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
         };
         /**
          * TrackDeviation
