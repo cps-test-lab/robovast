@@ -101,7 +101,42 @@ type SceneTexture =
   | { file: string }
   | { raw: BinRef; width: number; height: number; channels: number }
 
+/** The format a roqsim web scene descriptor states in its `format` field. */
+export const SCENE_FORMAT = 'roqsim.web_scene'
+/**
+ * The highest descriptor version this loader reads. A descriptor stating a newer one was written to
+ * a contract this code has not seen, so it is refused rather than drawn with the keys that happen to
+ * overlap. An unstamped descriptor is the layout every exporter wrote before the stamp: version 1.
+ */
+export const SCENE_VERSION = 1
+
+/**
+ * Refuse a descriptor this loader cannot read, naming what it states and what is read. Another
+ * format is refused too: a simulator's own scene manifest shares the `scene.json` file name.
+ */
+export function checkSceneFormat(scene: { format?: unknown; version?: unknown }, url: string): void {
+  if (scene.format !== undefined && scene.format !== SCENE_FORMAT) {
+    throw new Error(
+      `${url} is a ${JSON.stringify(scene.format)} document, not a scene descriptor ` +
+        `(${JSON.stringify(SCENE_FORMAT)}).`,
+    )
+  }
+  if (scene.version === undefined) return
+  const version = scene.version
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
+    throw new Error(`${url}: scene descriptor version ${JSON.stringify(version)} is not a positive integer.`)
+  }
+  if (version > SCENE_VERSION) {
+    throw new Error(
+      `${url} is scene descriptor version ${version}; this viewer reads up to ${SCENE_VERSION}. ` +
+        'Update the viewer to one that reads it.',
+    )
+  }
+}
+
 interface SceneDescriptor {
+  format?: string
+  version?: number
   up: string
   bodies: SceneBody[]
   joints: SceneJoint[]
@@ -517,6 +552,8 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
       return r.arrayBuffer()
     }),
   ])
+
+  checkSceneFormat(scene, sceneUrl)
 
   const loader = new TextureLoader()
   // Clones made before the image arrives share the Source but carry their own upload state, so the

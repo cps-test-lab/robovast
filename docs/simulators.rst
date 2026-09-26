@@ -256,6 +256,10 @@ else -- no ROS, no rosbag, no postprocessing:
      - per run
      - **only the simulator that ran**
 
+The descriptor states what it is with ``format: "roqsim.web_scene"`` and a ``version``. The panel
+refuses another format or a version newer than it reads, naming both, so a descriptor written to a
+later contract is an error rather than a plausible drawing; an unstamped descriptor is version 1.
+
 That split is what lets a second simulator be admitted. Geometry is world-authored, so it can be
 compiled offline from an SDF, a USD, an MJCF or a floorplan by whatever tool reads that format;
 only the motion is a property of the execution, and its format is the simulator's own
