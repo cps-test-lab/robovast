@@ -181,7 +181,7 @@ Then check it, and run it:
 
    vast workspace validate my-experiment my.vast   # every problem at once
    vast workspace preview  my-experiment my.vast   # how many configurations is that?
-   vast workspace config-names my-experiment my.vast   # the names --filter selects from
+   vast workspace preview my-experiment my.vast        # the names --filter selects from
    vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
 
 ``run --filter`` takes a name or glob, or several separated by commas (``--filter

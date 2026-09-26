@@ -122,11 +122,12 @@ export function LaunchBar() {
   // content, so an edit made elsewhere asks again.
   const configNames = useQuery({
     queryKey: ['configNames', workspaceId, configPath, configFile.data?.content],
-    queryFn: () => robovast.listConfigNames(workspaceId, configPath),
+    queryFn: () => robovast.previewConfigurations(workspaceId, 0, configPath, false),
     enabled: active && !!workspaceId && !!configPath && configFile.isSuccess,
     refetchInterval: (q) => (q.state.data?.state === 'composing' ? 1000 : false),
   })
-  const names = configNames.data?.state === 'ready' ? configNames.data.names : []
+  const names =
+    configNames.data?.state === 'ready' ? configNames.data.configurations.map((c) => c.name) : []
   const composing = configNames.isLoading || configNames.data?.state === 'composing'
 
   // A filter picked for one .vast means nothing for the next.

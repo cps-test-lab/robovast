@@ -45,7 +45,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         JobLogChunk, JobState, ListJobsResponse,
                                         ListWorkspacesResponse,
                                         LogChunk, McpCalls, McpToolStats,
-                                        PreviewResponse, ResourceUsage, RetriggerReport, ConfigNames,
+                                        PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
                                         ServiceCache, ServiceError, TAP_MAX_S,
                                         UnsupportedOperation,
@@ -598,15 +598,11 @@ class HTTPTransport(RobovastInterface):
                        timeout=COMMAND_LIMIT_S))
 
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
         return PreviewResponse.model_validate(self._post(
             Routes.workspace_preview(workspace_id),
-            json={"max_configs": max_configs, "path": path}))
-
-    def list_config_names(self, workspace_id: str, path: str = "") -> ConfigNames:
-        return ConfigNames.model_validate(self._post(
-            Routes.workspace_config_names(workspace_id), json={"path": path}))
+            json={"max_configs": max_configs, "path": path, "wait": wait}))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False) -> WorldDescription:

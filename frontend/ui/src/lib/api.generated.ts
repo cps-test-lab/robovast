@@ -1878,23 +1878,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/workspaces/{workspace_id}/config-names": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** List Config Names */
-        post: operations["list_config_names_workspaces__workspace_id__config_names_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/workspaces/{workspace_id}/preview": {
         parameters: {
             query?: never;
@@ -2105,14 +2088,6 @@ export interface components {
              */
             old_string: string;
         };
-        /** Body_list_config_names_workspaces__workspace_id__config_names_post */
-        Body_list_config_names_workspaces__workspace_id__config_names_post: {
-            /**
-             * Path
-             * @default
-             */
-            path: string;
-        };
         /** Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post */
         Body_materialize_retrigger_workspace_campaigns__campaign_id__retrigger_workspace_post: {
             /**
@@ -2133,6 +2108,11 @@ export interface components {
              * @default
              */
             path: string;
+            /**
+             * Wait
+             * @default true
+             */
+            wait: boolean;
         };
         /** Body_put_sources_file_sources__workspace_id___path__put */
         Body_put_sources_file_sources__workspace_id___path__put: {
@@ -2586,31 +2566,6 @@ export interface components {
             campaign_id: string;
             /** Workloads */
             workloads: components["schemas"]["CampaignVisualization"][];
-        };
-        /**
-         * ConfigNames
-         * @description Result of :meth:`RobovastInterface.list_config_names`: the configuration names a
-         *     ``.vast`` expands to, composed in the background.
-         *
-         *     ``state`` is ``composing`` while the expansion runs (``progress`` then counts its steps once
-         *     the first is counted), ``ready`` once ``names`` holds every name, and ``failed`` when the
-         *     expansion raised, with ``error`` saying why. ``names`` is empty in every state but
-         *     ``ready``.
-         */
-        ConfigNames: {
-            /**
-             * Error
-             * @default
-             */
-            error: string;
-            /** Names */
-            names: string[];
-            progress: components["schemas"]["StepProgress"] | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "composing" | "ready" | "failed";
         };
         /**
          * CreateCampaignRequest
@@ -3858,6 +3813,12 @@ export interface components {
         /**
          * PreviewResponse
          * @description Result of :meth:`RobovastInterface.preview_configurations`.
+         *
+         *     ``state`` is ``ready`` for a preview that waited for the expansion (the default). A
+         *     preview asked for with ``wait=False`` answers ``composing`` while the expansion runs in
+         *     the background (``progress`` then counts its steps once the first is counted), ``ready``
+         *     once every other field holds, and ``failed`` when the expansion raised, with ``error``
+         *     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
          */
         PreviewResponse: {
             /** Aux Containers */
@@ -3874,10 +3835,22 @@ export interface components {
             /** Configurations */
             configurations: components["schemas"]["PreviewConfiguration"][];
             /**
+             * Error
+             * @default
+             */
+            error: string;
+            progress: components["schemas"]["StepProgress"] | null;
+            /**
              * Runs Per Config
              * @default 0
              */
             runs_per_config: number;
+            /**
+             * State
+             * @default ready
+             * @enum {string}
+             */
+            state: "composing" | "ready" | "failed";
             /**
              * Total Trials
              * @default 0
@@ -8402,41 +8375,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_config_names_workspaces__workspace_id__config_names_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspace_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["Body_list_config_names_workspaces__workspace_id__config_names_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigNames"];
                 };
             };
             /** @description Validation Error */

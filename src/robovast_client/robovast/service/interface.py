@@ -2083,8 +2083,18 @@ class PreviewConfiguration(BaseModel):
 
 
 class PreviewResponse(BaseModel):
-    """Result of :meth:`RobovastInterface.preview_configurations`."""
+    """Result of :meth:`RobovastInterface.preview_configurations`.
 
+    ``state`` is ``ready`` for a preview that waited for the expansion (the default). A
+    preview asked for with ``wait=False`` answers ``composing`` while the expansion runs in
+    the background (``progress`` then counts its steps once the first is counted), ``ready``
+    once every other field holds, and ``failed`` when the expansion raised, with ``error``
+    saying why; the counts and ``configurations`` are empty in every state but ``ready``.
+    """
+
+    state: Literal["composing", "ready", "failed"] = "ready"
+    progress: Optional[StepProgress] = None
+    error: str = ""
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
@@ -2098,21 +2108,6 @@ class PreviewResponse(BaseModel):
     #: The Config tab's third column, from ``visualization.config.panels`` of the same file —
     #: flattened, with a Module-Federation ``remote`` attached to a package-provided panel.
     config_panels: list[dict] = Field(default_factory=list)
-
-
-class ConfigNames(BaseModel):
-    """Result of :meth:`RobovastInterface.list_config_names`: the configuration names a
-    ``.vast`` expands to, composed in the background.
-
-    ``state`` is ``composing`` while the expansion runs (``progress`` then counts its steps once
-    the first is counted), ``ready`` once ``names`` holds every name, and ``failed`` when the
-    expansion raised, with ``error`` saying why. ``names`` is empty in every state but
-    ``ready``."""
-
-    state: Literal["composing", "ready", "failed"]
-    progress: Optional[StepProgress] = None
-    names: list[str] = Field(default_factory=list)
-    error: str = ""
 
 
 class WorldDescription(BaseModel):
@@ -2602,10 +2597,6 @@ class Routes:
     @staticmethod
     def workspace_preview(workspace_id: str) -> str:
         return f"/workspaces/{workspace_id}/preview"
-
-    @staticmethod
-    def workspace_config_names(workspace_id: str) -> str:
-        return f"/workspaces/{workspace_id}/config-names"
 
     @staticmethod
     def workspace_world(workspace_id: str) -> str:
@@ -3832,24 +3823,21 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
         """Expand a workspace ``.vast`` into resolved configurations (no run).
 
         Wraps ``config_generation.generate_scenario_variations(output_dir=None)``;
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
-        """
 
-    @abstractmethod
-    def list_config_names(self, workspace_id: str, path: str = "") -> ConfigNames:
-        """The configuration names a workspace ``.vast`` expands to, without waiting for them.
-
-        The first call starts composing the file in the background and returns at once in
-        state ``composing``; the caller polls the same call until it is ``ready`` or
-        ``failed``. A result stays until the ``.vast`` changes, and the next call after that
-        composes again. ``path`` selects which ``.vast`` (empty = the sole one). Raises
-        ``ValueError`` for a search ``.vast``, whose configurations are drawn while it runs.
+        With ``wait=False`` the call never waits on the expansion: the first call starts
+        it in the background and answers at once in state ``composing``; the caller polls
+        the same call until it is ``ready`` or ``failed``. A landed answer is served until
+        the ``.vast`` changes, and the next call after that composes again. That is how the
+        launcher learns the names its filter selects from without blocking on a helper
+        container. A search ``.vast`` draws its configurations while it runs, so it is
+        refused in that mode (``ValueError``); waiting for it previews a sample as before.
         """
 
     @abstractmethod

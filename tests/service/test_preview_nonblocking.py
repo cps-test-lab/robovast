@@ -1,9 +1,9 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``list_config_names`` answers at once and composes in the background.
+"""``preview_configurations(wait=False)`` answers at once and composes in the background.
 
 The launcher polls it for the filter's dropdown, so a call never waits on composition: it
-starts one, reports it as ``composing``, and serves the landed names until the ``.vast``
+starts one, reports it as ``composing``, and serves the landed preview until the ``.vast``
 changes.
 """
 
@@ -54,7 +54,7 @@ def _impl(tmp_path, blocks):
 def _settled(impl):
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        result = impl.list_config_names("ws")
+        result = impl.preview_configurations("ws", wait=False)
         if result.state != "composing":
             return result
         time.sleep(0.05)
@@ -63,8 +63,8 @@ def _settled(impl):
 
 def test_the_first_call_does_not_wait(tmp_path):
     impl, _ = _impl(tmp_path, ["cell0"])
-    assert impl.list_config_names("ws").state == "composing"
-    assert _settled(impl).names == ["cell0"]
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert [c.name for c in _settled(impl).configurations] == ["cell0"]
 
 
 def test_an_edited_vast_is_composed_again(tmp_path):
@@ -73,19 +73,19 @@ def test_an_edited_vast_is_composed_again(tmp_path):
     vast.write_text(_VAST % "- name: cell0\n- name: cell1")
     stat = vast.stat()
     os.utime(vast, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-    assert impl.list_config_names("ws").state == "composing"
-    assert _settled(impl).names == ["cell0", "cell1"]
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert [c.name for c in _settled(impl).configurations] == ["cell0", "cell1"]
 
 
 def test_a_failed_composition_says_why(tmp_path):
     impl, vast = _impl(tmp_path, ["cell0"])
     vast.write_text(_VAST % "- name: cell0\n  variations:\n  - NoSuchVariation: {}")
     result = _settled(impl)
-    assert result.state == "failed" and result.error and not result.names
+    assert result.state == "failed" and result.error and not result.configurations
 
 
 def test_a_search_vast_is_refused(tmp_path):
     impl, vast = _impl(tmp_path, ["cell0"])
     vast.write_text(vast.read_text() + "search: {}\n")
     with pytest.raises(ValueError, match="search"):
-        impl.list_config_names("ws")
+        impl.preview_configurations("ws", wait=False)

@@ -70,7 +70,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         CampaignDeletion, CampaignTablesCleared,
                                         DeleteCampaignsRequest, ExportRef, ExportStatus,
                                         DeleteCampaignsResponse, OutputsIngested,
-                                        CampaignSummary, ConfigNames, OriginKind, ShareListing,
+                                        CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText,
@@ -660,10 +660,10 @@ class ServiceBase(RobovastInterface):
         # design; see the "taking a campaign in" section.
         self._archive_grants: dict[str, tuple[float, Path]] = {}
         self._archive_grants_lock = threading.Lock()
-        # (workspace_id, .vast path) -> (the .vast's mtime it was composed from, ConfigNames).
-        # See list_config_names; one small entry per .vast ever asked about.
-        self._config_names: dict[tuple, tuple[int, ConfigNames]] = {}
-        self._config_names_lock = threading.Lock()
+        # (workspace_id, .vast path, max_configs) -> (the .vast's mtime it was composed from,
+        # the preview). See preview_configurations(wait=False); one entry per .vast asked about.
+        self._previews: dict[tuple, tuple[int, PreviewResponse]] = {}
+        self._previews_lock = threading.Lock()
         if store is None:
             from robovast.service.workspaces import WorkspaceStore
             store = WorkspaceStore()
@@ -4817,11 +4817,62 @@ class ServiceBase(RobovastInterface):
                 "problems": list(result.get("problems") or []) + problems}
 
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
+        project = self._resolve_project(workspace_id, path)
+        if wait:
+            return self._compose_preview(workspace_id, path, project, max_configs)
+        from robovast.common.common import load_config
+        vast = project.config_path
+        if (load_config(vast) or {}).get("search"):
+            raise ValueError(
+                "a search .vast draws its configurations while it runs, so there are no names "
+                "to list ahead of it, and a config filter does not apply to it")
+        mtime = os.stat(vast).st_mtime_ns
+        key = (workspace_id, vast, max_configs)
+        with self._previews_lock:
+            held = self._previews.get(key)
+            # A composition in flight is answered as it stands even if the file has moved on:
+            # it cannot be stopped, and the first call after it lands composes again.
+            if held is not None and (held[1].state == "composing" or held[0] == mtime):
+                return held[1]
+            started = PreviewResponse(state="composing")
+            self._previews[key] = (mtime, started)
+        threading.Thread(
+            target=self._compose_preview_in_background,
+            args=(key, mtime, workspace_id, path, project, max_configs),
+            name=f"robovast-{_preview_tag(workspace_id, path)}-preview", daemon=True).start()
+        return started
+
+    def _compose_preview_in_background(self, key, mtime, workspace_id, path, project,
+                                       max_configs) -> None:
+        """Compose the preview, publishing its step counter and then the result into
+        ``_previews[key]``; a failure is the result the caller polls for."""
+        from robovast.client.status import StepProgress
+        from robovast.common.config_generation import parse_composition_step
+
+        def publish(result: PreviewResponse) -> None:
+            with self._previews_lock:
+                self._previews[key] = (mtime, result)
+
+        def on_line(line):
+            step = parse_composition_step(line)
+            if step is not None:
+                publish(PreviewResponse(state="composing",
+                                        progress=StepProgress(done=step[0], total=step[1])))
+
+        try:
+            publish(self._compose_preview(workspace_id, path, project, max_configs, on_line))
+        except Exception as e:  # noqa: BLE001 - the failure is the result the caller polls for
+            logger.info("Previewing %s failed: %s", project.config_path, e)
+            publish(PreviewResponse(state="failed", error=str(e)))
+
+    def _compose_preview(self, workspace_id: str, path: str, project, max_configs: int,
+                         on_line=None) -> PreviewResponse:
+        """The preview of *project*'s ``.vast``, composed now; *on_line* hears the composition's
+        progress lines."""
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
-        project = self._resolve_project(workspace_id, path)
         aux_containers: list = []
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
@@ -4842,7 +4893,8 @@ class ServiceBase(RobovastInterface):
             else:
                 try:
                     campaign_data = generate_scenario_variations(
-                        variation_file=project.config_path, output_dir=None)
+                        variation_file=project.config_path, output_dir=None,
+                        progress_update_callback=on_line)
                 except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
                     raise ValueError(str(e)) from e
                 configs = campaign_data["configs"]
@@ -4877,57 +4929,6 @@ class ServiceBase(RobovastInterface):
                                config_panels=_config_panel_specs(
                                    load_config(project.config_path) or {},
                                    _panel_remotes("config"), workspace_id))
-
-    def list_config_names(self, workspace_id: str, path: str = "") -> ConfigNames:
-        from robovast.common.common import load_config
-        project = self._resolve_project(workspace_id, path)
-        vast = project.config_path
-        if (load_config(vast) or {}).get("search"):
-            raise ValueError(
-                "a search .vast draws its configurations while it runs, so there are no names "
-                "to list, and a config filter does not apply to it")
-        mtime = os.stat(vast).st_mtime_ns
-        key = (workspace_id, vast)
-        with self._config_names_lock:
-            held = self._config_names.get(key)
-            # A composition in flight is answered as it stands even if the file has moved on:
-            # it cannot be stopped, and the first call after it lands composes again.
-            if held is not None and (held[1].state == "composing" or held[0] == mtime):
-                return held[1]
-            started = ConfigNames(state="composing")
-            self._config_names[key] = (mtime, started)
-        threading.Thread(
-            target=self._compose_config_names, args=(key, mtime, workspace_id, path, project),
-            name=f"robovast-{_preview_tag(workspace_id, path)}-names", daemon=True).start()
-        return started
-
-    def _compose_config_names(self, key, mtime, workspace_id, path, project) -> None:
-        """Compose *project*'s ``.vast`` as a preview does, publishing its step counter and then
-        its names into ``_config_names[key]``."""
-        from robovast.client.status import StepProgress
-        from robovast.common.config_generation import (generate_scenario_variations,
-                                                       parse_composition_step)
-
-        def publish(result: ConfigNames) -> None:
-            with self._config_names_lock:
-                self._config_names[key] = (mtime, result)
-
-        def on_line(line):
-            step = parse_composition_step(line)
-            if step is not None:
-                publish(ConfigNames(state="composing",
-                                    progress=StepProgress(done=step[0], total=step[1])))
-
-        try:
-            with self._aux_runner_context(_preview_tag(workspace_id, path), project, hold=True):
-                campaign_data = generate_scenario_variations(
-                    variation_file=project.config_path, progress_update_callback=on_line,
-                    output_dir=None)
-        except Exception as e:  # noqa: BLE001 - the failure is the result the caller polls for
-            logger.info("Listing config names of %s failed: %s", project.config_path, e)
-            publish(ConfigNames(state="failed", error=str(e)))
-            return
-        publish(ConfigNames(state="ready", names=[c["name"] for c in campaign_data["configs"]]))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False) -> WorldDescription:
