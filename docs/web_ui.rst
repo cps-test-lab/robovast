@@ -683,8 +683,8 @@ your browser at all.
 
 **Extracting is not importing.** Listings and this page answer from the campaign's
 registration and its ``campaign.db``, not from a scan of the results tree, so an archive that
-was merely unpacked would appear blank — which is why the archive is registered, and why ``vast results
-download`` alone does not make a campaign appear here.
+was merely unpacked would appear blank — which is why the archive is registered, and why
+``vast campaign download`` alone does not make a campaign appear here.
 
 **It is also not instant.** The import is a tracked operation like any other: the campaign
 appears in the list straight away at phase ``importing`` — its id is read from the archive
@@ -961,7 +961,9 @@ run files, and author the ``.vast`` in the Monaco editor.
 Taking a project out and putting one back
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Three buttons beside the workspace picker:
+Beside the workspace picker, **New workspace** creates an empty one and **Delete
+workspace** removes the selected one (campaigns already run from it are unaffected).
+Three more take a project out and put one back:
 
 **Download** saves the selected workspace as ``<ws-id>.tar.gz`` — the project files under
 one directory, which is the same archive ``vast workspace download`` fetches.
