@@ -23,6 +23,7 @@ from typing import Annotated, Any, ClassVar, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from robovast.common.migrations.config import SUPPORTED_CONFIG_VERSION
 from robovast_decode.quantity import to_bytes, to_cores
 
 logger = logging.getLogger(__name__)
@@ -2485,7 +2486,12 @@ class SearchConfig(BaseModel):
 
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    version: int = 1
+    version: int = Field(
+        default=SUPPORTED_CONFIG_VERSION,
+        description=(
+            "The config version this file is written against. Authoring accepts only the "
+            "current one, which is this field's default; an older file is brought forward "
+            "with 'vast configuration upgrade'."))
     extends: Optional[str] = Field(
         default=None,
         description=(
