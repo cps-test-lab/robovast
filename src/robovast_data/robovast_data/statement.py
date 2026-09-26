@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
 
@@ -77,15 +78,17 @@ class Statement:
     narrowing: Dict[str, Narrowing] = field(default_factory=dict)
 
 
-_PARSER = None
+#: One parser connection per thread. A DuckDB connection is not safe to share between threads:
+#: two requests parsing at once on one connection read each other's results, or none.
+_PARSERS = threading.local()
 
 
 def _parser() -> duckdb.DuckDBPyConnection:
-    """A connection used only to parse and print SQL; it never reads data."""
-    global _PARSER  # pylint: disable=global-statement
-    if _PARSER is None:
-        _PARSER = duckdb.connect()
-    return _PARSER
+    """This thread's connection used only to parse and print SQL; it never reads data."""
+    connection = getattr(_PARSERS, "connection", None)
+    if connection is None:
+        connection = _PARSERS.connection = duckdb.connect()
+    return connection
 
 
 def _walk(node, visit):

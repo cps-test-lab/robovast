@@ -43,6 +43,7 @@ import fcntl
 import hashlib
 import json
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 from typing import Callable, Dict, Iterable, List, Optional
@@ -164,13 +165,29 @@ def run_part_path(campaign_dir: str, table: str, config_name: str, run_id, index
     return os.path.join(TABLES_DIR, table, config_name, str(run_id), f"part-{index:04d}.parquet")
 
 
+def _incoming(path: str) -> str:
+    """A temporary name beside *path* that no other writer of *path* shares.
+
+    Two requests can build the same table at once; each writes its own file and the last
+    rename wins, where one shared name would let one writer rename away the other's file.
+    """
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                               prefix=os.path.basename(path) + ".", suffix=".incoming")
+    os.close(fd)
+    return tmp
+
+
 def write_table(campaign_dir: str, rel_path: str, table: pa.Table) -> int:
     """Write *table* to *rel_path* under the cache root, atomically; its size in bytes."""
     path = os.path.join(cache_root(campaign_dir), rel_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".incoming"
-    pq.write_table(table, tmp, compression="zstd")
-    os.replace(tmp, path)
+    tmp = _incoming(path)
+    try:
+        pq.write_table(table, tmp, compression="zstd")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     return os.path.getsize(path)
 
 
@@ -206,6 +223,26 @@ def manifest_lock(campaign_dir: str):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
+@contextmanager
+def run_lock(campaign_dir: str, run_key: str):
+    """Serialise the builds of one run's tables, across threads and processes.
+
+    Two requests that name the same run -- a run view opens several panels at once -- would
+    otherwise both decode its recordings and both write its tables. Holding this, the second
+    finds what the first wrote current and reads it. Runs lock separately, so building one
+    run does not wait for another.
+    """
+    root = os.path.join(cache_root(campaign_dir), ".locks")
+    os.makedirs(root, exist_ok=True)
+    name = run_key.replace(os.sep, "__") + ".lock"
+    with open(os.path.join(root, name), "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def read_manifest(campaign_dir: str) -> dict:
     path = os.path.join(cache_root(campaign_dir), MANIFEST)
     if not os.path.isfile(path):
@@ -221,10 +258,15 @@ def read_manifest(campaign_dir: str) -> dict:
 
 def write_manifest(campaign_dir: str, manifest: dict) -> None:
     path = os.path.join(cache_root(campaign_dir), MANIFEST)
-    tmp = path + ".incoming"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = _incoming(path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def _schema_id(manifest: dict, schema: pa.Schema) -> str:
