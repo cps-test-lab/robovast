@@ -86,6 +86,11 @@ _ROSOUT_BAG = "rosout_bag"
 #: Read size for the download generator.
 _CHUNK = 1024 * 1024
 
+#: How long a finished export is kept after it finished. An export is built for one
+#: request and downloaded once; what it holds is rebuilt on request, and a campaign's
+#: exports would otherwise grow by the size of its tables every time one is asked for.
+EXPORT_KEEP_S = 24 * 3600
+
 #: The rosbag2 metadata version the rewritten bags are written in.
 _ROSBAG2_VERSION = 9
 
@@ -116,7 +121,7 @@ def read_status(campaign_dir, export_id: str) -> ExportStatus:
     failed for that reason. ``KeyError`` for an id the campaign has no directory for.
     """
     path = export_dir(campaign_dir, export_id)
-    if not path.is_dir():
+    if not path.is_dir() or _expired(path):
         raise KeyError(f"no export {export_id!r} of this campaign")
     if (path / EXPORT_FILE).is_file():
         with open(path / EXPORT_FILE, encoding="utf-8") as fh:
@@ -148,7 +153,7 @@ def export_file(campaign_dir, campaign_id: str, export_id: str) -> Path:
     manifest nor its error on disk is not done, whatever became of its builder.
     """
     path = export_dir(campaign_dir, export_id)
-    if not path.is_dir():
+    if not path.is_dir() or _expired(path):
         raise KeyError(f"no export {export_id!r} of {campaign_id}")
     if (path / ERROR_FILE).is_file():
         with open(path / ERROR_FILE, encoding="utf-8") as fh:
@@ -158,6 +163,62 @@ def export_file(campaign_dir, campaign_id: str, export_id: str) -> Path:
     if not (path / EXPORT_FILE).is_file() or not file.is_file():
         raise KeyError(f"export {export_id} of {campaign_id} is not done yet")
     return file
+
+
+def _finished_at(path: Path) -> Optional[str]:
+    """When the export at *path* finished, done or failed; ``None`` while it has no outcome
+    on disk (building, or lost with the process that built it)."""
+    for name, key in ((EXPORT_FILE, "created_at"), (ERROR_FILE, "finished_at")):
+        if (path / name).is_file():
+            with open(path / name, encoding="utf-8") as fh:
+                return json.load(fh).get(key)
+    return None
+
+
+def _older_than_kept(stamp: Optional[str], now: Optional[datetime] = None,
+                     keep_for_s: float = EXPORT_KEEP_S) -> bool:
+    """Whether the time *stamp* names lies more than *keep_for_s* before *now*."""
+    if stamp is None:
+        return False
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    return ((now or datetime.now(timezone.utc)) - at).total_seconds() > keep_for_s
+
+
+def _expired(path: Path) -> bool:
+    """Whether the export at *path* finished more than :data:`EXPORT_KEEP_S` ago.
+
+    Checked where an export is read and served, so an export past its keep answers as one
+    that never was whether or not a sweep has removed it yet.
+    """
+    return _older_than_kept(_finished_at(path))
+
+
+def sweep_exports(campaign_dir, running: "set[str]", keep_for_s: float = EXPORT_KEEP_S,
+                  now: Optional[datetime] = None) -> List[str]:
+    """Remove the campaign's exports that finished more than *keep_for_s* ago; their ids.
+
+    *running* are the ids this process is building, left alone whatever their age. An export
+    whose builder stopped with the service has no finishing time and is removed once its
+    request is that old. A download already reading a removed tarball keeps its open file.
+    """
+    root = exports_root(campaign_dir)
+    if not root.is_dir():
+        return []
+    removed = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or not _EXPORT_ID.match(path.name) or path.name in running:
+            continue
+        stamp = _finished_at(path)
+        if stamp is None and (path / REQUEST_FILE).is_file():
+            with open(path / REQUEST_FILE, encoding="utf-8") as fh:
+                stamp = json.load(fh).get("started_at")
+        if _older_than_kept(stamp, now, keep_for_s):
+            shutil.rmtree(path, ignore_errors=True)
+            removed.append(path.name)
+    return removed
 
 
 def iter_file(path, chunk_size: int = _CHUNK) -> Iterator[bytes]:
@@ -397,6 +458,11 @@ class ExportStore:
         was checked against the catalog before this is called.
         """
         export_id = secrets.token_hex(6)
+        with self._lock:
+            running = {key[1] for key in self._running if key[0] == campaign_id}
+        for gone in sweep_exports(campaign_dir, running):
+            logger.info("Removed export %s of %s: kept %d h after it finished",
+                        gone, campaign_id, EXPORT_KEEP_S // 3600)
         path = export_dir(campaign_dir, export_id)
         path.mkdir(parents=True, exist_ok=False)
         started_at = _now()
@@ -500,7 +566,8 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
     payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
     name = export_file_name(campaign_id, export_id)
     tmp = path / (name + ".incoming")
-    with tarfile.open(tmp, "w:gz") as tar:
+
+    def members(tar: tarfile.TarFile) -> None:
         _add_bytes(tar, EXPORT_FILE, payload)
         for entry in written.values():
             tar.add(str(scratch / entry["file"]), arcname=entry["file"], recursive=False)
@@ -510,6 +577,12 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
             source = (scratch / "bags" / bag.rel if request.bags == "sqlite3" and bag.rosbag2
                       else bag.path)
             add_tree(tar, source, f"{campaign_id}/{bag.rel}")
+
+    # Through the archive's pigz pipe, on every core: a CSV export can be gigabytes of text.
+    from robovast.execution.campaign_archive import iter_tar  # pylint: disable=import-outside-toplevel
+    with open(tmp, "wb") as fh:
+        for chunk in iter_tar(members):
+            fh.write(chunk)
     os.replace(tmp, path / name)
     shutil.rmtree(scratch, ignore_errors=True)
     manifest["bytes"] = os.path.getsize(path / name)
