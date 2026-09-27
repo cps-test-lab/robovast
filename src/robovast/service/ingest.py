@@ -51,6 +51,7 @@ re-implementing the sequence.
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tarfile
@@ -184,8 +185,50 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
     return target
 
 
-def extract_archive(archive_path, results_root, *, remove_archive: bool = False) -> None:
-    """Unpack a campaign archive into *results_root*.
+class MemberOutsideCampaign(tarfile.FilterError):
+    """A member of a campaign archive that would land outside the campaign it holds."""
+
+    def __init__(self, member_name: str, campaign_id: str, where: str):
+        super().__init__(
+            f"member {member_name!r} would land at {where!r}, outside the campaign "
+            f"directory {campaign_id}/")
+
+
+def _confined_to(campaign_id: str):
+    """An extraction filter for the campaign's own directory, not the results root.
+
+    Each member is renamed relative to the campaign directory and handed to
+    ``tarfile.data_filter`` with that directory as its destination, so a ``..``, a symlink
+    or a hard link that reaches a sibling campaign is refused by name. The ``./`` root of a
+    ``tar -C <dir> .`` archive writes nothing.
+    """
+    prefix = campaign_id + "/"
+
+    def _inside(name: str, member_name: str) -> str:
+        rel = os.path.normpath(name.lstrip("/"))
+        if rel != campaign_id and not rel.startswith(prefix):
+            raise MemberOutsideCampaign(member_name, campaign_id, rel)
+        return rel[len(prefix):] or "."
+
+    def _filter(member, dest):
+        if os.path.normpath(member.name.lstrip("/")) == ".":
+            return None
+        inner = {"name": _inside(member.name, member.name)}
+        if member.islnk():
+            inner["linkname"] = _inside(member.linkname, member.name)
+        return tarfile.data_filter(member.replace(**inner), dest)
+
+    return _filter
+
+
+def extract_archive(archive_path, results_root, campaign_id: str, *,
+                    remove_archive: bool = False) -> None:
+    """Unpack the archive of *campaign_id* into ``<results_root>/<campaign_id>``.
+
+    An archive from elsewhere is untrusted input: every member is confined to the
+    campaign's own directory (:func:`_confined_to`), and one that would land anywhere else
+    fails the extraction naming the member. A campaign's ``job`` symlinks point within the
+    campaign, so they survive it.
 
     *remove_archive* deletes *archive_path* afterwards. It is for a copy the service staged
     -- from an upload, or from the share -- and now owns; a path the caller named is never
@@ -195,10 +238,8 @@ def extract_archive(archive_path, results_root, *, remove_archive: bool = False)
     archive_path = Path(archive_path)
     try:
         with tarfile.open(archive_path, 'r:*') as tar:
-            # `filter='data'` refuses absolute paths and ../ escapes. An archive from elsewhere is
-            # untrusted input, and the default became an error in newer Pythons for that reason.
-            # A campaign's `job` symlinks point within the campaign, so they survive it.
-            tar.extractall(path=Path(results_root), filter='data')
+            tar.extractall(path=Path(results_root) / _checked_campaign_name(campaign_id),
+                           filter=_confined_to(campaign_id))
     except (tarfile.TarError, OSError) as e:
         raise ValueError(f"could not read {archive_path.name}: {e}") from e
 

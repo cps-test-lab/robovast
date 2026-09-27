@@ -28,9 +28,17 @@ def handle_cli_exception(e: Exception) -> None:
     one: messages like ``[Errno 2] No such file or directory: 'x'`` say nothing about
     what kind of failure this was or where it happened, and the frames are in hand.
 
+    Click's own exceptions pass through untouched: a ``ClickException`` (a usage error,
+    or the "no service answers" refusal raised before a verb's body runs) is click's to
+    render, as ``Error: <message>`` with the exit code it defines. Reporting it here
+    would print it as a bug -- type, message and the frames of the ``raise`` -- for a
+    caller who mistyped an argument.
+
     Args:
         e: The exception to handle
     """
+    if isinstance(e, click.ClickException):
+        raise e
     click.echo(f"Error: {describe_cli_exception(e)}", err=True)
     sys.exit(1)
 
@@ -41,6 +49,8 @@ def describe_cli_exception(e: Exception) -> str:
     For a verb that acts on several things and reports each failure on its own before
     going on to the next. The full traceback goes to debug logging here as well.
     """
+    if isinstance(e, click.ClickException):
+        return e.format_message()
     logging.debug("Full traceback:\n%s", traceback.format_exc())
     if getattr(e, "include_traceback", True):
         return f"{e.__class__.__name__}: {failure_detail(e)}"
