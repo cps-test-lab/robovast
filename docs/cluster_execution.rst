@@ -1988,7 +1988,10 @@ matched against.
 ``--context`` selects a **kubeconfig context** for the operator verbs that talk to a
 cluster directly — ``vast cluster setup``, ``cluster cleanup``, ``cluster jobs-cleanup``,
 ``cluster monitor``, ``vast service upgrade``, ``service token`` and ``vast doctor`` — as
-listed by ``kubectl config get-contexts``:
+listed by ``kubectl config get-contexts``. Each acts on that one context, or on the
+kubeconfig's current one without the flag. ``cluster cleanup``, ``cluster jobs-cleanup``
+and ``cluster monitor`` take no ``.vast``: a file does not say which cluster to clean or
+watch.
 
 .. code-block:: bash
 
@@ -2052,10 +2055,6 @@ Rules:
   is valid.
 * On a service with no context recorded, a campaign with a per-cluster list fails, and
   the error says to run ``vast service upgrade`` against its cluster, which records one.
-* ``cluster cleanup`` and ``cluster jobs-cleanup`` with ``--vast`` refuse to pick a
-  cluster by accident: when the file lists several contexts and ``--context`` was not
-  given, they ask for one. ``cluster monitor --vast`` instead watches every context the
-  file lists.
 
 Running the same config on two clusters means launching it on each cluster's service:
 
