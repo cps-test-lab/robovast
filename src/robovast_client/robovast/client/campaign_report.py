@@ -74,7 +74,7 @@ def binding_budget(st):
     Read through :func:`budget_positions`, so a ``time`` budget reports where the search is
     now rather than where it was when the last round closed.
 
-    The single implementation of that rule on this side: :func:`progress_from_status` takes
+    The single implementation of that rule in Python: :func:`progress_from_status` takes
     the share from here and the status dict takes the row, so the reported progress and the
     criterion it is named against cannot disagree. The web UI's ``ringBudget`` (lib/eta.ts)
     applies the same rule to draw the ring, and ``campaignEtaSeconds`` expresses it in time
@@ -126,13 +126,9 @@ OBJECTIVE_HISTORY_WINDOW = 20
 def attach_objective_history(result: dict, client, campaign_id: str) -> None:
     """Add a search's objective trajectory to a status dict, in place.
 
-    On ``get_campaign_status`` rather than behind a tool of its own, and that is a deliberate
-    reversal. The first design put it in a separate ``get_search_progress`` on the grounds that a
-    per-batch array does not belong on a polled payload — true of the HTTP status, which every
-    campaign card fetches every 1.5s, and false here: this is an occasional agent call, and the
-    tooling steers agents to ``vast campaign wait`` rather than to polling it. Meanwhile a second tool has to
-    be *discovered*, and an agent that must remember to make a follow-up call does not make it —
-    which is the same lesson a launch's ``next_step`` exists for.
+    On the status report rather than behind a call of its own: a second call has to be
+    discovered, and an agent that must remember a follow-up does not make it. It stays off the
+    HTTP status, which the web UI polls, because this report is an occasional read.
 
     ``batches_since_improvement`` is a FACT, not a verdict. Whether a flat stretch means "converged"
     is only RoboVAST's to say when the campaign declared a ``no_improvement`` criterion — and then
@@ -140,12 +136,13 @@ def attach_objective_history(result: dict, client, campaign_id: str) -> None:
     rule as ``stalled: None`` when no timeout is declared: no verdict is possible, which is not the
     same as "healthy".
 
-    Best-effort: a service that cannot answer leaves the status untouched rather than failing the
-    read, because the trajectory is a bonus on a call whose job is the phase.
+    A service that cannot answer does not fail the read, whose job is the phase; the failure is
+    reported as ``objective_history_error`` so it does not read as a search with no history.
     """
     try:
         history = client.get_search_history(campaign_id)
-    except Exception:  # noqa: BLE001 - a status read must not fail over its garnish
+    except Exception as e:  # noqa: BLE001 - a status read must not fail over its garnish
+        result["objective_history_error"] = str(e)
         return
     if history.unavailable:
         # Named rather than silent: "several objectives, so there is no scalar to trend" is a
@@ -175,7 +172,7 @@ def attach_objective_history(result: dict, client, campaign_id: str) -> None:
 
 
 def status_to_dict(campaign_id: str, backend, st) -> dict:
-    """Render a controller :class:`Status` into the MCP status dict.
+    """Render a controller :class:`Status` into the status report's fields.
 
     Faithful to both batch and search campaigns: run counts are **batch-scoped**
     (``batch_runs_*``) and ``progress`` is computed mode-aware (see
@@ -220,8 +217,8 @@ def status_to_dict(campaign_id: str, backend, st) -> dict:
     # this is that judgement.
     result.update(stopping_soon_report(st))
     # Only when a running job's simulator reported one, but then always: an error-level finding
-    # is what stops `vast campaign wait` (exit 5), so a reader of this tool has to be shown the same thing
-    # the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
+    # is what stops `vast campaign wait` (exit 5), so a reader of this report has to be shown the
+    # same thing the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
     # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
     findings = error_findings(st)
     if findings:
@@ -306,12 +303,10 @@ def campaign_next_step(result: dict) -> str:
         # A campaign can finish green and still have nothing derived; saying "finished"
         # alone sends the caller looking for results that were never written.
         #
-        # But "postprocessed is false" covers two states that need opposite actions, and
-        # collapsing them told a reader the wrong one. A step that RAISES leaves the
-        # campaign not-postprocessed while the steps beside it already derived their data
-        # and loaded it, so its tables are queryable. Reporting "there are no CSVs" there
-        # is simply false, and it invites re-running everything to
-        # recover what is already there.
+        # But "postprocessed is false" covers two states that need opposite actions. A step
+        # that RAISES leaves the campaign not-postprocessed while the steps beside it already
+        # derived and loaded their data, so reporting "nothing was derived" there is false and
+        # invites re-running everything.
         error = result.get("postprocessing_error")
         if error:
             return (f"finished, but postprocessing reported an error: {error}. What the "
@@ -332,7 +327,7 @@ _WALK_PAGE = 200
 
 
 def summary_to_dict(summary) -> dict:
-    """Render a service ``CampaignSummary`` into the MCP listing entry.
+    """Render a service ``CampaignSummary`` into a listing entry.
 
     ``description`` and ``finished_at`` are omitted when empty rather than reported as
     ``""``/null: a campaign started without a description has none, which is not the same
@@ -380,9 +375,8 @@ def walk_all(client, sort: str, order: str) -> list:
     """Every campaign summary the service knows, in the service's order (live first,
     then by *sort*/*order*).
 
-    Only for ``running_only``. The service now leads with the live campaigns, so the
-    first page usually holds them all — but "usually" is not an answer to "which are
-    running", and nothing bounds their number, so this still walks every page.
+    Only for ``running_only``. The service leads with the live campaigns, so the first
+    page usually holds them all — but nothing bounds their number, so this walks every page.
     """
     from robovast.service.interface import ListCampaignsRequest
     out: list = []

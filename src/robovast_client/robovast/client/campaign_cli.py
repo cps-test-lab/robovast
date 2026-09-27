@@ -497,7 +497,7 @@ def wait(campaign, interval, timeout, namespace, context):
             # caller was just told to come back from, so it cannot be what sends them away again.
             seen["checks"] = {f.check for f in findings}
         else:
-            # A finding first when both are true, matching `_campaign_next_step`: it names a fault
+            # A finding first when both are true, matching `campaign_report.campaign_next_step`: it names a fault
             # class ("sim time is not advancing") where a stall says only "nothing finished in
             # time".
             fresh = [f for f in findings if f.check not in baseline]
