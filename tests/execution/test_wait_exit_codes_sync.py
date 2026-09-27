@@ -1,9 +1,10 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""Drift guard: a waiting command's exit codes are defined once, and only there.
+"""Drift guard: a ``vast`` verb's exit codes are defined once, and only there.
 
 ``vast campaign wait`` and ``vast image wait`` are branched on by exit status, so their
-codes are an interface. Each is a member of an enum in :mod:`robovast.execution.wait_exit`;
+codes are an interface, as are the ones every verb shares. Each is a member of an enum in
+:mod:`robovast.execution.wait_exit`;
 the commands raise those members, and every list of the codes -- the ``--help``, the
 ``next_step`` an MCP tool hands back, the run prompt, the table in ``docs/client.rst`` -- is
 rendered from them. A hand-written copy drifts, since nothing fails when the command gains a
@@ -19,7 +20,8 @@ import re
 import click
 import pytest
 
-from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit, WaitExit
+from robovast.execution.wait_exit import (FIRST_OUTCOME_CODE, CampaignWaitExit, CommonExit,
+                                          ImageWaitExit, WaitExit)
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CLIENT = _ROOT / "src" / "robovast_client" / "robovast" / "client"
@@ -39,9 +41,9 @@ _ABOUT_WAITING = re.compile(
 #: Not "exit 135", and not ``sys.exit(1)``, whose parenthesis follows with no space.
 _BY_NUMBER = re.compile(
     r"\b(?:exit(?:s|ed|ing)?(?:\s+(?:code|status))?\s+\(?|codes?\s+)"
-    r"`{0,2}([0-5])`{0,2}(?!\d|\.\d)", re.I)
+    r"`{0,2}([0-9])`{0,2}(?!\d|\.\d)", re.I)
 #: A table row whose first cell is a bare code: ``| 4 |`` or ``* - ``4````.
-_TABLE_ROW = re.compile(r"^\s*(?:\|\s*|\*\s+-\s+)`{0,2}([0-5])`{0,2}\s*(?:\||$)", re.M)
+_TABLE_ROW = re.compile(r"^\s*(?:\|\s*|\*\s+-\s+)`{0,2}([0-9])`{0,2}\s*(?:\||$)", re.M)
 
 
 def by_number(text: str) -> list[str]:
@@ -73,6 +75,7 @@ def _scanned_files():
     "``vast campaign wait``\n\n.. list-table::\n\n   * - ``3``\n     - No phase.",
     "`vast campaign wait`:\n\n| exit | means |\n|---|---|\n| 4 | stalled |",
     "Codes ``4`` and ``5`` are why this waiter exists.",
+    "`vast campaign wait` exits 6 on a finding",
     "block until every build is done: vast image wait b1 (exit 0 built, 1 failed)",
 ])
 def test_the_guard_recognises_a_code_stated_by_number(text):
@@ -148,11 +151,47 @@ def test_the_command_exits_only_with_members_and_with_every_one(module, function
 def test_the_help_lists_every_code_from_the_enum(module, group, enum):
     command = getattr(importlib.import_module(module), group).commands["wait"]
     text = command.get_help(click.Context(command, info_name=f"{group} wait"))
-    for member in enum:
+    for member in [*enum, CommonExit.USAGE_ERROR]:
         assert re.search(rf"^\s+{member.value}\s+{member.name}\s", text, re.M), member.name
 
 
-@pytest.mark.parametrize("enum", [CampaignWaitExit, ImageWaitExit])
+_OUTCOME_ENUMS = WaitExit.__subclasses__()
+
+
+def test_the_outcome_enums_are_the_ones_checked_here():
+    assert set(_OUTCOME_ENUMS) == {CampaignWaitExit, ImageWaitExit}
+
+
+@pytest.mark.parametrize("enum", _OUTCOME_ENUMS)
+def test_an_outcome_never_takes_a_common_code_for_another_meaning(enum):
+    """Success is ``CommonExit.SUCCESS`` and failure ``CommonExit.FAILED``; every other
+    outcome is numbered from ``FIRST_OUTCOME_CODE``, so a script retrying on an outcome never
+    retries a usage error."""
+    for member in enum:
+        if member.name in ("FINISHED", "BUILT"):
+            assert member.value == CommonExit.SUCCESS, member.name
+        elif member.name == "FAILED":
+            assert member.value == CommonExit.FAILED, member.name
+        else:
+            assert member.value >= FIRST_OUTCOME_CODE, member.name
+
+
+def test_the_same_outcome_has_the_same_code_in_every_enum():
+    codes = {}
+    for enum in _OUTCOME_ENUMS:
+        for member in enum:
+            assert codes.setdefault(member.name, member.value) == member.value, member.name
+
+
+def test_each_common_code_is_stated_once():
+    """Its meaning is written in the definition only; every list of it is rendered."""
+    for member in CommonExit:
+        where = [p.relative_to(_ROOT) for p in _scanned_files()
+                 if member.meaning in p.read_text(encoding="utf-8", errors="replace")]
+        assert not where, f"{member.name}'s meaning is restated in {where}"
+
+
+@pytest.mark.parametrize("enum", [CommonExit, CampaignWaitExit, ImageWaitExit])
 def test_the_docs_render_one_table_per_command(enum):
     """One canonical table, at the label every other page links to."""
     directive = f".. wait-exit-codes:: {enum.__module__}.{enum.__name__}"
