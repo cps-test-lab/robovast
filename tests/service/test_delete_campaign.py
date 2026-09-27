@@ -62,6 +62,19 @@ def test_a_path_that_cannot_be_removed_fails_the_delete_and_is_named(env):
     assert not (results / CID).exists()
 
 
+def test_a_delete_names_one_directory_under_the_results_root(env, tmp_path):
+    """The naming pattern alone lets a separator through, and an absolute id is honoured
+    as a directory to read: neither may reach the delete."""
+    transport, results = env
+    elsewhere = tmp_path / "elsewhere-2026-09-01-101500"
+    (elsewhere / "cfg").mkdir(parents=True)
+    for cid in (str(elsewhere), f"../{elsewhere.name}", f"{CID}/cfg"):
+        with pytest.raises(ValueError, match="not a valid campaign id"):
+            transport.delete_campaign(cid)
+    assert (elsewhere / "cfg").is_dir()
+    assert (results / CID / "cfg").is_dir()
+
+
 def test_a_delete_drops_what_is_cached_about_the_campaign(env):
     transport, _results = env
     transport._started_at_cache[CID] = "2026-09-01T10:15:00"       # noqa: SLF001

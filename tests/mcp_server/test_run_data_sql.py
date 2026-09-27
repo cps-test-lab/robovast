@@ -138,3 +138,32 @@ def test_list_campaign_plots(campaign, monkeypatch, tmp_path):
     assert r["plots"][0]["title"] == "Wind vs objective"
     assert "SELECT" in r["plots"][0]["query"]
     assert r["plots"][0]["vega_lite"] == {"mark": "point"}
+
+
+def test_without_a_service_an_absolute_folder_is_read_in_process(campaign):
+    """No service reachable: the tools read the folder named by its path on this host."""
+    assert "error" not in describe_campaign_data(campaign)
+    assert query_campaign_data_sql(campaign, "SELECT COUNT(*) n FROM runs")["rows"][0]["n"] == 2
+
+
+def test_a_service_refuses_an_absolute_campaign_id_by_name(campaign, tmp_path):
+    """Any folder on the service's host would otherwise be readable by any caller."""
+    from tests.service.null_service import serving
+    service = serving(tmp_path, tmp_path / "workspaces")
+    for read in (service.describe_campaign_data, service.list_campaign_plots,
+                 lambda cid: service.query_campaign_data_sql(cid, "SELECT 1")):
+        with pytest.raises(ValueError, match="is a folder, not a campaign id"):
+            read(campaign)
+    with pytest.raises(ValueError, match="is a folder, not a campaign id"):
+        service.query_campaign_data_sql(_CAMPAIGN, "SELECT 1", campaigns=[campaign])
+    assert service.describe_campaign_data(_CAMPAIGN).campaign_id == _CAMPAIGN
+
+
+def test_a_service_backed_tool_passes_the_refusal_on(campaign, monkeypatch, tmp_path):
+    from robovast.mcp_server import service_access
+    from tests.service.null_service import serving
+    service = serving(tmp_path, tmp_path / "workspaces")
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
+    assert "not a campaign id" in describe_campaign_data(campaign)["error"]
+    assert "not a campaign id" in query_campaign_data_sql(campaign, "SELECT 1")["error"]
+    assert "not a campaign id" in run_data.list_campaign_plots(campaign)["error"]

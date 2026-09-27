@@ -45,11 +45,8 @@ a restart forgets nothing, and a scope stops mattering the moment nothing answer
 Handing a pod the shared secret instead would let any container in the cluster start
 campaigns.
 
-Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
-``sources_root`` for any caller that is not on the same machine, because those are
-filesystem paths only useful — and only safe — to one that is; a forwarded request
-counts as remote, since behind a proxy the peer address is the proxy. And the file routes
-serve real paths on the service host, which is the point of the address space below.
+The file routes serve real paths on the service host, which is the point of the address
+space below.
 
 Addressing files
 ================
@@ -77,8 +74,9 @@ naming the reason once it failed; ``GET .../inputs`` is what a job pod extracts 
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened, only the
 named jobs' own documents (``job=<tag>``, required) taken from the per-job ones, and a
 cell's own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
-pod's output tree into the campaign, last writer wins, with what the driver owns -- the
-campaign's own store, its logs -- refused per member and named in the reply; and
+pod's output tree into the campaign, last writer wins, with what the service owns -- the
+campaign's own store and its ``_config/``, ``_transient/`` and ``_execution/`` -- refused
+per member and named in the reply; and
 ``GET``/``PUT /data/staged/{slot}`` move the scratch trees the service stages for a build
 or exec pod. Every stream a pod reads is a plain tar, and an upload may be plain or
 gzipped: the reader detects it. These are **control routes, not writes under** ``/results``, so that space
@@ -154,8 +152,10 @@ above: ``400`` for an id that is not a campaign id, ``409`` for a running campai
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class: ``exec_path_unavailable``, for a deployment
-where no command can be run in a container at all, and ``unsupported_operation``, for an
-operation this service does not offer (a client neither retries it nor blames its input). The
+where no command can be run in a container at all, ``unsupported_operation``, for an
+operation this service does not offer (a client neither retries it nor blames its input), and
+``binary_file``, for a text read (``?as=text``) of a binary file, which the HTTP transport
+raises again as ``BinaryFile`` so a caller can fetch the bytes instead. The
 exception type is what an
 HTTP boundary drops, and a client that has to *behave* differently (report the deployment
 rather than the image, degrade a check to "unchecked") would otherwise have to match on the
