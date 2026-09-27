@@ -529,6 +529,7 @@ export function StatusView({
   status,
   campaignId,
   jobs,
+  jobsError = null,
   hideLog = false,
   liveOnly = false,
   newest = true,
@@ -546,6 +547,10 @@ export function StatusView({
   // for any caller that only holds one.
   campaignId?: string
   jobs?: ListJobsResponse
+  // Why the jobs listing could not be read, when it could not: the service's sentence. Shown
+  // in place of the list, because an empty list here reads as "nothing is running", and a
+  // listing that failed says nothing of the kind.
+  jobsError?: string | null
   // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
   // the full log lives in Monitor.
   hideLog?: boolean
@@ -803,6 +808,8 @@ export function StatusView({
                 resultsBytes={resultsBytes}
                 selected
               />
+            ) : jobsError ? (
+              <ErrorText>could not list the jobs: {jobsError}</ErrorText>
             ) : (
               <JobsSection
                 campaignId={cid}

@@ -114,6 +114,9 @@ def save(url: str, token: str, name: str = "") -> Path:
     # Create with 0600 from the start rather than chmod-ing afterwards: between the two
     # there is a moment when a secret is world-readable.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The mode above applies only when the file is created; one that already exists keeps
+    # its own, so it is set here, before the token is written into it.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
