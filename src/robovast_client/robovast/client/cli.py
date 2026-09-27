@@ -41,6 +41,7 @@ from robovast.client.logging_config import (get_logger, setup_default_logging,
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
 from robovast.client.tail import tail_chunks
+from robovast.execution.wait_exit import ImageWaitExit, documents_exit_codes
 
 logger = get_logger(__name__)
 
@@ -485,7 +486,8 @@ def workspace_list(namespace, context):
               help='Also report the objects matching GLOB whose model values a run may '
                    'override, with their current values. Costs a model build.')
 @click.option('--entities', is_flag=True,
-              help='Also list the entities the world compiles. Costs a model build.')
+              help='Also list the entities the world compiles, and what its start state '
+                   'warns about. Costs a model build and a reset.')
 @click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
 @target_options
 def workspace_world(workspace, path, targets, entities, as_json, namespace, context):  # pylint: disable=redefined-outer-name
@@ -518,9 +520,15 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
         click.echo(f"asked:   {described.backend} in {described.image} "
                    f"({described.duration_s:.1f}s)")
         for plugin in described.components:
-            click.echo(f"  plugin {plugin.get('key')}  ({len(plugin.get('paths') or [])} paths)")
+            click.echo(f"  plugin {plugin.get('address')}  ({len(plugin.get('paths') or [])} paths)")
         if described.entities is not None:
             click.echo(f"  entities: {', '.join(described.entities) or '(none)'}")
+        for warning in described.warnings or []:
+            click.echo(f"  WARN [{warning.get('check')}] {warning.get('message')}")
+            if warning.get("hint"):
+                click.echo(f"       hint: {warning['hint']}")
+        for stage, reason in (described.errors or {}).items():
+            click.echo(f"  ERROR [{stage}] {reason}")
         fields = (described.overridable or {}).get("fields") or []
         if fields:
             click.echo(f"  overridable fields: {', '.join(f['field'] for f in fields)}")
@@ -1105,12 +1113,12 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         # As `vast campaign wait`: the caller stopped waiting, the builds did not stop building.
         # A distinct code keeps that apart from a build that actually failed.
         click.echo(str(e), err=True)
-        raise SystemExit(2) from e
+        raise SystemExit(ImageWaitExit.STOPPED_WAITING) from e
     except PollsStopped as e:
         # Also "stopped waiting", hence the same code -- but for the opposite reason, and
-        # exiting 1 here would report a perfectly healthy build as failed.
+        # FAILED here would report a perfectly healthy build as failed.
         click.echo(str(e), err=True)
-        raise SystemExit(2) from e
+        raise SystemExit(ImageWaitExit.STOPPED_WAITING) from e
     failed = False
     for build_id, status in done.items():
         if status.phase in SUCCESS_PHASES:
@@ -1128,8 +1136,7 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
             click.echo(f"  fixable_by={err.fixable_by}{where}", err=True)
         else:
             click.echo(f"✗ {build_id} failed", err=True)
-    if failed:
-        sys.exit(1)
+    raise SystemExit(ImageWaitExit.FAILED if failed else ImageWaitExit.BUILT)
 
 
 @image.command('wait')
@@ -1139,13 +1146,15 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
+@documents_exit_codes(ImageWaitExit)
 def image_wait(build_ids, interval, timeout, namespace, context):
-    """Block until every BUILD_ID is built: exit 0 (built), 1 (failed), 2 (stopped waiting:
-    --timeout, or the service stopped answering).
+    """Block until every BUILD_ID is built; the exit code says how the builds ended.
+
+    {exit_codes}
 
     A build whose *pod* cannot start -- its own image unpullable, nowhere to schedule it --
-    is a failure (exit 1) reported within a minute, not something this waits out: waiting it
-    out hangs indefinitely, because Kubernetes leaves such a Job ``active`` forever.
+    is a failure (``FAILED``) reported within a minute, not something this waits out: waiting
+    it out hangs indefinitely, because Kubernetes leaves such a Job ``active`` forever.
 
     Exists so a *caller* can wait without holding a request open, and is why the MCP
     offers no image-build-wait tool — the cap on how long a tool call may block turns a

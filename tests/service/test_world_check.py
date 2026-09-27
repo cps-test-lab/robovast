@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The world check: does the campaign's world load, and does its model compile?
+"""The world check: does the campaign's world load, does its model compile, and does it reset?
 
 The failure this guards is per-trial and expensive — a world that does not compile fails
 every run of the sweep, after the image pull and the pod schedule — and until this existed
@@ -377,6 +377,68 @@ def test_a_world_that_does_not_load_is_an_error(tmp_path, monkeypatch):
     problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
     assert [p["severity"] for p in problems] == ["error"]
+
+
+def test_a_world_whose_reset_raises_is_an_error(tmp_path, monkeypatch):
+    """No run of it reaches its first step, exactly like a model that does not compile."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    monkeypatch.setattr(
+        config_generation, "describe_world_payload",
+        lambda *a, **k: ({"entities": ["arm"], "warnings": None,
+                          "errors": {"reset": "cannot re-home"}}, "roqsim:test"))
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
+                              vast_dir=str(tmp_path), parameters=_parameters())
+    assert [p["severity"] for p in problems] == ["error"]
+    assert "does not reset" in problems[0]["message"]
+    assert "cannot re-home" in problems[0]["message"]
+
+
+INTERPENETRATION = {
+    "check": "interpenetration",
+    "message": "geom 'table_top' (entity 'table') and geom 'crate' (entity 'crate') "
+               "interpenetrate by 30.0 mm at reset (tolerance 5.0 mm, 4 contacts)",
+    "hint": "move the pose that places them there",
+}
+
+
+def test_a_start_state_warning_is_advice_in_the_simulators_own_words(tmp_path, monkeypatch):
+    """The simulator does not refuse the world, so neither does the check: advice, which keeps
+    ``valid``. Its check name, message and hint travel verbatim -- nothing here knows which
+    checks a simulator has."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    monkeypatch.setattr(
+        config_generation, "describe_world_payload",
+        lambda *a, **k: ({"warnings": [INTERPENETRATION], "errors": None}, "roqsim:test"))
+    (problem,) = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1",
+                                config_path="a.vast", vast_dir=str(tmp_path),
+                                parameters=_parameters())
+    assert problem["severity"] == "advice"
+    assert problem["stage"] == "world"
+    assert "world.yaml [interpenetration]" in problem["message"]
+    assert "'table_top' (entity 'table')" in problem["message"]
+    assert "30.0 mm" in problem["message"]
+    assert problem["message"].endswith("Next: move the pose that places them there")
+
+
+def test_a_start_state_warning_names_the_world_it_is_about(tmp_path, monkeypatch):
+    """Two worlds with the same overlap are two findings, each saying which world to fix."""
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    _two_worlds(monkeypatch)
+    monkeypatch.setattr(
+        config_generation, "describe_world_payload",
+        lambda _execution, block, *a, **k: (
+            {"warnings": [INTERPENETRATION], "errors": None}, "roqsim:test"))
+    problems = world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1",
+                              config_path="a.vast", vast_dir=str(tmp_path),
+                              parameters=_parameters())
+    assert len(problems) == 2
+    assert {p["message"].split(" [")[0] for p in problems} == {"world.yaml", "other-world.yaml"}
 
 
 def test_the_reason_a_query_could_not_run_names_what_would_settle_it(tmp_path, monkeypatch):
