@@ -46,3 +46,27 @@ def test_a_placer_that_raises_ends_the_composition_with_its_own_error(variation,
         variation._generate_obstacles_for_config([], _stated_config(),
                                                  variation.parameters.obstacle_configs)
 
+
+
+def test_a_planner_error_that_is_not_a_refused_waypoint_ends_the_composition(variation,
+                                                                             monkeypatch):
+    import robovast_nav.variation.obstacle_variation as mod
+
+    class _NoGrid(_Path):
+        def generate_path(self, *_args, **_kwargs):
+            raise ValueError("Occupancy grid not loaded or no waypoints provided.")
+
+    monkeypatch.setattr(mod, 'PathGenerator', _NoGrid)
+    with pytest.raises(ValueError, match="Occupancy grid not loaded") as exc:
+        variation._generate_obstacles_for_config([], _stated_config(),
+                                                 variation.parameters.obstacle_configs)
+    assert not isinstance(exc.value, mod.VariationInfeasibleError)
+
+
+def test_a_map_that_does_not_load_raises_from_the_planner(tmp_path):
+    from robovast_nav.path_generator import PathGenerator
+
+    broken = tmp_path / "map.yaml"
+    broken.write_text("image: missing.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n")
+    with pytest.raises(FileNotFoundError, match="Map image file not found"):
+        PathGenerator(str(broken))

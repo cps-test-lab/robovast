@@ -30,7 +30,7 @@ from robovast.common.variation.base_variation import (DestinationConfig, ProvCon
 
 from ..map_loader import load_map
 from ..obstacle_placer import ObstaclePlacer, footprint_of
-from ..path_generator import PathGenerator, path_length
+from ..path_generator import PathGenerator, WaypointRefused, path_length
 from .. import config_view
 from .nav_base_variation import NavVariation
 
@@ -544,10 +544,10 @@ class ObstacleVariation(NavVariation):
                                         f"Attempt {attempt}/{max_attempts}: obstacles block navigation, retrying..."
                                     )
 
-                            except ValueError as e:
+                            except WaypointRefused as e:
                                 # The planner refusing a waypoint (inside an obstacle, off
                                 # the map) is this placement's fault; any other exception is
-                                # the planner's, and propagates.
+                                # the planner's or the map's, and propagates.
                                 last_failure = 'blocked'
                                 self.progress_update(
                                     f"Attempt {attempt}/{max_attempts}: validation error: {str(e)}, retrying..."
