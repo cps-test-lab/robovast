@@ -7,8 +7,9 @@ import { useDialogs } from '@/components/DialogProvider'
 
 const isVast = (p: string) => p.endsWith('.vast')
 
-// Prompt for a name, write a minimal .vast scaffold at the service's config version, refresh the file list, and hand the new path to
-// `onCreated`. Shared by the Configuration and Files views so both create files the same way.
+// Prompt for a name, write a minimal .vast scaffold at the service's config version, refresh the
+// file list, and hand the new path to `onCreated`. Shared by the Configuration and Files views so
+// both create files the same way.
 export function useCreateVast(
   workspaceId: string,
   existingNames: string[],
