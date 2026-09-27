@@ -386,7 +386,8 @@ def resolve_family_image(image: str, *, project: str | None = None,
         # one `cluster setup`, all derived from the same `default_image_tag()`.
         logger.warning(
             "%s resolved to %r, a floating tag: what this runs against is whatever was "
-            "last pushed there. Set ROBOVAST_PROJECT_TAG to pin it.", role, resolved)
+            "last pushed there. Set ROBOVAST_PROJECT_TAG to a release version to pin it.",
+            role, resolved)
     return resolved
 
 
