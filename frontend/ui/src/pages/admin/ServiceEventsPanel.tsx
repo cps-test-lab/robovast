@@ -50,11 +50,11 @@ function EventRow({ event }: { event: ServiceEvent }) {
             · HTTP {String(event.payload.status)}
           </Typography>
         ) : null}
-        {/* An identical refusal inside a minute is counted onto the row already there rather
-            than recorded again; the count is what says the caller is still trying. */}
+        {/* The identical refusals the service counted instead of recording since the last
+            row of this one; the count is what says the caller is still trying. */}
         {typeof event.payload?.repeated === 'number' && event.payload.repeated > 0 ? (
           <Typography variant="caption" color="text.secondary">
-            · repeated {String(event.payload.repeated)}×
+            · {String(event.payload.repeated)} identical before it
           </Typography>
         ) : null}
       </Stack>

@@ -440,9 +440,10 @@ starts, endings and failures the toasts and the OS notifications announce, which
 scrolled away were held by nothing. Each row carries the service's own words, the time, the
 severity, who was refused where they said, and the status the caller got.
 
-Repeats collapse: an identical refusal inside a minute is counted onto the row already there
-(shown as ``repeated``) rather than recorded again, so a panel polling something that cannot
-answer it does not push the rest of the record out.
+Repeats collapse: an identical refusal inside a minute of the last one recorded is counted
+rather than recorded again, and the next row of it carries the count (shown as ``N identical
+before it``), so a panel polling something that cannot answer it does not push the rest of the
+record out.
 
 Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
 a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
