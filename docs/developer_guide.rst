@@ -1752,8 +1752,7 @@ Taking a campaign in
 separate steps so the importer can open the campaign's ``import.log`` once the directory is
 claimed; :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
 **per stage** (``layout``, ``config``, ``completeness``, ``environment``, ``campaign_store``,
-``tables``), since
-a campaign archive carries two version surfaces of its own (the ``.vast``'s and
+``tables``), since a campaign archive carries two version surfaces of its own (the ``.vast``'s and
 ``campaign.db``'s) which can independently be older, newer, absent or corrupt. Neither
 re-implements a migration -- the config ladder is applied in memory and the store migrates on
 open, so this module observes and reports. The ``environment`` stage names what the

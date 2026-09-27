@@ -396,14 +396,11 @@ _DECODER_ENTRY_PREFIX = "rosbags_"
 def _check_environment(campaign_dir: Path) -> dict:
     """What the campaign's ``.vast`` names that this deployment does not have.
 
-    Degraded, never blocking: the campaign lists and displays without any of it, and what is
-    missing only matters to what runs its code -- postprocessing, which a raw import chains
-    straight away, and a re-run. Named here so that is learned from the import report, not
-    from a postprocessing failure after it. Three things, each by name: the variation types
-    and postprocessing commands (entry points) that are not installed, the ``./file.py:Class``
-    plugins not in the archive, and the ``plugins:`` packages not installed -- which
-    postprocessing installs from their specs before it runs, and which may bring the missing
-    entry points with them, so the detail says so rather than guessing.
+    Degraded, never blocking: the campaign lists and displays without any of it; only
+    postprocessing, which a raw import chains straight away, and a re-run need it. Names are
+    checked, never loaded, so no code from the archive runs here. Postprocessing installs the
+    ``plugins:`` packages before it runs and they may provide a missing entry point, so the
+    detail says that rather than guessing.
     """
     from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
 

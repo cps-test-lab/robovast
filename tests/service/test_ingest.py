@@ -232,8 +232,7 @@ def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
     assert set(report["stages"]) == {"layout", "config", "completeness", "environment",
-                                     "campaign_store",
-                                     "tables"}
+                                     "campaign_store", "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -391,9 +390,8 @@ def _declare(campaign, **sections):
 
 
 def test_what_the_configuration_names_and_this_deployment_lacks_is_degraded_by_name(campaign):
-    """A raw import chains postprocessing straight away, so an entry point or a plugin package
-    this service does not have is named at import rather than met as a postprocessing
-    failure after it. Named, and never blocking: the campaign lists without any of it."""
+    """A raw import chains postprocessing straight away, so what it would lack is named in the
+    import report. Never blocking: the campaign lists without any of it."""
     _declare(campaign,
              variations=[{"NoSuchVariation": {}}, {"ParameterVariationList": {}}],
              postprocessing=["rosbags_tf_to_csv", {"no_such_command": {}},
