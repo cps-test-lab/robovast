@@ -57,7 +57,7 @@ import yaml
 
 from . import DATA_CONTRACT, __version__, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
-from .decode import channel_type, decode_bag, segments
+from .decode import channel_type, decode_bag, segments, undecodable_tables
 from .derived import DERIVED, INPUTS, JobRun, derive_job
 from .framing import Channel, McapTail, has_footer, summary_channels
 from .handlers import Videos
@@ -111,6 +111,8 @@ class BuildReport:
     built: Dict[str, List[str]] = field(default_factory=dict)      # table -> run keys
     skipped: Dict[str, List[str]] = field(default_factory=dict)    # table -> run keys current
     failed: Dict[str, Dict[str, str]] = field(default_factory=dict)  # table -> run -> reason
+    #: Tables built with the rows from before a topic stopped decoding: table -> run -> why.
+    incomplete: Dict[str, Dict[str, str]] = field(default_factory=dict)
     unknown: List[str] = field(default_factory=list)
     #: What a derivation could not do without failing: a container that recorded nothing, a
     #: run with no clock map. Findings about the records, reported with the build.
@@ -318,6 +320,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
         decoded = decode_bag(bag_dir, todo) if (todo or not report_current) else None
         complete = _complete(run, role, bag_dir)
         written = []
+        types = {topic: stats.type for topic, stats in decoded.topics.items()} if decoded else {}
         for handler in todo:
             name = type(handler).__name__
             if name in decoded.failed:
@@ -325,6 +328,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                     if wanted_tables is None or table in wanted_tables:
                         report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
                 continue
+            partial = undecodable_tables([handler], decoded.undecodable, types)
             for table, buf in handler.buffers.items():
                 if wanted_tables is not None and table not in wanted_tables:
                     continue
@@ -333,18 +337,25 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                     "run_id": run.run_id}))
                 rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
                 write_table(campaign_dir, rel, arrow)
-                written.append((table, rel, arrow))
+                written.append((table, rel, arrow, partial.get(table)))
+                if table in partial:
+                    report.incomplete.setdefault(table, {})[run_key] = partial[table]
+            # A table the topic gave no row for before it stopped decoding: absent, with why.
+            for table, reason in partial.items():
+                if table not in handler.buffers and (wanted_tables is None
+                                                     or table in wanted_tables):
+                    report.failed.setdefault(table, {})[run_key] = reason
         if decoded and not report_current:
             _recording_rows(recording_rows, role, decoded, plan)
         with manifest_lock(campaign_dir):
             fresh = read_manifest(campaign_dir)
             superseded = []
-            for table, rel, arrow in written:
+            for table, rel, arrow, reason in written:
                 superseded += record_run_table(
                     fresh, table, run_key, files=[rel], rows=arrow.num_rows,
                     schema=arrow.schema,
                     sources={os.path.relpath(bag_dir, campaign_dir): size},
-                    complete=complete)
+                    complete=complete, reason=reason)
                 report.built.setdefault(table, []).append(run_key)
             write_manifest(campaign_dir, fresh)
             # The parts an abandoned live session left: named by no manifest now.
@@ -581,7 +592,9 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     """``{table: {"runs": n, "built": n, "failed": {run: reason}}}`` without building anything.
 
     ``runs`` counts the runs whose records can yield the table, ``built`` those it is built
-    for. *runs* limits both to those ``config/run`` keys.
+    for. ``failed`` names the runs it has no rows for and why, and those whose rows stop
+    where a topic stopped decoding -- built, and incomplete. *runs* limits all three to those
+    ``config/run`` keys.
     """
     campaign_dir = os.path.abspath(campaign_dir)
     groups = plugin_groups(config)
@@ -604,7 +617,8 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     out: Dict[str, dict] = {}
     for table, table_keys in keys.items():
         entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
-        built = [k for k in table_keys if k in entries and not entries[k].get("reason")]
+        built = [k for k in table_keys if k in entries
+                 and (entries[k].get("files") or not entries[k].get("reason"))]
         failed = {k: entries[k]["reason"] for k in table_keys
                   if k in entries and entries[k].get("reason")}
         out[table] = {"runs": len(table_keys), "built": len(built), "failed": failed}

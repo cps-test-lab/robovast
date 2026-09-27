@@ -80,6 +80,34 @@ class BagReport:
     segments: List[str] = field(default_factory=list)
     bytes_read: Dict[str, int] = field(default_factory=dict)
 
+    @property
+    def undecodable(self) -> Dict[str, str]:
+        """``{topic: reason}`` of the topics whose messages stopped decoding."""
+        return {topic: stats.undecodable for topic, stats in self.topics.items()
+                if stats.undecodable}
+
+
+def undecodable_tables(handlers: Iterable[Handler], undecodable: Dict[str, str],
+                       types: Dict[str, str]) -> Dict[str, str]:
+    """``{table: reason}`` of the tables *handlers* fill that miss messages of a topic.
+
+    *undecodable* is ``{topic: reason}`` of the topics that stopped decoding, *types* their
+    type names. Such a table holds the rows from before the topic stopped -- none, for a type
+    nothing defines -- so a build and a live session record it with this reason, and a reader
+    reports it beside what the table does hold.
+    """
+    out: Dict[str, List[str]] = {}
+    for handler in handlers:
+        for topic in handler.topics():
+            reason = undecodable.get(topic)
+            if reason is None:
+                continue
+            for table in handler.tables_of(topic):
+                out.setdefault(table, []).append(
+                    f"topic {topic} ({types.get(topic, 'unknown type')}) is undecodable: "
+                    f"{reason}")
+    return {table: "; ".join(reasons) for table, reasons in out.items()}
+
 
 def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
     """Read every segment of *bag_dir* once and feed *handlers*; return what was read.
@@ -168,4 +196,5 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
     return report
 
 
-__all__ = ["BagReport", "SIDECAR_NAME", "TopicStats", "channel_type", "decode_bag", "segments"]
+__all__ = ["BagReport", "SIDECAR_NAME", "TopicStats", "channel_type", "decode_bag", "segments",
+           "undecodable_tables"]

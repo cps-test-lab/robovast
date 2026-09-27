@@ -63,7 +63,7 @@ import pyarrow.parquet as pq
 from .authored import with_yaw
 from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
                     recorded_topics, recording_closed, roqsim_recording, scenario_recording)
-from .decode import channel_type, segments
+from .decode import channel_type, segments, undecodable_tables
 from .definitions import TypeCatalog
 from .derived import DERIVED, INPUTS, RUN_LOG, JobRun, derive_job
 from .frames import FrameRef, FrameTap
@@ -115,7 +115,8 @@ class Session:
     *tables* narrows the handlers to the ones those tables need (``None``: every table the
     recording can give); a table the recording's topics so far cannot give is listed in
     :attr:`unknown`. *config* is the campaign's decoder configuration. A table whose handler
-    failed is in :attr:`failed` with the reason, from then on. *frames* names image topics
+    failed is in :attr:`failed` with the reason, from then on; one a topic stopped decoding
+    for is in :attr:`incomplete`, as a build records it. *frames* names image topics
     to tap (:class:`~robovast_decode.frames.FrameTap`): every message of one is recorded
     with its place and its bytes as it is met, undeserialized, and never becomes a row.
     """
@@ -172,6 +173,13 @@ class Session:
     def bytes_read(self) -> Dict[str, int]:
         """``{segment path: bytes read}``: where the next read of each segment resumes."""
         return {path: tail.offset for path, tail in self._tails.items()}
+
+    @property
+    def incomplete(self) -> Dict[str, str]:
+        """``{table: reason}`` of the tables a topic stopped decoding for: they hold the rows
+        from before it, and the reason goes into their entries, as a build records it."""
+        partial = undecodable_tables(self._active, self._undecodable, self.recorded)
+        return {t: r for t, r in partial.items() if t in self.tables}
 
     @property
     def segments_closed(self) -> int:
@@ -359,10 +367,13 @@ class PartWriter:
         if batch.rows.num_rows:
             self._pending.setdefault(batch.table, []).append(batch.rows)
 
-    def write(self, sources: Optional[dict] = None) -> List[str]:
+    def write(self, sources: Optional[dict] = None,
+              incomplete: Optional[Dict[str, str]] = None) -> List[str]:
         """Write what accumulated as one part per table and name the parts in the manifest.
 
-        *sources* is what the rows were built from (:meth:`Session.sources`). Returns the
+        *sources* is what the rows were built from (:meth:`Session.sources`), *incomplete*
+        the reasons of the tables a topic stopped decoding for (:attr:`Session.incomplete`),
+        entered with their parts. Returns the
         parts written, relative to the cache root. With nothing accumulated the entries are
         still stamped ``live`` again: the stamp is what keeps a build from taking over a
         table whose run is quiet. Raises :class:`LostOwnership` when an entry this writer
@@ -400,23 +411,27 @@ class PartWriter:
                 superseded += record_run_table(
                     manifest, table, self.key, files=self._parts[table], rows=self._rows[table],
                     schema=self._schemas[table], sources=dict(sources or {}), complete=False,
-                    live=now)
+                    live=now, reason=(incomplete or {}).get(table))
             write_manifest(self.campaign_dir, manifest)
         remove_files(self.campaign_dir, superseded)
         return [rel for _, rel, _ in written]
 
     def finalise(self, sources: Optional[dict] = None,
-                 failed: Optional[Dict[str, str]] = None) -> List[str]:
+                 failed: Optional[Dict[str, str]] = None,
+                 incomplete: Optional[Dict[str, str]] = None) -> List[str]:
         """Merge every table's parts and what is still pending into the run's one file.
 
         The entry is recorded ``complete`` without a ``live`` stamp, and the parts are
         removed after the manifest is written. *failed* is ``{table: reason}`` for tables
         whose handler failed: entered as absent with that reason, their parts removed.
+        *incomplete* is ``{table: reason}`` for tables a topic stopped decoding for: entered
+        with their rows and that reason, or as absent with it where they have none.
         Returns the files written.
         """
         if self.finalised:
             raise RuntimeError(f"{self.key}: the writer is finalised")
         failed = dict(failed or {})
+        incomplete = {t: r for t, r in (incomplete or {}).items() if t not in failed}
         root = cache_root(self.campaign_dir)
         final = []
         for table in list(self._schemas):
@@ -436,9 +451,12 @@ class PartWriter:
             for table, rel, rows in final:
                 superseded += record_run_table(manifest, table, self.key, files=[rel],
                                                rows=rows.num_rows, schema=rows.schema,
-                                               sources=dict(sources or {}), complete=True)
+                                               sources=dict(sources or {}), complete=True,
+                                               reason=incomplete.get(table))
                 superseded += [p for p in self._parts.get(table, []) if p not in superseded]
-            for table, reason in failed.items():
+            absent = {**{t: r for t, r in incomplete.items() if t not in self._schemas},
+                      **failed}
+            for table, reason in absent.items():
                 record_run_absent(manifest, table, self.key, sources=dict(sources or {}),
                                   complete=True, reason=reason, known=True)
                 superseded += [p for p in self._parts.get(table, []) if p not in superseded]
@@ -778,12 +796,13 @@ class Watcher:
                 if writer is not None:
                     for batch in final:
                         writer.append(batch)
-                    writer.finalise(session.sources(), failed=session.failed)
+                    writer.finalise(session.sources(), failed=session.failed,
+                                    incomplete=session.incomplete)
                 live.following.remove(following)
                 continue
             if writer is not None and now - following.last_write >= self.part_s:
                 try:
-                    following.writer.write(session.sources())
+                    following.writer.write(session.sources(), incomplete=session.incomplete)
                 except LostOwnership as exc:
                     # The stamp went stale long enough for a build to take the table: the
                     # rows are decoded again from the recording's start, into fresh parts.

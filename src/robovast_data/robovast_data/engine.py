@@ -136,14 +136,17 @@ class Scope:
 
 @dataclass
 class Problem:
-    """A table a query needed that could not be built for a run, and why."""
+    """A table a query needed that could not be built for a run, or that holds only part of
+    what the run recorded (*partial*), and why."""
     campaign_id: str
     table: str
     run: str
     reason: str
+    partial: bool = False
 
     def __str__(self) -> str:
-        return f"{self.table} not built for {self.campaign_id}/{self.run}: {self.reason}"
+        what = "incomplete" if self.partial else "not built"
+        return f"{self.table} {what} for {self.campaign_id}/{self.run}: {self.reason}"
 
 
 @dataclass
@@ -252,7 +255,8 @@ class Engine:
                 manifest = manifests[scope.campaign_dir] = read_manifest(scope.campaign_dir)
             entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(key) or {}
             if entry.get("reason"):
-                problems.append(Problem(scope.campaign_id, table, key, entry["reason"]))
+                problems.append(Problem(scope.campaign_id, table, key, entry["reason"],
+                                        partial=bool(entry.get("files"))))
         return problems
 
     # -- what a query names ----------------------------------------------------------------

@@ -446,8 +446,10 @@ query names it.
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
   question is written down**. Read its ``note`` first. It lists every table the campaign's
   records can give, each with its ``kind`` (``view``, ``table``, ``record``) and, for a
-  per-run table, ``built`` of ``runs`` — for how many runs it is built already. Describing
-  builds nothing; a table's ``columns`` are empty until it is built for some run.
+  per-run table, ``built`` of ``runs`` — for how many runs it is built already — and under
+  ``failed`` the runs it has no rows for, or only part of them, with the reason
+  (:ref:`results-table-cache`). Describing builds nothing; a table's ``columns`` are empty
+  until it is built for some run.
 * ``query_campaign_data_sql`` — one ``SELECT`` in DuckDB's dialect, **confined to the
   campaign it names**: the query sees only that campaign's files, so ``WHERE campaign_id =
   ...`` is never needed to keep another campaign's rows out. Before it runs, the tables it
