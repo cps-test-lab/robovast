@@ -161,7 +161,9 @@ def test_batches_arrive_as_the_file_grows_and_add_up_to_a_whole_build(tmp_path):
     # The transform buffer persists across flushes: the same map-relative poses, no fewer.
     assert _sorted_rows(pa.concat_tables(got["poses"], promote_options="permissive")) == _sorted_rows(
         expected["poses"])
-    assert session.sources() == {"cfg/0/rosbag2": os.path.getsize(bag.segment)}
+    # Finished, the recording's segments and its definitions sidecar, as a build records them.
+    assert session.sources() == {"cfg/0/rosbag2": os.path.getsize(bag.segment) + os.path.getsize(
+        bag.bag_dir / "message_definitions.json")}
 
 
 def test_the_session_knows_what_it_read_and_reads_only_what_is_new(tmp_path):

@@ -125,6 +125,18 @@ def test_assets_cannot_escape_their_entry(client):
         assert client.get(prefix + bad).status_code == 404
 
 
+@pytest.mark.parametrize("key", ["..", "."])
+def test_a_key_that_is_not_one_entry_names_no_file(tmp_path, monkeypatch, key):
+    """``..`` would make the cache root's parent the entry, and every file under it servable."""
+    monkeypatch.setenv("ROBOVAST_SCENE_CACHE", str(tmp_path / "cache"))
+    (tmp_path / "cache" / "k").mkdir(parents=True)
+    (tmp_path / "cache" / "k" / "scene.json").write_text("{}")
+    (tmp_path / "beside.txt").write_text("not a scene")
+    rel = {"..": "beside.txt", ".": "k/scene.json"}[key]
+    with pytest.raises(KeyError):
+        NullService().resolve_campaign_scene_asset(CAMPAIGN, f"{key}/{rel}")
+
+
 def test_a_run_without_a_recording_reports_a_reason(client):
     """No ``sim_recording`` row: nothing to replay, and no world to build geometry from."""
     body = client.get(f"/campaigns/{CAMPAIGN}/scene",
