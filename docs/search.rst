@@ -356,7 +356,8 @@ ways can this fail?", not just "what is the single worst case". Use it for
   archive reads the ones it declares.
 * ``sigma`` — emitter step size as a fraction of each dimension's range
   (default ``0.1``).
-* ``emitters`` — number of CMA-ME emitters (default ``1``).
+* ``emitters`` — number of CMA-ME emitters (default ``1``). They split each batch
+  between them, so there are at most ``per_batch``; more is refused.
 
 Needs the extra: ``pip install 'robovast[qd]'``.
 
