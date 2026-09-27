@@ -104,31 +104,31 @@ def shortfall(label: str, free_bytes: int, capacity_bytes: int) -> Optional[str]
             f"reserve ({how}).")
 
 
-def room_bytes(path) -> int:
-    """Bytes that can be written under *path* before its filesystem falls below the reserve.
+def _usage(path):
+    """``psutil.disk_usage`` of the filesystem *path* is or will be created on.
 
-    Measured like :func:`disk_shortfall`, at the nearest existing ancestor; never negative.
+    Measured at the nearest existing ancestor, so a directory not created yet is judged by
+    the disk it will be created on.
     """
     import psutil  # pylint: disable=import-outside-toplevel
 
     target = Path(path)
     while not target.exists() and target != target.parent:
         target = target.parent
-    usage = psutil.disk_usage(str(target))
+    return psutil.disk_usage(str(target))
+
+
+def room_bytes(path) -> int:
+    """Bytes that can be written under *path* before its filesystem falls below the reserve."""
+    usage = _usage(path)
     return max(0, usage.free - reserve_bytes(usage.used + usage.free))
 
 
 def disk_shortfall(path, label: str = "the service's disk") -> Optional[str]:
     """The sentence saying the filesystem holding *path* is below the reserve, else ``None``.
 
-    Measured at the nearest existing ancestor, so a directory a campaign has not created yet
-    is judged by the disk it will be created on. Capacity is ``used + free``, as on the meters:
-    blocks a filesystem holds back for root are not room a write can use.
+    Capacity is ``used + free``, as on the meters: blocks a filesystem holds back for root
+    are not room a write can use.
     """
-    import psutil  # pylint: disable=import-outside-toplevel
-
-    target = Path(path)
-    while not target.exists() and target != target.parent:
-        target = target.parent
-    usage = psutil.disk_usage(str(target))
+    usage = _usage(path)
     return shortfall(label, usage.free, usage.used + usage.free)

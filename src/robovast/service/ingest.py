@@ -134,13 +134,10 @@ def read_campaign_id(archive_path, *, fits_in=None) -> str:
     ``ValueError`` -- the interface's vocabulary for "this input is wrong", mapped to 400 by
     the HTTP layer -- when the archive is not exactly one campaign.
 
-    *fits_in*, a directory the archive would be extracted under, also bounds what the
-    extraction writes: the member sizes the same index carries are summed, and an archive
-    that would unpack to more than that filesystem has room for above its free-space reserve
-    raises :class:`~robovast.common.errors.InsufficientStorageError` (507) before a byte is
-    written. The compressed size says nothing about this -- recordings barely compress, and
-    a crafted archive compresses a terabyte of zeros to kilobytes -- so the reserve checked
-    when the import was admitted cannot stand in for it.
+    Given *fits_in*, the directory the archive would be extracted under, an archive whose
+    members add up to more than that filesystem has room for above its free-space reserve
+    raises :class:`~robovast.common.errors.InsufficientStorageError` (507). The compressed
+    size bounds nothing: a crafted archive packs a terabyte of zeros into kilobytes.
     """
     archive_path = Path(archive_path)
     try:
@@ -170,9 +167,8 @@ def _check_room(archive_path: Path, unpacked: int, fits_in) -> None:
         gb = 1000 ** 3
         raise InsufficientStorageError(
             f"{archive_path.name} unpacks to {unpacked / gb:.1f} GB, and the results volume "
-            f"has {room / gb:.1f} GB free above its reserve. Nothing was extracted; free "
-            f"space ('vast service cache --clear', or delete campaigns no longer needed) "
-            f"and import it again.")
+            f"has {room / gb:.1f} GB free above its reserve. Nothing was extracted; delete "
+            f"campaigns no longer needed, then import it again.")
 
 
 def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
