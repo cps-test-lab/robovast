@@ -155,12 +155,16 @@ class QDStrategy(SearchStrategy):
         lower, upper = self.codec.bounds()
         bounds = list(zip(lower.tolist(), upper.tolist()))
 
+        seed = cfg.seed
+        # Seeded, or a CVT archive places its centroids differently in every process and a
+        # seeded search is neither reproducible nor resumable.
         if params.archive.type == 'cvt':
             self.archive = CVTArchive(solution_dim=self.codec.dim,
-                                      cells=params.archive.cells, ranges=ranges)
+                                      cells=params.archive.cells, ranges=ranges, seed=seed)
         else:
             dims = [m.bins for m in params.archive.measures.values()]
-            self.archive = GridArchive(solution_dim=self.codec.dim, dims=dims, ranges=ranges)
+            self.archive = GridArchive(solution_dim=self.codec.dim, dims=dims, ranges=ranges,
+                                       seed=seed)
 
         x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
@@ -171,7 +175,6 @@ class QDStrategy(SearchStrategy):
                 f"qd splits each batch of {cfg.per_batch} draw(s) between its emitters, so "
                 f"'emitters' must be between 1 and per_batch; got {n_emitters}.")
         base, extra = divmod(cfg.per_batch, n_emitters)
-        seed = cfg.seed
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x0, sigma0=sigma0, bounds=bounds,
                                      batch_size=base + (1 if i < extra else 0),

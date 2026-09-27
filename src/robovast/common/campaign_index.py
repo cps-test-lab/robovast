@@ -196,6 +196,7 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
                 status="missing", result_dir="", n_samples=0,
             )
             indexed.add(name)
+        store.complete_batch(batch_id)
     logger.info("Built campaign store: %s", store_path)
     return store_path
 

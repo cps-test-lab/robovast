@@ -182,6 +182,7 @@ def test_a_store_written_before_asked_existed_falls_back_to_its_rows(tmp_path):
         store.record_unit(batch_id=batch_id, paramset_id=f"p{i}", config_name=f"c{i}",
                           params={"x": i}, objectives={"f": 1.0}, measures={},
                           n_samples=1, status="evaluated", result_dir=f"c{i}")
+    store.complete_batch(batch_id)
 
     batches = recorded_batches(store, campaign_id)
     assert [b.asked for b in batches] == [2]

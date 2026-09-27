@@ -520,7 +520,9 @@ _TABLE_DESCRIPTIONS = {
     ("campaign", "batch"): (
         "One row per search batch/iteration; idx is the iteration index — the "
         "search history over time. You rarely need this table: run_view already "
-        "carries idx as its `batch` column, so no join is required."),
+        "carries idx as its `batch` column, so no join is required. complete=1 once "
+        "every unit of the batch is recorded; a batch without it is still running or was "
+        "interrupted, so its units are not what it ended with."),
     ("campaign", "unit"): (
         "One row per evaluated configuration. objectives_json (all named "
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
