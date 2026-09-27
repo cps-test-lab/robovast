@@ -37,6 +37,7 @@ import os
 from pathlib import Path
 
 from robovast.client.file_address import SOURCES, format_address
+from robovast.client.safe_path import UnsafePathError, safe_join
 from robovast.client.workspaces import is_campaign_results_dir
 from robovast.client.workspaces import is_skipped as _should_skip
 
@@ -233,15 +234,14 @@ def pull_workspace_to_directory(client, workspace_id: str, directory, *,
 def _safe_target(root: Path, rel: str) -> Path:
     """*rel* resolved under *root*, or a ``ValueError`` when it would leave it.
 
-    An archive is the one input here that came from another machine, so a member naming
-    ``..`` or an absolute path is refused rather than written.
+    An archive is the one input here that came from another machine, so a member that
+    leaves *root* is refused rather than written.
     """
-    base = root.resolve()
-    target = (root / rel).resolve()
-    # Compared by path components, not as strings: ``pulled2`` begins with ``pulled``.
-    if base not in target.parents:
-        raise ValueError(f"{rel!r} would be written outside {root}, so the archive is refused")
-    return target
+    try:
+        return safe_join(root, rel)
+    except UnsafePathError as e:
+        raise ValueError(
+            f"{rel!r} would be written outside {root}, so the archive is refused") from e
 
 
 class _ChunkReader:
