@@ -230,7 +230,7 @@ def source_size(bag_dir: str) -> int:
     definitions sidecar.
 
     The sidecar counts because it decides what decodes: one written, or rewritten, after a
-    table was built can turn a topic that stopped decoding into one that does not.
+    table was built can define a type the table was built without.
     """
     size = sum(os.path.getsize(p) for p in segments(bag_dir))
     sidecar = os.path.join(bag_dir, SIDECAR_NAME)
