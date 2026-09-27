@@ -1077,6 +1077,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/screenshots/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campaign Screenshot Frame
+         * @description A render ``POST .../screenshot`` kept, fetched again by the name it was kept under.
+         *
+         *     Kept for a bounded time and count (``robovast.service.screenshot``); a 404 once it is
+         *     gone. Its bytes never change under its name, so it is served as immutable.
+         */
+        get: operations["campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/search/history": {
         parameters: {
             query?: never;
@@ -2107,6 +2130,11 @@ export interface components {
         BatchObjective: {
             /** Best So Far */
             best_so_far: number | null;
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
             /** Idx */
             idx: number;
             /** Max */
@@ -3147,8 +3175,8 @@ export interface components {
          *     ``level`` decides what happens, and only these two mean anything here:
          *
          *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
-         *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-         *       still holds ``running`` for its whole life.
+         *       (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator
+         *       is wedged still holds ``running`` for its whole life.
          *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
          *       ``get_job_state`` and on the campaign's own exit.
          *
@@ -5296,6 +5324,10 @@ export interface components {
              * @default false
              */
             packaged: boolean;
+            /** Warnings */
+            warnings: {
+                [key: string]: unknown;
+            }[] | null;
             /**
              * World
              * @default
@@ -7028,6 +7060,38 @@ export interface operations {
             header?: never;
             path: {
                 campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                name: string;
             };
             cookie?: never;
         };

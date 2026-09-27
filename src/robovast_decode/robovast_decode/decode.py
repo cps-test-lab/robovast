@@ -73,10 +73,14 @@ class TopicStats:
 
 @dataclass
 class BagReport:
-    """What one pass read: per-topic counts, and the handlers that failed and why."""
+    """What one pass read: per-topic counts, and the handlers that failed and why.
+
+    ``failed`` is keyed by the handler itself: a plan holds several handlers of one class,
+    and one failing must not read as all of them having failed.
+    """
     bag_dir: str
     topics: Dict[str, TopicStats] = field(default_factory=dict)
-    failed: Dict[str, str] = field(default_factory=dict)
+    failed: Dict[Handler, str] = field(default_factory=dict)
     segments: List[str] = field(default_factory=list)
     bytes_read: Dict[str, int] = field(default_factory=dict)
 
@@ -134,7 +138,7 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
     def fail(handler, exc):
         if handler in active:
             active.remove(handler)
-            report.failed[type(handler).__name__] = f"{type(exc).__name__}: {exc}"
+            report.failed[handler] = f"{type(exc).__name__}: {exc}"
             for topic_handlers in wanted.values():
                 if handler in topic_handlers:
                     topic_handlers.remove(handler)

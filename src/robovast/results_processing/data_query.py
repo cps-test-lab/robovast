@@ -520,7 +520,9 @@ _TABLE_DESCRIPTIONS = {
     ("campaign", "batch"): (
         "One row per search batch/iteration; idx is the iteration index — the "
         "search history over time. You rarely need this table: run_view already "
-        "carries idx as its `batch` column, so no join is required."),
+        "carries idx as its `batch` column, so no join is required. complete=1 once "
+        "every unit of the batch is recorded; a batch without it is still running or was "
+        "interrupted, so its units are not what it ended with."),
     ("campaign", "unit"): (
         "One row per evaluated configuration. objectives_json (all named "
         "objectives) and measures_json (quality-diversity measures) live ONLY here "
@@ -538,7 +540,10 @@ _TABLE_DESCRIPTIONS = {
         "(WHERE u.status='evaluated') when averaging objectives, and count "
         "status='no_sample' to see how much of the search space went unmeasured — that is "
         "a coverage loss, not a result. status='composition_failed' is the sibling case "
-        "where the draw could not be built at all and never ran."),
+        "where the draw could not be built at all and never ran. status='recalled' marks a "
+        "SEARCH cell an earlier batch already measured and this batch re-proposed: it was "
+        "not run again, carries no objectives, runs or config_name, and recalled_from is "
+        "the id of the unit that measured it -- exclude it when counting cells."),
     ("campaign", "run"): (
         "One row per individual run, child of unit via unit_id and of a job via job_id. "
         "status is passed/failed/error/killed/invalid/unknown (unknown = test.xml missing "
