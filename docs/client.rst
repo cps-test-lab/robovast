@@ -117,6 +117,24 @@ deliberately on both sides, and each side additionally owns what only it can do 
 and long waits here, results queries and diff-based authoring there.
 
 
+.. _client-exit-codes:
+
+Exit codes
+----------
+
+Every verb exits with one of these, defined once as the members of
+``robovast.execution.wait_exit.CommonExit``:
+
+.. wait-exit-codes:: robovast.execution.wait_exit.CommonExit
+
+Only a waiting verb adds outcome codes of its own, numbered above these, from 3 up, so
+that none reads as a usage error: ``vast campaign wait``
+(:ref:`its codes <client-wait-exit-codes>`) and ``vast image wait``
+(:ref:`its codes <client-image-wait-exit-codes>`). ``vast container exec`` exits
+as failed when its command does, and prints the command's own status instead of passing it
+through.
+
+
 .. _client-partial-surface:
 
 What is absent, and what is only partly here
@@ -248,7 +266,9 @@ Its exit codes
 **The exit code is the answer.** The codes are defined once, as the members of
 ``robovast.execution.wait_exit.CampaignWaitExit``: the command raises them, and this table, its
 ``--help`` and every list of them an MCP tool or prompt hands out are rendered from them.
-Anything else refers to a code by its name.
+Anything else refers to a code by its name. Success and failure are the common codes, and a
+usage error is ``USAGE_ERROR`` as for every verb (:ref:`client-exit-codes`); the other
+outcomes are numbered above those.
 
 .. wait-exit-codes:: robovast.execution.wait_exit.CampaignWaitExit
 
