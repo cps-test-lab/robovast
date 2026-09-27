@@ -2217,3 +2217,36 @@ def test_a_job_with_no_pod_yet_reports_no_node(cs, monkeypatch):
     _one_running_job(cs, monkeypatch, phase="Pending")
 
     assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].node is None
+
+
+_PER_CLUSTER = {"cpu": [{"lab.example": 4}, {"cloud.example": 8}], "memory": "8Gi"}
+
+
+def _backend_of_service(monkeypatch, recorded):
+    """The backend a service builds for a campaign, with *recorded* as its deployed context."""
+    if recorded is None:
+        monkeypatch.delenv("ROBOVAST_KUBE_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("ROBOVAST_KUBE_CONTEXT", recorded)
+    svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
+                         cluster_config_kwargs={}, reap_on_start=False)
+    monkeypatch.setattr(svc, "_cluster_config", lambda: None)
+    monkeypatch.setattr(svc, "_admission_controller", lambda: None)
+    return svc._build_backend(None)
+
+
+def test_a_service_with_a_recorded_context_resolves_a_per_cluster_list(monkeypatch):
+    from robovast.execution.cluster_execution.cluster_context import resolve_resources
+    backend = _backend_of_service(monkeypatch, "cloud.example")
+    assert resolve_resources(_PER_CLUSTER, backend.kube_context) == {
+        "cpu": 8, "memory": "8Gi"}
+
+
+def test_a_service_without_a_recorded_context_refuses_naming_the_remedy(monkeypatch):
+    """The launch carries no context, so telling the caller to pass one names a flag that
+    changes nothing; what records the context is redeploying the service."""
+    from robovast.execution.cluster_execution.cluster_context import resolve_resources
+    backend = _backend_of_service(monkeypatch, None)
+    with pytest.raises(ValueError, match="vast service upgrade") as caught:
+        resolve_resources(_PER_CLUSTER, backend.kube_context)
+    assert "lab.example" in str(caught.value) and "cloud.example" in str(caught.value)
