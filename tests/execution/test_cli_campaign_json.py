@@ -32,7 +32,7 @@ class _Client:
                             results_bytes=1024)])
 
 
-def _cli(monkeypatch, *args):
+def _invoke(monkeypatch, *args):
     @contextlib.contextmanager
     def _service(*_a, **_k):
         yield _Client(), "fake service"
@@ -40,6 +40,11 @@ def _cli(monkeypatch, *args):
     monkeypatch.setattr(campaign_cli, "service_client", _service)
     result = CliRunner().invoke(campaign_cli.campaign, list(args))
     assert result.exit_code == 0, result.output + result.stderr
+    return result
+
+
+def _cli(monkeypatch, *args):
+    result = _invoke(monkeypatch, *args)
     assert "Target: fake service" in result.stderr
     return json.loads(result.stdout)
 
@@ -63,3 +68,17 @@ def test_list_json_carries_the_campaigns_list_campaigns_returns(monkeypatch):
     assert printed["campaigns"] == tool["campaigns"]
     assert printed["total"] == tool["total"] == 2
     assert printed["campaigns"][0]["priority"] == 2
+
+
+def test_the_printed_status_is_drawn_from_the_same_report(monkeypatch):
+    """The lines a person reads come from the report, so they cannot drop a field it carries."""
+    printed = _invoke(monkeypatch, "status", "c1").stdout
+    assert "runs      8 / 8" in printed
+    assert "conversion died" in printed
+
+
+def test_the_printed_listing_is_drawn_from_the_same_entries(monkeypatch):
+    printed = _invoke(monkeypatch, "list").stdout
+    assert "[prio +2]" in printed
+    assert "0.0 MiB" in printed
+    assert "pilot" in printed

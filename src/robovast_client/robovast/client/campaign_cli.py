@@ -609,6 +609,8 @@ def list_cmd(limit, sort_key, descending, as_json, namespace, context):
 
     ``--json`` prints ``{campaigns, total, offset}`` on stdout and the target on stderr.
     """
+    from robovast.client.campaign_report import \
+        campaign_listing  # pylint: disable=import-outside-toplevel
     from robovast.client.progress import fmt_size  # pylint: disable=import-outside-toplevel
     try:
         from robovast.service.interface import \
@@ -616,49 +618,47 @@ def list_cmd(limit, sort_key, descending, as_json, namespace, context):
 
         with service_client(namespace, context) as (client, label):
             _echo_target(label, err=as_json)
-            request = ListCampaignsRequest(limit=limit, sort=sort_key,
-                                           order='desc' if descending else 'asc')
-            if as_json:
-                from robovast.client.campaign_report import \
-                    campaign_listing  # pylint: disable=import-outside-toplevel
-                click.echo(json.dumps(campaign_listing(client, request)))
-                return
-            listed = client.list_campaigns(request).campaigns
+            listing = campaign_listing(client, ListCampaignsRequest(
+                limit=limit, sort=sort_key, order='desc' if descending else 'asc'))
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
 
+    if as_json:
+        click.echo(json.dumps(listing))
+        return
+    listed = listing["campaigns"]
+
     if not listed:
         click.echo("no campaigns")
         return
-    width = max(len(c.campaign_id) for c in listed)
+    width = max(len(c["campaign_id"]) for c in listed)
     # Two columns of their own, each as wide as the widest value in this listing and each
     # absent when no campaign has one: descriptions that line up are what makes the listing
     # scannable, and a marker on some rows only would step every one of them along.
-    sizes = [fmt_size(c.results_bytes) if c.results_bytes is not None else "-"
-             for c in listed]
+    sizes = [fmt_size(c["results_bytes"]) if "results_bytes" in c else "-" for c in listed]
     size_width = max(len(s) for s in sizes)
-    standings = {c.campaign_id: _queue_standing(c) for c in listed}
+    standings = {c["campaign_id"]: _queue_standing(c) for c in listed}
     mark = max(len(t) + 3 for t in standings.values()) if any(standings.values()) else 0
     for summary, size in zip(listed, sizes):
-        standing = standings[summary.campaign_id]
-        click.echo(f"  {summary.campaign_id:<{width}}  {summary.phase:<12} "
+        standing = standings[summary["campaign_id"]]
+        click.echo(f"  {summary['campaign_id']:<{width}}  {summary['status']:<12} "
                    + f"{size:>{size_width}}  "
                    + f"{f'[{standing}]' if standing else '':<{mark}}"
-                   + f"{summary.description}")
+                   + f"{summary.get('description', '')}")
 
 
-def _queue_standing(summary) -> str:
-    """A campaign's rank and hold as a listing row shows them, or ``""`` at the default.
+def _queue_standing(entry: dict) -> str:
+    """A listing entry's rank and hold as a row shows them, or ``""`` at the default.
 
     The same labels the web UI's campaign card carries. Omitted at the default because a
     ``prio 0`` on every row says nothing. The service reports both only while the campaign
     is live, so a finished row never carries them.
     """
     parts = []
-    if summary.priority:
-        parts.append(f"prio {summary.priority:+d}")
-    if summary.paused:
+    if entry.get("priority"):
+        parts.append(f"prio {entry['priority']:+d}")
+    if entry.get("paused"):
         parts.append("paused")
     return ", ".join(parts)
 
@@ -676,34 +676,36 @@ def status_cmd(campaign, as_json, namespace, context):  # pylint: disable=redefi
     not waiting on. Waiting is a separate verb because it can take days, and holding a
     request open for that is a different thing from asking once.
 
-    ``--json`` prints the fuller report on stdout -- stall verdict, health findings,
-    postprocessing, ``next_step`` -- and the target on stderr.
+    Both forms read one report: the lines here are drawn from it, and ``--json`` prints the
+    whole of it -- stall verdict, health findings, postprocessing, ``next_step`` -- on stdout,
+    with the target on stderr.
     """
+    from robovast.client.campaign_report import \
+        status_report  # pylint: disable=import-outside-toplevel
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label, err=as_json)
             campaign_id = campaign or _sole_running_campaign(client)
             if not campaign_id:
                 raise ValueError("no campaign is running; pass CAMPAIGN.")
-            if as_json:
-                from robovast.client.campaign_report import \
-                    status_report  # pylint: disable=import-outside-toplevel
-                click.echo(json.dumps(status_report(client, campaign_id)))
-                return
-            status = client.get_status(campaign_id)
+            report = status_report(client, campaign_id)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
 
+    if as_json:
+        click.echo(json.dumps(report))
+        return
     click.echo(f"  campaign  {campaign_id}")
-    click.echo(f"  phase     {status.phase}")
-    if getattr(status, "total_runs", 0):
-        click.echo(f"  runs      {getattr(status, 'completed_runs', 0)}"
-                   f" / {status.total_runs}")
+    click.echo(f"  phase     {report['status']}")
+    if report["batch_runs_total"]:
+        click.echo(f"  runs      {report['batch_runs_done']} / {report['batch_runs_total']}")
     # Only when it happened. A campaign short of a machine is slower than its plan and says so
     # nowhere else while it runs, so the one-read status is where a reader meets it.
-    for node_id, why in sorted((getattr(status, "nodes_skipped", None) or {}).items()):
+    for node_id, why in sorted(report.get("nodes_skipped", {}).items()):
         click.echo(f"  left out  {node_id} — {why}")
+    if report.get("next_step"):
+        click.echo(f"  next      {report['next_step']}")
 
 
 @campaign.command('import')
