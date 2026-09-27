@@ -123,7 +123,7 @@ def _checked_campaign_name(name: str) -> str:
     return name
 
 
-def read_campaign_id(archive_path) -> str:
+def read_campaign_id(archive_path, *, fits_in=None) -> str:
     """The campaign id an archive holds, read from its member list alone.
 
     Known before anything is extracted, which is what lets an import be a *tracked*
@@ -133,18 +133,47 @@ def read_campaign_id(archive_path) -> str:
 
     ``ValueError`` -- the interface's vocabulary for "this input is wrong", mapped to 400 by
     the HTTP layer -- when the archive is not exactly one campaign.
+
+    Given *fits_in*, the directory the archive would be extracted under, an archive whose
+    members take more than that filesystem has room for above its free-space reserve --
+    each member at least one block, a file its size rounded up to whole blocks -- raises
+    :class:`~robovast.common.errors.InsufficientStorageError` (507). The compressed size
+    bounds nothing: a crafted archive packs a terabyte of zeros, or a million empty
+    entries, into kilobytes.
     """
     archive_path = Path(archive_path)
     try:
         with tarfile.open(archive_path, 'r:*') as tar:
-            tops = _top_level_entries(tar.getnames())
+            members = tar.getmembers()
     except (tarfile.TarError, OSError) as e:
         raise ValueError(f"could not read {archive_path.name}: {e}") from e
+    tops = _top_level_entries(m.name for m in members)
+    if fits_in is not None:
+        _check_room(archive_path, members, fits_in)
     if len(tops) != 1:
         raise ValueError(
             f"archive holds {len(tops)} top-level entries; expected one campaign "
             f"directory: {sorted(tops)[:5]}")
     return _checked_campaign_name(tops.pop())
+
+
+def _check_room(archive_path: Path, members, fits_in) -> None:
+    """Refuse an archive whose *members* would take more than *fits_in* has room for."""
+    from robovast.common.disk_reserve import (  # pylint: disable=import-outside-toplevel
+        block_bytes, room_bytes)
+    from robovast.common.errors import \
+        InsufficientStorageError  # pylint: disable=import-outside-toplevel
+
+    block = block_bytes(fits_in)
+    unpacked = block * sum(max(1, -(-(m.size if m.isfile() else 0) // block))
+                           for m in members)
+    room = room_bytes(fits_in)
+    if unpacked > room:
+        gb = 1000 ** 3
+        raise InsufficientStorageError(
+            f"{archive_path.name} unpacks to {unpacked / gb:.1f} GB, and the results volume "
+            f"has {room / gb:.1f} GB free above its reserve. Nothing was extracted; delete "
+            f"campaigns no longer needed, then import it again.")
 
 
 def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
