@@ -474,7 +474,7 @@ _PARAMETER_VOCABULARY = {
     # what to act on
     "address", "campaign_id", "workspace_id", "config_path", "config_name", "run_id",
     "job_name", "build_id", "container", "node", "name", "group", "catalog", "topic",
-    "frame", "camera", "backend", "scenario_path", "world_path", "from_campaign",
+    "frame", "camera", "scenario_path", "world_path", "from_campaign",
     "from_share",
     "campaign_name", "targets", "entities", "phase", "entries", "content",
     # Which recorded table a track comes from, and which marker of a configuration to

@@ -792,8 +792,9 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
 def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. ``error_detail`` says what to change.
 
-    ``error_detail`` names the ``phase`` (apt / pip / base-image / source-build /
-    base-pull / push / resource / builder-pod), the offending ``entry``, a ``message``,
+    ``error_detail`` names the ``phase`` (base-pull / base-image / apt / pip /
+    source-build / build / push / resource / builder / builder-pod), the offending
+    ``entry``, a ``message``,
     and ``fixable_by`` — ``agent`` (a ``.vast`` edit fixes it) or ``infra`` (no edit
     will). Read this before reaching for the builder log.
 
@@ -806,8 +807,10 @@ def get_image_build_status(build_id: str) -> dict:
                   build on. Adding it to ``python_packages`` papers over that --
                   re-pin ``execution.containers.<name>.image`` instead.
 
-    ``builder-pod`` names no field: the *builder* could not start, so no rebuild helps.
-    Phase ``blocked`` is that, before it is terminal.
+    ``builder`` and ``builder-pod`` name no field: the build daemon was unreachable, or
+    the *builder* could not start, so no ``.vast`` edit helps. Phase ``blocked`` is the
+    latter, before it is terminal. ``build`` is a failure no other phase matched; the log
+    tail says which field.
 
     Args:
         build_id: One id from ``build_experiment_image`` — its ``build_id``, or any value
