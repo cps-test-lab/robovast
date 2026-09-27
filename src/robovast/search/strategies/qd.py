@@ -27,6 +27,7 @@ extra to use it.
 """
 
 import logging
+import math
 from typing import Literal, Optional
 
 import numpy as np
