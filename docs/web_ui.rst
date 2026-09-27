@@ -1453,13 +1453,13 @@ data: a table is built the first time a query names it, and a table not yet buil
 lists its columns as soon as a query builds it. Under a table, the runs it is missing or
 incomplete for are listed, each with its reason: a build that failed for the run, or a topic that
 stopped decoding and left only the rows before it (:ref:`results-table-cache`). Hover a name for
-its description; click it to browse it. Among them are the ``runs`` **dimension table** (per-run ``status``/``duration_s``
-and each varied parameter as a ``param_*`` column) and the campaign's record as schema
-``campaign`` (``campaign.run``, ``campaign.unit``, …). Write **read-only SQL** — DuckDB's
-dialect (:ref:`results-querying`) — in the editor and **Run** it; the result shows as a table
-and, via the chart builder, as a chart — pick *x* / *y* / *color* columns and a mark. Join
-``runs`` to any metric table on ``(config_name, run_id)`` to answer "how does *<param>* affect
-*<metric>*".
+its description; click it to browse it. Among them are the ``runs`` **dimension table**
+(per-run ``status``/``duration_s`` and each varied parameter as a ``param_*`` column) and the
+campaign's record as schema ``campaign`` (``campaign.run``, ``campaign.unit``, …). Write
+**read-only SQL** — DuckDB's dialect (:ref:`results-querying`) — in the editor and **Run** it;
+the result shows as a table and, via the chart builder, as a chart — pick *x* / *y* / *color*
+columns and a mark. Join ``runs`` to any metric table on ``(config_name, run_id)`` to answer
+"how does *<param>* affect *<metric>*".
 
 The campaign's records and its built tables are files in its own directory on the service's
 results tree, so a query reads them where they are; what it builds for the first time is
