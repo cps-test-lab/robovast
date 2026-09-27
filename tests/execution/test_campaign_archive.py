@@ -116,6 +116,33 @@ def test_writer_error_propagates_on_close():
         list(campaign_archive.iter_tar(boom))
 
 
+def _add_random(size):
+    def add(tar):
+        info = tarfile.TarInfo("blob")
+        info.size = size
+        tar.addfile(info, io.BytesIO(os.urandom(size)))
+    return add
+
+
+def test_a_compressor_that_dies_mid_stream_fails_the_stream(monkeypatch):
+    """The reader sees a short gzip stream end cleanly; only the compressor knows it is short."""
+    real_popen = campaign_archive.subprocess.Popen
+
+    def dying_pigz(args, **kwargs):
+        assert args[0] == "pigz"
+        return real_popen(["sh", "-c", "head -c 64; exit 3"], **kwargs)
+
+    monkeypatch.setattr(campaign_archive.subprocess, "Popen", dying_pigz)
+    with pytest.raises(RuntimeError, match="pigz exited with code 3"):
+        list(campaign_archive.iter_tar(_add_random(8 * 1024 * 1024)))
+
+
+def test_a_reader_that_stops_early_is_not_a_failure():
+    stream = campaign_archive.iter_tar(_add_random(8 * 1024 * 1024), chunk_size=1024)
+    assert next(stream)
+    stream.close()
+
+
 def test_a_file_truncated_under_the_copy_is_padded_rather_than_raising(tmp_path):
     """``tarfile`` copies exactly the header's byte count, and a live file may not have it.
 

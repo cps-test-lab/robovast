@@ -49,6 +49,7 @@ import io
 import json
 import logging
 import os
+import signal
 import subprocess  # nosec B404 - fixed 'pigz' binary, no shell
 import tarfile
 import threading
@@ -344,6 +345,9 @@ class _TarPipe:
 
         Closing the read end first is what unblocks a writer the reader abandoned: its
         next write fails with a broken pipe instead of waiting for a reader that is gone.
+        ``pigz`` is checked first: a compressor that died ends its stream as cleanly as a
+        finished one and breaks the writer's pipe as an abandoned reader does, so only its
+        exit tells the two apart. A reader that stopped early kills it with ``SIGPIPE``.
         """
         try:
             self._stdout.close()
@@ -351,14 +355,14 @@ class _TarPipe:
             pass
         self._writer.join()
         if self._pigz is not None:
-            self._pigz.wait()
+            code = self._pigz.wait()
+            if code not in (0, -signal.SIGPIPE):
+                raise RuntimeError(f"pigz exited with code {code}")
         if self._error:
             error = self._error[0]
             if isinstance(error, BrokenPipeError):
                 return  # the reader stopped early -- its choice, not a failure here
             raise error
-        if self._pigz is not None and self._pigz.returncode not in (0, None):
-            raise RuntimeError(f"pigz exited with code {self._pigz.returncode}")
 
 
 @contextlib.contextmanager
