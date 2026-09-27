@@ -51,9 +51,9 @@ bounded by `runs:`.
 ### Computing them: `analysis/compare.py`
 
 Each campaign's notebook is scoped to one campaign, so none of the pairings above is
-something this directory could previously *compute* — they were prose. `analysis/compare.py`
-is that missing half. It reads each campaign's own `campaign.db`, which carries the scored
-cells **and** the `.vast` that produced them, so nothing about what a campaign is gets
+something a notebook can compute; `analysis/compare.py` computes them. It reads each
+campaign's own `campaign.db`, which carries the scored cells **and** the `.vast` that
+produced them, so nothing about what a campaign is gets
 passed in on the command line: the strategy, its budget and its seed come from the record,
 and a comparison cannot be labelled with a strategy the campaign did not run.
 
@@ -99,9 +99,9 @@ good cell early within its batch.
 
 `qd`'s row is the weakest evidence in the table and is kept for that reason. It was run under
 a `time:` budget on a contended cluster, which bought it 63 runs where its siblings had 180-256,
-so its figures rest on eight scored cells. That measurement is why the file now declares a
-`runs:` budget like the others -- wall-clock is not a measure of compute on a shared cluster,
-and a campaign budgeted in it is not comparable with one budgeted in runs.
+so its figures rest on eight scored cells. The file declares a `runs:` budget like the
+others: wall-clock is not a measure of compute on a shared cluster, and a campaign budgeted in
+it is not comparable with one budgeted in runs.
 
 Re-run at `runs: 240` it spent its budget properly (256 runs, four batches) and still scored
 only 16 cells, because two of those four batches went unscored on a saturated cluster -- see the
@@ -172,7 +172,7 @@ outcome is still in doubt buys accuracy rather than economy.
 for the rule stated above. The same policy given a third less money reaches -1.374 and reads
 as a clear loss. Nothing about the policy changed between those two campaigns; only the
 budget did, and the unequal comparison measured the budget rather than the policy. That is
-why `nav_search_adaptive_reps.vast` now declares tpe's 240, and why `analysis/compare.py`
+why `nav_search_adaptive_reps.vast` declares tpe's 240, and why `analysis/compare.py`
 refuses to present an unequal pair as a contest.
 
 **The nested search answers a question about the STACK, not about the world.** Every other
@@ -189,18 +189,17 @@ situation and not in the configuration.
 ## The objective is a margin, not a verdict
 
 `failure_rate` is a proportion over N runs, so with 3 runs it has four reachable values —
-and against a sharp physical threshold nearly every cell lands on an endpoint. The campaign
-that motivated this directory had **93.8% of its configurations scoring exactly 0.0 or
-1.0**: every strategy hit the ceiling in a few draws and the comparison between them said
-nothing.
+and against a sharp physical threshold nearly every cell lands on an endpoint. In one
+campaign scored that way **93.8% of the configurations scored exactly 0.0 or 1.0**: every
+strategy hits the ceiling in a few draws and the comparison between them says nothing.
 
 So the objective here is a **robustness margin**: the worst of one signed margin per failure
 mode (clearance, time, arrival), aggregated worst-case across repetitions rather than
 averaged. Continuous, signed, negative means failed, and it grades what a verdict cannot.
 
 **Each margin is divided by a SCALE, never by its own threshold.** This is the whole design,
-and getting it wrong is not a detail — the first version of this objective divided by
-thresholds and came out *worse than the `failure_rate` it replaced*. A threshold answers
+and getting it wrong is not a detail — the same margins divided by thresholds score
+*worse than `failure_rate`*. A threshold answers
 *did it fail*; a scale answers *by how much*. Divide by the threshold and you conflate them:
 with the 0.05 m contact threshold as denominator the clearance margin carried 20 per metre
 against the arrival margin's 1.67, so `min()` returned whichever margin had the tightest
@@ -218,7 +217,7 @@ deepest one decides every score. `path_scale` is the scenario's traverse, (−2.
 is *not* the room the widest doorway offers: a run cannot be clear by that much and fail, and
 it cannot penetrate an obstacle by more than a few centimetres either, because contact ends
 the trial. The clearance term's reach is that penetration depth, ~0.1 m. The `timeout` margin
-was always of this form, and it is the one that never needed a floor.
+is its own scale and needs no floor.
 
 Scaled this way a full-penetration contact reaches about −1.0 and a robot that never left the
 start reaches −0.88, so the worst of the three is whichever failure is nearest rather than
@@ -228,7 +227,7 @@ arrive, and the objective ranks a robot that safely stopped short below one that
 pedestrian.
 
 Measured over the 48 cells of one `nav_search_halton` run, `failure_rate` took 4 distinct
-values with 30 of 48 (62.5%) on an endpoint — the cliff this replaced.
+values with 30 of 48 (62.5%) on an endpoint — the cliff the margin avoids.
 
 **Two changes are easy to confuse here, so they are separated by measurement** — 16 cells at
 15 repeats each, one thing varied at a time:
@@ -242,10 +241,10 @@ values with 30 of 48 (62.5%) on an endpoint — the cliff this replaced.
 Removing the clamp is what restores the distinct values; the denominators are unchanged
 between the first two rows. What the scales buy is different and also necessary: they put the
 margins in a range where the three can be compared, which is the paragraph above. Expect a
-clamp, not a denominator, to be what flattens this objective if it is ever changed again.
+clamp, not a denominator, to be what flattens this objective.
 
 The sign agrees on 48 of 48 cells: re-normalising does not move the verdict, only its
-resolution. The tightest cell sits at −0.007, and one cell of the earlier 16-cell grid
+resolution. The tightest cell sits at −0.007, and one cell of the 16-cell grid above
 passed with **a millimetre** of clearance — a verdict scores that identically to one that
 passed with 0.4 m.
 
@@ -315,9 +314,9 @@ structure and still leave the per-cell counts rattling. `analysis/nav_grid.ipynb
 computes which factor dominates from the campaign in front of it and names it, rather than
 repeating a winner fixed in prose — a view that asserted one would have been wrong here.
 
-**Four runs per width cannot see even the coarse structure**, and an earlier version of this
-table read them as 4/3/1/1 with the two widest widths described as mostly passing. That
-ordering was an artifact of the sample size.
+**Four runs per width cannot see even the coarse structure**: read at that size the table
+comes out 4/3/1/1, with the two widest widths mostly passing -- an artifact of the sample
+size.
 
 ## Budgets
 
@@ -367,6 +366,6 @@ campaigns against each other is `analysis/compare.py`, above.
   success against its estimated pose at the instant it stops; the metric measures ground
   truth at the last recorded sample. Runs that *passed* ended 0.23–0.51 m out, so comparing
   against the planner's 0.25 scored most of them as maximum-severity failures.
-- **Check that a factor axis actually spans outcomes before trusting a sweep.** An earlier
-  version of the grid used doorway widths of 0.8–2.6 m, every one of which the robot passed
-  — so the geometry contributed nothing and every failure came from the walker.
+- **Check that a factor axis actually spans outcomes before trusting a sweep.** Over doorway
+  widths of 0.8–2.6 m the robot passes every one, so the geometry contributes nothing and
+  every failure comes from the walker.
