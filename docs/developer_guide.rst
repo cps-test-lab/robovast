@@ -398,15 +398,14 @@ How to bump the version
 2. Rebuild and push the container images
 
 That is the whole procedure, because there is only one copy. The images take the
-value as a build arg that ``container/image_stamp.sh`` derives from that constant
-— the same way they take the git revision and the build date, and for the same
-reason: a constant copied by hand into each Dockerfile drifts, which is why it
-used to need a CI gate comparing the copies. ``image_stamp.sh`` refuses to build
-if it cannot read the constant, rather than producing an image that carries no
-protocol at all.
+value as a build arg derived from that constant -- by ``container/image_stamp.sh``
+for a local build, by ``image.yml`` in CI -- the same way they take the git
+revision and the build date, and for the same reason: a constant copied by hand
+into each Dockerfile drifts. Both refuse to build if they cannot read the
+constant, rather than producing an image that carries no protocol at all.
 
-``image.yml`` still guards the shape: each Dockerfile must declare
-``ARG ROBOVAST_COMPAT_VERSION`` and label from it, so a literal cannot creep back.
+``image.yml`` guards the shape: each Dockerfile must declare
+``ARG ROBOVAST_COMPAT_VERSION`` and label from it, not from a literal.
 
 **Remembering to bump is the part nothing could check** — the version is a claim,
 and it fails by being forgotten. ``make check-compat-version`` (run in CI on every
