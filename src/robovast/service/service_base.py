@@ -3471,11 +3471,10 @@ class ServiceBase(RobovastInterface):
                                 eof=final and not read.pending, phases=read.phases)
 
     def campaign_log_watch(self, campaign_id: str):
-        """A :class:`~robovast.service.campaign_log.CampaignLogWatch` over the campaign's
-        phase files, for a stream that pushes rows as they are written. The caller closes
-        it."""
+        """A :class:`~robovast.service.dir_watch.DirWatch` over the campaign's phase files,
+        for a stream that pushes rows as they are written. The caller closes it."""
         from robovast.service import campaign_log  # pylint: disable=import-outside-toplevel
-        return campaign_log.CampaignLogWatch(self.campaign_dir(campaign_id))
+        return campaign_log.watch(self.campaign_dir(campaign_id))
 
     #: Directories under a campaign that are not per-configuration results.
     _RESERVED_DIRS = frozenset({"_config", "_execution", "_transient"})
@@ -3524,11 +3523,11 @@ class ServiceBase(RobovastInterface):
         return job_dir, job_log.runs_of_job(links, rel)
 
     def job_log_watch(self, campaign_id: str, job_name: str):
-        """A :class:`~robovast.service.job_log.LogWatch` over the job's log files, for a stream
-        that pushes rows as they are written. The caller closes it."""
+        """A :class:`~robovast.service.dir_watch.DirWatch` over the job's log files, for a
+        stream that pushes rows as they are written. The caller closes it."""
         from robovast.service import job_log  # pylint: disable=import-outside-toplevel
         job_dir, _runs = self._job_log_dir(campaign_id, job_name)
-        return job_log.LogWatch(job_dir)
+        return job_log.watch(job_dir)
 
     def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
         """A job's log rows after *cursor*, read from its ``logs/system*.log`` files.
