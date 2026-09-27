@@ -41,9 +41,8 @@ The overall workflow in RoboVAST consists of three main steps:
 
 For each step, RoboVAST provides dedicated tools to facilitate the process. For details on specific tools, please refer to :doc:`how_to_run`.
 
-There is nothing to initialize. Every command names its own input: the local verbs take the
-``.vast`` as an argument, and a campaign runs a *workspace's* project, named by the pair
-(workspace, path).
+Every command names its own input: the local verbs take the ``.vast`` as an argument, and a
+campaign runs a *workspace's* project, named by the pair (workspace, path).
 
 .. code-block:: bash
 
@@ -71,7 +70,7 @@ The central part of RoboVAST is the configuration file, which defines all aspect
 
 In this example we use configuration file :repo_link:`configs/examples/growth_sim/growth_sim.vast`.
 
-The ``settings`` are split into three main sections: ``configuration``, ``execution``, and ``analysis``.
+The file has four main sections: ``configuration``, ``execution``, ``results_processing`` and ``visualization``.
 
 Configuration
 ^^^^^^^^^^^^^
@@ -89,7 +88,7 @@ In this example, we define two scenarios:
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 2-21
+   :lines: 4-24
    :caption: Configuration section of RoboVAST Configuration File
 
 
@@ -100,16 +99,16 @@ Execution
 
      For the execution, it is expected that the connection to the Kubernetes cluster is set up properly.
 
-The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests, including the scenario file to execute. For multi-container setups and CPU/memory allocation, see ``resources`` and ``secondary_containers`` in :doc:`configuration`.
+The ``execution`` section of the ``.vast`` configuration specifies all necessary parameters for running the tests, including the scenario file to execute. For multi-container setups and CPU/memory allocation, see ``execution.containers`` in :doc:`configuration`.
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 22-29
+   :lines: 25-39
    :caption: Execution section of RoboVAST Configuration File
 
 The ``scenario_file`` parameter specifies which OpenSCENARIO 2 file to execute (``scenario.osc``).
-In this example, we configure 20 runs for each config to ensure statistically meaningful results.
-In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``**/files/*.py`` in the ``run_files``. In larger setups, it might be required to use a custom container image.
+In this example, we configure 2 runs for each config; a campaign meant to give statistically meaningful results uses more.
+In this basic example we hand in the system-under-test ``growth_sim.py`` directly by specifying the pattern ``files/*.py`` in the ``run_files``. In larger setups, it might be required to use a custom container image.
 
 Check Generated Configurations
 """"""""""""""""""""""""""""""
@@ -124,11 +123,17 @@ Before starting the execution in the cluster, it is recommended to first check t
 Check Result of a Single Execution
 """"""""""""""""""""""""""""""""""
 
-To check that the container image and test are correctly set up, run one configuration's scenario in the image before a campaign: ``vast container run`` (or the MCP ``exec_in_container``) starts it with the same parameters and test files a campaign would stage, and its log can be read afterwards.
+To check that the container image and test are correctly set up, run one configuration's scenario in the image before a campaign: ``vast container exec`` (or the MCP ``exec_in_container``) stages it with the same parameters and test files a campaign would, and prints where the scenario's log is inside the container; ``--keep-alive`` keeps the container so the log can be read afterwards.
 
 .. code-block:: bash
 
-   vast workspace run growth_sim growth_sim.vast --filter config1 --runs 1
+   vast container exec --workspace growth_sim --config growth_sim.vast --config-name test-fixed-values
+
+A pilot campaign of that one configuration with a single run then goes the way the full campaign will:
+
+.. code-block:: bash
+
+   vast workspace run growth_sim growth_sim.vast --filter test-fixed-values --runs 1
 
 
 Cluster Execution
@@ -191,14 +196,13 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the results can optionally be postprocessed to simplify later evaluation. The user might specify postprocessing commands in the ``results_processing.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be postprocessed to simplify later evaluation. The user might specify postprocessing commands in the ``results_processing.postprocessing`` section of the ``.vast`` configuration. Recorded ROS bags need no such command: the tables they give are built from the records the first time a query, a panel or an export names them (see :ref:`results-processing`).
 
 .. code-block:: bash
 
    vast campaign postprocess <campaign-id>
 
-It runs automatically when the campaign's runs finish, so this is for running it *again*.
-Postprocessing is cached based on the results directory hash. If the results directory is unchanged since the last postprocessing, the postprocessing is skipped automatically. To force postprocessing even if the results are unchanged (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
+It runs automatically when the campaign's runs finish, so this is for running it *again* — after updating postprocessing scripts, say. ``--force`` (``-f``) clears the campaign's built tables first, so they are derived afresh from the records:
 
 .. code-block:: bash
 
@@ -216,12 +220,12 @@ The visualization can be customized by adapting the ``visualization.results.expl
 
 .. literalinclude:: ../configs/examples/growth_sim/growth_sim.vast
    :language: yaml
-   :lines: 32-36
-   :caption: Evaluation section of RoboVAST Configuration File
+   :lines: 49-56
+   :caption: Visualization section of RoboVAST Configuration File
 
 Although this example includes only one entry in the analysis list, you can add more. Each additional entry will appear as a separate tab in the GUI.
 
-There are three reserved keys for analysis: ``run``, ``config``, and ``campaign``. These allow you to specify Jupyter notebooks for different scopes:
+There are four reserved keys for analysis: ``run``, ``config``, ``batch`` and ``campaign``, one per scope a notebook can analyze (:ref:`configuration <visualization-section>` lists them); this example uses three:
 
 - **run**: analyzes an individual run.
 - **config**: analyzes all runs for a specific configuration/parameter set.

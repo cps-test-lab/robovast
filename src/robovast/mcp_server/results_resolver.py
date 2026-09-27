@@ -61,10 +61,11 @@ def resolve_results_dir() -> Path:
 def resolve_campaign_path(campaign: str) -> Path:
     """Build and validate the path to a campaign directory.
 
-    A campaign folder is self-contained for analysis, so ``campaign`` may be
-    either a campaign **name** resolved under the initialized project's results
-    directory, or an **absolute path** to a campaign directory — the latter lets
-    analysis tools operate on any campaign folder with no initialized project.
+    The tools' reader when no service is reachable, in the caller's own process: a
+    campaign folder is self-contained for analysis, so ``campaign`` may be a campaign
+    **name** resolved under the local results root, or an **absolute path** to any
+    campaign folder on this host. A service takes names only
+    (:meth:`~robovast.service.service_base.ServiceBase.campaign_dir`).
 
     Args:
         campaign: Campaign name (e.g. ``campaign-2026-03-04-152130``) or an

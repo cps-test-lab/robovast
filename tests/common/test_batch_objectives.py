@@ -25,6 +25,7 @@ def _campaign(tmp_path, *, mode="search", objectives=None, batches=()):
                 batch_id=bid, paramset_id=f"p{idx}{n}", config_name=f"c{idx}{n}",
                 params={}, objectives={} if value is None else {objectives[0]["name"]: value},
                 measures={}, status=status, result_dir=f"c{idx}{n}", n_samples=1)
+        store.complete_batch(bid)
     store.close()
     return tmp_path
 
@@ -39,7 +40,8 @@ def test_aggregates_one_row_per_batch_with_a_rising_best(tmp_path):
     assert got["unavailable"] is None
     assert [b["idx"] for b in got["batches"]] == [0, 1]
     assert got["batches"][0] == {"idx": 0, "n_units": 2, "n_scored": 2, "min": 0.2,
-                                 "max": 0.6, "mean": pytest.approx(0.4), "best_so_far": 0.6}
+                                 "max": 0.6, "mean": pytest.approx(0.4), "best_so_far": 0.6,
+                                 "complete": True}
     assert got["batches"][1]["best_so_far"] == 0.9
 
 
@@ -59,6 +61,16 @@ def test_unmeasured_units_are_excluded_rather_than_scored_as_zero(tmp_path):
     # measured nothing" was unreportable. The statistics still come only from the evaluated one.
     assert (batch["n_units"], batch["n_scored"]) == (3, 1)
     assert (batch["min"], batch["max"], batch["mean"]) == (0.8, 0.8, 0.8)
+
+
+def test_a_recalled_cell_is_not_a_cell_the_batch_had(tmp_path):
+    """A cell an earlier batch measured, re-proposed and recalled, cost this batch nothing:
+    counted in `n_units` it would read as a cell this batch lost."""
+    root = _campaign(tmp_path, batches=[[("evaluated", 0.4)], [("evaluated", 0.7)]])
+    with CampaignStore(root / STORE_FILENAME) as store:
+        store.record_recall(2, "p00", {})
+    batch = read_batch_objectives(root)["batches"][1]
+    assert (batch["n_units"], batch["n_scored"]) == (1, 1)
 
 
 def test_a_batch_that_scored_nothing_is_a_gap_and_best_carries_forward(tmp_path):
