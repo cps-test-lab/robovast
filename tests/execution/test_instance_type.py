@@ -26,7 +26,8 @@ def campaign_data(tmp_path):
     (tmp_path / "s.osc").write_text("scenario x:\n    do serial:\n        wait elapsed(1s)\n",
                                     encoding="utf-8")
     return {"vast": str(tmp_path / "s.vast"), "scenario_file": str(tmp_path / "s.osc"),
-            "configs": [{"name": "c1", "config": {}}], "execution": {"runs": 1}}
+            "configs": [{"name": "c1", "config": {}, "_config_block": {"name": "c1"},
+                         "_read_files": []}], "execution": {"runs": 1}}
 
 
 def _instance_type_line(campaign_data, **kwargs) -> str:
