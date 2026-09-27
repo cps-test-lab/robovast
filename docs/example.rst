@@ -41,9 +41,8 @@ The overall workflow in RoboVAST consists of three main steps:
 
 For each step, RoboVAST provides dedicated tools to facilitate the process. For details on specific tools, please refer to :doc:`how_to_run`.
 
-There is nothing to initialize. Every command names its own input: the local verbs take the
-``.vast`` as an argument, and a campaign runs a *workspace's* project, named by the pair
-(workspace, path).
+Every command names its own input: the local verbs take the ``.vast`` as an argument, and a
+campaign runs a *workspace's* project, named by the pair (workspace, path).
 
 .. code-block:: bash
 
@@ -124,7 +123,13 @@ Before starting the execution in the cluster, it is recommended to first check t
 Check Result of a Single Execution
 """"""""""""""""""""""""""""""""""
 
-To check that the container image and test are correctly set up, run one configuration's scenario in the image before a campaign: ``vast container exec`` (or the MCP ``exec_in_container``) starts it with the same parameters and test files a campaign would stage, and its log can be read afterwards.
+To check that the container image and test are correctly set up, run one configuration's scenario in the image before a campaign: ``vast container exec`` (or the MCP ``exec_in_container``) stages it with the same parameters and test files a campaign would, and prints where the scenario's log is inside the container; ``--keep-alive`` keeps the container so the log can be read afterwards.
+
+.. code-block:: bash
+
+   vast container exec --workspace growth_sim --config growth_sim.vast --config-name test-fixed-values
+
+A pilot campaign of that one configuration with a single run then goes the way the full campaign will:
 
 .. code-block:: bash
 
@@ -191,7 +196,7 @@ Analysis
 As result analysis is tailored to each test, users are expected to implement their own analysis routines.
 
 There are two steps invoked to analyze results.
-First, the results can optionally be postprocessed to simplify later evaluation. The user might specify postprocessing commands in the ``results_processing.postprocessing`` section of the ``.vast`` configuration. Common scripts including converting ROS bags to CSV files or extracting poses from tf-data are available to improve usability.
+First, the results can optionally be postprocessed to simplify later evaluation. The user might specify postprocessing commands in the ``results_processing.postprocessing`` section of the ``.vast`` configuration. Recorded ROS bags need no such command: the tables they give are built from the records the first time a query, a panel or an export names them (see :ref:`results-processing`).
 
 .. code-block:: bash
 
