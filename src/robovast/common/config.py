@@ -2694,8 +2694,11 @@ def validate_config(config: dict, strict: bool = True):
     Raises:
         ValueError: If required sections are missing
     """
+    # Read at call time: the version the ladder declares now, not at this module's import.
+    from robovast.common import migrations  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
         BASELINE_CONFIG_VERSION, find_migration_markers)
+    supported = migrations.SUPPORTED_CONFIG_VERSION
 
     logger.debug("Validating configuration")
     version = config.get("version", None)
@@ -2703,17 +2706,17 @@ def validate_config(config: dict, strict: bool = True):
     # not silently accept an old version. Reading an *archived* campaign goes through
     # ``load_config(upgrade=True)`` instead, which ladders it in memory. The refusal below
     # therefore names that path rather than being a dead end -- see migrations/README.md.
-    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < SUPPORTED_CONFIG_VERSION:
+    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < supported:
         raise ValueError(
             f"config version {version} is not the current version "
-            f"({SUPPORTED_CONFIG_VERSION}), and authoring requires the current one.\n"
+            f"({supported}), and authoring requires the current one.\n"
             "\n"
             "  Upgrade the file:   vast configuration upgrade\n"
             "\n"
             "An archived campaign is migrated automatically when read, so this refusal "
             "only ever applies to a file you are authoring or launching from.\n"
             "\n" + _V1_MIGRATION)
-    if version != SUPPORTED_CONFIG_VERSION:
+    if version != supported:
         # Raised, not logged-and-raised: every caller reports the failure it catches,
         # so logging the same text here printed it twice.
         raise ValueError(f"Unsupported config version: {version}")
