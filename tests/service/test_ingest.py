@@ -367,3 +367,15 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+def test_a_config_that_is_not_a_mapping_blocks_the_import_by_name(campaign):
+    """A .vast whose document is a list parses as YAML but holds no configuration. The config
+    stage refuses it and says why, rather than the import raising and reporting nothing."""
+    vast_path = next((campaign / "_config").glob("*.vast"))
+    vast_path.write_text("- a list\n- not a mapping\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["config"]
+    assert stage["verdict"] == STAGE_FAILED
+    assert "not a mapping" in stage["detail"]
+    assert report["ok"] is False and "config" in report["blocking"]
