@@ -165,7 +165,7 @@ def test_the_cli_reports_and_clears(transport, scenes, monkeypatch):
 
     _entry(scenes, "world-a", 2_000_000_000)
     monkeypatch.setattr(service_cli, "service_client",
-                        lambda namespace, context: contextlib.nullcontext((transport, "here")))
+                        lambda: contextlib.nullcontext((transport, "here")))
     shown = CliRunner().invoke(service_cli.service, ["cache"])
     cleared = CliRunner().invoke(service_cli.service, ["cache", "--clear"])
     assert "scene cache" in shown.output and "2.0 GB in 1 entry" in shown.output

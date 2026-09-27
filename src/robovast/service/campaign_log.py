@@ -54,6 +54,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from robovast.common.campaign_logs import (EXECUTION_DIR, INFRA_PHASES, SECTIONS_DIR,
                                            disk_section_names, ordered_sections)
+from robovast.service.dir_watch import DirWatch
 from robovast.service.interface import CampaignLogRow
 from robovast_decode import log_summary
 
@@ -287,51 +288,11 @@ def read_rows(campaign_dir: Path, cursor: str = "", *, final: bool,
     return Read(out, encode_cursor(state), pending, phases)
 
 
-class CampaignLogWatch:
-    """Wakes a reader when a campaign's phase files change, instead of it asking on a timer.
-
-    Watches the campaign's ``_execution/`` tree with inotify
-    (:class:`robovast.execution.data.file_agent.Inotify`), ``sections/`` included as it
-    appears. Before the directory exists -- a campaign that has not started writing --
-    :meth:`wait` looks for it again at most once a second, and watches it from the moment
-    it appears.
-    """
-
-    #: How often a campaign whose ``_execution/`` does not exist yet is looked at again.
-    APPEAR_S = 1.0
-
-    def __init__(self, campaign_dir: Path):
-        self._exec_dir = Path(campaign_dir) / EXECUTION_DIR
-        self._inotify = None
-        self._attach()
-
-    def _attach(self) -> None:
-        if self._inotify is not None or not self._exec_dir.is_dir():
-            return
-        from robovast.execution.data.file_agent import \
-            Inotify  # pylint: disable=import-outside-toplevel
-        inotify = Inotify()
-        try:
-            inotify.add_tree(str(self._exec_dir))
-        except FileNotFoundError:
-            inotify.close()
-            return
-        self._inotify = inotify
-
-    def wait(self, timeout: float) -> None:
-        """Return once the phase files changed, or after *timeout* seconds."""
-        self._attach()
-        if self._inotify is None:
-            time.sleep(min(timeout, self.APPEAR_S))
-            self._attach()
-            return
-        self._inotify.wait(timeout)
-
-    def close(self) -> None:
-        if self._inotify is not None:
-            self._inotify.close()
-            self._inotify = None
+def watch(campaign_dir: Path) -> DirWatch:
+    """A :class:`~robovast.service.dir_watch.DirWatch` over the campaign's ``_execution/``
+    tree, ``sections/`` included as it appears: what a stream of the campaign log waits on."""
+    return DirWatch(Path(campaign_dir) / EXECUTION_DIR)
 
 
-__all__ = ["LEVEL_RANK", "NOTE", "SETTLE_S", "CampaignLogWatch", "Read", "decode_cursor",
-           "encode_cursor", "level_rank", "phase_filter", "read_rows", "row_rank"]
+__all__ = ["LEVEL_RANK", "NOTE", "SETTLE_S", "Read", "decode_cursor", "encode_cursor",
+           "level_rank", "phase_filter", "read_rows", "row_rank", "watch"]

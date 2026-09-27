@@ -186,8 +186,8 @@ class ImageBuildError(BaseModel):
     registry-qualified ref (see the zero-registry-knowledge invariant).
     """
 
-    #: base-pull | base-image | apt | pip | source-build | push | resource | validate |
-    #: builder-pod
+    #: base-pull | base-image | apt | pip | source-build | build | push | resource |
+    #: builder | builder-pod
     #:
     #: ``base-image`` is distinct from ``base-pull``: the image was fetched fine, it
     #: simply does not contain something the project's own packages depend on.
@@ -240,6 +240,13 @@ class ImageBuildStatus(BaseModel):
     #: looks exactly like one that is slow for no reason. Zero/empty means "not reported".
     context_bytes: int = 0
     cache_ref: str = ""
+
+
+#: The :attr:`ImageBuildStatus.phase` values meaning the image exists: built by this build,
+#: or found already built for the same inputs. Every other terminal phase is a failure. One
+#: definition, so the wait, the launch that depends on the build and the refusal that names
+#: it cannot list it differently.
+IMAGE_BUILT_PHASES: frozenset[str] = frozenset({"succeeded", "cached"})
 
 
 class ExecRequest(BaseModel):
@@ -2451,13 +2458,17 @@ class ServiceError(OSError):
 
     include_traceback = False
 
-    def __init__(self, status: int, detail: str, url: str = "", code: str = ""):
+    def __init__(self, status: int, detail: str, url: str = "", code: str = "",
+                 next_step: str = ""):
         self.status = status
         self.detail = detail
         self.url = url
         #: The refusal's class, from :data:`ERROR_CODE_HEADER`; ``""`` when the service
         #: named none. What a caller branches on, the detail being what it prints.
         self.code = code
+        #: The command that moves the caller forward, from :data:`NEXT_STEP_HEADER`;
+        #: ``""`` when there is none.
+        self.next_step = next_step
         super().__init__(detail)
 
 
@@ -2492,6 +2503,10 @@ class ServiceUnreachable(OSError):
 #: every refusal the service composes, and one shape for all of them is worth more than a
 #: second shape for the handful that carry a code.
 ERROR_CODE_HEADER = "x-robovast-error"
+
+#: Header carrying an :class:`~robovast.common.errors.ActionableError`'s ``next_step``: the
+#: literal command that moves the caller forward. Absent when the refusal has none.
+NEXT_STEP_HEADER = "x-robovast-next-step"
 
 #: No command can be run in a container on this deployment --
 #: :class:`~robovast.common.errors.ExecPathUnavailable` crossing HTTP. Every code is a fact
@@ -3087,13 +3102,13 @@ class RobovastInterface(ABC):
         """Roll this service onto the newest image at its resolved tag.
 
         Returns once the roll has been *asked for* -- **not** once the new pod is serving.
-        With one replica and the default RollingUpdate strategy Kubernetes starts the new
-        pod before stopping the old, so the pod answering this call is still up when it
-        answers; a caller learns the handover happened by watching
-        ``upgrade_info().running_digest`` change, never from this return value.
+        The Deployment's strategy is ``Recreate``: the pod answering this call stops before
+        its replacement starts, so the API is away for a few seconds; a caller learns the
+        handover happened by watching ``upgrade_info().running_digest`` change, never from
+        this return value.
 
-        Refuses while campaigns are live, because the controller driving them runs in the
-        pod being replaced. ``force`` overrides that refusal and nothing else -- in
+        Refuses while a live campaign could not be picked up again by the replacement,
+        because the controller driving it runs in the pod being replaced. ``force`` overrides that refusal and nothing else -- in
         particular it does not make an unsupported deployment supported, nor roll a deployment
         pinned to a fixed version, which ``upgrade_info`` reports as unsupported.
         """
