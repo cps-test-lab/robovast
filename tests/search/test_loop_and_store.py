@@ -720,10 +720,10 @@ def test_an_aborted_search_records_the_batches_it_completed(tmp_path):
     controller, store, _ = _search_controller(cfg, tmp_path)
     real_batch = controller._run_search_batch
 
-    def _die_on_the_third(param_sets, batch_idx, batch_id):
+    def _die_on_the_third(param_sets, batch_idx, batch_id, recorded=None):
         if batch_idx == 2:
             raise RuntimeError("2 scenario job(s) cannot start after 60s")
-        return real_batch(param_sets, batch_idx, batch_id)
+        return real_batch(param_sets, batch_idx, batch_id, recorded)
 
     controller._run_search_batch = _die_on_the_third
     campaign_id = store.create_campaign(name="c", config={}, mode="search", config_dir=".")
@@ -738,6 +738,7 @@ def test_an_aborted_search_records_the_batches_it_completed(tmp_path):
     # it is rounds *completed*, which is two, and it is published from inside the loop
     # rather than returned from it.
     assert conn.execute("SELECT COUNT(*) FROM batch").fetchone()[0] == 3
+    assert conn.execute("SELECT idx FROM batch WHERE complete IS NULL").fetchall() == [(2,)]
     assert batches == 2
     assert kind == "error"
     assert "cannot start" in reason

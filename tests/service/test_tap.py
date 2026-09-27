@@ -461,14 +461,14 @@ def test_the_mcp_tool_collects_the_lines_within_its_own_bound(monkeypatch):
 
 def test_the_mcp_tool_fails_loudly_without_a_service(monkeypatch):
     from robovast.mcp_server import service_access
-    from robovast.mcp_server.plugins import execution
+    from tests.mcp_server.conftest import registered_tools
     monkeypatch.setattr(service_access, "service_client", lambda: None)
-    assert "error" in execution.tap_job("camp-1", "cfga/1")
+    assert "error" in registered_tools()["tap_job"].fn("camp-1", "cfga/1")
 
 
 def test_the_mcp_tool_hands_a_refusal_through_as_the_sentence(monkeypatch):
     from robovast.mcp_server import service_access
-    from robovast.mcp_server.plugins import execution
+    from tests.mcp_server.conftest import registered_tools
 
     class _Refusing:
         def tap_job(self, *a, **k):
@@ -477,7 +477,8 @@ def test_the_mcp_tool_hands_a_refusal_through_as_the_sentence(monkeypatch):
             yield  # pylint: disable=unreachable
 
     monkeypatch.setattr(service_access, "service_client", lambda: _Refusing())
-    assert execution.tap_job("camp-1", "cfga/1")["error"].startswith("no tap for roqsim")
+    tap_job = registered_tools()["tap_job"].fn
+    assert tap_job("camp-1", "cfga/1")["error"].startswith("no tap for roqsim")
 
 
 def test_the_interface_default_refuses_naming_the_implementation():
