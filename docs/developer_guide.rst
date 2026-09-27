@@ -2792,12 +2792,15 @@ codes come from ``py_trees_ros_interfaces`` — plain py_trees ``Status`` values
 **The manifest is the catalogue** (:mod:`robovast_decode.tables`). A table is accumulated
 column-wise and written as ``.cache/tables/<table>/<config>/<run>.parquet``; ``.cache/MANIFEST.json``
 names, per table and run, exactly the files that make up that table, their schema, the source
-they were built from, the decoder version that wrote them, and — for a run with no rows — the
-reason it has none. Files are written first and the manifest is replaced in one ``rename``
-under a lock, so a reader that arrives mid-rebuild sees the old set or the new one, never a
-mixture. A table already built for a run from the same source bytes by the same decoder version
-is left alone; a run that has grown since, a table not yet asked for, or anything another
-decoder version wrote is built again. ``robovast-decode build <campaign_dir>`` and
+they were built from, the decoder version that wrote them, and — for a run with no rows, or
+only part of them — the reason. Files are written first and the manifest is replaced in one
+``rename`` under a lock, so a reader that arrives mid-rebuild sees the old set or the new one,
+never a mixture. A table already built for a run from the same source bytes by the same decoder
+version is left alone; a run that has grown since, a table not yet asked for, or anything another
+decoder version wrote is built again. A recording's source bytes include its definitions
+sidecar, and a query checks a final entry that carries a reason, and the recording report,
+against them once more (:func:`~robovast_decode.build.settled`): the sidecar is written after the
+run's verdict. ``robovast-decode build <campaign_dir>`` and
 ``robovast-decode tables <campaign_dir>`` do the same from a shell, offline.
 
 **The decoder's configuration** is the campaign's ``rosbags_*`` postprocessing entries (frames

@@ -500,9 +500,10 @@ answers with the rows there are and names it as incomplete for that run beside t
 ``robovast-decode build`` prints it as ``PARTIAL`` and exits non-zero.
 
 A later request builds only what is missing: a table not yet asked for, a run whose records have
-grown, or anything a different decoder version wrote. A run that has not finished — no
-``test.xml`` yet, or a recording still open — is looked at again on the next request, so **SQL
-works while a campaign is running** and follows it as it goes.
+grown, a recording whose definitions sidecar came or changed since (it decides what decodes), or
+anything a different decoder version wrote. A run that has not finished — no ``test.xml`` yet, or
+a recording still open — is looked at again on the next request, so **SQL works while a campaign
+is running** and follows it as it goes.
 
 A run being followed *as it records* (:mod:`robovast_decode.live`) is the exception: a session
 reads each new record of the growing bag, flushes the handlers' rows in batches, and writes them

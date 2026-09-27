@@ -57,7 +57,7 @@ import yaml
 
 from . import run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
-from .decode import channel_type, decode_bag, segments, undecodable_tables
+from .decode import SIDECAR_NAME, channel_type, decode_bag, segments, undecodable_tables
 from .derived import DERIVED, INPUTS, JobRun, derive_job
 from .framing import Channel, McapTail, has_footer, summary_channels
 from .handlers import Videos
@@ -225,8 +225,16 @@ def recorded_topics(bag_dir: str) -> Dict[str, str]:
     return topics
 
 
-def _source_size(bag_dir: str) -> int:
-    return sum(os.path.getsize(p) for p in segments(bag_dir))
+def source_size(bag_dir: str) -> int:
+    """What a recording's tables are current against: the bytes of its segments and of its
+    definitions sidecar.
+
+    The sidecar counts because it decides what decodes: one written, or rewritten, after a
+    table was built can define a type the table was built without.
+    """
+    size = sum(os.path.getsize(p) for p in segments(bag_dir))
+    sidecar = os.path.join(bag_dir, SIDECAR_NAME)
+    return size + (os.path.getsize(sidecar) if os.path.isfile(sidecar) else 0)
 
 
 def _complete(run: Run, role: str, bag_dir: str) -> bool:
@@ -286,7 +294,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     """One run's tables from its recordings and its own files; the caller holds its lock."""
     sources = _sources(run)
     manifest = read_manifest(campaign_dir)
-    sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b in sources}
+    sizes = {os.path.relpath(b, campaign_dir): source_size(b) for _, b in sources}
     report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
                                                sum(sizes.values()))
     recording_rows = TableBuffer(RECORDING_TABLE)
@@ -542,6 +550,30 @@ def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
     return sum(entry.get("sources", {}).values()) == size
 
 
+def settled(campaign_dir: str, table: str, entry: Optional[dict]) -> bool:
+    """Whether a reader may take *entry* as it is, without asking for a build.
+
+    It may when this decoder wrote it under this contract and it is final (``complete``), or a
+    live session's whose stamp is fresh. A final entry that carries a reason, and the
+    recording report, are measured against their sources once more: the run's container
+    writes the definitions sidecar after its verdict, so a sidecar can come after the entry
+    was final and decode what it could not.
+    """
+    if not written_here(entry):
+        return False
+    if not entry.get("complete"):
+        return live_owned(entry)
+    if not (entry.get("reason") or table == RECORDING_TABLE):
+        return True
+    for rel, size in entry.get("sources", {}).items():
+        path = os.path.join(campaign_dir, rel)
+        now = (source_size(path) if os.path.isdir(path)
+               else os.path.getsize(path) if os.path.isfile(path) else None)
+        if now != size:
+            return False
+    return True
+
+
 def _entry_current(entry: Optional[dict], sources: dict) -> bool:
     """Whether a derived entry needs no build: the same *sources* by this decoder under this
     contract, or a watcher's whose stamp is fresh."""
@@ -616,4 +648,4 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
            "Run", "SharedJobError", "available_tables", "bag_information", "build",
            "derived_sources", "find_runs", "recorded_topics", "recording_closed",
-           "roqsim_recording", "scenario_recording"]
+           "roqsim_recording", "scenario_recording", "settled", "source_size"]
