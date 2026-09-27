@@ -851,6 +851,7 @@ class CampaignController:
         because :meth:`_run_search` needs it on the path where this does NOT return.
         """
         from robovast.search.compose import distinct_draws
+        from robovast.search.history import RecordedBatch
         from robovast.search.stopping import StopResult, StopSnapshot
         batch_idx = self._batches_done
         result = None
@@ -891,7 +892,11 @@ class CampaignController:
             # measured it or an earlier one did. A recalled cell is a real answer to a
             # real proposal -- it is what that cell measured -- so withholding it would
             # hand back a short generation carrying less than the campaign knows.
-            self.strategy.tell(scored + recalled)
+            # Recorded as rows, which is what a resume replays, and told in the order the
+            # replay tells them (`RecordedBatch.told`).
+            for ev in recalled:
+                self.store.record_recall(batch_id, ev.params.id, ev.params.values)
+            self.strategy.tell(RecordedBatch(evaluations=scored, recalled=recalled).told)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
             self._batches_done = batch_idx
