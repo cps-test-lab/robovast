@@ -749,7 +749,7 @@ rule that survives: **if a wait can outlive a turn, it is not a tool.**
 
 ``next_step`` is how those commands reach the caller: a literal command with the
 ids already filled in, in band with the answer, because a reply carrying only an
-id leaves "and now wait for it" to be remembered — and it was not. **An error may
+id leaves "and now wait for it" to be remembered, which it is not. **An error may
 carry one too.** A refusal is where the next move is least obvious: an agent told
 "the image is not built" moments after building it has nowhere to go, whereas the
 same refusal with ``vast image wait <build-id>`` attached is a next action. Where
@@ -845,7 +845,7 @@ ids apart. The launcher in the web UI has the same field.
 .. note::
 
    ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same
-   **per-job** view the web UI Monitor shows: the current batch's jobs with their
+   **per-job** view the web UI's Campaigns page shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
    log of a single job. A **finished** job is served as readily as a running one: a pod
    that has gone is read from the campaign's own files instead.
@@ -1171,25 +1171,25 @@ phase never transfers the others; each row it returns is rendered the way
 continuation indented, and ``tail``, ``summarize`` and the page window apply to those lines.
 
 ``summarize=True`` is the one to reach for on a stalled run, because **filtering
-cannot diagnose a flood — the flood is the signal.** A campaign whose TF was being
-rejected wholesale matched a severity ``grep`` 18226 times; the returned lines looked
-like ordinary noise and the count that was the actual finding went unread. Summarized,
-it is one line:
+cannot diagnose a flood — the flood is the signal.** A campaign whose TF is rejected
+wholesale can match a severity ``grep`` tens of thousands of times; the returned lines
+look like ordinary noise and the count that is the actual finding goes unread.
+Summarized, it is one line:
 
 .. code-block:: text
 
    get_campaign_log(campaign_id, summarize=True)
    → patterns: [{pattern: "[tf_bridge] TF_OLD_DATA ignoring data from the past for
                             frame base_link at time <n> according to authority <…>",
-                 count: 18226, severity: "warn", example: "<the first raw line>"}]
-     patterns_total: 2, severity_counts: {other: 1, warn: 18226, error: 0}
+                 count: <N>, severity: "warn", example: "<the first raw line>"}]
+     patterns_total: 2, severity_counts: {other: 1, warn: <N>, error: 0}
 
 Each line is normalized before grouping — timestamps, coordinates, ids and hashes
 become ``<n>`` / ``<hex>`` / ``<uuid>`` — so the same message with different numbers
 collapses, while the same text from two different nodes stays two findings.
 ``example`` keeps the group actionable, since the placeholders have eaten the
 specifics. ``patterns_total`` is the true number of distinct patterns even when
-``top`` capped the list, and ``severity_counts`` counts **lines**, not groups: "18226
+``top`` capped the list, and ``severity_counts`` counts **lines**, not groups: "<N>
 warnings" is the finding, "1 distinct warning" is only how it is reported.
 
 Summarizing replaces the text rather than shortening it: the response carries
@@ -1431,11 +1431,10 @@ service's data plane into the pod, exactly as a campaign job's inputs are, so an
 campaign can stage this can stage too — there is no separate size ceiling to run into.
 
 **A running campaign is never a target of this tool.** There is no way from here to a
-job's container or pod, and the argument for that has not changed: a campaign in flight is
-provenance-recorded, reproducible compute, and attaching to it perturbs the thing it exists
-to produce.
+job's container or pod: a campaign in flight is provenance-recorded, reproducible compute,
+and attaching to it perturbs the thing it exists to produce.
 
-What changed is that the perturbation is now *recordable* rather than forbidden. Three tools
+What a live job does allow is a *recorded* perturbation. Three tools
 reach a live job, and the difference between them is who chooses the command and for how
 long it runs:
 

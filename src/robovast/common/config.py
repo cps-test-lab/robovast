@@ -2194,8 +2194,8 @@ class RepetitionsConfig(BaseModel):
     ``execution.runs`` gives every cell the same number of repetitions. That is the
     right default and the wrong one in the same campaign: a cell whose runs all agree
     was decided by the first one, while a cell on a failure boundary is exactly where
-    more samples buy something. Measured on a quadrotor search: 3 of 32 configurations
-    produced a mixed outcome over 5 repetitions, so 145 of 160 runs bought one bit each.
+    more samples buy something. Typically few cells are on a boundary, so most of a
+    fixed count buys one bit per cell.
 
     This is a **policy layer, not a strategy**: it is applied between ``ask()`` and
     composition, so it composes with every strategy instead of being one of them. A
@@ -2237,16 +2237,16 @@ class RepetitionsConfig(BaseModel):
                 f"repetitions max ({self.max}) must be >= min ({self.min})")
         if self.seed_parameter is not None or self.paired:
             # Refused rather than accepted-and-ignored. Pairing needs repetition i of every cell
-            # to draw the same noise, and neither channel available today delivers that:
+            # to draw the same noise, and neither available channel delivers that:
             #
             #   - a simulator override document is written per CONFIG, so every repetition of a
-            #     cell would read one seed and stop varying -- strictly worse than the present
-            #     behaviour, where an unseeded run draws its own;
+            #     cell would read one seed and stop varying -- worse than an unseeded run,
+            #     which draws its own;
             #   - the simulator's own episode counter cannot stand in for it: every run is its
             #     own job and its own simulator process, so each one counts from the first
             #     episode and "episode i" is not "repetition i".
             #
-            # What it needs is a per-run seed on the execution backend. Until that exists, saying
+            # What it needs is a per-run seed on the execution backend. Without one, saying
             # 'paired' would claim a comparison the data cannot support.
             raise ValueError(
                 "repetitions 'paired'/'seed_parameter' need a per-run seed, which no execution "

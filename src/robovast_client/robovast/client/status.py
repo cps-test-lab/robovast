@@ -42,12 +42,11 @@ from pydantic import BaseModel, ConfigDict, Field
 class Phase(StrEnum):
     """The campaign lifecycle vocabulary carried by ``Status.phase``.
 
-    A ``StrEnum`` so members *are* their plain string value: the wire format is
-    unchanged (JSON still sees ``"finished"``), existing string comparisons keep
-    working, and set membership against raw strings does too. Prefer the group
+    A ``StrEnum`` so members *are* their plain string value: JSON sees
+    ``"finished"``, and string comparisons and set membership against raw strings
+    work. Prefer the group
     predicates (:func:`is_terminal` / :func:`is_running`) over re-listing phase
-    names at a call site — that re-listing had drifted into several divergent
-    "terminal" sets across the CLI, service, and MCP plugins.
+    names at a call site, since each re-listing is a copy free to drift.
 
     ``Status.phase`` stays typed ``str`` on purpose (the field is deliberately
     open, so a future ``stage``-like marker slots in without a schema change);
@@ -56,7 +55,7 @@ class Phase(StrEnum):
     # -- live: the campaign is still working ------------------------------
     # Ordered by when they occur: acceptance → pre-flight → image build (if any)
     # → plugin install (if any) → config-variation expansion (batch) → the run loop
-    # → finish → postprocess → share. (``importing`` is the exception: it is where a
+    # → finish → share (if any) → postprocess. (``importing`` is the exception: it is where a
     # campaign that was taken in rather than run *starts*.) ``initializing``, ``building``, ``plugin
     # install`` and ``variation`` precede ``running`` and exist so the pre-run steps
     # are observable rather than a blank "starting".
@@ -83,8 +82,8 @@ class Phase(StrEnum):
     # "live" -- ``vast campaign wait``, the busy guard, the campaign view -- treats an import
     # like any other work in progress without being told about imports.
     IMPORTING = "importing"
-    POSTPROCESSING = "postprocessing"
     SHARING = "sharing"
+    POSTPROCESSING = "postprocessing"
     # -- terminal: the campaign is over, one way or another ---------------
     FINISHED = "finished"
     FAILED = "failed"

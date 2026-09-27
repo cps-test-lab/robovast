@@ -27,6 +27,7 @@ serve.
 
 import logging
 from collections import Counter
+from typing import Optional
 from urllib.parse import urlencode
 
 from fastmcp import FastMCP
@@ -247,7 +248,7 @@ def get_campaign_status(campaign_id: str) -> dict:
 
 
 @lacks(job_name="for one job's log use get_job_log")
-def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
+def get_campaign_log(campaign_id: str, limit: Optional[int] = None, offset: int = 0,
                      grep: str = "", tail: int = 0, min_severity: str = "",
                      summarize: bool = False, top: int = DEFAULT_TOP,
                      phase: str = "", hide_shutdown: bool = True) -> dict:
@@ -264,12 +265,13 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
 
     Args:
         campaign_id: The id from ``start_campaign``.
-        limit: Maximum lines to return. Ignored with ``summarize``.
-        offset: First line to return (for paging the matches).
+        limit: Maximum lines to return (default 200). Refused with ``summarize``.
+        offset: First line to return (for paging the matches). Refused with
+            ``summarize``.
         hide_shutdown: Stop at each run's scenario verdict (past it a run only tears down);
             ``shutdown_dropped`` says what it cut.
         grep: Keep rows whose message or logger matches this regex (case-insensitive).
-        tail: Keep only the last N lines of what survived. Ignored with ``summarize``.
+        tail: Keep only the last N lines of what survived. Refused with ``summarize``.
         min_severity: ``"warn"`` or ``"error"``: a row's own level, else the keyword
             classifier; prefer it to a severity ``grep``.
         summarize: Distinct **patterns with counts** instead of lines; timestamps,
@@ -295,6 +297,17 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     from robovast.service.campaign_log import phase_filter  # noqa: PLC0415
     from robovast_decode.log_summary import SEVERITIES, severity_rank  # noqa: PLC0415
 
+    if summarize:
+        paging = [f"{name}={value}" for name, value in
+                  (("limit", limit), ("offset", offset), ("tail", tail)) if value]
+        if paging:
+            raise ValueError(
+                f"{', '.join(paging)} cannot be combined with summarize=True: a summary "
+                f"returns patterns, not lines, so there is no page to size or window to "
+                f"move. Drop {'them' if len(paging) > 1 else 'it'}, or drop summarize to "
+                f"read lines.")
+    if limit is None:
+        limit = _CAMPAIGN_LOG_PAGE
     # The shared severity vocabulary (``warn``/``error``), so this control means what it
     # means on every log tool; the read takes the level it names.
     min_level = _SEVERITY_LEVEL[SEVERITIES[severity_rank(min_severity)]] \
@@ -365,6 +378,12 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                 client, Routes.campaign_logs_stream(campaign_id))
     return result
 
+
+#: Lines ``get_image_build_log`` keeps when the caller names no ``tail`` and reads lines.
+_BUILD_LOG_TAIL = 200
+
+#: Lines one ``get_campaign_log`` page returns when the caller names no ``limit``.
+_CAMPAIGN_LOG_PAGE = 200
 
 #: The level the campaign log read filters at for each severity a caller may name. The
 #: read ranks a stamped row by its level and an unstamped one by the keyword classifier,
@@ -792,8 +811,9 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
 def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. ``error_detail`` says what to change.
 
-    ``error_detail`` names the ``phase`` (apt / pip / base-image / source-build /
-    base-pull / push / resource / builder-pod), the offending ``entry``, a ``message``,
+    ``error_detail`` names the ``phase`` (base-pull / base-image / apt / pip /
+    source-build / build / push / resource / builder / builder-pod), the offending
+    ``entry``, a ``message``,
     and ``fixable_by`` — ``agent`` (a ``.vast`` edit fixes it) or ``infra`` (no edit
     will). Read this before reaching for the builder log.
 
@@ -806,8 +826,10 @@ def get_image_build_status(build_id: str) -> dict:
                   build on. Adding it to ``python_packages`` papers over that --
                   re-pin ``execution.containers.<name>.image`` instead.
 
-    ``builder-pod`` names no field: the *builder* could not start, so no rebuild helps.
-    Phase ``blocked`` is that, before it is terminal.
+    ``builder`` and ``builder-pod`` name no field: the build daemon was unreachable, or
+    the *builder* could not start, so no ``.vast`` edit helps. Phase ``blocked`` is the
+    latter, before it is terminal. ``build`` is a failure no other phase matched; the log
+    tail says which field.
 
     Args:
         build_id: One id from ``build_experiment_image`` — its ``build_id``, or any value
@@ -823,7 +845,7 @@ def get_image_build_status(build_id: str) -> dict:
 
 
 def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
-                        tail: int = 200, min_severity: str = "",
+                        tail: Optional[int] = None, min_severity: str = "",
                         summarize: bool = False, top: int = DEFAULT_TOP) -> dict:
     """The raw builder log. **Read ``get_image_build_status`` first** — its
     ``error_detail`` usually contains the whole story; come here for more.
@@ -843,7 +865,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
             which indexes the unfiltered stream.
         grep, tail, min_severity, summarize, top: The filters ``get_campaign_log``
             documents; ``grep="x509|denied"`` is the usual registry-failure read.
-            ``tail`` defaults to 200 here, not 0.
+            ``tail`` defaults to 200 here, not 0, and is refused with ``summarize``.
 
     Returns:
         Lines: ``{text, next_offset, eof, lines, matched_lines, lines_total, dropped,
@@ -853,6 +875,8 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
         severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
+    if tail is None:
+        tail = 0 if summarize else _BUILD_LOG_TAIL
     client = service_access.require_service()
     chunk = client.get_image_build_log(build_id, offset)
     view = view_log(chunk.text, grep=grep, tail=tail,
