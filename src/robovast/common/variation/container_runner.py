@@ -191,6 +191,13 @@ class ContainerRunner(Protocol):
     def close(self) -> None:
         """Release any resources (temp dirs, etc.). Idempotent."""
 
+    def image_digest(self) -> str:
+        """The immutable identity of the image :meth:`run` runs in; raise if unreadable.
+
+        What a cache of the container's output is keyed on: the spec's image is a ref, and
+        a ref can name different bytes after a push.
+        """
+
     # Optional, and deliberately not part of the Protocol -- a runner that cannot place a
     # tree at a fixed absolute path simply does not define it, and
     # ``stage_for_container`` refuses rather than running without the mount:
@@ -271,6 +278,28 @@ class LocalContainerRunner:
             terminate=lambda proc: _end_container(name, proc),
             stopped_reason=(f"auxiliary container {self._spec.image} stopped by request "
                             f"while composing"))
+
+    def image_digest(self) -> str:
+        """The local image ``docker run`` would use, pulled first if it is not present.
+
+        Its repo digest where it has one, its image id otherwise (a locally built image).
+        """
+        image = self._spec.image
+        inspect = ["docker", "image", "inspect", "--format",
+                   '{{.Id}} {{join .RepoDigests " "}}', image]
+        result = subprocess.run(inspect, capture_output=True, text=True, check=False)  # nosec B603 B607
+        if result.returncode != 0:
+            pull = subprocess.run(["docker", "pull", image],  # nosec B603 B607
+                                  capture_output=True, text=True, check=False)
+            if pull.returncode != 0:
+                raise RuntimeError(f"cannot read the digest of auxiliary image {image}: "
+                                   f"docker pull failed: {pull.stderr.strip()}")
+            result = subprocess.run(inspect, capture_output=True, text=True, check=False)  # nosec B603 B607
+        ids = result.stdout.split()
+        if result.returncode != 0 or not ids:
+            raise RuntimeError(f"cannot read the digest of auxiliary image {image}: "
+                               f"{result.stderr.strip() or 'docker image inspect printed nothing'}")
+        return ids[1] if len(ids) > 1 else ids[0]
 
     def close(self) -> None:
         if self._tmp and os.path.isdir(self._tmp):

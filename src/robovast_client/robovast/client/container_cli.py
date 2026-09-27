@@ -20,6 +20,7 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
+from robovast.execution.wait_exit import CommonExit
 
 @click.group()
 def container():
@@ -62,6 +63,9 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
     ends it. No ``--timeout``: the limit is derived from what is being run (the
     project's ``execution.timeout`` for a scenario, a fixed cap for a command) and
     reported with the result.
+
+    A command that fails or times out makes this exit as failed. Its own exit status is on
+    the ``[exit ...]`` line and not passed through, where it would read as one of ``vast``'s.
     """
     from robovast.service.interface import ExecRequest
     try:
@@ -91,7 +95,7 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
                    f"{', config ' + result.container.config if result.container.config else ''}"
                    f", hard stop in {result.container.deadline_in_s}s]", err=True)
     if result.timed_out or result.exit_code != 0:
-        sys.exit(result.exit_code or 1)
+        sys.exit(CommonExit.FAILED)
 
 
 @container.command('stop')

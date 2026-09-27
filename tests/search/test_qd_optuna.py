@@ -242,3 +242,72 @@ def test_qd_survives_a_generation_with_no_evaluations_at_all():
     _drive_qd(s, 1, drop={0, 1, 2, 3})
     _drive_qd(s, 1)
     assert s.report().extra["num_elites"] > 0
+
+
+def _qd_with_emitters(per_batch, emitters):
+    return build_strategy(_cfg(
+        "qd", QUAD_SPACE, [{"name": "obj", "direction": "maximize"}], per_batch=per_batch,
+        strategy_parameters={"emitters": emitters, "archive": {"type": "grid",
+            "measures": {"m1": {"low": 0, "high": 1, "bins": 8},
+                         "m2": {"low": 0, "high": 4, "bins": 8}}}}))
+
+
+def test_qd_proposes_exactly_per_batch_across_its_emitters():
+    """Five draws split unevenly across two emitters make a generation of exactly five."""
+    pytest.importorskip("ribs")
+    s = _qd_with_emitters(per_batch=5, emitters=2)
+    rng = random.Random(0)
+    for _ in range(3):
+        ps = s.ask(5)
+        assert len(ps) == 5
+        s.tell([Evaluation(params=p, objectives={"obj": rng.random()},
+                           measures={"m1": rng.random(), "m2": 4 * rng.random()})
+                for p in ps])
+
+
+def test_qd_proposes_no_more_than_asked_for():
+    """A preview caps what it composes at a few draws, and asks for that many."""
+    pytest.importorskip("ribs")
+    assert len(_qd_with_emitters(per_batch=64, emitters=4).ask(8)) == 8
+
+
+def _told(ps, rng):
+    return [Evaluation(params=p, objectives={"obj": rng.random()},
+                       measures={"m1": rng.random(), "m2": 4 * rng.random()}) for p in ps]
+
+
+def test_qd_does_not_report_draws_it_never_proposed_as_missing(caplog):
+    """The rest of a generation beyond ``ask(n)`` was never handed out, so its absence
+    from ``tell`` is not a short batch."""
+    pytest.importorskip("ribs")
+    s = _qd(per_batch=8)
+    with caplog.at_level("WARNING", logger="robovast.search.strategies.qd"):
+        s.tell(_told(s.ask(3), random.Random(0)))
+    assert "came back short" not in caplog.text
+    assert s.report().extra["num_elites"] > 0
+
+
+def test_qd_counts_only_proposed_draws_as_missing(caplog):
+    pytest.importorskip("ribs")
+    s = _qd(per_batch=8)
+    ps = s.ask(4)
+    with caplog.at_level("WARNING", logger="robovast.search.strategies.qd"):
+        s.tell(_told(ps[:3], random.Random(0)))
+    assert "1 of 4 proposed draw(s) produced no evaluation" in caplog.text
+    assert ps[3].id in caplog.text
+
+
+def test_qd_refuses_more_than_a_generation():
+    """One generation is all the emitters draw before a tell, so asking for more fails."""
+    pytest.importorskip("ribs")
+    with pytest.raises(ValueError, match="per_batch"):
+        _qd_with_emitters(per_batch=4, emitters=2).ask(5)
+
+
+def test_qd_refuses_more_emitters_than_draws_per_batch():
+    """An emitter with no share of the batch is refused, not silently dropped."""
+    pytest.importorskip("ribs")
+    with pytest.raises(ValueError, match="emitters"):
+        _qd_with_emitters(per_batch=2, emitters=3)
+    with pytest.raises(ValueError, match="emitters"):
+        _qd_with_emitters(per_batch=2, emitters=0)
