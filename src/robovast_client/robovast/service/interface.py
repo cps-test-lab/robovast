@@ -2207,8 +2207,9 @@ class DataTable(BaseModel):
     #: For a built-per-run table: how many runs it covers, and for how many it is built.
     runs: Optional[int] = None
     built: Optional[int] = None
-    #: Runs whose build failed, keyed by run, with the reason (at most a sample of them).
-    failed: dict = Field(default_factory=dict)
+    #: Runs the table has no rows for, or only the rows from before a topic stopped decoding
+    #: (counted in ``built``), keyed by run, with the reason (at most a sample of them).
+    failed: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
