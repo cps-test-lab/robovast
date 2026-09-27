@@ -214,11 +214,8 @@ def test_a_pull_token_is_never_presented_for_a_push(sessions):
 
 
 def test_a_push_challenge_asks_for_its_whole_scope():
-    """A push challenge's scope carries a comma inside its quotes (``pull,push``).
-
-    Split on every comma, the token endpoint was asked for ``pull`` alone and the push that
-    followed was refused although the credential could push.
-    """
+    """A push challenge's scope carries a comma inside its quotes (``pull,push``), and the
+    token endpoint is asked for all of it: a ``pull`` token would refuse the push."""
     asked = {}
 
     class _Session:
