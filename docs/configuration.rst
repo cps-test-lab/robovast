@@ -20,12 +20,18 @@ A ``.vast`` configuration file has the following top-level structure:
      ...
    plugins:
      - my_plugin==1.2.3
+   configuration_presets:
+     ...
    configuration:
      - name: scenario1
        ...
    execution:
      ...
+   search:                       # optional; see Search
+     ...
    results_processing:
+     ...
+   recording:
      ...
    visualization:
      ...
@@ -1442,8 +1448,8 @@ inside it.
 - ``memory`` (Optional): Memory reservation (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list —
   and, with no ``memory_limit``, the ceiling too
 - ``cpu_limit`` / ``memory_limit`` (Optional): the **ceiling**, when it should differ from the
-  reservation. Omitted — the default — the limit equals the request, which is what every
-  campaign meant before these existed. See *Splitting the reservation from the ceiling* below
+  reservation. Omitted — the default — the limit equals the request. See *Splitting the
+  reservation from the ceiling* below
 - ``gpu`` (Optional): Number of GPUs. Omitted, the container gets none, whatever the
   cluster advertises; declare ``gpu: 1`` on the container that renders (a camera or image
   sensor in the world). Setting it enables the NVIDIA runtime; the GPU must also be
@@ -2046,7 +2052,9 @@ postprocessing.  Each entry is either a plugin name (string) or a dictionary wit
 the plugin name as key and plugin-specific parameters as value.
 
 Publication plugins are executed by ``vast results publish`` and operate on the
-full results directory (parent of campaign directories).
+full results directory (parent of campaign directories). Every entry also takes
+``ask: true``, which asks for confirmation before that plugin runs (``--force`` skips the
+question).
 
 .. code-block:: yaml
 
@@ -2105,10 +2113,16 @@ full results directory (parent of campaign directories).
 
 - ``zenodo``: Upload the files the preceding plugins produced (the zip archives) to a
   Zenodo deposition, together with the dataset metadata from the ``.vast``. The deposition
-  is not submitted or published — the files are uploaded for review. Parameters:
-  ``record_id`` (an existing deposition to add to), ``ask`` (confirm before uploading) and
-  ``sandbox`` (``true`` targets ``sandbox.zenodo.org``). The access token is
-  ``ZENODO_ACCESS_TOKEN`` in the project's ``.env``.
+  is not submitted or published — the files are uploaded for review. Optional parameters:
+
+  - ``record_id``: the draft deposition to add to. Omitted, the id cached in
+    ``.robovast_zenodo_project`` beside the ``.vast`` is used, or a new deposition is created
+    after a prompt and its id cached there.
+  - ``sandbox``: ``true`` targets ``sandbox.zenodo.org`` instead of ``zenodo.org``.
+  - ``overwrite``: a file of the same name already in the deposition, as for ``zip``.
+
+  The access token, with the ``deposit:write`` scope, is the ``ZENODO_ACCESS_TOKEN``
+  environment variable, which ``vast`` reads from the ``.env`` of the directory it runs in.
 
 Multiple ``zip`` entries may be defined to produce different archives from the
 same campaign:
