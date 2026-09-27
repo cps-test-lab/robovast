@@ -162,7 +162,11 @@ class QDStrategy(SearchStrategy):
         # The emitters' batches sum to exactly per_batch, so a generation spends one batch
         # of the budget, and no emitter gets an empty batch, so there are at most per_batch
         # of them.
-        n_emitters = max(1, min(params.emitters, cfg.per_batch))
+        n_emitters = params.emitters
+        if not 1 <= n_emitters <= cfg.per_batch:
+            raise ValueError(
+                f"qd splits each batch of {cfg.per_batch} draw(s) between its emitters, so "
+                f"'emitters' must be between 1 and per_batch; got {n_emitters}.")
         base, extra = divmod(cfg.per_batch, n_emitters)
         seed = cfg.seed
         emitters = [
@@ -181,13 +185,20 @@ class QDStrategy(SearchStrategy):
         self._direction = self.single_objective.direction
 
     def ask(self, n: int) -> list[ParamSet]:
-        """At most *n* proposals: a generation, or the first *n* of one.
+        """*n* proposals: a generation, or the first *n* of one.
 
         The emitters draw a whole generation (``per_batch``) at once, and pyribs offers no
         way to ask for fewer. A caller wanting less -- a preview capped at a few draws -- gets
         the first *n*; the rest stay in the outstanding generation, so a ``tell`` of what was
-        proposed closes it through :meth:`_tell_incomplete` rather than mismatching it.
+        proposed closes it through :meth:`_tell_incomplete` rather than mismatching it. More
+        than a generation is refused, since one generation is all the emitters can draw
+        before they are told.
         """
+        if n > self.cfg.per_batch:
+            raise ValueError(
+                f"qd asked for {n} proposals, but one generation is per_batch = "
+                f"{self.cfg.per_batch} draw(s) and the emitters cannot draw another before "
+                f"this one is told.")
         solutions = self.scheduler.ask()
         self._ask = []
         proposals = []

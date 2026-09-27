@@ -269,3 +269,19 @@ def test_qd_proposes_no_more_than_asked_for():
     """A preview caps what it composes at a few draws, and asks for that many."""
     pytest.importorskip("ribs")
     assert len(_qd_with_emitters(per_batch=64, emitters=4).ask(8)) == 8
+
+
+def test_qd_refuses_more_than_a_generation():
+    """One generation is all the emitters draw before a tell, so asking for more fails."""
+    pytest.importorskip("ribs")
+    with pytest.raises(ValueError, match="per_batch"):
+        _qd_with_emitters(per_batch=4, emitters=2).ask(5)
+
+
+def test_qd_refuses_more_emitters_than_draws_per_batch():
+    """An emitter with no share of the batch is refused, not silently dropped."""
+    pytest.importorskip("ribs")
+    with pytest.raises(ValueError, match="emitters"):
+        _qd_with_emitters(per_batch=2, emitters=3)
+    with pytest.raises(ValueError, match="emitters"):
+        _qd_with_emitters(per_batch=2, emitters=0)
