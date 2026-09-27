@@ -24,9 +24,9 @@ import yaml
 
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-                                     STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
-                                     missing_for_import, missing_for_import_in,
-                                     read_campaign_id)
+                                     STAGE_NEWER, STAGE_OK, blocking_summary,
+                                     claim_campaign_dir, ingest_campaign, missing_for_import,
+                                     missing_for_import_in, read_campaign_id)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -200,6 +200,18 @@ def test_a_missing_execution_record_degrades_rather_than_failing(tmp_path, campa
     report = ingest_campaign(campaign)
     assert report["stages"]["layout"]["verdict"] == STAGE_DEGRADED
     assert report["ok"] is True, "degraded must not block: the campaign is still usable"
+
+
+def test_the_importers_own_log_is_not_an_execution_record(tmp_path, campaign):
+    """An import claims ``_execution/`` and opens its log there before extracting, so an
+    archive without ``_execution/`` arrives with one holding only the importer's files."""
+    shutil.rmtree(campaign / "_execution")
+    target = claim_campaign_dir(tmp_path / "results", campaign.name)
+    (target / "_execution" / "import.log").write_text("importing\n", encoding="utf-8")
+    shutil.copytree(campaign, target, dirs_exist_ok=True)
+    report = ingest_campaign(target)
+    assert report["stages"]["layout"]["verdict"] == STAGE_DEGRADED
+    assert "_execution" in report["stages"]["layout"]["detail"]
 
 
 def test_a_store_indexing_no_runs_is_degraded_not_ok(campaign):

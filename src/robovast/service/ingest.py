@@ -356,13 +356,13 @@ def _check_layout(campaign_dir: Path) -> dict:
 
     if not campaign_dir.is_dir():
         return _stage(STAGE_FAILED, f"{campaign_dir} is not a directory")
-    # The layout stamp is the importer's own record once the ladder has run, so an
-    # ``_execution/`` holding nothing else is an execution record the archive did not have.
-    stamp = Path(ARCHIVE_STAMP)
-    missing = [name for name in ("_config", "_execution")
-               if not (campaign_dir / name).is_dir()
-               or (name == stamp.parent.name
-                   and {e.name for e in (campaign_dir / name).iterdir()} <= {stamp.name})]
+    missing = [name for name in ("_config", "_execution") if not (campaign_dir / name).is_dir()]
+    # The importer claims ``_execution/`` for its log and writes the stamp and the report
+    # there, so a directory holding only those is an execution record the archive lacked.
+    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json"}
+    if ("_execution" not in missing
+            and {e.name for e in (campaign_dir / "_execution").iterdir()} <= importer_records):
+        missing.append("_execution")
     if "_config" in missing:
         return _stage(STAGE_FAILED,
                       "no _config/ directory, so this is not a campaign this deployment can "
