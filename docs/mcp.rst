@@ -455,6 +455,12 @@ work, and still catches an exception it turns into a different answer (a binary 
 as text is answered with the URL that serves its bytes). The call log counts a call that
 answered with the error document as failed.
 
+**A failed read is not an empty campaign.** A tool that computes over a campaign's data --
+``get_campaign_summary``, ``get_camera_frame`` -- answers a lookup that failed (no such
+campaign, no service, a transport error) with that failure. Only data the campaign does not
+have reads as absent: a campaign with no runs is "no run data", a run with no ``videos`` row
+"registered no video", and a table or column a store predates is left out of the answer.
+
 
 .. _mcp-analysis:
 

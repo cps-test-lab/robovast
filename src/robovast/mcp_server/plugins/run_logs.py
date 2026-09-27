@@ -375,8 +375,8 @@ def search_run_logs(
             lines.extend(rows)
             if summarize and len(rows) >= scan:
                 scan_capped.append(cid)
-            counted = data_access.query(cid, _count_sql(scoped), 1)
-            total_rows = (counted.get("rows") or [{}])[0].get("n")
+            counted = data_access.rows(cid, _count_sql(scoped), 1)
+            total_rows = (counted or [{}])[0].get("n")
             lines_total += int(total_rows) if total_rows is not None else len(rows)
 
     out: dict = {"campaigns": searched, "campaigns_skipped": skipped}

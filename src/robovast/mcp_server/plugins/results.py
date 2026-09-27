@@ -43,6 +43,7 @@ from fastmcp.utilities.types import Image
 from robovast.client.campaign_report import campaign_listing
 from robovast.mcp_server import data_access, run_artifacts, service_access
 from robovast.mcp_server.lacks import lacks
+from robovast.results_processing.data_query import DataQueryError
 
 logger = logging.getLogger(__name__)
 
@@ -235,14 +236,13 @@ def get_campaign_summary(campaign_id: str) -> dict:
 
     # Where the campaign came from -- the same kind of question as the block above, asked of
     # the same row, but read SEPARATELY on purpose: these columns arrived in store schema 7,
-    # and `rows()` turns any error (including "no such column" on an older or downloaded
-    # campaign) into []. Folded into the query above, one old campaign would silently lose
-    # its robovast_version and image as well. Two reads fail independently, so an old
+    # and a store that predates them rejects the query. Folded into the query above, one
+    # old campaign would lose its robovast_version and image as well; read apart, an old
     # campaign loses only what it genuinely does not have.
     #
     # Deliberately NOT added to list_campaigns: that listing is for triage, already drops
     # created_by and mode, and a `running_only` walk renders hundreds of entries.
-    origin = data_access.rows(campaign_id, """
+    origin = _unless_unrecorded(campaign_id, """
         SELECT origin_kind, origin_workspace_id, origin_workspace_name,
                origin_config_path, origin_from_campaign
         FROM campaign.campaign LIMIT 1
@@ -256,7 +256,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
     # re-run, so an empty step list says the frozen config was read exactly as written, where
     # an absent key says nothing recorded it -- and a re-run that read a different config
     # version than the campaign it reproduces is not repeating the same experiment.
-    migration = data_access.rows(campaign_id, """
+    migration = _unless_unrecorded(campaign_id, """
         SELECT origin_config_version_from, origin_config_migration_steps
         FROM campaign.campaign LIMIT 1
     """)
@@ -272,6 +272,15 @@ def get_campaign_summary(campaign_id: str) -> dict:
     # surface -- it answers "which robovast, which image, which backend" three lines up.
     result.update(_retrigger_view(campaign_id))
     return result
+
+
+def _unless_unrecorded(campaign_id: str, sql: str, max_rows: int = 5000) -> list[dict]:
+    """:func:`~robovast.mcp_server.data_access.rows`, or ``[]`` when the campaign's store
+    has no table or column the query names. A lookup that failed still raises."""
+    try:
+        return data_access.rows(campaign_id, sql, max_rows=max_rows)
+    except DataQueryError:
+        return []
 
 
 def _retrigger_view(campaign_id: str) -> dict:
@@ -589,9 +598,9 @@ def _video_row(campaign_id: str, config_name: str, run_id: int, topic: Optional[
     sql = (f"SELECT topic, file, t_start, t_end, fps, frames FROM {_VIDEOS_TABLE} "
            f"WHERE {scope}" + (f" AND topic = {_lit(topic)}" if topic else "")
            + " ORDER BY topic")
-    rows = data_access.rows(campaign_id, sql, max_rows=50)
+    rows = _unless_unrecorded(campaign_id, sql, max_rows=50)
     if not rows:
-        known = data_access.rows(
+        known = _unless_unrecorded(
             campaign_id,
             f"SELECT DISTINCT topic FROM {_VIDEOS_TABLE} "
             f"WHERE config_name = {_lit(config_name)} AND run_id = {_lit(run_id)}",
@@ -627,7 +636,7 @@ def _image_topics(campaign_id: str, config_name: str, run_id: int) -> list:
     """The image topics the run recorded, from its ``_recording`` report; ``[]`` when the
     report is not built or names none."""
     types = ", ".join(_lit(t) for t in _IMAGE_TYPES)
-    rows = data_access.rows(
+    rows = _unless_unrecorded(
         campaign_id,
         f"SELECT DISTINCT topic FROM _recording WHERE config_name = {_lit(config_name)} "
         f"AND run_id = {_lit(run_id)} AND type IN ({types}) ORDER BY topic", max_rows=50)
@@ -815,20 +824,16 @@ def _container_failures(campaign_id: str) -> list:
     """One entry per container that died and was restarted, newest first.
 
     Read separately from the run rollup because it must answer on a campaign that has NO
-    run rows -- one that died mid-batch never recorded any. Best-effort: a store that
-    predates the table simply has nothing to say, and a summary must not fail because its
-    post-mortem section could not be built.
+    run rows -- one that died mid-batch never recorded any. A store that predates the table
+    has nothing to say.
     """
-    try:
-        rows = data_access.rows(campaign_id, """
-            SELECT detected_at, job_name, node_label, container, role, reason, exit_code,
-                   signal_name, memory_limit, cpu_limit, log_status, runs_json
-            FROM campaign.container_failure ORDER BY detected_at DESC
-        """)
-    except Exception:  # noqa: BLE001 - no table, no store, nothing to report
-        return []
+    rows = _unless_unrecorded(campaign_id, """
+        SELECT detected_at, job_name, node_label, container, role, reason, exit_code,
+               signal_name, memory_limit, cpu_limit, log_status, runs_json
+        FROM campaign.container_failure ORDER BY detected_at DESC
+    """)
     out = []
-    for row in rows or ():
+    for row in rows:
         entry = {k: row.get(k) for k in
                  ("detected_at", "job_name", "node_label", "container", "role", "reason",
                   "exit_code", "signal_name", "log_status")}
