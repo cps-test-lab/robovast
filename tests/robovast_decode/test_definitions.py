@@ -5,6 +5,7 @@
 import json
 
 from robovast_decode.definitions import SIDECAR_NAME, TypeCatalog
+from robovast_decode.framing import Schema
 
 
 def test_a_standard_type_is_filled_in_from_the_distro_when_first_needed():
@@ -19,6 +20,15 @@ def test_the_recordings_own_definition_wins_over_the_distros():
     assert catalog.add_definition("std_msgs/msg/Bool", "ros2msg", "bool data\nint32 revision")
     assert catalog.ensure("std_msgs/msg/Bool")
     assert [name for name, _ in catalog.fields("std_msgs/msg/Bool")] == ["data", "revision"]
+
+
+def test_a_schema_record_is_read_only_in_the_encodings_rosbag2_writes():
+    catalog = TypeCatalog()
+    assert catalog.add_schema(Schema(1, "std_msgs/msg/Bool", "ros2msg", b"bool data\n"))
+    assert catalog.knows("std_msgs/msg/Bool")
+    assert not catalog.add_schema(Schema(2, "my_pkg/msg/Empty", "ros2msg", b""))
+    assert not catalog.add_schema(Schema(3, "my_pkg/msg/Doc", "jsonschema", b"{}"))
+    assert not catalog.knows("my_pkg/msg/Doc")
 
 
 def test_an_empty_recorded_definition_leaves_the_type_to_the_next_source(tmp_path):

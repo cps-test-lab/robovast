@@ -111,7 +111,9 @@ def load_health_checks(declared=None, config_dir=None) -> dict:
     *declared* is ``results_processing.health_checks`` from the campaign's ``.vast``. A name
     resolves against the installed :data:`HEALTH_GROUP` entry points; a local
     ``./path.py:Class`` ref is loaded from beside the config, which is how a system under
-    test ships a check for itself without packaging one.
+    test ships a check for itself without packaging one. An entry written as a one-key mapping
+    passes its value to the check's class as keyword arguments; a check that is a function
+    takes none, and a parameter given to one is refused rather than dropped.
 
     **Why not run every installed check automatically.** The argument for it is real: a check
     only reads tables, so the campaigns most in need of grading -- the ones nobody thought
@@ -135,10 +137,11 @@ def load_health_checks(declared=None, config_dir=None) -> dict:
 
     checks = {}
     for ref in declared or []:
-        name = ref if isinstance(ref, str) else next(iter(ref))
+        name, params = (ref, None) if isinstance(ref, str) else next(iter(ref.items()))
+        params = params or {}
         try:
             if is_file_ref(name):
-                obj = load_ref(name, config_dir)
+                obj = load_ref(name, HEALTH_GROUP, config_dir)
             elif name in installed:
                 obj = installed[name].load()
             else:
@@ -149,7 +152,13 @@ def load_health_checks(declared=None, config_dir=None) -> dict:
                                "reference; skipping. Installed: %s",
                                name, ", ".join(sorted(installed)) or "none")
                 continue
-            checks[name] = obj() if inspect.isclass(obj) else obj
+            if not inspect.isclass(obj):
+                if params:
+                    raise TypeError(f"it is a function, which takes no parameters, but "
+                                    f"{sorted(params)} were given")
+                checks[name] = obj
+            else:
+                checks[name] = obj(**params)
         except Exception as exc:  # noqa: BLE001 - one bad plugin must not stop the rest
             logger.warning("health check %r could not be loaded: %s", name, exc)
     return checks
