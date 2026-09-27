@@ -101,8 +101,9 @@ ROS packages built from source
 ``system_packages`` covers what apt has and ``python_packages`` covers what pip has. Some ROS
 packages are in neither: a package with a ``source:`` entry and no ``release:`` block in
 ``ros/rosdistro`` has no Debian on **any** distro, and is not on PyPI either. ``px4_msgs`` is
-one; vendor driver and message packages routinely are. Before this key the only way in was to
-bake such a package into a shared family image, which makes every unrelated campaign pay for it.
+one; vendor driver and message packages routinely are. Without this key the only way in would
+be to bake such a package into a shared family image, which makes every unrelated campaign pay
+for it.
 
 ``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref and
 colcon-built into the container's ``/ws`` overlay.
@@ -152,7 +153,7 @@ repository is recorded in the image's build manifest (``vcs.txt``, see
 :ref:`what an image records <image-records>`), which for a source-built package is the only
 statement anywhere of what code the overlay holds. The overlay is ``/ws``, the workspace the
 framework image already builds into and the entrypoint already sources, so the packages are on
-the environment of every process a run starts, by the mechanism that was already there.
+the environment of every process a run starts, with no mechanism of their own.
 
 A build that clones nothing, or that ends up selecting no packages, fails the image build with a
 message naming the repository, rather than producing an image that quietly lacks them. The clone
@@ -263,7 +264,7 @@ by saying so:
    make release-images PROJECT=docker.io/<ns> \
         UBUNTU_MIRROR=https://<mirror>/ubuntu UBUNTU_SNAPSHOT=none
 
-``UBUNTU_SNAPSHOT=none`` drops the dated path, installs whatever that archive serves today, and
+``UBUNTU_SNAPSHOT=none`` drops the dated path, installs whatever that archive serves at build time, and
 labels the images ``org.robovast.ubuntu-snapshot=none``. That label is the point: a campaign
 built on such an image records that it cannot be rebuilt to the same package versions, and
 ``check-recipe`` and ``rebuild_from_recipe`` say so rather than reporting a pruned snapshot.
@@ -432,7 +433,7 @@ is what an experiment depends on.
 
 Two things it needs that are easy to miss. The **Dockerfile is an input**, and the recipe records
 the commit it came from rather than the file, so the rebuild checks that revision out first and
-refuses if it cannot; building today's Dockerfile with an old image's pins tests a combination
+refuses if it cannot; building the current Dockerfile with an old image's pins tests a combination
 that never existed. And the recipe and the lock must come from the **same** image — a tag means
 different bytes locally and remotely the moment the registry moves ahead, so a real comparison
 insists on one image and only ``--plan-only`` may ask the registry.
