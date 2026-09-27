@@ -212,6 +212,11 @@ checkout looks entirely normal in the meantime. The failure mode depends on whic
   hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
   reconciles Secrets from the environment — concludes the registry and git credentials
   are gone and deletes both.
+* ``robovast.doctor_checks`` — the checks ``vast doctor`` runs beyond the client's own
+  (Docker from the core; the Kubernetes tools, cluster and deployment from
+  ``robovast-cluster``). Each entry takes the command's ``DoctorOptions`` and returns a list
+  of ``Check`` (both in ``robovast.client.doctor``). A plugin that fails, and a provider that
+  is installed but registered nothing, are each reported as a failed check naming it.
 
 The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block, reinstall
 before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
@@ -552,8 +557,8 @@ The referenced module travels with the campaign: it is archived into
 from that snapshot rather than replaying recorded configurations — can resolve it, and it
 is content-hashed into the campaign's ``config_identifier``, because the source
 that decides which configurations exist is part of what the experiment is. Editing it
-therefore gives the campaign a new identity, exactly as editing a packaged variation's
-module does.
+therefore gives the campaign a new identity. A packaged variation counts by its name, so a
+new release of its package leaves the identity as it was.
 
 .. important::
 
@@ -578,6 +583,14 @@ line the variation is written on and the config block that ran it
 code. That text is the same on the CLI, in the MCP tools (``validate_project``,
 ``preview_configurations``) and in the web UI's config editor, so the line to fix is in
 front of whoever is authoring the plugin.
+
+**What the composition cache sees.** A composition is cached under its ``.vast``, the files the
+``.vast`` names and the source of its variations. A file your plugin reads because another file
+names it — the image a map YAML points at — is not among them: return its absolute path from
+``get_read_files()`` and a cached composition is not reused once it changes, and the
+``config_identifier`` of each configuration it composed covers its content. The helper image a
+plugin declares with ``get_required_container`` is covered without this: the entry records the
+digest it ran, and a hit is served only while the image still resolves to it.
 
 .. note::
 
@@ -711,9 +724,9 @@ front of whoever is authoring the plugin.
 
    :mod:`robovast.common.container_runner_proxy` closes that: the parent serves its own
    live factory on a Unix socket beside the job file, and the worker installs a factory
-   whose runners forward ``run`` / ``close`` / ``expose`` back across it. The runner —
-   and with it the Kubernetes client, the storage client and the credentials both
-   authenticate with — stays in the parent; only the four calls of the
+   whose runners forward ``run`` / ``image_digest`` / ``close`` / ``expose`` back across
+   it. The runner — and with it the Kubernetes client, the storage client and the
+   credentials both authenticate with — stays in the parent; only the calls of the
    :class:`~robovast.common.variation.container_runner.ContainerRunner` contract cross,
    plus ``workspace``, which is a path both sides can already see. Command output is
    streamed frame by frame, so a plugin's progress still reaches the campaign log while
@@ -1062,7 +1075,8 @@ and a half-written artifact can never be mistaken for a finished one.
 
 **Staleness.** Declare what was read by calling ``write_manifest(out_dir, paths)``, which
 writes ``.generated.json`` into the output directory; the next composition hashes those paths
-and skips the generator when nothing moved. Report the *real* set — for anything compiled from
+and skips the generator when nothing moved, and when the image of the container it declares
+still resolves to the same digest. Report the *real* set — for anything compiled from
 a description that can reference others, that includes the transitive ones. A generator that
 reports nothing is never cached, and a cached result is honored only while its outputs are
 still on disk unchanged: staleness fails towards doing the work, never towards serving a stale
@@ -1481,6 +1495,10 @@ Then register the class as an entry point in ``pyproject.toml``:
 
 The plugin is picked up automatically the next time the server starts.
 
+A tool need not catch what it cannot answer: whatever it raises reaches the caller as the
+one error document (:ref:`mcp-errors`). Catch only an exception the tool turns into a
+different answer.
+
 A call the tool rejects — an unknown or missing argument — is answered with the arguments
 the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
 declare why with :func:`robovast.mcp_server.lacks.lacks`, and the reason is added to that
@@ -1598,7 +1616,10 @@ responsibility:
            )
 
 ``objectives`` and ``measures`` are named dicts, so single- and multi-objective
-use the same shape. The framework records how many runs backed each result.
+use the same shape. The framework records how many runs backed each result. Every
+declared objective must be a finite number: a NaN, an infinity or a non-number is refused
+when the result is read, naming the extractor and the configuration, because no strategy
+can compare it.
 
 Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
 or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:
@@ -1661,11 +1682,18 @@ Schema
   reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
-  batch-mode campaign.
+  batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
+  ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
+  written before schema 14). ``complete`` is 1 once every unit of the batch is recorded;
+  NULL on a batch still running or interrupted, whose units are not what it ended with.
+  For a batch written before schema 15 the migration sets it where the record decides it
+  (:doc:`search`, "Surviving a service restart").
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
-  of the unit's ``run`` rows, kept for convenience.
+  of the unit's ``run`` rows, kept for convenience. A search cell re-proposed after an
+  earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
+  that measured it, with no outcome of its own.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
   ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
@@ -1673,6 +1701,13 @@ Schema
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
+
+These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads the
+complete batches back into the ``ask``/``tell`` sequence a resumed strategy is re-driven
+through (:doc:`search`, "Surviving a service restart"), and the live loop builds what it
+tells from the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
+``search.history.unfinished_batch`` reads an incomplete last batch, which the loop's first
+round finishes.
 
 .. rubric:: Two definitions of the schema, on purpose
 
@@ -1750,15 +1785,49 @@ Taking a campaign in
 :func:`~robovast.service.ingest.claim_campaign_dir` and
 :func:`~robovast.service.ingest.extract_archive` unpack an archive into a results root, as
 separate steps so the importer can open the campaign's ``import.log`` once the directory is
-claimed; :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
-**per stage** (``layout``, ``config``, ``completeness``, ``campaign_store``, ``tables``), since
-a campaign archive carries two version surfaces of its own (the ``.vast``'s and
-``campaign.db``'s) which can independently be older, newer, absent or corrupt. Neither
-re-implements a migration -- the config ladder is applied in memory and the store migrates on
-open, so this module observes and reports. The ``tables`` stage loads nothing: an archive
-carries the campaign's records and never ``.cache/``, and its tables are built from those
-records the first time something names them. The stage only says whether the records give any
-table at all.
+claimed. The extraction confines every member to the campaign's own directory: an archive
+is untrusted input, and a member that resolves to a sibling campaign -- through ``..``, a
+symlink or a hard link -- fails the import naming the member rather than landing there.
+:func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
+**per stage** (``archive``, ``layout``, ``config``, ``completeness``, ``environment``,
+``campaign_store``, ``tables``), since a campaign archive carries three version surfaces of its
+own which can independently be older, newer, absent or corrupt: its **layout**, the ``.vast``'s
+version and ``campaign.db``'s schema. This module re-implements none of their ladders -- it
+runs the layout ladder, the config ladder is applied in memory and the store migrates on open
+-- and reports what each did. The ``environment`` stage names what the
+configuration needs that this deployment lacks -- variation types, postprocessing commands,
+metadata processors and health checks not installed, ``./file.py:Class`` plugins not in the
+archive, ``plugins:`` packages not installed -- and is degraded, never blocking: the
+campaign lists without them, and only postprocessing and a re-run need them. The ``tables``
+stage loads nothing: an archive carries the campaign's records and never ``.cache/``, and its
+tables are built from those records the first time something names them. The stage only says
+whether the records give any table at all.
+
+.. rubric:: The archive layout
+
+Everything in a campaign tree that carries no number of its own -- where its records sit, and
+the formats of ``_execution/outcome.json``, ``launch.yaml``, ``execution.yaml`` and the other
+records -- is versioned by one number, the **archive layout**
+(:mod:`robovast.common.migrations.archive`). It is the single source of truth for those
+formats: ``outcome.json`` carries no schema field of its own, because a field on ``Status``
+would number one record and leave the others beside it unnumbered, and a record's format
+changes by moving the layout with a step that rewrites it.
+
+Both archive streams (:mod:`robovast.execution.campaign_archive`: the download and the
+upload-to-share, on the service and on the cluster) add ``_execution/archive.json`` as they
+write -- the layout, the robovast that wrote it, and the numbers of the surfaces that carry
+their own -- and never copy a stamp already in the tree. The ``archive`` stage runs first,
+because every other stage reads records whose paths and formats the layout decides:
+
+* **no stamp** is layout 1, the first layout;
+* **older** runs the steps in order over the extracted tree, then rewrites the stamp to the
+  layout the tree is now at, with ``layout_from``;
+* **newer** is ``newer``, not blocking, naming the layout and the robovast that wrote it;
+* a stamp that states no layout, or a step that fails, **blocks**.
+
+A step is ``migrate(campaign_dir) -> None`` and rewrites the tree in place; like a config step
+it may not import the model its record is read with now. Layout 1 is the only layout so far,
+so the ladder has no steps; ``src/robovast/common/migrations/README.md`` says how to add one.
 
 Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
 reachable service), ``POST /campaigns/import`` behind the web UI's upload button, and the
@@ -2728,12 +2797,15 @@ codes come from ``py_trees_ros_interfaces`` — plain py_trees ``Status`` values
 **The manifest is the catalogue** (:mod:`robovast_decode.tables`). A table is accumulated
 column-wise and written as ``.cache/tables/<table>/<config>/<run>.parquet``; ``.cache/MANIFEST.json``
 names, per table and run, exactly the files that make up that table, their schema, the source
-they were built from, the decoder version that wrote them, and — for a run with no rows — the
-reason it has none. Files are written first and the manifest is replaced in one ``rename``
-under a lock, so a reader that arrives mid-rebuild sees the old set or the new one, never a
-mixture. A table already built for a run from the same source bytes by the same decoder version
-is left alone; a run that has grown since, a table not yet asked for, or anything another
-decoder version wrote is built again. ``robovast-decode build <campaign_dir>`` and
+they were built from, the decoder version that wrote them, and — for a run with no rows, or
+only part of them — the reason. Files are written first and the manifest is replaced in one
+``rename`` under a lock, so a reader that arrives mid-rebuild sees the old set or the new one,
+never a mixture. A table already built for a run from the same source bytes by the same decoder
+version is left alone; a run that has grown since, a table not yet asked for, or anything another
+decoder version wrote is built again. A recording's source bytes include its definitions
+sidecar, and a query checks a final entry that carries a reason, and the recording report,
+against them once more (:func:`~robovast_decode.build.settled`): the sidecar is written after the
+run's verdict. ``robovast-decode build <campaign_dir>`` and
 ``robovast-decode tables <campaign_dir>`` do the same from a shell, offline.
 
 **The decoder's configuration** is the campaign's ``rosbags_*`` postprocessing entries (frames

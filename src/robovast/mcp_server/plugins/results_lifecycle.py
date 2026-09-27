@@ -48,11 +48,8 @@ def get_postprocessing(campaign_id: str) -> dict:
     immutable ``_config/`` snapshot is never changed; edits are versioned
     overrides. Pair with :func:`update_postprocessing` + :func:`run_postprocessing`.
     """
-    try:
-        return service_access.require_service() \
-            .get_postprocessing(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service() \
+        .get_postprocessing(campaign_id).model_dump()
 
 
 def update_postprocessing(campaign_id: str, entries: list) -> dict:
@@ -64,12 +61,9 @@ def update_postprocessing(campaign_id: str, entries: list) -> dict:
     the ``_config/`` snapshot is untouched. Call :func:`run_postprocessing` to apply.
     """
     from robovast.service.interface import UpdatePostprocessingRequest
-    try:
-        return service_access.require_service() \
-            .update_postprocessing(UpdatePostprocessingRequest(
-                campaign_id=campaign_id, entries=entries)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service() \
+        .update_postprocessing(UpdatePostprocessingRequest(
+            campaign_id=campaign_id, entries=entries)).model_dump()
 
 
 def run_postprocessing(campaign_id: str, force: bool = False,
@@ -91,13 +85,10 @@ def run_postprocessing(campaign_id: str, force: bool = False,
             wrote as the runs went, built again from the records.
     """
     from robovast.service.interface import RunPostprocessingRequest
-    try:
-        return service_access.require_service() \
-            .run_postprocessing(RunPostprocessingRequest(
-                campaign_id=campaign_id, force=force, replay=replay,
-                skip=skip or [])).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service() \
+        .run_postprocessing(RunPostprocessingRequest(
+            campaign_id=campaign_id, force=force, replay=replay,
+            skip=skip or [])).model_dump()
 
 
 def build_campaign_tables(campaign_id: str, tables: list | None = None) -> dict:
@@ -113,12 +104,9 @@ def build_campaign_tables(campaign_id: str, tables: list | None = None) -> dict:
         tables: Table names to build; every table its records can give when omitted.
     """
     from robovast.service.interface import BuildCampaignTablesRequest
-    try:
-        return service_access.require_service().build_campaign_tables(
-            BuildCampaignTablesRequest(campaign_id=campaign_id,
-                                       tables=list(tables or []))).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service().build_campaign_tables(
+        BuildCampaignTablesRequest(campaign_id=campaign_id,
+                                   tables=list(tables or []))).model_dump()
 
 
 def clear_campaign_tables(campaign_id: str) -> dict:
@@ -127,10 +115,7 @@ def clear_campaign_tables(campaign_id: str) -> dict:
     Loses nothing but the time to build again. Refused while the campaign runs or its
     tables are being built. Returns ``{campaign_id, freed_bytes}``.
     """
-    try:
-        return service_access.require_service().clear_campaign_tables(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service().clear_campaign_tables(campaign_id).model_dump()
 
 
 def run_share(campaign_id: str) -> dict:
@@ -148,11 +133,8 @@ def run_share(campaign_id: str) -> dict:
         campaign_id: The finished campaign to (re)upload.
     """
     from robovast.service.interface import RunShareRequest
-    try:
-        return service_access.require_service() \
-            .run_share(RunShareRequest(campaign_id=campaign_id)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service() \
+        .run_share(RunShareRequest(campaign_id=campaign_id)).model_dump()
 
 
 def delete_campaign(campaign_id: str | list[str]) -> dict:
@@ -177,11 +159,8 @@ def delete_campaign(campaign_id: str | list[str]) -> dict:
     ids = [campaign_id] if isinstance(campaign_id, str) else list(campaign_id)
     if not ids or not all(ids):
         return {"error": "campaign_id is required to delete a campaign."}
-    try:
-        res = client.delete_campaigns(DeleteCampaignsRequest(campaign_ids=ids))
-        return res.model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    res = client.delete_campaigns(DeleteCampaignsRequest(campaign_ids=ids))
+    return res.model_dump()
 
 
 def import_campaign(archive_path: str = "", share_archive: str = "",
@@ -214,13 +193,10 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
         campaign you just recovered.
     """
     from robovast.service.interface import ImportCampaignRequest
-    try:
-        ref = service_access.require_service().import_campaign(ImportCampaignRequest(
-            archive_path=archive_path, share_archive=share_archive,
-            force=force, rebuild_store=rebuild_store))
-        return {"campaign_id": ref.campaign_id, "note": ref.note}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    ref = service_access.require_service().import_campaign(ImportCampaignRequest(
+        archive_path=archive_path, share_archive=share_archive,
+        force=force, rebuild_store=rebuild_store))
+    return {"campaign_id": ref.campaign_id, "note": ref.note}
 
 
 def get_campaign_download(campaign_id: str) -> dict:
@@ -292,13 +268,10 @@ def export_campaign(campaign_id: str, tables: list | None = None, format: str = 
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
-    try:
-        request = ExportRequest(tables=list(tables) if tables is not None else None,
-                                format=format, bags=bags, records=records)
-        ref = client.create_export(campaign_id, request)
-        status = client.get_export_status(campaign_id, ref.export_id)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    request = ExportRequest(tables=list(tables) if tables is not None else None,
+                            format=format, bags=bags, records=records)
+    ref = client.create_export(campaign_id, request)
+    status = client.get_export_status(campaign_id, ref.export_id)
     url = service_access.web_url(client, ref.url)
     options = [f"--format {format}", f"--bags {bags}"]
     if tables is not None:
@@ -322,11 +295,8 @@ def get_export_status(campaign_id: str, export_id: str) -> dict:
     ``tables`` fills with row counts as they are written; ``bytes``, ``started_at`` and
     ``finished_at`` say the rest.
     """
-    try:
-        return service_access.require_service() \
-            .get_export_status(campaign_id, export_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service() \
+        .get_export_status(campaign_id, export_id).model_dump()
 
 
 # -- Plugin class ------------------------------------------------------------
