@@ -509,10 +509,9 @@ without one it falls back to software rendering, which is correct but roughly an
 magnitude slower and burns a dozen CPU cores doing it. On a sweep that is often the
 difference between a campaign that finishes and one that does not.
 
-**There is nothing to configure.** Setup detects a GPU and makes it schedulable, and the
-container that runs the simulator then requests one because the cluster advertises it — no
-flag, and no change to the ``.vast``. The same file renders in hardware on a GPU cluster and
-in software on a CPU one.
+Setup detects a GPU and makes it schedulable; a container gets one only when its ``.vast``
+declares ``resources: {gpu: 1}``. Undeclared, it gets none even where the cluster has them, so
+a campaign that never renders does not spend GPU quota, which caps concurrency.
 
 .. code-block:: bash
 
@@ -596,9 +595,7 @@ unlike a remembered number it cannot go stale::
 A bare re-run of ``setup --force`` preserves whatever count is deployed, so it will not
 quietly undo a deliberate ``--gpu-replicas 24``.
 
-**Opting a campaign out.** Set ``gpu: 0`` on the simulation container to leave the GPU alone
-— worth doing for a camera-less world, which never renders and would otherwise hold a
-replica for nothing:
+**Asking for one.** Declare it on the container that renders:
 
 .. code-block:: yaml
 
@@ -606,7 +603,10 @@ replica for nothing:
      containers:
        simulation:
          resources:
-           gpu: 0
+           gpu: 1
+
+On a cluster where no node advertises a GPU, such a job fails rather than waits: no amount
+of waiting produces the device.
 
 ``gpu`` also takes the per-cluster form, for one ``.vast`` across a GPU and a non-GPU
 cluster: ``gpu: [{local: 1}, {gcp-c4: 0}]``.
