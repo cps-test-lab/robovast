@@ -36,13 +36,9 @@ the rest. It is the one source of truth for those formats -- no record carries a
 of its own. Move it when a record moves or its format changes in a way an older reader would
 misread.
 
-```sh
-make new-archive-migration       # scaffolds the step file and wires it into the ladder
-```
-
-Then implement `migrate(campaign_dir)` in the generated `archive/vN_to_vM.py`, and add its
-test to `_STEP_TESTS` in `tests/common/test_archive_migrations.py` --
-`test_every_step_is_tested` fails until you do.
+Write `migrate(campaign_dir)` in a new `archive/vN_to_vM.py`, append it to `_MIGRATIONS` in
+`archive/__init__.py`, raise `ARCHIVE_LAYOUT` by one (an assert ties the two), and test the
+step in `tests/common/test_archive_migrations.py`.
 
 - **A step rewrites the extracted tree in place** and touches only paths inside the campaign
   directory it is given.
@@ -51,9 +47,9 @@ test to `_STEP_TESTS` in `tests/common/test_archive_migrations.py` --
 - **Append only.** An edit changes what an archive already written becomes.
 
 Every archive carries `_execution/archive.json`, written by both streams in
-`robovast.execution.campaign_archive`. An archive with none is layout 0 -- every archive written
-before the stamp -- so absent is a version, not an error. An import (`ingest_campaign`'s
-`archive` stage) walks the ladder first; a newer layout imports with the verdict `newer`, named.
+`robovast.execution.campaign_archive`. An archive with none is layout 1, the first layout, so
+absent is a version, not an error. An import (`ingest_campaign`'s `archive` stage) walks the
+ladder first; a newer layout imports with the verdict `newer`, named.
 
 ## Adding a `.vast` config migration step
 

@@ -11,29 +11,23 @@ an import reads it before anything else in the tree
 :data:`BASELINE_ARCHIVE_LAYOUT`.
 """
 
-# tools/new_archive_migration.py appends to this block and _MIGRATIONS, keyed on the markers.
-from . import v0_to_v1  # noqa: F401
-# <new-migration-import>
-
 import json
 from pathlib import Path
 
 #: Campaign-relative path of the stamp.
 ARCHIVE_STAMP = "_execution/archive.json"
 
-#: The layout of an archive that carries no stamp.
-BASELINE_ARCHIVE_LAYOUT = 0
+#: The oldest layout, and the layout of an archive that carries no stamp.
+BASELINE_ARCHIVE_LAYOUT = 1
 
 #: The layout this robovast writes, and the one an import brings an older tree to.
 ARCHIVE_LAYOUT = 1
 
-#: ``_MIGRATIONS[i]`` carries an extracted campaign tree from layout
-#: ``BASELINE_ARCHIVE_LAYOUT + i`` to ``+ i + 1``, in place. **Append only; never edit an
-#: existing entry** -- an edit changes what an archive already written would become.
-_MIGRATIONS = [
-    v0_to_v1.migrate,
-    # <new-migration-entry>
-]
+#: ``_MIGRATIONS[i]`` is ``migrate(campaign_dir)`` from the module ``vN_to_vM.py`` beside this
+#: one, carrying an extracted campaign tree from layout ``BASELINE_ARCHIVE_LAYOUT + i`` to
+#: ``+ i + 1`` in place. **Append only; never edit an existing entry** -- an edit changes what
+#: an archive already written would become.
+_MIGRATIONS: list = []
 
 assert len(_MIGRATIONS) == ARCHIVE_LAYOUT - BASELINE_ARCHIVE_LAYOUT
 
@@ -86,7 +80,8 @@ def read_layout(campaign_dir) -> "tuple[int, dict]":
     except (OSError, ValueError) as e:
         raise ArchiveLayoutError(f"{ARCHIVE_STAMP} is not readable as JSON: {e}") from e
     layout = stamp.get("layout") if isinstance(stamp, dict) else None
-    if not isinstance(layout, int) or isinstance(layout, bool) or layout < 0:
+    if (not isinstance(layout, int) or isinstance(layout, bool)
+            or layout < BASELINE_ARCHIVE_LAYOUT):
         raise ArchiveLayoutError(
             f"{ARCHIVE_STAMP} states no layout this robovast can read (layout: {layout!r}); "
             f"the layouts it knows are {BASELINE_ARCHIVE_LAYOUT}..{ARCHIVE_LAYOUT}.")

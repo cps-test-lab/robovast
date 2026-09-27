@@ -317,14 +317,13 @@ def missing_for_import_in(campaign_root) -> list:
 def _migrate_archive(campaign_dir: Path) -> dict:
     """Bring the extracted tree to the archive layout this robovast reads.
 
-    No stamp walks the ladder from the baseline layout. A newer layout is ``newer``, as a
+    No stamp is the baseline layout. A newer layout is ``newer``, as a
     newer ``.vast`` or store is, and not blocking: the campaign still lists, but its records
     may be misread, so the stage names the layout and the robovast that wrote it. An
     unreadable stamp or a failing step blocks: nothing after it knows what the tree holds.
     """
     from robovast.common.migrations.archive import (  # pylint: disable=import-outside-toplevel
-        ARCHIVE_LAYOUT, BASELINE_ARCHIVE_LAYOUT, ArchiveLayoutError, ArchiveTooNew,
-        upgrade_archive)
+        ARCHIVE_LAYOUT, ArchiveLayoutError, ArchiveTooNew, upgrade_archive)
 
     try:
         found, applied = upgrade_archive(campaign_dir)
@@ -337,10 +336,7 @@ def _migrate_archive(campaign_dir: Path) -> dict:
                       recovery="re-export the campaign from the service that holds it")
     if not applied:
         return _stage(STAGE_OK, f"archive layout {found}", version=found)
-    origin = (" (no stamp: written before archives carried one)"
-              if found == BASELINE_ARCHIVE_LAYOUT else "")
-    return _stage(STAGE_MIGRATED,
-                  f"archive layout {found}{origin} migrated to {ARCHIVE_LAYOUT}",
+    return _stage(STAGE_MIGRATED, f"archive layout {found} migrated to {ARCHIVE_LAYOUT}",
                   version=found, steps=applied)
 
 
@@ -357,8 +353,8 @@ def _check_layout(campaign_dir: Path) -> dict:
     if not campaign_dir.is_dir():
         return _stage(STAGE_FAILED, f"{campaign_dir} is not a directory")
     missing = [name for name in ("_config", "_execution") if not (campaign_dir / name).is_dir()]
-    # The importer claims ``_execution/`` for its log and writes the stamp and the report
-    # there, so a directory holding only those is an execution record the archive lacked.
+    # The importer's log and report and the archive's layout stamp all sit in ``_execution/``,
+    # so a directory holding only those is an execution record the archive lacked.
     importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json"}
     if ("_execution" not in missing
             and {e.name for e in (campaign_dir / "_execution").iterdir()} <= importer_records):

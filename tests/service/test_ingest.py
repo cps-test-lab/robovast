@@ -526,20 +526,14 @@ def _stamp(campaign, **fields):
     (campaign / ARCHIVE_STAMP).write_text(json.dumps(fields), encoding="utf-8")
 
 
-def test_an_archive_without_a_stamp_is_the_layout_before_it_and_imports(campaign):
-    """Every archive written before the stamp has none: it is layout 0, walks the ladder,
-    and imports -- and the tree then says which layout it is at, and which it came from."""
-    from robovast.common.migrations.archive import (ARCHIVE_LAYOUT, BASELINE_ARCHIVE_LAYOUT,
-                                                    read_layout)
+def test_an_archive_without_a_stamp_is_the_current_layout_and_is_left_unstamped(campaign):
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT, ARCHIVE_STAMP
     report = ingest_campaign(campaign)
     assert report["ok"] is True
     stage = report["stages"]["archive"]
-    assert stage["verdict"] == STAGE_MIGRATED
-    assert stage["version"] == BASELINE_ARCHIVE_LAYOUT
-    assert stage["steps"][0] == f"{BASELINE_ARCHIVE_LAYOUT}_to_{BASELINE_ARCHIVE_LAYOUT + 1}"
-    assert "no stamp" in stage["detail"]
-    layout, stamp = read_layout(campaign)
-    assert layout == ARCHIVE_LAYOUT and stamp["layout_from"] == BASELINE_ARCHIVE_LAYOUT
+    assert stage["verdict"] == STAGE_OK
+    assert stage["version"] == ARCHIVE_LAYOUT
+    assert not (campaign / ARCHIVE_STAMP).exists()
 
 
 def test_an_archive_at_the_current_layout_is_ok(campaign):

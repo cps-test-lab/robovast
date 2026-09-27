@@ -1808,18 +1808,18 @@ changes by moving the layout with a step that rewrites it.
 Both archive streams (:mod:`robovast.execution.campaign_archive`: the download and the
 upload-to-share, on the service and on the cluster) add ``_execution/archive.json`` as they
 write -- the layout, the robovast that wrote it, and the numbers of the surfaces that carry
-their own -- and never copy a stamp already in the tree. The ``archive`` stage runs first, because every other stage reads
-records whose paths and formats the layout decides:
+their own -- and never copy a stamp already in the tree. The ``archive`` stage runs first,
+because every other stage reads records whose paths and formats the layout decides:
 
-* **no stamp** -- every archive written before the stamp -- is layout 0, and walks the ladder;
+* **no stamp** is layout 1, the first layout;
 * **older** runs the steps in order over the extracted tree, then rewrites the stamp to the
   layout the tree is now at, with ``layout_from``;
 * **newer** is ``newer``, not blocking, naming the layout and the robovast that wrote it;
 * a stamp that states no layout, or a step that fails, **blocks**.
 
 A step is ``migrate(campaign_dir) -> None`` and rewrites the tree in place; like a config step
-it may not import the model its record is read with now. ``make new-archive-migration``
-scaffolds one, and ``test_every_step_is_tested`` fails until it has a test.
+it may not import the model its record is read with now. Layout 1 is the only layout so far,
+so the ladder has no steps; ``src/robovast/common/migrations/README.md`` says how to add one.
 
 Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
 reachable service), ``POST /campaigns/import`` behind the web UI's upload button, and the
