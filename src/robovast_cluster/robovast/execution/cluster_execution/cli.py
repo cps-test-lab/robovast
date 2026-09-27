@@ -629,8 +629,8 @@ def _echo_job_node_aliases(changes, *, whole=False):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--ingress-host', default='', metavar='HOST',
               help='Publish the service at this hostname, so users reach it in a '
-                   'browser without kubectl. Needs TLS (see --issuer/--tls-secret) '
-                   'and an access token; both are refused otherwise.')
+                   'browser without kubectl. Needs an access token, and TLS (see '
+                   '--issuer/--tls-secret) unless --insecure-http is given.')
 @click.option('--ingress-class', default='', metavar='NAME',
               help='IngressClass to use (e.g. nginx). Default: the cluster default.')
 @click.option('--issuer', default='', metavar='NAME',
