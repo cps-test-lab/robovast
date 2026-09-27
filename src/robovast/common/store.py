@@ -515,18 +515,13 @@ ALTER TABLE campaign ADD COLUMN origin_config_migration_steps TEXT;
 
 # 13 -> 14: the cells a search batch RECALLED rather than ran.
 #
-# A search re-proposes a cell an earlier batch measured, and the loop does not run it again:
-# it tells the strategy what that cell scored. The strategy was told it, so the replay that
-# rebuilds the strategy on a resume has to tell it too -- and without a row the replay handed
-# the strategy a shorter generation than the live run had, and the resumed search proposed
-# something else. A recalled cell is a ``unit`` row with status ``'recalled'`` and
-# ``recalled_from`` naming the unit that measured it. It carries no objectives of its own:
-# the answer the strategy was told is that unit's, read from there, never a copy.
+# A cell an earlier batch measured is not run again; the strategy is told what it scored
+# then, and the replay on a resume tells it the same. A recalled cell is a ``unit`` row with
+# status ``'recalled'`` and ``recalled_from`` naming the unit that measured it, carrying no
+# objectives of its own.
 #
 # ``batch.recalls_recorded`` separates a batch that recalled nothing from one written before
-# a recall had a row. NULL on every batch recorded before this step and never backfilled:
-# which cells such a batch recalled was not kept, and cannot be told from the rows it left.
-# Its replay tells what it recorded; see ``search.history.RecordedBatch.recalls_unknown``.
+# a recall had a row: NULL on every batch recorded before this step, and never backfilled.
 _MIGRATION_ADD_RECALLED = """
 ALTER TABLE batch ADD COLUMN recalls_recorded INTEGER;
 ALTER TABLE unit ADD COLUMN recalled_from INTEGER REFERENCES unit(id);

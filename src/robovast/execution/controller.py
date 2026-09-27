@@ -900,11 +900,8 @@ class CampaignController:
             # measured it or an earlier one did. A recalled cell is a real answer to a
             # real proposal -- it is what that cell measured -- so withholding it would
             # hand back a short generation carrying less than the campaign knows.
-            #
-            # Recorded before it is told, as a row naming the unit that measured it: a
-            # resume re-tells the strategy what this batch told it, and reads that from
-            # these rows. The told list is built by the same `RecordedBatch` the replay
-            # builds, so the two cannot order it differently.
+            # Recorded as rows, which is what a resume replays, and told in the order the
+            # replay tells them (`RecordedBatch.told`).
             for ev in recalled:
                 self.store.record_recall(batch_id, ev.params.id, ev.params.values)
             self.strategy.tell(RecordedBatch(evaluations=scored, recalled=recalled).told)

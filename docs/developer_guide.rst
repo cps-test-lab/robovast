@@ -1670,11 +1670,6 @@ Schema
   of the unit's ``run`` rows, kept for convenience. A search cell re-proposed after an
   earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
   that measured it, with no outcome of its own.
-
-These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads them
-back into the ``ask``/``tell`` sequence a resumed strategy is re-driven through
-(:doc:`search`, "Surviving a service restart"), and the live loop builds what it tells from
-the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
   ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
@@ -1682,6 +1677,11 @@ the same ``RecordedBatch`` type, so what a replay tells is what the live run tol
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
+
+These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads them
+back into the ``ask``/``tell`` sequence a resumed strategy is re-driven through
+(:doc:`search`, "Surviving a service restart"), and the live loop builds what it tells from
+the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
 
 .. rubric:: Two definitions of the schema, on purpose
 
