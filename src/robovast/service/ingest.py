@@ -157,10 +157,28 @@ def read_campaign_id(archive_path, *, fits_in=None) -> str:
         refuse_unless_room(archive_path.name, members, fits_in, "the results volume",
                            "delete campaigns no longer needed, then import it again")
     if len(tops) != 1:
+        if _is_export(tops):
+            raise ValueError(
+                f"{archive_path.name} is an export -- the campaign's tables as files beside "
+                f"its records -- which is the campaign to read, not the campaign to import: "
+                f"open it with robovast-data, or import the campaign's download "
+                f"('vast campaign download') instead.")
         raise ValueError(
             f"archive holds {len(tops)} top-level entries; expected one campaign "
             f"directory: {sorted(tops)[:5]}")
     return _checked_campaign_name(tops.pop())
+
+
+def _is_export(tops) -> bool:
+    """Whether *tops* are an export's members: its manifest and its tables beside the campaign.
+
+    Named rather than counted among the "several top-level entries" refusals, because an
+    export is the other archive this system writes of a campaign, and the person holding
+    one is told which of the two imports.
+    """
+    from robovast.service.exports import (  # pylint: disable=import-outside-toplevel
+        EXPORT_FILE, TABLES_MEMBER)
+    return EXPORT_FILE in tops and TABLES_MEMBER in tops
 
 
 def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
