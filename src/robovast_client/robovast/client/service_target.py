@@ -135,14 +135,13 @@ def service_client(namespace='default', context=None):
     yield RobovastClient(url), f"service ({url}) [detected]"
 
 
-def echo_target(label, *, err=False):
+def echo_target(label, err: bool = False):
     """Say which store we resolved.
 
     Never leave this implicit: a workspace created on this machine is invisible
     to a web UI served by the cluster, and vice versa — the one trap this whole
-    surface has. Auto-detection still prints, so it is announced.
-
-    *err* sends it to stderr, for a verb whose stdout a program reads (``--json``).
+    surface has. Auto-detection still prints, so it is announced. *err* sends it to
+    stderr, for a verb whose stdout is a document a program parses.
     """
     click.echo(f"Target: {label}", err=err)
     if label.startswith('this machine'):

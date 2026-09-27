@@ -86,7 +86,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
-from robovast.common.disk_reserve import reserve_disabled
+from robovast.common.disk_reserve import refuse_unless_room, reserve_disabled
 from robovast.common.query_limits import query_limits
 from robovast.service.storage_reserve import storage_refusal
 
@@ -912,6 +912,9 @@ class ServiceBase(RobovastInterface):
         different id. Anything else is refused rather than flattened: an archive with two
         top-level entries is not one of ours, and guessing which to take would seed a
         project from half of something.
+
+        An archive that would unpack past the workspaces volume's room above the reserve is
+        refused before anything is written.
         """
         import tarfile  # pylint: disable=import-outside-toplevel
 
@@ -927,6 +930,8 @@ class ServiceBase(RobovastInterface):
             provider.download_archive(object_name, str(staged))
             with tarfile.open(staged, "r:gz") as tar:
                 members = tar.getmembers()
+                refuse_unless_room(object_name, members, project_dir, "the workspaces volume",
+                                   "free space there, then create the workspace again")
                 # `./` is not a top-level entry: `tar` writes it for the archive root, so an
                 # archive rolled by hand carries one and reading it as the project's
                 # directory would nest the whole tree one level down -- silently, which is
@@ -1555,8 +1560,8 @@ class ServiceBase(RobovastInterface):
                 owned = archive.resolve().parent == staged_root
             except OSError:
                 owned = False
-            return (read_campaign_id(archive), lambda _log: (archive, owned),
-                    not _archive_has_metrics(archive))
+            return (read_campaign_id(archive, fits_in=self._campaigns_root()),
+                    lambda _log: (archive, owned), not _archive_has_metrics(archive))
 
         object_name, campaign_id, variant = self._find_share_archive(request.share_archive)
 
@@ -1672,7 +1677,9 @@ class ServiceBase(RobovastInterface):
             # and reports `config, layout` -- the archive's own symptom -- under an id that
             # is not the one that failed. Reading the id costs the tar's index, which the
             # upload path already pays (`_resolve_import_source`); this closes the other.
-            inner = read_campaign_id(archive)
+            # With the room to unpack it: a share archive's size is known only now, and a
+            # staged upload's free space may have been taken since the request admitted it.
+            inner = read_campaign_id(archive, fits_in=self._campaigns_root())
             if inner != campaign_id:
                 raise RuntimeError(
                     f"the archive fetched for {campaign_id} holds campaign {inner!r}. "
@@ -3026,12 +3033,22 @@ class ServiceBase(RobovastInterface):
                                                      stage, validate)
         validate(request)
         vast_file = self._exec_vast_file(request)
-        spec, _campaign_data, limit_s, limit_source = stage(
-            # The staged entrypoint is rendered for this exec; a campaign's rendered
-            # entrypoint is never copied across.
-            vast_file, request.config_name,
-            cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
-            command=request.command, archived=bool(request.campaign_id))
+        # Staging a configuration composes the file, and composition reaches whatever it asks
+        # a container for -- a variation's helper image, a generator's, the simulator's
+        # input-files query. So it runs inside the service's aux-runner context, held and
+        # keyed on the source as preview is: the same file previewed and then exec'd reuses
+        # one warm container. A bare-image exec composes nothing, and so starts nothing.
+        # The hook is given no project: a campaign source has none, only its ``_config/``.
+        with self._aux_runner_context(
+                _preview_tag(request.workspace_id or request.campaign_id,
+                             request.config_path),
+                None, hold=True):
+            spec, _campaign_data, limit_s, limit_source = stage(
+                # The staged entrypoint is rendered for this exec; a campaign's rendered
+                # entrypoint is never copied across.
+                vast_file, request.config_name,
+                cluster=self.IMPLEMENTATION == "cluster",  # pylint: disable=no-member
+                command=request.command, archived=bool(request.campaign_id))
         # Ownership of spec's staging tree passes to the manager: a held container mounts
         # it as /config, so it must outlive this call. On the way *in*, though, a failure
         # before that handover is ours to clean up.
@@ -4991,6 +5008,7 @@ class ServiceBase(RobovastInterface):
             inputs=[str(p) for p in (payload.get("inputs") or [])],
             components=list(payload.get("components") or []),
             entities=payload.get("entities"),
+            warnings=payload.get("warnings"),
             overridable=dict(payload.get("overridable") or {}),
             # Both carry how the answer was arrived at, so dropping them here would hand a caller
             # a null `entities` with nothing to distinguish "compiles none" from "could not ask".
@@ -5491,9 +5509,12 @@ class ServiceBase(RobovastInterface):
                 / filename)
 
     def campaign_screenshot(self, campaign_id, config_name, run_id, *, at=None, view=None,
-                            focus=None, camera=None, size="960x720") -> str:
-        """Render one moment of a run. Synchronous — see :mod:`robovast.service.screenshot`."""
+                            focus=None, camera=None, size="960x720") -> "ScreenshotFrame":  # noqa: F821
+        """Render one moment of a run, and keep it. Synchronous — see
+        :mod:`robovast.service.screenshot`."""
         from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
+        from robovast.service.interface import \
+            ScreenshotFrame  # pylint: disable=import-outside-toplevel
         from robovast.service.scene_cache import \
             SceneUnavailable  # pylint: disable=import-outside-toplevel
         try:
@@ -5504,12 +5525,19 @@ class ServiceBase(RobovastInterface):
             identity, _key = self._scene_identity(campaign_id, config_name, run_id)
         except SceneUnavailable as err:
             raise screenshot.ScreenshotUnavailable(str(err)) from err
-        return str(screenshot.render(
+        frame = screenshot.render(
             identity,
             state_path=self._run_state_path(campaign_id, config_name, run_id,
                                             screenshot.state_filename(identity)),
             at=at, view=view or {}, focus=focus or [], camera=camera, size=size,
-            runner_context=self._scene_runner_context(identity)))
+            runner_context=self._scene_runner_context(identity))
+        kept = screenshot.keep(campaign_id, frame)
+        return ScreenshotFrame(path=str(kept), name=kept.name)
+
+    def resolve_campaign_screenshot(self, campaign_id: str, name: str) -> str:
+        """See the interface. The store is the service's own, like the scene cache."""
+        from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
+        return str(screenshot.kept(campaign_id, name))
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
         """Resolve ``<key>/<file>`` within the shared descriptor cache.

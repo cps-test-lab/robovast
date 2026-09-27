@@ -4,6 +4,8 @@ Renders the browser scene descriptor (`scene.json` + `scene.bin`, plus `tex_<i>.
 roqsim exports — via the `roqsim-export-web` CLI or the `MujocoSim` adapter's
 `ROQSIM_SCENE_EXPORT_DIR` hook. Any simulator that emits the same descriptor renders here too;
 the format is owned by roqsim (`roqsim/export_web.py`), the reference loader is this one.
+The descriptor states `format: "roqsim.web_scene"` and a `version`; the loader refuses another
+format or a version newer than `SCENE_VERSION`, naming both, and reads an unstamped one as version 1.
 
 - `sceneLoader.ts` — descriptor → three.js `Group`, plus an imperative animation API:
   `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for world-frame

@@ -41,7 +41,8 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast login <url>`` / ``vast logout``
      - Store or forget the service credentials, verified before saving.
    * - ``vast workspace init|update|download|list|delete``
-     - Move a directory into a service workspace, and back out again.
+     - Move a directory into a service workspace, and back out again. ``list --json``
+       prints what the MCP ``list_workspaces`` tool returns.
    * - ``vast workspace validate|preview``
      - Check a project, and see what its sweep expands to — both before spending compute.
    * - ``vast workspace run <ws> [vast]``
@@ -49,7 +50,10 @@ Every group is named after what it acts on, so the group tells you what you are 
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
    * - ``vast campaign list|status``
      - What has run, and where one campaign has got to. The list marks a live campaign whose
-       queue priority or hold is not the default (``[prio -1]``, ``[paused]``).
+       queue priority or hold is not the default (``[prio -1]``, ``[paused]``). ``--json``
+       prints one JSON object with the fields the MCP ``list_campaigns`` and
+       ``get_campaign_status`` tools return (stall verdict, health findings and ``next_step``
+       included), with the ``Target:`` line on stderr so stdout parses.
    * - ``vast campaign wait <id>``
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
@@ -77,7 +81,8 @@ Every group is named after what it acts on, so the group tells you what you are 
        for it, and pull it down as one ``.tar.gz`` (:ref:`results-export`).
    * - ``vast service info|resources``
      - Which service is answering, which code it runs and whether it has a queue to order;
-       whether the cluster has room.
+       whether the cluster has room. ``--json`` prints what the MCP ``get_service_info`` and
+       ``get_resource_usage`` tools return.
    * - ``vast service cache [--clear]``
      - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
@@ -91,8 +96,14 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Read and write single files by address.
    * - ``vast image build|wait|status|log``
      - Have the service build the derived images a project's containers declare.
+       ``status --json`` prints what the MCP ``get_image_build_status`` tool returns,
+       ``next_step`` included.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
+
+A verb whose ``--json`` names an MCP tool prints the document that tool returns, built by the
+same function, and draws its plain lines from that document. With ``--json``, stdout carries
+only the JSON and the ``Target:`` line goes to stderr.
 
 That is the whole loop — validate, preview, launch, wait, fetch — and none of it needs the
 core. What the core adds is *local analysis*: ``vast config`` reads and expands a ``.vast``
@@ -225,43 +236,41 @@ merely past its last run:
 
    vast campaign wait basic-nav-2026-08-16-101500
 
-**The exit code is the answer:**
-
-.. list-table::
-   :header-rows: 1
-   :widths: 12 88
-
-   * - Code
-     - Means
-   * - ``0``
-     - Finished.
-   * - ``1``
-     - Failed, or stopped.
-   * - ``2``
-     - ``--timeout`` elapsed. The campaign is unaffected and can be waited on again.
-   * - ``3``
-     - No such campaign — the service knows no phase for that id. A typo, or a campaign
-       that died before recording one. Distinct from ``1`` on purpose: those send you
-       looking for different things.
-   * - ``4``
-     - **Stalled**: nothing has completed for longer than one run may take. The campaign is
-       *still running* and nothing is waiting on it now — the message says so, and names
-       both ways out (re-run this command, or ``stop_campaign``).
-   * - ``5``
-     - A running job's **simulator** reported something wrong about itself
-       (:ref:`mcp-health-findings`). Same shape as ``4``: the campaign is still running, the
-       run was **not** touched, and nothing is waiting on it.
-
-Codes ``4`` and ``5`` are why this command exists in the form it does. A stalled or wedged
-campaign never reaches a terminal phase — it holds ``running`` for its whole life — so a
-waiter that stopped only on a terminal phase never returned, and nobody was ever told. Only a
-**new** stall or finding ends the wait: whatever was already true when this command started
-is what the caller was just told about, and exiting on it would make "re-run this after
-diagnosing" an infinite loop rather than the way back.
-
 Run it as the **whole** command, unwrapped and unchained. Anything appended makes the
 shell report the wrapper's status instead, which turns a failed campaign into a reported
 success — a real incident, not a hypothetical one.
+
+.. _client-wait-exit-codes:
+
+Its exit codes
+--------------
+
+**The exit code is the answer.** The codes are defined once, as the members of
+``robovast.execution.wait_exit.CampaignWaitExit``: the command raises them, and this table, its
+``--help`` and every list of them an MCP tool or prompt hands out are rendered from them.
+Anything else refers to a code by its name.
+
+.. wait-exit-codes:: robovast.execution.wait_exit.CampaignWaitExit
+
+``NO_PHASE`` is distinct from ``FAILED`` on purpose: the two send you looking for different
+things. ``STALLED`` and ``HEALTH_FINDING`` end the wait with the campaign still running and the
+run **not** touched; the message says so and names both ways out (re-run this command, or
+``stop_campaign``). A health finding is what a running job's own simulator reported about
+itself (:ref:`mcp-health-findings`).
+
+Those two are why this command exists in the form it does. A stalled or wedged campaign never
+reaches a terminal phase — it holds ``running`` for its whole life — so a waiter that stopped
+only on a terminal phase would never return, and nobody would be told. Only a **new** stall or
+finding ends the wait: whatever was already true when this command started is what the caller
+was just told about, and exiting on it would make "re-run this after diagnosing" an infinite
+loop rather than the way back.
+
+``vast image wait`` answers the same way for image builds, with the members of
+``ImageWaitExit``:
+
+.. _client-image-wait-exit-codes:
+
+.. wait-exit-codes:: robovast.execution.wait_exit.ImageWaitExit
 
 
 When something is wrong
