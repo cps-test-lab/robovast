@@ -104,11 +104,15 @@ def measure_value(spec: MeasureSpec, raw, name: str) -> float:
                 f"declare (have: {spec.values})") from None
         return index + 0.5
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         raise ValueError(
             f"measure '{name}' is numeric (low/high) but got {raw!r}; declare "
             f"'values' if it is categorical") from None
+    if not math.isfinite(value):
+        # The archive would refuse it too, without naming the measure.
+        raise ValueError(f"measure '{name}' got {raw!r}; an archive coordinate must be finite")
+    return value
 
 
 class ArchiveConfig(BaseModel):
@@ -151,21 +155,29 @@ class QDStrategy(SearchStrategy):
         lower, upper = self.codec.bounds()
         bounds = list(zip(lower.tolist(), upper.tolist()))
 
+        seed = cfg.seed
+        # Seeded, or a CVT archive places its centroids differently in every process and a
+        # seeded search is neither reproducible nor resumable.
         if params.archive.type == 'cvt':
             self.archive = CVTArchive(solution_dim=self.codec.dim,
-                                      cells=params.archive.cells, ranges=ranges)
+                                      cells=params.archive.cells, ranges=ranges, seed=seed)
         else:
             dims = [m.bins for m in params.archive.measures.values()]
-            self.archive = GridArchive(solution_dim=self.codec.dim, dims=dims, ranges=ranges)
+            self.archive = GridArchive(solution_dim=self.codec.dim, dims=dims, ranges=ranges,
+                                       seed=seed)
 
         x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
-        n_emitters = max(1, params.emitters)
-        batch = max(1, math.ceil(cfg.per_batch / n_emitters))
-        seed = cfg.seed
+        # One generation is one batch: the emitters' batch sizes sum to per_batch.
+        n_emitters = params.emitters
+        if not 1 <= n_emitters <= cfg.per_batch:
+            raise ValueError(
+                f"qd splits each batch of {cfg.per_batch} draw(s) between its emitters, so "
+                f"'emitters' must be between 1 and per_batch; got {n_emitters}.")
+        base, extra = divmod(cfg.per_batch, n_emitters)
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x0, sigma0=sigma0, bounds=bounds,
-                                     batch_size=batch,
+                                     batch_size=base + (1 if i < extra else 0),
                                      seed=None if seed is None else seed + i)
             for i in range(n_emitters)
         ]
@@ -176,9 +188,20 @@ class QDStrategy(SearchStrategy):
         self.scheduler = Scheduler(self.archive, emitters)
         self._batches_done = 0
         self._ask: list[tuple[str, np.ndarray]] = []   # (ParamSet.id, solution) in ask order
+        self._proposed = 0                             # leading entries of _ask handed out
         self._direction = self.single_objective.direction
 
     def ask(self, n: int) -> list[ParamSet]:
+        """The first *n* of one generation of ``per_batch`` proposals.
+
+        pyribs draws a whole generation at once; the unproposed rest is closed by
+        :meth:`_tell_incomplete` on ``tell``.
+        """
+        if n > self.cfg.per_batch:
+            raise ValueError(
+                f"qd asked for {n} proposals, but one generation is per_batch = "
+                f"{self.cfg.per_batch} draw(s) and the emitters cannot draw another before "
+                f"this one is told.")
         solutions = self.scheduler.ask()
         self._ask = []
         proposals = []
@@ -187,14 +210,14 @@ class QDStrategy(SearchStrategy):
             ps = ParamSet(values=values)
             proposals.append(ps)
             self._ask.append((ps.id, np.asarray(sol)))
-        logger.debug("QD proposed %d solution(s)", len(proposals))
-        return proposals
+        self._proposed = n
+        logger.debug("QD drew %d solution(s), proposed %d", len(proposals), n)
+        return proposals[:n]
 
     def tell(self, evaluations: list[Evaluation]) -> None:
         by_id = {ev.params.id: ev for ev in evaluations}
-        missing = [ps_id for ps_id, _ in self._ask if ps_id not in by_id]
-        if missing:
-            self._tell_incomplete(by_id, missing)
+        if any(ps_id not in by_id for ps_id, _ in self._ask):
+            self._tell_incomplete(by_id)
             return
         obj_batch, meas_batch = [], []
         name = self.single_objective.name
@@ -235,31 +258,18 @@ class QDStrategy(SearchStrategy):
         return [measure_value(self._measure_specs[m], ev.measures[m], m)
                 for m in self.measure_names]
 
-    def _tell_incomplete(self, by_id: dict, missing: list) -> None:
-        """Close a generation that came back short, without inventing the missing rows.
+    def _tell_incomplete(self, by_id: dict) -> None:
+        """Close a generation some of whose draws have no evaluation, inventing nothing.
 
-        A draw can be unrealizable — a path too short to hold the obstacles the same
-        draw asks for — and then no config is composed, nothing runs, and there is no
-        evaluation. The batch loop records that unit and evaluates the rest, so ``tell``
-        is handed fewer results than ``ask`` proposed. Every other strategy simply
-        ingests what it got; pyribs cannot, and without this that asymmetry is a crash:
-        ``Scheduler.tell`` requires exactly one objective and one measure row per
-        solution it emitted.
+        A draw has none when it was not proposed (``ask(n)`` with ``n < per_batch``) or
+        was proposed but unrealizable, so no config ran. ``Scheduler.tell`` needs one
+        objective and one measure row per solution, and there is no value meaning "not
+        measured": the archive rejects a non-finite objective, and a finite stand-in
+        would need invented measures that place it in a real cell as an elite.
 
-        There is no sentinel that means "not measured". The archive rejects a non-finite
-        objective outright, so ``-inf`` raises instead of being ignored — and a
-        worst-case *finite* objective would be worse than the crash it avoids, because
-        the measures would have to be invented too, and an invented measure vector lands
-        the fabrication in a real archive cell, where it becomes an elite the search then
-        chases.
-
-        So the generation is closed the only honest way. The evaluations that *did*
-        happen go into the archive directly (``add`` is the same insertion
-        ``Scheduler.tell`` performs on them), and the emitters go without their CMA-ES
-        update for this one round — they resample from the distribution they already
-        had. The cost is one generation of adaptation. The cost of the KeyError this
-        replaces was a 50-batch search that died on batch 33 with eight hours of
-        completed, unpostprocessed work behind it.
+        So the evaluations that exist go into the archive directly (``add`` is the
+        insertion ``Scheduler.tell`` performs), and the emitters skip this generation's
+        CMA-ES update and resample from their current distribution.
         """
         from ribs.schedulers import Scheduler  # noqa: PLC0415 - optional extra
 
@@ -273,11 +283,13 @@ class QDStrategy(SearchStrategy):
             sols.append(sol)
             obj_batch.append(-value if self._direction == 'minimize' else value)
             meas_batch.append(self._coordinates(ev))
-        logger.warning(
-            "QD batch came back short: %d of %d draw(s) produced no evaluation (%s). "
-            "The %d measured one(s) still enter the archive; the emitters skip this "
-            "generation's update and resample from their current distribution.",
-            len(missing), len(self._ask), ", ".join(missing), len(sols))
+        untold = [ps_id for ps_id, _ in self._ask[:self._proposed] if ps_id not in by_id]
+        if untold:
+            logger.warning(
+                "QD batch came back short: %d of %d proposed draw(s) produced no evaluation "
+                "(%s). The %d measured one(s) still enter the archive; the emitters skip "
+                "this generation's update and resample from their current distribution.",
+                len(untold), self._proposed, ", ".join(untold), len(sols))
         if sols:
             self.archive.add(solution=np.array(sols), objective=np.array(obj_batch),
                              measures=np.array(meas_batch))
@@ -312,10 +324,8 @@ class QDStrategy(SearchStrategy):
             "elites": elites,
             "measure_names": self.measure_names,
         }
-        # The elites carry RAW objective values -- the sign flip that made the archive
-        # maximize was undone two lines up -- so which end is best is the campaign's
-        # direction again. `max` alone returned the archive's WORST cell for every
-        # minimizing search, and returned it as the answer.
+        # The elites carry raw objective values (the archive's maximizing sign flip is
+        # undone above), so the best end is the campaign's direction.
         pick = min if self._direction == 'minimize' else max
         best = pick(elites, key=lambda e: e["objective"], default=None)
         report = SearchReport(extra=extra)

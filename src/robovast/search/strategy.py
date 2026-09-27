@@ -105,7 +105,7 @@ class SearchStrategy(ABC):
         is what makes the default correct for every strategy at once rather than a
         durability contract each one has to implement.
 
-        The proposals are discarded. They are asked for anyway because ``ask`` is what
+        The proposals are not run. They are asked for because ``ask`` is what
         advances a strategy's sequence -- each of the strategies here holds a seeded RNG or
         a sequence index, and one told the evaluations without being asked for the
         proposals would resume with its stream rewound and re-draw points it had already
@@ -121,13 +121,25 @@ class SearchStrategy(ABC):
         costs a proposal and produces no evaluation. :meth:`tell` already copes with a
         short generation, and this relies on exactly that contract rather than adding one.
 
+        What is told is ``batch.told``: the batch's scored evaluations and then the ones it
+        recalled -- cells an earlier batch measured, which the live loop did not run again
+        but did tell the strategy about. Leaving those out hands the strategy a shorter
+        generation than it saw live, and it proposes something else from there. A batch
+        recorded before recalled cells had rows has them read off its re-asked proposals
+        (:meth:`~robovast.search.history.RecordedBatch.with_recalls`).
+
         A resumed search reproduces the original only if the strategy is seeded --
         ``search.seed``. Without it a fresh process re-seeds from entropy, and the replay
         rebuilds a *different* search; the caller checks that before getting here.
         """
+        measured: dict = {}
         for batch in batches:
-            self.ask(batch.asked)
-            self.tell(batch.evaluations)
+            proposed = self.ask(batch.asked)
+            if not batch.recalls_recorded:
+                batch = batch.with_recalls(proposed, measured)
+            self.tell(batch.told)
+            for ev in batch.evaluations:
+                measured.setdefault(ev.params.id, ev)
 
 
 def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
