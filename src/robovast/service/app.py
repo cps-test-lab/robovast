@@ -55,6 +55,7 @@ from robovast.service.interface import (ActionResult, ArrowQueryRequest,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
                                         EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
+                                        BINARY_FILE, BinaryFile,
                                         UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         ExportRef, ExportRequest, ExportStatus,
@@ -467,6 +468,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             # The same status as a write that already failed for lack of space, with the
             # meter and the amounts: new work is declined before the disk is full.
             raise HTTPException(status_code=507, detail=str(e)) from e
+        except BinaryFile as e:
+            raise HTTPException(status_code=e.status, detail=str(e),
+                                headers={ERROR_CODE_HEADER: BINARY_FILE}) from e
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
@@ -1290,18 +1294,27 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
         ``view`` is repeated ``key=value`` (``?view=azimuth=90&view=distance=12``)."""
         from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
-        from starlette.background import BackgroundTask  # pylint: disable=import-outside-toplevel
 
         from robovast.common.simulators import parse_view  # pylint: disable=import-outside-toplevel
-        from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
 
         frame = _guard(lambda: impl.campaign_screenshot(
             campaign_id, config_name, run_id, at=at, view=parse_view(view),
             focus=list(focus), camera=camera or None, size=size))
-        # Deleted after the bytes are on the wire, by the function that knows what render()
-        # built — a path reassembled by hand here is how a cleanup deletes the wrong tree.
-        return FileResponse(frame, media_type="image/png",
-                            background=BackgroundTask(screenshot.discard, Path(frame)))
+        # The render is kept, so there is nothing to delete once it is sent. Where it is kept
+        # travels as a header: the body is the PNG itself.
+        return FileResponse(frame.path, media_type="image/png", headers={
+            "Content-Location": Routes.campaign_screenshot_frame(campaign_id, frame.name)})
+
+    @app.get(Routes.campaign_screenshot_frame("{campaign_id}", "{name}"), tags=["results"])
+    def campaign_screenshot_frame(campaign_id: str, name: str):
+        """A render ``POST .../screenshot`` kept, fetched again by the name it was kept under.
+
+        Kept for a bounded time and count (``robovast.service.screenshot``); a 404 once it is
+        gone. Its bytes never change under its name, so it is served as immutable."""
+        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
+        return FileResponse(str(_guard(
+            lambda: impl.resolve_campaign_screenshot(campaign_id, name))),
+            media_type="image/png", headers={"Cache-Control": IMMUTABLE_CACHE_CONTROL})
 
     @app.get(Routes.campaign_scene_asset("{campaign_id}", "{path:path}"), tags=["results"])
     def campaign_scene_asset(campaign_id: str, path: str):
@@ -2309,9 +2322,10 @@ def _from_loopback(request) -> bool:
     """Did this request come from the same machine?
 
     Conservative on purpose: anything unparseable, absent (a Unix socket has no peer
-    address) or forwarded counts as *not* loopback, because the field this gates is only
-    useful to a caller that can open the service host's filesystem, and being wrong in
-    that direction merely costs a caller two fields it could not have used.
+    address) or forwarded counts as *not* loopback, because what this gates -- the
+    ``host_path`` settings -- is only useful to a caller that can open the service host's
+    filesystem, and being wrong in that direction merely withholds paths it could not have
+    used.
     """
     import ipaddress  # pylint: disable=import-outside-toplevel
     client = getattr(request, "client", None)
