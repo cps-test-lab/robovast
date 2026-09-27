@@ -212,6 +212,11 @@ checkout looks entirely normal in the meantime. The failure mode depends on whic
   hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
   reconciles Secrets from the environment — concludes the registry and git credentials
   are gone and deletes both.
+* ``robovast.doctor_checks`` — the checks ``vast doctor`` runs beyond the client's own
+  (Docker from the core; the Kubernetes tools, cluster and deployment from
+  ``robovast-cluster``). Each entry takes the command's ``DoctorOptions`` and returns a list
+  of ``Check`` (both in ``robovast.client.doctor``). A plugin that fails, and a provider that
+  is installed but registered nothing, are each reported as a failed check naming it.
 
 The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block, reinstall
 before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
