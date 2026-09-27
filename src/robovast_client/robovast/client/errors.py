@@ -39,8 +39,19 @@ def handle_cli_exception(e: Exception) -> None:
     """
     if isinstance(e, click.ClickException):
         raise e
-    logging.debug("Full traceback:\n%s", traceback.format_exc())
-    unexpected = getattr(e, "include_traceback", True)
-    click.echo(f"Error: {e.__class__.__name__}: {failure_detail(e)}" if unexpected
-               else f"Error: {failure_detail(e)}", err=True)
+    click.echo(f"Error: {describe_cli_exception(e)}", err=True)
     sys.exit(1)
+
+
+def describe_cli_exception(e: Exception) -> str:
+    """The one line :func:`handle_cli_exception` prints for *e*, without exiting.
+
+    For a verb that acts on several things and reports each failure on its own before
+    going on to the next. The full traceback goes to debug logging here as well.
+    """
+    if isinstance(e, click.ClickException):
+        return e.format_message()
+    logging.debug("Full traceback:\n%s", traceback.format_exc())
+    if getattr(e, "include_traceback", True):
+        return f"{e.__class__.__name__}: {failure_detail(e)}"
+    return failure_detail(e)

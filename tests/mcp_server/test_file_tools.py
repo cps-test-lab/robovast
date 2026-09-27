@@ -72,6 +72,21 @@ def test_a_binary_read_points_at_the_byte_route(ws):
     assert "vast files get" in out["error"]
 
 
+def test_a_binary_read_answers_with_the_url_serving_its_bytes(ws, monkeypatch):
+    monkeypatch.setattr(files._client(), "base_url", "http://svc", raising=False)
+    out = files.read_file("/results/camp-1/nav/0/bag.mcap")
+    assert out == {"address": "/results/camp-1/nav/0/bag.mcap", "binary": True,
+                   "url": "http://svc/results/camp-1/nav/0/bag.mcap",
+                   "note": "Binary — fetch the URL (or 'vast files get'); not text."}
+
+
+def test_a_refusal_that_mentions_binary_is_not_a_binary_file(ws, monkeypatch):
+    monkeypatch.setattr(files._client(), "base_url", "http://svc", raising=False)
+    out = files.read_file("/results/camp-1/nav/0/binary.txt")
+    assert "no file at" in out["error"]
+    assert "url" not in out
+
+
 def test_a_malformed_address_states_the_expected_form(ws):
     out = files.read_file("nav/0/test.xml")
     assert "/<namespace>/<owner>/<path>" in out["error"]
