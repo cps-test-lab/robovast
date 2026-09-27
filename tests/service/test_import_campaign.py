@@ -246,6 +246,32 @@ def test_a_failed_import_is_kept_so_its_reason_can_be_read(service, tmp_path, mo
     assert "failed" in outcome
 
 
+@pytest.mark.parametrize("fails", [False, True], ids=["landed", "failed"])
+def test_an_import_that_concluded_leaves_no_marker_of_being_under_way(
+        service, tmp_path, monkeypatch, fails):
+    """The directory is marked as an import under way when it is claimed, so a tree the
+    process died in reads as failed rather than as the archived campaign. Once the import
+    has concluded -- landed, or failed with its reason recorded -- the marker is gone and the
+    outcome is what the records say."""
+    from robovast.common.campaign_data import read_import_marker
+
+    if fails:
+        def _boom(*_a, **_k):
+            raise OSError("disk went away mid-extraction")
+        monkeypatch.setattr("robovast.service.ingest.extract_archive", _boom)
+
+    ref = service.import_campaign(ImportCampaignRequest(
+        archive_path=str(_archive(tmp_path, runs=1))))
+    status = _wait_done(service, ref.campaign_id)
+
+    campaign = service._campaigns_root() / ref.campaign_id  # pylint: disable=protected-access
+    assert read_import_marker(campaign) is None
+    recovered = reconstruct_status_from_disk(campaign)
+    assert status.phase == recovered.phase == (Phase.FAILED if fails else Phase.FINISHED)
+    if fails:
+        assert "mid-extraction" in recovered.error
+
+
 def test_an_archive_that_is_not_the_campaign_it_was_fetched_as_is_refused(
         service, tmp_path, monkeypatch):
     """The id is claimed from the object's *name*; the tree lands under the tar's own.
