@@ -87,6 +87,9 @@ export function useCampaignImport(
 ) {
   const [started, setStarted] = useState<{ id: string; note: string } | null>(null)
   const [report, setReport] = useState<IngestReport | null>(null)
+  // The import left its live phases but its stage report could not be read: the reason. Without
+  // it the panel would keep saying "Importing …" for an import that is over.
+  const [reportUnread, setReportUnread] = useState<string | null>(null)
   const [failure, setFailure] = useState<{ status?: number; message: string } | null>(null)
   const [open, setOpen] = useState(false)
   // The staged path is kept so a retry (Replace / Rebuild store) re-imports what was already
@@ -105,6 +108,7 @@ export function useCampaignImport(
     }) => {
       setStarted(null)
       setReport(null)
+      setReportUnread(null)
       setFailure(null)
       setOpen(false)
       if (file) staged.current = (await robovast.stageCampaignArchive(file)).path
@@ -129,10 +133,11 @@ export function useCampaignImport(
     },
   })
 
-  // The import we started has left its live phases, so its stage report has been written.
-  // Fetched once, on that transition, rather than polled: `_execution/import.json` is only
-  // interesting after the fact, and a campaign that failed has had its directory removed, so
-  // there is deliberately no retry — the card's own failure box is the answer in that case.
+  // The import we started has left its live phases, so its stage report is written if it ever
+  // will be. Fetched once, on that transition, rather than polled: `_execution/import.json` is
+  // only interesting after the fact, and an import that failed before its stage checks (the
+  // fetch, the extraction) writes none, so there is deliberately no retry — the campaign's own
+  // failure box is the answer in that case.
   const settled = useSettledImport(campaigns, started?.id)
   useEffect(() => {
     if (!settled) return
@@ -142,9 +147,11 @@ export function useCampaignImport(
       .then((file) => {
         if (live) setReport(JSON.parse(file.content) as IngestReport)
       })
-      .catch(() => {
-        /* No report to show: a failed import took its directory with it, and the campaign
-           card reports that. Silence here rather than a second error about the first. */
+      .catch((e: unknown) => {
+        // No report to show: the campaign's card says how the import ended. What this panel
+        // owes is that the import is over, and why there is no report, rather than
+        // "Importing …" for good.
+        if (live) setReportUnread(e instanceof Error ? e.message : String(e))
       })
     return () => {
       live = false
@@ -187,11 +194,28 @@ export function useCampaignImport(
     <>
       {/* Shown only until the report replaces it: while the import runs, the campaign row is
           the better place to look, and this just says which row that is. */}
-      {started && !outcome ? (
+      {started && !outcome && !reportUnread ? (
         <Typography variant="caption" color="text.secondary">
           {`Importing ${started.id} — it appears in the list below.`}
           {started.note ? ` ${started.note}` : ''}
         </Typography>
+      ) : null}
+
+      {started && reportUnread && !outcome ? (
+        <ImportOutcomePanel
+          headline={`${started.id}: import over, its stage report could not be read`}
+          tone="neutral"
+          open={open}
+          onToggle={() => setOpen((o) => !o)}
+          onDismiss={() => {
+            setReportUnread(null)
+            setStarted(null)
+          }}
+        >
+          <Typography variant="caption" color="text.secondary">
+            {`${reportUnread} — the campaign's row below says how the import ended.`}
+          </Typography>
+        </ImportOutcomePanel>
       ) : null}
 
       {outcome ? (
