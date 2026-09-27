@@ -2695,7 +2695,7 @@ def validate_config(config: dict, strict: bool = True):
         ValueError: If required sections are missing
     """
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
-        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION, find_migration_markers)
+        BASELINE_CONFIG_VERSION, find_migration_markers)
 
     logger.debug("Validating configuration")
     version = config.get("version", None)
