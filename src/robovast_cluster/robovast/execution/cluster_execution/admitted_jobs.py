@@ -56,6 +56,9 @@ class Round:
     expired: List[str]
     #: Why the pods could not be read, when :attr:`blocked` is ``None``.
     blocked_error: str = ""
+    #: ``{job: cause}`` for Jobs the queue gave up creating. Never part of ``planned``, so a
+    #: round with nothing else is :attr:`over` -- which is why a caller reads this first.
+    given_up: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
     def over(self) -> bool:
@@ -145,8 +148,9 @@ class AdmittedJobs:
             created = [n for n, st in states.items() if st == CREATED]
             created += [n for n in self._created if n not in states]
             planned = sum(1 for st in states.values() if st == PLANNED)
+            given_up = self.admission.given_up(self.owner)
         else:
-            created, planned = list(self._created), 0
+            created, planned, given_up = list(self._created), 0, {}
         remaining = self._list_remaining(created)
         still = set(remaining)
         done = [n for n in created if n not in still]
@@ -158,7 +162,7 @@ class AdmittedJobs:
         fresh, expired = self._time_blocked(blocked, contended, set(ignore_blocked))
         return Round(created=created, planned=planned, remaining=remaining, done=done,
                      blocked=blocked, contended=contended, fresh=fresh, expired=expired,
-                     blocked_error=error)
+                     blocked_error=error, given_up=given_up)
 
     def _blocked(self, created):
         """``(blocked, contended, error)`` among *created*; ``(None, {}, why)`` when
