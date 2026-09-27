@@ -9,11 +9,12 @@ Public API:
 * the refusals: :class:`ConfigTooNew`, :class:`ConfigTooOld`, :class:`UnmigratableConfig`.
 
 ``README.md`` in this directory is the entry point for adding a migration step, and lists
-all three version surfaces (config, campaign store, host<->container).
+all four version surfaces (archive layout, config, campaign store, host<->container).
 """
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .config import (BASELINE_CONFIG_VERSION, MIGRATION_MARKER, SUPPORTED_CONFIG_VERSION,
@@ -112,12 +113,19 @@ def read_vast(vast_path) -> dict:
     Read directly rather than through ``load_config``: this is a *diagnosis* of a file that may
     well be too old to validate, and the strict reader would raise before the report could say
     so -- turning the answer into the failure it was asked about.
+
+    Raises ``ValueError`` when the document is not a mapping, since nothing that classifies
+    or migrates a configuration can read one.
     """
     import yaml  # pylint: disable=import-outside-toplevel
 
     with open(vast_path, "r", encoding="utf-8") as handle:
         documents = list(yaml.safe_load_all(handle))
-    return (documents[0] if documents else None) or {}
+    raw = (documents[0] if documents else None) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{Path(vast_path).name} holds a {type(raw).__name__}, not a mapping "
+                         f"of configuration keys")
+    return raw
 
 
 def upgrade_config_file(path, *, write: bool = False):
