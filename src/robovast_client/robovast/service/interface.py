@@ -2464,6 +2464,27 @@ class ServiceError(OSError):
         super().__init__(detail)
 
 
+class ServiceUnreachable(OSError):
+    """No robovast-service answered at the URL a client was given.
+
+    Not a refusal: nothing answered, so there is no status and no ``detail``. What a
+    caller needs is the address it tried and the socket-level reason, in one sentence --
+    ``requests`` wraps that reason in two layers of pool and retry bookkeeping, and the
+    resulting paragraph, printed with the frames it was raised through, read as a crash
+    in the client rather than as a service that is down.
+
+    ``include_traceback = False``, as for :class:`ServiceError`: the frames are the HTTP
+    transport's and name nothing the reader can act on.
+    """
+
+    include_traceback = False
+
+    def __init__(self, url: str, reason: str):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"no robovast-service answered at {url}: {reason}")
+
+
 #: Header naming the CLASS of a refusal, for the few whose class a caller must act on
 #: rather than print. The message says what happened and is written for a person; a client
 #: that has to *behave* differently -- degrade to "unchecked", report the deployment rather
