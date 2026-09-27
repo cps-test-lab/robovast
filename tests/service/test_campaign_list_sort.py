@@ -334,7 +334,8 @@ def test_the_mcp_tool_hands_the_order_through_and_reports_the_size(monkeypatch):
 
 def test_the_mcp_tool_reports_an_unknown_value_as_an_error(monkeypatch):
     from robovast.mcp_server import service_access
-    from robovast.mcp_server.plugins.results import list_campaigns
+    from tests.mcp_server.conftest import registered_tools
+    list_campaigns = registered_tools()["list_campaigns"].fn
 
     monkeypatch.setattr(service_access, "service_client", lambda: pytest.fail(
         "an unknown value must be refused before anything is asked"))
