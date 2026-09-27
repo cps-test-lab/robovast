@@ -77,7 +77,6 @@ def test_generation_fails_before_staging(tmp_path):
         "version: 6\n"
         "execution:\n"
         "  containers: {scenario: {image: i}}\n"
-        "  image: ghcr.io/cps-test-lab/robovast:latest\n"
         "  scenario_file: sub/scenario.osc\n"
         "  runs: 1\n"
         "configuration:\n"

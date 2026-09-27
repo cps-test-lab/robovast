@@ -101,7 +101,8 @@ def test_listing_prefers_the_service(monkeypatch, no_project):
     monkeypatch.setattr(service_access, "service_client", _FakeListingClient)
 
     result = list_campaigns()
-    assert result["source"] == "service"
+    # No `source`: the service is the only one there is, so a field naming it says nothing.
+    assert "source" not in result
     assert [c["campaign_id"] for c in result["campaigns"]] == ["svc-running", "svc-done"]
     assert result["campaigns"][0]["description"] == "the pilot"
     # Omitted, not reported empty: a campaign started without one has no description.

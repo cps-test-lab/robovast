@@ -270,7 +270,7 @@ def test_a_verb_that_talks_to_a_service_gets_that_far(without_core, monkeypatch)
 
     monkeypatch.setattr(service_target, "detected_service_url",
                         lambda: "https://svc.example")
-    with service_target.service_client("", None) as (client, label):
+    with service_target.service_client() as (client, label):
         assert client is not None
         assert "svc.example" in label
 

@@ -67,22 +67,50 @@ def test_service_client_has_no_serviceless_switch():
     assert "require_service" not in inspect.signature(st.service_client).parameters
 
 
-def test_target_options_names_no_service():
-    """No flag and no environment variable picks a service; a login does.
+def _verbs(group, path=()):
+    ctx = click.Context(group)
+    for name in group.list_commands(ctx):
+        cmd = group.get_command(ctx, name)
+        if isinstance(cmd, click.Group):
+            yield from _verbs(cmd, path + (name,))
+        elif cmd is not None:
+            yield " ".join(path + (name,)), cmd
 
-    The original of this test asserted the option set was exactly
-    ``{cluster, namespace, context}``. ``--cluster`` is gone with the tunnel it drove,
-    and the remaining two are for the Kubernetes work a command does itself — neither
-    selects which service answers.
+
+#: Verbs that drive Kubernetes themselves, and so read a context and a namespace.
+_KUBE_MODULE = "robovast.execution.cluster_execution.cli"
+
+
+def test_only_verbs_that_drive_a_cluster_take_a_kube_context():
+    """A verb that only talks to the service offers no ``--context``/``--namespace``.
+
+    The service is resolved (local port, then ``vast login``), never named per call, so
+    such a flag on a service verb would be accepted and ignored. Only the cluster
+    distribution's verbs and ``doctor`` read one.
     """
-    @st.target_options
-    def cmd(namespace, context):  # pragma: no cover - only inspected
-        pass
+    from robovast.client.cli import cli, load_plugins
+    load_plugins()
+    offering = {path: cmd.callback.__module__ for path, cmd in _verbs(cli)
+                if {p.name for p in cmd.params} & {"namespace", "context", "kube_context"}}
+    assert offering, "no verb offers a kube context at all -- the walk found nothing"
+    stray = {path: mod for path, mod in offering.items()
+             if mod != _KUBE_MODULE and path != "doctor"}
+    assert not stray, f"service verbs offering a kube context they ignore: {stray}"
 
-    names = {p.name for p in cmd.__click_params__}
-    assert names == {"namespace", "context"}
-    assert "service_url" not in names
-    assert "cluster" not in names
+
+@pytest.mark.parametrize("argv", [
+    ["workspace", "run", "--context", "somewhere", "ws"],
+    ["campaign", "list", "-n", "elsewhere"],
+    ["files", "ls", "-x", "somewhere", "/sources"],
+])
+def test_a_service_verb_refuses_a_kube_context(argv):
+    from click.testing import CliRunner
+
+    from robovast.client.cli import cli, load_plugins
+    load_plugins()
+    result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 2, result.output
+    assert "No such option" in result.output
 
 
 def test_no_tunnel_is_opened_for_a_command(monkeypatch):
@@ -91,7 +119,7 @@ def test_no_tunnel_is_opened_for_a_command(monkeypatch):
     assert not hasattr(st, "_stop_port_forward")
 
     monkeypatch.setattr(st, "_service_alive", lambda url: True)
-    with st.service_client(namespace="ns", context="local") as (client, label):
+    with st.service_client() as (client, label):
         assert isinstance(client, HTTPTransport)
         assert client.base_url == "http://127.0.0.1:8800"
         assert "detected" in label

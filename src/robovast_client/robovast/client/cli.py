@@ -39,7 +39,7 @@ from robovast.client.errors import handle_cli_exception
 from robovast.client.logging_config import (get_logger, setup_default_logging,
                                             setup_logging)
 from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
+from robovast.client.service_target import service_client
 from robovast.client.tail import tail_chunks
 from robovast.execution.wait_exit import ImageWaitExit, documents_exit_codes
 
@@ -343,8 +343,7 @@ _INIT_EXCLUDE_DIRS = {'results'}
               help='Upload campaign results trees too. Off by default: they are a '
                    "campaign's OUTPUT, so pushing them back as project input uploads "
                    'every past campaign on disk. What was skipped is always reported.')
-@target_options
-def workspace_init(directory, name, excludes, include_results, namespace, context):
+def workspace_init(directory, name, excludes, include_results):
     """Create a workspace and upload every file from DIRECTORY into it.
 
     ``.vast``/``.osc`` are written inline; all other files go through the upload
@@ -362,7 +361,7 @@ def workspace_init(directory, name, excludes, include_results, namespace, contex
     from robovast.service.project_push import sync_directory_to_workspace
     root = Path(directory).resolve()
     skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         requested = name or root.name
         ws = client.create_workspace(CreateWorkspaceRequest(name=requested))
@@ -399,8 +398,7 @@ def workspace_init(directory, name, excludes, include_results, namespace, contex
               help='Upload campaign results trees too. Off by default: they are a '
                    "campaign's OUTPUT, so pushing them back as project input uploads "
                    'every past campaign on disk. What was skipped is always reported.')
-@target_options
-def workspace_update(workspace, directory, excludes, prune, include_results, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_update(workspace, directory, excludes, prune, include_results):  # pylint: disable=redefined-outer-name
     """Re-sync DIRECTORY into an EXISTING workspace (id or name).
 
     Uploads every file from DIRECTORY, overwriting in place — ``.vast``/``.osc``
@@ -419,7 +417,7 @@ def workspace_update(workspace, directory, excludes, prune, include_results, nam
     from robovast.service.project_push import _resolve_workspace_id, sync_directory_to_workspace
     root = Path(directory).resolve()
     skip_dirs = _INIT_EXCLUDE_DIRS | set(excludes)
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         wid = _resolve_workspace_id(client, workspace)
         stats = sync_directory_to_workspace(
@@ -438,8 +436,7 @@ def workspace_update(workspace, directory, excludes, prune, include_results, nam
 @click.option('--overwrite', is_flag=True,
               help='Replace local files that already exist. Off by default: pulling over an '
                    'edited copy of the same project would lose those edits irrecoverably.')
-@target_options
-def workspace_download(workspace_id, directory, overwrite, namespace, context):
+def workspace_download(workspace_id, directory, overwrite):
     """Fetch every file in WORKSPACE (an id or a name) into DIRECTORY.
 
     The other direction of ``workspace init`` / ``update``, so a project can be taken off a
@@ -455,7 +452,7 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
     """
     from robovast.service.project_push import pull_workspace_to_directory
 
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         try:
             counts = pull_workspace_to_directory(client, workspace_id, directory,
@@ -469,8 +466,7 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
 @click.option('--json', 'as_json', is_flag=True,
               help='Print the listing as one JSON object, the fields the MCP '
                    'list_workspaces tool returns.')
-@target_options
-def workspace_list(as_json, namespace, context):
+def workspace_list(as_json):
     """List workspaces (newest first), with the campaigns running out of each.
 
     ``--json`` prints ``{workspaces, total}`` on stdout and the target on stderr.
@@ -478,7 +474,7 @@ def workspace_list(as_json, namespace, context):
     import json as json_mod
 
     from robovast.client.workspace_report import workspace_listing
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target, err=as_json)
         listing = workspace_listing(client)
     if as_json:
@@ -503,8 +499,7 @@ def workspace_list(as_json, namespace, context):
               help='Also list the entities the world compiles, and what its start state '
                    'warns about. Costs a model build and a reset.')
 @click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
-@target_options
-def workspace_world(workspace, path, targets, entities, as_json, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_world(workspace, path, targets, entities, as_json):  # pylint: disable=redefined-outer-name
     """Describe the world a campaign of this workspace's project will load.
 
     The other half of authoring a ``sim:`` override: ``vast workspace world`` says what the
@@ -522,7 +517,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
     import json as json_mod
 
     from robovast.service.project_push import _resolve_workspace_id
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target, err=as_json)
         wid = _resolve_workspace_id(client, workspace)
         described = client.describe_world(wid, path, targets, entities)
@@ -560,9 +555,8 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 @click.option('--no-scenario-check', is_flag=True,
               help='Skip parsing the scenario in the image that would run it. That is '
                    'the only check that sees an import the image does not carry.')
-@target_options
-def workspace_validate(workspace, vast_path, no_world_check, no_scenario_check,  # pylint: disable=redefined-outer-name
-                       namespace, context):
+def workspace_validate(workspace, vast_path, no_world_check,  # pylint: disable=redefined-outer-name
+                       no_scenario_check):
     """Check a project before spending any compute on it.
 
     Reports **every** problem at once rather than the first, because they fail
@@ -577,7 +571,7 @@ def workspace_validate(workspace, vast_path, no_world_check, no_scenario_check, 
         from robovast.service.project_push import \
             _resolve_workspace_id  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
             report = client.validate_project(
@@ -619,8 +613,7 @@ def workspace_validate(workspace, vast_path, no_world_check, no_scenario_check, 
 @click.argument('vast_path', metavar='[VAST]', required=False, default='')
 @click.option('--max-configs', type=int, default=0, show_default=True,
               help='Show at most this many configurations (0 = all).')
-@target_options
-def workspace_preview(workspace, vast_path, max_configs, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_preview(workspace, vast_path, max_configs):  # pylint: disable=redefined-outer-name
     """Show what the sweep expands to, without running any of it.
 
     The answer to "how many configurations will this be" — asked before a launch rather
@@ -630,7 +623,7 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
         from robovast.service.project_push import \
             _resolve_workspace_id  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
             preview = client.preview_configurations(
@@ -692,11 +685,10 @@ def workspace_preview(workspace, vast_path, max_configs, namespace, context):  #
                    'then download its archive into the current directory.')
 @click.option('--poll-interval', type=float, default=5.0, show_default=True,
               help='Seconds between status polls when --wait-and-download is set.')
-@target_options
 def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint: disable=redefined-outer-name
                   campaign_name, description, priority, upload_to_share,
                   allow_opaque_image, image_project, image_project_tag,
-                  wait_and_download, poll_interval, namespace, context):
+                  wait_and_download, poll_interval):
     """Run a ``.vast`` — the one way to start a campaign from a project.
 
     WORKSPACE is a ``ws-…`` id or a workspace name. VAST is the path to the ``.vast``
@@ -742,7 +734,7 @@ def workspace_run(workspace, vast_path, push_dir, config_filter, runs,  # pylint
         project_tag = image_project_tag if image_project_tag is not None else os.environ.get(
             'ROBOVAST_PROJECT_TAG', '')
 
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
 
             if push_dir is not None:
@@ -824,14 +816,13 @@ def _resolve_or_create_workspace(client, workspace, create_request_cls):
 
 @workspace.command('delete')
 @click.argument('workspace', metavar='WORKSPACE')
-@target_options
-def workspace_delete(workspace, namespace, context):  # pylint: disable=redefined-outer-name
+def workspace_delete(workspace):  # pylint: disable=redefined-outer-name
     """Delete a workspace and its inputs (existing campaigns are unaffected).
 
     WORKSPACE may be a ``ws-…`` id or a workspace name (unique names resolve;
     ambiguous ones must be deleted by id).
     """
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         res = client.delete_workspace(workspace)
         click.echo(res.message or ('deleted' if res.ok else 'failed'))
@@ -898,11 +889,10 @@ def files():
 @click.option('--detail', '-l', is_flag=True, help='Show sizes.')
 @click.option('--limit', default=100, show_default=True, help='Maximum entries.')
 @click.option('--offset', default=0, help='First entry to show.')
-@target_options
 @_file_errors
-def files_ls(address, recursive, detail, limit, offset, namespace, context):
+def files_ls(address, recursive, detail, limit, offset):
     """List the directory at ADDRESS (a trailing slash is optional)."""
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         listing = client.list_files(address, recursive=recursive, detail=detail,
                                     offset=offset, limit=limit)
@@ -923,11 +913,10 @@ def files_ls(address, recursive, detail, limit, offset, namespace, context):
 @click.argument('address')
 @click.option('--lines', default=200, show_default=True, help='Maximum lines.')
 @click.option('--offset', default=0, help='First line to print.')
-@target_options
 @_file_errors
-def files_cat(address, lines, offset, namespace, context):
+def files_cat(address, lines, offset):
     """Print a page of the text file at ADDRESS (binary files → ``vast files get``)."""
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         page = client.read_file(address, lines=lines, offset=offset)
         click.echo(page.content)
@@ -940,16 +929,15 @@ def files_cat(address, lines, offset, namespace, context):
 @files.command('get')
 @click.argument('address')
 @click.argument('destination', type=click.Path(dir_okay=False))
-@target_options
 @_file_errors
-def files_get(address, destination, namespace, context):
+def files_get(address, destination):
     """Download the file at ADDRESS to DESTINATION, bytes intact.
 
     The way to fetch one binary artifact (a rosbag, a mesh, a rendered plot) without
     downloading the campaign archive around it.
     """
     from pathlib import Path
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         data = client.read_file_bytes(address)
     Path(destination).write_bytes(data)
@@ -959,9 +947,8 @@ def files_get(address, destination, namespace, context):
 @files.command('put')
 @click.argument('address')
 @click.argument('source', type=click.Path(exists=True, dir_okay=False))
-@target_options
 @_file_errors
-def files_put(address, source, namespace, context):
+def files_put(address, source):
     """Upload SOURCE to ADDRESS (``/sources/…`` only — results are immutable).
 
     ``.vast``/``.osc`` are written inline; every other type goes through the upload
@@ -970,7 +957,7 @@ def files_put(address, source, namespace, context):
     from pathlib import Path
 
     from robovast.service.project_push import push_file
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         kind = push_file(client, address, Path(source))
     click.echo(f"{kind} {address}")
@@ -978,11 +965,10 @@ def files_put(address, source, namespace, context):
 
 @files.command('rm')
 @click.argument('address')
-@target_options
 @_file_errors
-def files_rm(address, namespace, context):
+def files_rm(address):
     """Delete the file at ADDRESS (``/sources/…`` only)."""
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         res = client.delete_file(address)
         click.echo(res.message or ('deleted' if res.ok else 'failed'))
@@ -1068,8 +1054,7 @@ def image():
                    "workspace's project, never a CWD one.")
 @click.option('--config-path', default='', help='Which .vast when the workspace has several.')
 @click.option('--wait/--no-wait', default=True, help='Wait for the build to finish (default).')
-@target_options
-def image_build(workspace_id, config_path, wait, namespace, context):  # pylint: disable=redefined-outer-name
+def image_build(workspace_id, config_path, wait):  # pylint: disable=redefined-outer-name
     """Build (or reuse) the images the project's containers declare.
 
     Zero or more: one per container in ``execution.containers`` that adds packages.
@@ -1077,7 +1062,7 @@ def image_build(workspace_id, config_path, wait, namespace, context):  # pylint:
     containers build -- there is no CWD project and no single "the" image.
     """
     from robovast.service.interface import BuildImageRequest
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         ref = client.build_image(BuildImageRequest(
             workspace_id=workspace_id, config_path=config_path))
@@ -1117,8 +1102,8 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
     ``fixable_by`` say *what to change*, and a caller that prints only "build failed"
     sends the reader to the builder log for something the status already knew.
     """
-    from robovast.execution.image_build_wait import (SUCCESS_PHASES,
-                                                     wait_for_image_builds)
+    from robovast.execution.image_build_wait import wait_for_image_builds
+    from robovast.service.interface import IMAGE_BUILT_PHASES
     from robovast.execution.poll_health import PollsStopped
     try:
         done = wait_for_image_builds(build_ids, client=client, interval=interval,
@@ -1135,7 +1120,7 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         raise SystemExit(ImageWaitExit.STOPPED_WAITING) from e
     failed = False
     for build_id, status in done.items():
-        if status.phase in SUCCESS_PHASES:
+        if status.phase in IMAGE_BUILT_PHASES:
             click.echo(f"✓ built 'build:{status.tag}'")
             continue
         failed = True
@@ -1159,9 +1144,8 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
               help='Seconds between status polls.')
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
-@target_options
 @documents_exit_codes(ImageWaitExit)
-def image_wait(build_ids, interval, timeout, namespace, context):
+def image_wait(build_ids, interval, timeout):
     """Block until every BUILD_ID is built; the exit code says how the builds ended.
 
     {exit_codes}
@@ -1179,7 +1163,7 @@ def image_wait(build_ids, interval, timeout, namespace, context):
     Takes **several** ids because a project builds one image per container that adds
     packages, and waiting for the first says nothing about the rest.
     """
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         _wait_for_builds(client, list(build_ids), interval=interval, timeout=timeout)
 
@@ -1189,8 +1173,7 @@ def image_wait(build_ids, interval, timeout, namespace, context):
 @click.option('--json', 'as_json', is_flag=True,
               help='Print the status as one JSON object, the fields the MCP '
                    'get_image_build_status tool returns.')
-@target_options
-def image_status(build_id, as_json, namespace, context):
+def image_status(build_id, as_json):
     """Show an image build's status and what to do next.
 
     ``--json`` prints the status on stdout and the target on stderr.
@@ -1198,7 +1181,7 @@ def image_status(build_id, as_json, namespace, context):
     import json as json_mod
 
     from robovast.client.image_report import build_status_report
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target, err=as_json)
         s = build_status_report(client, build_id)
     if as_json:
@@ -1215,10 +1198,9 @@ def image_status(build_id, as_json, namespace, context):
 
 @image.command('log')
 @click.argument('build_id')
-@target_options
-def image_log(build_id, namespace, context):
+def image_log(build_id):
     """Print an image build's raw builder log."""
-    with service_client(namespace, context) as (client, target):
+    with service_client() as (client, target):
         _echo_target(target)
         tail_chunks(lambda o: client.get_image_build_log(build_id, o),
                     lambda text: click.echo(text, nl=False))
