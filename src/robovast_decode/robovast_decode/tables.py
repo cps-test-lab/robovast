@@ -294,13 +294,15 @@ def schema_of(manifest: dict, entry: dict) -> List[List[str]]:
 
 def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[str], rows: int,
                      schema: pa.Schema, sources: dict, complete: bool,
-                     live: Optional[float] = None) -> List[str]:
+                     live: Optional[float] = None, reason: Optional[str] = None) -> List[str]:
     """Enter one run's contribution to *table* in *manifest* (in memory).
 
     *files* are every file the run's table is made of: its one finished file, or the parts
     written so far. *live* is the epoch time the session writing those parts last wrote, or
-    ``None`` for an entry nobody is appending to. Returns the files the entry named before
-    and no longer does, for the caller to remove once the manifest is written.
+    ``None`` for an entry nobody is appending to. *reason* says why the rows are not all the
+    recording holds (a topic that stopped decoding), which a reader reports beside them.
+    Returns the files the entry named before and no longer does, for the caller to remove
+    once the manifest is written.
     """
     entry = manifest["tables"].setdefault(table, {"runs": {}})
     before = entry["runs"].get(run_key) or {}
@@ -313,10 +315,24 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
         "decoder": __version__,
         "contract": DATA_CONTRACT,
     }
+    if reason is not None:
+        record["reason"] = reason
     if live is not None:
         record["live"] = live
     entry["runs"][run_key] = record
     return [f for f in before.get("files") or [] if f not in files]
+
+
+def written_here(entry: Optional[dict]) -> bool:
+    """Whether *entry* was written by this decoder under the contract it follows now.
+
+    Two versions of the decoder can carry one package version -- every build of a branch
+    does -- so the contract number is checked beside it: a table laid out under another
+    contract is not the table a reader was promised, whatever version wrote it. An entry
+    that fails this is built again, never read as current.
+    """
+    return bool(entry) and (entry.get("decoder") == __version__
+                            and entry.get("contract") == DATA_CONTRACT)
 
 
 def live_owned(entry: Optional[dict], now: Optional[float] = None) -> bool:
@@ -393,4 +409,4 @@ __all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "LIVE_STALE_S", "MANIFEST", "TableBuf
            "cache_root", "campaign_table_path", "fixed", "leading_then_sorted", "live_owned",
            "manifest_lock", "read_manifest", "record_campaign_table", "record_run_absent",
            "record_run_table", "remove_files", "run_part_path", "run_table_path", "schema_of",
-           "write_manifest", "write_table"]
+           "write_manifest", "write_table", "written_here"]

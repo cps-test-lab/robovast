@@ -139,3 +139,10 @@ def test_a_categorical_measure_builds_a_working_archive():
         for i, ps in enumerate(proposals)])
     report = strategy.report()
     assert report.extra['num_elites'] >= 1
+
+
+@pytest.mark.parametrize('raw', [float('nan'), float('inf'), 'nan'])
+def test_a_non_finite_numeric_measure_is_refused_by_name(raw):
+    spec = MeasureSpec(low=0.0, high=1.5)
+    with pytest.raises(ValueError, match="clearance"):
+        measure_value(spec, raw, 'clearance')
