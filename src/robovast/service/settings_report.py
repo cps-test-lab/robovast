@@ -338,8 +338,7 @@ def describe(loopback: bool = False) -> list[Described]:
 
     Args:
         loopback: whether the caller reached this service over the loopback interface, and
-            may therefore be shown host paths — the rule ``/version`` already applies to
-            ``results_root`` / ``sources_root``.
+            may therefore be shown host paths.
 
     The environment decides what is reported; :data:`KNOWN` decides only how. A key it does
     not cover still appears, without its value.
