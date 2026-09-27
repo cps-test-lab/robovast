@@ -93,10 +93,9 @@ just reads, aggregates and names.
 *How* it aggregates is a real choice, and the obvious answer is usually the wrong
 one. Averaging hides the run you care about — four comfortable landings and one that
 nearly tipped over average to "comfortable" — and on a quality-diversity archive it
-collapses the very spread the archive exists to map: measured on a quadrotor QD
-campaign, behaviour measures averaged over five runs filled 3 of 512 cells, because
-averaging pulled every cell toward the middle of the behaviour space before the
-archive saw it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
+collapses the very spread the archive exists to map: behaviour measures averaged over
+several runs fill only a small fraction of the archive's cells, because averaging pulls
+every cell toward the middle of the behaviour space before the archive sees it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
 (the default), ``quantile`` (a pessimistic tail that one freak run cannot define) and
 ``mean`` (which must be asked for by name)::
 
@@ -630,10 +629,10 @@ Why a fixed repetition count wastes most of its runs
 simultaneously too many and too few. A cell whose runs all agree was decided by its
 first one; a cell on a failure boundary is exactly where more samples buy something.
 
-Measured on a quadrotor search campaign: **3 of 32 configurations produced a mixed
-outcome across 5 repetitions**. The other 29 spent 5 runs each to establish a single
-bit — 145 of 160 runs. At three milliseconds a run that is invisible; at ninety
-seconds a run it is the campaign's whole budget.
+Typically **only the few configurations on a failure boundary produce a mixed outcome
+across their repetitions**; every other cell spends its whole count establishing a single
+bit. When a run takes milliseconds that is invisible; when it takes minutes it is most of
+the campaign's budget.
 
 The ``repetitions`` block
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -677,7 +676,7 @@ Two consequences worth knowing:
   cell gets ``min``. Guessing high would rebuild the uniform waste with a different
   constant.
 * When **every observation so far agrees**, no neighbourhood can be contested and
-  everything gets ``min``. That is the 29-of-32 case, and spending the floor on it is
+  everything gets ``min``. That is the common case above, and spending the floor on it is
   the correct answer, not a degenerate one.
 
 A strategy still outranks the policy
@@ -696,8 +695,8 @@ accordingly, so a batch may become several execution groups.
 Budgeting a search whose repetitions vary
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once repetitions are adaptive, ``batches × per_batch × execution.runs`` no longer
-predicts anything. Bound the campaign with ``budget: [{runs: N}]``, which counts
+With adaptive repetitions, ``batches × per_batch × execution.runs`` does not predict
+the spend. Bound the campaign with ``budget: [{runs: N}]``, which counts
 executions directly. This is also what makes two strategies comparable: a fair contest
 gives both the same number of runs, not the same number of batches.
 

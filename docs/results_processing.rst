@@ -1277,7 +1277,7 @@ Re-running a finished campaign's post-run steps
 The two steps that run *after* a campaign's scenarios finish — **postprocessing** and the
 **upload-to-share** — can each be re-triggered on a finished campaign, and each works **from the
 stored campaign alone**: no live campaign process is required, so a re-trigger is available even
-after the ``robovast-service`` (``vast serve``) was restarted. Under the web UI's *Monitor* each
+after the ``robovast-service`` (``vast serve``) has restarted. On the web UI's *Campaigns* page each
 finished campaign's actions menu offers *Retrigger postprocessing* and *Export to share*; the same
 operations are ``vast campaign postprocess`` and ``vast share export -i <campaign-id>`` on the
 command line and the MCP tools ``run_postprocessing`` and ``run_share``.
@@ -2008,7 +2008,8 @@ Original campaign-directories are not modified.
 
 .. option:: -r, --results-dir PATH
 
-   Source directory containing campaign directories.
+   Directory holding the campaign directories to merge. Required: there is no default
+   results directory.
 
 
 .. _results-postprocess-commands:

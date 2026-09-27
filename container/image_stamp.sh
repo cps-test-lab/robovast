@@ -31,7 +31,7 @@
 # the image -- not the caller's working directory, which may be a superproject holding robovast
 # as a submodule.
 #
-# Two arrays and not one: a build script expands only the arrays its Dockerfile declares an ARG
+# Separate arrays and not one: a build script expands only the arrays its Dockerfile declares an ARG
 # for, and passing a --build-arg no Dockerfile declares is a warning on every build.
 image_stamp_args() {
   local root="${1:-}" sha dirty compat
@@ -47,7 +47,7 @@ image_stamp_args() {
   # answer baked in, exactly as the revision is. RFC 3339 in UTC, matching the format
   # docker/metadata-action puts in org.opencontainers.image.created, so the CI-built and the
   # locally built image are read the same way. Unlike the revision this changes on every build
-  # rather than every commit, so its ARG belongs at the very end of a Dockerfile.
+  # rather than every commit, so its ARG belongs after every install step of a Dockerfile.
   BUILD_DATE_ARGS=(--build-arg "ROBOVAST_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
 
   # The host<->container protocol version, read from the one place that defines it instead of

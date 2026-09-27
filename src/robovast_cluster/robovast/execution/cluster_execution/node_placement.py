@@ -410,21 +410,13 @@ def _parse_quantity(value) -> int:
     ``0`` rather than a raise: this feeds a ranking, and a node whose size cannot be read
     should sort last, not abort the placement of every other node.
     """
+    from kubernetes.utils.quantity import \
+        parse_quantity  # pylint: disable=import-outside-toplevel
     if not value:
         return 0
-    text = str(value).strip()
-    suffixes = (("Ei", 1024 ** 6), ("Pi", 1024 ** 5), ("Ti", 1024 ** 4), ("Gi", 1024 ** 3),
-                ("Mi", 1024 ** 2), ("Ki", 1024), ("E", 1000 ** 6), ("P", 1000 ** 5),
-                ("T", 1000 ** 4), ("G", 1000 ** 3), ("M", 1000 ** 2), ("k", 1000))
-    for suffix, factor in suffixes:
-        if text.endswith(suffix):
-            try:
-                return int(float(text[:-len(suffix)]) * factor)
-            except ValueError:
-                return 0
     try:
-        return int(float(text))
-    except ValueError:
+        return int(parse_quantity(str(value).strip()))
+    except (ValueError, OverflowError):  # OverflowError: "inf" reads as Infinity
         return 0
 
 

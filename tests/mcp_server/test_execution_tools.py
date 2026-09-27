@@ -807,6 +807,29 @@ def test_min_severity_uses_the_shared_classifier_not_a_hand_written_grep(monkeyp
     assert summary["severity_counts"] == {"other": 1, "warn": 0, "error": 1}
 
 
+@pytest.mark.parametrize("paging, named", [
+    ({"tail": 5}, "tail=5"),
+    ({"limit": 50}, "limit=50"),
+    ({"offset": 10}, "offset=10"),
+    ({"tail": 5, "limit": 50}, "limit=50, tail=5"),
+])
+def test_a_campaign_log_summary_refuses_the_line_paging_it_cannot_apply(
+        monkeypatch, tmp_path, paging, named):
+    """``tail``, ``limit`` and ``offset`` size and move a page of lines; a summary has none,
+    so passing one with ``summarize`` is refused by name rather than dropped."""
+
+    _service_with_log(monkeypatch, tmp_path, {"controller.log": _flooded_log(5)})
+    out = execution.get_campaign_log(_CID, summarize=True, **paging)
+    assert set(out) == {"error"}
+    assert out["error"].startswith(f"{named} cannot be combined with summarize=True")
+
+
+def test_a_job_log_summary_refuses_tail(monkeypatch):
+    _service_with_job_log(monkeypatch, _flooded_log(5))
+    out = execution.get_job_log(_CID, "job-0", summarize=True, tail=3)
+    assert "tail=3 cannot be combined with summarize" in out["error"]
+
+
 def test_an_invalid_filter_is_reported_rather_than_silently_ignored(monkeypatch, tmp_path):
 
     _service_with_log(monkeypatch, tmp_path, {"controller.log": _stamp(1, "INFO", "line")})
