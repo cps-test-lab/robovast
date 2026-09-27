@@ -46,6 +46,9 @@ export function PostprocessingDialog({
   // A replay clears every built table and builds every table the records can give, for every
   // run, before the declared pass: the rows must equal what the live watcher wrote.
   const [replay, setReplay] = useState(false)
+  // Clears the campaign's built tables first, so what it declares is built again from its
+  // records -- `vast campaign postprocess --force`. Without it a table already built stands.
+  const [force, setForce] = useState(false)
   // Load the fetched source into the buffer (and reset it on reopen / after a save writes a new rev).
   useEffect(() => {
     if (src.data) setText(src.data.content)
@@ -60,7 +63,7 @@ export function PostprocessingDialog({
   const saveAndRerun = useMutation({
     mutationFn: async () => {
       if (changed) await robovast.updatePostprocessingSource(campaignId, text ?? '')
-      return robovast.runPostprocessing(campaignId, { replay })
+      return robovast.runPostprocessing(campaignId, { replay, force })
     },
     onSuccess: (result) => {
       // Not ok = the busy guard (an operation is already running): keep the dialog open and
@@ -114,6 +117,22 @@ export function PostprocessingDialog({
               <Typography variant="body2">
                 Replay: clear every built table and build every table the records can give, for
                 every run, before the declared steps
+              </Typography>
+            }
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                size="small"
+                checked={force}
+                onChange={(e) => setForce(e.target.checked)}
+                disabled={busy || replay}
+              />
+            }
+            label={
+              <Typography variant="body2">
+                Rebuild: clear the built tables first, so the declared ones are built again from
+                the records (a replay does this and more)
               </Typography>
             }
           />

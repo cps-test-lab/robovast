@@ -253,8 +253,11 @@ It provides four views:
   ``results_processing.postprocessing`` block of the campaign's own
   ``_config/<name>.vast``, with no override file and no revision history. It is the one
   narrow exception to the snapshot being a record of what ran, and it is why the
-  read-only config view calls that snapshot *frozen* rather than *immutable*. The
-  browser equivalent of ``vast cluster monitor``.
+  read-only config view calls that snapshot *frozen* rather than *immutable*. The dialog's
+  two checkboxes are ``vast campaign postprocess``'s flags: **Rebuild** clears the built
+  tables first so the declared ones are built again from the records (``--force``), and
+  **Replay** clears them and builds every table the records can give, for every run,
+  before the declared steps (``--replay``).
   A finished campaign's menu also offers **Build all tables**, which builds every table its
   records can give, for every run, in the background — the same operation as
   ``vast campaign tables build`` (:ref:`results-tables-ahead`). Its confirmation says what is
@@ -441,9 +444,10 @@ starts, endings and failures the toasts and the OS notifications announce, which
 scrolled away were held by nothing. Each row carries the service's own words, the time, the
 severity, who was refused where they said, and the status the caller got.
 
-Repeats collapse: an identical refusal inside a minute is counted onto the row already there
-(shown as ``repeated``) rather than recorded again, so a panel polling something that cannot
-answer it does not push the rest of the record out.
+Repeats collapse: an identical refusal inside a minute of the last one recorded is counted
+rather than recorded again, and the next row of it carries the count (shown as ``N identical
+before it``), so a panel polling something that cannot answer it does not push the rest of the
+record out.
 
 Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
 a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
