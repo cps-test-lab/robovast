@@ -1273,13 +1273,23 @@ campaign this deployment never ran, from an archive
 — when what arrived is a raw archive, carrying no postprocessing record — rolls straight
 on into ``postprocessing``. Its per-stage verdicts land in ``_execution/import.json`` and its
 narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
-rather than a failure.
+rather than a failure. One such stage is ``environment``: it names the variation types,
+postprocessing commands, metadata processors, health checks and plugin packages the
+campaign's ``.vast`` uses that this deployment does not have, so a raw import says what
+its postprocessing will lack before running it.
 
 A genuine failure is **kept, as a failed campaign**, and the refusal names what was
 missing rather than which check noticed. Registering the campaign is what makes it visible
 while it arrives, so the entry outlives the failure, and keeping the directory keeps the
 ``import.log`` and ``import.json`` that explain it. Remove it with ``vast campaign delete``, or
 import again with ``--force``.
+
+An archive that would unpack to more than the results volume has room for above its
+free-space reserve is refused with a 507 before anything is extracted. Its size is read from
+the archive's index, not from the compressed file, whose size says nothing about what
+extraction writes: each member counts as at least one block of the results volume, and a
+file as its size rounded up to whole blocks. A share archive is checked once it is
+downloaded, when its size is known.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no
 frozen ``_config/`` instead of writing an archive whose only possible future is an ingest

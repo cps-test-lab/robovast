@@ -37,6 +37,7 @@ def _search_campaign(root, direction="maximize", batches=((0.2, 0.6), (0.5, 0.9)
             store.record_unit(batch_id=bid, paramset_id=f"p{idx}{n}", config_name=f"c{idx}{n}",
                               params={}, objectives={"failure_rate": v}, measures={},
                               status="evaluated", result_dir=f"c{idx}{n}", n_samples=1)
+        store.complete_batch(bid)
     store.close()
 
 
@@ -49,6 +50,7 @@ def test_serves_the_trajectory_of_a_search(harness):
     assert body["unavailable"] is None
     assert [b["idx"] for b in body["batches"]] == [0, 1]
     assert [b["best_so_far"] for b in body["batches"]] == [0.6, 0.9]
+    assert [b["complete"] for b in body["batches"]] == [True, True]
 
 
 def test_minimizing_search_reports_the_minimum_as_best(harness):

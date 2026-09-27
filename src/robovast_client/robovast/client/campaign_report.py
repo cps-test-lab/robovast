@@ -156,7 +156,8 @@ def attach_objective_history(result: dict, client, campaign_id: str) -> None:
         return
     best = batches[-1].best_so_far
     since = 0
-    for b in reversed(batches):
+    # A batch still running has not yet been a round without improvement.
+    for b in reversed([b for b in batches if b.complete]):
         if b.best_so_far != best:
             break
         since += 1
@@ -217,8 +218,8 @@ def status_to_dict(campaign_id: str, backend, st) -> dict:
     # this is that judgement.
     result.update(stopping_soon_report(st))
     # Only when a running job's simulator reported one, but then always: an error-level finding
-    # is what stops `vast campaign wait` (exit 5), so a reader of this report has to be shown the
-    # same thing the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
+    # is what stops `vast campaign wait` (HEALTH_FINDING), so a reader of this report has to be
+    # shown the same thing the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
     # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
     findings = error_findings(st)
     if findings:

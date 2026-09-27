@@ -32,6 +32,7 @@ from urllib.parse import urlencode
 from fastmcp import FastMCP
 
 from robovast.client.campaign_report import status_report
+from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
 from robovast.mcp_server.service_access import NO_SERVICE, error_result
@@ -55,7 +56,7 @@ def _wait_next_step(campaign_id: str) -> str:
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
     return (f"run in the background: vast campaign wait {campaign_id} "
-            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
+            f"({CampaignWaitExit.summary()})")
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
@@ -63,6 +64,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    description: str = "", priority: int = 0,
+                   image_project_tag: str = "",
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
@@ -100,6 +102,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             ``provenance:``. Refused by default: nothing in the results could then say what
             ran. Prefer fixing it — add ``provenance: {source, revision}`` there, or declare
             ``system_packages`` and drop the image so robovast builds it. Exemption recorded.
+        image_project_tag: Tag the RoboVAST ``family:`` images are taken at, this run only
+            (``vast workspace run --image-project-tag``). Pin a release (``2.2.0``) for a run
+            that must be reproducible; default is the service's, often a floating ``latest``.
+            An image the ``.vast`` names is run as written.
         description: **Set this every time.** One line (≤200 chars) saying what the run is
             *for* — what tells two same-day ids apart. Good: "pilot: 5 reps DWB vs MPPI on
             open_space, new inflation radius".
@@ -140,7 +146,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                 ("config_filter", config_filter), ("runs", runs),
                 ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
                 ("description", description),
-                ("priority", priority)) if value]
+                ("priority", priority), ("image_project_tag", image_project_tag)) if value]
             if supplied:
                 return {"error":
                         f"from_campaign={from_campaign!r} replays what that campaign "
@@ -164,7 +170,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             # 25-trial sweep finished "successfully" with 5 trials.
             runs=runs if runs and runs > 0 else 0,
             allow_opaque_image=allow_opaque_image, priority=priority,
-            upload_to_share=upload_to_share))
+            upload_to_share=upload_to_share, image_project_tag=image_project_tag))
         out = {"campaign_id": ref.campaign_id,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
@@ -190,7 +196,7 @@ def get_campaign_status(campaign_id: str) -> dict:
     runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
-    itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
+    itself; what ends a ``vast campaign wait`` early, and it needs no declared timeout.
     ``get_job_state`` is the fuller read.
 
     ``postprocessed`` — ``finished`` does not imply the campaign-end pass ran: one whose
@@ -779,7 +785,7 @@ def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
         return ("every image is built — start_campaign(...) to run it, or "
                 "exec_in_container(...) to look inside it")
     return (f"run in the background: vast image wait {' '.join(ids)} --interval 5 "
-            f"(exit 0 built, 1 failed). A builder pod that cannot start -- its own image "
+            f"({ImageWaitExit.summary()}). A builder pod that cannot start -- its own image "
             f"unpullable, or nowhere to schedule it -- fails within a minute rather than "
             f"hanging; get_image_build_status says which")
 
@@ -870,7 +876,7 @@ def _status_next_step(status) -> str:
                 "involved, and the build fails on its own shortly if this does not clear")
     if not status.done:
         return (f"run in the background: vast image wait {status.build_id} --interval 5 "
-                f"(exit 0 built, 1 failed)")
+                f"({ImageWaitExit.summary()})")
     if status.phase == "failed":
         return (f"read error_detail above, then "
                 f"get_image_build_log(build_id='{status.build_id}', summarize=True) "
@@ -1000,7 +1006,8 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
         workspace_id, config_path: A workspace and which ``.vast`` in it.
         campaign_id: An existing campaign's ``_config/`` as the project — exactly one
             source, this or ``workspace_id``. A running campaign's container is never touched.
-        config_name: Stage this config. Omitted always means the bare image.
+        config_name: One configuration the ``.vast`` expands to, as
+            ``preview_configurations`` names it — not a file. Omitted: the bare image.
         container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
             Naming one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.

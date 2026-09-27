@@ -995,6 +995,16 @@ class ClusterContainerRunner:
             self._staged = False
             self._attempt(full_cmd, progress_update_callback)
 
+    def image_digest(self) -> str:
+        """The ``imageID`` the kubelet reports for this runner's container."""
+        pod = self._client().read_namespaced_pod(self._pod, self._namespace)
+        for status in (pod.status.container_statuses or []):
+            if status.name == self._container and status.image_id:
+                return status.image_id.split("://", 1)[-1]
+        raise RuntimeError(f"cannot read the digest of auxiliary image {self._spec.image}: "
+                           f"pod {self._pod} reports no imageID for container "
+                           f"{self._container}")
+
     def _attempt(self, full_cmd, progress_update_callback) -> None:
         """One transfer-run-transfer against whichever container :attr:`_pod` names."""
         self._copy_in()
