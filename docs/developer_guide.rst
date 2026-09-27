@@ -584,6 +584,13 @@ code. That text is the same on the CLI, in the MCP tools (``validate_project``,
 ``preview_configurations``) and in the web UI's config editor, so the line to fix is in
 front of whoever is authoring the plugin.
 
+**What the composition cache sees.** A composition is cached under its ``.vast``, the files the
+``.vast`` names and the source of its variations. A file your plugin reads because another file
+names it — the image a map YAML points at — is not among them: return its absolute path from
+``get_read_files()`` and a cached composition is not reused once it changes. The helper image a
+plugin declares with ``get_required_container`` is covered without this: the entry records the
+digest it ran, and a hit is served only while the image still resolves to it.
+
 .. note::
 
    **Packaging a variation plugin as its own distribution.** If your variation
@@ -1067,7 +1074,8 @@ and a half-written artifact can never be mistaken for a finished one.
 
 **Staleness.** Declare what was read by calling ``write_manifest(out_dir, paths)``, which
 writes ``.generated.json`` into the output directory; the next composition hashes those paths
-and skips the generator when nothing moved. Report the *real* set — for anything compiled from
+and skips the generator when nothing moved, and when the image of the container it declares
+still resolves to the same digest. Report the *real* set — for anything compiled from
 a description that can reference others, that includes the transitive ones. A generator that
 reports nothing is never cached, and a cached result is honored only while its outputs are
 still on disk unchanged: staleness fails towards doing the work, never towards serving a stale

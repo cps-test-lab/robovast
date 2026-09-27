@@ -1866,7 +1866,8 @@ cached for the campaign):
 - each **auxiliary helper image** (a composition's ``aux-<member>`` pod), when composition
   first asks for it — the pod and its ``transfer`` container run digests. A step served from
   a cache — a composition, an up-to-date input generator — starts no helper, and has the ones
-  it would have started fixed all the same, because a replay recomposes and runs them;
+  it would have started fixed all the same: the cache is served only while that digest is the
+  one it was built with, and a replay recomposes and runs them;
 - every **planned container** (scenario, simulation, sut, any declared one) before the first
   batch creates a Job.
 

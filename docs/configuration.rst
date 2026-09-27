@@ -1326,7 +1326,8 @@ in a container instead, so the *service's* environment stops mattering. With ``s
          command: floorplan --input {inputs[0]} --output {out}
 
 In a campaign this is a container in the campaign's auxiliary pod; ``vast configuration
-generate`` on a development machine runs it as an ephemeral ``docker run``.
+generate`` on a development machine runs it as an ephemeral ``docker run``. The image's digest is
+part of the staleness check, so a generator re-runs when its image is pushed anew.
 
 .. note::
 
