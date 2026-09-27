@@ -355,7 +355,8 @@ def test_campaign_summary_counts_a_kill_apart_from_the_failures(monkeypatch):
          "unknown": 0, "killed": 2},
     ]
     monkeypatch.setattr(data_access, "rows",
-                        lambda cid, sql: per_config if "GROUP BY config_name" in sql else [])
+                        lambda cid, sql, **_:
+                        per_config if "GROUP BY config_name" in sql else [])
     monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
                         lambda _rows: {})
 
@@ -374,13 +375,14 @@ def test_campaign_summary_omits_num_killed_when_nothing_was_killed(monkeypatch):
 
     monkeypatch.setattr(
         data_access, "rows",
-        lambda cid, sql: ([{"config_name": "cfg-a", "num_runs": 2, "success": 2,
+        lambda cid, sql, **_: ([{"config_name": "cfg-a", "num_runs": 2, "success": 2,
                             "failed": 0, "unknown": 0, "killed": 0}]
                           if "GROUP BY config_name" in sql else []))
     monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
                         lambda _rows: {})
 
-    assert "num_killed" not in results.get_campaign_summary("campaign-x")
+    summary = results.get_campaign_summary("campaign-x")
+    assert "error" not in summary and "num_killed" not in summary
 
 
 def test_campaign_summary_reports_a_shortfall_as_a_shortfall(monkeypatch):
@@ -404,7 +406,8 @@ def test_campaign_summary_reports_a_shortfall_as_a_shortfall(monkeypatch):
          "unknown": 0, "killed": 0, "missing": 1},
     ]
     monkeypatch.setattr(data_access, "rows",
-                        lambda cid, sql: per_config if "GROUP BY config_name" in sql else [])
+                        lambda cid, sql, **_:
+                        per_config if "GROUP BY config_name" in sql else [])
     monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
                         lambda _rows: {})
 
@@ -424,11 +427,12 @@ def test_campaign_summary_says_nothing_about_missing_when_nothing_is(monkeypatch
 
     monkeypatch.setattr(
         data_access, "rows",
-        lambda cid, sql: ([{"config_name": "cfg-a", "num_runs": 2, "success": 2,
+        lambda cid, sql, **_: ([{"config_name": "cfg-a", "num_runs": 2, "success": 2,
                             "failed": 0, "unknown": 0, "killed": 0, "missing": 0}]
                           if "GROUP BY config_name" in sql else []))
     monkeypatch.setattr("robovast.results_processing.advice.campaign_advice",
                         lambda _rows: {})
 
     summary = results.get_campaign_summary("campaign-x")
+    assert "error" not in summary
     assert "num_missing_configs" not in summary and "note" not in summary

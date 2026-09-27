@@ -19,7 +19,7 @@
 A table is built for a run the first time something names it, and kept: the manifest records
 which runs each table is built for, from which source bytes and by which decoder, so a later
 request builds only what is missing -- a run that has grown since, a table not yet asked for,
-or anything a different decoder version wrote.
+or anything a different decoder version, or another data contract, wrote.
 
 Where recordings live, relative to the campaign directory:
 
@@ -55,17 +55,17 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
-from . import __version__, run_slices
+from . import run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
-from .decode import channel_type, decode_bag, segments
+from .decode import SIDECAR_NAME, channel_type, decode_bag, segments, undecodable_tables
 from .derived import DERIVED, INPUTS, JobRun, derive_job
 from .framing import Channel, McapTail, has_footer, summary_channels
 from .handlers import Videos
 from .layout import YAML_LOADER, job_links, run_dirs
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
 from .tables import (TableBuffer, fixed, live_owned, manifest_lock, read_manifest,
-                     record_run_absent, record_run_table, remove_files, run_lock,
-                     run_table_path, write_manifest, write_table)
+                     record_run_absent, record_run_table, remove_files, run_lock, run_table_path,
+                     write_manifest, write_table, written_here)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
@@ -111,6 +111,8 @@ class BuildReport:
     built: Dict[str, List[str]] = field(default_factory=dict)      # table -> run keys
     skipped: Dict[str, List[str]] = field(default_factory=dict)    # table -> run keys current
     failed: Dict[str, Dict[str, str]] = field(default_factory=dict)  # table -> run -> reason
+    #: Tables built with the rows from before a topic stopped decoding: table -> run -> why.
+    incomplete: Dict[str, Dict[str, str]] = field(default_factory=dict)
     unknown: List[str] = field(default_factory=list)
     #: What a derivation could not do without failing: a container that recorded nothing, a
     #: run with no clock map. Findings about the records, reported with the build.
@@ -223,8 +225,16 @@ def recorded_topics(bag_dir: str) -> Dict[str, str]:
     return topics
 
 
-def _source_size(bag_dir: str) -> int:
-    return sum(os.path.getsize(p) for p in segments(bag_dir))
+def source_size(bag_dir: str) -> int:
+    """What a recording's tables are current against: the bytes of its segments and of its
+    definitions sidecar.
+
+    The sidecar counts because it decides what decodes: one written, or rewritten, after a
+    table was built can define a type the table was built without.
+    """
+    size = sum(os.path.getsize(p) for p in segments(bag_dir))
+    sidecar = os.path.join(bag_dir, SIDECAR_NAME)
+    return size + (os.path.getsize(sidecar) if os.path.isfile(sidecar) else 0)
 
 
 def _complete(run: Run, role: str, bag_dir: str) -> bool:
@@ -284,7 +294,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     """One run's tables from its recordings and its own files; the caller holds its lock."""
     sources = _sources(run)
     manifest = read_manifest(campaign_dir)
-    sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b in sources}
+    sizes = {os.path.relpath(b, campaign_dir): source_size(b) for _, b in sources}
     report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
                                                sum(sizes.values()))
     recording_rows = TableBuffer(RECORDING_TABLE)
@@ -293,10 +303,15 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     # {table: role} of what an earlier recording of the run already gives, so a later one
     # does not fill the same table.
     claimed: Dict[str, str] = {}
+    # {table: sources} of each bag table: the one recording it comes from, which is what
+    # its entry is current against, rows or none.
+    bag_sources: Dict[str, dict] = {}
     for role, bag_dir in sources:
         recorded = recorded_topics(bag_dir)
         plan = plan_for(role, recorded, groups.get(role), taken=claimed)
         claimed.update({t: role for t in plan.tables})
+        rel_bag = os.path.relpath(bag_dir, campaign_dir)
+        bag_sources.update({t: {rel_bag: sizes[rel_bag]} for t in plan.tables})
         known_tables.update(plan.tables)
         run_bag_tables.update(plan.tables)
         handlers, _unknown = narrow(plan, wanted_tables)
@@ -304,7 +319,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
             if isinstance(handler, Videos):
                 handler.output_dir = run.path
                 handler.bag_name = os.path.basename(bag_dir)
-        size = sizes[os.path.relpath(bag_dir, campaign_dir)]
+        size = sizes[rel_bag]
         todo = []
         for handler in handlers:
             current = [t for t in handler.tables()
@@ -318,13 +333,14 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
         decoded = decode_bag(bag_dir, todo) if (todo or not report_current) else None
         complete = _complete(run, role, bag_dir)
         written = []
+        types = {topic: stats.type for topic, stats in decoded.topics.items()} if decoded else {}
         for handler in todo:
-            name = type(handler).__name__
-            if name in decoded.failed:
+            if handler in decoded.failed:
                 for table in handler.tables():
                     if wanted_tables is None or table in wanted_tables:
-                        report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
+                        report.failed.setdefault(table, {})[run_key] = decoded.failed[handler]
                 continue
+            partial = undecodable_tables([handler], decoded.undecodable, types)
             for table, buf in handler.buffers.items():
                 if wanted_tables is not None and table not in wanted_tables:
                     continue
@@ -333,18 +349,25 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                     "run_id": run.run_id}))
                 rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
                 write_table(campaign_dir, rel, arrow)
-                written.append((table, rel, arrow))
+                written.append((table, rel, arrow, partial.get(table)))
+                if table in partial:
+                    report.incomplete.setdefault(table, {})[run_key] = partial[table]
+            # A table the topic gave no row for before it stopped decoding: absent, with why.
+            for table, reason in partial.items():
+                if table not in handler.buffers and (wanted_tables is None
+                                                     or table in wanted_tables):
+                    report.failed.setdefault(table, {})[run_key] = reason
         if decoded and not report_current:
             _recording_rows(recording_rows, role, decoded, plan)
         with manifest_lock(campaign_dir):
             fresh = read_manifest(campaign_dir)
             superseded = []
-            for table, rel, arrow in written:
+            for table, rel, arrow, reason in written:
                 superseded += record_run_table(
                     fresh, table, run_key, files=[rel], rows=arrow.num_rows,
                     schema=arrow.schema,
-                    sources={os.path.relpath(bag_dir, campaign_dir): size},
-                    complete=complete)
+                    sources={rel_bag: size},
+                    complete=complete, reason=reason)
                 report.built.setdefault(table, []).append(run_key)
             write_manifest(campaign_dir, fresh)
             # The parts an abandoned live session left: named by no manifest now.
@@ -358,7 +381,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                                report, known_tables,
                                reserved=run_bag_tables | DERIVED_TABLES)
     if wanted_tables is not None:
-        _record_absent(campaign_dir, run, wanted_tables, report, sizes,
+        _record_absent(campaign_dir, run, wanted_tables, report, sizes, bag_sources,
                        known=run_bag_tables | file_tables | {RECORDING_TABLE})
 
 
@@ -500,11 +523,14 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
 
 
 def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildReport,
-                   sizes: dict, known: set) -> None:
+                   sizes: dict, bag_sources: Dict[str, dict], known: set) -> None:
     """Enter the asked-for tables *run* has no rows for, and why where a build failed.
 
-    *known* are the tables the run's records can give at all: a table outside it is one this
-    run never had, which is a different answer from one it had and came out empty.
+    A bag table's entry records the one recording it comes from (*bag_sources*), as an entry
+    with rows does, so the next build finds it current; any other records every recording
+    of the run (*sizes*). *known* are the tables the run's records can give at all: a table
+    outside it is one this run never had, which is a different answer from one it had and
+    came out empty.
     """
     have = {t for t, keys in report.built.items() if run.key in keys}
     have |= {t for t, keys in report.skipped.items() if run.key in keys}
@@ -516,25 +542,51 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
         manifest = read_manifest(campaign_dir)
         for table in missing:
             reason = report.failed.get(table, {}).get(run.key)
-            record_run_absent(manifest, table, run.key, sources=sizes, complete=complete,
+            record_run_absent(manifest, table, run.key,
+                              sources=bag_sources.get(table, sizes), complete=complete,
                               reason=reason, known=table in known)
         write_manifest(campaign_dir, manifest)
 
 
 def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
-    """Whether the entry needs no build: same bytes by this decoder, or a live session's."""
+    """Whether the entry needs no build: same bytes by this decoder under this contract, or
+    a live session's."""
     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(run_key)
-    if not entry or entry.get("decoder") != __version__:
+    if not written_here(entry):
         return False
     if entry.get("live") is not None:
         return live_owned(entry)
     return sum(entry.get("sources", {}).values()) == size
 
 
+def settled(campaign_dir: str, table: str, entry: Optional[dict]) -> bool:
+    """Whether a reader may take *entry* as it is, without asking for a build.
+
+    It may when this decoder wrote it under this contract and it is final (``complete``), or a
+    live session's whose stamp is fresh. A final entry that carries a reason, and the
+    recording report, are measured against their sources once more: the run's container
+    writes the definitions sidecar after its verdict, so a sidecar can come after the entry
+    was final and decode what it could not.
+    """
+    if not written_here(entry):
+        return False
+    if not entry.get("complete"):
+        return live_owned(entry)
+    if not (entry.get("reason") or table == RECORDING_TABLE):
+        return True
+    for rel, size in entry.get("sources", {}).items():
+        path = os.path.join(campaign_dir, rel)
+        now = (source_size(path) if os.path.isdir(path)
+               else os.path.getsize(path) if os.path.isfile(path) else None)
+        if now != size:
+            return False
+    return True
+
+
 def _entry_current(entry: Optional[dict], sources: dict) -> bool:
-    """Whether a derived entry needs no build: the same *sources* by this decoder, or a
-    watcher's whose stamp is fresh."""
-    if not entry or entry.get("decoder") != __version__:
+    """Whether a derived entry needs no build: the same *sources* by this decoder under this
+    contract, or a watcher's whose stamp is fresh."""
+    if not written_here(entry):
         return False
     if entry.get("live") is not None:
         return live_owned(entry)
@@ -569,7 +621,9 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     """``{table: {"runs": n, "built": n, "failed": {run: reason}}}`` without building anything.
 
     ``runs`` counts the runs whose records can yield the table, ``built`` those it is built
-    for. *runs* limits both to those ``config/run`` keys.
+    for. ``failed`` names the runs it has no rows for and why, and those whose rows stop
+    where a topic stopped decoding -- built, and incomplete. *runs* limits all three to those
+    ``config/run`` keys.
     """
     campaign_dir = os.path.abspath(campaign_dir)
     groups = plugin_groups(config)
@@ -592,9 +646,10 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     out: Dict[str, dict] = {}
     for table, table_keys in keys.items():
         entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
-        built = [k for k in table_keys if k in entries and not entries[k].get("reason")]
-        failed = {k: entries[k]["reason"] for k in table_keys
-                  if k in entries and entries[k].get("reason")}
+        # An entry of another decoder or contract is neither: the next build replaces it.
+        current = {k: entries[k] for k in table_keys if written_here(entries.get(k))}
+        built = [k for k, e in current.items() if e.get("files") or not e.get("reason")]
+        failed = {k: e["reason"] for k, e in current.items() if e.get("reason")}
         out[table] = {"runs": len(table_keys), "built": len(built), "failed": failed}
     return out
 
@@ -602,4 +657,4 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
            "Run", "SharedJobError", "available_tables", "bag_information", "build",
            "derived_sources", "find_runs", "recorded_topics", "recording_closed",
-           "roqsim_recording", "scenario_recording"]
+           "roqsim_recording", "scenario_recording", "settled", "source_size"]
