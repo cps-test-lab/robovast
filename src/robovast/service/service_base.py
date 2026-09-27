@@ -66,7 +66,7 @@ from robovast.common.store import read_campaign_created_at, read_campaign_descri
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
-from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
+from robovast.service.interface import (ActionResult, BinaryFile, CampaignOrigin, CampaignRef,
                                         CampaignDeletion, CampaignTablesCleared,
                                         DeleteCampaignsRequest, ExportRef, ExportStatus,
                                         DeleteCampaignsResponse, OutputsIngested,
@@ -1088,8 +1088,10 @@ class ServiceBase(RobovastInterface):
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
         namespace, owner, rel, target = self._address_target(address)
         self._require_file(address, target)
-        return FileText(address=file_address.format_address(namespace, owner, rel),
-                        **file_view.read_text_page(target, lines, offset))
+        address = file_address.format_address(namespace, owner, rel)
+        if file_view.is_binary(target):
+            raise BinaryFile(address)
+        return FileText(address=address, **file_view.read_text_page(target, lines, offset))
 
     def read_file_bytes(self, address: str) -> bytes:
         _, _, _, target = self._address_target(address)
@@ -4945,7 +4947,7 @@ class ServiceBase(RobovastInterface):
                     sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
-                         if k.startswith("_") and k != "_config_block"}),
+                         if k.startswith("_") and k not in ("_config_block", "_read_files")}),
                     contribution=_config_view_contribution(c, vast_dir),
                     previews=_config_previews(c, remotes))
                  for c in shown]

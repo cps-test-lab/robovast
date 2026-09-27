@@ -1663,7 +1663,9 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # by 10 cannot say which helper images its configurations came from.
 # 12: an entry carries the digest of each of those images and the files its composition read
 # beyond the key (:func:`_cached_entry_is_current`), without which a hit cannot be checked.
-_CACHE_FORMAT_VERSION = 12
+# 13: each configuration carries its ``.vast`` block and the files its variations read
+# (``_read_files``), both part of its identity; an entry from 12 carries neither.
+_CACHE_FORMAT_VERSION = 13
 
 
 def _build_generate_cache_key(
@@ -1798,14 +1800,12 @@ def _result_to_transport(result: dict) -> dict:
     byte-for-byte identical to a cached one. Per-config ``_config_files`` /
     ``_config_transient_files`` ``(rel, path)`` tuples become tagged dicts (source
     files keep their absolute path; artifacts store the path relative to
-    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``,
-    ``_config_block``) are dropped.
+    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``) are dropped.
     """
     transport = copy.deepcopy(result)
     transport["_transient_files"] = []
     transport.pop("_output_dir", None)
     for cfg in transport.get("configs", []):
-        cfg.pop("_config_block", None)
         storable = []
         for rel, path in cfg.get("_config_files", []):
             if os.path.isabs(rel):
@@ -2287,6 +2287,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     for config in configurations:
         block_end = steps_done + _steps(config)
+        block_read_files = []
         if variation_classes is None:
             # Read variation classes from the variation file
             variation_classes_and_parameters = _get_variation_classes(config, vast_dir)
@@ -2377,6 +2378,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             duration = round(time.monotonic() - t0, 3)
 
             read_files.extend(var_read_files)
+            block_read_files.extend(var_read_files)
 
             # Validate and collect variation input files
             for vf in var_input_files:
@@ -2420,9 +2422,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             steps_done = block_end
             progress_update_callback(_STEP_LINE.format(done=steps_done, total=steps_total))
 
+        # A file under output_dir was generated, and what generated it is keyed already.
+        block_read_files = sorted({
+            p for p in block_read_files
+            if not os.path.abspath(p).startswith(os.path.abspath(output_dir) + os.sep)})
         for c in current_configs:
             c["_config_name"] = config.get("name")
             c["_config_block"] = config
+            # Hashed into the configuration's identity (compute_config_identifier).
+            c["_read_files"] = block_read_files
 
         configs.extend(current_configs)
 

@@ -16,7 +16,8 @@ import pytest
 import requests
 
 from robovast.service.http_client import HTTPTransport
-from robovast.service.interface import EditFileRequest, ServiceError, WriteFileRequest
+from robovast.service.interface import (BINARY_FILE, ERROR_CODE_HEADER, BinaryFile,
+                                        EditFileRequest, ServiceError, WriteFileRequest)
 
 
 class _Resp:
@@ -170,6 +171,18 @@ def test_a_refusal_carries_the_services_own_message(monkeypatch):
     assert str(excinfo.value) == advice
     assert excinfo.value.status == 400
     assert "Client Error" not in str(excinfo.value)
+
+
+def test_a_binary_file_refusal_is_raised_as_its_class(monkeypatch):
+    resp = _Resp(status_code=400, payload={"detail": "bag.mcap is a binary file"})
+    resp.headers = {ERROR_CODE_HEADER: BINARY_FILE}
+    monkeypatch.setattr(requests.Session, "get", lambda self, *a, **kw: resp)
+
+    with pytest.raises(BinaryFile) as excinfo:
+        HTTPTransport("http://svc").read_file("/results/camp-1/bag.mcap")
+
+    assert excinfo.value.url == "/results/camp-1/bag.mcap"
+    assert str(excinfo.value) == "bag.mcap is a binary file"
 
 
 def test_a_refusal_is_still_an_oserror(monkeypatch):

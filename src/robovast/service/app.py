@@ -55,6 +55,7 @@ from robovast.service.interface import (ActionResult, ArrowQueryRequest,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
                                         EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
+                                        BINARY_FILE, BinaryFile,
                                         UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         ExportRef, ExportRequest, ExportStatus,
@@ -467,6 +468,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             # The same status as a write that already failed for lack of space, with the
             # meter and the amounts: new work is declined before the disk is full.
             raise HTTPException(status_code=507, detail=str(e)) from e
+        except BinaryFile as e:
+            raise HTTPException(status_code=e.status, detail=str(e),
+                                headers={ERROR_CODE_HEADER: BINARY_FILE}) from e
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id

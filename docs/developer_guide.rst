@@ -557,8 +557,8 @@ The referenced module travels with the campaign: it is archived into
 from that snapshot rather than replaying recorded configurations — can resolve it, and it
 is content-hashed into the campaign's ``config_identifier``, because the source
 that decides which configurations exist is part of what the experiment is. Editing it
-therefore gives the campaign a new identity, exactly as editing a packaged variation's
-module does.
+therefore gives the campaign a new identity. A packaged variation counts by its name, so a
+new release of its package leaves the identity as it was.
 
 .. important::
 
@@ -587,7 +587,8 @@ front of whoever is authoring the plugin.
 **What the composition cache sees.** A composition is cached under its ``.vast``, the files the
 ``.vast`` names and the source of its variations. A file your plugin reads because another file
 names it — the image a map YAML points at — is not among them: return its absolute path from
-``get_read_files()`` and a cached composition is not reused once it changes. The helper image a
+``get_read_files()`` and a cached composition is not reused once it changes, and the
+``config_identifier`` of each configuration it composed covers its content. The helper image a
 plugin declares with ``get_required_container`` is covered without this: the entry records the
 digest it ran, and a hit is served only while the image still resolves to it.
 
@@ -1493,6 +1494,10 @@ Then register the class as an entry point in ``pyproject.toml``:
    my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
 
 The plugin is picked up automatically the next time the server starts.
+
+A tool need not catch what it cannot answer: whatever it raises reaches the caller as the
+one error document (:ref:`mcp-errors`). Catch only an exception the tool turns into a
+different answer.
 
 A call the tool rejects — an unknown or missing argument — is answered with the arguments
 the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
@@ -2792,12 +2797,15 @@ codes come from ``py_trees_ros_interfaces`` — plain py_trees ``Status`` values
 **The manifest is the catalogue** (:mod:`robovast_decode.tables`). A table is accumulated
 column-wise and written as ``.cache/tables/<table>/<config>/<run>.parquet``; ``.cache/MANIFEST.json``
 names, per table and run, exactly the files that make up that table, their schema, the source
-they were built from, the decoder version that wrote them, and — for a run with no rows — the
-reason it has none. Files are written first and the manifest is replaced in one ``rename``
-under a lock, so a reader that arrives mid-rebuild sees the old set or the new one, never a
-mixture. A table already built for a run from the same source bytes by the same decoder version
-is left alone; a run that has grown since, a table not yet asked for, or anything another
-decoder version wrote is built again. ``robovast-decode build <campaign_dir>`` and
+they were built from, the decoder version that wrote them, and — for a run with no rows, or
+only part of them — the reason. Files are written first and the manifest is replaced in one
+``rename`` under a lock, so a reader that arrives mid-rebuild sees the old set or the new one,
+never a mixture. A table already built for a run from the same source bytes by the same decoder
+version is left alone; a run that has grown since, a table not yet asked for, or anything another
+decoder version wrote is built again. A recording's source bytes include its definitions
+sidecar, and a query checks a final entry that carries a reason, and the recording report,
+against them once more (:func:`~robovast_decode.build.settled`): the sidecar is written after the
+run's verdict. ``robovast-decode build <campaign_dir>`` and
 ``robovast-decode tables <campaign_dir>`` do the same from a shell, offline.
 
 **The decoder's configuration** is the campaign's ``rosbags_*`` postprocessing entries (frames

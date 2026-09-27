@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
+from robovast.service.interface import BINARY_FILE, ERROR_CODE_HEADER
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 
@@ -82,6 +83,7 @@ def test_text_view_refuses_binary_rather_than_mangling_it(env):
     resp = client.get("/results/camp-1/nav/3/scene/scene.bin", params={"as": "text"})
     assert resp.status_code == 400
     assert "binary" in resp.json()["detail"].lower()
+    assert resp.headers[ERROR_CODE_HEADER] == BINARY_FILE
 
 
 def test_missing_file_is_404(env):
