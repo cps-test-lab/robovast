@@ -194,7 +194,8 @@ Where the settings are read
 
 Highest precedence first:
 
-1. ``--image-project`` / ``--image-project-tag`` on ``vast workspace run`` — this run only;
+1. ``--image-project`` / ``--image-project-tag`` on ``vast workspace run`` — this run only.
+   The MCP ``start_campaign`` takes the tag the same way, as ``image_project_tag``;
 2. a real environment variable (``export ROBOVAST_PROJECT=...``);
 3. ``./.env`` — **the current directory only**, so this is the *project's* setting;
 4. ``~/.config/robovast/env`` — the *user's* setting, read whatever directory ``vast`` runs
