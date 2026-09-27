@@ -1432,10 +1432,9 @@ inside it.
 - ``cpu_limit`` / ``memory_limit`` (Optional): the **ceiling**, when it should differ from the
   reservation. Omitted — the default — the limit equals the request, which is what every
   campaign meant before these existed. See *Splitting the reservation from the ceiling* below
-- ``gpu`` (Optional): Number of GPUs. **Rarely needed.** Omit it and the container running
-  the simulator gets one wherever the cluster advertises GPUs, so the common case is to say
-  nothing; ``gpu: 0`` opts out on a cluster that has them (worth doing for a camera-less
-  world, which never renders). Setting it enables the NVIDIA runtime; the GPU must also be
+- ``gpu`` (Optional): Number of GPUs. Omitted, the container gets none, whatever the
+  cluster advertises; declare ``gpu: 1`` on the container that renders (a camera or image
+  sensor in the world). Setting it enables the NVIDIA runtime; the GPU must also be
   schedulable, which ``vast cluster setup``
   arranges — see :ref:`cluster-gpu`, which also covers why the replica count caps
   concurrency without partitioning VRAM, and the comparability caveat for a campaign whose
