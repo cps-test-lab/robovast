@@ -311,6 +311,17 @@ class ResourcesConfig(BaseModel):
             check(v)
         return v
 
+    @field_validator('gpu')
+    @classmethod
+    def validate_gpu_count(cls, v):
+        """The Job builder clamps a negative count to no GPU."""
+        values = [value for entry in v for value in entry.values()] if isinstance(v, list) \
+            else [v]
+        for value in values:
+            if value is not None and value < 0:
+                raise ValueError(f'gpu {value!r} is not a GPU count: use 0 or more')
+        return v
+
     @model_validator(mode="after")
     def validate_limits_are_not_below_requests(self):
         """A ceiling under its own reservation is refused here rather than by the cluster.
