@@ -1780,7 +1780,10 @@ Taking a campaign in
 :func:`~robovast.service.ingest.claim_campaign_dir` and
 :func:`~robovast.service.ingest.extract_archive` unpack an archive into a results root, as
 separate steps so the importer can open the campaign's ``import.log`` once the directory is
-claimed; :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
+claimed. The extraction confines every member to the campaign's own directory: an archive
+is untrusted input, and a member that resolves to a sibling campaign -- through ``..``, a
+symlink or a hard link -- fails the import naming the member rather than landing there.
+:func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
 **per stage** (``archive``, ``layout``, ``config``, ``completeness``, ``environment``,
 ``campaign_store``, ``tables``), since a campaign archive carries three version surfaces of its
 own which can independently be older, newer, absent or corrupt: its **layout**, the ``.vast``'s

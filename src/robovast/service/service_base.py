@@ -1688,7 +1688,8 @@ class ServiceBase(RobovastInterface):
                     f"would then mean what it says.")
             logger.info("extracting %s into %s ...", Path(archive).name,
                         self._campaigns_root())
-            extract_archive(archive, self._campaigns_root(), remove_archive=owned)
+            extract_archive(archive, self._campaigns_root(), campaign_id,
+                            remove_archive=owned)
             report = ingest_campaign(target, rebuild_store=request.rebuild_store)
             for name, stage in report["stages"].items():
                 logger.info("  %-15s %-10s %s", name, stage["verdict"], stage["detail"])
