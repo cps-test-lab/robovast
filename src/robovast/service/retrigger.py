@@ -54,6 +54,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from robovast.client.safe_path import UnsafePathError, safe_join
+
 logger = logging.getLogger(__name__)
 
 #: Where staged project trees live: one directory per retrigger, under the workspaces root.
@@ -617,7 +619,12 @@ def _place_scenario(staging_dir: Path, campaign_config) -> None:
     declared = getattr(getattr(campaign_config, "execution", None), "scenario_file", "") or ""
     if not declared or not os.path.dirname(declared):
         return                        # already flat: the staged basename is the declared path
-    target = staging_dir / declared
+    try:
+        target = safe_join(staging_dir, declared)
+    except UnsafePathError as e:
+        raise RetriggerRefused(
+            f"the campaign's .vast declares its scenario at {declared!r}, outside the "
+            f"project; a campaign's scenario is a file of its project.") from e
     if target.exists():
         return
     flat = staging_dir / os.path.basename(declared)

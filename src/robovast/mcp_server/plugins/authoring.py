@@ -50,12 +50,9 @@ def create_workspace(name: str = "", from_campaign: str = "", from_share: str = 
         ``{workspace_id, name, created_at}``.
     """
     from robovast.service.interface import CreateWorkspaceRequest
-    try:
-        return service_access.require_service().create_workspace(
-            CreateWorkspaceRequest(name=name, from_campaign=from_campaign,
-                                   from_share=from_share)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service().create_workspace(
+        CreateWorkspaceRequest(name=name, from_campaign=from_campaign,
+                               from_share=from_share)).model_dump()
 
 
 def list_workspaces(workspace_id: str = "") -> dict:
@@ -67,24 +64,13 @@ def list_workspaces(workspace_id: str = "") -> dict:
     Returns:
         ``{workspaces, total}`` of ``{workspace_id, name, created_at}``, or ``{error}``.
     """
-    try:
-        client = service_access.require_service()
-        if workspace_id:
-            found = [client.get_workspace(workspace_id).model_dump()]
-        else:
-            found = [w.model_dump()
-                     for w in client.list_workspaces().workspaces]
-        return {"workspaces": found, "total": len(found)}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    from robovast.client.workspace_report import workspace_listing
+    return workspace_listing(service_access.require_service(), workspace_id)
 
 
 def delete_workspace(workspace_id: str) -> dict:
     """Delete a workspace and its inputs. Existing campaigns are unaffected."""
-    try:
-        return service_access.require_service().delete_workspace(workspace_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service().delete_workspace(workspace_id).model_dump()
 
 
 def export_workspace(workspace_id: str) -> dict:
@@ -99,10 +85,7 @@ def export_workspace(workspace_id: str) -> dict:
     Returns:
         ``{slug, object_name, size, url}``, or ``{error}``.
     """
-    try:
-        return service_access.require_service().export_workspace(workspace_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return service_access.require_service().export_workspace(workspace_id).model_dump()
 
 
 def create_upload(address: str, executable: bool = False) -> dict:
@@ -122,12 +105,9 @@ def create_upload(address: str, executable: bool = False) -> dict:
         when nobody can name an origin for it (see ``service_access.web_url``).
     """
     from robovast.service.interface import CreateUploadRequest, Routes
-    try:
-        client = service_access.require_service()
-        grant = client.create_upload(CreateUploadRequest(
-            address=address, executable=executable))
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    grant = client.create_upload(CreateUploadRequest(
+        address=address, executable=executable))
     if not grant.url:
         # The HTTP route handler (`app.py`) sets this on the way out; a caller reaching
         # the same implementation in-process (the MCP mounted inside the service) skips
@@ -327,56 +307,50 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
     from robovast.service.project_push import _resolve_workspace_id
-    try:
-        target = _address_route(address)
-        if target is None:
-            # A search .vast expands per sampled ParamSet, not from a `configuration:`
-            # block; composing a sample is the only preview that reflects what it runs.
-            aux: list = []
-            if (load_config(address) or {}).get("search"):
-                from robovast.search.compose import preview_search_sample
-                sample = preview_search_sample(address)
-                configs = sample["configs"]
-                runs = sample["runs_per_config"]
-            else:
-                campaign_data = generate_scenario_variations(
-                    variation_file=address, output_dir=None)
-                configs = campaign_data["configs"]
-                runs = campaign_data.get("execution", {}).get("runs", 1)
-                aux = list(campaign_data.get("aux_containers") or [])
-            items = [{"name": c["name"], "parameters": c.get("config", {})}
-                     for c in configs]
-            truncated = bool(limit) and len(items) > limit
-            return {
-                "configs": len(configs),
-                "runs_per_config": runs,
-                "total_trials": len(configs) * runs,
-                "configurations": items[:limit] if truncated else items,
-                "truncated": truncated,
-                "aux_containers": aux,
-                "source": "local file",
-            }
-        client = service_access.require_service()
-        workspace_id, rel_path = target
-        resp = client.preview_configurations(
-            _resolve_workspace_id(client, workspace_id), limit, rel_path)
-        # ``previews`` carries the web UI's Module-Federation asset refs for rendering a
-        # variation; they are useless to an MCP caller and would be the bulk of the reply.
+    target = _address_route(address)
+    if target is None:
+        # A search .vast expands per sampled ParamSet, not from a `configuration:`
+        # block; composing a sample is the only preview that reflects what it runs.
+        aux: list = []
+        if (load_config(address) or {}).get("search"):
+            from robovast.search.compose import preview_search_sample
+            sample = preview_search_sample(address)
+            configs = sample["configs"]
+            runs = sample["runs_per_config"]
+        else:
+            campaign_data = generate_scenario_variations(
+                variation_file=address, output_dir=None)
+            configs = campaign_data["configs"]
+            runs = campaign_data.get("execution", {}).get("runs", 1)
+            aux = list(campaign_data.get("aux_containers") or [])
+        items = [{"name": c["name"], "parameters": c.get("config", {})}
+                 for c in configs]
+        truncated = bool(limit) and len(items) > limit
         return {
-            "configs": resp.configs,
-            "runs_per_config": resp.runs_per_config,
-            "total_trials": resp.total_trials,
-            "configurations": [{"name": c.name, "parameters": c.parameters}
-                               for c in resp.configurations],
-            "truncated": resp.truncated,
-            "aux_containers": list(resp.aux_containers),
-            "source": "workspace",
+            "configs": len(configs),
+            "runs_per_config": runs,
+            "total_trials": len(configs) * runs,
+            "configurations": items[:limit] if truncated else items,
+            "truncated": truncated,
+            "aux_containers": aux,
+            "source": "local file",
         }
-    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        # error_result rather than {"error": str(e)}: composing here can refuse with an
-        # ActionableError (a variation needing an auxiliary container no runner can provide),
-        # and dropping its next_step leaves the caller with a reason and no move.
-        return service_access.error_result(e)
+    client = service_access.require_service()
+    workspace_id, rel_path = target
+    resp = client.preview_configurations(
+        _resolve_workspace_id(client, workspace_id), limit, rel_path)
+    # ``previews`` carries the web UI's Module-Federation asset refs for rendering a
+    # variation; they are useless to an MCP caller and would be the bulk of the reply.
+    return {
+        "configs": resp.configs,
+        "runs_per_config": resp.runs_per_config,
+        "total_trials": resp.total_trials,
+        "configurations": [{"name": c.name, "parameters": c.parameters}
+                           for c in resp.configurations],
+        "truncated": resp.truncated,
+        "aux_containers": list(resp.aux_containers),
+        "source": "workspace",
+    }
 
 
 def describe_world(address: str, targets: str = "", entities: bool = False) -> dict:
@@ -394,31 +368,27 @@ def describe_world(address: str, targets: str = "", entities: bool = False) -> d
             *entities*.
 
     Returns:
-        ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
-        dropped_transport, errors}``, ``overridable`` being ``{fields, targets}``; or
-        ``{error}`` — including when only an unbuilt image could answer. A non-empty ``errors``
-        means a partial answer: read it before taking a null ``entities`` for a world that
-        compiles none. ``dropped_transport`` names transport plugins the build left out, which a
-        describe does not need.
+        ``{backend, image, duration_s, world, packaged, inputs, components, entities, warnings,
+        overridable, dropped_transport, errors}``, ``overridable`` being ``{fields, targets}``;
+        or ``{error}`` — including when only an unbuilt image could answer. A non-empty
+        ``errors`` means a partial answer: read it before taking a null ``entities`` for a world
+        that compiles none. ``warnings`` comes with *entities*: what the start state holds that
+        will make a run misbehave (bodies placed inside one another), each
+        ``{check, message, hint}``. ``dropped_transport`` names transport plugins the build left
+        out, which a describe does not need.
     """
     from robovast.service.project_push import _resolve_workspace_id
-    try:
-        target = _address_route(address)
-        if target is None:
-            raise ValueError(
-                "describe_world needs a workspace address (/sources/<workspace_id>/<path>): "
-                "the world is described by the campaign's own image, which only the service "
-                "knows how to reach")
-        client = service_access.require_service()
-        workspace_id, rel_path = target
-        described = client.describe_world(
-            _resolve_workspace_id(client, workspace_id), rel_path, targets, entities)
-        return described.model_dump()
-    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        # error_result rather than {"error": str(e)}: this answer comes from a container, so
-        # a deployment that cannot run one is one of the failures it may carry, and that is
-        # stated once there rather than per tool.
-        return service_access.error_result(e)
+    target = _address_route(address)
+    if target is None:
+        raise ValueError(
+            "describe_world needs a workspace address (/sources/<workspace_id>/<path>): "
+            "the world is described by the campaign's own image, which only the service "
+            "knows how to reach")
+    client = service_access.require_service()
+    workspace_id, rel_path = target
+    described = client.describe_world(
+        _resolve_workspace_id(client, workspace_id), rel_path, targets, entities)
+    return described.model_dump()
 
 
 def _resolved_request(address: str):
@@ -475,54 +445,42 @@ def describe_scenario(address: str, scenario_path: str) -> dict:
 
     Returns ``{valid, diagnostics, actions_used, tree, image}``.
     """
-    try:
-        client, request = _resolved_request(address)
-        container_path = f"/sources/{request.workspace_id}/{scenario_path}"
-        payload = _exec_json(
-            client, request,
-            # ``python3``: a declared base image has no ``python`` (see image_catalog's
-            # ``_COMMANDS``), so this failed for every project that does not build its
-            # scenario image -- which is most of them.
-            f"python3 -m scenario_execution.introspection describe {container_path}",
-            container="scenario")
-        image = client.resolve_image(
-            request.model_copy(update={"container": "scenario"})).image
-        return {**payload, "image": image}
-    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        # error_result rather than {"error": str(e)}: this answer comes from a container, so
-        # a deployment that cannot run one is one of the failures it may carry, and that is
-        # stated once there rather than per tool.
-        return service_access.error_result(e)
+    client, request = _resolved_request(address)
+    container_path = f"/sources/{request.workspace_id}/{scenario_path}"
+    payload = _exec_json(
+        client, request,
+        # ``python3``: a declared base image has no ``python`` (see image_catalog's
+        # ``_COMMANDS``), so this failed for every project that does not build its
+        # scenario image -- which is most of them.
+        f"python3 -m scenario_execution.introspection describe {container_path}",
+        container="scenario")
+    image = client.resolve_image(
+        request.model_copy(update={"container": "scenario"})).image
+    return {**payload, "image": image}
 
 
 def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
     """Body hierarchy under bodies matching the required glob `pattern`, capped per
     match. `{bodies: [{root, tree, truncated}], image}`.
     """
-    try:
-        if not pattern:
-            raise ValueError("pattern is required -- there is no 'describe every body' mode")
-        client, request = _resolved_request(address)
-        container_path = f"/sources/{request.workspace_id}/{world_path}"
-        payload = _exec_json(
-            client, request,
-            # No `--json`: `roqsim scenes describe` has no such flag and argparse refuses the whole
-            # command over it (its answer is JSON either way), so this tool could never once have
-            # succeeded against a real image. The stub in its test made the mistake invisible.
-            f"roqsim scenes describe {container_path} --body-tree {pattern}",
-            # The SIMULATOR's image, which is the only one with roqsim in it. Unqualified,
-            # this resolved to the scenario container -- so on any project whose simulator
-            # comes from the image family it answered "roqsim: command not found", and the
-            # tool had never worked there.
-            container="simulation")
-        image = client.resolve_image(
-            request.model_copy(update={"container": "simulation"})).image
-        return {"bodies": payload.get("body_tree") or [], "image": image}
-    except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
-        # error_result rather than {"error": str(e)}: this answer comes from a container, so
-        # a deployment that cannot run one is one of the failures it may carry, and that is
-        # stated once there rather than per tool.
-        return service_access.error_result(e)
+    if not pattern:
+        raise ValueError("pattern is required -- there is no 'describe every body' mode")
+    client, request = _resolved_request(address)
+    container_path = f"/sources/{request.workspace_id}/{world_path}"
+    payload = _exec_json(
+        client, request,
+        # No `--json`: `roqsim scenes describe` has no such flag and argparse refuses the whole
+        # command over it (its answer is JSON either way), so this tool could never once have
+        # succeeded against a real image. The stub in its test made the mistake invisible.
+        f"roqsim scenes describe {container_path} --body-tree {pattern}",
+        # The SIMULATOR's image, which is the only one with roqsim in it. Unqualified,
+        # this resolved to the scenario container -- so on any project whose simulator
+        # comes from the image family it answered "roqsim: command not found", and the
+        # tool had never worked there.
+        container="simulation")
+    image = client.resolve_image(
+        request.model_copy(update={"container": "simulation"})).image
+    return {"bodies": payload.get("body_tree") or [], "image": image}
 
 
 for _fn in (validate_project, preview_configurations, describe_world):
