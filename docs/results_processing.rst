@@ -1445,7 +1445,10 @@ campaign's ``.cache/exports/<export_id>/`` -- rebuildable and disposable like th
 beside it, counted and cleared with the ``table cache`` (:ref:`results-tables-ahead`) --
 and its status is answered from that directory once it is finished, so a status read after
 a service restart still answers; an export that was building when the service stopped reads
-as failed, to be started again.
+as failed, to be started again. An export is kept for 24 hours after it finished
+(``EXPORT_KEEP_S``): past that its address answers as for an export that never was, and the
+export is made again on request. Its files are removed when the campaign's next export
+starts; a download already reading the tarball finishes.
 
 
 .. _results-querying:
