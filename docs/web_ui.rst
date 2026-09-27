@@ -253,8 +253,11 @@ It provides four views:
   ``results_processing.postprocessing`` block of the campaign's own
   ``_config/<name>.vast``, with no override file and no revision history. It is the one
   narrow exception to the snapshot being a record of what ran, and it is why the
-  read-only config view calls that snapshot *frozen* rather than *immutable*. The
-  browser equivalent of ``vast cluster monitor``.
+  read-only config view calls that snapshot *frozen* rather than *immutable*. The dialog's
+  two checkboxes are ``vast campaign postprocess``'s flags: **Rebuild** clears the built
+  tables first so the declared ones are built again from the records (``--force``), and
+  **Replay** clears them and builds every table the records can give, for every run,
+  before the declared steps (``--replay``).
   A finished campaign's menu also offers **Build all tables**, which builds every table its
   records can give, for every run, in the background — the same operation as
   ``vast campaign tables build`` (:ref:`results-tables-ahead`). Its confirmation says what is
