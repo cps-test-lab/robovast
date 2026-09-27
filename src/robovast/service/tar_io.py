@@ -52,7 +52,7 @@ import stat
 import tarfile
 from pathlib import Path
 
-from robovast.client.safe_path import UnsafePathError, check_relative
+from robovast.client.safe_path import UnsafePathError, check_relative, is_inside
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +176,7 @@ def _member_rel(name: str) -> "str | None":
 
 def _escapes(root: Path, path: Path) -> bool:
     """Whether *path*, with the symlinks that already exist under *root* followed, leaves it."""
-    resolved = path.resolve()
-    return resolved != root and root not in resolved.parents
+    return not is_inside(root, path)
 
 
 def _chmod(path: Path, mode: int) -> None:
