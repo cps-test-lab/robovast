@@ -156,6 +156,31 @@ def test_a_job_tag_cannot_reach_outside_the_campaigns_documents(client):
         assert resp.status_code == 400, (tag, resp.text)
 
 
+def test_a_cells_file_cannot_name_another_campaigns_cell(client, root):
+    """``config_file`` names a cell of this campaign: a name that steps out of it would
+    read another campaign's inputs under the token of this one."""
+    _campaign(root, _OTHER)
+    for config_name in (f"../{_OTHER}/cell-a", "cell-a/..", ".", ".."):
+        resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                          params={"job": ["job-1"],
+                                  "config_file": [f"{config_name}:campaign.vast"]})
+        assert resp.status_code == 400, (config_name, resp.text)
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"],
+                              "config_file": [f"cell-a:../../{_OTHER}/cell-a/_config/campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
+def test_a_cells_file_cannot_lead_out_of_its_campaign_through_a_link(client, root):
+    """A one-segment name is still a way out when the cell is a symlink to another
+    campaign's cell: the file is refused where it resolves, not by how it is spelled."""
+    _campaign(root, _OTHER)
+    (root / _CAMPAIGN / "cell-b").symlink_to(root / _OTHER / "cell-a")
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"], "config_file": ["cell-b:campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
 def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, root):
     payload = _tar([("cell-a/1/test.xml", b"<testsuite/>"),
                     ("cell-a/1/logs/system.log", b"ran\n"),
@@ -168,6 +193,31 @@ def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, r
     assert sorted(body["refused"]) == ["_execution/controller.log", "campaign.db"]
     assert (root / _CAMPAIGN / "cell-a" / "1" / "test.xml").read_bytes() == b"<testsuite/>"
     assert (root / _CAMPAIGN / "_execution" / "controller.log").read_text() == "driver's\n"
+
+
+def test_outputs_may_not_write_the_services_own_folders(client, root):
+    """``_transient/`` holds the job-link manifest the driver turns into symlinks, and
+    ``_config/`` what every job is handed; a link inside the delivery is no way around it."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        link = tarfile.TarInfo("cell-a/1/t")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../_transient"
+        tar.addfile(link)
+        for name in ("_transient/job_links.yaml", "_config/campaign.vast",
+                     "_execution/outcome.json", "cell-a/1/t/job_links.yaml",
+                     "cell-a/1/test.xml"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+    resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=buf.getvalue())
+    assert resp.status_code == 200, resp.text
+    assert sorted(resp.json()["refused"]) == [
+        "_config/campaign.vast", "_execution/outcome.json", "_transient/job_links.yaml",
+        "cell-a/1/t/job_links.yaml"]
+    assert not (root / _CAMPAIGN / "_transient" / "job_links.yaml").exists()
+    assert (root / _CAMPAIGN / "_config" / "campaign.vast").read_text().startswith("configuration")
+    assert (root / _CAMPAIGN / "cell-a" / "1" / "test.xml").read_bytes() == b"x"
 
 
 def test_ranges_append_and_a_mismatch_is_answered_with_a_resync(client, root):
