@@ -301,7 +301,7 @@ def monitor(interval, once, kube_context, namespace, vast):
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_context import (  # pylint: disable=import-outside-toplevel
         get_active_kube_context, get_config_context_names)
     try:
@@ -786,7 +786,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_setup import setup_server  # pylint: disable=import-outside-toplevel
     if list_configs:
         try:
@@ -926,7 +926,7 @@ def run_cleanup(campaign, namespace, context, vast):
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
     from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
@@ -1006,7 +1006,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     It fails, non-zero, if that pod does not take over: an image it cannot pull, a node it
     cannot be scheduled on, or a container that crash-loops. The reason Kubernetes gave is
     printed as soon as it appears, so a stuck upgrade names its cause in seconds instead of
-    looking like a hang -- and "✓ upgraded and ready" now means it. Use ``--timeout`` for a
+    looking like a hang -- and "✓ upgraded and ready" means it. Use ``--timeout`` for a
     registry slow enough to need longer.
 
     Always restarts the pod, even when nothing appears to have changed. That is the
@@ -1251,7 +1251,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
         #
         # Its storage settings are recovered from the live Deployment rather than defaulted:
         # they arrived as `setup` flags, nothing records them, and re-rendering from defaults
-        # would silently move a PVC-backed cache back to a hostPath. `deploy_service` now
+        # would silently move a PVC-backed cache back to a hostPath. `deploy_service`
         # recovers its own the same way (see `service_storage_from_cluster`), and both take
         # their node pin from the constant label rather than from an argument this call site
         # would have to remember to pass.
@@ -1445,7 +1445,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement,
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
     try:
         cluster_kwargs = {}
