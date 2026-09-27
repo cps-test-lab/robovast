@@ -50,6 +50,21 @@ def test_members_land_with_their_mode_and_directories(tmp_path):
     assert os.access(tmp_path / "cfg" / "run.sh", os.X_OK)
 
 
+def test_a_denied_name_is_refused_where_it_lands_not_by_its_spelling(tmp_path):
+    """A symlink to a directory is a second name for it, so a member written through
+    the link lands on a denied file under its real name and is refused as that."""
+    (tmp_path / "_execution").mkdir()
+    (tmp_path / "_execution" / "controller.log").write_text("the driver's\n")
+    out = tar_io.extract_stream(_tar([
+        ("x", "->_execution", 0o777),
+        ("x/controller.log", b"the pod's\n", 0o644),
+        ("x/kept.log", b"a sidecar's\n", 0o644),
+    ]), tmp_path, deny=("_execution/controller.log",))
+    assert out.refused == ["x/controller.log"]
+    assert (tmp_path / "_execution" / "controller.log").read_text() == "the driver's\n"
+    assert (tmp_path / "_execution" / "kept.log").read_text() == "a sidecar's\n"
+
+
 def test_a_member_leaving_the_tree_is_refused_and_the_rest_kept(tmp_path):
     out = tar_io.extract_stream(_tar([
         ("../escape.txt", b"x", 0o644),
