@@ -84,31 +84,6 @@ def cache_inputs(model_file_path):
     return [model_file_path] + [f for f in models if f != model_file_path]
 
 
-def get_scenery_builder_version():
-    """Return the docker image digest/ID of the scenery_builder image.
-
-    Runs ``docker inspect`` on the image and returns its first RepoDigest
-    (falling back to the image ID). Used only for provenance.
-
-    Returns:
-        The version string stripped of whitespace, or ``None`` if it cannot be
-        determined (e.g. docker is unavailable, as in the controller pod, or the
-        image has not been pulled yet).
-    """
-    for fmt in ("{{index .RepoDigests 0}}", "{{.Id}}"):
-        try:
-            result = subprocess.run(
-                ["docker", "inspect", "--format", fmt, SCENERY_BUILDER_IMAGE],
-                capture_output=True, text=True, timeout=10, check=False,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError, OSError):
-            return None
-        version = result.stdout.strip()
-        if result.returncode == 0 and version:
-            return version
-    return None
-
-
 def _create_config_for_floorplan(
     floorplan_name,
     output_dir,
@@ -233,7 +208,7 @@ def _occ_grid_command(laser_height):
     return ["occ-grid", "--laser-height", str(laser_height)]
 
 
-def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl", laser_height=None):
+def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, mesh_format="stl", laser_height=None):
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
         return None
@@ -242,6 +217,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         raise RuntimeError(
             "FloorplanVariation requires an auxiliary container runner but none "
             "was provided by the execution backend.")
+    image = container_runner.image_digest()
 
     # Everything the container reads/writes must live under the shared workspace
     # so it is visible at the same path inside the container.
@@ -258,9 +234,11 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
         progress_update_callback(f"\nProcessing: {variation}")
 
         file_cache = FileCache(base_path, "floorplan_variation",
-                               [variation_file, num_variations, seed_value, mesh_format, laser_height])
+                               [variation_file, num_variations, seed_value, mesh_format, laser_height,
+                                image])
         files_for_hash = cache_inputs(variation_file_path)
-        strings_for_hash = [str(num_variations), str(seed_value), mesh_format, str(laser_height)]
+        strings_for_hash = [str(num_variations), str(seed_value), mesh_format, str(laser_height),
+                            image]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -356,13 +334,6 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 if os.path.isdir(jsonld_src):
                     shutil.copytree(jsonld_src, jsonld_dst, dirs_exist_ok=True)
 
-                # Write scenery_builder version into each config subfolder so it
-                # is preserved inside the cache tar and recoverable on cache hits.
-                if scenery_builder_version:
-                    version_file = os.path.join(artifacts_path, config_name, "scenery_builder_version.txt")
-                    with open(version_file, "w", encoding="utf-8") as vf:
-                        vf.write(scenery_builder_version)
-
             cache_target_file_name = file_cache.get_cache_filename()
             progress_update_callback(f"\nCreating tar archive {cache_target_file_name}...")
             with tarfile.open(cache_target_file_name, "w:gz") as tar:
@@ -374,7 +345,6 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
     progress_update_callback(f"Preparing map directory: {output_dir}")
 
-    floorplan_versions = {}
     for map_tar in all_map_dirs:
         try:
             with tarfile.open(map_tar, "r:*") as tf:
@@ -389,20 +359,15 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
                 if not subfolders:
                     raise ValueError("No subfolders found in extracted tar file")
                 floorplan_names.extend(subfolders)
-                for subfolder in subfolders:
-                    version_path = os.path.join(output_dir, subfolder, "scenery_builder_version.txt")
-                    if os.path.exists(version_path):
-                        with open(version_path, encoding="utf-8") as vf:
-                            floorplan_versions[subfolder] = vf.read().strip()
         except Exception as exc:
             print(f"Failed to extract {map_tar}: {exc}")
             raise ValueError("Failed to extract map tar file") from exc
 
     floorplan_names.sort()
-    return floorplan_names, floorplan_versions
+    return floorplan_names, image
 
 
-def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, scenery_builder_version=None, mesh_format="stl", laser_height=None):
+def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progress_update_callback, container_runner, mesh_format="stl", laser_height=None):
     """Generate artifacts (maps and meshes) from existing floorplan files.
 
     Args:
@@ -412,16 +377,14 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         progress_update_callback: Callback function for progress updates
         container_runner: Backend-provided handle to run scenery_builder commands
             (see robovast.common.variation.container_runner).
-        scenery_builder_version: Optional version string for the scenery_builder image.
-            Written into the cache tar so it survives cache hits.
         mesh_format: Mesh file format produced by scenery_builder (``stl`` or ``obj``).
         laser_height: Height (m) the occupancy grid is sliced at, or None for
             scenery_builder's default. See :func:`_occ_grid_command`.
 
     Returns:
-        Tuple of (floorplan_names, versions) where floorplan_names is a list of
-        subdirectory names that were generated and versions is a dict mapping
-        floorplan_name to the scenery_builder version string (or None).
+        Tuple of (floorplan_names, image) where floorplan_names is a list of
+        subdirectory names that were generated and image is the digest of the
+        scenery_builder image they were built with.
     """
     if not os.path.exists(base_path):
         progress_update_callback(f"✗ Path not found: {base_path}")
@@ -431,6 +394,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         raise RuntimeError(
             "FloorplanGeneration requires an auxiliary container runner but none "
             "was provided by the execution backend.")
+    image = container_runner.image_digest()
 
     # Everything the container reads/writes must live under the shared workspace.
     temp_base = _shared_dir(os.path.join(container_runner.workspace, "floorplan_generation"))
@@ -447,13 +411,13 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         floorplan_basename = os.path.splitext(os.path.basename(floorplan_file))[0]
         progress_update_callback(f"\nProcessing: {floorplan_basename}")
 
-        # laser_height is in the key for the same reason mesh_format is: it changes the bytes
-        # produced from an unchanged .fpm, so a cache hit across two values would serve one
-        # campaign's map to another.
+        # laser_height and the image are in the key for the same reason mesh_format is: each
+        # changes the bytes produced from an unchanged .fpm, so a cache hit across two values
+        # would serve one campaign's map to another.
         file_cache = FileCache(base_path, "floorplan_generation",
-                               [floorplan_file, mesh_format, laser_height])
+                               [floorplan_file, mesh_format, laser_height, image])
         files_for_hash = cache_inputs(floorplan_file_path)
-        strings_for_hash = [mesh_format, str(laser_height)]
+        strings_for_hash = [mesh_format, str(laser_height), image]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
 
@@ -506,13 +470,6 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
             if os.path.isdir(temp_transform_path):
                 shutil.copytree(temp_transform_path, jsonld_dst, dirs_exist_ok=True)
 
-            # Write scenery_builder version into the artifact directory so it
-            # is preserved inside the cache tar and recoverable on cache hits.
-            if scenery_builder_version:
-                version_file = os.path.join(artifacts_path, floorplan_basename, "scenery_builder_version.txt")
-                with open(version_file, "w", encoding="utf-8") as vf:
-                    vf.write(scenery_builder_version)
-
             # Create tar archive for caching
             cache_target_file_name = file_cache.get_cache_filename()
             progress_update_callback(f"Creating tar archive {cache_target_file_name}...")
@@ -525,7 +482,6 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
 
     progress_update_callback(f"Preparing artifact directory: {output_dir}")
 
-    floorplan_versions = {}
     for artifacts_tar in all_artifacts_dirs:
         try:
             with tarfile.open(artifacts_tar, "r:*") as tf:
@@ -540,14 +496,9 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
                 if not subfolders:
                     raise ValueError("No subfolders found in extracted tar file")
                 floorplan_names.extend(subfolders)
-                for subfolder in subfolders:
-                    version_path = os.path.join(output_dir, subfolder, "scenery_builder_version.txt")
-                    if os.path.exists(version_path):
-                        with open(version_path, encoding="utf-8") as vf:
-                            floorplan_versions[subfolder] = vf.read().strip()
         except Exception as exc:
             progress_update_callback(f"Failed to extract {artifacts_tar}: {exc}")
             raise ValueError("Failed to extract artifacts tar file") from exc
 
     floorplan_names.sort()
-    return floorplan_names, floorplan_versions
+    return floorplan_names, image
