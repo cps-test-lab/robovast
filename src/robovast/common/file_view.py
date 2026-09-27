@@ -18,7 +18,7 @@
 
 Separate from :mod:`robovast.client.file_address` (which decides *where* a path points
 and whether it may be written) because these are substrate concerns: paging text,
-refusing binary, and turning a directory into a bounded listing. The service applies
+telling binary from text, and turning a directory into a bounded listing. The service applies
 them, not the client — a caller asking for 100 lines of a cluster log must transfer 100
 lines, not the file.
 """
@@ -72,14 +72,6 @@ def is_binary(path: Path) -> bool:
         return True
 
 
-def binary_refused(name: str) -> ValueError:
-    """The one refusal every file reader raises, so the advice does not depend on which
-    one answered."""
-    return ValueError(
-        f"{name} is a binary file — read it as bytes (GET the address without "
-        "'as=text', or 'vast files get'), or download the campaign archive.")
-
-
 def split_lines(text: str) -> list[str]:
     """Split *text* the way iterating an opened text file does.
 
@@ -121,14 +113,9 @@ def read_text_page(path: Path, lines: int = 200, offset: int = 0) -> dict:
 
     ``lines <= 0`` means "no limit" — the whole file from *offset*. That is the editor's
     case (it needs the file, not a page) and it matches :func:`paginate`, so one
-    convention covers both.
-
-    Raises:
-        ValueError: If the file is binary. Callers get the byte URL instead — mangling
-            binary into "text" would be a wrong answer that looks like a right one.
+    convention covers both. A binary file is the caller's to refuse, by :func:`is_binary`,
+    before it asks.
     """
-    if is_binary(path):
-        raise binary_refused(path.name)
     total = 0
     window: list[str] = []
     end = offset + lines if lines > 0 else None
