@@ -640,6 +640,24 @@ def test_deploy_service_obeys_a_stated_empty_pool(monkeypatch):
     assert rendered["job_node_labels"] == {}
 
 
+def test_deploy_service_records_the_current_context_when_none_is_named(monkeypatch):
+    """Setup and upgrade without --context still ran against a context: the kubeconfig's
+    current one. The service resolves per-cluster resource lists with what is recorded,
+    and a launch carries no context of its own, so recording nothing left every such list
+    refused."""
+    from robovast.execution.cluster_execution import cluster_context
+    monkeypatch.setattr(cluster_context, "get_active_kube_context", lambda: "lab.example")
+    rendered = _deploy_capturing_manifests(monkeypatch, {})
+    assert rendered["kube_context"] == "lab.example"
+
+
+def test_deploy_service_records_the_named_context_over_the_current_one(monkeypatch):
+    from robovast.execution.cluster_execution import cluster_context
+    monkeypatch.setattr(cluster_context, "get_active_kube_context", lambda: "lab.example")
+    rendered = _deploy_capturing_manifests(monkeypatch, {}, kube_context="cloud.example")
+    assert rendered["kube_context"] == "cloud.example"
+
+
 def _cluster_with(monkeypatch, *, dep=None, error=None):
     from kubernetes import client as kclient
 

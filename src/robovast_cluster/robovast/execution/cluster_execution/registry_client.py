@@ -42,6 +42,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from typing import Optional
@@ -179,6 +180,9 @@ def credentials_for(dockerconfigjson: str, host: str) -> "Optional[tuple[str, st
     return None
 
 
+_CHALLENGE_PARAM = re.compile(r'([A-Za-z0-9_.-]+)\s*=\s*(?:"([^"]*)"|([^\s,]+))')
+
+
 def _bearer_token(session, challenge: str, creds) -> "tuple[Optional[str], float]":
     """Satisfy a ``WWW-Authenticate: Bearer …`` challenge: ``(token, lifetime_seconds)``.
 
@@ -187,10 +191,10 @@ def _bearer_token(session, challenge: str, creds) -> "tuple[Optional[str], float
     """
     if not challenge.lower().startswith("bearer "):
         return None, 0.0
-    params = {}
-    for part in challenge[len("bearer "):].split(","):
-        key, _, value = part.strip().partition("=")
-        params[key.strip()] = value.strip().strip('"')
+    # Parameters are ``key="quoted"`` or ``key=token`` (RFC 7235), and a quoted value may hold
+    # a comma -- a push challenge's scope is ``repository:<name>:pull,push``.
+    params = {key: quoted or bare
+              for key, quoted, bare in _CHALLENGE_PARAM.findall(challenge[len("bearer "):])}
     realm = params.pop("realm", "")
     if not realm:
         return None, 0.0
