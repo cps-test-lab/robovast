@@ -28,6 +28,34 @@
         "title": "ActionResult",
         "type": "object"
       },
+      "ArrowQueryRequest": {
+        "description": "A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).\n\nThe typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in\nits type, with no row cap. What ``robovast-data`` reads a service's tables through.",
+        "properties": {
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "ArrowQueryRequest",
+        "type": "object"
+      },
       "BatchObjective": {
         "description": "One search batch's objective figures.\n\n``min``/``max``/``mean`` are RAW and direction-free, so no reader has to know whether the\ncampaign maximizes before it can read a field name; ``best_so_far`` is the one figure that\napplies the direction. ``None`` statistics with ``n_scored == 0`` mark a batch that measured\nnothing \u2014 a gap, never a zero \u2014 and ``best_so_far`` carries forward across it.",
         "properties": {
@@ -41,6 +69,11 @@
               }
             ],
             "title": "Best So Far"
+          },
+          "complete": {
+            "default": false,
+            "title": "Complete",
+            "type": "boolean"
           },
           "idx": {
             "title": "Idx",
@@ -92,6 +125,7 @@
         },
         "required": [
           "best_so_far",
+          "complete",
           "idx",
           "max",
           "mean",
@@ -1658,7 +1692,7 @@
         "type": "object"
       },
       "HealthFinding": {
-        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast campaign wait``\n  (exit 5), because nobody would otherwise be told: a run whose simulator is wedged\n  still holds ``running`` for its whole life.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
+        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast campaign wait``\n  (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator\n  is wedged still holds ``running`` for its whole life.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
         "properties": {
           "check": {
             "title": "Check",
@@ -5246,6 +5280,21 @@
             "title": "Packaged",
             "type": "boolean"
           },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          },
           "world": {
             "default": "",
             "title": "World",
@@ -5263,6 +5312,7 @@
           "inputs",
           "overridable",
           "packaged",
+          "warnings",
           "world"
         ],
         "title": "WorldDescription",
@@ -7517,6 +7567,57 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/query.arrow": {
+      "post": {
+        "description": "Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.\n\nThe CSV twin spells every value as text and a list column as ``[...]``; this keeps\nthe types, which is what ``robovast-data`` reads a service's tables through. The\nrequest's ``tables`` are the caller's own relations -- each an Arrow IPC stream in\nbase64 -- registered under their names for this query alone, so a DataFrame a\nnotebook made joins the campaign's tables on the service.",
+        "operationId": "query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArrowQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Campaign Data Arrow",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/query.csv": {
       "get": {
         "description": "Stream the same read-only ``SELECT`` as CSV, with no row cap.\n\nThe JSON query clamps at 5000 rows and says ``truncated``; this is where the rest\nof the result lives. Streamed, so a result larger than memory is fine at both\nends, and an MCP tool can hand over this URL instead of spending context on rows.",
@@ -8088,6 +8189,56 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/screenshots/{name}": {
+      "get": {
+        "description": "A render ``POST .../screenshot`` kept, fetched again by the name it was kept under.\n\nKept for a bounded time and count (``robovast.service.screenshot``); a 404 once it is\ngone. Its bytes never change under its name, so it is served as immutable.",
+        "operationId": "campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Screenshot Frame",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/search/history": {
       "get": {
         "operationId": "get_search_history_campaigns__campaign_id__search_history_get",
@@ -8616,7 +8767,7 @@
     },
     "/data/campaigns/{campaign_id}/frame": {
       "get": {
-        "description": "One camera frame of a run as ``image/jpeg``, no wider than 640 px.\n\nThe last frame at or before ``t``, the first when none is; the newest without\n``t``. Its stamp, in the seconds every table of the run uses, is the\n``X-Frame-Time`` header. A live run's frame comes from the watcher following its\nrecording, a finished run's from an index built on first request. ``404`` for a\nrun without the topic or with no frame of it yet, with the reason.",
+        "description": "One camera frame of a run: as ``image/jpeg`` no wider than 640 px, or whole.\n\nThe last frame at or before ``t``, the first when none is; the newest without\n``t``. Its stamp, in the seconds every table of the run uses, is the\n``X-Frame-Time`` header. With ``full`` the frame is what the camera produced --\n``application/x-npy`` holding the pixels in the encoding's own dtype (the encoding\nin ``X-Frame-Encoding``), or a compressed image's own bytes -- and its frame is\n``X-Frame-Id``. A live run's frame comes from the watcher following its recording,\na finished run's from an index built on first request. ``404`` for a run without\nthe topic or with no frame of it yet, with the reason.",
         "operationId": "get_campaign_frame_data_campaigns__campaign_id__frame_get",
         "parameters": [
           {
@@ -8667,12 +8818,26 @@
               "description": "a moment in seconds of the run's clock; the newest frame without it",
               "title": "T"
             }
+          },
+          {
+            "description": "the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded",
+            "in": "query",
+            "name": "full",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded",
+              "title": "Full",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
             "content": {
-              "image/jpeg": {}
+              "application/x-npy": {},
+              "image/jpeg": {},
+              "image/png": {}
             },
             "description": "Successful Response"
           },
@@ -8940,6 +9105,100 @@
           }
         },
         "summary": "Upload Campaign Outputs",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/points": {
+      "get": {
+        "description": "One point cloud of a run as an Arrow IPC stream, one column per field.\n\nThe cloud at or before ``t`` (the last without it), or with ``after`` the first one\nafter ``t``. Its stamp is ``X-Frame-Time``, its frame ``X-Frame-Id``. ``404`` for a\nrun or topic that is not here, a topic that is not a point cloud, and a step past\nthe last cloud, with the reason.",
+        "operationId": "get_campaign_points_data_campaigns__campaign_id__points_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run, as <config>/<run_id>",
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "description": "the run, as <config>/<run_id>",
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the point cloud topic",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "the point cloud topic",
+              "title": "Topic",
+              "type": "string"
+            }
+          },
+          {
+            "description": "a moment in seconds of the run's clock; the last cloud without it",
+            "in": "query",
+            "name": "t",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a moment in seconds of the run's clock; the last cloud without it",
+              "title": "T"
+            }
+          },
+          {
+            "description": "the first cloud strictly after t (the run's first without t), to step through the topic",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "the first cloud strictly after t (the run's first without t), to step through the topic",
+              "title": "After",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.apache.arrow.stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign Points",
         "tags": [
           "data"
         ]
