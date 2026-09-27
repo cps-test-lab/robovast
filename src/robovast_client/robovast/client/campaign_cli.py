@@ -89,7 +89,7 @@ def stop(campaign, namespace, context):
                 # leaves; restating it here would be a second answer to one question.
                 click.echo(f"Stop requested for '{campaign_id}': {result.message}")
             else:
-                click.echo(f"Stop failed: {result.message}")
+                raise click.ClickException(result.message or "stop failed")
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
     # usage and setting the exit code, so they must pass the broad handler below rather than be
     # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
@@ -126,7 +126,7 @@ def stop_job(job_name, campaign, reason, namespace, context):
             if result.ok:
                 click.echo(f"Stopped job '{job_name}' of '{campaign_id}'. {result.message}")
             else:
-                click.echo(f"Stop failed: {result.message}")
+                raise click.ClickException(result.message or "stop failed")
     # The bare re-raise is deliberate: click handles UsageError/ClickException itself, printing
     # usage and setting the exit code, so they must pass the broad handler below rather than be
     # folded into handle_cli_exception. pylint calls it redundant only because super-linter lints
@@ -199,7 +199,7 @@ def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
             if result.ok:
                 click.echo(f"{what} '{campaign_id}'. {result.message}")
             else:
-                click.echo(f"Failed: {result.message}")
+                raise click.ClickException(result.message or "scheduling change failed")
     # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
