@@ -491,3 +491,16 @@ def test_what_a_raw_import_postprocessing_runs_is_checked_in_full(campaign):
     for name in ("rosbags_to_cvs", "no_such_processor", "no_such_check", "./absent.py:Check"):
         assert name in stage["detail"]
     assert "./check.py:Check" not in stage["detail"]
+
+
+def test_a_config_that_is_not_a_mapping_blocks_the_import_by_name(campaign):
+    """A .vast whose document is a list parses as YAML but holds no configuration. The config
+    stage refuses it and says why, rather than the import raising and reporting nothing."""
+    vast_path = next((campaign / "_config").glob("*.vast"))
+    vast_path.write_text("- a list\n- not a mapping\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["config"]
+    assert stage["verdict"] == STAGE_FAILED
+    assert "not a mapping" in stage["detail"]
+    assert report["ok"] is False and "config" in report["blocking"]
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
