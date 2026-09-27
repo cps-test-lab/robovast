@@ -89,6 +89,18 @@ class TypeCatalog:
         self._failed.pop(typename, None)
         return True
 
+    def add_schema(self, record) -> bool:
+        """Register the type an mcap ``Schema`` record carries; ``False`` when it carries none.
+
+        rosbag2 writes one ``ros2msg`` or ``ros2idl`` schema per recorded type; a schema in
+        any other encoding is not a definition this catalog can read, and an empty one is
+        a type rosbag2 could not find (see :meth:`add_definition`).
+        """
+        if record.encoding not in ("ros2msg", "ros2idl") or not record.data:
+            return False
+        return self.add_definition(record.name, record.encoding,
+                                   record.data.decode("utf-8", errors="replace"))
+
     def add_sidecar(self, bag_dir: str) -> int:
         """Register the definitions in *bag_dir*'s sidecar; how many types it named."""
         path = os.path.join(bag_dir, SIDECAR_NAME)
@@ -157,9 +169,7 @@ def catalog_for(schemas: Iterable, bag_dir: Optional[str] = None) -> TypeCatalog
     """A catalog from the recording's schema records and its sidecar; the distro fills in lazily."""
     catalog = TypeCatalog()
     for schema in schemas:
-        if schema.encoding in ("ros2msg", "ros2idl"):
-            text = schema.data.decode("utf-8", errors="replace") if schema.data else ""
-            catalog.add_definition(schema.name, schema.encoding, text)
+        catalog.add_schema(schema)
     if bag_dir:
         catalog.add_sidecar(bag_dir)
     return catalog
