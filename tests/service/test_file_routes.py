@@ -219,6 +219,22 @@ def test_path_escape_is_rejected(env):
         transport.read_file_bytes("/results/camp-1/../../secret.txt")
 
 
+@pytest.mark.parametrize("owner", ["..", "."])
+def test_a_results_owner_is_confined_to_the_results_root(env, owner):
+    """The owner segment is a directory name under the results root, never a step
+    beside it: ``/results/../`` is the directory holding the results tree and the
+    workspace store, and ``/results/./`` the tree itself."""
+    client, transport, _ = env
+    with pytest.raises(ValueError):
+        transport.read_file_bytes(f"/results/{owner}/secret.txt")
+    with pytest.raises(ValueError):
+        transport.list_files(f"/results/{owner}/")
+    # httpx normalizes a dot segment away, so the route sees it percent-encoded only.
+    encoded = owner.replace(".", "%2e")
+    assert client.get(f"/results/{encoded}/secret.txt").status_code == 400
+    assert client.get(f"/results/{encoded}/").status_code == 400
+
+
 def test_a_results_address_cannot_reach_a_workspace(env):
     _, transport, ws = env
     with pytest.raises(KeyError):

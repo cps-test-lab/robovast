@@ -179,7 +179,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             out["note"] = ref.note
         return out
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return error_result(e)
 
 
 def get_campaign_status(campaign_id: str) -> dict:
@@ -448,9 +448,7 @@ def list_campaign_jobs(campaign_id: str) -> dict:
     """
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); live job listing is served "
-                         "by the service"}
+        return {"error": NO_SERVICE}
     try:
         return client.list_jobs(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -655,8 +653,7 @@ def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); job logs are served by the service"}
+        return {"error": NO_SERVICE}
     try:
         chunk = client.get_job_log(campaign_id, job_name, cursor).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -891,7 +888,7 @@ def get_image_build_status(build_id: str) -> dict:
     """
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable"}
+        return {"error": NO_SERVICE}
     try:
         return build_status_report(client, build_id)
     except Exception as e:  # noqa: BLE001
@@ -931,7 +928,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable"}
+        return {"error": NO_SERVICE}
     try:
         chunk = client.get_image_build_log(build_id, offset)
     except Exception as e:  # noqa: BLE001
