@@ -636,6 +636,8 @@ _DESCRIBE_NOTE = (
     "runs it already is, and a query naming it builds the rest -- only the runs its WHERE "
     "restricts it to with config_name = / run_id = / IN (...), so narrow a first look at a "
     "large table to one run. 'columns' is empty until a table is built for some run. "
+    "A table's 'failed' names the runs it has no rows for, or only the rows from before a "
+    "topic stopped decoding, and why: an answer over those runs is partial. "
     "Each column is listed as 'name TYPE': numeric columns are INTEGER/REAL, so compare and "
     "ORDER BY them directly. A TEXT column holds text — ordering it is lexicographic "
     "('10.022' < '9.5'), so CAST(col AS DOUBLE) first. A table's 'column_notes' flags a "
@@ -817,7 +819,8 @@ def query_data_db(campaign_dir, sql: str, max_rows: int = 500,
     if problems:
         shown = "; ".join(str(p) for p in problems[:5])
         more = f" (+{len(problems) - 5} more)" if len(problems) > 5 else ""
-        notes.append(f"the answer leaves out what could not be built: {shown}{more}")
+        notes.append(f"the answer leaves out what could not be built or decoded: "
+                     f"{shown}{more}")
     if notes:
         result["note"] = " ".join(notes)
     return result

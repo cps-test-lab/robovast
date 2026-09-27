@@ -170,8 +170,9 @@ class RemoteCampaign(Reader):
         if problems:
             shown = "\n  ".join(problems[:10])
             more = f"\n  ... {len(problems) - 10} more" if len(problems) > 10 else ""
-            warnings.warn(f"{len(problems)} table(s) could not be built for some runs; the "
-                          f"answer leaves them out:\n  {shown}{more}", stacklevel=4)
+            warnings.warn(f"{len(problems)} table(s) are missing or incomplete for some runs; "
+                          f"the answer leaves out what they lack:\n  {shown}{more}",
+                          stacklevel=4)
         return result.to_pandas()
 
     @property
