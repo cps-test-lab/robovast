@@ -31,6 +31,8 @@ not ask for:
   Neither has a use in campaign output.
 * **A name the caller may not write.** Given per call as *deny*: the campaign's own
   store, which the driver holds open, and the driver's logs, which have one writer.
+  Judged by where the member lands with the tree's symlinks followed, so a link into
+  a directory is not a way around it.
 
 Refused members are named in the result rather than raised on: a pod's output is many
 files, and one it may not write is not a reason to lose the rest.
@@ -50,7 +52,7 @@ import stat
 import tarfile
 from pathlib import Path
 
-from robovast.client.safe_path import UnsafePathError, check_relative
+from robovast.client.safe_path import UnsafePathError, check_relative, is_inside
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +116,14 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
             except UnsafePathError:
                 out.refused.append(member.name)
                 continue
-            if rel in denied or os.path.basename(rel) in denied:
+            target = root / rel
+            parent = target.parent.resolve()
+            if _escapes(root, parent):
                 out.refused.append(member.name)
                 continue
-            target = root / rel
-            if _escapes(root, target.parent):
+            # A symlink already in the tree is a second name for a directory.
+            landing = (parent / target.name).relative_to(root).as_posix()
+            if landing in denied or target.name in denied:
                 out.refused.append(member.name)
                 continue
             try:
@@ -182,8 +187,7 @@ def _member_rel(name: str) -> "str | None":
 
 def _escapes(root: Path, path: Path) -> bool:
     """Whether *path*, with the symlinks that already exist under *root* followed, leaves it."""
-    resolved = path.resolve()
-    return resolved != root and root not in resolved.parents
+    return not is_inside(root, path)
 
 
 def _chmod(path: Path, mode: int) -> None:
