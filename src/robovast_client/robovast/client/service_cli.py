@@ -19,6 +19,7 @@ started in a venv is "however it was installed and started", so it has no image 
 
 
 import csv
+import json
 import sys
 from datetime import datetime
 
@@ -173,8 +174,11 @@ def _wait_for_handover(client, before):
 
 
 @service.command('info')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the answer as one JSON object, the fields the MCP '
+                   'get_service_info tool returns.')
 @target_options
-def info(namespace, context):
+def info(as_json, namespace, context):
     """Which service is answering, which code it runs, and which backend it drives.
 
     Call this first when something behaves unexpectedly. A service loads robovast **once,
@@ -185,76 +189,101 @@ def info(namespace, context):
     ``version`` is the package semver, so it stays the same across every edit and reading
     it as a revision is a live trap.
 
-    ``robovast_version``, the field the compatibility handshake compares, is not printed:
-    it resolves to a revision when there is one and to the semver otherwise, so it is
-    always already on one of these two lines. Printing it as ``version`` as well would show
-    the same SHA twice on every deployed service.
+    ``code_version``, the field the compatibility handshake compares, is not printed: it
+    resolves to a revision when there is one and to the semver otherwise, so it is always
+    already on one of these two lines.
+
+    ``--json`` prints every field on stdout and the target on stderr.
     """
+    from robovast.client.service_report import \
+        service_info_report  # pylint: disable=import-outside-toplevel
     try:
         with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            version = client.version()
+            _echo_target(label, err=as_json)
+            report = service_info_report(client)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
 
-    click.echo(f"  version   {version.package_version or '(unavailable — no package metadata)'}")
-    click.echo(f"  revision  {version.code_revision or '(unavailable — cannot compare with your tree)'}")
-    # Only when known. A source checkout has no build to date, and an absent line says that
-    # more honestly than a placeholder that would have to be read as one.
-    if version.built_at:
-        click.echo(f"  built     {version.built_at}")
-    click.echo(f"  api       {version.api_version}")
-    if version.backend:
-        click.echo(f"  backend   {version.backend}")
-    # Only when the service said: an older one has no verdict, and printing "none" for it
-    # would claim no queue for a service that may well have one.
-    if version.can_schedule is not None:
-        click.echo("  queue     " + ("priority and pause" if version.can_schedule
+    if as_json:
+        click.echo(json.dumps(report))
+        return
+    version = report.get('package_version', '(unavailable — no package metadata)')
+    revision = report.get('code_revision', '(unavailable — cannot compare with your tree)')
+    click.echo(f"  version   {version}")
+    click.echo(f"  revision  {revision}")
+    if "built_at" in report:
+        click.echo(f"  built     {report['built_at']}")
+    click.echo(f"  api       {report['api_version']}")
+    if report["backend"]:
+        click.echo(f"  backend   {report['backend']}")
+    if "web_base" in report:
+        click.echo(f"  web       {report['web_base']}")
+    # Absent means the service did not say, so neither line claims a "no".
+    if "can_schedule" in report:
+        click.echo("  queue     " + ("priority and pause" if report["can_schedule"]
                                      else "none (one campaign at a time)"))
-    if version.kube_context:
-        source = f" ({version.kube_context_source})" if version.kube_context_source else ""
-        click.echo(f"  context   {version.kube_context}{source}")
+    if "can_build_images" in report:
+        why = report.get('build_unavailable') or 'no reason given'
+        click.echo("  builds    " + ("yes" if report["can_build_images"] else f"no — {why}"))
+    if report.get("kube_context"):
+        source = report.get("kube_context_source")
+        click.echo(f"  context   {report['kube_context']}{f' ({source})' if source else ''}")
+    if report.get("namespace"):
+        in_pod = {True: "in the cluster", False: "outside the cluster"}.get(report.get("in_pod"))
+        click.echo(f"  namespace {report['namespace']}{f' ({in_pod})' if in_pod else ''}")
 
 
 @service.command('resources')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the usage as one JSON object, the fields the MCP '
+                   'get_resource_usage tool returns.')
 @target_options
-def resources(namespace, context):
+def resources(as_json, namespace, context):
     """Does the cluster have room, and is it reachable?
 
     Ask before a sweep.
 
     ``pending`` is work the backend has accepted but is not executing, which is why it is
-    counted apart from usage rather than folded into it -- counting queued work as *used*
-    would report more cores in use than the cluster has.
+    counted apart from usage rather than folded into it: queued work has no cores yet.
+
+    ``--json`` prints every field on stdout and the target on stderr.
     """
+    from robovast.client.service_report import \
+        resource_usage_report  # pylint: disable=import-outside-toplevel
     try:
         with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            usage = client.resource_usage()
+            _echo_target(label, err=as_json)
+            usage = resource_usage_report(client)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
+        return
+
+    if as_json:
+        click.echo(json.dumps(usage))
         return
 
     def _gib(value):
         return f"{value / (1024 ** 3):.1f} GiB"
 
-    click.echo(f"  backend   {usage.backend}"
-               f" ({'parallel runs' if usage.parallel_runs else 'one run at a time'})")
-    click.echo(f"  cpu       {usage.cpu_used:.1f} / {usage.cpu_capacity:.1f} cores")
-    click.echo(f"  memory    {_gib(usage.memory_used_bytes)} /"
-               f" {_gib(usage.memory_capacity_bytes)}")
-    click.echo(f"  runs      {usage.jobs_running} running, {usage.jobs_pending} pending")
+    click.echo(f"  backend   {usage['backend']}"
+               f" ({'parallel runs' if usage['parallel_runs'] else 'one run at a time'})")
+    click.echo(f"  cpu       {usage['cpu_used']:.1f} / {usage['cpu_capacity']:.1f} cores")
+    click.echo(f"  memory    {_gib(usage['memory_used_bytes'])} /"
+               f" {_gib(usage['memory_capacity_bytes'])}")
+    if usage["metrics_unavailable"]:
+        click.echo(f"  measured  not read: {usage['metrics_unavailable']}")
+    click.echo(f"  runs      {usage['jobs_running']} running, {usage['jobs_pending']} pending")
     # In GB, the unit the free-space reserve is stated in, so the two lines can be compared.
-    for label, space in (("disk", usage.disk), ("store", usage.store)):
-        if space is not None and space.capacity_bytes > 0:
-            free = max(0, space.capacity_bytes - space.used_bytes)
+    for label, space in (("disk", usage["disk"]), ("results", usage["results"])):
+        if space is not None and space["capacity_bytes"] > 0:
+            free = max(0, space["capacity_bytes"] - space["used_bytes"])
             click.echo(f"  {label:<9} {free / 1000 ** 3:.0f} GB free of "
-                       f"{space.capacity_bytes / 1000 ** 3:.0f} GB")
-    if usage.disk is None and usage.disk_unavailable:
-        click.echo(f"  disk      not read: {usage.disk_unavailable}")
-    if usage.storage_refusal:
-        click.echo(f"  refusing  {usage.storage_refusal}")
+                       f"{space['capacity_bytes'] / 1000 ** 3:.0f} GB")
+    if usage["disk"] is None and usage["disk_unavailable"]:
+        click.echo(f"  disk      not read: {usage['disk_unavailable']}")
+    if usage["storage_refusal"]:
+        click.echo(f"  refusing  {usage['storage_refusal']}")
 
 
 @service.command('cache')
