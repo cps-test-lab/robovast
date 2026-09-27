@@ -24,4 +24,4 @@ def test_a_failing_handler_does_not_fail_its_siblings():
 
     assert bad in report.failed and "boom" in report.failed[bad]
     assert good not in report.failed
-    assert good.buffers["rosbag2_collision"].rows > 0
+    assert good.buffers["rosbag2_collision"].count > 0

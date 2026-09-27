@@ -37,7 +37,7 @@ and the shared secret -- a restart of either changes what the other sees not at 
 
 What the plane refuses is decided here too. A campaign that is not here is a 404; there
 is no route by which a pod creates one. Members a pod may never write -- the campaign's
-own store, the driver's logs -- are refused per member and reported, never written
+own store, the service's records of it -- are refused per member and reported, never written
 (:mod:`robovast.service.tar_io`). And a scoped token reaches exactly one campaign's or
 slot's routes (:func:`robovast.service.auth.scope_allows`), which is why these are
 control routes under :data:`~robovast.service.interface.Routes.DATA` rather than write
@@ -69,12 +69,12 @@ logger = logging.getLogger(__name__)
 #: listing, which recognises campaigns by name.
 STAGED_DIRNAME = "_staged"
 
-#: Names under ``_execution/`` only the driver writes. A pod delivering outputs may not
-#: replace them: the driver's log is appended to for the campaign's whole life, and a
-#: staged snapshot of it landing on top would truncate the record to the moment the pod
-#: was given its copy.
-DRIVER_OWNED = ("_execution/controller.log", "_execution/variation.log",
-                "_execution/build.log")
+#: The directories only the service writes, which a pod delivering outputs may not. A pod
+#: writes its run, its job's artifacts and a probe's records, none of them here.
+#: ``_config/`` and ``_transient/`` hold what every job is handed as inputs and the job-link
+#: manifest the driver turns into symlinks; ``_execution/`` the driver's logs and the
+#: campaign's recorded outcome.
+SERVICE_OWNED = ("_config/", "_transient/", "_execution/")
 
 #: How many extractions run at once in one process. Bounded by the disk, not the CPU:
 #: past a handful, concurrent writers only make each other seek.
@@ -202,7 +202,7 @@ class DataPlane:
         """
         from robovast.service import tar_io  # pylint: disable=import-outside-toplevel
         campaign_dir = self.campaign_dir(campaign_id)
-        result = tar_io.extract_stream(stream, campaign_dir, deny=DRIVER_OWNED)
+        result = tar_io.extract_stream(stream, campaign_dir, deny=SERVICE_OWNED)
         if result.refused:
             logger.warning("outputs for %s: refused %d member(s): %s", campaign_id,
                            len(result.refused), ", ".join(result.refused[:5]))
