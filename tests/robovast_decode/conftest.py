@@ -157,3 +157,51 @@ def make_roqsim_campaign(root: Path, runs=(("cfg", 0),), verdict=True, samples=R
     (root / "_transient").mkdir(parents=True, exist_ok=True)
     (root / "_transient" / "job_links.yaml").write_text("{}\n")
     return root
+
+
+# -- a recording with topics a decoder cannot read ---------------------------------------------
+
+def string_cdr(text: str) -> bytes:
+    """A ``std_msgs/msg/String`` as rosbag2 records it."""
+    from rosbags.typesys import Stores, get_typestore
+
+    store = get_typestore(Stores.ROS2_JAZZY)
+    typename = "std_msgs/msg/String"
+    return bytes(store.serialize_cdr(store.types[typename](data=text), typename))
+
+
+def write_bag(bag_dir: Path, topics: dict) -> Path:
+    """A closed rosbag2 recording of *topics*, ``{topic: (type, [payload, ...])}``.
+
+    No schema record carries a definition, so a type is decodable only where the ROS
+    distribution's standard set defines it.
+    """
+    from mcap.writer import Writer
+
+    bag_dir.mkdir(parents=True, exist_ok=True)
+    with open(bag_dir / "rosbag2_0.mcap", "wb") as fh:
+        writer = Writer(fh)
+        writer.start(profile="ros2", library="test")
+        stamp = 1_000_000_000
+        for topic, (typename, payloads) in topics.items():
+            schema = writer.register_schema(typename, "ros2msg", b"")
+            channel = writer.register_channel(topic, "cdr", schema)
+            for i, payload in enumerate(payloads):
+                stamp += 10_000_000
+                writer.add_message(channel, stamp, payload, stamp, i)
+        writer.finish()
+    (bag_dir / "metadata.yaml").write_text(yaml.safe_dump({"rosbag2_bagfile_information": {
+        "topics_with_message_count": [
+            {"topic_metadata": {"name": topic, "type": typename, "serialization_format": "cdr"},
+             "message_count": len(payloads)}
+            for topic, (typename, payloads) in topics.items()]}}))
+    return bag_dir
+
+
+#: ``/opaque`` has a type nothing defines; ``/torn``'s second message does not decode;
+#: ``/fine`` decodes whole.
+UNDECODABLE_TOPICS = {
+    "/opaque": ("example_msgs/msg/Opaque", [b"\x00\x01\x00\x00"] * 3),
+    "/torn": ("std_msgs/msg/String", [string_cdr("a"), b"\x00\x01", string_cdr("c")]),
+    "/fine": ("std_msgs/msg/String", [string_cdr("a"), string_cdr("b"), string_cdr("c")]),
+}

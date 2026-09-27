@@ -32,29 +32,18 @@ class WaypointGenerator:
 
         Args:
             map_file_path: Path to the map YAML file
+
+        Raises:
+            FileNotFoundError: If the map YAML or its image is missing
+            ValueError: If the map cannot be read
         """
         self.map_file_path = map_file_path
-        self.map: Map = None
-
-        self.load_map()
-
-    def load_map(self):
-        """Load the map file and initialize internal data structures."""
-        try:
-            # Load map using shared map_loader utility
-            self.map = load_map(self.map_file_path)
-
-        except Exception as e:
-            print(f"Error loading map {self.map_file_path}: {e}")
-            self.map = None
+        self.map: Map = load_map(map_file_path)
 
     def generate_waypoints(
         self, num_waypoints: int, robot_diameter: float, min_distance: float = 0.0, max_distance: float = None, initial_start_pose=None
     ) -> List[Pose]:
         """Generate random valid waypoints."""
-        if self.map is None or self.map.occupancy_grid is None:
-            raise ValueError("Occupancy grid not loaded")
-
         waypoints = []
         max_attempts = num_waypoints * 50  # Limit total attempts
 
