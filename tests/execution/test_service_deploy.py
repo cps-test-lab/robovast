@@ -317,14 +317,14 @@ def test_deploy_context_stamped_into_service_env():
     # Per-cluster resource lists are keyed by kubeconfig context name; in-cluster
     # there is no kubeconfig, so deploy records the context for the in-pod driver.
     ms = sd.service_manifests(namespace="default", image="x", config_name="rke2",
-                              kube_context="gcp-c4")
+                              kube_context="cloud.example")
     dep = next(m for m in ms if m["kind"] == "Deployment")
     env = {e["name"]: e["value"] for e in
            dep["spec"]["template"]["spec"]["containers"][0]["env"]}
-    assert env["ROBOVAST_KUBE_CONTEXT"] == "gcp-c4"
+    assert env["ROBOVAST_KUBE_CONTEXT"] == "cloud.example"
 
 
-def test_no_context_stamped_when_deploy_uses_active_context():
+def test_no_context_stamped_when_none_is_known():
     ms = sd.service_manifests(namespace="default", image="x", config_name="rke2")
     dep = next(m for m in ms if m["kind"] == "Deployment")
     names = {e["name"] for e in
