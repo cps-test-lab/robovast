@@ -57,7 +57,7 @@ import yaml
 
 from . import DATA_CONTRACT, __version__, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
-from .decode import channel_type, decode_bag, segments, undecodable_tables
+from .decode import SIDECAR_NAME, channel_type, decode_bag, segments, undecodable_tables
 from .derived import DERIVED, INPUTS, JobRun, derive_job
 from .framing import Channel, McapTail, has_footer, summary_channels
 from .handlers import Videos
@@ -225,8 +225,16 @@ def recorded_topics(bag_dir: str) -> Dict[str, str]:
     return topics
 
 
-def _source_size(bag_dir: str) -> int:
-    return sum(os.path.getsize(p) for p in segments(bag_dir))
+def source_size(bag_dir: str) -> int:
+    """What a recording's tables are current against: the bytes of its segments and of its
+    definitions sidecar.
+
+    The sidecar counts because it decides what decodes: one written, or rewritten, after a
+    table was built can turn a topic that stopped decoding into one that does not.
+    """
+    size = sum(os.path.getsize(p) for p in segments(bag_dir))
+    sidecar = os.path.join(bag_dir, SIDECAR_NAME)
+    return size + (os.path.getsize(sidecar) if os.path.isfile(sidecar) else 0)
 
 
 def _complete(run: Run, role: str, bag_dir: str) -> bool:
@@ -286,7 +294,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     """One run's tables from its recordings and its own files; the caller holds its lock."""
     sources = _sources(run)
     manifest = read_manifest(campaign_dir)
-    sizes = {os.path.relpath(b, campaign_dir): _source_size(b) for _, b in sources}
+    sizes = {os.path.relpath(b, campaign_dir): source_size(b) for _, b in sources}
     report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
                                                sum(sizes.values()))
     recording_rows = TableBuffer(RECORDING_TABLE)
@@ -628,4 +636,4 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
            "Run", "SharedJobError", "available_tables", "bag_information", "build",
            "derived_sources", "find_runs", "recorded_topics", "recording_closed",
-           "roqsim_recording", "scenario_recording"]
+           "roqsim_recording", "scenario_recording", "source_size"]

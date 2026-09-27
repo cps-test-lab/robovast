@@ -62,8 +62,9 @@ import pyarrow.parquet as pq
 
 from .authored import with_yaw
 from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
-                    recorded_topics, recording_closed, roqsim_recording, scenario_recording)
-from .decode import channel_type, segments, undecodable_tables
+                    recorded_topics, recording_closed, roqsim_recording, scenario_recording,
+                    source_size)
+from .decode import SIDECAR_NAME, channel_type, segments, undecodable_tables
 from .definitions import TypeCatalog
 from .derived import DERIVED, INPUTS, RUN_LOG, JobRun, derive_job
 from .frames import FrameRef, FrameTap
@@ -144,7 +145,11 @@ class Session:
                                   if self._wanted_tables is None or t in self._wanted_tables]
         self.failed: Dict[str, str] = {}
         self.catalog = TypeCatalog()
-        self._sidecar = self.catalog.add_sidecar(self.bag_dir) > 0
+        #: The bytes of the definitions sidecar the catalog holds; 0 while it holds none.
+        self._sidecar_bytes = 0
+        self._sidecar = self._load_sidecar()
+        #: The sidecar bytes held when a type was first given up for want of a definition.
+        self._gave_up_at: Optional[int] = None
         self._active: List[Handler] = list(handlers)
         self._readers: Dict[str, List[Handler]] = {}
         for handler in handlers:
@@ -190,13 +195,19 @@ class Session:
         """What the rows so far were built from, in the manifest's ``sources`` shape.
 
         While the session runs, the bytes read of the recording; once finished, the size of
-        its segments, which is what a whole build records, so a later build finds the entry
-        current and leaves it alone.
+        its segments and its definitions sidecar (:func:`~robovast_decode.build.source_size`),
+        which is what a whole build records, so a later build finds the entry current and
+        leaves it alone.
         """
         rel = os.path.relpath(self.bag_dir, self.campaign_dir)
-        if self.finished:
-            return {rel: sum(os.path.getsize(p) for p in segments(self.bag_dir))}
-        return {rel: sum(self.bytes_read.values())}
+        if not self.finished:
+            return {rel: sum(self.bytes_read.values())}
+        if self._gave_up_at is None:
+            return {rel: source_size(self.bag_dir)}
+        # A type was given up against the sidecar as it was then: that is what the rows are
+        # current against, so a sidecar that came or changed since makes them stale.
+        return {rel: sum(os.path.getsize(p) for p in segments(self.bag_dir))
+                + self._gave_up_at}
 
     # -- reading -----------------------------------------------------------------------
 
@@ -287,6 +298,8 @@ class Session:
             encoding = channel.message_encoding
             if not self._decodable(typename, encoding):
                 self._undecodable[topic] = self.catalog.missing([typename])[typename]
+                if self._gave_up_at is None:
+                    self._gave_up_at = self._sidecar_bytes
                 continue
             try:
                 msg = self.catalog.deserialize(record.data, typename, encoding)
@@ -304,10 +317,18 @@ class Session:
             return True
         # The sidecar is written by the run's container, which may be after the recorder's
         # first records: look for it once more before giving a type up.
-        if not self._sidecar and self.catalog.add_sidecar(self.bag_dir):
+        if not self._sidecar and self._load_sidecar():
             self._sidecar = True
             return self.catalog.ensure(typename, encoding)
         return False
+
+    def _load_sidecar(self) -> bool:
+        path = os.path.join(self.bag_dir, SIDECAR_NAME)
+        size = os.path.getsize(path) if os.path.isfile(path) else 0
+        if self.catalog.add_sidecar(self.bag_dir) <= 0:
+            return False
+        self._sidecar_bytes = size
+        return True
 
     def _fail(self, handler: Handler, exc: Exception) -> None:
         if handler not in self._active:
