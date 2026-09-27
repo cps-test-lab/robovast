@@ -13,7 +13,7 @@ or a published one.
 It provides four pages — **Config**, **Campaigns**, **Results** and **Admin** — described
 here by what they do:
 
-* **Campaigns**, the list — lists campaigns and shows each one's live progress (phase, per-batch
+* **Campaigns**, the list — shows each campaign's live progress (phase, per-batch
   run progress, budget/stopping criteria), with a **Stop** action and a collapsible
   **live log** panel. **Every** campaign is listed **folded**: one row carrying its phase,
   id, description, its results size, a time, and a **compact run meter**, with the jobs list, the Details
@@ -269,9 +269,10 @@ here by what they do:
   campaign itself, and once postprocessing has written into its tree the raw campaign no
   longer exists to export. A campaign ends up on the share as *both* by being uploaded at
   campaign end (before postprocessing, hence raw) and exported again afterwards.
-* **Campaigns**, the launch bar atop the list — starts a campaign from a workspace (which ``.vast``, config filter,
-  runs per configuration, *Postprocess* and *Upload to share*
-  toggles) and watches its live status. The browser equivalent of ``vast workspace run``. *Upload to share* streams a raw, pre-postprocessing
+* **Campaigns**, the launch bar atop the list — starts a campaign from a workspace (which
+  ``.vast``, config filter, runs per configuration, *Postprocess* and *Upload to share*
+  toggles); the launched campaign appears in the list below like any other. The browser
+  equivalent of ``vast workspace run``. *Upload to share* streams a raw, pre-postprocessing
   ``tar.gz`` to the configured external share the moment the runs finish (off by
   default; the share destination comes from the service's ``.env``).
   Once a ``.vast`` is selected the service composes it in the background, with a spinner and

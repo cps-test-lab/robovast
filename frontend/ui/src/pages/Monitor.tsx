@@ -327,8 +327,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['status', id] })
       qc.invalidateQueries({ queryKey: ['campaigns'] })
-      // A refusal the service returns rather than raises (the busy guard, mostly). Kept a
-      // warning, as it was on the card: it is an expected answer, not a fault.
+      // A refusal the service returns rather than raises (the busy guard, mostly). A warning:
+      // it is an expected answer, not a fault.
       if (res && !res.ok) {
         notify({ severity: 'warning', key: `stop:${id}`, message: 'Stop had no effect.',
                  note: res.message || undefined })
@@ -342,10 +342,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const stopJob = useMutation({
     mutationFn: ({ jobName, reason }: { jobName: string; reason?: string }) =>
       robovast.stopJob(id, jobName, reason),
-    // A warning, not an error, and therefore not sticky: this refusal is the EXPECTED outcome
-    // when the job finished between the poll that drew the button and the click, and the
-    // server's message (which names the phase) is the whole explanation. That judgement was
-    // already in the card it is replacing; only the place it appears has changed.
+    // A warning, not an error, and therefore on the shorter clock: this refusal is the EXPECTED
+    // outcome when the job finished between the poll that drew the button and the click, and the
+    // server's message (which names the phase) is the whole explanation.
     onError: (e: unknown) => notify({
       severity: 'warning', key: `stopjob:${id}`, message: 'Could not stop that job.',
       note: (e as Error).message,
