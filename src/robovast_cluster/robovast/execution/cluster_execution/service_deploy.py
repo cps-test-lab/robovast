@@ -235,9 +235,7 @@ def results_volume(storage_path="", storage_class=""):
 #: many at once.
 DEFAULT_RESULTS_SIZE = "500Gi"
 
-#: Kubernetes quantity suffixes, as multiples of a byte. Both series, because a
-#: StorageClass takes either and an operator who writes ``500G`` must not be told it is
-#: smaller than the ``500Gi`` already deployed without the comparison being true.
+
 def parse_quantity(value: str) -> int:
     """A Kubernetes storage quantity in bytes, or ``ValueError`` naming what was read.
 
