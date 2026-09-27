@@ -106,7 +106,8 @@ extensions = ['sphinx.ext.extlinks',
               'sphinxcontrib.spelling',
               'mcp_tools',
               'http_routes',
-              'variation_plugins']
+              'variation_plugins',
+              'wait_exit_codes']
 
 # Add the project root to the path so we can import the modules.
 # Paths are relative to this conf.py file so they work regardless of CWD

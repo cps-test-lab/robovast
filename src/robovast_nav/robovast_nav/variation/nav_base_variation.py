@@ -22,11 +22,20 @@ from robovast.common import is_scenario_parameter
 from robovast.common.variation import Variation
 
 from ..data_model import Pose
+from ..map_loader import map_files
 
 logger = logging.getLogger(__name__)
 
 
 class NavVariation(Variation):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._read_files = set()
+
+    def get_read_files(self):
+        """The map YAMLs this variation used and the images they name."""
+        return sorted(self._read_files)
 
     def resolve_input_paths(self, paths) -> list:
         """Resolve relative input paths against ``base_path``.
@@ -147,6 +156,7 @@ class NavVariation(Variation):
             raise ValueError(
                 "No valid map file path could be determined. Please specify map_file in the YAML configuration or ensure a previous variation provides it.")
 
+        self._read_files.update(os.path.abspath(p) for p in map_files(map_file_path))
         return map_file_path
 
     def get_waypoints(self, config) -> list:
