@@ -348,12 +348,14 @@ Moving a cluster's images
    ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast service upgrade
 
 ``upgrade`` is the command for this, not ``setup --force``. It recovers the cluster's own
-configuration and ingress host *from the cluster*, then touches only the Deployment's
-image, RBAC and the credential Secrets, and restarts the pod — which is the only way
-``envFrom`` Secrets are re-read — unless ``--no-restart`` limits it to what a running pod
-picks up. ``setup`` **provisions**: it re-runs the GPU device-plugin
-install, the results volume and the registry storage, and it takes its options as arguments, so a re-run
-without the original flags re-provisions with different ones.
+configuration and ingress host *from the cluster*, reconciles the cluster state a version may
+need (RBAC, node labels, the registry route), and rolls the Deployment onto the new image with
+the credential Secrets rebuilt from the environment. The roll always restarts the pod, which is
+the only way ``envFrom`` Secrets are re-read. ``--no-restart`` stops after the cluster state,
+which the running pod picks up, and moves neither the image nor the Secrets. ``setup``
+**provisions**: it re-runs the GPU device-plugin install, the results volume and the registry
+storage, and it takes its options as arguments, so a re-run without the original flags
+re-provisions with different ones.
 
 
 .. _image-records:
@@ -454,9 +456,9 @@ lock records what actually ran, so those specs can be replaced by exactly those 
 ``vast campaign rerun --check`` reports which recorded images carry a lock, because that is what
 decides whether a rebuild would install the same software or merely something compatible.
 
-A campaign's own ``image_build_refs`` in ``_execution/execution.yaml`` records the same facts per
-container, read from the labels at composition time — plus, for a user-supplied image, the ``provenance:`` block its
-author declared. Those survive the image being deleted, which the labels do not.
+A campaign's own ``image_build_refs`` in ``_execution/execution.yaml`` records the same facts
+per container, read from the labels at composition time — plus, for a user-supplied image, the
+``provenance:`` block its author declared. Those survive the image being deleted, which the labels do not.
 
 Which revision a deployment is running
 ``````````````````````````````````````
@@ -476,7 +478,7 @@ Nothing has to be passed to get it. Both the environment variable and the revisi
 derived at build time from the checkout the build scripts live in
 (``container/image_stamp.sh``), so ``make release-images`` bakes them with no extra flag —
 there is deliberately no option for it, because an option is something to forget, and a
-forgotten one produced exactly this gap. A dirty tree bakes ``<sha>+dirty`` and the build says
+forgotten one leaves a deployment unable to say which code it runs. A dirty tree bakes ``<sha>+dirty`` and the build says
 so: such an image corresponds to no commit anyone can check out, and a campaign run against it
 records that rather than looking reproducible.
 
@@ -485,7 +487,7 @@ and printed by ``vast service info`` as ``built``. It answers the question a rev
 *how old is what is deployed?* — and it is baked rather than read from
 ``org.opencontainers.image.created`` because a container cannot read its own labels. Unlike the
 revision it changes on every build, so its ``ARG`` sits after every install step in the
-Dockerfile, where only the ``ENV``, the labels and the compatibility-version ``ARG`` follow it.
+Dockerfile and only metadata follows it.
 
 A build outside a git checkout bakes nothing, and ``code_revision`` is then **absent** rather
 than filled with something else. That is a deliberate answer — *this deployment cannot tell
