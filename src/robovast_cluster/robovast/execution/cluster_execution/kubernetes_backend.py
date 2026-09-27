@@ -96,6 +96,7 @@ from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAM
                         POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
 # node_admission imports nothing from this package, so there is no cycle to route around
 # by importing late.
+from .node_admission import CREATE_ATTEMPT_LIMIT
 from .node_admission import CREATED as _ADMIT_CREATED
 from .node_placement import job_node_pool
 
@@ -3229,6 +3230,14 @@ class BatchJobRunner:
             # Deleting a Job is asynchronous, so one already dropped keeps reporting itself
             # blocked for a poll or two; its timer must not expire again.
             rnd = tracker.poll(ignore_blocked=self._invalidated or ())
+            if rnd.given_up:
+                # Read before `over`: a given-up Job is neither planned nor running, so a
+                # batch of them is otherwise a batch that finished with every run empty.
+                causes = "; ".join(f"{job}: {why}" for job, why in sorted(rnd.given_up.items()))
+                raise CampaignConfigError(
+                    f"{len(rnd.given_up)} job(s) of batch {self._batch_tag} could not be "
+                    f"created after {CREATE_ATTEMPT_LIMIT} attempts each, so the batch cannot "
+                    f"run. The API server's answer is the cause: {causes}")
             remaining, planned_count = rnd.remaining, rnd.planned
             if not planned_count:
                 # Every job this batch defined exists, so an uncreated probe has nothing left
