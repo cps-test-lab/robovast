@@ -126,42 +126,53 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
             if landing in denied or target.name in denied:
                 out.refused.append(member.name)
                 continue
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                _chmod(target, member.mode | 0o700)
-            elif member.issym():
-                if _escapes(root, (target.parent / member.linkname)):
-                    out.refused.append(member.name)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _replace_with_symlink(target, member.linkname)
-            elif member.isfile() and OFFSET_HEADER in member.pax_headers:
-                offset = _offset_of(member)
-                if offset is None:
-                    out.refused.append(member.name)
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                outcome = _append_range(target, source, offset, member.size, member.mode)
-                if outcome == _APPENDED:
-                    out.files += 1
-                    out.bytes += member.size
-                elif outcome == _RESYNC:
-                    out.resync.append(rel)
-            elif member.isfile():
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _write_atomic(target, source, member.mode)
-                out.files += 1
-                out.bytes += member.size
-            else:
-                # Hard links, devices, FIFOs: nothing campaign output has a use for.
+            try:
+                _place(tar, member, rel, root, target, out)
+            except (FileExistsError, NotADirectoryError):
+                # A file or a dangling symlink where a directory is needed refuses this
+                # member only; an error of the disk itself still ends the extraction.
                 out.refused.append(member.name)
     return out
+
+
+def _place(tar: tarfile.TarFile, member: tarfile.TarInfo, rel: str, root: Path,
+           target: Path, out: Extracted) -> None:
+    """Write one member, already confined and allowed, at *target*; count it in *out*."""
+    if member.isdir():
+        target.mkdir(parents=True, exist_ok=True)
+        _chmod(target, member.mode | 0o700)
+    elif member.issym():
+        if _escapes(root, (target.parent / member.linkname)):
+            out.refused.append(member.name)
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _replace_with_symlink(target, member.linkname)
+    elif member.isfile() and OFFSET_HEADER in member.pax_headers:
+        offset = _offset_of(member)
+        if offset is None:
+            out.refused.append(member.name)
+            return
+        source = tar.extractfile(member)
+        if source is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        outcome = _append_range(target, source, offset, member.size, member.mode)
+        if outcome == _APPENDED:
+            out.files += 1
+            out.bytes += member.size
+        elif outcome == _RESYNC:
+            out.resync.append(rel)
+    elif member.isfile():
+        source = tar.extractfile(member)
+        if source is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(target, source, member.mode)
+        out.files += 1
+        out.bytes += member.size
+    else:
+        # Hard links, devices, FIFOs: nothing campaign output has a use for.
+        out.refused.append(member.name)
 
 
 def _member_rel(name: str) -> "str | None":
