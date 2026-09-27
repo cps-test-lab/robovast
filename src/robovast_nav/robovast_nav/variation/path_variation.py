@@ -30,6 +30,7 @@ from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHAN
                                                       VariationInfeasibleError)
 
 from ..data_model import Orientation, Pose, Position
+from ..map_loader import map_files
 # `path_length` here always means the length a campaign ASKED for; the measurement of a
 # path in hand is imported under a name that cannot be confused with it.
 from ..path_generator import PathGenerator, WaypointRefused, path_length as arc_length
@@ -315,7 +316,8 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
         # The prefix names the pickle layout: a cache written under an earlier layout is
         # not found rather than unpacked into the wrong shape.
         file_cache = FileCache(cache_path, "robovast_path_generation_v2_", [self.parameters, seed, path_length, num_goal_poses])
-        cache = file_cache.get_cached_file([map_file_path], binary=True)
+        cache_inputs = map_files(map_file_path)
+        cache = file_cache.get_cached_file(cache_inputs, binary=True)
         if cache:
             cached_start_pose, cached_goal_poses, cached_path = pickle.loads(cache)
             self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
@@ -464,7 +466,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
         self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_poses}")
         file_content = pickle.dumps((start_pose, goal_poses, path))
         file_cache.save_file_to_cache(
-            input_files=[map_file_path],
+            input_files=cache_inputs,
             file_content=file_content,
             binary=True)
         return start_pose, goal_poses, path, map_file_path
