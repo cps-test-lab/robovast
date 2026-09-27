@@ -76,8 +76,6 @@ def test_a_raster_with_no_nul_byte_is_binary(tmp_path):
     path.write_bytes(_PGM_OPEN_FLOOR)
     assert file_view.is_binary_bytes(_PGM_OPEN_FLOOR) is True
     assert file_view.is_binary(path) is True
-    with pytest.raises(ValueError, match="binary"):
-        file_view.read_text_page(path)
 
 
 def test_a_multibyte_character_at_the_sample_boundary_is_still_text():

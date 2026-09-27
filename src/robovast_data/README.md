@@ -69,6 +69,6 @@ scope.
 **What a query may touch.** It can read the campaign's tables and nothing else on disk.
 
 **Spellings kept from older engines.** `CAST(x AS REAL)` means a double. `CAST(x AS INTEGER)`
-truncates. `PERCENTILE(value, p)` takes `p` from 0 to 100. `REGEXP(pattern, value)` searches.
+truncates, exactly up to 2^53: the value passes through a double. `PERCENTILE(value, p)` takes `p` from 0 to 100. `REGEXP(pattern, value)` searches.
 
 Part of [RoboVAST](https://cps-test-lab.github.io/robovast/).

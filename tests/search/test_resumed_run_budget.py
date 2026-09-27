@@ -134,6 +134,7 @@ def test_a_store_that_recorded_no_allocation_falls_back_to_the_campaign_default(
         store.record_unit(batch_id=batch_id, paramset_id=f"p{i}", config_name=f"c{i}",
                           params={"x": i}, objectives={"failure_rate": 1.0}, measures={},
                           n_samples=1, status="evaluated", result_dir=f"c{i}")
+    store.complete_batch(batch_id)
 
     assert [b.reps for b in recorded_batches(store, campaign_id)] == [[None, None]]
 
