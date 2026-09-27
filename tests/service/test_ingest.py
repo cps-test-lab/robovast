@@ -368,7 +368,6 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     campaign only in what is absent — so the marker the archiver wrote is the campaign
     saying so itself.
     """
-    import json
 
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
 
