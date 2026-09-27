@@ -24,4 +24,3 @@ def test_the_failure_names_the_address_and_its_source(monkeypatch):
     assert "'vast login'" in result.output
     assert "Traceback" not in result.output
     assert "HTTPConnectionPool" not in result.output
-
