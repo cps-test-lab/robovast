@@ -61,6 +61,16 @@ def test_unmeasured_units_are_excluded_rather_than_scored_as_zero(tmp_path):
     assert (batch["min"], batch["max"], batch["mean"]) == (0.8, 0.8, 0.8)
 
 
+def test_a_recalled_cell_is_not_a_cell_the_batch_had(tmp_path):
+    """A cell an earlier batch measured, re-proposed and recalled, cost this batch nothing:
+    counted in `n_units` it would read as a cell this batch lost."""
+    root = _campaign(tmp_path, batches=[[("evaluated", 0.4)], [("evaluated", 0.7)]])
+    with CampaignStore(root / STORE_FILENAME) as store:
+        store.record_recall(2, "p00", {})
+    batch = read_batch_objectives(root)["batches"][1]
+    assert (batch["n_units"], batch["n_scored"]) == (1, 1)
+
+
 def test_a_batch_that_scored_nothing_is_a_gap_and_best_carries_forward(tmp_path):
     root = _campaign(tmp_path, batches=[
         [("evaluated", 0.7)],

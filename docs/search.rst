@@ -236,7 +236,9 @@ Marker rules:
    generation is *not* short in this case — a recalled evaluation is a real answer to a real
    proposal. A recalled cell costs no runs and is not counted as a new evaluation, so
    neither a ``runs`` nor an ``evaluations`` budget is spent on it; ``batches`` still
-   advances, which is what ends a search that has stopped finding anything new.
+   advances, which is what ends a search that has stopped finding anything new. The
+   batch records it as a ``unit`` row with status ``recalled`` whose ``recalled_from``
+   names the unit that measured it; the row carries no objectives or runs of its own.
 
 Strategies
 ----------
@@ -565,6 +567,16 @@ was **proposed** — the batch row's ``asked`` — not what came back, and not t
 ``unit`` rows either: a draw the variation pipeline could not realize, or one whose runs
 were all lost, costs a proposal and produces no evaluation, and a repeated draw costs a
 proposal and produces no row of its own.
+
+What is told back is what the live batch told: its ``evaluated`` cells, then its
+``recalled`` ones, each read from the unit its ``recalled_from`` names. A recalled cell is
+an answer the strategy was given, so a replay that left it out would hand the strategy a
+shorter generation than it saw — ``optuna`` would close that trial as failed — and the
+resumed search would propose differently from there.
+
+A batch recorded before store schema 14 has no row for a recalled cell. Its replay reads
+them off the proposals it re-asks: every distinct one an earlier batch measured is a cell
+the live loop recalled, so such a campaign resumes exactly too.
 
 Two conditions, both checked before the campaign is re-launched:
 

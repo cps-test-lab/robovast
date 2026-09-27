@@ -538,7 +538,10 @@ _TABLE_DESCRIPTIONS = {
         "(WHERE u.status='evaluated') when averaging objectives, and count "
         "status='no_sample' to see how much of the search space went unmeasured — that is "
         "a coverage loss, not a result. status='composition_failed' is the sibling case "
-        "where the draw could not be built at all and never ran."),
+        "where the draw could not be built at all and never ran. status='recalled' marks a "
+        "SEARCH cell an earlier batch already measured and this batch re-proposed: it was "
+        "not run again, carries no objectives, runs or config_name, and recalled_from is "
+        "the id of the unit that measured it -- exclude it when counting cells."),
     ("campaign", "run"): (
         "One row per individual run, child of unit via unit_id and of a job via job_id. "
         "status is passed/failed/error/killed/invalid/unknown (unknown = test.xml missing "
