@@ -45,8 +45,8 @@ a restart forgets nothing, and a scope stops mattering the moment nothing answer
 Handing a pod the shared secret instead would let any container in the cluster start
 campaigns.
 
-One consequence shows up in the table: the file routes serve real paths on the service
-host, which is the point of the address space below.
+The file routes serve real paths on the service host, which is the point of the address
+space below.
 
 Addressing files
 ================
