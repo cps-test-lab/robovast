@@ -45,7 +45,7 @@ Every group is named after what it acts on, so the group tells you what you are 
        prints what the MCP ``list_workspaces`` tool returns.
    * - ``vast workspace validate|preview|world``
      - Check a project, see what its sweep expands to, and describe the world its simulator
-       will load — all before spending compute.
+       will load — all before launching a campaign.
    * - ``vast workspace run <ws> [vast]``
      - **Launch a campaign.** The one way to run a ``.vast``. ``--push DIR`` pushes and
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
@@ -100,6 +100,9 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast service restart``
      - Roll the deployed service onto the newest image at its tag, through its own API —
        no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
+   * - ``vast service mcp-stats``
+     - Which MCP tools agents call, and what they answered (``--calls``, ``--failed``,
+       ``--csv``).
    * - ``vast container exec|stop``
      - Run a command in the experiment image, to test a container before a campaign does.
    * - ``vast files ls|cat|get|put|rm``
@@ -110,6 +113,8 @@ Every group is named after what it acts on, so the group tells you what you are 
        ``next_step`` included.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
+   * - ``vast install-completion``
+     - Install shell completion for ``vast``, for the shell ``$SHELL`` names.
 
 A verb whose ``--json`` names an MCP tool prints the document that tool returns, built by the
 same function, and draws its plain lines from that document. With ``--json``, stdout carries
