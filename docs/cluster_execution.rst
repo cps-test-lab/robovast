@@ -1980,14 +1980,14 @@ Which cluster a campaign runs on
 A campaign runs on the cluster its **service** is deployed into: the service drives the
 Jobs from inside that cluster, so the cluster is chosen when you choose a service — the one
 answering on the conventional local port, else the one ``vast login`` stored — and not by
-the launch command. ``vast service info`` prints the kubeconfig context that service
-resolves to (``context``), which is the name the per-cluster lists below are matched
-against.
+the launch command. ``vast service info`` prints the kubeconfig context name that service
+was given (``context``) — for a deployed service, the ``--context`` of ``vast cluster
+setup`` — which is the name the per-cluster lists below are matched against.
 
 ``--context`` selects a **kubeconfig context** for the operator verbs that talk to a
 cluster directly — ``vast cluster setup``, ``cluster cleanup``, ``cluster jobs-cleanup``,
-``cluster monitor``, ``vast service upgrade`` and ``service token`` — as listed by
-``kubectl config get-contexts``:
+``cluster monitor``, ``vast service upgrade``, ``service token`` and ``vast doctor`` — as
+listed by ``kubectl config get-contexts``:
 
 .. code-block:: bash
 
@@ -2041,12 +2041,14 @@ Rules:
 * **Scalars take precedence** — a plain integer/string is used unchanged on
   every cluster.
 * For per-cluster lists the entry whose key matches the **service's** context is
-  used.  If no entry matches, the launch is refused, naming the keys the list has.
+  used.  If no entry matches, or the service was given no context name, the launch is
+  refused, naming the keys the list has.
 * Fields can be mixed: ``cpu`` as a scalar and ``memory`` as a per-cluster list
   is valid.
-* The operator verbs that read a ``.vast`` (``cluster cleanup``, ``cluster jobs-cleanup``
-  and ``cluster monitor`` with ``--vast``) refuse to pick a cluster by accident: when the
-  file lists several contexts and ``--context`` was not given, they ask for one.
+* ``cluster cleanup`` and ``cluster jobs-cleanup`` with ``--vast`` refuse to pick a
+  cluster by accident: when the file lists several contexts and ``--context`` was not
+  given, they ask for one. ``cluster monitor --vast`` instead watches every context the
+  file lists.
 
 Running the same config on two clusters means launching it on each cluster's service:
 
