@@ -100,7 +100,8 @@ The structure inside is domain-specific, but typically includes:
    ├── share.log                             # ``share`` phase (export to share, when re-run)
    ├── sections/                             # earlier runs of the repeatable phases
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
-   └── import.json                           # per-stage import report (only on an imported campaign)
+   ├── import.json                           # per-stage import report (only on an imported campaign)
+   └── importing.json                        # left only by an import that never concluded
 
 Each pre-/post-run **phase** writes its own log file here, and the files are the record. The
 service reads them in phase order as one campaign log of **rows** -- ``vast campaign log``, the
@@ -1298,6 +1299,13 @@ while it arrives, so the entry outlives the failure, and keeping the directory k
 ``import.log`` and ``import.json`` that explain it. Remove it with ``vast campaign delete``, or
 import again with ``--force``.
 
+An import the service **died in the middle of** is kept the same way and reads as failed
+too: the directory is marked as an import under way (``_execution/importing.json``) from
+the moment it is claimed until the import has concluded, and a tree still carrying the
+marker is reported as the interrupted import it is -- not as the campaign whose
+``outcome.json`` the archive brought, which lands before the runs do and would otherwise
+describe a finished campaign over a partial tree.
+
 An archive that would unpack to more than the results volume has room for above its
 free-space reserve is refused with a 507 before anything is extracted. Its size is read from
 the archive's index, not from the compressed file, whose size says nothing about what
@@ -1423,7 +1431,10 @@ The tarball holds ``export.json`` -- the request, the decoder version, the data 
 was built -- then ``tables/`` and the campaign tree under ``<campaign_id>/``. That layout is
 public: pandas and DuckDB read ``tables/<name>.parquet`` directly, and ``Campaign()`` opens
 the export as it opens the campaign, reading the tables it carries and building nothing
-(:ref:`evaluation-notebooks`).
+(:ref:`evaluation-notebooks`). It opens only an export written under its own data contract:
+a table the export carries is never rebuilt, so one laid out under another contract is
+refused by number rather than read as the table its name promises -- export the campaign
+again from a current service, or read the files directly.
 
 **Download or export.** ``vast campaign download`` is the campaign as the service holds it:
 records and recordings, no table, for a copy that builds its tables on first use, re-runs,
@@ -1431,6 +1442,8 @@ or goes back into a service; ``--extract`` unpacks it as it streams into ``<id>/
 no archive. ``vast campaign export`` is the campaign to read: the tables built once, the
 records, and the recordings only when asked. Images and point clouds are read from the
 recordings alone, so an export made without ``--bags`` has tables and no frames, and says so.
+Only the download imports: an export handed to ``vast campaign import`` is refused as an
+export, naming the download.
 
 .. list-table::
    :header-rows: 1
@@ -1668,10 +1681,6 @@ and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
 :ref:`mcp-files`. Reading a campaign on this machine needs no running service; against a
 cluster service the read serves that one file off the service's results volume, not the
 campaign.
-
-If the service runs on your own machine, ``get_service_info`` also reports a
-``results_root`` you can open directly with your own tools; it is absent whenever
-that would be a path you cannot actually read.
 
 
 .. _results-metadata:
