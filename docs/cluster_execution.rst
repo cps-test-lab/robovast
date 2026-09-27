@@ -609,7 +609,7 @@ On a cluster where no node advertises a GPU, such a job fails rather than waits:
 of waiting produces the device.
 
 ``gpu`` also takes the per-cluster form, for one ``.vast`` across a GPU and a non-GPU
-cluster: ``gpu: [{local: 1}, {gcp-c4: 0}]``.
+cluster: ``gpu: [{lab.example: 1}, {cloud.example: 0}]``.
 
 **Which GPU did a run actually use?** ``sysinfo`` records it, so it is a query over a
 finished campaign rather than something inferred from wall-clock:
@@ -1977,20 +1977,22 @@ or, for a pull reason, run fewer jobs at once than the registry will serve.
 Selecting a Cluster Context
 ---------------------------
 
-RoboVAST uses **kubeconfig contexts** to address different clusters.  Pass
-the ``--context`` flag to any cluster sub-command to select a specific context
-(as listed by ``kubectl config get-contexts``):
+RoboVAST uses **kubeconfig contexts** to address different clusters.  The commands that
+act on a cluster themselves take ``--context``/``-x`` to select one (as listed by
+``kubectl config get-contexts``), and use the kubeconfig's current context without it:
 
 .. code-block:: bash
 
-   # Use the currently active context (default)
-   vast workspace run my-experiment
+   # Use the current context
+   vast cluster setup rke2
 
    # Explicitly target a context
-   vast workspace run my-experiment --context gcp-c4
+   vast cluster setup rke2 --context cloud.example
 
-The ``--context`` flag is available on ``workspace run``, ``cluster setup``,
-``cluster monitor``, ``cluster jobs-cleanup``, and ``cluster cleanup``.
+The ``--context`` flag is available on ``cluster setup``, ``service upgrade``,
+``cluster monitor``, ``cluster jobs-cleanup``, and ``cluster cleanup``. A campaign is
+not one of them: ``vast workspace run`` talks to a service, and the service runs in the
+cluster it was set up in.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -2011,43 +2013,48 @@ a list of ``{context-name: value}`` mappings instead of a plain scalar.
    execution:
      resources:
        cpu:
-         - gcp-c4: 4
-         - local:  8
+         - cloud.example: 4
+         - lab.example:   8
        memory:
-         - gcp-c4: 10Gi
-         - local:  20Gi
+         - cloud.example: 10Gi
+         - lab.example:   20Gi
      secondary_containers:
        - nav:
            resources:
              cpu:
-               - gcp-c4: 2
-               - local:  4
+               - cloud.example: 2
+               - lab.example:   4
        - simulation:
            resources:
              cpu:
-               - gcp-c4: 2
-               - local:  4
+               - cloud.example: 2
+               - lab.example:   4
              memory:
-               - gcp-c4: 8Gi
-               - local:  16Gi
+               - cloud.example: 8Gi
+               - lab.example:   16Gi
+
+The service picks the entry with the context it was deployed against, which
+``vast cluster setup`` and ``vast service upgrade`` record in the service
+(``ROBOVAST_KUBE_CONTEXT``): the context named with ``--context``, else the kubeconfig's
+current context. The launch carries no context of its own.
 
 Rules:
 
 * **Scalars take precedence** — a plain integer/string is used unchanged on
   every cluster.
-* For per-cluster lists the entry whose key matches the active context is
-  used.  If no entry matches, RoboVAST raises a ``ValueError``.
+* For per-cluster lists the entry whose key matches the service's recorded context is
+  used.  If no entry matches, the campaign fails naming the entries there are.
 * Fields can be mixed: ``cpu`` as a scalar and ``memory`` as a per-cluster list
   is valid.
-* If a per-cluster list is present and no ``--context`` is supplied, RoboVAST
-  will ask you to provide one.
+* On a service with no context recorded, a campaign with a per-cluster list fails, and
+  the error says to run ``vast service upgrade`` against its cluster, which records one.
 
-Running the same config on two clusters:
+Running the same config on two clusters means launching it on each cluster's service:
 
 .. code-block:: bash
 
-   vast workspace run my-experiment --context gcp-c4
-   vast workspace run my-experiment --context local
+   vast cluster setup rke2 --context cloud.example   # records cloud.example
+   vast cluster setup rke2 --context lab.example     # records lab.example
 
 
 Cloud Provider Configurations
@@ -2137,7 +2144,7 @@ node reports its machine type) and how the volumes are backed.
    .. code-block:: bash
 
       kubectl config rename-context \
-        gke_<project>_<region>_<cluster-name> gcp-c4
+        gke_<project>_<region>_<cluster-name> <short-name>
 
 5. Pass ``--ingress-class gce`` when publishing with ``--ingress-host`` on GKE's built-in
    controller. Unlike ingress-nginx it cannot route to a plain ClusterIP, so both Services

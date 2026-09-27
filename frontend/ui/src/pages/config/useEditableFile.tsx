@@ -3,6 +3,7 @@ import { useActiveView } from '@/lib/activeView'
 import { useDialogs } from '@/components/DialogProvider'
 import { robovast } from '@/lib/robovastClient'
 import { configFileUrl, isEmptySource, type ConfigSource } from '@/lib/configSource'
+import { BufferOwner, failureText } from './bufferOwner'
 
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'reloaded'
 
@@ -28,6 +29,13 @@ export function useEditableFile(
 ) {
   const [content, setContent] = useState('')
   const [saving, setSaving] = useState<SaveState>('idle')
+  // Why the selected file could not be read, or the last save failed: the service's sentence.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  // Which file the buffer holds. A write goes only to that file: until the selected file's own
+  // text has been read in, the buffer is not writable at all (see bufferOwner.ts).
+  const owner = useRef(new BufferOwner())
+  const [writable, setWritable] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Keep the latest afterSave without retriggering the debounce closure identity.
   const afterSaveRef = useRef(afterSave)
@@ -67,8 +75,10 @@ export function useEditableFile(
         await robovast.writeProjectFile(id, path, text)
         serverText.current = text
         await afterSaveRef.current?.(text)
+        setSaveError(null)
         setSaving('saved')
-      } catch {
+      } catch (e) {
+        setSaveError(failureText(e))
         setSaving('error')
       }
     },
@@ -77,18 +87,33 @@ export function useEditableFile(
 
   // Load the selected file's content into the buffer.
   useEffect(() => {
+    owner.current.begin()
+    setWritable(false)
+    setLoadError(null)
+    setSaveError(null)
     if (!id || !path) {
       adopt('')
       setSaving('idle')
       return
     }
     let cancelled = false
-    robovast.readFileAt(configFileUrl({ kind, id }, path)).then((f) => {
-      if (!cancelled) {
+    robovast.readFileAt(configFileUrl({ kind, id }, path)).then(
+      (f) => {
+        if (cancelled) return
         adopt(f.content)
+        owner.current.loaded({ id, path })
+        setWritable(true)
         setSaving('idle')
-      }
-    })
+      },
+      (e) => {
+        if (cancelled) return
+        // The buffer still holds the previous file's text. Showing it under this path would
+        // misstate the file, and writing it would replace the file with another one.
+        adopt('')
+        setLoadError(failureText(e))
+        setSaving('idle')
+      },
+    )
     return () => {
       cancelled = true
     }
@@ -112,6 +137,8 @@ export function useEditableFile(
     if (readOnly || kind !== 'workspace') return
     if (!id || !path || isEmptySource({ kind, id })) return
     if (writing.current || asking.current) return
+    // Nothing of this file is in the buffer to compare, or to keep.
+    if (!owner.current.mayWrite({ id, path })) return
     let cancelled = false
     void (async () => {
       let disk: string
@@ -173,6 +200,7 @@ export function useEditableFile(
       // `kind` as well as the flag: only a workspace has a writable address, so the write below is
       // unreachable for a campaign source by construction rather than by the caller pairing the two.
       if (readOnly || kind !== 'workspace') return
+      if (!owner.current.mayWrite({ id, path })) return
       const text = value ?? ''
       setContent(text)
       contentRef.current = text
@@ -191,5 +219,5 @@ export function useEditableFile(
     [kind, id, path, readOnly, writeNow],
   )
 
-  return { content, saving, onChange }
+  return { content, saving, onChange, writable, loadError, saveError }
 }
