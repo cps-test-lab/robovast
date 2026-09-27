@@ -37,7 +37,7 @@ nothing. Two seeded operations, both of which keep the low-discrepancy property:
 permutation per base (Owen-style in spirit, per-base rather than per-level), and a shift
 per dimension on the unit torus (Cranley-Patterson). The shift is what makes every
 dimension a function of the seed: base 2 has one non-zero digit and so no permutation,
-which left the first factor of every campaign on one sequence whatever its seed.
+and without the shift the first factor would follow one sequence whatever the seed.
 """
 
 import logging
@@ -126,8 +126,9 @@ class HaltonSearch(SearchStrategy):
         self._tables = _scramble_tables(self._bases, cfg.seed, params.scramble)
         # Continues across batches. Restarting per batch would re-draw the same points and
         # cover *less* than random -- the evenness is a property of the whole series.
-        # Index 1 rather than 0: the zeroth point is the origin corner in every dimension,
-        # which is a boundary of the space rather than a sample from it.
+        # Index 1 rather than 0: the zeroth point has no digits, so it is the origin
+        # corner unscrambled and the bare shift vector scrambled -- in neither case a
+        # point of the sequence.
         self._index = 1
         self._batches_done = 0
         self._history: list[Evaluation] = []

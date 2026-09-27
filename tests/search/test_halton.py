@@ -162,8 +162,8 @@ def test_unknown_strategy_parameter_is_refused():
 
 def test_a_different_seed_changes_every_dimension():
     """Permuting a base's non-zero digits leaves base 2 -- dimension 0 -- with nothing to
-    permute, so the first factor of every campaign was the same sequence whatever the seed,
-    and a 1-D search was seed-independent outright."""
+    permute, so only the seeded shift makes the first factor, and a 1-D search as a whole,
+    depend on the seed."""
     a = _points(build_strategy(_cfg(seed=7)))
     b = _points(build_strategy(_cfg(seed=9)))
     assert [p[0] for p in a] != [p[0] for p in b]
