@@ -121,9 +121,7 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
             if _escapes(root, parent):
                 out.refused.append(member.name)
                 continue
-            # Judged where the member lands, not by the name it carries: a symlink the
-            # stream put in place first is a second name for a directory here, and a
-            # deny by name alone would let ``<link>/<file>`` write the file it names.
+            # A symlink already in the tree is a second name for a directory.
             landing = (parent / target.name).relative_to(root).as_posix()
             if landing in denied or target.name in denied:
                 out.refused.append(member.name)
