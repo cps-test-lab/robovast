@@ -38,6 +38,29 @@ def test_no_running_campaign_is_a_refusal(monkeypatch):
     assert "Traceback" not in result.output
 
 
+@pytest.mark.parametrize("verb", [
+    ["status"], ["postprocess"], ["log"], ["log", "--json"], ["stop-job", "job-1"],
+    ["tap", "job-1"], ["priority", "2"], ["pause"], ["resume"]])
+def test_every_verb_that_needs_a_campaign_refuses_alike_without_one(monkeypatch, verb):
+    """A verb that acts on one campaign and finds none has done nothing; exiting 0 would
+    read as done."""
+    _fake_service(monkeypatch, campaign_cli, _campaigns("finished"))
+    result = CliRunner().invoke(campaign_cli.campaign, verb)
+    assert result.exit_code == 1, result.output
+    assert "Error: no campaign is running; pass CAMPAIGN." in result.stderr
+    assert "Traceback" not in result.output
+    if "--json" in verb:
+        assert result.stdout == "", "stdout of a --json verb carries a document or nothing"
+
+
+def test_stop_without_a_running_campaign_is_a_no_op(monkeypatch):
+    """Nothing running is what a stop asks for, so it is already so."""
+    _fake_service(monkeypatch, campaign_cli, _campaigns("finished"))
+    result = CliRunner().invoke(campaign_cli.campaign, ["stop"])
+    assert result.exit_code == 0, result.output
+    assert "No running campaign found." in result.output
+
+
 def test_several_running_campaigns_are_a_refusal_naming_them(monkeypatch):
     _fake_service(monkeypatch, campaign_cli, _campaigns("running", "running"))
     result = CliRunner().invoke(campaign_cli.campaign, ["stop"])

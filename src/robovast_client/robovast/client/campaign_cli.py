@@ -57,6 +57,14 @@ def _sole_running_campaign(client):
     return live[0].campaign_id
 
 
+def _campaign_to_act_on(client, campaign):
+    """CAMPAIGN, or else the one running campaign; refuses when there is none to act on."""
+    campaign_id = campaign or _sole_running_campaign(client)
+    if not campaign_id:
+        raise click.ClickException("no campaign is running; pass CAMPAIGN.")
+    return campaign_id
+
+
 @campaign.command()
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @target_options
@@ -113,10 +121,7 @@ def stop_job(job_name, campaign, reason, namespace, context):
     try:
         with service_client(namespace, context) as (client, target):
             _echo_target(target)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if campaign_id is None:
-                click.echo("No running campaign found.")
-                return
+            campaign_id = _campaign_to_act_on(client, campaign)
             result = client.stop_job(campaign_id, job_name, reason, "cli")
             if result.ok:
                 click.echo(f"Stopped job '{job_name}' of '{campaign_id}'. {result.message}")
@@ -158,10 +163,7 @@ def tap(job_name, campaign, selection, max_seconds, namespace, context):
     try:
         with service_client(namespace, context) as (client, target):
             _echo_target(target)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if campaign_id is None:
-                click.echo("No running campaign found.")
-                return
+            campaign_id = _campaign_to_act_on(client, campaign)
             names = [name for name in selection.split(",") if name.strip()]
             for item in client.tap_job(campaign_id, job_name, names, max_seconds=max_seconds,
                                        source="cli"):
@@ -192,10 +194,7 @@ def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
     try:
         with service_client(namespace, context) as (client, target):
             _echo_target(target)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if campaign_id is None:
-                click.echo("No running campaign found.")
-                return
+            campaign_id = _campaign_to_act_on(client, campaign)
             result = client.set_campaign_scheduling(campaign_id, priority, paused)
             if result.ok:
                 click.echo(f"{what} '{campaign_id}'. {result.message}")
@@ -283,10 +282,7 @@ def log(campaign, follow, phase, min_level, grep, as_json, namespace, context):
     try:
         with service_client(namespace, context) as (client, target):
             _echo_target(target, err=as_json)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if campaign_id is None:
-                click.echo("No running campaign found; pass CAMPAIGN.", err=as_json)
-                return
+            campaign_id = _campaign_to_act_on(client, campaign)
             filters = {"phase": phase, "min_level": min_level, "grep": grep}
             if follow:
                 chunks = client.iter_campaign_log(campaign_id, **filters)
@@ -687,9 +683,7 @@ def status_cmd(campaign, as_json, namespace, context):  # pylint: disable=redefi
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label, err=as_json)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if not campaign_id:
-                raise click.ClickException("no campaign is running; pass CAMPAIGN.")
+            campaign_id = _campaign_to_act_on(client, campaign)
             report = status_report(client, campaign_id)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
@@ -798,9 +792,7 @@ def postprocess_cmd(campaign, force, replay, skip_plugins, namespace, context):
     try:
         with service_client(namespace, context) as (client, label):
             _echo_target(label)
-            campaign_id = campaign or _sole_running_campaign(client)
-            if not campaign_id:
-                raise click.ClickException("no campaign is running; pass CAMPAIGN.")
+            campaign_id = _campaign_to_act_on(client, campaign)
             res = client.run_postprocessing(RunPostprocessingRequest(
                 campaign_id=campaign_id, force=force, replay=replay, skip=list(skip_plugins)))
     except Exception as e:  # noqa: BLE001
