@@ -46,7 +46,7 @@ This is the same path every campaign takes, differing only in which service answ
     vast workspace validate <workspace> my.vast             # check it
     vast workspace run <workspace> my.vast --filter config1 --runs 1
 
-``vast workspace list`` names the workspace; ``vast workspace update . <workspace>`` pushes
+``vast workspace list`` names the workspace; ``vast workspace update <workspace> .`` pushes
 an edit. Before a campaign, ``vast container exec`` (or the MCP ``exec_in_container``) runs
 a command or one configuration's scenario in the image, which is where an import error or
 a missing package shows up in seconds rather than after a pull.
@@ -1652,7 +1652,9 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables — the four below, plus ``job``, ``node`` and ``container_failure``::
+``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables: the five below, plus ``node`` (one row per
+cluster node a job ran on, keyed by a hash of its name) and ``container_failure`` (one row per
+container restart the runner saw under a job)::
 
     campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
@@ -1692,7 +1694,7 @@ Schema
   earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
   that measured it, with no outcome of its own.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
-  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
+  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``killed``/``invalid``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
   ``start_time`` and ``failure_message``. ``run_id`` is the numeric run index
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
@@ -2555,16 +2557,16 @@ touching any panel:
   nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a
   specialized endpoint without the generic seam knowing about it, e.g. the costmap panel's
-  nav grids), and ``runFileUrl`` for per-run artifact files — today implemented over the
-  read-only data-query endpoints (``dbDataProvider``), and by ``LiveDataProvider`` over a
-  running run's feed (``liveFeed.ts``). ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
+  nav grids), and ``runFileUrl`` for per-run artifact files. ``dbDataProvider`` implements it
+  over the read-only data-query endpoints and returns the host's ``LiveDataProvider``, whose
+  ``subscribeLive`` follows a run that is still recording (``liveFeed.ts``). ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
   (``at(t)``/``upTo(t)``).
-* **Time** comes only from the shared ``PlaybackClock`` (``clock.ts``), an external store
+* **Time** comes only from the shared ``PlaybackClock`` (``frontend/panel-kit/src/clock.ts``), an external store
   (not React state) so display-rate updates don't re-render the tree; canvas panels
   subscribe imperatively via ``useCanvasClock``.
 
 **Package-provided & user-authored panels (Module Federation).** A remote panel is loaded
-at runtime by exactly the seam the variation-preview path uses (above) — the two now share
+at runtime by exactly the seam the variation-preview path uses (above) — the two share
 their machinery. Server side, ``_resolve_plugin_asset(group, name, rel, asset_attr)`` (in
 ``service/app.py``) and ``_plugin_remotes(group, asset_attr, url_builder, module_attr)`` (in
 ``service/service_base.py``) are the generalized forms of the variation-only helpers;
@@ -2677,11 +2679,13 @@ sizes the frustum each frame to enclose the world's bounding sphere — measured
 from the pivot, which the wheel now carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
-robovast-specific wiring lives in the consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx`` and ``panels/config/Scene3DPanel.tsx``, which
-binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
-(``GET /results/<campaign>/<config>/<run>/<path>`` — the address is the run's real
-directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in
-it), and drives ``basePose`` from the clock.
+robovast-specific wiring lives in the two consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx``
+and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the descriptor through
+``useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
+per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
+uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
+``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config
+view's has no clock and draws what the variations placed as markers.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 
