@@ -87,7 +87,10 @@ class BoundarySearch(SearchStrategy):
         self._bases = _PRIMES[:self._dims]
         self._tables = _scramble_tables(self._bases, cfg.seed, True)
         self._halton_index = 1
-        self._rng = np.random.default_rng(0 if cfg.seed is None else int(cfg.seed))
+        # A stream of its own: default_rng(seed) is the scramble's generator, so its first
+        # draw would be the first dimension's Cranley-Patterson shift.
+        seed_seq = np.random.SeedSequence(0 if cfg.seed is None else int(cfg.seed))
+        self._rng = np.random.default_rng(seed_seq.spawn(1)[0])
         self._batches_done = 0
         self._history: list[Evaluation] = []
         self._points: list[np.ndarray] = []      # unit-cube coordinates of evaluations
@@ -118,15 +121,12 @@ class BoundarySearch(SearchStrategy):
         are scored against the same model and would all agree. A cell evaluated eight
         times locates the boundary no better than once.
 
-        **A pick is removed from the pool, not merely penalised.** The spread term alone
-        cannot guarantee this and did not: ``nearness`` is in [0, 1] while the bonus is
-        ``exploration * distance``, so a candidate sitting exactly on the level outscores
-        every rival even with its own bonus driven to zero. Measured on a real campaign,
-        batch 2 asked for 8 proposals and returned the same point 8 times. Identical values
-        hash to one ``ParamSet`` id, so composition mapped one id to several configs and the
-        campaign died pointing at its variations. The spread term is kept -- it is what
-        makes the picks *spread* rather than merely differ -- but distinctness is now
-        structural.
+        **A pick is removed from the pool, not merely penalised.** The spread term cannot
+        guarantee distinct picks: ``nearness`` is in [0, 1] while the bonus is
+        ``exploration * distance``, so a candidate exactly on the level outscores every
+        rival even with its own bonus at zero. Identical values hash to one ``ParamSet``
+        id, which composition cannot map to several configs. The spread term makes the
+        picks spread; removal makes them distinct.
         """
         if n > self.params.candidates:
             raise ValueError(
