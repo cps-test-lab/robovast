@@ -64,7 +64,7 @@ def test_the_suite_runs_against_this_checkout(module_name, distribution):
 #: rather than a merge: the loader builds ``{ep.name: ep}``, so a duplicate resolves
 #: unpredictably to whichever came last.
 SINGLE_PROVIDER_GROUPS = ("robovast.cli_plugins", "robovast.cluster_plugins",
-                          "robovast.service_plugins")
+                          "robovast.service_plugins", "robovast.doctor_checks")
 
 
 @pytest.mark.parametrize("group", SINGLE_PROVIDER_GROUPS)
