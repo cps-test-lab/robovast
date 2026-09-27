@@ -61,8 +61,13 @@ def data_url(namespace: str) -> str:
 
 
 def campaign_secret_name(campaign_id: str) -> str:
+    """The campaign's token Secret: the prefix and the whole label-safe id.
+
+    Not cut to a label's 63 characters -- a Secret is named by a DNS subdomain (253), and
+    cutting drops the id's timestamp, so campaigns of one long name would share a Secret.
+    """
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
-    return (CAMPAIGN_SECRET_PREFIX + _label_safe_campaign(campaign_id))[:63].rstrip("-.")
+    return CAMPAIGN_SECRET_PREFIX + _label_safe_campaign(campaign_id).rstrip("-.")
 
 
 def campaign_secret_manifest(namespace: str, campaign_id: str, token: str) -> dict:
