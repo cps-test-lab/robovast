@@ -9,9 +9,10 @@ error instead of publishing as though the file had said nothing.
 
 import pytest
 
-from robovast.results_processing.publication import _execute_plugin
-from robovast.results_processing.publication_plugins import zenodo, zip as zip_plugin
 from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
+from robovast.results_processing.publication import _execute_plugin
+from robovast.results_processing.publication_plugins import zenodo
+from robovast.results_processing.publication_plugins import zip as zip_plugin
 
 _BODY = """configuration:
   - name: cfg
