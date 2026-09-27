@@ -580,6 +580,11 @@ A query is answered by the service, next to the campaign's directory, and nothin
 prepared before a question can be asked — so ``describe_campaign_data`` takes a campaign id
 and returns the schema, and a query works while the campaign runs.
 
+A service reads only the campaigns in its own results tree and refuses an absolute path in
+place of a campaign id. With no service reachable, ``describe_campaign_data`` and
+``query_campaign_data_sql`` read the campaign in the MCP server's own process instead, and
+there also take an absolute path to a campaign folder on this host.
+
 The first query to name a table for a run pays for building it from that run's records; every
 later one reads the parquet file it left in ``.cache/``. After that, cost tracks the rows a
 query touches, not the rosbags beside them — the same rule ``read_file`` follows for

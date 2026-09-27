@@ -321,7 +321,8 @@ async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -
     and its ``columns`` are empty until it is built for one.
 
     Args:
-        campaign_id: Campaign identifier, or an absolute campaign path.
+        campaign_id: Campaign identifier; with no service reachable, also an absolute
+            path to a campaign folder on this host.
 
     Returns:
         ``{campaign_id, tables, note}`` — each table
@@ -353,7 +354,8 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
     result. Reach for SQL when no tool fits.
 
     Args:
-        campaign_id: Campaign identifier or absolute path (schema ``main``).
+        campaign_id: Campaign identifier (schema ``main``); with no service reachable,
+            also an absolute path to a campaign folder on this host.
         sql: A single ``SELECT``.
         limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
 
@@ -395,7 +397,7 @@ def list_campaign_plots(campaign_id: str) -> dict:
     SQL beyond them.
 
     Args:
-        campaign_id: Campaign identifier or an absolute campaign path.
+        campaign_id: Campaign identifier.
 
     Returns:
         ``{campaign_id, plots}`` of ``{title, query, vega_lite}``, or ``{error}``.
