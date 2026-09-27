@@ -93,11 +93,8 @@ def list_files(address: str, recursive: bool = False, offset: int = 0,
         ``{address, entries, total, truncated, recursive}``. Directory entries end in
         ``/``; each is relative to ``address``, so the next address is ``address + entry``.
     """
-    try:
-        r = _client().list_files(address, recursive=recursive, offset=offset, limit=limit)
-        return r.model_dump(exclude={"detailed"})
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    r = _client().list_files(address, recursive=recursive, offset=offset, limit=limit)
+    return r.model_dump(exclude={"detailed"})
 
 
 #: Ratio at which a page stops being "the file" and becomes a sample of it. Below this,
@@ -133,17 +130,15 @@ def read_file(address: str, limit: int = 200, offset: int = 0) -> dict:
     client = _client()
     try:
         page = client.read_file(address, lines=limit, offset=offset).model_dump()
-    except AddressError as e:
-        return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         url = service_access.web_url(client, Routes.file(address))
         # A binary read is a refusal only as text; over HTTP it is an ordinary
         # GET. Answering with the URL turns "you cannot have this" into "here is where it
         # is" — the caller wanted the bytes, and they are one request away.
-        if "binary" in str(e).lower() and url:
+        if not isinstance(e, AddressError) and "binary" in str(e).lower() and url:
             return {"address": address, "url": url, "binary": True,
                     "note": "Binary — fetch the URL (or 'vast files get'); not text."}
-        return {"error": str(e)}
+        raise
 
     total, returned = page.get("total_lines", 0), page.get("returned_lines", 0)
     if returned and total > returned * _PAGE_IS_A_SAMPLE:
@@ -165,11 +160,8 @@ def write_file(address: str, content: str) -> dict:
         content: File text.
     """
     from robovast.service.interface import WriteFileRequest
-    try:
-        return _client().write_file(
-            WriteFileRequest(address=address, content=content)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return _client().write_file(
+        WriteFileRequest(address=address, content=content)).model_dump()
 
 
 def edit_file(address: str, old_string: str, new_string: str) -> dict:
@@ -184,12 +176,9 @@ def edit_file(address: str, old_string: str, new_string: str) -> dict:
         new_string: Replacement text.
     """
     from robovast.service.interface import EditFileRequest
-    try:
-        return _client().edit_file(EditFileRequest(
-            address=address, old_string=old_string,
-            new_string=new_string)).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return _client().edit_file(EditFileRequest(
+        address=address, old_string=old_string,
+        new_string=new_string)).model_dump()
 
 
 def delete_file(address: str) -> dict:
@@ -198,10 +187,7 @@ def delete_file(address: str) -> dict:
     Args:
         address: ``/sources/<workspace_id>/<path>``.
     """
-    try:
-        return _client().delete_file(address).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    return _client().delete_file(address).model_dump()
 
 
 list_files.__doc__ = list_files.__doc__.replace(

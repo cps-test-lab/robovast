@@ -37,7 +37,6 @@ from robovast.client.service_report import resource_usage_report
 from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
-from robovast.mcp_server.service_access import NO_SERVICE, error_result
 from robovast.service.interface import Routes
 from robovast_decode.log_summary import DEFAULT_TOP
 
@@ -117,69 +116,64 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         ``from_campaign`` launch (``campaign_id`` is the NEW one). Plus ``note`` when the
         launch was accepted but will not do what was asked, or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
-        # Decoded before the length check so the description is measured as the text that
-        # will actually be stored.
-        from robovast.mcp_server.client_text import unescape_client_text
-        from robovast.service.interface import DESCRIPTION_MAX_LEN, CreateCampaignRequest
-        description = unescape_client_text(description)
-        # Checked here rather than left to the request model's validator: this returns
-        # the actionable "shorten it and call again" instead of a pydantic traceback
-        # string, and it refuses before anything is launched.
-        if len(description) > DESCRIPTION_MAX_LEN:
-            return {"error": f"description is {len(description)} characters; the limit "
-                             f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
-        if force and not from_campaign:
-            # Refused rather than ignored: what it overrides is the re-run pre-flight, so on a
-            # workspace launch it would name a policy this call never consults.
-            return {"error": "force overrides the re-run pre-flight, which only a "
-                             "from_campaign launch has — drop it, or name the campaign to "
-                             "re-run."}
-        if from_campaign:
-            # Named rather than dropped: a retrigger takes these from what the source
-            # campaign recorded, so accepting them here would answer a different question
-            # than the caller asked and look like it had worked.
-            supplied = [name for name, value in (
-                ("workspace_id", workspace_id), ("config_path", config_path),
-                ("config_filter", config_filter), ("runs", runs),
-                ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("description", description),
-                ("priority", priority), ("image_project_tag", image_project_tag)) if value]
-            if supplied:
-                return {"error":
-                        f"from_campaign={from_campaign!r} replays what that campaign "
-                        f"recorded, so {', '.join(supplied)} cannot be set at the same time "
-                        f"— drop them, or start from a workspace instead. The retriggered "
-                        f"campaign's description is derived from the source's."}
-            ref = client.retrigger_campaign(from_campaign, force)
-            out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
-                   "next_step": _wait_next_step(ref.campaign_id)}
-            if ref.note:
-                out["note"] = ref.note
-            return out
-        ref = client.create_campaign(CreateCampaignRequest(
-            workspace_id=workspace_id, config_path=config_path,
-            config_filter=config_filter, campaign_name=campaign_name,
-            description=description,
-            # Pass the "unset" value through instead of substituting 1: the service maps a
-            # non-positive count to None and falls back to the .vast's execution.runs,
-            # which is what this tool documents. Substituting 1 here silently shrank every
-            # campaign started without an explicit count to one run per configuration — a
-            # 25-trial sweep finished "successfully" with 5 trials.
-            runs=runs if runs and runs > 0 else 0,
-            allow_opaque_image=allow_opaque_image, priority=priority,
-            upload_to_share=upload_to_share, image_project_tag=image_project_tag))
-        out = {"campaign_id": ref.campaign_id,
+    client = service_access.require_service()
+    # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
+    # Decoded before the length check so the description is measured as the text that
+    # will actually be stored.
+    from robovast.mcp_server.client_text import unescape_client_text
+    from robovast.service.interface import DESCRIPTION_MAX_LEN, CreateCampaignRequest
+    description = unescape_client_text(description)
+    # Checked here rather than left to the request model's validator: this returns
+    # the actionable "shorten it and call again" instead of a pydantic traceback
+    # string, and it refuses before anything is launched.
+    if len(description) > DESCRIPTION_MAX_LEN:
+        return {"error": f"description is {len(description)} characters; the limit "
+                         f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
+    if force and not from_campaign:
+        # Refused rather than ignored: what it overrides is the re-run pre-flight, so on a
+        # workspace launch it would name a policy this call never consults.
+        return {"error": "force overrides the re-run pre-flight, which only a "
+                         "from_campaign launch has — drop it, or name the campaign to "
+                         "re-run."}
+    if from_campaign:
+        # Named rather than dropped: a retrigger takes these from what the source
+        # campaign recorded, so accepting them here would answer a different question
+        # than the caller asked and look like it had worked.
+        supplied = [name for name, value in (
+            ("workspace_id", workspace_id), ("config_path", config_path),
+            ("config_filter", config_filter), ("runs", runs),
+            ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
+            ("description", description),
+            ("priority", priority), ("image_project_tag", image_project_tag)) if value]
+        if supplied:
+            return {"error":
+                    f"from_campaign={from_campaign!r} replays what that campaign "
+                    f"recorded, so {', '.join(supplied)} cannot be set at the same time "
+                    f"— drop them, or start from a workspace instead. The retriggered "
+                    f"campaign's description is derived from the source's."}
+        ref = client.retrigger_campaign(from_campaign, force)
+        out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
             out["note"] = ref.note
         return out
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
+    ref = client.create_campaign(CreateCampaignRequest(
+        workspace_id=workspace_id, config_path=config_path,
+        config_filter=config_filter, campaign_name=campaign_name,
+        description=description,
+        # Pass the "unset" value through instead of substituting 1: the service maps a
+        # non-positive count to None and falls back to the .vast's execution.runs,
+        # which is what this tool documents. Substituting 1 here silently shrank every
+        # campaign started without an explicit count to one run per configuration — a
+        # 25-trial sweep finished "successfully" with 5 trials.
+        runs=runs if runs and runs > 0 else 0,
+        allow_opaque_image=allow_opaque_image, priority=priority,
+        upload_to_share=upload_to_share, image_project_tag=image_project_tag))
+    out = {"campaign_id": ref.campaign_id,
+           "next_step": _wait_next_step(ref.campaign_id)}
+    if ref.note:
+        out["note"] = ref.note
+    return out
 
 
 def get_campaign_status(campaign_id: str) -> dict:
@@ -248,13 +242,8 @@ def get_campaign_status(campaign_id: str) -> dict:
         (``run_view.status``/``passed``) remains the authority on that run; this aggregate
         is a convenience, and this flag says when it is one worth having.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        return status_report(client, campaign_id)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return status_report(client, campaign_id)
 
 
 @lacks(job_name="for one job's log use get_job_log")
@@ -306,41 +295,32 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     from robovast.service.campaign_log import phase_filter  # noqa: PLC0415
     from robovast_decode.log_summary import SEVERITIES, severity_rank  # noqa: PLC0415
 
-    try:
-        # The shared severity vocabulary (``warn``/``error``), so this control means what it
-        # means on every log tool; the read takes the level it names.
-        min_level = _SEVERITY_LEVEL[SEVERITIES[severity_rank(min_severity)]] \
-            if min_severity else None
-        wanted = phase_filter(phase)
-    except ValueError as e:
-        return {"error": str(e)}
+    # The shared severity vocabulary (``warn``/``error``), so this control means what it
+    # means on every log tool; the read takes the level it names.
+    min_level = _SEVERITY_LEVEL[SEVERITIES[severity_rank(min_severity)]] \
+        if min_severity else None
+    wanted = phase_filter(phase)
     # Ask the service, which knows where this campaign's log actually lives: its results
     # tree, which is not on this filesystem when the service runs on another host. With no
     # service, an archived results tree on this host is read through the same reader.
     client = service_access.service_client()
-    try:
-        if client is not None:
-            chunk = client.get_campaign_logs(campaign_id, phase=wanted, min_level=min_level,
-                                             grep=grep or None)
-            rows, present = chunk.rows, chunk.phases
-        else:
-            from robovast.service.campaign_log import read_rows  # noqa: PLC0415
-            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-            read = read_rows(campaign_dir, final=True, phase=wanted, min_level=min_level,
-                             grep=grep or None)
-            rows, present = read.rows, read.phases
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    if client is not None:
+        chunk = client.get_campaign_logs(campaign_id, phase=wanted, min_level=min_level,
+                                         grep=grep or None)
+        rows, present = chunk.rows, chunk.phases
+    else:
+        from robovast.service.campaign_log import read_rows  # noqa: PLC0415
+        campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+        read = read_rows(campaign_dir, final=True, phase=wanted, min_level=min_level,
+                         grep=grep or None)
+        rows, present = read.rows, read.phases
     counts = Counter(row.phase for row in rows)
     phases = [{"name": name, "included": wanted is None or name == wanted,
                **({"rows": counts[name]} if wanted is None or name == wanted else {})}
               for name in present]
     text = "".join(format_campaign_log_row(row) + "\n" for row in rows)
-    try:
-        view = view_log(text, tail=tail, summarize=summarize, top=top,
-                        hide_shutdown=hide_shutdown)
-    except ValueError as e:
-        return {"error": str(e)}
+    view = view_log(text, tail=tail, summarize=summarize, top=top,
+                    hide_shutdown=hide_shutdown)
     name = f"{campaign_id} (infrastructure log)"
     if summarize:
         # ``offset``/``lines`` page through lines and have no meaning over grouped
@@ -446,13 +426,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         a ``detail`` when the cluster has said why — a node another campaign is holding,
         or a rate-limited pull — which is a reason, not a fault: it starts on its own.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return client.list_jobs(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.list_jobs(campaign_id).model_dump()
 
 
 def _shutdown_report(view: dict) -> dict:
@@ -515,13 +490,8 @@ def get_job_state(campaign_id: str, job_name: str) -> dict:
         ``{job_name, status, scenario, simulator, resources, unavailable}``, or ``{error}``. An
         unreadable section is **absent**, with ``unavailable`` saying which and why.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        return client.get_job_state(campaign_id, job_name).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return service_access.error_result(e)
+    client = service_access.require_service()
+    return client.get_job_state(campaign_id, job_name).model_dump()
 
 
 def exec_in_job(campaign_id: str, job_name: str, command: str,
@@ -546,14 +516,9 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
     Returns:
         ``{exit_code, stdout, stderr, timed_out, limit_s, limit_source}``, or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        result = client.exec_in_job(campaign_id, job_name, command, container, source="mcp")
-        return result.model_dump()
-    except Exception as e:  # noqa: BLE001
-        return service_access.error_result(e)
+    client = service_access.require_service()
+    result = client.exec_in_job(campaign_id, job_name, command, container, source="mcp")
+    return result.model_dump()
 
 
 #: Longest a tap collects before this tool answers. A tool call holds its caller for the
@@ -583,31 +548,26 @@ def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
         ``{lines, count, exit_code, timed_out, max_seconds, stream_url}`` (the tap as
         server-sent events, for longer), or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        if max_seconds < 1:
-            raise ValueError("max_seconds is at least 1")
-        seconds = min(int(max_seconds), _TAP_TOOL_MAX_S)
-        names = list(selection or [])
-        lines: list = []
-        end = None
-        for item in client.tap_job(campaign_id, job_name, names, max_seconds=seconds,
-                                   source="mcp"):
-            if hasattr(item, "exit_code"):
-                end = item
-                break
-            lines.append(item.line)
-        query = "?" + urlencode({"job_name": job_name, "selection": ",".join(names),
-                                 "max_seconds": seconds})
-        return {"lines": lines, "count": len(lines),
-                "exit_code": None if end is None else end.exit_code,
-                "timed_out": bool(end is not None and end.timed_out),
-                "max_seconds": seconds,
-                "stream_url": service_access.web_url(client, Routes.job_tap(campaign_id) + query)}
-    except Exception as e:  # noqa: BLE001
-        return service_access.error_result(e)
+    client = service_access.require_service()
+    if max_seconds < 1:
+        raise ValueError("max_seconds is at least 1")
+    seconds = min(int(max_seconds), _TAP_TOOL_MAX_S)
+    names = list(selection or [])
+    lines: list = []
+    end = None
+    for item in client.tap_job(campaign_id, job_name, names, max_seconds=seconds,
+                               source="mcp"):
+        if hasattr(item, "exit_code"):
+            end = item
+            break
+        lines.append(item.line)
+    query = "?" + urlencode({"job_name": job_name, "selection": ",".join(names),
+                             "max_seconds": seconds})
+    return {"lines": lines, "count": len(lines),
+            "exit_code": None if end is None else end.exit_code,
+            "timed_out": bool(end is not None and end.timed_out),
+            "max_seconds": seconds,
+            "stream_url": service_access.web_url(client, Routes.job_tap(campaign_id) + query)}
 
 
 def _job_log_text(rows: list) -> str:
@@ -651,19 +611,11 @@ def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
         ``lines`` is this chunk, ``matched_lines`` what the filters kept before ``tail``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        chunk = client.get_job_log(campaign_id, job_name, cursor).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-    try:
-        view = view_log(_job_log_text(chunk["rows"]), grep=grep, tail=tail,
-                        min_severity=min_severity, summarize=summarize, top=top,
-                        hide_shutdown=hide_shutdown)
-    except ValueError as e:
-        return {"error": str(e)}
+    client = service_access.require_service()
+    chunk = client.get_job_log(campaign_id, job_name, cursor).model_dump()
+    view = view_log(_job_log_text(chunk["rows"]), grep=grep, tail=tail,
+                    min_severity=min_severity, summarize=summarize, top=top,
+                    hide_shutdown=hide_shutdown)
     return _log_response({"cursor": chunk["cursor"], "eof": chunk["eof"]}, view,
                          report_shutdown=True)
 
@@ -684,15 +636,10 @@ def stop_campaign(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, stopped, status, note}`` or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        res = client.stop(campaign_id)
-        return {"campaign_id": campaign_id, "stopped": res.ok,
-                "status": "stopping", "note": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    res = client.stop(campaign_id)
+    return {"campaign_id": campaign_id, "stopped": res.ok,
+            "status": "stopping", "note": res.message}
 
 
 def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
@@ -712,16 +659,11 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
         ``{campaign_id, job_name, stopped, note}`` or ``{error}``.
     """
     from robovast.mcp_server.client_text import unescape_client_text
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        res = client.stop_job(campaign_id, job_name,
-                              unescape_client_text(reason) or None, "mcp")
-        return {"campaign_id": campaign_id, "job_name": job_name,
-                "stopped": res.ok, "note": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    res = client.stop_job(campaign_id, job_name,
+                          unescape_client_text(reason) or None, "mcp")
+    return {"campaign_id": campaign_id, "job_name": job_name,
+            "stopped": res.ok, "note": res.message}
 
 
 def get_resource_usage() -> dict:
@@ -747,13 +689,8 @@ def get_resource_usage() -> dict:
     already busy with across every campaign, so free cores behind a long queue are not as
     free as they look.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return resource_usage_report(client)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return resource_usage_report(client)
 
 
 def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
@@ -839,22 +776,17 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         and ``cached_builds`` is the per-container answer. Nothing else answers that question
         without a ``build_id`` already in hand.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
+    client = service_access.require_service()
     from robovast.service.interface import BuildImageRequest
-    try:
-        ref = client.build_image(BuildImageRequest(
-            workspace_id=workspace_id, config_path=config_path,
-            container=container or None))
-        return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
-                "builds": ref.builds,
-                "cached_builds": getattr(ref, "cached_builds", {}) or {},
-                "next_step": _build_wait_next_step(
-                    ref.build_id, ref.builds, ref.cached,
-                    getattr(ref, "cached_builds", None))}
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
+    ref = client.build_image(BuildImageRequest(
+        workspace_id=workspace_id, config_path=config_path,
+        container=container or None))
+    return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
+            "builds": ref.builds,
+            "cached_builds": getattr(ref, "cached_builds", {}) or {},
+            "next_step": _build_wait_next_step(
+                ref.build_id, ref.builds, ref.cached,
+                getattr(ref, "cached_builds", None))}
 
 
 def get_image_build_status(build_id: str) -> dict:
@@ -886,13 +818,8 @@ def get_image_build_status(build_id: str) -> dict:
         ``{error}``. ``next_step`` is the command for the phase reported — this tool is
         polled precisely while deciding what to do next, so the answer says it.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return build_status_report(client, build_id)
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
+    client = service_access.require_service()
+    return build_status_report(client, build_id)
 
 
 def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
@@ -926,18 +853,10 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
         severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        chunk = client.get_image_build_log(build_id, offset)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-    try:
-        view = view_log(chunk.text, grep=grep, tail=tail,
-                        min_severity=min_severity, summarize=summarize, top=top)
-    except ValueError as e:
-        return {"error": str(e)}
+    client = service_access.require_service()
+    chunk = client.get_image_build_log(build_id, offset)
+    view = view_log(chunk.text, grep=grep, tail=tail,
+                    min_severity=min_severity, summarize=summarize, top=top)
     return _log_response({"next_offset": chunk.next_offset, "eof": chunk.eof}, view)
 
 
@@ -988,25 +907,17 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     from robovast.service.interface import ExecRequest  # noqa: PLC0415
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        result = client.exec_in_container(ExecRequest(
-            command=command, workspace_id=workspace_id, config_path=config_path,
-            campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive,
-            container=container, fresh=fresh))
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
+    client = service_access.require_service()
+    result = client.exec_in_container(ExecRequest(
+        command=command, workspace_id=workspace_id, config_path=config_path,
+        campaign_id=campaign_id, config_name=config_name,
+        keep_alive=keep_alive,
+        container=container, fresh=fresh))
     out = result.model_dump()
     # Trim through the same filter the log tools use, so "the last N lines" and the
     # dropped accounting mean one thing across the surface.
     for stream in ("stdout", "stderr"):
-        try:
-            view = view_log(out.get(stream) or "", tail=tail)
-        except ValueError as e:
-            return {"error": str(e)}
+        view = view_log(out.get(stream) or "", tail=tail)
         out[stream] = view.get("content", "")
         if view.get("truncated"):
             out[f"{stream}_truncated"] = True
@@ -1027,13 +938,8 @@ def stop_container() -> dict:
 
     Nothing held reports ``stopped: false``, which is an empty result rather than an error.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return client.stop_exec_container().model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.stop_exec_container().model_dump()
 
 
 # -- Plugin class ------------------------------------------------------------

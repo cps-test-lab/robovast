@@ -1179,7 +1179,9 @@
             "type": "string"
           },
           "failed": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "type": "string"
+            },
             "title": "Failed",
             "type": "object"
           },

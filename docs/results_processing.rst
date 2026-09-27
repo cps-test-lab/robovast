@@ -1981,6 +1981,11 @@ Merging Results
 
 Merges campaign-directories with identical configs into one ``merged_campaign_dir``.
 Groups ``campaign-directory/config-directory`` by ``config_identifier`` from ``config.yaml``.
+The identifier hashes the configuration's ``.vast`` block, the content of the files it names
+and of the files its variations read beyond those (the image a map YAML points at), the run
+files, the scenario file, the ``sut:`` sources, and the variations' names as written. A
+packaged variation counts by name, not by its installed source, so a configuration has the
+same identifier on every host and robovast release.
 Run folders (0, 1, 2, …) from all campaigns are renumbered and copied.
 Original campaign-directories are not modified.
 
