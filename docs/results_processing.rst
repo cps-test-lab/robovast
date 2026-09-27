@@ -1431,6 +1431,8 @@ or goes back into a service; ``--extract`` unpacks it as it streams into ``<id>/
 no archive. ``vast campaign export`` is the campaign to read: the tables built once, the
 records, and the recordings only when asked. Images and point clouds are read from the
 recordings alone, so an export made without ``--bags`` has tables and no frames, and says so.
+Only the download imports: an export handed to ``vast campaign import`` is refused as an
+export, naming the download.
 
 .. list-table::
    :header-rows: 1
