@@ -15,8 +15,8 @@ Everything about versioning and migration in robovast starts here. If you were a
 
 **A campaign's built tables have no ladder, on purpose.** They are *derived* from the
 campaign's records into its `.cache/`, and building them again is the definition of correct:
-each table's manifest entry records the decoder version that wrote it, a newer decoder
-rebuilds what an older one wrote the next time the table is named, and a manifest of another
+each table's manifest entry records the decoder version and the data contract it was written
+under, what another version or contract wrote is built again the next time the table is named, and a manifest of another
 format is refused with the instruction to clear the campaign's tables. `campaign.db` is the
 opposite case and keeps its ladder: it is authored as the campaign runs and cannot be
 regenerated from anything.

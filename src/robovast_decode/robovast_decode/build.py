@@ -19,7 +19,7 @@
 A table is built for a run the first time something names it, and kept: the manifest records
 which runs each table is built for, from which source bytes and by which decoder, so a later
 request builds only what is missing -- a run that has grown since, a table not yet asked for,
-or anything a different decoder version wrote.
+or anything a different decoder version, or another data contract, wrote.
 
 Where recordings live, relative to the campaign directory:
 
@@ -55,7 +55,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
-from . import DATA_CONTRACT, __version__, run_slices
+from . import run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
 from .decode import channel_type, decode_bag, segments
 from .derived import DERIVED, INPUTS, JobRun, derive_job
@@ -64,8 +64,8 @@ from .handlers import Videos
 from .layout import YAML_LOADER, job_links, run_dirs
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
 from .tables import (TableBuffer, fixed, live_owned, manifest_lock, read_manifest,
-                     record_run_absent, record_run_table, remove_files, run_lock,
-                     run_table_path, write_manifest, write_table)
+                     record_run_absent, record_run_table, remove_files, run_lock, run_table_path,
+                     write_manifest, write_table, written_here)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
@@ -521,22 +521,11 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
         write_manifest(campaign_dir, manifest)
 
 
-def _written_here(entry: Optional[dict]) -> bool:
-    """Whether *entry* was written by this decoder under the contract it follows now.
-
-    Two versions of the decoder can carry one package version -- every build of a branch
-    does -- so the contract number is checked beside it: a table laid out under an older
-    contract is not the table a reader was promised, whatever version wrote it.
-    """
-    return bool(entry) and (entry.get("decoder") == __version__
-                            and entry.get("contract") == DATA_CONTRACT)
-
-
 def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
     """Whether the entry needs no build: same bytes by this decoder under this contract, or
     a live session's."""
     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(run_key)
-    if not _written_here(entry):
+    if not written_here(entry):
         return False
     if entry.get("live") is not None:
         return live_owned(entry)
@@ -546,7 +535,7 @@ def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
 def _entry_current(entry: Optional[dict], sources: dict) -> bool:
     """Whether a derived entry needs no build: the same *sources* by this decoder under this
     contract, or a watcher's whose stamp is fresh."""
-    if not _written_here(entry):
+    if not written_here(entry):
         return False
     if entry.get("live") is not None:
         return live_owned(entry)
@@ -604,9 +593,10 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     out: Dict[str, dict] = {}
     for table, table_keys in keys.items():
         entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
-        built = [k for k in table_keys if k in entries and not entries[k].get("reason")]
-        failed = {k: entries[k]["reason"] for k in table_keys
-                  if k in entries and entries[k].get("reason")}
+        # An entry of another decoder or contract is neither: the next build replaces it.
+        current = {k: entries[k] for k in table_keys if written_here(entries.get(k))}
+        built = [k for k, e in current.items() if not e.get("reason")]
+        failed = {k: e["reason"] for k, e in current.items() if e.get("reason")}
         out[table] = {"runs": len(table_keys), "built": len(built), "failed": failed}
     return out
 

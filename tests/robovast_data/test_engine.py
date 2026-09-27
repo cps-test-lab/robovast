@@ -7,6 +7,7 @@ import json
 import pytest
 import yaml
 
+import robovast_decode
 from robovast_data import Engine, QueryError, Scope
 from robovast_decode import build as decode_build
 
@@ -195,7 +196,7 @@ def test_a_directory_that_is_not_a_campaign_is_refused(tmp_path):
 def test_the_decoder_used_is_the_one_the_manifest_names(campaign):
     Engine([Scope(str(campaign))], workers=1).arrow("SELECT count(*) FROM poses")
     entries = _manifest(campaign)["tables"]["poses"]["runs"].values()
-    assert {e["decoder"] for e in entries} == {decode_build.__version__}
+    assert {e["decoder"] for e in entries} == {robovast_decode.__version__}
 
 
 # -- a table being written in parts while its run records ----------------------------------
@@ -297,7 +298,7 @@ def test_threads_and_memory_limit_bound_the_connection(campaign):
     assert limit.replace(" ", "") in ("256.0MiB", "256MiB", "268.4MB")
 
 
-def test_ensure_rebuilds_a_table_laid_out_under_another_contract(campaign):
+def test_a_table_laid_out_under_another_contract_is_built_again_not_described(campaign):
     from robovast_decode import DATA_CONTRACT
     from robovast_decode.tables import read_manifest, write_manifest
     engine = Engine([Scope(str(campaign))], workers=1)
@@ -306,6 +307,8 @@ def test_ensure_rebuilds_a_table_laid_out_under_another_contract(campaign):
     for entry in manifest["tables"]["poses"]["runs"].values():
         entry["contract"] = DATA_CONTRACT - 1
     write_manifest(str(campaign), manifest)
+    catalog = engine.catalog()["poses"]
+    assert (catalog["built"], catalog["rows"], catalog["columns"]) == (0, 0, None)
     engine.ensure(["poses"])
     assert all(e["contract"] == DATA_CONTRACT
                for e in read_manifest(str(campaign))["tables"]["poses"]["runs"].values())
