@@ -310,7 +310,6 @@ class ResourcesConfig(BaseModel):
     @field_validator('gpu')
     @classmethod
     def validate_gpu_count(cls, v):
-        """The Job builder clamps a negative count to no GPU."""
         values = [value for entry in v for value in entry.values()] if isinstance(v, list) \
             else [v]
         for value in values:
