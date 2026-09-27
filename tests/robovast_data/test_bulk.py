@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from robovast_data import Campaign, Frame, PointCloud
+from robovast_data import DATA_CONTRACT, Campaign, Frame, PointCloud
 from tests.robovast_decode.test_bulk import CLOUD, CLOUD_TOPIC, _cloud
 from tests.robovast_decode.test_frames import (COMPRESSED, RAW, RAW_TOPIC, TOPIC, closed_bag,
                                                compressed, fixture_span, image_bag, jpeg, raw)
@@ -89,24 +89,47 @@ def test_what_is_not_there_is_said(tmp_path):
         c.frames("cfg", 0, TOPIC)
 
 
-def test_an_export_lists_the_tables_it_carries_and_has_no_recording(tmp_path):
-    root, _ = _campaign_with_bulk(tmp_path)
+def _export_of(tmp_path, root, contract):
+    """An export of *root* holding ``poses``, as ``vast campaign export`` writes one."""
     poses = Campaign(str(root), workers=1).table("poses")
     export = tmp_path / "export"
     (export / "tables").mkdir(parents=True)
     poses.to_parquet(export / "tables" / "poses.parquet")
     shutil.copytree(root, export / root.name,
                     ignore=shutil.ignore_patterns("rosbag2*", ".cache", "rosout_bag"))
-    (export / "export.json").write_text(json.dumps({
+    manifest = {
         "campaign_id": root.name, "export_id": "0123456789ab", "decoder": "test",
         "request": {"format": "parquet", "bags": "none", "records": True},
-        "tables": {"poses": {"rows": len(poses), "file": "tables/poses.parquet"}}}))
+        "tables": {"poses": {"rows": len(poses), "file": "tables/poses.parquet"}}}
+    if contract is not None:
+        manifest["data_contract"] = contract
+    (export / "export.json").write_text(json.dumps(manifest))
+    return export, poses
+
+
+def test_an_export_lists_the_tables_it_carries_and_has_no_recording(tmp_path):
+    root, _ = _campaign_with_bulk(tmp_path)
+    export, poses = _export_of(tmp_path, root, DATA_CONTRACT)
     e = Campaign(str(export), workers=1)
     listed = e.tables.set_index("name")
     assert listed.loc["poses", "runs"] == 1 and listed.loc["poses", "built"] == 1
     assert len(e.table("poses", config="cfg", run=0)) == len(poses)
     with pytest.raises(FileNotFoundError, match="--bags mcap"):
         e.frame("cfg", 0, TOPIC)
+
+
+@pytest.mark.parametrize("contract", [DATA_CONTRACT - 1, DATA_CONTRACT + 1, None],
+                         ids=["older", "newer", "unnumbered"])
+def test_an_export_under_another_data_contract_is_refused_by_number(tmp_path, contract):
+    """A table an export carries is served as it is and never rebuilt, so one laid out
+    under another contract would be read as the table its name promises. The export says
+    which contract it follows, and a mismatch -- older, newer, or from before the contract
+    was numbered -- is refused naming both."""
+    root, _ = _campaign_with_bulk(tmp_path)
+    export, _ = _export_of(tmp_path, root, contract)
+    with pytest.raises(ValueError, match=f"contract {DATA_CONTRACT}") as refused:
+        Campaign(str(export), workers=1)
+    assert (str(contract) if contract is not None else "before") in str(refused.value)
 
 
 def test_a_frame_loops_result_joins_the_tables_by_stamp(tmp_path):
