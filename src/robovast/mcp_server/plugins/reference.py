@@ -174,11 +174,6 @@ def get_service_info() -> dict:
     expect instead. ``package_version`` is the release, unchanged across edits, and no
     substitute.
 
-    **Check ``can_build_images`` before authoring a container that adds packages**, or the
-    refusal arrives at ``start_campaign``, after the push and the workspace;
-    ``build_unavailable`` then carries the reason. Absent is not ``false``, and it reports
-    the infrastructure a build needs rather than that a given build will be published.
-
     ``backend`` is the execution backend, fixed at startup; ``get_resource_usage()``
     actually touches it.
     On a cluster, ``in_pod: false`` means campaigns are driven from outside it: fine for a
@@ -191,59 +186,16 @@ def get_service_info() -> dict:
     ``can_schedule`` says whether ``priority``/``paused`` apply. Either absent is "the
     service did not say", which is not ``false``.
     """
+    from robovast.client.service_report import service_info_report
     from robovast.mcp_server import service_access
     from robovast.mcp_server.service_access import NO_SERVICE
     client = service_access.service_client()
     if client is None:
         return {"error": NO_SERVICE}
     try:
-        v = client.version()
+        return service_info_report(client)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
-    info = {
-        "code_version": v.robovast_version,
-        "api_version": v.api_version,
-        "backend": v.backend,
-        "results_address": v.results_address,
-        "sources_address": v.sources_address,
-    }
-    # Only when it is genuinely known. Absent says "this deployment cannot tell you", which
-    # a caller can act on (probe the behaviour); a placeholder would be read as a revision
-    # that happens not to match, which is a different and wrong conclusion.
-    if getattr(v, "code_revision", ""):
-        info["code_revision"] = v.code_revision
-    # Same rule, other question: "" means no package metadata to read, not a release of
-    # zero. Absent rather than empty so a caller cannot print it as one.
-    if getattr(v, "package_version", ""):
-        info["package_version"] = v.package_version
-    # Same rule again: a source checkout has no build to date, and inventing one would be
-    # read as the age of the deployment.
-    if getattr(v, "built_at", ""):
-        info["built_at"] = v.built_at
-    # Absent means this deployment has no origin to declare (unpublished, or
-    # bound to a wildcard), not an origin that happens to be unknown.
-    if v.web_base:
-        info["web_base"] = v.web_base
-    # Only from a backend that has them: on any other these would all be None, and five
-    # null fields read as "unknown" rather than "not applicable".
-    if v.backend == "kubernetes":
-        info.update({
-            "kube_context": v.kube_context,
-            "kube_context_source": v.kube_context_source,
-            "namespace": v.namespace,
-            "in_pod": v.in_pod,
-            "api_server": v.api_server,
-        })
-    # Only when the service gave a verdict. `None` means "this service did not say" --
-    # an older one has no such field -- and reporting that as False would tell every
-    # healthy pre-field deployment to go and fix a registry it does not need fixed.
-    if v.can_build_images is not None:
-        info["can_build_images"] = v.can_build_images
-        if not v.can_build_images and v.build_unavailable:
-            info["build_unavailable"] = v.build_unavailable
-    if v.can_schedule is not None:
-        info["can_schedule"] = v.can_schedule
-    return info
 
 
 # -- Plugin class ------------------------------------------------------------
