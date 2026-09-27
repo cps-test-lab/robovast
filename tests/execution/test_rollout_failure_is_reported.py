@@ -427,7 +427,7 @@ def test_a_suggested_kubectl_omits_the_flag_when_there_is_no_context():
      "names what no node could satisfy", "vast doctor"),
 ])
 def test_each_failure_gets_the_action_that_fits_it(signal, expected, forbidden):
-    """Four states, four actions -- as `_status_next_step` in the MCP layer branches.
+    """Four states, four actions -- as `image_report.build_next_step` branches.
 
     One generic "inspect the pod" is a dead end for the reader who already did.
     """
