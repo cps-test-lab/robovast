@@ -128,6 +128,23 @@ def read_vast(vast_path) -> dict:
     return raw
 
 
+def round_trip_yaml():
+    """A ``ruamel.yaml`` loader that rewrites a ``.vast`` as a person wrote it.
+
+    It keeps the comments, the quoting and every document, so a rewrite changes only what
+    its caller changed. For every rewrite of a file a person will read or edit again.
+    """
+    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
+
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    # Wide enough that nothing is re-wrapped. Left at the default, ruamel reflows any flow
+    # mapping past ~80 columns -- including ones the caller never touched -- so the diff of
+    # a two-key change rewrites lines all over the file and stops showing what changed.
+    yaml.width = 4096
+    return yaml
+
+
 def upgrade_config_file(path, *, write: bool = False):
     """Upgrade the ``.vast`` at *path*, **preserving comments**; return ``(config, applied)``.
 
@@ -145,15 +162,7 @@ def upgrade_config_file(path, *, write: bool = False):
     subclass, so the pure ``dict -> dict`` steps work on it unchanged and comments attached
     to untouched keys survive.
     """
-    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
-
-    yaml = YAML()
-    yaml.preserve_quotes = True
-    # Wide enough that nothing is re-wrapped. Left at the default, ruamel reflows any flow
-    # mapping past ~80 columns -- including ones the step never touched -- so a migration
-    # that changed two keys rewrites lines all over the file, and the diff stops showing
-    # what the migration did.
-    yaml.width = 4096
+    yaml = round_trip_yaml()
     with open(path, "r", encoding="utf-8") as handle:
         documents = list(yaml.load_all(handle))
     if not documents or documents[0] is None:

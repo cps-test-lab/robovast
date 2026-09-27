@@ -193,8 +193,6 @@ def test_a_snapshot_says_so_inside_the_archive(tmp_path):
     Named facts rather than a bare flag because the file is read by a person deciding
     whether to trust the archive at least as often as by the importer.
     """
-    import json
-
     campaign = tmp_path / "camp-2026-01-01-000000"
     (campaign / "_config").mkdir(parents=True)
     payload = b"".join(campaign_archive.iter_campaign_tar(
