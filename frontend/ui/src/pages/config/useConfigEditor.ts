@@ -70,7 +70,7 @@ export function useConfigEditor(source: ConfigSource) {
     setSelectedCfg(0)
   }, [sourceKey])
 
-  const { content, saving, onChange } = useEditableFile(source, selected, async () => {
+  const { content, saving, onChange, writable, loadError, saveError } = useEditableFile(source, selected, async () => {
     setValidation(await robovast.validateProject(source.id, selected))
   }, readOnly)
 
@@ -98,6 +98,9 @@ export function useConfigEditor(source: ConfigSource) {
     content,
     saving,
     onChange,
+    writable,
+    loadError,
+    saveError,
     validation,
     createVast,
     generate,
