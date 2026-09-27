@@ -60,10 +60,6 @@ def collect_var_refs(node: Any) -> set:
     return {name} if name is not None else set()
 
 
-class GeneralConfig(BaseModel):
-    model_config = ConfigDict(extra='allow')
-
-
 class VariationConfig(BaseModel):
     pass
     # model_config = ConfigDict(extra='forbid')
@@ -2538,7 +2534,6 @@ class ConfigV1(BaseModel):
             "Declared here only so the key is discoverable and a raw file validates; the "
             "loader resolves and removes it, so nothing downstream ever sees it."))
     metadata: Optional[dict[str, Any]] = None
-    general: Optional[GeneralConfig] = None
     plugins: Optional[list[str]] = Field(
         default=None,
         description=(

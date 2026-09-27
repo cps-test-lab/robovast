@@ -26,7 +26,7 @@ scenario nav:
 """
 
 _VAST = """\
-version: 6
+version: 7
 metadata: {name: names-test}
 configuration:
 %s
