@@ -8,6 +8,7 @@ take an empty or cut-off table for the whole recording. A build and a live sessi
 """
 
 import json
+import os
 import shutil
 
 from robovast_decode.build import available_tables, build
@@ -73,3 +74,18 @@ def test_a_live_session_records_the_same_reasons_as_a_build(tmp_path):
     for table, entry in _entries(built).items():
         assert followed[table].get("reason") == entry.get("reason"), table
         assert followed[table]["rows"] == entry["rows"], table
+
+
+def test_an_absent_table_of_a_run_with_two_recordings_is_current_on_the_next_build(tmp_path):
+    # The run has its scenario recording and its job's rosout recording; the table comes from
+    # the first alone, so its entry is current against that one's bytes.
+    campaign = _campaign(tmp_path / "c")
+    bag_dir = write_bag(campaign / "cfg" / "0" / "rosbag2", UNDECODABLE_TOPICS)
+    assert build(str(campaign), tables=["rosbag2_opaque"]).failed["rosbag2_opaque"]
+    report = build(str(campaign), tables=["rosbag2_opaque"])
+    assert report.skipped.get("rosbag2_opaque") == ["cfg/0"]
+    assert "rosbag2_opaque" not in report.built and "rosbag2_opaque" not in report.failed
+    manifest = json.loads((campaign / ".cache" / "MANIFEST.json").read_text())
+    absent = manifest["tables"]["rosbag2_opaque"]["runs"]["cfg/0"]
+    assert list(absent["sources"]) == [os.path.relpath(bag_dir, campaign)]
+    assert "/opaque" in absent["reason"], "the reason stays with the entry"
