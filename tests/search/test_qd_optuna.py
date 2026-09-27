@@ -271,6 +271,32 @@ def test_qd_proposes_no_more_than_asked_for():
     assert len(_qd_with_emitters(per_batch=64, emitters=4).ask(8)) == 8
 
 
+def _told(ps, rng):
+    return [Evaluation(params=p, objectives={"obj": rng.random()},
+                       measures={"m1": rng.random(), "m2": 4 * rng.random()}) for p in ps]
+
+
+def test_qd_does_not_report_draws_it_never_proposed_as_missing(caplog):
+    """The rest of a generation beyond ``ask(n)`` was never handed out, so its absence
+    from ``tell`` is not a short batch."""
+    pytest.importorskip("ribs")
+    s = _qd(per_batch=8)
+    with caplog.at_level("WARNING", logger="robovast.search.strategies.qd"):
+        s.tell(_told(s.ask(3), random.Random(0)))
+    assert "came back short" not in caplog.text
+    assert s.report().extra["num_elites"] > 0
+
+
+def test_qd_counts_only_proposed_draws_as_missing(caplog):
+    pytest.importorskip("ribs")
+    s = _qd(per_batch=8)
+    ps = s.ask(4)
+    with caplog.at_level("WARNING", logger="robovast.search.strategies.qd"):
+        s.tell(_told(ps[:3], random.Random(0)))
+    assert "1 of 4 proposed draw(s) produced no evaluation" in caplog.text
+    assert ps[3].id in caplog.text
+
+
 def test_qd_refuses_more_than_a_generation():
     """One generation is all the emitters draw before a tell, so asking for more fails."""
     pytest.importorskip("ribs")
