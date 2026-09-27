@@ -731,9 +731,8 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
     or in the campaign view.
 
     It creates a campaign, which is why it is here and not in ``vast results``: an upload
-    and one HTTP call, needing nothing of the local half of the tool. It sat in the group
-    that ships only with the full distribution, so the install most likely to be talking to
-    a remote service was the one that could not import into it.
+    and one HTTP call, needing nothing of the local half of the tool, so a client-only
+    install can import into the service it talks to.
     """
     from pathlib import Path  # pylint: disable=import-outside-toplevel
 
