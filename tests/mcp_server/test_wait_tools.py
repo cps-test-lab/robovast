@@ -36,13 +36,16 @@ def test_starting_a_campaign_hands_back_the_command_that_waits_for_it():
 
 def test_the_wait_command_is_handed_back_with_every_exit_it_can_take():
     """The harness reports the exit code and nothing else, so the code is only a signal
-    if the caller was told what each one means -- a 5 nobody named reads as a crash of the
-    waiter, and a 4 named without "still running" reads as the campaign having ended."""
-    import re
+    if the caller was told what each one means -- an unnamed ``HEALTH_FINDING`` reads as a
+    crash of the waiter, and ``STALLED`` without "still running" as the campaign having
+    ended."""
+    from robovast.execution.wait_exit import CampaignWaitExit
     step = execution._wait_next_step("camp-1")
-    named = set(re.findall(r"(?:exit |, |; )(\d) ", step + " "))
-    assert named == {"0", "1", "2", "3", "4", "5"}, named
-    assert "still running" in step
+    for member in CampaignWaitExit:
+        assert f"{member.value} {member.label}" in step, member.name
+    running = step[step.index("still running"):]
+    for member in CampaignWaitExit:
+        assert (f"{member.value} {member.label}" in running) == member.still_running, member.name
 
 
 def test_building_an_image_hands_back_the_command_that_waits_for_it():
