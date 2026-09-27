@@ -1,6 +1,18 @@
 How to run
 ==========
 
+.. click:: robovast.client.cli:login
+   :prog: vast login
+
+.. click:: robovast.client.cli:logout
+   :prog: vast logout
+
+.. click:: robovast.client.cli:doctor
+   :prog: vast doctor
+
+.. click:: robovast.client.cli:install_completion
+   :prog: vast install-completion
+
 .. click:: robovast.client.cli:workspace
    :prog: vast workspace
    :nested: full
@@ -12,10 +24,17 @@ How to run
 .. click:: robovast.configuration.configuration_utils.cli:configuration
    :prog: vast config
    :nested: full
-   :commands: generate, variation-points, variation-types, list
 
 .. click:: robovast.client.container_cli:container
    :prog: vast container
+   :nested: full
+
+.. click:: robovast.client.cli:files
+   :prog: vast files
+   :nested: full
+
+.. click:: robovast.client.cli:image
+   :prog: vast image
    :nested: full
 
 .. `vast cluster` and `vast service` both attach operator verbs lazily, from
@@ -50,7 +69,19 @@ How to run
 .. click:: robovast.results_processing.cli:results
    :prog: vast results
    :nested: full
-   :commands: postprocess, merge-campaigns, postprocess-commands
+
+.. click:: robovast.execution.share_cli:share
+   :prog: vast share
+   :nested: full
+
+.. click:: robovast.common.cli.core_commands:serve
+   :prog: vast serve
+
+.. click:: robovast.common.cli.core_commands:serve_data
+   :prog: vast serve-data
+
+.. click:: robovast.common.cli.core_commands:ui
+   :prog: vast ui
 
 
 Environment variables
