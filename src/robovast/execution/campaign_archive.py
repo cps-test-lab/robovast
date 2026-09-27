@@ -21,6 +21,9 @@
   campaign to an external share provider (upload-to-share, cluster) and to serve
   the ``/data/campaigns/{id}/archive`` download, both of which run against ~1TB
   campaigns where materialising a compressed copy would blow the pod's scratch.
+* :func:`iter_tar` / :func:`tar_stream` are the same pipe over any members: the
+  workspace download and share upload, and the export's tarball on disk. Every
+  ``tar.gz`` the service writes is compressed here.
 
 **Compression is for bytes that leave the cluster.** A stream a pod fetches or delivers
 is a plain tar (``compress=False``): run output is mostly recordings that barely

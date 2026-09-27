@@ -512,8 +512,7 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
                       else bag.path)
             add_tree(tar, source, f"{campaign_id}/{bag.rel}")
 
-    # Compressed the way the archive route compresses, through pigz on every core: a CSV
-    # export is gigabytes of text, and Python's own gzip would spend minutes on one core.
+    # Through the archive's pigz pipe, on every core: a CSV export can be gigabytes of text.
     from robovast.execution.campaign_archive import iter_tar  # pylint: disable=import-outside-toplevel
     with open(tmp, "wb") as fh:
         for chunk in iter_tar(members):
