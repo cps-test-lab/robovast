@@ -32,6 +32,7 @@ from pathlib import Path
 
 import yaml
 
+from robovast.common.migrations import round_trip_yaml
 # The one resolver for "this campaign's .vast" — shared with postprocessing and the rest
 # of the service, so there is a single source of truth for which file is the campaign's
 # config.
@@ -40,27 +41,10 @@ from robovast.common.results_utils import campaign_vast
 logger = logging.getLogger(__name__)
 
 
-def _yaml():
-    """A round-trip loader: the file is rewritten as a person wrote it.
-
-    ``ruamel.yaml`` keeps the comments, the quoting and every document of the file, so an
-    edit changes the block it is about and nothing else. ``vast campaign rerun
-    --to-workspace`` hands this file to a person, and its comments carry the reasons
-    (which image, which world) an edit of the analysis has no business dropping.
-    """
-    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
-    loader = YAML()
-    loader.preserve_quotes = True
-    # Left at the default, ruamel reflows a flow mapping past ~80 columns, untouched ones
-    # included, and the diff no longer shows what the edit did.
-    loader.width = 4096
-    return loader
-
-
 def _load(vast_path: Path) -> list:
     """Every document of the file, the configuration first; a file with none holds ``{}``."""
     with open(vast_path, encoding="utf-8") as handle:
-        documents = list(_yaml().load_all(handle))
+        documents = list(round_trip_yaml().load_all(handle))
     if not documents or documents[0] is None:
         documents = [{}] + documents[1:]
     return documents
@@ -68,7 +52,7 @@ def _load(vast_path: Path) -> list:
 
 def _write(vast_path: Path, documents: list) -> None:
     with open(vast_path, "w", encoding="utf-8") as handle:
-        _yaml().dump_all(documents, handle)
+        round_trip_yaml().dump_all(documents, handle)
     logger.info("Updated campaign config %s", vast_path)
 
 
