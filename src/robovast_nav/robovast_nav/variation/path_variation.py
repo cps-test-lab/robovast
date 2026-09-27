@@ -516,9 +516,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
     - ``raster_size``: Grid spacing between raster points in meters.
     - ``path_length``: Target path length in meters.
     - ``robot_diameter``: Robot diameter for collision checking in meters.
-    - ``start_pose``: Optional start position as parameter reference (``@start_pose``)
-      or direct pose with ``x``, ``y``, ``yaw``.  If omitted, all valid raster points
-      are used as potential start poses.
+    - ``start_from``: Optional start position as a reference to a pose the configuration
+      carries (``@start_pose``), or a direct pose with ``x``, ``y``, ``yaw``.  If omitted,
+      all valid raster points are used as potential start poses.
     - ``num_goal_poses``: Number of goal poses per path (default: ``1``).
       Single goal mode uses grid-to-grid paths; multi-goal mode uses a search radius
       algorithm.
@@ -583,7 +583,14 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                     # Reference to a config parameter
                     pose_ref = self.parameters.start_from.lstrip('@')
                     self.check_scenario_parameter_reference(pose_ref)
-                    start_poses = [None]  # Will be resolved from config later
+                    referenced = (config.get('config') or {}).get(pose_ref)
+                    if referenced is None:
+                        raise ValueError(
+                            f"PathVariationRasterized: start_from '@{pose_ref}' names a pose "
+                            f"configuration '{config['name']}' does not carry; state it in "
+                            f"the configuration's parameters or have an earlier variation "
+                            f"set it.")
+                    start_pose = Pose.from_any(referenced)
                 else:
                     # Directly specified pose
                     start_pose = Pose(
@@ -594,14 +601,14 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                             yaw=self.parameters.start_from.yaw
                         )
                     )
-                    if not waypoint_generator.is_valid_position(
-                        start_pose.position.x,
-                        start_pose.position.y,
-                        self.parameters.robot_diameter/2.
-                    ):
-                        raise ValueError(f"PathVariationRasterized: Start pose {start_pose} is not valid on the map for config '{config['name']}'.")
-                    start_poses = [start_pose]
-                    self.progress_update(f"Using provided start pose: {start_pose}")
+                if not waypoint_generator.is_valid_position(
+                    start_pose.position.x,
+                    start_pose.position.y,
+                    self.parameters.robot_diameter/2.
+                ):
+                    raise ValueError(f"PathVariationRasterized: Start pose {start_pose} is not valid on the map for config '{config['name']}'.")
+                start_poses = [start_pose]
+                self.progress_update(f"Using provided start pose: {start_pose}")
             else:
                 # Use all raster points as start poses
                 start_poses = [
