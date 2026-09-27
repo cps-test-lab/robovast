@@ -31,6 +31,7 @@ import { browseSql, columnsPlaceholder, tableLabel } from '@/lib/dataTables'
 import { FailureBox } from '@/components/StatusView'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
+import { TableFailures } from './TableFailures'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
 
 const DEFAULT_SQL = 'SELECT * FROM runs LIMIT 500'
@@ -235,6 +236,7 @@ export function DataBrowser({
                   <Box sx={{ pl: 1, color: 'text.secondary', fontSize: 11 }}>
                     {t.columns.length ? t.columns.join(', ') : columnsPlaceholder(t)}
                   </Box>
+                  <TableFailures table={t} />
                 </Box>
               ))
             )}
