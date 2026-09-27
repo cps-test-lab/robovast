@@ -65,6 +65,25 @@ def _stage_input_dir(src_dir, dst_dir):
                 pass
 
 
+_MODEL_SUFFIXES = (".fpm", ".variation")
+
+
+def cache_inputs(model_file_path):
+    """The model files a build of *model_file_path* can read, for the cache key.
+
+    Every model file in the tree :func:`_stage_input_dir` stages, since an import is a path
+    relative to the importing file; all of them rather than the imported ones, so the key
+    needs no model parser.
+    """
+    directory = os.path.dirname(model_file_path)
+    models = sorted(
+        os.path.join(root, name)
+        for root, _dirs, names in os.walk(directory)
+        for name in names
+        if name.endswith(_MODEL_SUFFIXES) and os.path.isfile(os.path.join(root, name)))
+    return [model_file_path] + [f for f in models if f != model_file_path]
+
+
 def get_scenery_builder_version():
     """Return the docker image digest/ID of the scenery_builder image.
 
@@ -240,7 +259,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
 
         file_cache = FileCache(base_path, "floorplan_variation",
                                [variation_file, num_variations, seed_value, mesh_format, laser_height])
-        files_for_hash = [variation_file_path]  # TODO: add fpm
+        files_for_hash = cache_inputs(variation_file_path)
         strings_for_hash = [str(num_variations), str(seed_value), mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
@@ -249,11 +268,8 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             progress_update_callback(f"✓ Using cached output for {variation}")
             all_map_dirs.append(cached_file)
         else:
-            # Stage the whole directory containing the variation file into the
-            # workspace so the container can read it at the same absolute path.
-            # The .variation file references siblings (e.g. ``import "rooms.fpm"``),
-            # so the entire directory must be present (the previous docker wrapper
-            # bind-mounted the containing directory for the same reason).
+            # Stage the whole directory: a .variation imports other model files by
+            # relative path.
             input_dir = os.path.join(temp_base, variation, "input")
             _stage_input_dir(os.path.dirname(variation_file_path), input_dir)
             staged_input = os.path.join(input_dir, os.path.basename(variation_file))
@@ -436,7 +452,7 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         # campaign's map to another.
         file_cache = FileCache(base_path, "floorplan_generation",
                                [floorplan_file, mesh_format, laser_height])
-        files_for_hash = [floorplan_file_path]
+        files_for_hash = cache_inputs(floorplan_file_path)
         strings_for_hash = [mesh_format, str(laser_height)]
         cached_file = file_cache.get_cached_file(files_for_hash, binary=False,
                                                  content=False, strings_for_hash=strings_for_hash)
