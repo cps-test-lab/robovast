@@ -6,6 +6,7 @@ import * as monaco from 'monaco-editor'
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import { configureMonacoYaml } from 'monaco-yaml'
 import yamlWorker from 'monaco-yaml/yaml.worker?worker'
+import { robovast } from './robovastClient'
 
 self.MonacoEnvironment = {
   getWorker(_moduleId: string, label: string) {
@@ -31,6 +32,19 @@ export function configureVastSchema(schema: object): void {
 
 export function isSchemaConfigured(): boolean {
   return schemaConfigured
+}
+
+/** The config schema, fetched once per session and attached to the editor on arrival. One
+ *  query for every reader -- the editor and the new-file template -- so whichever asks first,
+ *  the editor is configured. */
+export const configSchemaQuery = {
+  queryKey: ['configSchema'],
+  queryFn: async () => {
+    const schema = await robovast.getConfigSchema()
+    if (!isSchemaConfigured()) configureVastSchema(schema)
+    return schema
+  },
+  staleTime: Infinity,
 }
 
 export { monaco }
