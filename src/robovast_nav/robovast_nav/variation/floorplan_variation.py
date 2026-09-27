@@ -28,7 +28,7 @@ from robovast.common.variation.container_runner import ContainerSpec
 
 from ..floorplan_generation import (SCENERY_BUILDER_ENTRYPOINT, SCENERY_BUILDER_IMAGE,
                                     _create_config_for_floorplan, generate_floorplan_artifacts,
-                                    generate_floorplan_variations, get_scenery_builder_version)
+                                    generate_floorplan_variations)
 from .nav_base_variation import NavVariation
 
 
@@ -475,19 +475,16 @@ class FloorplanGeneration(NavVariation):
         """
         self.progress_update("Running Floorplan Generation...")
 
-        scenery_builder_image = get_scenery_builder_version()
-
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
             in_configs = [{'config': {}, '_config_files': []}]
 
-        floorplan_names, floorplan_versions = generate_floorplan_artifacts(
+        floorplan_names, scenery_builder_image = generate_floorplan_artifacts(
             self.base_path,
             self.parameters.floorplans,
             self.output_dir,
             self.progress_update,
             self.container_runner,
-            scenery_builder_version=scenery_builder_image,
             mesh_format=self.parameters.mesh_format,
             laser_height=self.parameters.laser_height,
         )
@@ -504,8 +501,6 @@ class FloorplanGeneration(NavVariation):
         for floorplan_idx, floorplan_name in enumerate(floorplan_names):
             transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
             fpm_file = self.parameters.floorplans[floorplan_idx]
-            # Version from cache takes precedence; fall back to freshly queried value
-            version = floorplan_versions.get(floorplan_name) or scenery_builder_image
             for config in in_configs:
                 new_config = _create_config_for_floorplan(
                     floorplan_name,
@@ -526,8 +521,7 @@ class FloorplanGeneration(NavVariation):
                     'derived_from_files': derived_from_files,
                     'fpm_file': f'_config/{fpm_file}'
                 }
-                if version:
-                    extras['scenery_builder_image'] = version
+                extras['scenery_builder_image'] = scenery_builder_image
                 new_config['_variation_entry_extras'] = extras
                 results.append(new_config)
 
@@ -664,20 +658,17 @@ class FloorplanVariation(NavVariation):
     def variation(self, in_configs):
         self.progress_update("Running Floorplan Variation...")
 
-        scenery_builder_image = get_scenery_builder_version()
-
         # If no input configs, create initial empty config
         if not in_configs or len(in_configs) == 0:
             in_configs = [{'config': {}, '_config_files': []}]
 
-        floorplan_names, floorplan_versions = generate_floorplan_variations(self.base_path,
+        floorplan_names, scenery_builder_image = generate_floorplan_variations(self.base_path,
                                                         self.parameters.variation_files,
                                                         self.parameters.num_variations,
                                                         self.parameters.seed,
                                                         self.output_dir,
                                                         self.progress_update,
                                                         self.container_runner,
-                                                        scenery_builder_version=scenery_builder_image,
                                                         mesh_format=self.parameters.mesh_format,
                                                         laser_height=self.parameters.laser_height)
 
@@ -693,8 +684,6 @@ class FloorplanVariation(NavVariation):
             for _ in range(self.parameters.num_variations):
                 floorplan_name = floorplan_names[floorplan_idx]
                 transient = _collect_floorplan_transient_files(self.output_dir, floorplan_name)
-                # Version from cache takes precedence; fall back to freshly queried value
-                version = floorplan_versions.get(floorplan_name) or scenery_builder_image
                 for config in in_configs:
                     new_config = _create_config_for_floorplan(
                         floorplan_name,
@@ -715,8 +704,7 @@ class FloorplanVariation(NavVariation):
                         extras = {
                             'variation_file': f'_config/{variation_file}'
                         }
-                    if version:
-                        extras['scenery_builder_image'] = version
+                    extras['scenery_builder_image'] = scenery_builder_image
                     new_config['_variation_entry_extras'] = extras
                     results.append(new_config)
                 floorplan_idx += 1
