@@ -5,8 +5,8 @@
 # compose, postprocess, evaluate and drive the search loop from inside the
 # cluster — reading per-batch results from the service's own results volume
 # instead of round-tripping them to the laptop. Beyond Python it carries `curl`
-# (the service's own probes and the data-plane checks), `pigz` (the streamed
-# campaign archive, robovast/execution/campaign_archive.py) and `git` (resolving
+# (the service's own probes and the data-plane checks), `pigz` (every tar.gz the
+# service writes, robovast/execution/campaign_archive.py) and `git` (resolving
 # a campaign's VCS-pinned plugins); `tar` ships in the base image.
 #
 # It does NOT contain the ROS runtime: scenario execution and rosbag postprocessing
