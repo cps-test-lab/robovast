@@ -170,7 +170,7 @@ def test_a_batch_migrated_from_schema_13_does_not_hold_its_recalls(tmp_path):
     for step in _MIGRATIONS[1:13]:
         conn.executescript(step)
     conn.execute("PRAGMA user_version = 13")
-    conn.execute("INSERT INTO campaign (id, name, mode) VALUES (1, 'old', 'search')")
+    conn.execute("INSERT INTO campaign (id, name, mode, batches) VALUES (1, 'old', 'search', 1)")
     conn.execute("INSERT INTO batch (id, campaign_id, idx, asked) VALUES (1, 1, 0, 2)")
     conn.execute(
         "INSERT INTO unit (batch_id, paramset_id, params_json, objectives_json, status) "

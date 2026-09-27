@@ -25,6 +25,7 @@ def _campaign(tmp_path, *, mode="search", objectives=None, batches=()):
                 batch_id=bid, paramset_id=f"p{idx}{n}", config_name=f"c{idx}{n}",
                 params={}, objectives={} if value is None else {objectives[0]["name"]: value},
                 measures={}, status=status, result_dir=f"c{idx}{n}", n_samples=1)
+        store.complete_batch(bid)
     store.close()
     return tmp_path
 
@@ -39,7 +40,8 @@ def test_aggregates_one_row_per_batch_with_a_rising_best(tmp_path):
     assert got["unavailable"] is None
     assert [b["idx"] for b in got["batches"]] == [0, 1]
     assert got["batches"][0] == {"idx": 0, "n_units": 2, "n_scored": 2, "min": 0.2,
-                                 "max": 0.6, "mean": pytest.approx(0.4), "best_so_far": 0.6}
+                                 "max": 0.6, "mean": pytest.approx(0.4), "best_so_far": 0.6,
+                                 "complete": True}
     assert got["batches"][1]["best_so_far"] == 0.9
 
 

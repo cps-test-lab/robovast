@@ -220,6 +220,7 @@ class CampaignController:
         #: Every evaluation scored so far, in order. The repetition policy reads it to
         #: judge where the landscape is contested; nothing else depends on it.
         self._history: list = []
+        self._unfinished = None
         # Optional control-channel state (cluster mode). When set, the controller
         # publishes loop phase/progress and honours the cooperative `stop` command.
         self.state = state
@@ -634,6 +635,7 @@ class CampaignController:
             failed_runs += cfg_failed
             killed_runs += cfg_killed
             invalid_runs_count += cfg_invalid
+        self.store.complete_batch(batch_id)
         if self.state is not None:
             if failed_runs:
                 logger.warning("Batch complete: %d run(s) did not pass.", failed_runs)
@@ -777,17 +779,25 @@ class CampaignController:
         rather than restored from a serialized state, because nothing serializes one; see
         that method for why the replay is by batch and asks before it tells.
         """
-        from robovast.search.history import position_from, recorded_batches
+        from robovast.search.history import (position_from, recorded_batches,
+                                             unfinished_batch)
 
         batches = recorded_batches(self.store, campaign_id)
+        # Finished by the first round of `_search_loop`, which re-asks it.
+        self._unfinished = unfinished_batch(self.store, campaign_id)
         position = position_from(
             batches, default_runs=self.runs, fold_best=fold_best,
-            age_s=self._campaign_age(campaign_id) if batches else 0.0)
+            age_s=self._campaign_age(campaign_id)
+            if batches or self._unfinished else 0.0)
         if batches:
             self.strategy.resume(batches)
             logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
                         "%d run(s) already spent.",
                         position.batches, position.evaluations, position.runs)
+        if self._unfinished is not None:
+            logger.info("Batch %d was interrupted with %d of its cell(s) recorded; it is "
+                        "re-asked and only the missing cells are run.",
+                        self._unfinished.idx, len(self._unfinished.units))
         return position
 
     def _campaign_age(self, campaign_id: int) -> float:
@@ -856,17 +866,24 @@ class CampaignController:
         batch_idx = self._batches_done
         result = None
         while True:
+            unfinished, self._unfinished = self._unfinished, None
             proposed = self.strategy.ask(self.per_batch)
             # A repeated draw is one cell, not two: collapsed before composition, which
             # can only give it one config name and one result directory.
             param_sets = distinct_draws(proposed, f"Batch {batch_idx}")
             if self.repetition_policy is not None:
                 param_sets = self.repetition_policy.assign(param_sets, self._history)
-            # `asked` is what the STRATEGY proposed, not what survived the line above: a
-            # resume re-drives the strategy through the sequence it saw, and asking it for
-            # the collapsed count would rewind its stream by every repeat.
-            batch_id = self.store.open_batch(campaign_id, batch_idx, ".",
-                                             asked=len(proposed))
+            if unfinished is None:
+                # `asked` is what the STRATEGY proposed, not what survived the line above:
+                # a resume re-drives the strategy through the sequence it saw, and asking
+                # it for the collapsed count would rewind its stream by every repeat.
+                batch_id = self.store.open_batch(campaign_id, batch_idx, ".",
+                                                 asked=len(proposed))
+                recorded, recalls_recorded = {}, frozenset()
+            else:
+                batch_id = unfinished.batch_id
+                recorded, recalls_recorded = unfinished.units, unfinished.recalled
+                _check_reasked(unfinished, batch_idx, proposed, param_sets)
             if self.state is not None:
                 self.state.update(batch=batch_idx)
             logger.info("\n%s\n🔁  Batch %d  —  %d parameter set(s)\n%s",
@@ -878,7 +895,7 @@ class CampaignController:
             # than taken from self.runs * per_batch.
             fresh, recalled = self._split_already_evaluated(param_sets, batch_idx)
             self._runs_done += sum((ps.n_reps or self.runs) for ps in fresh)
-            scored = self._run_search_batch(fresh, batch_idx, batch_id)
+            scored = self._run_search_batch(fresh, batch_idx, batch_id, recorded)
             # A batch that measured nothing, counted. Only when there was something to
             # measure: a batch of cells an earlier one already scored is short by design and
             # says nothing about whether this campaign can produce.
@@ -895,7 +912,9 @@ class CampaignController:
             # Recorded as rows, which is what a resume replays, and told in the order the
             # replay tells them (`RecordedBatch.told`).
             for ev in recalled:
-                self.store.record_recall(batch_id, ev.params.id, ev.params.values)
+                if ev.params.id not in recalls_recorded:
+                    self.store.record_recall(batch_id, ev.params.id, ev.params.values)
+            self.store.complete_batch(batch_id)
             self.strategy.tell(RecordedBatch(evaluations=scored, recalled=recalled).told)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
@@ -1056,14 +1075,22 @@ class CampaignController:
             if handler is not None:
                 remove_campaign_log_handler(handler)
 
-    def _run_search_batch(self, param_sets, batch_idx, batch_id):
+    def _run_search_batch(self, param_sets, batch_idx, batch_id, recorded=None):
         """Compose, execute and score one batch.
 
         Parameter sets are grouped by effective repetition count (``ps.n_reps``
         or the campaign default ``runs``); each group runs with that many reps.
         With the default strategy every set uses the default, so this is a single
         group.
+
+        *recorded* holds the cells an interrupted run of this batch already recorded
+        (:attr:`~robovast.search.history.UnfinishedBatch.units`). They are not evaluated or
+        recorded again, and a group they fill entirely is not run. A group with a cell
+        missing is run whole, as the uninterrupted batch ran it: the backend keeps its job
+        plan and adopts the runs that already have a verdict. The evaluations come back in
+        the order the uninterrupted batch scored them.
         """
+        recorded = recorded or {}
         if not param_sets:
             # Every cell this batch proposed was measured by an earlier one. There is
             # nothing to compose, nothing to run and nothing to postprocess, and going
@@ -1076,8 +1103,10 @@ class CampaignController:
             groups.setdefault(ps.n_reps or self.runs, []).append(ps)
         multi = len(groups) > 1
 
-        # Expected runs across the whole batch (all reps-groups), for run progress.
-        self._begin_batch_progress(sum((ps.n_reps or self.runs) for ps in param_sets))
+        # Expected runs across the groups that run, for run progress.
+        self._begin_batch_progress(sum(
+            reps * len(group) for reps, group in groups.items()
+            if any(ps.id not in recorded for ps in group)))
         evaluations = []
         failed_runs = 0
         killed_runs = 0
@@ -1086,8 +1115,20 @@ class CampaignController:
         # check below. Counted per cell rather than inferred afterwards from the store,
         # because the reason is what makes the stop message actionable.
         unrunnable = {"composition_failed": 0, "no_sample": 0}
+
+        def take_recorded(ps):
+            status, ev = recorded[ps.id]
+            if ev is not None:
+                evaluations.append(ev)
+            elif status in unrunnable:
+                unrunnable[status] += 1
+
         try:
             for reps, group in sorted(groups.items()):
+                if all(ps.id in recorded for ps in group):
+                    for ps in group:
+                        take_recorded(ps)
+                    continue
                 tag = f"batch-{batch_idx}" + (f"/reps-{reps}" if multi else "")
                 # Compose into a temp dir (intermediate config artifacts); the backend
                 # stages from it and only results land under the campaign root.
@@ -1113,6 +1154,9 @@ class CampaignController:
                 self._run_postprocessing(tag)
 
                 for ps in group:
+                    if ps.id in recorded:
+                        take_recorded(ps)
+                        continue
                     config_name = name_by_id.get(ps.id)
                     if config_name is None:
                         # Composition itself failed for this param set (see
@@ -1243,6 +1287,27 @@ class CampaignController:
 
 
 # -- builders ---------------------------------------------------------------
+
+def _check_reasked(unfinished, batch_idx, proposed, param_sets) -> None:
+    """Raise unless re-asking the interrupted batch *unfinished* proposed what it recorded.
+
+    A seeded strategy replayed through the complete batches proposes the same cells again.
+    One that does not would finish the batch with another batch's cells.
+    """
+    ids = {ps.id for ps in param_sets}
+    problems = []
+    if unfinished.idx != batch_idx:
+        problems.append(f"it is batch {unfinished.idx}, but {batch_idx} batch(es) precede it")
+    if unfinished.asked is not None and unfinished.asked != len(proposed):
+        problems.append(f"it proposed {unfinished.asked} parameter set(s), the re-ask "
+                        f"{len(proposed)}")
+    stray = sorted((set(unfinished.units) | unfinished.recalled) - ids)
+    if stray:
+        problems.append(f"it recorded cell(s) the re-ask did not propose: {', '.join(stray)}")
+    if problems:
+        raise RuntimeError(f"Cannot finish interrupted batch {unfinished.idx}: "
+                           + "; ".join(problems))
+
 
 def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
                           campaign_id: str, state=None,

@@ -772,6 +772,9 @@ class BatchObjective(BaseModel):
     max: Optional[float] = None
     mean: Optional[float] = None
     best_so_far: Optional[float] = None
+    #: False while the batch is running, or when it was interrupted and not yet resumed: its
+    #: counts are what it has recorded so far.
+    complete: bool = False
 
 
 class SearchHistory(BaseModel):
