@@ -361,8 +361,8 @@ system-under-test image is not a robovast image at all, so an absent label on th
 means "not applicable" rather than "unreadable" — failing closed on them would
 refuse every campaign that has a SUT.
 
-An image built before the label existed now reports nothing and is refused.  Those
-images predate protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
+An image without the label reports nothing and is refused.  Such an image
+predates protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
 right answer for them regardless — but the message says what to do about it
 (rebuild from the recorded revision, or re-tag with the label) rather than only
 that it could not tell.
@@ -372,7 +372,7 @@ direction because the fixes are not interchangeable: an image **older** than the
 window means "check out the revision the campaign recorded
 (``_execution/execution.yaml``) and run it there", while one **newer** means
 "upgrade robovast".  Neither ever advises pulling a newer image — a re-run needs the
-bytes the campaign recorded, not today's.
+bytes the campaign recorded, not the current ones.
 
 .. warning::
 
@@ -1028,7 +1028,8 @@ options in preference order.
 
    That two install sites decide this, and only one of them is documented where a backend
    author would look, is worth revisiting: whether a backend *should* be shippable per
-   campaign is a design question, and today the answer is an accident of call order.
+   campaign is a design question, and the answer follows from call order rather than from a
+   decision.
 
 **Where it runs in composition.** ``apply_backend()`` is called once at the top of the
 ``execution`` extraction in ``generate_scenario_variations()``, so the container plan, the
@@ -1716,7 +1717,7 @@ reader can see what a table looks like without replaying history. ``_MIGRATIONS`
 append-only ladder that upgrades an *existing* store; entry *i* takes ``user_version`` *i*
 to *i+1* and is never edited once shipped, because some database on disk has already
 applied it. Note migration 0→1 is a frozen copy of the v1 layout rather than ``_SCHEMA``
-— reusing ``_SCHEMA`` there would jump an old store to today's tables and the later
+— reusing ``_SCHEMA`` there would jump an old store to the current tables and the later
 ``ALTER TABLE`` steps would then fail on columns that already exist.
 
 Adding a column therefore means touching both, in the same position.
@@ -1831,7 +1832,7 @@ because every other stage reads records whose paths and formats the layout decid
 * a stamp that states no layout, or a step that fails, **blocks**.
 
 A step is ``migrate(campaign_dir) -> None`` and rewrites the tree in place; like a config step
-it may not import the model its record is read with now. Layout 1 is the only layout so far,
+it may not import the current model its record is read with. Layout 1 is the only layout so far,
 so the ladder has no steps; ``src/robovast/common/migrations/README.md`` says how to add one.
 
 Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
@@ -1942,8 +1943,8 @@ Status: phase and stage
 change, so a defensive re-set does not restart the clock). It exists because a phase name
 alone cannot separate *slow* from *wedged*: an image build in progress and one that will
 never finish both read ``building``. Readers render it as an age — the MCP status returns
-``phase_age_s``, and the web Monitor shows it beside the phase dot while a pre-run phase is
-in effect, where there is no progress bar to watch instead.
+``phase_age_s``, and the web UI's Campaigns page shows it beside the phase dot while a pre-run
+phase is in effect, where there is no progress bar to watch instead.
 
 .. _a-started-campaign-is-findable:
 
@@ -2019,7 +2020,7 @@ two campaigns needing the same image both wait on one build. Two consequences:
 * Stopping a building campaign **detaches** it. ``_await_build_image`` raises
   ``CampaignStopped`` and touches neither the build Job nor the local build thread: a
   sibling may be waiting on that build, and the image is a cache entry rather than this
-  campaign's property. Nothing cancels a build today — the cluster teardown is label-scoped
+  campaign's property. Nothing cancels a build — the cluster teardown is label-scoped
   to ``jobgroup=scenario-runs`` and cannot reach a ``jobgroup=image-builds`` Job, and the
   local ``docker rm -f robovast`` cannot reach a ``buildx`` thread — and it must stay that
   way.
@@ -2037,8 +2038,8 @@ is exactly when someone comes looking. It is also why
 ``controller._record_controller_outcome`` uploads ``build.log`` alongside ``outcome.json``
 — a campaign that died waiting for its image never reaches ``finalize_campaign`` at all.
 
-This changes an error path on purpose: a failed build is now an inspectable ``failed``
-campaign — reason in its status, output in its own log — rather than a 500 and no campaign.
+A failed build is therefore an inspectable ``failed`` campaign — reason in its status,
+output in its own log — rather than a 500 and no campaign.
 Building is part of the campaign's driven work, not a precondition of its existence.
 
 Control operations
@@ -2087,8 +2088,8 @@ mappings documented under *Per-Cluster Resource Limits* in
 :doc:`cluster_execution`) lives in :mod:`robovast.execution.cluster_execution.cluster_context`:
 
 .. automodule:: robovast.execution.cluster_execution.cluster_context
-   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
-             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
+   :members: get_active_kube_context, list_all_contexts, resolve_resource_value,
+             resolve_resources
    :undoc-members:
 
 
@@ -2173,8 +2174,8 @@ React app that reuses those libraries directly.
 request/response models (including :class:`~robovast.execution.control_server.Status`)
 — **1:1**, exactly as the Python ``HTTPTransport`` does. When the interface changes,
 update this file. Pages call the client via TanStack Query (``refetchInterval`` drives
-the Monitor's live polling; mutations drive create/stop). Current pages:
-``pages/Monitor.tsx`` (the launch bar merged into it — there is no separate Launcher),
+the Campaigns page's live polling; mutations drive create/stop). Pages:
+``pages/Monitor.tsx`` (the Campaigns page, which holds the launch bar),
 ``pages/config/ConfigPage.tsx``, ``pages/results/ResultsPage.tsx`` and
 ``pages/admin/AdminPage.tsx``, sharing ``components/StatusView.tsx`` for the live
 ``Status`` render.
@@ -2598,9 +2599,9 @@ samples too large to preload) are in-tree source that both the host and each rem
 their own bundle. Resolve it with a ``tsconfig`` ``paths`` entry plus a matching vite
 ``resolve.alias`` — see ``src/robovast_nav/web`` for the two lines. Do **not** add it to the MF
 ``shared`` map: bundling a private copy is what keeps a version skew between an installed package
-and a newer host UI an ordinary build rather than a remote-load failure. The earlier arrangement — a
-hand-maintained ``contract.ts`` mirror plus a re-implementation of the host's canvas/clock
-scaffolding — is what let a fetch-staleness bug exist in the costmap panel and nowhere else.
+and a newer host UI an ordinary build rather than a remote-load failure. A hand-maintained
+mirror of the contract, or a re-implementation of the host's canvas/clock scaffolding, would
+let a bug exist in one panel and nowhere else.
 
 A panel type may also declare an optional ``REMOTE_NAME`` — the Module-Federation *container*
 name, defaulting to the entry-point name (one container per type). Panels that share a single
@@ -2678,7 +2679,7 @@ series converging on that pivot, so a notch moves millimeters once you are close
 never be passed through — flying the eye *and* the pivot along the cursor ray keeps the radius, and
 with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
 sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
-from the pivot, which the wheel now carries along and which is therefore constant by design.
+from the pivot, which the wheel carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
 robovast-specific wiring lives in the consumer, ``frontend/ui/src/panels/Scene3DPanel.tsx``, which

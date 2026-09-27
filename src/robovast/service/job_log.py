@@ -42,6 +42,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from robovast.service.dir_watch import DirWatch
 from robovast.service.interface import JobLogRow
 from robovast_decode import log_summary
 from robovast_decode.run_log import SRC_STDOUT, TIME_EXACT, TIME_NONE, LogRecord, container_of
@@ -211,50 +212,11 @@ def runs_finished(campaign_dir: Path, runs: List[str], now: Optional[float] = No
     return True
 
 
-class LogWatch:
-    """Wakes a reader when a job's log files change, instead of it asking on a timer.
-
-    Watches the job's ``logs/`` directory with inotify
-    (:class:`robovast.execution.data.file_agent.Inotify`). Before the directory exists -- a job
-    that has not started writing -- :meth:`wait` looks for it again at most once a second,
-    and watches it from the moment it appears.
-    """
-
-    #: How often a job whose ``logs/`` does not exist yet is looked at again.
-    APPEAR_S = 1.0
-
-    def __init__(self, job_dir: Optional[Path]):
-        self._logs = Path(job_dir) / LOGS_DIR if job_dir is not None else None
-        self._inotify = None
-        self._attach()
-
-    def _attach(self) -> None:
-        if self._inotify is not None or self._logs is None or not self._logs.is_dir():
-            return
-        from robovast.execution.data.file_agent import \
-            Inotify  # pylint: disable=import-outside-toplevel
-        inotify = Inotify()
-        try:
-            inotify.add_tree(str(self._logs))
-        except FileNotFoundError:
-            inotify.close()
-            return
-        self._inotify = inotify
-
-    def wait(self, timeout: float) -> None:
-        """Return once the logs changed, or after *timeout* seconds."""
-        self._attach()
-        if self._inotify is None:
-            time.sleep(min(timeout, self.APPEAR_S))
-            self._attach()
-            return
-        self._inotify.wait(timeout)
-
-    def close(self) -> None:
-        if self._inotify is not None:
-            self._inotify.close()
-            self._inotify = None
+def watch(job_dir: Optional[Path]) -> DirWatch:
+    """A :class:`~robovast.service.dir_watch.DirWatch` over the job's ``logs/`` directory:
+    what a stream of the job log waits on. ``None`` is a job that has no directory."""
+    return DirWatch(Path(job_dir) / LOGS_DIR if job_dir is not None else None)
 
 
-__all__ = ["LOGS_DIR", "MAIN_LOG", "SETTLE_S", "LogWatch", "decode_cursor", "encode_cursor", "log_files",
-           "read_rows", "runs_finished", "runs_of_job"]
+__all__ = ["LOGS_DIR", "MAIN_LOG", "SETTLE_S", "decode_cursor", "encode_cursor", "log_files",
+           "read_rows", "runs_finished", "runs_of_job", "watch"]
