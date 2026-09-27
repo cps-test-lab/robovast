@@ -779,6 +779,9 @@ class BatchObjective(BaseModel):
     max: Optional[float] = None
     mean: Optional[float] = None
     best_so_far: Optional[float] = None
+    #: False while the batch is running, or when it was interrupted and not yet resumed: its
+    #: counts are what it has recorded so far.
+    complete: bool = False
 
 
 class SearchHistory(BaseModel):
@@ -1275,7 +1278,7 @@ class ServiceSetting(BaseModel):
     #: Why THIS caller got no value though the setting is set: ``"secret"`` (a credential;
     #: never shown to anyone, in any form), ``"server_only"`` (registry details, which do
     #: not cross this interface -- see ``RegistryConfig``), ``"host_path"`` (shown to a
-    #: loopback caller only, as ``VersionInfo.results_root`` is), or ``"unclassified"``.
+    #: loopback caller only), or ``"unclassified"``.
     #: ``None`` when :attr:`value` stands, and when the setting is simply unset.
     withheld: Optional[str] = None
 
@@ -1787,7 +1790,7 @@ class OutputsIngested(BaseModel):
     files: int = 0
     bytes: int = 0
     #: Members refused rather than written -- a path leaving the tree, a hard link, a
-    #: file only the driver writes. Named, so a pod whose output vanished can read why.
+    #: path only the service writes. Named, so a pod whose output vanished can read why.
     refused: list[str] = Field(default_factory=list)
     #: Files whose delivered range did not start where the file ends here; the sender
     #: sends each of them whole next time.
@@ -2149,6 +2152,12 @@ class WorldDescription(BaseModel):
     components: list[dict] = Field(default_factory=list)
     #: The entities the world compiles — ``None`` unless asked for, since it costs a build.
     entities: Optional[list[str]] = None
+    #: What the world's start state holds that will not stop it from loading but is likely to
+    #: make a run misbehave, as the simulator words it: ``{"check", "message", "hint"}`` each
+    #: (roqsim: two bodies placed inside one another). Comes with ``entities``, from the reset
+    #: that follows the same build; ``None`` when the world was not reset, ``[]`` when its start
+    #: state has nothing to say. ``validate_project`` reports each one as advice.
+    warnings: Optional[list[dict]] = None
     #: ``{"fields": [...], "targets": {...}}``: the model values a run may change, and (when a
     #: target glob was given) the objects that can be named with their current values.
     overridable: dict = Field(default_factory=dict)
@@ -2157,9 +2166,9 @@ class WorldDescription(BaseModel):
     #: because ``entities`` was arrived at without them.
     dropped_transport: list[str] = Field(default_factory=list)
     #: Why a half of the answer is missing, when the simulator could produce only part of it
-    #: (``{"build": "..."}`` with ``entities`` left ``None``). Empty when the reply is complete —
-    #: and a caller must read it before concluding that a null ``entities`` means the world
-    #: compiles none.
+    #: (``{"build": "..."}`` with ``entities`` left ``None``, or ``{"reset": "..."}`` with
+    #: ``warnings`` left ``None``). Empty when the reply is complete — and a caller must read it
+    #: before concluding that a null ``entities`` means the world compiles none.
     errors: dict = Field(default_factory=dict)
 
 
@@ -2205,8 +2214,9 @@ class DataTable(BaseModel):
     #: For a built-per-run table: how many runs it covers, and for how many it is built.
     runs: Optional[int] = None
     built: Optional[int] = None
-    #: Runs whose build failed, keyed by run, with the reason (at most a sample of them).
-    failed: dict = Field(default_factory=dict)
+    #: Runs the table has no rows for, or only the rows from before a topic stopped decoding
+    #: (counted in ``built``), keyed by run, with the reason (at most a sample of them).
+    failed: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
@@ -2279,6 +2289,23 @@ class DataQueryResult(BaseModel):
     # not be built for (see ``data_query.query_data_db``). Carried on the model so the
     # hint survives the HTTP path, not just the in-process one.
     note: Optional[str] = None
+
+
+class ScreenshotFrame(BaseModel):
+    """A rendered screenshot, as :meth:`RobovastInterface.campaign_screenshot` returns it.
+
+    Two things, because a render has two lives: the bytes this caller holds now, and the copy
+    the service keeps so the render can be fetched again -- by this caller later, or by anyone
+    it hands the address to. ``robovast.service.screenshot`` states how long it is kept.
+    """
+
+    #: A local file holding the PNG. Remove it with ``robovast.service.screenshot.discard``,
+    #: which removes a transient copy and leaves a kept render alone, so the caller need not
+    #: know which of the two it was given.
+    path: str
+    #: The render's name under :meth:`Routes.campaign_screenshot_frame`. Empty when the
+    #: service kept no copy, so there is nothing to address.
+    name: str = ""
 
 
 class SceneStatus(BaseModel):
@@ -2441,6 +2468,27 @@ class ServiceError(OSError):
         super().__init__(detail)
 
 
+class ServiceUnreachable(OSError):
+    """No robovast-service answered at the URL a client was given.
+
+    Not a refusal: nothing answered, so there is no status and no ``detail``. What a
+    caller needs is the address it tried and the socket-level reason, in one sentence --
+    ``requests`` wraps that reason in two layers of pool and retry bookkeeping, and the
+    resulting paragraph, printed with the frames it was raised through, read as a crash
+    in the client rather than as a service that is down.
+
+    ``include_traceback = False``, as for :class:`ServiceError`: the frames are the HTTP
+    transport's and name nothing the reader can act on.
+    """
+
+    include_traceback = False
+
+    def __init__(self, url: str, reason: str):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"no robovast-service answered at {url}: {reason}")
+
+
 #: Header naming the CLASS of a refusal, for the few whose class a caller must act on
 #: rather than print. The message says what happened and is written for a person; a client
 #: that has to *behave* differently -- degrade to "unchecked", report the deployment rather
@@ -2496,6 +2544,32 @@ class UnsupportedOperation(ServiceError):
         sentence = f"{operation} is not supported {where}"
         super().__init__(self.STATUS, f"{sentence}. {hint}" if hint else sentence,
                          code=UNSUPPORTED_OPERATION)
+
+
+#: A text read of a binary file -- :class:`BinaryFile` crossing HTTP.
+BINARY_FILE = "binary_file"
+
+
+class BinaryFile(ServiceError, ValueError):
+    """A text read refused because the file is binary.
+
+    ``url`` is the route that serves the file's bytes, relative to the service's origin. A
+    ``ValueError`` like any refused input, so the app answers ``400``, with
+    :data:`BINARY_FILE` in :data:`ERROR_CODE_HEADER`; the HTTP transport raises this class
+    again from that code, so a caller catches one type wherever the service runs.
+    """
+
+    STATUS = 400
+
+    def __init__(self, address: str, detail: str = ""):
+        name = address.rstrip("/").rsplit("/", 1)[-1]
+        super().__init__(
+            self.STATUS,
+            detail or (f"{name} is a binary file — read it as bytes (GET the address "
+                       "without 'as=text', or 'vast files get'), or download the "
+                       "campaign archive."),
+            url=Routes.file(address), code=BINARY_FILE)
+        self.address = address
 
 
 API_VERSION = "0"
@@ -2869,6 +2943,13 @@ class Routes:
         return f"/campaigns/{campaign_id}/screenshot"
 
     @staticmethod
+    def campaign_screenshot_frame(campaign_id: str, name: str) -> str:
+        # A kept render, fetched again by a GET. Its own segment rather than a child of the POST
+        # above, so the route that runs the simulator and the one that only serves bytes cannot
+        # be mistaken for each other.
+        return f"/campaigns/{campaign_id}/screenshots/{name}"
+
+    @staticmethod
     def campaign_scene_asset(campaign_id: str, path: str) -> str:
         # The descriptor's bytes, served from the shared cache like a panel bundle. A separate first
         # segment from ``scene`` on purpose: ``scene/run`` would otherwise collide with a cached file
@@ -3083,8 +3164,8 @@ class RobovastInterface(ABC):
         Line-based paging happens **server-side**, so a caller reading 100 lines of a
         log on the cluster transfers 100 lines, not the file.
 
-        Raises ``ValueError`` on a malformed address or a binary file (→ 400) and
-        ``KeyError`` when the file does not exist (→ 404).
+        Raises :class:`BinaryFile` on a binary file and ``ValueError`` on a malformed
+        address (both → 400), and ``KeyError`` when the file does not exist (→ 404).
         """
 
     @abstractmethod
@@ -3556,10 +3637,10 @@ class RobovastInterface(ABC):
 
         The last writer wins, member by member: the containers of one pod share an
         output tree and each contributes its own files to it. Refused with a
-        ``KeyError`` for a campaign that is not here and a ``ValueError`` for one that has
-        ended -- outputs arriving after the verdict would change a record nothing reads
-        again. What a pod never writes -- the campaign's own store, the driver's logs --
-        is refused per member and reported, never written.
+        ``KeyError`` for a campaign that is not here; one that has ended still takes it, since
+        a stop tears pods down while they flush. What a pod never writes -- the campaign's
+        own store, its ``_config/``, ``_transient/`` and ``_execution/`` -- is refused per
+        member and reported, never written.
         """
 
     @abstractmethod
@@ -4009,8 +4090,8 @@ class RobovastInterface(ABC):
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
                             at: Optional[float] = None, view: Optional[dict] = None,
                             focus: Optional[list] = None, camera: Optional[str] = None,
-                            size: str = "960x720") -> str:
-        """Re-render one moment of a run from a chosen viewpoint; return the image's path.
+                            size: str = "960x720") -> ScreenshotFrame:
+        """Re-render one moment of a run from a chosen viewpoint; return the image.
 
         The counterpart of :meth:`campaign_scene_status` for *pixels* rather than geometry, and
         unlike it this one **does** work: it runs the simulator in the campaign's own pinned
@@ -4020,8 +4101,18 @@ class RobovastInterface(ABC):
         Needs a simulator that can re-render (``SimulatorBackend.simulation_screenshot``) and a
         run that recorded its state. Raises with the reason when either is missing.
 
-        The caller owns the returned path and removes it with
-        ``robovast.service.screenshot.discard``; the route does that once the response is sent.
+        The service keeps each render for a while and serves it at
+        :meth:`Routes.campaign_screenshot_frame` under the returned ``name``, so it can be
+        fetched again without rendering it again. The caller removes the returned ``path``
+        with ``robovast.service.screenshot.discard``, which leaves the kept copy alone.
+        """
+
+    @abstractmethod
+    def resolve_campaign_screenshot(self, campaign_id: str, name: str) -> str:
+        """Absolute path of a render :meth:`campaign_screenshot` kept under *name*.
+
+        Raises ``KeyError`` when it is not, or no longer, kept -- the contract
+        :meth:`resolve_campaign_scene_asset` has, so the route serves both the same way.
         """
 
     @abstractmethod

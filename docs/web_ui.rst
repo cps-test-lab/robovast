@@ -389,7 +389,8 @@ secret shows as ``set`` and its value never leaves the service, because RoboVAST
 per-route authorization: anything a response carries is available to every logged-in
 caller. Two other kinds of value are held back for narrower reasons: registry endpoints and
 refs never cross the client interface at all, and a path on the service's own disk is shown
-only to a caller on that machine — the same rule ``/version`` applies to its roots.
+only to a caller on that machine; a forwarded request counts as remote, since behind a
+proxy the peer address is the proxy.
 
 The list comes from the environment rather than from a catalogue in the code, so a setting
 added to RoboVAST appears here without anyone maintaining a list. The cost is that a key
@@ -1450,14 +1451,17 @@ implying a position it does not have.
 per-run table, ``built M/N`` — for how many of the N runs whose records can give it the table
 is built. A partial count is the normal state of a campaign nobody has queried yet, not missing
 data: a table is built the first time a query names it, and a table not yet built for any run
-lists its columns as soon as a query builds it. Hover a name for its description; click it to
-browse it. Among them are the ``runs`` **dimension table** (per-run ``status``/``duration_s``
-and each varied parameter as a ``param_*`` column) and the campaign's record as schema
-``campaign`` (``campaign.run``, ``campaign.unit``, …). Write **read-only SQL** — DuckDB's
-dialect (:ref:`results-querying`) — in the editor and **Run** it; the result shows as a table
-and, via the chart builder, as a chart — pick *x* / *y* / *color* columns and a mark. Join
-``runs`` to any metric table on ``(config_name, run_id)`` to answer "how does *<param>* affect
-*<metric>*".
+lists its columns as soon as a query builds it. Under a table, the runs it is missing or
+incomplete for are listed, each with its reason: a build that failed for the run, or a topic that
+stopped decoding and left only the rows before it (:ref:`results-table-cache`). Hover a name for
+its description; click it to browse it. Among them are the ``runs`` **dimension table**
+(per-run ``status``/``duration_s`` and each varied parameter as a ``param_*`` column) and the
+campaign's record as schema ``campaign`` (``campaign.run``, ``campaign.unit``, …). Write
+**read-only SQL** — DuckDB's dialect (:ref:`results-querying`) — in the editor and **Run** it;
+the result shows as a table and, via the chart builder, as a chart — pick *x* / *y* / *color*
+columns and a mark. A warning above the result names what the answer lacks: the runs a table it
+read is missing or incomplete for, or the size limit it stopped at. Join ``runs`` to any metric
+table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric>*".
 
 The campaign's records and its built tables are files in its own directory on the service's
 results tree, so a query reads them where they are; what it builds for the first time is

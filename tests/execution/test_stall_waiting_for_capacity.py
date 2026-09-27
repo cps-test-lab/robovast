@@ -161,3 +161,47 @@ def test_the_loop_clears_the_flag_when_the_batch_is_done():
     exit_block = source[source.index("if rnd.over"):]
     assert "_publish_capacity_wait(False)" in exit_block.split("break", maxsplit=1)[0], (
         "the batch loop exits without clearing the capacity-wait flag")
+
+
+# -- a batch whose every run has finished --------------------------------------
+
+def test_a_batch_whose_runs_all_finished_is_not_called_queued():
+    """A capacity wait that outlives the batch's last run holds back no run of it, so the
+    verdict must not say "none can complete" of runs that all have."""
+    report = stall_report(_status(waiting_for_capacity=True,
+                                  runs={"completed": 6, "total": 6}))
+    assert report["stalled"] is None
+    assert "stall_reason" not in report
+    assert "capacity" not in report["stall_verdict"].lower()
+    assert "every run of the current batch has finished (6 of 6)" in report["stall_verdict"]
+    assert report["progress_age_s"] > 4000
+
+
+def test_a_batch_whose_runs_all_finished_is_not_accused_of_a_stall():
+    """Past the per-run budget with no run left to measure is arithmetic, not a stall: what
+    remains is the campaign's work after its runs, which no run counter can advance."""
+    report = stall_report(_status(runs={"completed": 6, "total": 6}))
+    assert report["stalled"] is None
+    assert "stall_reason" not in report
+
+
+def test_a_run_that_delivered_nothing_is_finished_too():
+    """Once tallied, ``no_result`` is ``total - completed``: those runs are over as well."""
+    report = stall_report(_status(runs={"completed": 4, "no_result": 2, "total": 6}))
+    assert report["stalled"] is None
+    assert "(6 of 6)" in report["stall_verdict"]
+
+
+def test_one_unfinished_run_keeps_the_verdict():
+    """A batch with a run still out is judged as before: that run is what the budget watches."""
+    report = stall_report(_status(runs={"completed": 5, "total": 6}))
+    assert report["stalled"] is True
+    queued = stall_report(_status(waiting_for_capacity=True,
+                                  runs={"completed": 5, "total": 6}))
+    assert "capacity" in queued["stall_verdict"].lower()
+
+
+def test_a_batch_with_no_runs_yet_is_not_finished():
+    """``total`` 0 is a batch not yet begun, not one whose zero runs have all finished."""
+    report = stall_report(_status(waiting_for_capacity=True))
+    assert "capacity" in report["stall_verdict"].lower()
