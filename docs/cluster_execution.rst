@@ -609,7 +609,7 @@ On a cluster where no node advertises a GPU, such a job fails rather than waits:
 of waiting produces the device.
 
 ``gpu`` also takes the per-cluster form, for one ``.vast`` across a GPU and a non-GPU
-cluster: ``gpu: [{local: 1}, {gcp-c4: 0}]``.
+cluster: ``gpu: [{lab.example: 1}, {cloud.example: 0}]``.
 
 **Which GPU did a run actually use?** ``sysinfo`` records it, so it is a query over a
 finished campaign rather than something inferred from wall-clock:
@@ -1982,7 +1982,8 @@ Jobs from inside that cluster, so the cluster is chosen when you choose a servic
 answering on the conventional local port, else the one ``vast login`` stored — and not by
 the launch command. ``vast service info`` prints the kubeconfig context name that service
 was given (``context``) — for a deployed service, the ``--context`` of ``vast cluster
-setup`` — which is the name the per-cluster lists below are matched against.
+setup`` or ``vast service upgrade`` — which is the name the per-cluster lists below are
+matched against.
 
 ``--context`` selects a **kubeconfig context** for the operator verbs that talk to a
 cluster directly — ``vast cluster setup``, ``cluster cleanup``, ``cluster jobs-cleanup``,
@@ -1995,7 +1996,7 @@ listed by ``kubectl config get-contexts``:
    vast cluster setup rke2
 
    # Explicitly target a context
-   vast cluster setup rke2 --context gcp-c4
+   vast cluster setup rke2 --context cloud.example
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -2016,35 +2017,41 @@ a list of ``{context-name: value}`` mappings instead of a plain scalar.
    execution:
      resources:
        cpu:
-         - gcp-c4: 4
-         - local:  8
+         - cloud.example: 4
+         - lab.example:   8
        memory:
-         - gcp-c4: 10Gi
-         - local:  20Gi
+         - cloud.example: 10Gi
+         - lab.example:   20Gi
      secondary_containers:
        - nav:
            resources:
              cpu:
-               - gcp-c4: 2
-               - local:  4
+               - cloud.example: 2
+               - lab.example:   4
        - simulation:
            resources:
              cpu:
-               - gcp-c4: 2
-               - local:  4
+               - cloud.example: 2
+               - lab.example:   4
              memory:
-               - gcp-c4: 8Gi
-               - local:  16Gi
+               - cloud.example: 8Gi
+               - lab.example:   16Gi
+
+The service picks the entry with the context it was deployed against, which
+``vast cluster setup`` and ``vast service upgrade`` record in the service
+(``ROBOVAST_KUBE_CONTEXT``): the context named with ``--context``, else the kubeconfig's
+current context. The launch carries no context of its own.
 
 Rules:
 
 * **Scalars take precedence** — a plain integer/string is used unchanged on
   every cluster.
 * For per-cluster lists the entry whose key matches the **service's** context is
-  used.  If no entry matches, or the service was given no context name, the launch is
-  refused, naming the keys the list has.
+  used.  If no entry matches, the campaign fails naming the entries there are.
 * Fields can be mixed: ``cpu`` as a scalar and ``memory`` as a per-cluster list
   is valid.
+* On a service with no context recorded, a campaign with a per-cluster list fails, and
+  the error says to run ``vast service upgrade`` against its cluster, which records one.
 * ``cluster cleanup`` and ``cluster jobs-cleanup`` with ``--vast`` refuse to pick a
   cluster by accident: when the file lists several contexts and ``--context`` was not
   given, they ask for one. ``cluster monitor --vast`` instead watches every context the
@@ -2147,7 +2154,7 @@ node reports its machine type) and how the volumes are backed.
    .. code-block:: bash
 
       kubectl config rename-context \
-        gke_<project>_<region>_<cluster-name> gcp-c4
+        gke_<project>_<region>_<cluster-name> <short-name>
 
 5. Pass ``--ingress-class gce`` when publishing with ``--ingress-host`` on GKE's built-in
    controller. Unlike ingress-nginx it cannot route to a plain ClusterIP, so both Services
