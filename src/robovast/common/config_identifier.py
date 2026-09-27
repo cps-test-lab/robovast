@@ -21,13 +21,16 @@ Identifiers are stored in config.yaml per config-directory for merge-campaigns g
 """
 
 import hashlib
-import importlib
-import inspect
+import importlib.machinery
+import importlib.metadata
+import importlib.util
 import os
 from functools import lru_cache
 from typing import Any
 
 import yaml
+
+from .plugin_ref import is_file_ref
 
 
 def hash_file_content(file_path: str) -> str:
@@ -74,49 +77,149 @@ def _iter_package_files(package_path: str) -> list[str]:
     return sorted(result)
 
 
-def _hash_variation_entrypoints_impl(variation_type_names: list[str]) -> str:
-    """Hash the source of every module in the package of each variation entry point."""
+class VariationSourceNotFound(LookupError):
+    """A variation's source cannot be found, so nothing can stand for it in a hash."""
+
+
+def variation_refs(config_block: dict) -> list[str]:
+    """The variation references a configuration block names, as the ``.vast`` wrote them."""
+    listed = config_block.get("variations")
+    if not isinstance(listed, list):
+        return []
+    return [ref for item in listed if isinstance(item, dict) for ref in item]
+
+
+def _source_root(module_name: str, site_dir: str | None) -> str | None:
+    """The first regular package (its directory) or module (its file) on *module_name*'s path.
+
+    Found without importing it. A namespace root (``robovast``) is skipped: it spans
+    distributions, so what the variation ships in is below it. With *site_dir*, only that
+    directory is searched.
+    """
+    parts = module_name.split(".")
+    search_path = [site_dir] if site_dir else None
+    for depth in range(1, len(parts) + 1):
+        name = ".".join(parts[:depth])
+        if site_dir:
+            spec = importlib.machinery.PathFinder.find_spec(name, search_path)
+        else:
+            spec = importlib.util.find_spec(name)
+        if spec is None:
+            return None
+        if spec.origin not in (None, "namespace"):
+            if spec.submodule_search_locations is None:
+                return spec.origin
+            return os.path.dirname(spec.origin)
+        search_path = list(spec.submodule_search_locations or [])
+    return None
+
+
+def _hash_source(root: str) -> str:
+    hasher = hashlib.sha256()
+    for path in _iter_package_files(root) if os.path.isdir(root) else [root]:
+        with open(path, "rb") as f:
+            hasher.update(path.encode())
+            hasher.update(f.read())
+    return hasher.hexdigest()[:12]
+
+
+def _variation_entry_points(site_dir: str) -> list[tuple[str | None, Any]]:
+    """``(site_dir, entry point)`` of each variation type, the workspace's plugins first.
+
+    The workspace's plugin venv is read as metadata, never put on ``sys.path``: a
+    ``plugins:`` package is imported only in the isolated compose worker, which leads its
+    path with that venv -- hence first here too.
+    """
+    found = []
+    if os.path.isdir(site_dir):
+        for dist in importlib.metadata.distributions(path=[site_dir]):
+            found.extend((site_dir, ep) for ep in dist.entry_points
+                         if ep.group == "robovast.variation_types")
+    found.extend((None, ep) for ep in
+                 importlib.metadata.entry_points(group="robovast.variation_types"))
+    return found
+
+
+def _hash_variation_entrypoints_impl(refs: list[str], vast_dir: str) -> str:
+    """Hash the source of the package each variation reference is shipped in.
+
+    A ``<path>.py:<Class>`` reference contributes its name only: its module is a run file,
+    content-hashed there.
+
+    Raises:
+        VariationSourceNotFound: a reference no installed package or workspace plugin
+            registers, or whose package has no source to hash.
+    """
+    from robovast.common.config_plugins import \
+        plugin_site_dir  # pylint: disable=import-outside-toplevel
+
     eps_by_name = {}
-    try:
-        eps = list(importlib.metadata.entry_points(group="robovast.variation_types"))
-        for ep in eps:
-            if ep.name in variation_type_names:
-                eps_by_name[ep.name] = ep
-    except Exception:
-        pass
+    for site_dir, ep in _variation_entry_points(plugin_site_dir(vast_dir)):
+        eps_by_name.setdefault(ep.name, (site_dir, ep))
 
     ep_hashes = {}
-    for name in sorted(variation_type_names):
-        if name not in eps_by_name:
-            # Unknown variation type - hash the name to contribute to identifier
+    for name in sorted(set(refs)):
+        if is_file_ref(name):
             ep_hashes[name] = hashlib.sha256(name.encode()).hexdigest()[:12]
             continue
-        ep = eps_by_name[name]
-        module_name = ep.value.split(":")[0]
-        top_package = module_name.split(".")[0]
-
-        try:
-            package = importlib.import_module(top_package)
-            package_path = inspect.getfile(package)
-            package_dir = os.path.dirname(package_path)
-
-            hasher = hashlib.sha256()
-            for path in _iter_package_files(package_dir):
-                with open(path, "rb") as f:
-                    hasher.update(path.encode())
-                    hasher.update(f.read())
-            ep_hashes[name] = hasher.hexdigest()[:12]
-        except Exception:
-            ep_hashes[name] = hashlib.sha256(name.encode()).hexdigest()[:12]
+        if name not in eps_by_name:
+            raise VariationSourceNotFound(
+                f"Variation type '{name}' is registered by no installed package and no "
+                f"workspace plugin, so its source cannot be part of the configuration's "
+                f"identity.")
+        site_dir, ep = eps_by_name[name]
+        root = _source_root(ep.value.split(":")[0], site_dir)
+        if root is None:
+            raise VariationSourceNotFound(
+                f"Variation type '{name}' ({ep.value}) resolves to no package source, so "
+                f"its source cannot be part of the configuration's identity.")
+        ep_hashes[name] = _hash_source(root)
 
     combined = ",".join(f"{k}={v}" for k, v in sorted(ep_hashes.items()))
     return hashlib.sha256(combined.encode()).hexdigest()[:12]
 
 
+def _plugin_stamp(vast_dir: str) -> int | None:
+    """Changes whenever the workspace's plugins are (re)installed."""
+    from robovast.common.config_plugins import (  # pylint: disable=import-outside-toplevel
+        MARKER_NAME, plugin_dir)
+    try:
+        return os.stat(os.path.join(plugin_dir(vast_dir), MARKER_NAME)).st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
 @lru_cache(maxsize=64)
-def hash_variation_entrypoints(variation_type_names: tuple[str, ...]) -> str:
-    """Hash variation entry points used in config. Cached by frozenset of names."""
-    return _hash_variation_entrypoints_impl(list(variation_type_names))
+def _hash_variation_entrypoints_cached(refs: tuple[str, ...], vast_dir: str,
+                                       _stamp: int | None) -> str:
+    return _hash_variation_entrypoints_impl(list(refs), vast_dir)
+
+
+def hash_variation_entrypoints(refs, vast_dir: str) -> str:
+    """Hash the source of the variations *refs* name.
+
+    Raises:
+        VariationSourceNotFound: see :func:`_hash_variation_entrypoints_impl`.
+    """
+    vast_dir = os.path.abspath(vast_dir)
+    return _hash_variation_entrypoints_cached(
+        tuple(sorted(set(refs))), vast_dir, _plugin_stamp(vast_dir))
+
+
+def hash_read_files(vast_dir: str, paths) -> str:
+    """Hash the files a configuration's variations read, by content.
+
+    A file inside *vast_dir* is named by its relative path, so a campaign composed again
+    from its archived copy keeps its identity.
+    """
+    vast_dir = os.path.abspath(vast_dir)
+    hasher = hashlib.sha256()
+    for path in sorted(set(paths)):
+        rel = os.path.relpath(path, vast_dir)
+        hasher.update((path if rel.startswith("..") else rel).encode())
+        with open(path, "rb") as f:
+            hasher.update(f.read())
+    return hasher.hexdigest()[:12]
 
 
 def _canonical_config_block(config_block: dict) -> str:
@@ -209,8 +312,9 @@ def compute_config_identifier(
     config_block: dict,
     run_files_hash: str,
     scenario_file_hash: str,
-    variation_type_names: list[str],
+    variations: list[str],
     sut_sources_hash: str = "",
+    read_files=(),
 ) -> tuple[str, dict[str, str]]:
     """Compute unique config identifier from all inputs that affect config generation.
 
@@ -219,22 +323,24 @@ def compute_config_identifier(
         config_block: Configuration entry from vast (name, parameters, variations).
         run_files_hash: Precomputed hash of run_files files.
         scenario_file_hash: Precomputed hash of scenario file content.
-        variation_type_names: List of variation type names used in this config.
+        variations: The variation references the config block names
+            (:func:`variation_refs`).
         sut_sources_hash: Content hash of the config files the ``sut:`` channel
             addresses, or ``""`` when the campaign declares none. They are inputs
             to generation exactly as a world is, but they cannot ride in
             ``run_files_hash``: that list is also *staged*, and a source mounted
             un-rewritten beside its rewritten copy is what the channel refuses.
+        read_files: Absolute paths of the files the config's variations read beyond what
+            the block names (``Variation.get_read_files``) -- the image a map YAML names.
 
     Returns:
         Tuple of (12-char hex digest, dict of sub-identifiers for debugging).
     """
     canonical = _canonical_config_block(config_block)
-    var_tuple = tuple(sorted(variation_type_names))
 
     block_hash = _hash_config_block_cached(canonical)
     ref_files_hash = hash_config_referenced_files(vast_dir, canonical)
-    var_hash = hash_variation_entrypoints(var_tuple)
+    var_hash = hash_variation_entrypoints(variations, vast_dir)
 
     sub_identifier = {
         "block": block_hash,
@@ -258,6 +364,11 @@ def compute_config_identifier(
     if sut_sources_hash:
         sub_identifier["sut_sources"] = sut_sources_hash
         combined += f",sut={sut_sources_hash}"
+    # Same reason: appended only when a variation read a file.
+    if read_files:
+        read_hash = hash_read_files(vast_dir, read_files)
+        sub_identifier["read_files"] = read_hash
+        combined += f",read={read_hash}"
     config_identifier = hashlib.sha256(combined.encode()).hexdigest()[:12]
 
     return config_identifier, sub_identifier

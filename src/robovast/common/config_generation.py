@@ -38,7 +38,8 @@ from robovast.client.status import failure_detail
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_channels import SCENARIO, SIM, SUT, channel
-from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
+from .config_identifier import (VariationSourceNotFound, collect_paths_from_config,
+                                hash_variation_entrypoints, variation_refs)
 from .config_location import variation_line
 from .config_plugins import ensure_workspace_plugins
 from .errors import (ActionableError, AuxContainerUnavailable, CampaignStopped,
@@ -1663,7 +1664,9 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # by 10 cannot say which helper images its configurations came from.
 # 12: an entry carries the digest of each of those images and the files its composition read
 # beyond the key (:func:`_cached_entry_is_current`), without which a hit cannot be checked.
-_CACHE_FORMAT_VERSION = 12
+# 13: each configuration carries its ``.vast`` block and the files its variations read
+# (``_read_files``), both part of its identity; an entry from 12 carries neither.
+_CACHE_FORMAT_VERSION = 13
 
 
 def _build_generate_cache_key(
@@ -1731,17 +1734,10 @@ def _build_generate_cache_key(
             if os.path.exists(abs_path):
                 key.add_file(abs_path, base_dir=vast_dir)
 
-    # Hash the source code of every variation plugin referenced in the .vast file.
-    # This ensures a cache miss when plugin implementation changes, even if the
-    # .vast file and input data files are untouched.
-    all_variation_names = tuple(sorted({
-        class_name
-        for config_block in configurations
-        for item in config_block.get('variations', [])
-        if isinstance(item, dict)
-        for class_name in item.keys()
-    }))
-    key.add("variation_entrypoints_hash", hash_variation_entrypoints(all_variation_names))
+    # The source of every variation the .vast names, so a changed plugin misses.
+    key.add("variation_entrypoints_hash", hash_variation_entrypoints(
+        [ref for config_block in configurations for ref in variation_refs(config_block)],
+        vast_dir))
 
     # A replay's recorded digests (``image_pins``) replace the project in resolving `family:`
     # refs, so an entry composed from the project's tags must never satisfy a replay, and one
@@ -1798,14 +1794,12 @@ def _result_to_transport(result: dict) -> dict:
     byte-for-byte identical to a cached one. Per-config ``_config_files`` /
     ``_config_transient_files`` ``(rel, path)`` tuples become tagged dicts (source
     files keep their absolute path; artifacts store the path relative to
-    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``,
-    ``_config_block``) are dropped.
+    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``) are dropped.
     """
     transport = copy.deepcopy(result)
     transport["_transient_files"] = []
     transport.pop("_output_dir", None)
     for cfg in transport.get("configs", []):
-        cfg.pop("_config_block", None)
         storable = []
         for rel, path in cfg.get("_config_files", []):
             if os.path.isabs(rel):
@@ -2180,22 +2174,30 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     #   config_generation_{key}.json      – config metadata
     #   config_generation_artifacts_{key}.tar.gz – artifact files written to output_dir
     #     by variation plugins (only created/restored when non-empty _config_files exist)
-    _cache_enabled = use_cache and variation_classes is None
-    if _cache_enabled:
+    _cache_key = None
+    if use_cache and variation_classes is None:
+        try:
+            _cache_key = _build_generate_cache_key(
+                variation_file=os.path.abspath(variation_file),
+                vast_dir=vast_dir,
+                scenario_file=scenario_file,
+                run_files=run_files,
+                analysis_files=analysis_files,
+                configurations=configurations,
+                tolerate_infeasible=tolerate_infeasible,
+                image_project=image_project,
+                image_project_tag=image_project_tag,
+                image_pins=image_pins,
+            )
+        except VariationSourceNotFound as e:
+            # A variation whose source cannot be found yet -- a workspace plugin not
+            # installed before its first composition -- leaves nothing to key on, so this
+            # composition is neither looked up nor stored. A misspelt name is reported when
+            # composition resolves it.
+            logger.debug("Composing %s uncached: %s", variation_file, e)
+    if _cache_key is not None:
         _cache_meta = FileCache2(vast_dir, "config_generation_", suffix=".json")
         _cache_artifacts = FileCache2(vast_dir, "config_generation_artifacts_", suffix=".tar.gz")
-        _cache_key = _build_generate_cache_key(
-            variation_file=os.path.abspath(variation_file),
-            vast_dir=vast_dir,
-            scenario_file=scenario_file,
-            run_files=run_files,
-            analysis_files=analysis_files,
-            configurations=configurations,
-            tolerate_infeasible=tolerate_infeasible,
-            image_project=image_project,
-            image_project_tag=image_project_tag,
-            image_pins=image_pins,
-        )
         _cached = _cache_meta.get_json(_cache_key)
         # Checking a hit fixes the helper images it names, as a started helper's would be.
         if _cached is not None and _cached_entry_is_current(
@@ -2219,7 +2221,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     else:
         _cache_meta = None
         _cache_artifacts = None
-        _cache_key = None
 
     # Cache miss for a plugin campaign: compose in an isolated subprocess so the
     # plugin (and its pinned deps) are imported there, never in this process. The
@@ -2287,6 +2288,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     for config in configurations:
         block_end = steps_done + _steps(config)
+        block_read_files = []
         if variation_classes is None:
             # Read variation classes from the variation file
             variation_classes_and_parameters = _get_variation_classes(config, vast_dir)
@@ -2377,6 +2379,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             duration = round(time.monotonic() - t0, 3)
 
             read_files.extend(var_read_files)
+            block_read_files.extend(var_read_files)
 
             # Validate and collect variation input files
             for vf in var_input_files:
@@ -2420,9 +2423,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             steps_done = block_end
             progress_update_callback(_STEP_LINE.format(done=steps_done, total=steps_total))
 
+        # A file under output_dir was generated, and what generated it is keyed already.
+        block_read_files = sorted({
+            p for p in block_read_files
+            if not os.path.abspath(p).startswith(os.path.abspath(output_dir) + os.sep)})
         for c in current_configs:
             c["_config_name"] = config.get("name")
             c["_config_block"] = config
+            # Hashed into the configuration's identity (compute_config_identifier).
+            c["_read_files"] = block_read_files
 
         configs.extend(current_configs)
 

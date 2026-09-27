@@ -4935,7 +4935,7 @@ class ServiceBase(RobovastInterface):
                     sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
-                         if k.startswith("_") and k != "_config_block"}),
+                         if k.startswith("_") and k not in ("_config_block", "_read_files")}),
                     contribution=_config_view_contribution(c, vast_dir),
                     previews=_config_previews(c, remotes))
                  for c in shown]

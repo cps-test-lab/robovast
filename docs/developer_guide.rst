@@ -587,7 +587,8 @@ front of whoever is authoring the plugin.
 **What the composition cache sees.** A composition is cached under its ``.vast``, the files the
 ``.vast`` names and the source of its variations. A file your plugin reads because another file
 names it — the image a map YAML points at — is not among them: return its absolute path from
-``get_read_files()`` and a cached composition is not reused once it changes. The helper image a
+``get_read_files()`` and a cached composition is not reused once it changes, and the
+``config_identifier`` of each configuration it composed covers its content. The helper image a
 plugin declares with ``get_required_container`` is covered without this: the entry records the
 digest it ran, and a hit is served only while the image still resolves to it.
 
