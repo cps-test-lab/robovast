@@ -3087,13 +3087,13 @@ class RobovastInterface(ABC):
         """Roll this service onto the newest image at its resolved tag.
 
         Returns once the roll has been *asked for* -- **not** once the new pod is serving.
-        With one replica and the default RollingUpdate strategy Kubernetes starts the new
-        pod before stopping the old, so the pod answering this call is still up when it
-        answers; a caller learns the handover happened by watching
-        ``upgrade_info().running_digest`` change, never from this return value.
+        The Deployment's strategy is ``Recreate``: the pod answering this call stops before
+        its replacement starts, so the API is away for a few seconds; a caller learns the
+        handover happened by watching ``upgrade_info().running_digest`` change, never from
+        this return value.
 
-        Refuses while campaigns are live, because the controller driving them runs in the
-        pod being replaced. ``force`` overrides that refusal and nothing else -- in
+        Refuses while a live campaign could not be picked up again by the replacement,
+        because the controller driving it runs in the pod being replaced. ``force`` overrides that refusal and nothing else -- in
         particular it does not make an unsupported deployment supported, nor roll a deployment
         pinned to a fixed version, which ``upgrade_info`` reports as unsupported.
         """
