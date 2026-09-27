@@ -416,7 +416,7 @@ def _parse_quantity(value) -> int:
         return 0
     try:
         return int(parse_quantity(str(value).strip()))
-    except ValueError:
+    except (ValueError, OverflowError):  # OverflowError: "inf" reads as Infinity
         return 0
 
 

@@ -248,7 +248,7 @@ def parse_quantity(value: str) -> int:
         parse_quantity as read_quantity  # pylint: disable=import-outside-toplevel
     try:
         return int(read_quantity((value or "").strip()))
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:  # OverflowError: "inf" reads as Infinity
         raise ValueError(
             f"{value!r} is not a storage size: write a number and an optional unit, "
             f"e.g. '500Gi', '2Ti' or '750G'.") from exc
