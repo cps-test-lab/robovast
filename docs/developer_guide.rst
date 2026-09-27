@@ -1679,7 +1679,10 @@ Schema
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
   batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
   ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
-  written before schema 14).
+  written before schema 14). ``complete`` is 1 once every unit of the batch is recorded;
+  NULL on a batch still running or interrupted, whose units are not what it ended with.
+  For a batch written before schema 15 the migration sets it where the record decides it
+  (:doc:`search`, "Surviving a service restart").
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
@@ -1694,10 +1697,12 @@ Schema
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
 
-These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads them
-back into the ``ask``/``tell`` sequence a resumed strategy is re-driven through
-(:doc:`search`, "Surviving a service restart"), and the live loop builds what it tells from
-the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
+These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads the
+complete batches back into the ``ask``/``tell`` sequence a resumed strategy is re-driven
+through (:doc:`search`, "Surviving a service restart"), and the live loop builds what it
+tells from the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
+``search.history.unfinished_batch`` reads an incomplete last batch, which the loop's first
+round finishes.
 
 .. rubric:: Two definitions of the schema, on purpose
 
