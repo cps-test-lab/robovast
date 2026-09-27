@@ -669,7 +669,7 @@ def _warn_if_already_loaded(specs) -> None:
             "restarts (in-process, first-wins).", name, existing, spec)
 
 
-def _is_importable(spec: str) -> bool:
+def is_installed(spec: str) -> bool:
     """Whether *spec*'s distribution is already installed in the current env."""
     name = _requirement_name(spec)
     if not name:
@@ -853,7 +853,7 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
         to_install = []  # already installed for this spec set and this environment
     else:
         # Detect plugins already installed (manually) and fetch only what's missing.
-        to_install = [s for s in specs if not _is_importable(s)]
+        to_install = [s for s in specs if not is_installed(s)]
         detected = [s for s in specs if s not in to_install]
         if detected:
             logger.info("Using already-installed variation plugin(s): %s",
