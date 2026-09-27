@@ -159,9 +159,7 @@ class QDStrategy(SearchStrategy):
 
         x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
-        # The emitters' batches sum to exactly per_batch, so a generation spends one batch
-        # of the budget, and no emitter gets an empty batch, so there are at most per_batch
-        # of them.
+        # One generation is one batch: the emitters' batch sizes sum to per_batch.
         n_emitters = params.emitters
         if not 1 <= n_emitters <= cfg.per_batch:
             raise ValueError(
