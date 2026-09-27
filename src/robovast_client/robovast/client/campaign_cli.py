@@ -938,9 +938,9 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
     file, not a results tree, so a results directory is the wrong home for it.
 
     One campaign that fails does not stop the others: each is reported on its own line, the
-    exit summary counts what landed, and the command exits 1 when any campaign did not. A thin single-archive copy cannot do several,
-    resume past a failure, or show progress on a multi-gigabyte transfer, so this is the
-    one implementation.
+    exit summary counts what landed, and the command exits 1 when any campaign did not. A
+    thin single-archive copy cannot do several, resume past a failure, or show progress on
+    a multi-gigabyte transfer, so this is the one implementation.
     """
     import time  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
