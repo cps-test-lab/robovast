@@ -85,3 +85,18 @@ def test_a_cut_transfer_leaves_no_half_campaign(tmp_path):
     with pytest.raises((tarfile.TarError, EOFError, OSError)):
         extract_campaign_archive(_Client(gzip.compress(cut)), CID, str(tmp_path))
     assert list(tmp_path.iterdir()) == [], "nothing under the real name, no scratch left"
+
+
+@pytest.mark.parametrize("served", [".tar.gz", "...tar.gz"])
+def test_a_served_name_that_names_no_directory_is_refused(tmp_path, served):
+    """An empty name would make *out_dir* itself the target, and ``..`` its parent: both are
+    removed to make room for the campaign."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "kept.txt").write_text("mine")
+    (tmp_path / "beside.txt").write_text("mine too")
+    payload = _archive([(f"{CID}/campaign.db", b"db")])
+    with pytest.raises(RuntimeError, match="names no directory"):
+        extract_campaign_archive(_Client(payload, served), CID, str(out))
+    assert (out / "kept.txt").read_text() == "mine"
+    assert (tmp_path / "beside.txt").read_text() == "mine too"

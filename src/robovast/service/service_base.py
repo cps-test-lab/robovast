@@ -5568,6 +5568,10 @@ class ServiceBase(RobovastInterface):
         del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign
         from robovast.service import scene_cache
         key, _, rel = str(path).partition("/")
+        try:
+            check_segment(key)
+        except UnsafePathError:
+            key = ""
         if not key or not rel:
             raise KeyError(f"scene asset path must be '<key>/<file>', got {path!r}")
         scene_cache.touch(key)
