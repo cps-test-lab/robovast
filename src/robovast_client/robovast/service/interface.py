@@ -2207,8 +2207,9 @@ class DataTable(BaseModel):
     #: For a built-per-run table: how many runs it covers, and for how many it is built.
     runs: Optional[int] = None
     built: Optional[int] = None
-    #: Runs whose build failed, keyed by run, with the reason (at most a sample of them).
-    failed: dict = Field(default_factory=dict)
+    #: Runs the table has no rows for, or only the rows from before a topic stopped decoding
+    #: (counted in ``built``), keyed by run, with the reason (at most a sample of them).
+    failed: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
@@ -2536,6 +2537,32 @@ class UnsupportedOperation(ServiceError):
         sentence = f"{operation} is not supported {where}"
         super().__init__(self.STATUS, f"{sentence}. {hint}" if hint else sentence,
                          code=UNSUPPORTED_OPERATION)
+
+
+#: A text read of a binary file -- :class:`BinaryFile` crossing HTTP.
+BINARY_FILE = "binary_file"
+
+
+class BinaryFile(ServiceError, ValueError):
+    """A text read refused because the file is binary.
+
+    ``url`` is the route that serves the file's bytes, relative to the service's origin. A
+    ``ValueError`` like any refused input, so the app answers ``400``, with
+    :data:`BINARY_FILE` in :data:`ERROR_CODE_HEADER`; the HTTP transport raises this class
+    again from that code, so a caller catches one type wherever the service runs.
+    """
+
+    STATUS = 400
+
+    def __init__(self, address: str, detail: str = ""):
+        name = address.rstrip("/").rsplit("/", 1)[-1]
+        super().__init__(
+            self.STATUS,
+            detail or (f"{name} is a binary file — read it as bytes (GET the address "
+                       "without 'as=text', or 'vast files get'), or download the "
+                       "campaign archive."),
+            url=Routes.file(address), code=BINARY_FILE)
+        self.address = address
 
 
 API_VERSION = "0"
@@ -3130,8 +3157,8 @@ class RobovastInterface(ABC):
         Line-based paging happens **server-side**, so a caller reading 100 lines of a
         log on the cluster transfers 100 lines, not the file.
 
-        Raises ``ValueError`` on a malformed address or a binary file (→ 400) and
-        ``KeyError`` when the file does not exist (→ 404).
+        Raises :class:`BinaryFile` on a binary file and ``ValueError`` on a malformed
+        address (both → 400), and ``KeyError`` when the file does not exist (→ 404).
         """
 
     @abstractmethod

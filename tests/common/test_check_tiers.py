@@ -232,14 +232,13 @@ def test_an_actionable_refusal_keeps_its_next_step_in_a_problem():
 
 
 def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypatch):
-    """Preview composes, so it is a place the aux-container refusal surfaces.
-
-    Returning ``{"error": str(e)}`` drops the ``next_step`` riding on an ActionableError --
-    leaving the caller a reason and no move, in exactly the case where the move is least
-    obvious.
+    """Preview composes, so it is a place the aux-container refusal surfaces, and its
+    ``next_step`` reaches the caller: a reason with no move is least useful exactly where
+    the move is least obvious.
     """
     from robovast.common.errors import AuxContainerUnavailable
     from robovast.mcp_server.plugins import authoring
+    from tests.mcp_server.conftest import registered_tools
 
     def _refuse(**_kwargs):
         raise AuxContainerUnavailable("needs a container", next_step="start_campaign(...)")
@@ -249,7 +248,7 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
     monkeypatch.setattr("robovast.common.config_generation.generate_scenario_variations",
                         _refuse)
 
-    result = authoring.preview_configurations("some.vast", limit=1)
+    result = registered_tools()["preview_configurations"].fn("some.vast", limit=1)
     assert result["error"] == "needs a container"
     assert result["next_step"] == "start_campaign(...)"
 
