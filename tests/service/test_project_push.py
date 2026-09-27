@@ -545,3 +545,27 @@ def test_a_refused_upload_reaches_the_caller_as_the_services_sentence(tmp_path):
         push_file(http_client, _address("ws-1", "data.bin"), binary)
     assert excinfo.value.status == 507
     assert excinfo.value.detail == "The service ran out of disk space."
+
+
+def test_an_archive_member_cannot_escape_into_a_sibling_sharing_the_prefix(tmp_path):
+    """``pulled/../pulled2`` shares ``pulled`` as a string prefix but is not under it.
+
+    The archive came from another machine, so a member that resolves beside the target
+    rather than inside it is refused, and nothing is written there.
+    """
+    import io
+    import tarfile
+
+    from robovast.service.project_push import pull_workspace_to_directory
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        payload = b"escaped\n"
+        member = tarfile.TarInfo("ws/../pulled2/evil.txt")
+        member.size = len(payload)
+        tar.addfile(member, io.BytesIO(payload))
+    client = SimpleNamespace(workspace_tar_stream=lambda _wid: iter([buf.getvalue()]))
+
+    with pytest.raises(ValueError, match="outside"):
+        pull_workspace_to_directory(client, "ws-1", tmp_path / "pulled")
+    assert not (tmp_path / "pulled2").exists()
