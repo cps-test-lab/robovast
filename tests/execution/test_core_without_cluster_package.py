@@ -99,20 +99,20 @@ def test_a_local_teardown_does_not_claim_a_failed_upload(without, warnings_from)
         logging.getLogger("robovast.execution.controller").removeHandler(handler)
 
 
-def test_doctor_reports_a_missing_cluster_package_instead_of_raising(without):
+def test_doctor_reports_an_unimportable_cluster_plugin_instead_of_raising(without, monkeypatch):
     """`vast doctor` exists to say what is wrong. Dying while finding out is the one
-    failure it cannot have, so a missing `load_kube_config` is a reported Check too."""
-    without("robovast.execution.cluster_execution.kube_client")
-    from robovast.client.doctor import check_cluster
+    failure it cannot have, so a cluster plugin that cannot import is a reported Check."""
+    from importlib.metadata import EntryPoint
 
-    checks = check_cluster()
-    assert [c.name for c in checks] == ["cluster support"]
-    assert checks[0].status == "warn", "a client install is not broken for lacking it"
-    assert "not installed" in checks[0].detail
+    from robovast.client import doctor
 
+    without("robovast.execution.cluster_execution")
+    plugin = EntryPoint("cluster", "robovast.execution.cluster_execution.doctor:doctor_checks",
+                        doctor.CHECK_GROUP)
+    monkeypatch.setattr(doctor, "entry_points",
+                        lambda group: [plugin] if group == doctor.CHECK_GROUP else [])
+    monkeypatch.setattr(doctor, "check_client", lambda: [])
 
-def test_the_whole_doctor_still_runs_without_the_cluster_package(without):
-    without("robovast.execution.cluster_execution.kube_client")
-    from robovast.client.doctor import run_checks
-
-    assert run_checks(), "doctor produced no checks at all"
+    checks = doctor.run_checks()
+    fault = next(c for c in checks if c.name == "cluster checks")
+    assert fault.status == "FAIL" and "ImportError" in fault.detail
