@@ -13,6 +13,7 @@ is reading.
 
 import io
 import json
+import shutil
 import tarfile
 
 import pytest
@@ -21,7 +22,8 @@ from fastapi.testclient import TestClient
 
 from robovast.service import auth
 from robovast.service.app import build_app
-from robovast.service.exports import ERROR_FILE, EXPORT_FILE, REQUEST_FILE, export_dir
+from robovast.service.exports import (ERROR_FILE, EXPORT_FILE, REQUEST_FILE, export_dir,
+                                      export_file_name)
 from robovast.service.interface import Routes
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
@@ -326,6 +328,14 @@ def test_a_finished_export_is_kept_a_day_and_removed_when_the_next_one_starts(
     assert building.exists() and export_dir(campaign, young_id).exists()
     assert client.get(Routes.campaign_export(_CAMPAIGN, old_id)).status_code == 404
     assert client.get(Routes.campaign_export(_CAMPAIGN, young_id)).json()["done"]
+
+    # Past its keep, an export answers as one that never was before any sweep removed it.
+    (old / EXPORT_FILE).parent.mkdir(parents=True)
+    (old / EXPORT_FILE).write_text(json.dumps(manifest))
+    (old / export_file_name(_CAMPAIGN, old_id)).write_bytes(b"")
+    assert client.get(Routes.campaign_export(_CAMPAIGN, old_id)).status_code == 404
+    assert client.get(Routes.campaign_export_download(_CAMPAIGN, old_id)).status_code == 404
+    shutil.rmtree(old)
 
     # The next export's start is where the sweep runs on the service.
     (old / EXPORT_FILE).parent.mkdir(parents=True)
