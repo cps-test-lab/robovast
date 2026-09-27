@@ -788,14 +788,6 @@ class CampaignController:
             logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
                         "%d run(s) already spent.",
                         position.batches, position.evaluations, position.runs)
-            unknown = [i for i, b in enumerate(batches) if b.recalls_unknown]
-            if unknown:
-                logger.warning(
-                    "Batch(es) %s were recorded before a recalled cell had a row of its own, "
-                    "and asked for more cells than they recorded. Any cell they recalled from "
-                    "an earlier batch is missing from the replay, so the resumed strategy "
-                    "may propose differently from the uninterrupted search.",
-                    ", ".join(str(i) for i in unknown))
         return position
 
     def _campaign_age(self, campaign_id: int) -> float:

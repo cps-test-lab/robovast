@@ -136,11 +136,31 @@ def test_a_recalled_cell_is_a_row_naming_the_unit_that_measured_it(tmp_path):
     conn.close()
 
 
-def test_a_batch_recorded_before_recalls_had_rows_is_flagged(tmp_path):
-    """A store written under schema 13 has no recalled rows and never will: which cells its
-    batches recalled was not kept. Migrated, it still resumes -- each batch replays what it
-    recorded -- and a batch that asked for more cells than it recorded is flagged, because
-    that is the only trace a recall could have left in it."""
+@pytest.mark.parametrize("name", CASES)
+def test_a_search_recorded_before_recalls_had_rows_resumes_exactly(tmp_path, name):
+    """Batches written before schema 14 have no recalled rows: the replay reads those cells
+    off the proposals it re-asks, and tells what the uninterrupted search told."""
+    straight, _, _ = _search_controller(_cfg(name, BATCHES), tmp_path / "straight")
+    whole = _spy(straight)
+    straight.run()
+
+    first, store, _ = _search_controller(_cfg(name, STOP_AFTER), tmp_path / "resumed")
+    first.run()
+    conn = sqlite3.connect(store.db_path)
+    assert conn.execute("DELETE FROM unit WHERE status = 'recalled'").rowcount
+    conn.execute("UPDATE batch SET recalls_recorded = NULL")
+    conn.commit()
+    conn.close()
+    second, _, _ = _search_controller(_cfg(name, BATCHES), tmp_path / "resumed")
+    second.store = store
+    resumed = _spy(second)
+    second.run()
+
+    assert resumed["tells"] == whole["tells"]
+    assert resumed["asks"] == whole["asks"]
+
+
+def test_a_batch_migrated_from_schema_13_does_not_hold_its_recalls(tmp_path):
     from robovast.common.store import _MIGRATION_INITIAL, _MIGRATIONS, CampaignStore
     from robovast.search.history import recorded_batches
 
@@ -151,20 +171,29 @@ def test_a_batch_recorded_before_recalls_had_rows_is_flagged(tmp_path):
         conn.executescript(step)
     conn.execute("PRAGMA user_version = 13")
     conn.execute("INSERT INTO campaign (id, name, mode) VALUES (1, 'old', 'search')")
-    # Batch 0 recorded every cell it asked for; batch 1 asked for three and recorded two.
-    for batch_id, asked, cells in ((1, 2, ("a", "b")), (2, 3, ("c", "d"))):
-        conn.execute("INSERT INTO batch (id, campaign_id, idx, asked) VALUES (?, 1, ?, ?)",
-                     (batch_id, batch_id - 1, asked))
-        for cell in cells:
-            conn.execute(
-                "INSERT INTO unit (batch_id, paramset_id, params_json, objectives_json, "
-                "status) VALUES (?, ?, '{}', '{\"f\": 1.0}', 'evaluated')", (batch_id, cell))
+    conn.execute("INSERT INTO batch (id, campaign_id, idx, asked) VALUES (1, 1, 0, 2)")
+    conn.execute(
+        "INSERT INTO unit (batch_id, paramset_id, params_json, objectives_json, status) "
+        "VALUES (1, 'a', '{}', '{\"f\": 1.0}', 'evaluated')")
     conn.commit()
     conn.close()
 
     with CampaignStore(db) as store:
-        batches = recorded_batches(store, 1)
+        (batch,) = recorded_batches(store, 1)
 
-    assert [len(b.told) for b in batches] == [2, 2]
-    assert [b.recalled for b in batches] == [[], []]
-    assert [b.recalls_unknown for b in batches] == [False, True]
+    assert not batch.recalls_recorded
+    assert [ev.params.id for ev in batch.told] == ["a"]
+
+
+def test_with_recalls_reads_each_distinct_measured_proposal_in_proposal_order():
+    from robovast.search.history import RecordedBatch
+    from robovast.search.types import Evaluation, ParamSet
+
+    a, b = (Evaluation(params=ParamSet(values={"x": v}), objectives={"f": 1.0})
+            for v in (1, 2))
+    fresh = ParamSet(values={"x": 3})
+    batch = RecordedBatch(asked=4, recalls_recorded=False).with_recalls(
+        [b.params, fresh, a.params, b.params], {a.params.id: a, b.params.id: b})
+
+    assert batch.recalled == [b, a]
+    assert batch.recalls_recorded

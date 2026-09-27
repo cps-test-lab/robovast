@@ -521,7 +521,8 @@ ALTER TABLE campaign ADD COLUMN origin_config_migration_steps TEXT;
 # objectives of its own.
 #
 # ``batch.recalls_recorded`` separates a batch that recalled nothing from one written before
-# a recall had a row: NULL on every batch recorded before this step, and never backfilled.
+# a recall had a row: NULL on every batch recorded before this step, whose replay reads its
+# recalls off the proposals it re-asks (``search.history.RecordedBatch.with_recalls``).
 _MIGRATION_ADD_RECALLED = """
 ALTER TABLE batch ADD COLUMN recalls_recorded INTEGER;
 ALTER TABLE unit ADD COLUMN recalled_from INTEGER REFERENCES unit(id);

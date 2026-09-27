@@ -38,11 +38,12 @@ What is told back is not only what the batch scored. A cell an earlier batch mea
 not run again: the loop tells the strategy what it scored then, and records the cell as a
 ``recalled`` row naming the unit that measured it. The replay reads the told evaluation
 from that unit, so it tells the strategy the same answer the live run did, read from the
-same row.
+same row. A batch recorded before a recall had a row has its recalled cells read off the
+proposals the replay re-asks (:meth:`RecordedBatch.with_recalls`).
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 from .types import Evaluation, ParamSet
@@ -63,18 +64,16 @@ class RecordedBatch:
             occupied the plan its allocation reserved, and not the recalled ones, which were
             allocated nothing. ``None`` for a row written before the allocation was
             recorded, where it was the campaign's ``execution.runs``.
-        recalls_unknown: the batch was recorded before a recalled cell had a row, and it
-            asked for more than it recorded -- so it may have recalled cells that
-            ``recalled`` cannot hold, and a replay of it can tell the strategy less than
-            the live run did. A batch that asked for no more than it recorded recalled
-            nothing, however old.
+        recalls_recorded: whether ``recalled`` is the batch's record. ``False`` for a
+            batch written before a recalled cell had a row; its replay fills ``recalled``
+            with :meth:`with_recalls`.
     """
 
     asked: int = 0
     evaluations: list = field(default_factory=list)
     recalled: list = field(default_factory=list)
     reps: list = field(default_factory=list)
-    recalls_unknown: bool = False
+    recalls_recorded: bool = True
 
     @property
     def told(self) -> list:
@@ -84,6 +83,18 @@ class RecordedBatch:
         tells in is the order the live run told in by construction.
         """
         return self.evaluations + self.recalled
+
+    def with_recalls(self, proposed: list, measured: dict) -> "RecordedBatch":
+        """This batch with ``recalled`` read off the cells it *proposed*.
+
+        *measured* maps ``ParamSet.id`` to the evaluation an earlier batch scored for it.
+        Each distinct proposal found there, in proposal order, is a cell the live loop
+        recalled rather than ran -- the split it made -- so a replay that re-asks the
+        seeded strategy recovers them exactly.
+        """
+        ids = dict.fromkeys(ps.id for ps in proposed)
+        return replace(self, recalled=[measured[i] for i in ids if i in measured],
+                       recalls_recorded=True)
 
 
 @dataclass(frozen=True)
@@ -215,11 +226,10 @@ def recorded_batches(store, campaign_row_id: int) -> list:
                         f"unit {row['id']} of batch {batch['idx']} recalls unit "
                         f"{row['recalled_from']}, which no earlier batch evaluated")
                 recalled.append(source)
-        asked = _asked(batch, rows)
         out.append(RecordedBatch(
-            asked=asked, evaluations=evaluations, recalled=recalled,
+            asked=_asked(batch, rows), evaluations=evaluations, recalled=recalled,
             reps=[_reps(r) for r in rows if r["status"] != "recalled"],
-            recalls_unknown=batch["recalls_recorded"] is None and asked > len(rows)))
+            recalls_recorded=bool(batch["recalls_recorded"])))
     return out
 
 

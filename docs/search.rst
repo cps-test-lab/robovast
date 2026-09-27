@@ -573,11 +573,9 @@ an answer the strategy was given, so a replay that left it out would hand the st
 shorter generation than it saw — ``optuna`` would close that trial as failed — and the
 resumed search would propose differently from there.
 
-A batch recorded before store schema 14 kept no row for a recalled cell, and which cells it
-recalled cannot be recovered from what it did keep. Such a campaign still resumes: each of
-those batches replays the evaluations it recorded. Where one of them asked for more cells
-than it recorded, it may have recalled some, and the resume logs a warning naming it — the
-search carries on, but from there it may not propose what the uninterrupted one would have.
+A batch recorded before store schema 14 has no row for a recalled cell. Its replay reads
+them off the proposals it re-asks: every distinct one an earlier batch measured is a cell
+the live loop recalled, so such a campaign resumes exactly too.
 
 Two conditions, both checked before the campaign is re-launched:
 
