@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from robovast.client import campaign_report
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import authoring, execution, results_lifecycle
 from robovast.service.job_log import _records, _row
@@ -242,6 +243,7 @@ def test_force_without_from_campaign_is_refused_not_ignored(service):
     {"campaign_name": "again"},
     {"upload_to_share": True},
     {"description": "retrying the flake"},
+    {"image_project_tag": "2.2.0"},
 ])
 def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs):
     """A retrigger takes these from the record, so accepting them would answer a different
@@ -253,6 +255,22 @@ def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs
     assert next(iter(kwargs)) in out["error"]
     # Refused before anything was launched.
     assert not any(call[0] == "retrigger_campaign" for call in service.calls)
+
+
+def test_service_start_passes_the_image_tag(service):
+    """The tag the CLI's --image-project-tag sets, reaching the same request field: without it
+    an MCP-started campaign could only resolve family images at the service's own tag."""
+    execution.start_campaign(workspace_id="ws-1", image_project_tag="2.2.0")
+    _name, req = service.calls[-1]
+    assert req.image_project_tag == "2.2.0"
+    # The project is left to the service's default: the tag alone is what was asked for.
+    assert req.image_project == ""
+
+
+def test_start_without_an_image_tag_leaves_it_to_the_service(service):
+    execution.start_campaign(workspace_id="ws-1")
+    _name, req = service.calls[-1]
+    assert req.image_project_tag == ""
 
 
 def test_service_start_passes_description(service):
@@ -334,6 +352,44 @@ def test_stop_job_without_a_service_says_so(monkeypatch):
     assert "error" in execution.stop_job("svc-campaign-1", "cfgA/0")
 
 
+# -- a refusal that knows the next move hands it over ---------------------------------
+#
+# The service refuses new disk-consuming work below its storage reserve and, when clearing
+# its cache would free enough, says which command does that. The docs promise the same
+# ``next_step`` from every tool that takes on such work; dropping it leaves the caller
+# with a reason and no move.
+
+
+def _refusing(operation):
+    from robovast.common.errors import InsufficientStorageError
+
+    def _refuse(*_a, **_k):
+        raise InsufficientStorageError("Cannot launch a campaign. 3 GB free.",
+                                       next_step="vast service cache --clear")
+
+    class _Client(_FakeClient):
+        pass
+
+    setattr(_Client, operation, _refuse)
+    return _Client()
+
+
+@pytest.mark.parametrize("operation, call", [
+    ("create_campaign", lambda: execution.start_campaign(workspace_id="ws1")),
+    ("retrigger_campaign", lambda: execution.start_campaign(from_campaign="c1")),
+    ("import_campaign", lambda: results_lifecycle.import_campaign(archive_path="/a.tar.gz")),
+    ("run_postprocessing", lambda: results_lifecycle.run_postprocessing("c1")),
+    ("build_campaign_tables", lambda: results_lifecycle.build_campaign_tables("c1")),
+    ("create_export", lambda: results_lifecycle.export_campaign("c1")),
+], ids=["create_campaign", "retrigger_campaign", "import_campaign", "run_postprocessing",
+        "build_campaign_tables", "create_export"])
+def test_a_storage_refusal_carries_the_command_that_frees_space(monkeypatch, operation, call):
+    monkeypatch.setattr(service_access, "service_client", lambda: _refusing(operation))
+    out = call()
+    assert "3 GB free" in out["error"]
+    assert out["next_step"] == "vast service cache --clear"
+
+
 # -- fail loudly when no service is reachable (no local fallback) ------------
 
 
@@ -353,6 +409,90 @@ def test_status_without_service_fails_loudly(no_service):
 
 def test_stop_without_service_fails_loudly(no_service):
     assert "no robovast-service" in execution.stop_campaign("x")["error"]
+
+
+def _dummy_arguments(fn) -> dict:
+    """One value per required parameter, by its annotation."""
+    import inspect
+    by_type = {str: "x", int: 1, float: 1.0, bool: False}
+    return {name: by_type[param.annotation]
+            for name, param in inspect.signature(fn).parameters.items()
+            if param.default is inspect.Parameter.empty}
+
+
+@pytest.mark.parametrize("tool", [fn for fn in execution._TOOLS
+                                  if fn is not execution.get_campaign_log],
+                         ids=lambda fn: fn.__name__)
+def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service, tool):
+    """The server instructions promise that every control tool says so when no service
+    answers, and the sentence they say is the one that tells the caller what not to do
+    instead. A tool with a sentence of its own sends a caller to bring a service up by
+    hand, which is the workaround the shared one refuses.
+
+    ``get_campaign_log`` is the exception, and reads an archived campaign on this host.
+    """
+    from robovast.mcp_server.service_access import NO_SERVICE
+    assert tool(**_dummy_arguments(tool)) == {"error": NO_SERVICE}
+
+
+#: Plugins whose tools answer from this process alone: the docs, the examples, the plugin
+#: registry.
+_SERVICELESS_PLUGINS = {"docs", "examples", "plugin_metadata"}
+#: Tools that answer without a service: the static reference, and the readers of a
+#: campaign archived in this host's results directory.
+_SERVICELESS_TOOLS = {"get_config_schema", "get_cli_help", "get_campaign_log",
+                      "get_campaign_summary", "describe_campaign_data",
+                      "query_campaign_data_sql", "get_camera_frame", "search_run_logs"}
+
+
+def _control_tools():
+    import importlib
+    import pkgutil
+
+    from robovast.mcp_server import plugins
+    for info in pkgutil.iter_modules(plugins.__path__):
+        if info.name in _SERVICELESS_PLUGINS:
+            continue
+        module = importlib.import_module(f"{plugins.__name__}.{info.name}")
+        for fn in getattr(module, "_TOOLS", []):
+            if fn.__name__ not in _SERVICELESS_TOOLS:
+                yield pytest.param(fn, id=f"{info.name}.{fn.__name__}")
+
+
+def _workspace_arguments(fn) -> dict:
+    """One value per required parameter; a string is a workspace address, so a tool that
+    checks its path first gets as far as asking for the service."""
+    import inspect
+    import types
+    import typing
+    by_type = {str: "/sources/ws1/x.vast", int: 1, float: 1.0, bool: False, list: []}
+
+    def value(annotation):
+        # The first alternative of a union: ``str | list[str]`` takes a string.
+        if (isinstance(annotation, types.UnionType)
+                or typing.get_origin(annotation) is typing.Union):
+            annotation = typing.get_args(annotation)[0]
+        return by_type[typing.get_origin(annotation) or annotation]
+    return {name: value(param.annotation)
+            for name, param in inspect.signature(fn).parameters.items()
+            if param.default is inspect.Parameter.empty}
+
+
+@pytest.mark.parametrize("tool", list(_control_tools()))
+def test_every_plugins_control_tools_say_the_no_service_sentence(no_service, tool):
+    """The promise is the server's, not one module's: a tool added to any plugin answers
+    with the shared sentence, whether it returns it, raises it or, as ``validate_project``
+    does, lists it as a problem."""
+    import asyncio
+
+    from robovast.mcp_server.service_access import NO_SERVICE
+    try:
+        answer = tool(**_workspace_arguments(tool))
+        if asyncio.iscoroutine(answer):
+            answer = asyncio.run(answer)
+    except Exception as e:  # noqa: BLE001 - a raised refusal reaches the caller too
+        answer = str(e)
+    assert NO_SERVICE in str(answer)
 
 
 # -- the download link does not depend on where a campaign ran -------------------------
@@ -687,7 +827,7 @@ def test_the_status_reports_a_stall_and_names_the_next_call():
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
                 progress_deadline_s=600, progress_since=time.time() - 700)
-    out = execution._status_to_dict("camp", "service", st)
+    out = campaign_report.status_to_dict("camp", "service", st)
     assert out["stalled"] is True
     assert out["progress_age_s"] >= 700
     assert "summarize=True" in out["stall_reason"]
@@ -703,7 +843,7 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
                 progress_since=time.time() - 99999)
-    out = execution._status_to_dict("camp", "service", st)
+    out = campaign_report.status_to_dict("camp", "service", st)
     assert out["stalled"] is None
     assert "execution.timeout" in out["stall_verdict"]
     assert out["progress_age_s"] > 0
@@ -854,9 +994,9 @@ def test_a_failed_postprocessing_step_does_not_report_the_campaign_as_empty():
     Both halves were false -- the steps beside the failing one had already derived and
     loaded their data -- and it invited re-running everything to recover what was there.
     """
-    from robovast.mcp_server.plugins.execution import _campaign_next_step
+    from robovast.client.campaign_report import campaign_next_step
 
-    step = _campaign_next_step({
+    step = campaign_next_step({
         "status": "finished", "postprocessed": False,
         "postprocessing_error": "1 of 4 step(s) — ./break.py:Break: deliberate failure",
     })
@@ -873,9 +1013,9 @@ def test_postprocessing_that_never_ran_says_only_the_record_will_answer():
     Nothing was derived, so the campaign's own record is all there is -- which is worth
     saying, because it is not nothing: run_view and the campaign.* tables answer.
     """
-    from robovast.mcp_server.plugins.execution import _campaign_next_step
+    from robovast.client.campaign_report import campaign_next_step
 
-    step = _campaign_next_step({"status": "finished", "postprocessed": False})
+    step = campaign_next_step({"status": "finished", "postprocessed": False})
 
     assert "did not run" in step
     assert "run_view" in step, "say what still answers, rather than implying nothing does"
@@ -884,10 +1024,10 @@ def test_postprocessing_that_never_ran_says_only_the_record_will_answer():
 
 def test_a_progressing_campaign_still_gets_no_hint():
     """A hint on every reply is a field callers learn to skip."""
-    from robovast.mcp_server.plugins.execution import _campaign_next_step
+    from robovast.client.campaign_report import campaign_next_step
 
-    assert _campaign_next_step({"status": "running", "postprocessed": False}) == ""
-    assert _campaign_next_step({"status": "finished", "postprocessed": True}) == ""
+    assert campaign_next_step({"status": "running", "postprocessed": False}) == ""
+    assert campaign_next_step({"status": "finished", "postprocessed": True}) == ""
 
 
 def test_a_local_file_check_does_not_call_an_unchecked_world_a_pass(
@@ -954,10 +1094,10 @@ def test_a_scenario_nobody_could_parse_is_not_a_pass(tmp_path, monkeypatch,
 def test_the_listing_says_when_a_campaign_is_held():
     """No progress is a fault everywhere except here. Without this an agent reads a campaign
     somebody parked as one that is stuck, and the reasonable next move is the wrong one."""
-    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.client.campaign_report import summary_to_dict
     from robovast.service.interface import CampaignSummary
 
-    entry = _summary_to_dict(CampaignSummary(
+    entry = summary_to_dict(CampaignSummary(
         campaign_id="c-1", phase="running", priority=-3, paused=True))
     assert entry["paused"] is True
     assert entry["priority"] == -3
@@ -966,8 +1106,8 @@ def test_the_listing_says_when_a_campaign_is_held():
 def test_an_ordinary_campaign_carries_neither():
     """Omitted at the default, like description: every campaign reporting "priority 0"
     spends context on a fact about none of them."""
-    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.client.campaign_report import summary_to_dict
     from robovast.service.interface import CampaignSummary
 
-    entry = _summary_to_dict(CampaignSummary(campaign_id="c-1", phase="running"))
+    entry = summary_to_dict(CampaignSummary(campaign_id="c-1", phase="running"))
     assert "paused" not in entry and "priority" not in entry
