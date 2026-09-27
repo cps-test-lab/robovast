@@ -111,9 +111,7 @@ class Evaluator:
         # because this is the one place that knows what the campaign declared; every reader
         # downstream then gets a dict that means what its name says.
         objectives = {n: result.objectives[n] for n in self.objective_names}
-        # A NaN or an infinity is refused where it enters, because nothing downstream can
-        # compare it: a NaN best-so-far is never replaced, stops a search that is improving,
-        # and sorts a report arbitrarily.
+        # No strategy can compare a NaN or an infinity, so it is refused where it enters.
         non_finite = {n: v for n, v in objectives.items()
                       if isinstance(v, numbers.Real) and not math.isfinite(v)}
         if non_finite:

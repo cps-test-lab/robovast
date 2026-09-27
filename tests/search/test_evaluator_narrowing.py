@@ -108,15 +108,14 @@ def test_a_missing_declared_objective_still_raises(tmp_path):
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_a_non_finite_objective_is_refused_naming_it(tmp_path, value):
-    """A NaN best-so-far is never replaced (every comparison with it is false), stops a
-    search that is improving, and sorts arbitrarily -- so it is refused where it enters."""
+    """Every comparison with a NaN is false, so no strategy can rank it."""
     with pytest.raises(ValueError, match="robustness"):
         _evaluator(NAV, {**NAV_REPORT, "robustness": value}).evaluate(
             tmp_path, ParamSet(id="p", values={}))
 
 
 def test_a_non_finite_diagnostic_beside_the_objective_is_kept(tmp_path):
-    """Only what is optimized must be a number to compare; a diagnostic is a measurement."""
+    """Only an optimized value must be comparable; a diagnostic is kept as measured."""
     got = _evaluator(NAV, {**NAV_REPORT, "time_to_goal": float("nan")}).evaluate(
         tmp_path, ParamSet(id="p", values={}))
     assert got.objectives == {"robustness": -0.09}
