@@ -72,17 +72,19 @@ _MODEL_SUFFIXES = (".fpm", ".variation")
 def cache_inputs(model_file_path):
     """Every file a build of *model_file_path* reads, for the cache key.
 
-    The model plus every model file beside it: a ``.variation`` imports sibling ``.fpm``
-    files, which is why the whole directory is staged for the container, and an edited
-    import has to invalidate the cache as an edited entry file does. Every sibling rather
-    than the ones an import names, so the key needs no parser of its own.
+    The model plus every model file in its directory tree: a ``.variation`` imports ``.fpm``
+    files by a path relative to it, which is why the whole directory is staged for the
+    container, and an edited import has to invalidate the cache as an edited entry file
+    does. The key covers the tree :func:`_stage_input_dir` stages, and every model file in
+    it rather than the ones an import names, so the key needs no parser of its own.
     """
     directory = os.path.dirname(model_file_path)
-    siblings = sorted(
-        os.path.join(directory, name) for name in os.listdir(directory)
-        if name.endswith(_MODEL_SUFFIXES)
-        and os.path.isfile(os.path.join(directory, name)))
-    return [model_file_path] + [f for f in siblings if f != model_file_path]
+    models = sorted(
+        os.path.join(root, name)
+        for root, _dirs, names in os.walk(directory)
+        for name in names
+        if name.endswith(_MODEL_SUFFIXES) and os.path.isfile(os.path.join(root, name)))
+    return [model_file_path] + [f for f in models if f != model_file_path]
 
 
 def get_scenery_builder_version():

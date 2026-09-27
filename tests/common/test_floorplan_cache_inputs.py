@@ -39,3 +39,12 @@ def test_editing_an_imported_file_changes_the_key(tmp_path):
 
     after = cache.create_input_files_hash(cache_inputs(str(entry)), strings_for_hash=[])
     assert after != before
+
+
+def test_a_model_file_in_a_subdirectory_is_an_input(tmp_path):
+    entry = _project(tmp_path)
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "corridor.fpm").write_text("room c\n")
+    (tmp_path / "parts" / "corridor.fpm.yaml").write_text("sidecar\n")
+    assert str(tmp_path / "parts" / "corridor.fpm") in cache_inputs(str(entry))
+    assert str(tmp_path / "parts" / "corridor.fpm.yaml") not in cache_inputs(str(entry))
