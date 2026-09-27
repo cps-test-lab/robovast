@@ -28,7 +28,7 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.client.lazy_group import LazyPluginGroup
 from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
+from robovast.client.service_target import service_client
 from robovast.client.tail import tail_chunks
 
 #: Entry-point group for subcommands that attach to ``vast service``.
@@ -47,8 +47,7 @@ def service():
 @service.command('log')
 @click.option('--follow', '-f', is_flag=True,
               help='Keep printing new output until interrupted.')
-@target_options
-def service_log(follow, namespace, context):
+def service_log(follow):
     """Print what the robovast-service itself has been doing.
 
     Not a campaign's log -- this is the service process: what it decided, what it refused,
@@ -62,7 +61,7 @@ def service_log(follow, namespace, context):
     process cannot outlive the process.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             tail_chunks(lambda o: client.get_service_log(o),  # pylint: disable=unnecessary-lambda
                         lambda text: click.echo(text, nl=False), follow=follow)
@@ -82,8 +81,7 @@ def service_log(follow, namespace, context):
 @click.option('--wait', is_flag=True,
               help='Block until the new pod is the one serving, instead of returning once '
                    'the roll has been asked for.')
-@target_options
-def restart(yes, wait, namespace, context):
+def restart(yes, wait):
     """Roll the deployed service onto the newest image at its tag, and nothing else.
 
     Asks the service to restart itself, so this needs only a URL and a token -- which is the
@@ -108,7 +106,7 @@ def restart(yes, wait, namespace, context):
     and names them. ``--yes`` skips the question.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             info = client.upgrade_info()
             if not info.supported:
@@ -177,8 +175,7 @@ def _wait_for_handover(client, before):
 @click.option('--json', 'as_json', is_flag=True,
               help='Print the answer as one JSON object, the fields the MCP '
                    'get_service_info tool returns.')
-@target_options
-def info(as_json, namespace, context):
+def info(as_json):
     """Which service is answering, which code it runs, and which backend it drives.
 
     Call this first when something behaves unexpectedly. A service loads robovast **once,
@@ -198,7 +195,7 @@ def info(as_json, namespace, context):
     from robovast.client.service_report import \
         service_info_report  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label, err=as_json)
             report = service_info_report(client)
     except Exception as e:  # noqa: BLE001
@@ -238,8 +235,7 @@ def info(as_json, namespace, context):
 @click.option('--json', 'as_json', is_flag=True,
               help='Print the usage as one JSON object, the fields the MCP '
                    'get_resource_usage tool returns.')
-@target_options
-def resources(as_json, namespace, context):
+def resources(as_json):
     """Does the cluster have room, and is it reachable?
 
     Ask before a sweep.
@@ -252,7 +248,7 @@ def resources(as_json, namespace, context):
     from robovast.client.service_report import \
         resource_usage_report  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label, err=as_json)
             usage = resource_usage_report(client)
     except Exception as e:  # noqa: BLE001
@@ -289,8 +285,7 @@ def resources(as_json, namespace, context):
 @service.command('cache')
 @click.option('--clear', is_flag=True,
               help='Remove every entry nothing may still be using, and say what that freed.')
-@target_options
-def cache(clear, namespace, context):
+def cache(clear):
     """What the service's rebuildable caches hold; with --clear, free what may go.
 
     Only copies of durable data -- a campaign's files fetched from the object store, compiled
@@ -299,7 +294,7 @@ def cache(clear, namespace, context):
     operation or a recent reader may still be using is kept, and listed with the reason.
     """
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             report = client.clear_service_cache() if clear else client.service_cache()
     except Exception as e:  # noqa: BLE001
@@ -329,8 +324,7 @@ def cache(clear, namespace, context):
               help='How many calls to print with --calls.')
 @click.option('--csv', 'as_csv', is_flag=True,
               help='Write the call log as CSV to stdout, for a spreadsheet or a script.')
-@target_options
-def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
+def mcp_stats(show_calls, tool, failed, limit, as_csv):
     """Which MCP tools agents actually call, and what happened when they did.
 
     The same record the web UI's Admin page shows, on a terminal: a ranking of tools by
@@ -345,7 +339,7 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
     restart, and it covers a bounded window that the ranking prints.
     """
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             if not as_csv:
                 _echo_target(label)
             if show_calls or as_csv:

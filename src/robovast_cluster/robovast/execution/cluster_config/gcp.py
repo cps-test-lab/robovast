@@ -51,7 +51,7 @@ def _get_gke_cluster_info(kube_context=None): # pylint: disable=too-many-return-
     2. Fall back to reading the ``spec.providerID`` field on a cluster node
        (format ``gce://PROJECT/ZONE/INSTANCE``), then listing GKE clusters in
        that project to identify the cluster by zone/region.  This handles
-       custom context names such as ``gcp-c4``.
+       custom context names such as ``my-gke``.
 
     Returns ``(None, None, None)`` when the cluster cannot be identified as a
     GKE cluster or when the required tools are not available.

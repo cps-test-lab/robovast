@@ -68,7 +68,8 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
     2. ``grep`` keeps only lines matching that regex (case-insensitive).
     3. ``min_severity`` (``"warn"`` / ``"error"``) keeps only lines that severe.
     4. ``summarize`` groups and counts what survived — **or**, when it is false,
-       ``tail`` keeps the last N lines.
+       ``tail`` keeps the last N lines. The two are exclusive: a ``tail`` given with
+       ``summarize`` is refused, since a summary has no lines to keep the last of.
     5. ``collapse_relay`` strips a redundant per-line relay prefix.
 
     ``hide_shutdown`` comes first so the rest describe the *trial*: a ``tail`` applied
@@ -100,10 +101,15 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
         tool's own ``offset``.
 
     Raises:
-        ValueError: if *grep* is not a valid regex, or *min_severity* is not a known
-            severity — a silently ignored filter would read as "no such lines in the
-            log".
+        ValueError: if *grep* is not a valid regex, *min_severity* is not a known
+            severity, or *tail* is given with *summarize* — a silently ignored filter
+            would read as "no such lines in the log".
     """
+    if summarize and tail:
+        raise ValueError(
+            f"tail={tail} cannot be combined with summarize=True: a summary groups every "
+            f"line that matched into patterns, so there is no last N to keep. Drop tail, "
+            f"or drop summarize to read lines.")
     lines = text.splitlines()
     total = len(lines)
 

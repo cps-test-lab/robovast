@@ -15,20 +15,20 @@ notebooks share one source of truth (``metrics.csv``).
 **Nothing here is invented.** A cell that produced no result, or produced results
 this could not read, raises :class:`~robovast.search.extractor.NoSampleError`: the
 framework records the cell and carries on, and no number is put where a measurement
-should be. Both fabrications this once had were the ones the rest of RoboVAST
-documents as forbidden, and both pointed the search the wrong way —
+should be. The two tempting fabrications are ones the rest of RoboVAST documents as
+forbidden, and both would point the search the wrong way —
 
 * ``failure_rate = 0.0`` for a cell with no runs. The objective is **maximized**, so
   0.0 is the least interesting score there is: a cell whose every run died of
-  infrastructure looked like a cell where nothing failed, and the search steered
-  away from exactly the region it was hunting.
+  infrastructure would look like a cell where nothing failed, and the search would
+  steer away from exactly the region it is hunting.
 * zero-valued measures for a cell with no metrics. Those are archive coordinates,
   so ``(0, 0, 0, 0)`` is a real cell — the calmest corner of the behaviour space —
-  and an unmeasurable configuration became an elite the search then chased.
+  and an unmeasurable configuration would become an elite the search then chases.
 
-**Aggregated worst-case, not averaged**, for a reason measured on this campaign:
-behaviour measures averaged over five runs filled 3 of 512 archive cells, because
-averaging pulls every cell toward the middle of the behaviour space before the
+**Aggregated worst-case, not averaged**: behaviour measures averaged over several runs
+fill only a small fraction of the archive's cells, because averaging pulls every cell
+toward the middle of the behaviour space before the
 archive ever sees it (see :mod:`robovast.search.aggregate`). Every measure here is
 a quantity where *higher is worse* — tilt, drift, landing speed, control effort —
 so the pessimistic end is the maximum.
