@@ -10,7 +10,7 @@ from robovast.client import campaign_cli
 
 
 def test_a_failed_campaign_is_reported_and_the_next_one_still_downloads(monkeypatch, tmp_path):
-    import robovast.service.project_push as project_push
+    from robovast.service import project_push
 
     def _download(_client, campaign_id, dest, progress_callback=None):
         if campaign_id == "a-2026-09-01-10000000":

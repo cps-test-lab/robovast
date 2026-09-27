@@ -918,9 +918,6 @@ class ServiceBase(RobovastInterface):
         """
         import tarfile  # pylint: disable=import-outside-toplevel
 
-        from robovast.client.safe_path import \
-            UnsafePathError  # pylint: disable=import-outside-toplevel
-
         provider = self._share_provider()
         project_dir = self.store.registry.project_dir(workspace_id)
         staging = self._staging_dir()
@@ -3498,7 +3495,6 @@ class ServiceBase(RobovastInterface):
 
         Raises ``KeyError`` for a job the campaign does not have.
         """
-        from robovast.client.safe_path import             UnsafePathError  # pylint: disable=import-outside-toplevel
         from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
             read_job_links, resolve_job_artifact_rel)
         from robovast.service import job_log  # pylint: disable=import-outside-toplevel
