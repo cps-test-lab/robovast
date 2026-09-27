@@ -62,15 +62,13 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 import duckdb
 import pyarrow as pa
 
-from robovast_decode import DATA_CONTRACT
-from robovast_decode import __version__ as DECODER_VERSION
 from robovast_decode.authored import header, run_files
 from robovast_decode.build import (CAMPAIGN_TABLES, DERIVED_TABLES, RECORDING_TABLE, Run,
-                                   available_tables, build, find_runs)
+                                   available_tables, build, find_runs, settled)
 from robovast_decode.layout import decoder_config
 from robovast_decode.runs import RUNS_TABLE, StoreError, build_runs
-from robovast_decode.tables import (LIVE_STALE_S, TABLES_DIR, cache_root, live_owned,
-                                    read_manifest, schema_of)
+from robovast_decode.tables import (LIVE_STALE_S, TABLES_DIR, cache_root, read_manifest,
+                                    schema_of)
 
 from . import record, views
 from .statement import Narrowing, QueryError, Statement, parse
@@ -213,9 +211,7 @@ class Engine:
                     demanded.append((scope, table, run.key))
                     entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(
                         run.key)
-                    if entry and entry.get("decoder") == DECODER_VERSION and entry.get(
-                            "contract") == DATA_CONTRACT and (
-                            entry.get("complete") or live_owned(entry)):
+                    if settled(scope.campaign_dir, table, entry):
                         # Final, or a live session is appending its parts as the run records:
                         # the query reads the parts written so far.
                         continue

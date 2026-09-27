@@ -230,7 +230,7 @@ def source_size(bag_dir: str) -> int:
     definitions sidecar.
 
     The sidecar counts because it decides what decodes: one written, or rewritten, after a
-    table was built can turn a topic that stopped decoding into one that does not.
+    table was built can define a type the table was built without.
     """
     size = sum(os.path.getsize(p) for p in segments(bag_dir))
     sidecar = os.path.join(bag_dir, SIDECAR_NAME)
@@ -335,11 +335,10 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
         written = []
         types = {topic: stats.type for topic, stats in decoded.topics.items()} if decoded else {}
         for handler in todo:
-            name = type(handler).__name__
-            if name in decoded.failed:
+            if handler in decoded.failed:
                 for table in handler.tables():
                     if wanted_tables is None or table in wanted_tables:
-                        report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
+                        report.failed.setdefault(table, {})[run_key] = decoded.failed[handler]
                 continue
             partial = undecodable_tables([handler], decoded.undecodable, types)
             for table, buf in handler.buffers.items():
@@ -571,6 +570,30 @@ def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
     return sum(entry.get("sources", {}).values()) == size
 
 
+def settled(campaign_dir: str, table: str, entry: Optional[dict]) -> bool:
+    """Whether a reader may take *entry* as it is, without asking for a build.
+
+    It may when this decoder wrote it under this contract and it is final (``complete``), or a
+    live session's whose stamp is fresh. A final entry that carries a reason, and the
+    recording report, are measured against their sources once more: the run's container
+    writes the definitions sidecar after its verdict, so a sidecar can come after the entry
+    was final and decode what it could not.
+    """
+    if not _written_here(entry):
+        return False
+    if not entry.get("complete"):
+        return live_owned(entry)
+    if not (entry.get("reason") or table == RECORDING_TABLE):
+        return True
+    for rel, size in entry.get("sources", {}).items():
+        path = os.path.join(campaign_dir, rel)
+        now = (source_size(path) if os.path.isdir(path)
+               else os.path.getsize(path) if os.path.isfile(path) else None)
+        if now != size:
+            return False
+    return True
+
+
 def _entry_current(entry: Optional[dict], sources: dict) -> bool:
     """Whether a derived entry needs no build: the same *sources* by this decoder under this
     contract, or a watcher's whose stamp is fresh."""
@@ -645,4 +668,4 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
            "Run", "SharedJobError", "available_tables", "bag_information", "build",
            "derived_sources", "find_runs", "recorded_topics", "recording_closed",
-           "roqsim_recording", "scenario_recording", "source_size"]
+           "roqsim_recording", "scenario_recording", "settled", "source_size"]

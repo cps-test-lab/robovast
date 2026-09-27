@@ -1,17 +1,11 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""One confinement check, shared by the workspace tree and the results tree.
-
-The escapes below were each rejected by only *some* of the three implementations
-this replaced, which is the reason to have one: ``get_job_log`` tested only that the
-campaign dir was among the resolved parents, and ``get_run_file`` only that the
-resolved string had the run dir as a prefix — neither refused a ``~`` path, and
-neither considered a symlink planted inside the root.
-"""
+"""One confinement check, shared by every root a path from outside is joined onto."""
 
 import pytest
 
-from robovast.client.safe_path import UnsafePathError, check_relative, safe_join
+from robovast.client.safe_path import (UnsafePathError, check_relative, check_segment,
+                                       is_inside, safe_join)
 
 
 @pytest.fixture
@@ -79,3 +73,23 @@ def test_safe_join_still_catches_what_check_relative_cannot(root, tmp_path):
     check_relative("escape")                       # shape is fine
     with pytest.raises(UnsafePathError, match="escapes"):
         safe_join(root, "escape")
+
+
+def test_a_sibling_sharing_the_roots_prefix_is_outside(root, tmp_path):
+    (tmp_path / "root2").mkdir()
+    base = root.resolve()
+    assert is_inside(base, root / "sub" / "file.txt")
+    assert is_inside(base, root)
+    assert not is_inside(base, tmp_path / "root2" / "x")
+    assert not is_inside(base, root / ".." / "root2")
+
+
+@pytest.mark.parametrize("name", ["cell-a", "camp-2026-01-01-000000", "a.b"])
+def test_check_segment_accepts_one_entry(name):
+    assert check_segment(name) == name
+
+
+@pytest.mark.parametrize("bad", ["", ".", "..", "a/b", "../x", "/abs", "a\\b"])
+def test_check_segment_refuses_anything_but_one_entry(bad):
+    with pytest.raises(UnsafePathError):
+        check_segment(bad)
