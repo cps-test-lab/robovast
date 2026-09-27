@@ -31,6 +31,7 @@ import { browseSql, columnsPlaceholder, tableLabel } from '@/lib/dataTables'
 import { FailureBox } from '@/components/StatusView'
 import { VegaLiteChart } from '@/components/VegaLiteChart'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
+import { ResultNote } from './ResultNote'
 import { TableFailures } from './TableFailures'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
 
@@ -265,17 +266,12 @@ export function DataBrowser({
                 Run
               </Button>
               {result.data && !result.isFetching ? (
-                // The service explains a truncation it did not make for the row cap; "(truncated)"
-                // alone sends the reader to `LIMIT`, which is the fix for only one of the causes.
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  title={result.data.note ?? undefined}
-                >
+                <Typography variant="caption" color="text.secondary">
                   {result.data.row_count} rows{result.data.truncated ? ' (truncated)' : ''}
                 </Typography>
               ) : null}
             </Stack>
+            {result.data && !result.isFetching ? <ResultNote note={result.data.note} /> : null}
 
             {result.isError ? (
               <Alert severity="error">{(result.error as Error).message}</Alert>

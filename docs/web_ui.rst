@@ -1458,8 +1458,9 @@ its description; click it to browse it. Among them are the ``runs`` **dimension 
 campaign's record as schema ``campaign`` (``campaign.run``, ``campaign.unit``, …). Write
 **read-only SQL** — DuckDB's dialect (:ref:`results-querying`) — in the editor and **Run** it;
 the result shows as a table and, via the chart builder, as a chart — pick *x* / *y* / *color*
-columns and a mark. Join ``runs`` to any metric table on ``(config_name, run_id)`` to answer
-"how does *<param>* affect *<metric>*".
+columns and a mark. A warning above the result names what the answer lacks: the runs a table it
+read is missing or incomplete for, or the size limit it stopped at. Join ``runs`` to any metric
+table on ``(config_name, run_id)`` to answer "how does *<param>* affect *<metric>*".
 
 The campaign's records and its built tables are files in its own directory on the service's
 results tree, so a query reads them where they are; what it builds for the first time is
