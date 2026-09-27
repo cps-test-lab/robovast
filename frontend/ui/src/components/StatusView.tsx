@@ -529,7 +529,6 @@ export function StatusView({
   status,
   campaignId,
   jobs,
-  hideLog = false,
   liveOnly = false,
   newest = true,
   quotaCpu,
@@ -546,9 +545,6 @@ export function StatusView({
   // for any caller that only holds one.
   campaignId?: string
   jobs?: ListJobsResponse
-  // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
-  // the full log lives in Monitor.
-  hideLog?: boolean
   // Monitor cares only about jobs still meaningful right now: it drops completed ones
   // from both the count summary and the jobs list (the Launcher lists everything).
   liveOnly?: boolean
@@ -776,7 +772,7 @@ export function StatusView({
           The panel is a ternary, not two hidden divs: an unselected Log tab that stayed mounted
           would hold its EventSource open invisibly. The cost is that switching back re-opens the
           stream; the jobs' expansion state survives because StatusView owns it. */}
-      {cid && !hideLog ? (
+      {cid ? (
         <Box>
           <Tabs
             value={tab}
