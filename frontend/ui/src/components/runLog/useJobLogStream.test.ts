@@ -7,14 +7,8 @@
 
 import { describe, expect, it } from 'vitest'
 import type { JobLogRow } from '@/lib/robovastClient'
-import {
-  appendRows,
-  jobNameOf,
-  liveRunLogData,
-  NO_ROWS,
-  parseFrame,
-  toLogRow,
-} from './useJobLogStream'
+import { jobNameOf, parseFrame, toLogRow } from './useJobLogStream'
+import { appendRows, liveRunLogData, NO_ROWS } from './useLiveLogStream'
 
 describe('jobNameOf', () => {
   it('addresses a job the way the service names one', () => {

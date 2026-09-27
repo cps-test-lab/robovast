@@ -30,7 +30,6 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.execution.cluster_execution import data_paths
 from robovast.client.service_target import detected_service_url
-from robovast.client.service_target import target_options
 from robovast.client.status import (Phase, Status, budget_positions, stall_report,
                                     stopping_soon_report)
 
@@ -282,84 +281,49 @@ def _monitor_via_service(namespace, kube_context, interval, once):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--namespace', '-n', default='default', show_default=True,
               help='Kubernetes namespace the scenario Jobs run in.')
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='Watch every context this .vast names, instead of only the active '
-                   'one. Ignored when --context is given, which names one directly.')
-def monitor(interval, once, kube_context, namespace, vast):
+def monitor(interval, once, kube_context, namespace):
     """Monitor scenario execution jobs on the cluster.
 
     Displays progress per run: how many jobs have finished (completed or failed),
     how many are running, and how many are pending for each run.
 
-    Watches the active kubeconfig context. ``--context`` names another one;
-    ``--vast`` watches every context that file's per-cluster configuration names.
-    Only contexts with active or past jobs are shown.
-
-    This is intended for monitoring jobs created by
-    a campaign launch.
+    Watches one cluster: the ``--context`` one, else the kubeconfig's active context.
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
     # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
-    from .cluster_context import (  # pylint: disable=import-outside-toplevel
-        get_active_kube_context, get_config_context_names)
+    from .cluster_context import \
+        get_active_kube_context  # pylint: disable=import-outside-toplevel
     try:
         cursor_up = "\033[A"
         clear_line = "\033[2K"
         bar_width = 20
         pct_width = 7
 
-        # Build list of (label, kube_context_name) to monitor
-        if not kube_context:
-            # Only a .vast the caller named: monitoring a cluster works without one, and
-            # then watches the active context. There is deliberately no ambient project
-            # to fall back on -- a file in some parent directory of the CWD deciding
-            # which clusters to watch is a surprise, not a convenience.
-            config_names = get_config_context_names(vast) if vast else set()
-            if config_names:
-                contexts_to_monitor = sorted((n, n) for n in config_names)
-            else:
-                # No per-cluster config — fall back to active context
-                active = get_active_kube_context()
-                contexts_to_monitor = [(active or "(active)", active)]
-        else:
-            contexts_to_monitor = [(kube_context, kube_context)]
+        ctx = kube_context or get_active_kube_context()
 
-        multi = len(contexts_to_monitor) > 1
+        # Prefer the robovast-service: it drives the campaigns, so its status reports
+        # loop phase/batch/run progress and is authoritative for "done" — the monitor
+        # never exits in the gap between search generations. Falls through to the
+        # Kubernetes-only view below when no service is configured.
+        if _monitor_via_service(namespace, ctx, interval, once):
+            return
 
-        # Prefer the robovast-service (single-context campaigns): it drives the
-        # campaigns, so its status reports loop phase/batch/run progress and is
-        # authoritative for "done" — the monitor never exits in the gap between
-        # search generations. Falls through to the Kubernetes-only view below when
-        # no service is configured (multi-cluster, or partial setups).
-        if not multi:
-            if _monitor_via_service(namespace, contexts_to_monitor[0][1], interval, once):
-                return
-
-        # Per-context state (keyed by kube_context_name)
-        initial_total: dict[str, dict] = {}        # ctx -> {campaign: total}
-        max_ok: dict[str, dict] = {}               # ctx -> {campaign: max_ok}
-        max_fail: dict[str, dict] = {}             # ctx -> {campaign: max_fail}
-        last_per_run: dict[str, dict] = {}         # ctx -> last known per_run
-        run_first_finished: dict[str, dict] = {}   # ctx -> {campaign: (timestamp, finished_count)}
-        all_jobs_seen: dict[str, dict] = {}        # ctx -> {campaign: bool} — True once all jobs visible
+        ctx_initial: dict[str, int] = {}                  # campaign -> total
+        ctx_ok: dict[str, int] = {}                       # campaign -> max ok
+        ctx_fail: dict[str, int] = {}                     # campaign -> max fail
+        ctx_first: dict[str, tuple] = {}                  # campaign -> (timestamp, finished)
+        ctx_all_seen: dict[str, bool] = {}                # campaign -> all jobs seen once
+        last_per_run: dict = {}                           # last known per_run
         prev_line_count = [0]
 
-        def _build_run_lines(label, ctx, per_run):
-            """Return (lines, all_done) for a single context."""
+        def _build_run_lines(per_run):
+            """Return (lines, all_done)."""
             from .cluster_execution import \
                 JOB_PHASE_COUNTERS  # pylint: disable=import-outside-toplevel
-            ctx_initial = initial_total.setdefault(ctx, {})
-            ctx_ok = max_ok.setdefault(ctx, {})
-            ctx_fail = max_fail.setdefault(ctx, {})
-            ctx_first = run_first_finished.setdefault(ctx, {})
-            ctx_all_seen = all_jobs_seen.setdefault(ctx, {})
-
             all_campaigns = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
-            indent = "  " if multi else ""
             now = time.time()
 
             for campaign in all_campaigns:
@@ -434,56 +398,46 @@ def monitor(interval, once, kube_context, namespace, vast):
                 if c.get("blocked"):
                     extra += f"  Blocked: {c['blocked']}"
                 lines.append(
-                    f"{indent}{campaign}  [{progress_bar}]  {pct_str}  "
+                    f"{campaign}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}{extra}"
                     f"{rate_str}{eta_str}"
                 )
             if not lines:
-                lines.append(f"{indent}No scenario run jobs found.")
+                lines.append("No scenario run jobs found.")
             return lines, all_done
 
         def _print_status_lines():
             from .cluster_execution import \
                 get_cluster_job_counts_per_campaign  # pylint: disable=import-outside-toplevel
             all_lines = []
+            unreachable = False
+            try:
+                # Suppress urllib3 retry warnings for an unreachable cluster — this
+                # display reports reachability itself, one line below.
+                from .kube_client import quiet_urllib3_retries
+                with quiet_urllib3_retries():
+                    per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
+            except Exception as exc:
+                per_run = {}
+                unreachable = True
+                logging.debug(f"Could not query context {ctx!r}: {exc}")
+            # Use last known data when unreachable so bars stay meaningful
+            if unreachable:
+                per_run = dict(last_per_run)
+            else:
+                last_per_run.clear()
+                last_per_run.update(per_run)
             everything_done = True
-            for label, ctx in contexts_to_monitor:
-                unreachable = False
-                try:
-                    # Suppress urllib3 retry warnings for unreachable contexts — this
-                    # display reports reachability itself, one line below.
-                    from .kube_client import quiet_urllib3_retries
-                    with quiet_urllib3_retries():
-                        per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
-                except Exception as exc:
-                    # Keep displaying even if one context is unreachable
-                    per_run = {}
-                    unreachable = True
-                    logging.debug(f"Could not query context {ctx!r}: {exc}")
-                # Use last known data when unreachable so bars stay meaningful
-                if unreachable and ctx in last_per_run:
-                    per_run = last_per_run[ctx]
-                elif not unreachable:
-                    last_per_run[ctx] = per_run
-                # Skip contexts that have no jobs at all (and never had any)
-                if not per_run and ctx not in initial_total:
-                    if unreachable:
-                        indent = "  " if multi else ""
-                        if multi:
-                            all_lines.append(f"[{label}]")
-                        all_lines.append(f"{indent}(unreachable)")
-                        everything_done = False
-                    continue
-                if multi:
-                    ctx_label_str = f"[{label}]" + (" (unreachable)" if unreachable else "")
-                    all_lines.append(ctx_label_str)
-                elif unreachable:
-                    all_lines.append("(unreachable - showing last known state)")
-                run_lines, done = _build_run_lines(label, ctx, per_run)
-                all_lines.extend(run_lines)
-                if not done:
+            if not per_run and not ctx_initial:
+                if unreachable:
+                    all_lines.append("(unreachable)")
                     everything_done = False
+            else:
+                if unreachable:
+                    all_lines.append("(unreachable - showing last known state)")
+                run_lines, everything_done = _build_run_lines(per_run)
+                all_lines.extend(run_lines)
 
             # Erase previous output and redraw
             for _ in range(prev_line_count[0]):
@@ -500,8 +454,8 @@ def monitor(interval, once, kube_context, namespace, vast):
             _print_status_lines()
             return
 
-        ctx_label = "configured contexts" if multi else f"context '{contexts_to_monitor[0][0]}'"
-        click.echo(f"Monitoring scenario run jobs on {ctx_label} (press Ctrl+C to stop)...")
+        click.echo(f"Monitoring scenario run jobs on context '{ctx or '(active)'}' "
+                   "(press Ctrl+C to stop)...")
         sys.stdout.write("\n")
         sys.stdout.flush()
 
@@ -903,14 +857,11 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 @click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
-@target_options
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='A .vast to pre-flight against this cluster. Its only use here is to '
-                   'refuse when it declares per-cluster resource lists for several '
-                   'contexts and --context was not given -- which would otherwise pick '
-                   'a cluster by accident. Optional, and read only for that check.')
-def run_cleanup(campaign, namespace, context, vast):
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Namespace the robovast-service runs in.')
+@click.option('--context', '-x', default=None, metavar='NAME',
+              help='Kubernetes context to use (default: active context in kubeconfig).')
+def run_cleanup(campaign, namespace, context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution Jobs and their pods directly (using your kubeconfig
@@ -982,8 +933,8 @@ def run_cleanup(campaign, namespace, context, vast):
                    'binds its port; a pod that is genuinely broken (ImagePullBackOff, a crash '
                    'loop) still fails fast on its own, without spending this.')
 @click.option('--no-restart', is_flag=True, default=False,
-              help='Reconcile only what does not need the pod rolled -- RBAC, the '
-                   'queues, the registry ingress route -- then stop. For granting a '
+              help='Reconcile only what does not need the pod rolled -- RBAC, node '
+                   'labels, the registry ingress route -- then stop. For granting a '
                    'permission the RUNNING version is missing without a version change or '
                    'an API blip, e.g. while a campaign is in flight.')
 @click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
@@ -1009,8 +960,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     looking like a hang -- and "✓ upgraded and ready" means it. Use ``--timeout`` for a
     registry slow enough to need longer.
 
-    Always restarts the pod, even when nothing appears to have changed. That is the
-    point: an image ref that is a floating tag, or a change confined to the Secrets,
+    Without ``--no-restart`` it always restarts the pod, even when nothing appears to
+    have changed. That is the point: an image ref that is a floating tag, or a change confined to the Secrets,
     leaves the Deployment spec byte-identical, and Kubernetes then rolls nothing while
     this command reports success. It also makes the restart the *only* way the env
     Secrets are re-read -- the pod loads them through ``envFrom`` at container start and
@@ -1021,12 +972,13 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
-    ``--no-restart`` reconciles just that part — RBAC, the registry
-    ingress route, the optional tailnet node — and stops before the Deployment is touched. All three are picked up by
-    the *running* pod (the API server evaluates RBAC per request, and
-    workload, a route is the gateway's own state), so a permission the running version is
-    missing can be granted without a version change and without the API blip. That is the
-    difference between fixing a missed migration and rolling a service: it is the only way
+    ``--no-restart`` reconciles just what the *running* pod picks up — RBAC, the node
+    identity labels, the registry ingress route, the optional tailnet node and the job
+    node aliases — and stops before the Deployment is touched. The API server evaluates
+    RBAC per request, a node label is the node's own state, a route is the gateway's own
+    state and the tailnet node is a Deployment of its own, so a permission the running
+    version is missing can be granted without a version change and without the API blip.
+    That is the difference between fixing a missed migration and rolling a service: it is the only way
     to do the former while a campaign is in flight, because the campaign controller lives in
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
@@ -1035,9 +987,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     ``ROBOVAST_JOB_NODE_LABELS`` and ``ROBOVAST_JOB_NODE_ALIASES`` in the environment -- so an
     upgrade from a shell without them clears the pool and removes the aliases, and says so --
     after checking every alias against that pool, before anything changes. With
-    ``--no-restart`` the pool is not applied, since it lives in the pod's environment.
-    ``--no-restart`` reconciles them too: they are node labels a campaign reads when it
-    starts, not the pod's environment.
+    ``--no-restart`` the pool is not applied, since it lives in the pod's environment; the
+    aliases are, since they are node labels a campaign reads when it starts.
 
     Before the roll it asks the service which campaigns are live and names them, for the
     reason ``--no-restart`` exists: the pod being replaced is where their controller runs.
@@ -1418,14 +1369,8 @@ def cluster_token(namespace, kube_context, quiet):
                    'data. Without this the labels stay, so a later setup lands on the same '
                    'node with no flags -- which is the point of them. The on-disk data is '
                    'not removed either way.')
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='A .vast to pre-flight against this cluster. Its only use here is to '
-                   'refuse when it declares per-cluster resource lists for several '
-                   'contexts and --context was not given -- which would otherwise pick '
-                   'a cluster by accident. Optional, and read only for that check.')
 def cleanup(config_name, namespace, options, kube_context, forget_placement,
-            delete_data, vast):
+            delete_data):
     """Clean up the Kubernetes cluster setup.
 
     Removes the ``robovast`` pod (the registry), the ``robovast-service``
