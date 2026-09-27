@@ -389,10 +389,6 @@ def _check_config(campaign_dir: Path) -> dict:
                   recovery=recovery[found.state])
 
 
-#: Postprocessing entries that configure the decoder rather than name a plugin.
-_DECODER_ENTRY_PREFIX = "rosbags_"
-
-
 def _check_environment(campaign_dir: Path) -> dict:
     """What the campaign's ``.vast`` names that this deployment does not have.
 
@@ -408,9 +404,12 @@ def _check_environment(campaign_dir: Path) -> dict:
         is_installed  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
         read_vast, upgrade_config)
-    from robovast.common.plugin_ref import is_file_ref  # pylint: disable=import-outside-toplevel
+    from robovast.common.plugin_ref import (  # pylint: disable=import-outside-toplevel
+        file_ref_path, is_file_ref)
     from robovast.common.results_utils import \
         campaign_vast_or_none  # pylint: disable=import-outside-toplevel
+    from robovast.results_processing.campaign_tables import \
+        is_decoder_command  # pylint: disable=import-outside-toplevel
 
     vast_path = campaign_vast_or_none(campaign_dir)
     config = None
@@ -429,20 +428,31 @@ def _check_environment(campaign_dir: Path) -> dict:
             if isinstance(name, str):
                 yield name
 
-    variations = {name for cfg in config.get("configuration") or ()
-                  if isinstance(cfg, dict) for name in names(cfg.get("variations"))}
-    steps = set(names((config.get("results_processing") or {}).get("postprocessing")))
-    installed = {ep.name for ep in entry_points(group="robovast.variation_types")}
-    commands = {ep.name for ep in entry_points(group="robovast.postprocessing_commands")}
+    results = config.get("results_processing") or {}
+    # (what, entry-point group, names, whether a ./file.py:Class ref is accepted there)
+    wanted = (
+        ("variation types", "robovast.variation_types",
+         {name for cfg in config.get("configuration") or () if isinstance(cfg, dict)
+          for name in names(cfg.get("variations"))}, True),
+        ("postprocessing commands", "robovast.postprocessing_commands",
+         {name for name in names(results.get("postprocessing"))
+          if not is_decoder_command(name)}, True),
+        ("metadata processors", "robovast.metadata_processing",
+         set(names(results.get("metadata_processing"))), False),
+        ("health checks", "robovast.health_checks",
+         set(names(results.get("health_checks"))), True),
+    )
 
-    missing = []
-    if gone := sorted(v for v in variations if not is_file_ref(v) and v not in installed):
-        missing.append(f"variation types {', '.join(gone)}")
-    if gone := sorted(s for s in steps if not is_file_ref(s)
-                      and not s.startswith(_DECODER_ENTRY_PREFIX) and s not in commands):
-        missing.append(f"postprocessing commands {', '.join(gone)}")
-    if gone := sorted(r for r in variations | steps if is_file_ref(r)
-                      and not (vast_path.parent / r.split(":", 1)[0]).is_file()):
+    missing, file_refs = [], set()
+    for what, group, wanted_names, takes_file_refs in wanted:
+        installed = {ep.name for ep in entry_points(group=group)}
+        if takes_file_refs:
+            file_refs |= {name for name in wanted_names if is_file_ref(name)}
+        if gone := sorted(name for name in wanted_names - installed
+                          if not (takes_file_refs and is_file_ref(name))):
+            missing.append(f"{what} {', '.join(gone)}")
+    if gone := sorted(ref for ref in file_refs
+                      if not (vast_path.parent / (file_ref_path(ref) or ref)).is_file()):
         missing.append(f"local plugins {', '.join(gone)} (not in the archive's _config/)")
     specs = [s for s in config.get("plugins") or () if isinstance(s, str) and s.strip()]
     if gone := sorted(s for s in specs if not is_installed(s)):

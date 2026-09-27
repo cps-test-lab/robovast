@@ -382,8 +382,8 @@ def _declare(campaign, **sections):
     for key, value in sections.items():
         if key == "variations":
             raw.setdefault("configuration", [{"name": "cfg"}])[0]["variations"] = value
-        elif key == "postprocessing":
-            raw.setdefault("results_processing", {})["postprocessing"] = value
+        elif key in ("postprocessing", "metadata_processing", "health_checks"):
+            raw.setdefault("results_processing", {})[key] = value
         else:
             raw[key] = value
     vast.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
@@ -424,3 +424,19 @@ def test_a_configuration_that_cannot_be_parsed_is_reported_not_raised(campaign):
 def test_no_configuration_is_not_reported_as_needing_nothing(campaign):
     _vast(campaign).unlink()
     assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_what_a_raw_import_postprocessing_runs_is_checked_in_full(campaign):
+    """Postprocessing also runs the metadata processors and the health checks the campaign
+    declares, and a health check that is not installed is skipped rather than failing -- so
+    the import report is the one place that says it will not run."""
+    (_vast(campaign).parent / "check.py").write_text("class Check: pass\n", encoding="utf-8")
+    _declare(campaign,
+             postprocessing=["rosbags_to_cvs"],
+             metadata_processing=["no_such_processor"],
+             health_checks=["no_such_check", "./check.py:Check", "./absent.py:Check"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("rosbags_to_cvs", "no_such_processor", "no_such_check", "./absent.py:Check"):
+        assert name in stage["detail"]
+    assert "./check.py:Check" not in stage["detail"]
