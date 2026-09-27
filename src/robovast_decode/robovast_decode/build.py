@@ -330,11 +330,10 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
         written = []
         types = {topic: stats.type for topic, stats in decoded.topics.items()} if decoded else {}
         for handler in todo:
-            name = type(handler).__name__
-            if name in decoded.failed:
+            if handler in decoded.failed:
                 for table in handler.tables():
                     if wanted_tables is None or table in wanted_tables:
-                        report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
+                        report.failed.setdefault(table, {})[run_key] = decoded.failed[handler]
                 continue
             partial = undecodable_tables([handler], decoded.undecodable, types)
             for table, buf in handler.buffers.items():

@@ -680,6 +680,17 @@ class Variation():
         """
         return []
 
+    def get_read_files(self):
+        """Absolute paths of files :meth:`variation` read that its parameters do not name.
+
+        A file another file names -- the image a map YAML points at -- is invisible to the
+        composition cache key, which sees only the paths written in the ``.vast``. Report
+        such files here and a cached composition is not reused once one changes.
+
+        Must be called after :meth:`variation` has been executed.
+        """
+        return []
+
     def get_campaign_transient_files(self):
         """Return intermediate files to be placed in the campaign-level ``_transient/`` directory.
 
