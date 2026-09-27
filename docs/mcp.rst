@@ -654,15 +654,11 @@ Five tools work over it — ``list_files``, ``read_file``, ``write_file``, ``edi
 ``delete_file`` — instead of a reader and a lister per scope. The path after the owner
 is the **real on-disk path**, so what a listing shows is what you can read:
 
-.. code-block:: text
-
-   /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
-                         _execution/  launch.yaml, outcome.json, execution.yaml,
-                                      controller.log, postprocessing.log
-                         _transient/  configurations.yaml, entrypoint.sh,
-                                      postprocessing.yaml
-                         _jobs/job-N/ sysinfo.yaml, logs/system.log
-                         <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
+.. literalinclude:: ../src/robovast/mcp_server/plugins/files.py
+   :language: text
+   :start-after: _LAYOUT = """
+   :end-before: """
+   :dedent: 4
 
 ``<config_name>`` is the directory name, which is **not** the ``config_identifier``
 that the configuration tools accept — list the campaign root to see the real names.
