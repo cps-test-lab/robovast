@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import json
-import posixpath
 import shlex
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from robovast.client.safe_path import UnsafePathError, check_relative
 from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
                                         SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
@@ -50,19 +50,20 @@ def _config_in_container(config: str) -> str:
 
     A package ref is left alone: it travels inside the image and has no path at all.
 
-    A relative path that leaves the ``.vast``'s directory is refused: only that directory is
-    staged, so the file would not be in the container under any name.
+    A relative path is held to :func:`~robovast.client.safe_path.check_relative`: one with a
+    ``..`` segment is refused, since only the ``.vast``'s directory is staged.
     """
     if _is_package_ref(config):
         return config
     if config.startswith("/"):
         return config
-    relative = posixpath.normpath(config)
-    if relative == ".." or relative.startswith("../"):
+    try:
+        relative = check_relative(config)
+    except UnsafePathError as e:
         raise ValueError(
-            f"roqsim config {config!r} is outside the .vast's directory, which is all a "
-            f"campaign stages into {CONFIG_MOUNT}; move it beside the .vast or name it as a "
-            "package ref")
+            f"roqsim config {config!r}: {e}. A campaign stages only the .vast's directory, "
+            f"into {CONFIG_MOUNT}; name the file by its path inside it, or as a package "
+            "ref") from e
     return f"{CONFIG_MOUNT}/{relative}"
 
 

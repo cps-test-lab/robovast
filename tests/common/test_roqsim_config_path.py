@@ -23,6 +23,7 @@ def test_a_config_path_lands_under_the_mount_as_written(authored, expected):
     assert _config_in_container(authored) == expected
 
 
-def test_a_config_outside_the_vast_directory_is_refused():
-    with pytest.raises(ValueError, match=r"\.\./shared/depot\.yaml"):
-        _config_in_container("../shared/depot.yaml")
+@pytest.mark.parametrize("authored", ["../shared/depot.yaml", "worlds/../../depot.yaml"])
+def test_a_config_that_climbs_out_of_the_vast_directory_is_refused(authored):
+    with pytest.raises(ValueError, match=r"'\.\.'.*stages only the \.vast's directory"):
+        _config_in_container(authored)
