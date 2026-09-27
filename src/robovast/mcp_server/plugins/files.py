@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 _LAYOUT = """
     Under ``/results/<campaign_id>/``:
       _config/              scenario.osc, <name>.vast, run files, notebooks
-      _execution/           outcome.json (why it ended), execution.yaml, controller.log,
-                            postprocessing.log
+      _execution/           launch.yaml (what it was asked to run), outcome.json (why it
+                            ended), execution.yaml, controller.log, postprocessing.log
       _transient/           configurations.yaml, entrypoint.sh, postprocessing.yaml
       _jobs/batch-N/job-M/  sysinfo.yaml, resource_usage_*.csv, logs/system*.log
       <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
