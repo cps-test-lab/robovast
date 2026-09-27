@@ -132,14 +132,7 @@ reading results. Each phase is one plugin, so the generated table below is also 
        :ref:`testing a container <mcp-container-exec>`, which produces no campaign data.
    * - ``results``
      - Reading what a campaign did: :ref:`read-only SQL <mcp-analysis>` plus the campaign
-       listing, one aggregate, the declared plots, what a configuration's variations placed,
-       a run's track against its plan, and the pictures — a configuration drawn, a camera
-       frame, a screenshot, whether a run view's 3D scene is ready.
-   * - ``run_logs``
-     - Searching what the runs said, joined to how they ended (``search_run_logs``).
-   * - ``image_catalog``
-     - What an image's own catalogs (scenario actions, roqsim plugins, models, worlds)
-       offer, asked in the image and cached per image.
+       listing and one aggregate.
    * - ``results_lifecycle``
      - Acting *on* finished results: re-deriving them (postprocessing), publishing them,
        downloading, taking one in, cleaning up, deleting.
@@ -153,11 +146,8 @@ leaves "which module owns this?" without an answer, and puts build, postprocessi
 deletion and download inside a module named for execution control.
 
 Names read ``<verb>_<resource>``: ``get`` retrieves, ``list`` enumerates, ``search``
-filters, ``describe`` explains a structure (a campaign's tables, a world, a scenario),
-``query`` runs SQL, and the rest — ``validate``, ``preview``,
-``start``, ``stop``, ``run``, ``build``, ``delete``, ``create``, ``export``, ``import``,
-``update``, ``read``, ``write``, ``edit``, ``exec``, ``tap``, ``draw``, ``clear`` — do what
-they say.
+filters, ``describe``/``query`` are the SQL pair, and ``validate`` / ``preview`` /
+``start`` / ``stop`` / ``run`` / ``build`` / ``delete`` do what they say.
 
 Two whole classes of question are deliberately *not* one tool per scope: files are
 :ref:`one address space <mcp-files>`, and reading what a campaign did is
@@ -223,9 +213,8 @@ Each world that loads is also checked for **keys its image does not know**. A ca
 pinned image, and a world can be newer than it: a key a later plugin reads is, to the image's
 older plugin, a key nobody reads, and most plugins do not refuse one — the run starts and the key
 does nothing. So every component the world *document* declares has its top-level config keys
-compared with what that image's own plugin publishes (``get_image_catalog_entry`` with
-``catalog="roqsim_plugins"``: its ``parameters``, and ``schema`` where it declares one), and
-a key missing from it comes back as
+compared with what that image's own plugin publishes (``get_roqsim_plugin_details``: its
+``parameters``, and ``schema`` where it declares one), and a key missing from it comes back as
 ``severity: "advice"``:
 
 .. code-block:: text
@@ -241,7 +230,7 @@ image will refuse the key. Not compared: the keys roqsim lets any component carr
 ``prefix``, a transport scope, a fault block — read from the image, which is what applies them),
 components a model's manifest adds (they ship with the plugin that reads them), a plugin that
 publishes no keys at all, and a plugin the world loads by path. The catalog is asked once per
-image and cached with the ``image_catalog`` tools' own; a catalog that could not be read is
+image and cached with the ``list_roqsim_plugins`` tools' own; a catalog that could not be read is
 itself an advice problem saying the keys were not checked.
 
 ``check_scenario`` is the second such check, on the same pool but in the **scenario** container
@@ -271,9 +260,9 @@ remember and map onto their situation:
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by
   ``validate_project`` at all — declared specs are installed during config *generation*. A
   package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point
-  **names** out of that directory: metadata, not an import, because putting a staged
-  plugin directory on ``sys.path`` (:mod:`robovast.common.config_plugins`) is only safe in
-  the isolated compose subprocess and this process is long-lived.
+  **names** out of that directory: metadata, not an import, because
+  ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and
+  this process is long-lived.
 * A variation declaring an auxiliary container is exercised by **both**, because both
   compose: composing is what asks a variation to produce what it varies, and a variation may
   need a helper image to do it. Each arranges a runner for one first — see
@@ -425,7 +414,7 @@ must call the lister to learn the name the getter needs. So an **empty argument 
 
 The same reasoning fixes the vocabulary. One concept has one argument name across the
 surface — ``campaign_id``, ``config_name``, ``run_id``, ``address``, ``limit``,
-``offset`` — and one name has one meaning. A short spelling beside the long
+``offset``, ``backend`` — and one name has one meaning. A short spelling beside the long
 one, or ``config_path`` meaning a workspace-relative path on one tool and an absolute
 filesystem path on another, is a bug waiting for the caller that reads both. ``tail``
 (last N lines)
@@ -664,18 +653,14 @@ Five tools work over it — ``list_files``, ``read_file``, ``write_file``, ``edi
 ``delete_file`` — instead of a reader and a lister per scope. The path after the owner
 is the **real on-disk path**, so what a listing shows is what you can read:
 
-.. code-block:: text
+.. literalinclude:: ../src/robovast/mcp_server/plugins/files.py
+   :language: text
+   :start-after: _LAYOUT = """
+   :end-before: """
+   :dedent: 4
 
-   /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
-                         _execution/  launch.yaml, outcome.json, execution.yaml,
-                                      controller.log, postprocessing.log
-                         _transient/  configurations.yaml, entrypoint.sh,
-                                      postprocessing.yaml
-                         _jobs/[<batch>/]job-N/ sysinfo.yaml, logs/system.log
-                         <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
-
-``<config_name>`` is the directory name, the same ``config_name`` the results tools
-take — list the campaign root to see the real names.
+``<config_name>`` is the directory name, which is **not** the ``config_identifier``
+that the configuration tools accept — list the campaign root to see the real names.
 
 A trailing slash lists a directory; without one you read a file. Listings are
 non-recursive by default (a campaign has one directory per configuration and one per
@@ -823,7 +808,7 @@ it is the same rule as the wait tools: a share listing is a CLI call
 (``vast share download``, ``vast share import``), which costs this surface nothing.
 
 ``vast share`` is the one command group that does **not** go through the service: it
-speaks to Nextcloud, GCS, SFTP or WebDAV directly, with the caller's own credentials, which is
+speaks to Nextcloud, GCS or Zenodo directly, with the caller's own credentials, which is
 why it ships with the full ``robovast`` distribution rather than with ``robovast-client``.
 An agent holding only the client can therefore have its campaigns *uploaded* to a share
 (that path runs in the service, as a launch flag) but cannot list or fetch from one. Say
@@ -1246,9 +1231,8 @@ exposes:
   several ids because a project builds one image per container that adds packages, and
   waiting for the first says nothing about the rest.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus a **structured**
-  ``error_detail`` (``phase`` = base-pull / base-image / apt / pip / source-build / build /
-  push / resource / builder / builder-pod, the offending ``build:`` ``entry``,
-  and ``fixable_by`` = ``agent`` or
+  ``error_detail`` (``phase`` = apt / pip / source-build / base-pull / push / resource /
+  builder-pod, the offending ``build:`` ``entry``, and ``fixable_by`` = ``agent`` or
   ``infra``). Carries a ``next_step`` for the phase it reports — this is the tool that is
   polled while deciding what to do next, and a build still running, one that cannot start,
   one that failed, and one that finished want four different actions.

@@ -189,7 +189,7 @@ def plugins_cmd(group):
     """List installed plugins for an extension group.
 
     Defaults to the variation types usable in a ``.vast`` ``variations`` block.
-    Pass a name to ``vast configuration plugin-info`` for its parameter schema.
+    Pass a name to ``vast config plugin-info`` for its parameter schema.
     """
     eps = sorted(entry_points(group=group), key=lambda e: e.name)
     if not eps:
