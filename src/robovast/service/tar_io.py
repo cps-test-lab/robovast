@@ -30,7 +30,9 @@ not ask for:
   tree already has, which is what a symlink is for; one to a file outside it is an escape.
   Neither has a use in campaign output.
 * **A name the caller may not write.** Given per call as *deny*: the campaign's own
-  store, which the driver holds open, and the driver's logs, which have one writer.
+  store, which the driver holds open, and the directories the service writes the
+  campaign's records into. Judged by where the member lands with the tree's symlinks
+  followed, so a link into a directory is not a way around it.
 
 Refused members are named in the result rather than raised on: a pod's output is many
 files, and one it may not write is not a reason to lose the rest.
@@ -50,7 +52,7 @@ import stat
 import tarfile
 from pathlib import Path
 
-from robovast.client.safe_path import UnsafePathError, check_relative
+from robovast.client.safe_path import UnsafePathError, check_relative, is_inside
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +91,9 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
     """Extract the tar read from *stream* under *dest_root*; return what happened.
 
     *stream* is any binary file-like with ``read``; gzip or plain is detected from the
-    bytes (``r|*``). *deny* is a set of campaign-relative names, or names of files under
-    any directory (a bare file name), that are refused on top of :data:`DENY_ALWAYS`.
+    bytes (``r|*``). *deny* is a set of campaign-relative names, names of files under
+    any directory (a bare file name), or directories ending in ``/`` (the directory and
+    everything under it), that are refused on top of :data:`DENY_ALWAYS`.
 
     Members are written in stream order and the last one wins, which is how several
     containers of one pod, each contributing its own files to a shared tree, resolve.
@@ -100,7 +103,8 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
     """
     root = Path(dest_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    denied = frozenset(DENY_ALWAYS) | frozenset(deny or ())
+    denied = frozenset(DENY_ALWAYS) | frozenset(d for d in deny or () if not d.endswith("/"))
+    denied_dirs = tuple(d for d in deny or () if d.endswith("/"))
     out = Extracted()
     with tarfile.open(fileobj=stream, mode="r|*") as tar:
         for member in tar:
@@ -114,49 +118,64 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
             except UnsafePathError:
                 out.refused.append(member.name)
                 continue
-            if rel in denied or os.path.basename(rel) in denied:
-                out.refused.append(member.name)
-                continue
             target = root / rel
-            if _escapes(root, target.parent):
+            parent = target.parent.resolve()
+            if _escapes(root, parent):
                 out.refused.append(member.name)
                 continue
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                _chmod(target, member.mode | 0o700)
-            elif member.issym():
-                if _escapes(root, (target.parent / member.linkname)):
-                    out.refused.append(member.name)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _replace_with_symlink(target, member.linkname)
-            elif member.isfile() and OFFSET_HEADER in member.pax_headers:
-                offset = _offset_of(member)
-                if offset is None:
-                    out.refused.append(member.name)
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                outcome = _append_range(target, source, offset, member.size, member.mode)
-                if outcome == _APPENDED:
-                    out.files += 1
-                    out.bytes += member.size
-                elif outcome == _RESYNC:
-                    out.resync.append(rel)
-            elif member.isfile():
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _write_atomic(target, source, member.mode)
-                out.files += 1
-                out.bytes += member.size
-            else:
-                # Hard links, devices, FIFOs: nothing campaign output has a use for.
+            # A symlink already in the tree is a second name for a directory.
+            landing = (parent / target.name).relative_to(root).as_posix()
+            if (landing in denied or target.name in denied
+                    or (landing + "/").startswith(denied_dirs)):
+                out.refused.append(member.name)
+                continue
+            try:
+                _place(tar, member, rel, root, target, out)
+            except (FileExistsError, NotADirectoryError):
+                # A file or a dangling symlink where a directory is needed refuses this
+                # member only; an error of the disk itself still ends the extraction.
                 out.refused.append(member.name)
     return out
+
+
+def _place(tar: tarfile.TarFile, member: tarfile.TarInfo, rel: str, root: Path,
+           target: Path, out: Extracted) -> None:
+    """Write one member, already confined and allowed, at *target*; count it in *out*."""
+    if member.isdir():
+        target.mkdir(parents=True, exist_ok=True)
+        _chmod(target, member.mode | 0o700)
+    elif member.issym():
+        if _escapes(root, (target.parent / member.linkname)):
+            out.refused.append(member.name)
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _replace_with_symlink(target, member.linkname)
+    elif member.isfile() and OFFSET_HEADER in member.pax_headers:
+        offset = _offset_of(member)
+        if offset is None:
+            out.refused.append(member.name)
+            return
+        source = tar.extractfile(member)
+        if source is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        outcome = _append_range(target, source, offset, member.size, member.mode)
+        if outcome == _APPENDED:
+            out.files += 1
+            out.bytes += member.size
+        elif outcome == _RESYNC:
+            out.resync.append(rel)
+    elif member.isfile():
+        source = tar.extractfile(member)
+        if source is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(target, source, member.mode)
+        out.files += 1
+        out.bytes += member.size
+    else:
+        # Hard links, devices, FIFOs: nothing campaign output has a use for.
+        out.refused.append(member.name)
 
 
 def _member_rel(name: str) -> "str | None":
@@ -171,8 +190,7 @@ def _member_rel(name: str) -> "str | None":
 
 def _escapes(root: Path, path: Path) -> bool:
     """Whether *path*, with the symlinks that already exist under *root* followed, leaves it."""
-    resolved = path.resolve()
-    return resolved != root and root not in resolved.parents
+    return not is_inside(root, path)
 
 
 def _chmod(path: Path, mode: int) -> None:

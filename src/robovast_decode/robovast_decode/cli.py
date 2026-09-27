@@ -73,10 +73,13 @@ def main(argv=None) -> int:
     for table, by_run in sorted(report.failed.items()):
         for run, reason in sorted(by_run.items()):
             print(f"FAILED  {table} for {run}: {reason}", file=sys.stderr)
+    for table, by_run in sorted(report.incomplete.items()):
+        for run, reason in sorted(by_run.items()):
+            print(f"PARTIAL {table} for {run}: {reason}", file=sys.stderr)
     for table in report.unknown:
         print(f"UNKNOWN {table}: no recording of this campaign gives it", file=sys.stderr)
     print(f"{time.perf_counter() - started:.1f}s")
-    return 1 if (report.failed or report.unknown) else 0
+    return 1 if (report.failed or report.incomplete or report.unknown) else 0
 
 
 if __name__ == "__main__":

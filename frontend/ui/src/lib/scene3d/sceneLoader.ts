@@ -2,7 +2,7 @@
 // can be extracted into a package other projects consume too (see README.md in this directory).
 //
 // Loads a scene descriptor (scene.json + scene.bin, produced by a simulator backend's scene
-// exporter -- see docs/run_capture.rst) into a three.js Group, and returns a
+// exporter -- see docs/simulators.rst) into a three.js Group, and returns a
 // jointMap that animates hinge/slide joints -- covering the whole scene (robot + environment), not
 // just the articulated robot.
 //
@@ -101,7 +101,39 @@ type SceneTexture =
   | { file: string }
   | { raw: BinRef; width: number; height: number; channels: number }
 
+/** The format a roqsim web scene descriptor states in its `format` field. */
+export const SCENE_FORMAT = 'roqsim.web_scene'
+/** The highest descriptor version this loader reads; an unstamped descriptor is version 1. */
+export const SCENE_VERSION = 1
+
+/**
+ * Refuse a descriptor this loader cannot read, naming what it states and what is read. A newer
+ * version would otherwise be drawn with whatever keys overlap, and a simulator's own scene manifest
+ * shares the `scene.json` file name.
+ */
+export function checkSceneFormat(scene: { format?: unknown; version?: unknown }, url: string): void {
+  if (scene.format !== undefined && scene.format !== SCENE_FORMAT) {
+    throw new Error(
+      `${url} is a ${JSON.stringify(scene.format)} document, not a scene descriptor ` +
+        `(${JSON.stringify(SCENE_FORMAT)}).`,
+    )
+  }
+  if (scene.version === undefined) return
+  const version = scene.version
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
+    throw new Error(`${url}: scene descriptor version ${JSON.stringify(version)} is not a positive integer.`)
+  }
+  if (version > SCENE_VERSION) {
+    throw new Error(
+      `${url} is scene descriptor version ${version}; this viewer reads up to ${SCENE_VERSION}. ` +
+        'Update the viewer to one that reads it.',
+    )
+  }
+}
+
 interface SceneDescriptor {
+  format?: string
+  version?: number
   up: string
   bodies: SceneBody[]
   joints: SceneJoint[]
@@ -507,16 +539,19 @@ function buildSkinnedMesh(
 
 export async function loadScene(sceneUrl: string): Promise<SceneModel> {
   const baseUrl = new URL(sceneUrl, window.location.href).href
-  const [scene, bin] = await Promise.all([
-    fetch(sceneUrl).then((r) => {
-      if (!r.ok) throw new Error(`Failed to fetch ${sceneUrl} (${r.status} ${r.statusText}).`)
-      return r.json() as Promise<SceneDescriptor>
-    }),
-    fetch(new URL('scene.bin', baseUrl).href).then((r) => {
-      if (!r.ok) throw new Error(`Failed to fetch scene.bin (${r.status} ${r.statusText}).`)
-      return r.arrayBuffer()
-    }),
-  ])
+  const binRequest = fetch(new URL('scene.bin', baseUrl).href).then((r) => {
+    if (!r.ok) throw new Error(`Failed to fetch scene.bin (${r.status} ${r.statusText}).`)
+    return r.arrayBuffer()
+  })
+  // The descriptor is checked before scene.bin is awaited, so a document of another format is
+  // refused by name rather than by its missing sibling; that rejection is then not the one reported.
+  binRequest.catch(() => {})
+  const scene = await fetch(sceneUrl).then((r) => {
+    if (!r.ok) throw new Error(`Failed to fetch ${sceneUrl} (${r.status} ${r.statusText}).`)
+    return r.json() as Promise<SceneDescriptor>
+  })
+  checkSceneFormat(scene, sceneUrl)
+  const bin = await binRequest
 
   const loader = new TextureLoader()
   // Clones made before the image arrives share the Source but carry their own upload state, so the

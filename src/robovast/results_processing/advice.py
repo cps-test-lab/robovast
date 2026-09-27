@@ -708,13 +708,11 @@ def _campaign_sizing(query_rows) -> "str | None":
     so an inferred mode is answered as well as a stated one. ``None`` for a campaign recorded
     before the key existed -- which is the mode every campaign had then.
     """
-    try:
-        # `config_json` is TEXT holding JSON: `->` descends, `->>` ends the path as TEXT, and
-        # a missing key is the NULL a campaign without the key is read as.
-        rows = query_rows("SELECT config_json::JSON -> 'execution' ->> 'sizing' AS sizing "
-                          "FROM campaign.campaign LIMIT 1")
-    except Exception:  # noqa: BLE001 - no campaign table attached is not an error here
-        return None
+    # `config_json` is TEXT holding JSON: `->` descends, `->>` ends the path as TEXT, and
+    # a missing key is the NULL a campaign without the key is read as.
+    rows = _measured(query_rows)(
+        "SELECT config_json::JSON -> 'execution' ->> 'sizing' AS sizing "
+        "FROM campaign.campaign LIMIT 1")
     return rows[0].get("sizing") if rows else None
 
 
@@ -975,23 +973,31 @@ def governor_advice(rows: list[dict]) -> list[dict]:
 def campaign_advice(query_rows) -> dict[str, Any]:
     """Advice for a campaign, given a ``query_rows(sql) -> list[dict]`` callable.
 
+    *query_rows* raises :class:`~robovast.results_processing.data_query.DataQueryError` for
+    a table or column the campaign does not have -- a campaign predating a probe or a field
+    -- which reads as nothing measured. Anything else it raises propagates: a failed lookup
+    is not an absent measurement.
+
     Returns ``{"advice": [...]}`` -- a key rather than a bare list so a caller can merge it
     into a larger summary, and so a future non-resource advice source has somewhere to land.
     """
+    measured = _measured(query_rows)
     declared = query_rows(DECLARED_SQL)
-    try:
-        system_mem = query_rows(SYSTEM_MEM_SQL)
-    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
-        system_mem = []
-    try:
-        throttle = query_rows(THROTTLE_SQL)
-    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
-        throttle = []
-    try:
-        governor = query_rows(GOVERNOR_SQL)
-    except Exception:  # noqa: BLE001 - no job table, or a campaign predating the field
-        governor = []
-    return {"advice": (governor_advice(governor)
-                       + throttle_advice(throttle, declared, sizing=_campaign_sizing(query_rows))
-                       + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
-                       + shm_advice(query_rows(SHM_SQL), declared))}
+    return {"advice": (governor_advice(measured(GOVERNOR_SQL))
+                       + throttle_advice(measured(THROTTLE_SQL), declared,
+                                         sizing=_campaign_sizing(query_rows))
+                       + resource_advice(measured(USAGE_SQL), declared,
+                                         measured(SYSTEM_MEM_SQL))
+                       + shm_advice(measured(SHM_SQL), declared))}
+
+
+def _measured(query_rows):
+    """*query_rows*, answering ``[]`` for a query the campaign's data cannot answer."""
+    from robovast.results_processing.data_query import DataQueryError
+
+    def rows(sql: str) -> list[dict]:
+        try:
+            return query_rows(sql)
+        except DataQueryError:
+            return []
+    return rows
