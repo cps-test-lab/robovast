@@ -155,8 +155,10 @@ above: ``400`` for an id that is not a campaign id, ``409`` for a running campai
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class: ``exec_path_unavailable``, for a deployment
-where no command can be run in a container at all, and ``unsupported_operation``, for an
-operation this service does not offer (a client neither retries it nor blames its input). The
+where no command can be run in a container at all, ``unsupported_operation``, for an
+operation this service does not offer (a client neither retries it nor blames its input), and
+``binary_file``, for a text read (``?as=text``) of a binary file, which the HTTP transport
+raises again as ``BinaryFile`` so a caller can fetch the bytes instead. The
 exception type is what an
 HTTP boundary drops, and a client that has to *behave* differently (report the deployment
 rather than the image, degrade a check to "unchecked") would otherwise have to match on the

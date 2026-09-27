@@ -154,13 +154,7 @@ def get_cli_help(command: str = "", search: str = "") -> dict:
         return {"commands": commands, "total": len(commands),
                 "note": "Top-level groups. Pass `command` for one group's or command's "
                         "own help, or `search` to find a command by keyword."}
-    # An unknown path is a caller mistake, and every other tool on this surface answers
-    # one with ``{"error": ...}``. Raised, it arrives as a protocol-level failure, which
-    # reads as a broken server rather than as a misspelled argument.
-    try:
-        cmd, ctx = _resolve_command(command)
-    except ValueError as e:
-        return {"error": str(e)}
+    cmd, ctx = _resolve_command(command)
     return {"command": command, "help": cmd.get_help(ctx)}
 
 
@@ -188,14 +182,8 @@ def get_service_info() -> dict:
     """
     from robovast.client.service_report import service_info_report
     from robovast.mcp_server import service_access
-    from robovast.mcp_server.service_access import NO_SERVICE
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return service_info_report(client)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return service_info_report(client)
 
 
 # -- Plugin class ------------------------------------------------------------
