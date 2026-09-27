@@ -30,8 +30,9 @@ list keyed by the real Kubernetes context name instead of a scalar:
         - minikube: 20Gi
 
 Scalars always work and are the recommended default when a single cluster is
-used.  Pass the matching context name via ``--context/-x`` when running
-commands against a specific cluster.
+used.  The service resolves a per-cluster list with the context it was deployed
+against, which ``vast cluster setup`` and ``vast service upgrade`` record: the one
+named with ``--context/-x``, else the kubeconfig's current context.
 """
 
 import logging
@@ -186,11 +187,12 @@ def resolve_resource_value(
 
     Raises:
         ValueError: When the value is a per-cluster list but *context* is
-                    ``None``, or when the context has no entry in the list.
+                    ``None`` -- the service has no context recorded -- or when the
+                    context has no entry in the list.
 
     Args:
         value: Raw resource value (scalar or per-cluster list).
-        context: Active Kubernetes context name, or ``None``.
+        context: The context the service was deployed against, or ``None``.
 
     Returns:
         Resolved scalar value, or ``None`` when *value* is ``None``.
@@ -205,9 +207,12 @@ def resolve_resource_value(
         if context is None:
             available = [list(e.keys())[0] for e in value if isinstance(e, dict) and e]
             raise ValueError(
-                f"Per-cluster resource list {available} found but no Kubernetes context was "
-                "specified. Use --context/-x to select a target cluster, "
-                "or replace the per-cluster list with a plain scalar value."
+                f"Per-cluster resource list {available} found but this service has no "
+                "Kubernetes context recorded to pick an entry with. The service records "
+                "the context it is deployed against -- the one named with --context/-x, "
+                "else the kubeconfig's current one: run 'vast service upgrade' against "
+                "this cluster to record it, or replace the per-cluster list with a plain "
+                "scalar value."
             )
         for entry in value:
             if isinstance(entry, dict) and context in entry:
