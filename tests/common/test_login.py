@@ -54,6 +54,19 @@ def test_the_token_file_is_private():
     assert mode == 0o600, oct(mode)
 
 
+def test_a_token_written_over_a_readable_file_leaves_it_private():
+    """``os.open``'s mode applies only to a file it creates, not to one it truncates."""
+    path = login.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n")
+    path.chmod(0o644)
+
+    login.save("https://robovast.example.org", "tok", "Fred")
+
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600, oct(mode)
+
+
 def test_the_stored_shape_leaves_room_for_a_real_identity_provider():
     """``auth`` is an object so ``type``/``expires_at`` can arrive without a migration."""
     path = login.save("https://robovast.example.org", "tok", "Fred")
