@@ -45,6 +45,10 @@ _DECLARED = {
     # Read by the cluster to confine jobs to one registered node; it must arrive, or a
     # pinned campaign would silently use the whole pool.
     "kubernetes": {"jobs": {"node": "bench-a"}},
+    # Read by the cluster runner from the raw block for every job's pod.
+    "run_as_user": 4321,
+    "pre_command": "/config/files/pre.sh",
+    "post_command": "/config/files/post.sh",
 }
 
 #: Carried, but not an ``ExecutionConfig`` field -- ``containers`` is rewritten by
