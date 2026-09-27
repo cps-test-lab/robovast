@@ -807,7 +807,9 @@ for what a source is.
 Execution Section
 -----------------
 
-The ``execution`` section specifies how and where tests are executed.
+The ``execution`` section specifies how and where tests are executed. A key it does not
+declare is refused by name, so a misspelling fails validation instead of running the campaign
+without it.
 
 .. _config-containers:
 

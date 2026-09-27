@@ -960,6 +960,9 @@ def _drop_archived_kubernetes_keys(config: dict) -> dict:
 
 
 class ExecutionConfig(BaseModel):
+    # A key this block does not declare is refused: the backend reads the raw block, so a
+    # misspelled one would run the campaign as if it had not been written.
+    model_config = ConfigDict(extra='forbid')
     #: Settings for the Kubernetes backend. See :class:`KubernetesConfig`.
     kubernetes: Optional[KubernetesConfig] = None
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
@@ -1029,6 +1032,12 @@ class ExecutionConfig(BaseModel):
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
+    #: UID the run's containers run as; the backend uses ``1000`` when it is unset.
+    run_as_user: Optional[int] = None
+    #: Script sourced (``source <pre_command>``) before each run, in the scenario container.
+    pre_command: Optional[str] = None
+    #: Executable run after the scenario, passed to scenario-execution as ``--post-run``.
+    post_command: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2649,13 +2658,35 @@ def _drop_unknown_configuration_keys(config: dict) -> dict:
     return {**config, "configuration": cleaned}
 
 
+def _drop_unknown_execution_keys(config: dict) -> dict:
+    """A copy of *config* with keys ``execution`` does not declare removed, each logged.
+
+    Serves :func:`validate_config`'s lenient mode only, for the reason
+    :func:`_drop_unknown_configuration_keys` gives: an archived campaign ran with such a key
+    ignored. ``local`` is left for :func:`_drop_archived_local`, which names it.
+    """
+    execution = config.get("execution")
+    if not isinstance(execution, dict):
+        return config
+    known = set(ExecutionConfig.model_fields) | {"local"}
+    extra = [k for k in execution if k not in known]
+    if not extra:
+        return config
+    logger.warning(
+        "execution declares %s, which is not an execution key; the campaign ran with it "
+        "ignored and it is dropped here too. Valid keys: %s",
+        ", ".join(repr(k) for k in extra), ", ".join(sorted(ExecutionConfig.model_fields)))
+    return {**config, "execution": {k: v for k, v in execution.items() if k not in extra}}
+
+
 def validate_config(config: dict, strict: bool = True):
     """
     Validate the configuration settings.
 
     Args:
         config: The settings dictionary to validate
-        strict: Refuse a ``configuration`` entry carrying a key the schema does not declare.
+        strict: Refuse a ``configuration`` entry or an ``execution`` block carrying a key the
+            schema does not declare.
             True for authoring and launching, where such a key is a misspelling whose cost is
             a campaign configured differently than its file reads. False for reading an
             *archived* campaign, which already ran: the key changed nothing then, and refusing
@@ -2702,6 +2733,7 @@ def validate_config(config: dict, strict: bool = True):
     logger.debug(f"Config version {version} is supported")
     if not strict:
         config = _drop_unknown_configuration_keys(config)
+        config = _drop_unknown_execution_keys(config)
         config = _drop_archived_kubernetes_keys(config)
         config = _drop_archived_local(config)
     return get_validated_config(config, ConfigV1)
