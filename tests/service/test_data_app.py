@@ -195,6 +195,31 @@ def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, r
     assert (root / _CAMPAIGN / "_execution" / "controller.log").read_text() == "driver's\n"
 
 
+def test_outputs_may_not_write_the_services_own_folders(client, root):
+    """``_transient/`` holds the job-link manifest the driver turns into symlinks, and
+    ``_config/`` what every job is handed; a link inside the delivery is no way around it."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        link = tarfile.TarInfo("cell-a/1/t")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../_transient"
+        tar.addfile(link)
+        for name in ("_transient/job_links.yaml", "_config/campaign.vast",
+                     "_execution/outcome.json", "cell-a/1/t/job_links.yaml",
+                     "cell-a/1/test.xml"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+    resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=buf.getvalue())
+    assert resp.status_code == 200, resp.text
+    assert sorted(resp.json()["refused"]) == [
+        "_config/campaign.vast", "_execution/outcome.json", "_transient/job_links.yaml",
+        "cell-a/1/t/job_links.yaml"]
+    assert not (root / _CAMPAIGN / "_transient" / "job_links.yaml").exists()
+    assert (root / _CAMPAIGN / "_config" / "campaign.vast").read_text().startswith("configuration")
+    assert (root / _CAMPAIGN / "cell-a" / "1" / "test.xml").read_bytes() == b"x"
+
+
 def test_ranges_append_and_a_mismatch_is_answered_with_a_resync(client, root):
     """A live delivery extends a log; one that does not continue it names it in ``resync``."""
     log = root / _CAMPAIGN / "cell-a" / "1" / "logs" / "system.log"
