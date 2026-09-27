@@ -22,6 +22,7 @@ from importlib.metadata import entry_points
 from fastmcp import FastMCP
 
 from .plugin import MCPPlugin
+from .service_access import answering_errors
 
 ENTRY_POINT_GROUP = "robovast.mcp_plugins"
 
@@ -77,6 +78,10 @@ def registered_text(mcp: FastMCP) -> dict[str, str]:
 def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
     """Discover all installed plugins and register them with *mcp*.
 
+    Each tool a plugin registers answers what it raises with the one error document
+    (:func:`~robovast.mcp_server.service_access.answering_errors`), so no tool catches
+    an exception only to report it.
+
     Parameters
     ----------
     mcp:
@@ -101,8 +106,11 @@ def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
                 continue
             before = set(registered_tools(mcp))
             plugin.register(mcp)
-            after = set(registered_tools(mcp))
-            plugin_tools[plugin.name] = sorted(after - before)
+            after = registered_tools(mcp)
+            added = sorted(set(after) - before)
+            for name in added:
+                after[name].fn = answering_errors(after[name].fn)
+            plugin_tools[plugin.name] = added
             loaded.append(plugin)
             logger.debug("Loaded MCP plugin %r from %r.", plugin.name, ep.value)
         except Exception:

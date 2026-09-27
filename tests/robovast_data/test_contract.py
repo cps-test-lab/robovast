@@ -6,6 +6,8 @@ The fixture campaign's catalog, every table built, is kept as a golden file per 
 number. A change to it is a change every notebook, panel and agent prompt sees, so it fails
 here until the contract number moves and the changelog names the tables; then
 ``ROBOVAST_UPDATE_CONTRACT=1 pytest tests/robovast_data/test_contract.py`` writes the new file.
+It never rewrites the file of an existing number, so a schema change cannot pass without the
+number moving.
 """
 
 import json
@@ -24,7 +26,7 @@ def test_the_fixture_campaign_describes_as_the_contract_says(campaign):
     described = describe_data_db(str(campaign))
     assert described["data_contract"] == DATA_CONTRACT
     got = {f"{t['schema']}.{t['table']}": t["columns"] for t in described["tables"]}
-    if os.environ.get("ROBOVAST_UPDATE_CONTRACT"):
+    if os.environ.get("ROBOVAST_UPDATE_CONTRACT") and not GOLDEN.exists():
         GOLDEN.write_text(json.dumps(got, indent=1, sort_keys=True) + "\n")
     want = json.loads(GOLDEN.read_text())
     changed = sorted(set(got) ^ set(want)) + sorted(k for k in got.keys() & want.keys()
