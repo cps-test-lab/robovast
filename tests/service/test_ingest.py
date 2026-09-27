@@ -12,10 +12,7 @@ away to keep a boolean clean, and every non-ok stage has to name what to do abou
 """
 
 import io
-<<<<<<< HEAD
-=======
 import json
->>>>>>> origin/next
 import os
 import shutil
 import sqlite3
@@ -27,15 +24,9 @@ import yaml
 
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-<<<<<<< HEAD
-                                     STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
-                                     missing_for_import, missing_for_import_in,
-                                     read_campaign_id)
-=======
                                      STAGE_NEWER, STAGE_OK, blocking_summary,
                                      claim_campaign_dir, extract_archive, ingest_campaign,
                                      missing_for_import, missing_for_import_in, read_campaign_id)
->>>>>>> origin/next
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -394,7 +385,6 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     assert "3/20 runs" in stage["detail"]
 
 
-<<<<<<< HEAD
 def test_an_export_is_refused_as_an_export_and_told_which_archive_imports(tmp_path):
     """An export (``vast campaign export``) holds ``export.json`` and ``tables/`` beside the
     campaign's records, so it is not one campaign directory -- but it is the other archive
@@ -414,7 +404,8 @@ def test_an_export_is_refused_as_an_export_and_told_which_archive_imports(tmp_pa
     with pytest.raises(ValueError, match="is an export") as refused:
         read_campaign_id(export)
     assert "vast campaign download" in str(refused.value)
-=======
+
+
 def _bomb(tmp_path, unpacked: int) -> Path:
     """One campaign whose single file unpacks to *unpacked* bytes of zeros -- kilobytes packed."""
     out = tmp_path / "bomb.tar.gz"
@@ -690,4 +681,3 @@ def test_a_dot_rooted_archive_extracts_under_its_campaign_name(tmp_path):
     extract_archive(archive, results, campaign_id)
 
     assert (results / campaign_id / "_config" / "campaign.vast").is_file()
->>>>>>> origin/next
