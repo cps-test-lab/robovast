@@ -27,7 +27,6 @@ extra to use it.
 """
 
 import logging
-
 from typing import Literal, Optional
 
 import numpy as np
@@ -160,9 +159,9 @@ class QDStrategy(SearchStrategy):
 
         x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
-        # The emitters' batches sum to exactly per_batch -- ceil(per_batch / emitters) each
-        # overspent every batch of the budget by up to emitters - 1 draws -- and no emitter
-        # gets an empty batch, so there are at most per_batch of them.
+        # The emitters' batches sum to exactly per_batch, so a generation spends one batch
+        # of the budget, and no emitter gets an empty batch, so there are at most per_batch
+        # of them.
         n_emitters = max(1, min(params.emitters, cfg.per_batch))
         base, extra = divmod(cfg.per_batch, n_emitters)
         seed = cfg.seed

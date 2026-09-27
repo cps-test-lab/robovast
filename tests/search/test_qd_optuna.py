@@ -253,7 +253,7 @@ def _qd_with_emitters(per_batch, emitters):
 
 
 def test_qd_proposes_exactly_per_batch_across_its_emitters():
-    """Two emitters for five draws gave six: every batch of a budget overspent by one."""
+    """Five draws split unevenly across two emitters make a generation of exactly five."""
     pytest.importorskip("ribs")
     s = _qd_with_emitters(per_batch=5, emitters=2)
     rng = random.Random(0)
