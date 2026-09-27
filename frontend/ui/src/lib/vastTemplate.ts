@@ -1,7 +1,7 @@
 // Starter content for a brand-new .vast file created from the Config editor. It is intentionally
 // minimal but structurally complete, so the Monaco schema validation has something to guide the
-// user from -- and so it VALIDATES. `tests/common/test_new_file_template.py` validates this body
-// under the version below.
+// user from -- and so it VALIDATES: `tests/common/test_new_file_template.py` validates this body
+// under the version the config schema publishes.
 //
 // No image is named. The scenario container runs the framework image, resolved from the
 // deployment's project; `image:` is for a container of your own (see docs/images.rst).
