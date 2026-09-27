@@ -1974,25 +1974,32 @@ check what else is running and whether the queue admits more than the nodes can 
 or, for a pull reason, run fewer jobs at once than the registry will serve.
 
 
-Selecting a Cluster Context
----------------------------
+Which cluster a campaign runs on
+--------------------------------
 
-RoboVAST uses **kubeconfig contexts** to address different clusters.  The commands that
-act on a cluster themselves take ``--context``/``-x`` to select one (as listed by
-``kubectl config get-contexts``), and use the kubeconfig's current context without it:
+A campaign runs on the cluster its **service** is deployed into: the service drives the
+Jobs from inside that cluster, so the cluster is chosen when you choose a service — the one
+answering on the conventional local port, else the one ``vast login`` stored — and not by
+the launch command. ``vast service info`` prints the kubeconfig context name that service
+was given (``context``) — for a deployed service, the ``--context`` of ``vast cluster
+setup`` or ``vast service upgrade`` — which is the name the per-cluster lists below are
+matched against.
+
+``--context`` selects a **kubeconfig context** for the operator verbs that talk to a
+cluster directly — ``vast cluster setup``, ``cluster cleanup``, ``cluster jobs-cleanup``,
+``cluster monitor``, ``vast service upgrade``, ``service token`` and ``vast doctor`` — as
+listed by ``kubectl config get-contexts``. Each acts on that one context, or on the
+kubeconfig's current one without the flag. ``cluster cleanup``, ``cluster jobs-cleanup``
+and ``cluster monitor`` take no ``.vast``: a file does not say which cluster to clean or
+watch.
 
 .. code-block:: bash
 
-   # Use the current context
+   # The currently active context (default)
    vast cluster setup rke2
 
    # Explicitly target a context
    vast cluster setup rke2 --context cloud.example
-
-The ``--context`` flag is available on ``cluster setup``, ``service upgrade``,
-``cluster monitor``, ``cluster jobs-cleanup``, and ``cluster cleanup``. A campaign is
-not one of them: ``vast workspace run`` talks to a service, and the service runs in the
-cluster it was set up in.
 
 Contexts can be renamed to shorter, human-friendly identifiers:
 
@@ -2042,7 +2049,7 @@ Rules:
 
 * **Scalars take precedence** — a plain integer/string is used unchanged on
   every cluster.
-* For per-cluster lists the entry whose key matches the service's recorded context is
+* For per-cluster lists the entry whose key matches the **service's** context is
   used.  If no entry matches, the campaign fails naming the entries there are.
 * Fields can be mixed: ``cpu`` as a scalar and ``memory`` as a per-cluster list
   is valid.
@@ -2053,8 +2060,10 @@ Running the same config on two clusters means launching it on each cluster's ser
 
 .. code-block:: bash
 
-   vast cluster setup rke2 --context cloud.example   # records cloud.example
-   vast cluster setup rke2 --context lab.example     # records lab.example
+   vast login https://robovast-gcp.example.org
+   vast workspace run my-experiment
+   vast login https://robovast-lab.example.org
+   vast workspace run my-experiment
 
 
 Cloud Provider Configurations
