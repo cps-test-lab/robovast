@@ -4,8 +4,8 @@
 
 The queue gives up on a create that keeps raising -- a webhook, an RBAC change, a quota, a
 manifest the API server rejects -- and drops the item. Read only as "nothing planned, nothing
-running", that batch was over, and the campaign finished with every run recorded as having
-produced nothing. What was given up on is a verdict the runner raises with the cause.
+running", such a batch would look over and every run empty; what was given up on is instead a
+verdict the runner raises with the cause.
 """
 
 import pytest

@@ -726,8 +726,8 @@ class AdmissionController:
                 created += 1
             for item in failed:
                 # Dropped from the queue, not left to be retried by every later drain of every
-                # other campaign. The owner learns why through ``refusal``; its progress count
-                # then falls, which is what ends its wait.
+                # other campaign. The owner reads each Job's cause through ``given_up``, and its
+                # runner fails the batch with them.
                 self._items.pop(item.key, None)
         return created
 
