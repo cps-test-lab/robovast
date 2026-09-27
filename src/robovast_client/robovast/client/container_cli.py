@@ -19,7 +19,7 @@ import click
 
 from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
+from robovast.client.service_target import service_client
 from robovast.execution.wait_exit import CommonExit
 
 @click.group()
@@ -49,10 +49,8 @@ def container():
 @click.option('--fresh', is_flag=True,
               help='Replace the held container rather than join it, so the image is '
                    'fetched again: how to check that a re-pushed tag landed.')
-@target_options
 def exec_command(shell_command, workspace_id, config_path, campaign_id, config_name,
-                 container, keep_alive, fresh, namespace,
-                 context):  # pylint: disable=redefined-outer-name
+                 container, keep_alive, fresh):  # pylint: disable=redefined-outer-name
     """Test a container and its setup by running SHELL_COMMAND in the experiment image.
 
     Produces **no campaign data** — nothing durable, no provenance, no repetitions. Use
@@ -80,7 +78,7 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
     """
     from robovast.service.interface import ExecRequest
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             result = client.exec_in_container(ExecRequest(
                 command=shell_command, workspace_id=workspace_id,
@@ -111,11 +109,10 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
 
 
 @container.command('stop')
-@target_options
-def stop_container(namespace, context):  # pylint: disable=redefined-outer-name
+def stop_container():
     """Stop the held container-exec container, if there is one."""
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             result = client.stop_exec_container()
     except Exception as e:  # noqa: BLE001
