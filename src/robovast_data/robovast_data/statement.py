@@ -129,7 +129,8 @@ def _rewrite_casts(node) -> None:
         location = child.get("query_location", 0)
         as_double = {"class": "CAST", "type": "OPERATOR_CAST", "alias": "",
                      "query_location": location, "child": child,
-                     "cast_type": {"id": "DOUBLE", "type_info": None}, "try_cast": False}
+                     "cast_type": {"id": "DOUBLE", "type_info": None},
+                     "try_cast": node.get("try_cast", False)}
         node["child"] = {"class": "FUNCTION", "type": "FUNCTION", "alias": "",
                          "query_location": location,
                          "function_name": "trunc", "schema": "", "catalog": "",
