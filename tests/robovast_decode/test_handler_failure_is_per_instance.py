@@ -3,8 +3,8 @@
 """A handler that fails takes only its own tables with it, not its class's.
 
 A plan holds several handlers of one class -- one ``TopicTable`` per ``to_csv`` entry, one
-``ActionTopics`` per action. Keyed by class name, one failure marked every sibling failed,
-and the build discarded their rows.
+``ActionTopics`` per action. A failure is recorded against the handler instance, so its
+siblings keep their rows and each failure keeps its own reason.
 """
 
 from robovast_decode.decode import decode_bag
