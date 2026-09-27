@@ -60,18 +60,16 @@ USER_ENV_FILE_VAR = "ROBOVAST_ENV_FILE"
 def user_env_file() -> Path:
     """The user-level settings file, honouring :data:`USER_ENV_FILE_VAR` then XDG.
 
-    ``~/.config/robovast/env``. The same directory ``vast login`` keeps ``config.json``
-    in (see :func:`robovast.client.login.config_path`), resolved by the same rules, so
-    there is one place a user's RoboVAST configuration lives rather than a second one
-    invented for this. ``~/.robovast/`` is *data* — workspaces and caches — and settings
-    do not belong there.
+    ``env`` in :func:`robovast.client.login.user_config_dir` -- the directory ``vast
+    login`` keeps ``config.json`` in, so there is one place a user's RoboVAST
+    configuration lives rather than a second one invented for this. ``~/.robovast/`` is
+    *data* — workspaces and caches — and settings do not belong there.
     """
     override = os.environ.get(USER_ENV_FILE_VAR, "").strip()
     if override:
         return Path(override).expanduser()
-    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    root = Path(base).expanduser() if base else Path.home() / ".config"
-    return root / "robovast" / "env"
+    from robovast.client.login import user_config_dir  # pylint: disable=import-outside-toplevel
+    return user_config_dir() / "env"
 
 
 def _file_problems(values: dict) -> list:
