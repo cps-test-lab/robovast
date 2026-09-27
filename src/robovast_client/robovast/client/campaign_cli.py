@@ -282,10 +282,10 @@ def log(campaign, follow, phase, min_level, grep, as_json, namespace, context):
     """
     try:
         with service_client(namespace, context) as (client, target):
-            _echo_target(target)
+            _echo_target(target, err=as_json)
             campaign_id = campaign or _sole_running_campaign(client)
             if campaign_id is None:
-                click.echo("No running campaign found; pass CAMPAIGN.")
+                click.echo("No running campaign found; pass CAMPAIGN.", err=as_json)
                 return
             filters = {"phase": phase, "min_level": min_level, "grep": grep}
             if follow:
