@@ -647,15 +647,15 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
             carries them.
 
     Returns:
+        A listing or search names any page whose directives could not be expanded under
+        ``unresolved``; reading one is refused with the reason.
         Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
         Search: ``{results, total, matching_lines_total, truncated}`` — each result
         ``{page, title, matches, matching_lines, excerpts_total, truncated}``, where
         ``matches`` are the excerpts returned and ``matching_lines`` is how many lines
         of that page matched at all. ``truncated`` marks a page whose excerpts were
         capped, so a narrowed read is never mistaken for the whole answer.
-        Page: ``{page, title, content}``. Or ``{error}``. A listing or search names any
-        page whose directives could not be expanded under ``unresolved``; reading one is
-        refused with the reason.
+        Page: ``{page, title, content}``. Or ``{error}``.
     """
     if not _doc_files:
         return _no_docs()
