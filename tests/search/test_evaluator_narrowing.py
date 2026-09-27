@@ -114,12 +114,19 @@ def test_a_non_finite_objective_is_refused_naming_it(tmp_path, value):
             tmp_path, ParamSet(id="p", values={}))
 
 
-@pytest.mark.parametrize("value", ["nan", "0.5", None])
+@pytest.mark.parametrize("value", ["nan", "fast", None])
 def test_a_non_numeric_objective_is_refused_naming_it(tmp_path, value):
-    """A strategy's float() would read "nan" as NaN and fail on None far from the extractor."""
+    """A strategy's float() would read "nan" as NaN and fail on the others inside tell()."""
     with pytest.raises(ValueError, match="failure_rate.*robustness"):
         _evaluator(NAV, {**NAV_REPORT, "robustness": value}).evaluate(
             tmp_path, ParamSet(id="p", values={}))
+
+
+def test_a_numeric_string_objective_is_kept(tmp_path):
+    """Extractors read CSVs; a finite value arriving as text is not an error."""
+    got = _evaluator(NAV, {**NAV_REPORT, "robustness": "-0.09"}).evaluate(
+        tmp_path, ParamSet(id="p", values={}))
+    assert got.objectives == {"robustness": "-0.09"}
 
 
 def test_a_non_finite_diagnostic_beside_the_objective_is_kept(tmp_path):

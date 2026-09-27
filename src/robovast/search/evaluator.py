@@ -24,7 +24,6 @@ its objectives + measures into an :class:`Evaluation`. The framework counts
 
 import logging
 import math
-import numbers
 from pathlib import Path
 
 from robovast.common.config import SearchConfig
@@ -34,6 +33,13 @@ from .plugins import EXTRACTOR_GROUP, load_ref
 from .types import Evaluation, ParamSet
 
 logger = logging.getLogger(__name__)
+
+
+def _is_finite_number(value) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 class Evaluator:
@@ -112,13 +118,12 @@ class Evaluator:
         # downstream then gets a dict that means what its name says.
         objectives = {n: result.objectives[n] for n in self.objective_names}
         # No strategy can compare a NaN, an infinity or a non-number, so it is refused where
-        # it enters. A string is refused too: the strategies' float() would turn "nan" into NaN.
-        not_finite = {n: v for n, v in objectives.items()
-                      if not isinstance(v, numbers.Real) or not math.isfinite(v)}
+        # it enters. Tested through float(), which is how every strategy reads an objective.
+        not_finite = {n: v for n, v in objectives.items() if not _is_finite_number(v)}
         if not_finite:
             raise ValueError(
                 f"Extractor '{self._plugin}' returned objective value(s) {not_finite} for "
-                f"{config_dir}; an objective must be a finite real number to be compared.")
+                f"{config_dir}; an objective must be a finite number to be compared.")
         extras = {n: v for n, v in result.objectives.items() if n not in objectives}
         clashing = sorted(set(extras) & set(result.measures))
         if clashing:
