@@ -319,7 +319,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
             if isinstance(handler, Videos):
                 handler.output_dir = run.path
                 handler.bag_name = os.path.basename(bag_dir)
-        size = sizes[os.path.relpath(bag_dir, campaign_dir)]
+        size = sizes[rel_bag]
         todo = []
         for handler in handlers:
             current = [t for t in handler.tables()
@@ -366,7 +366,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                 superseded += record_run_table(
                     fresh, table, run_key, files=[rel], rows=arrow.num_rows,
                     schema=arrow.schema,
-                    sources={os.path.relpath(bag_dir, campaign_dir): size},
+                    sources={rel_bag: size},
                     complete=complete, reason=reason)
                 report.built.setdefault(table, []).append(run_key)
             write_manifest(campaign_dir, fresh)
