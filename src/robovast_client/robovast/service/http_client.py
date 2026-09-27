@@ -33,7 +33,8 @@ from robovast.client import file_address
 from robovast.client.app_version import running_version
 from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
-from robovast.service.interface import (ActionResult, BuildImageRequest,
+from robovast.service.interface import (ActionResult, BINARY_FILE, BinaryFile,
+                                        BuildImageRequest,
                                         CampaignLogChunk, CampaignLogRow, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DeleteCampaignsRequest,
@@ -47,7 +48,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, TAP_MAX_S,
+                                        ServiceCache, ServiceError, ServiceUnreachable, TAP_MAX_S,
                                         UnsupportedOperation,
                                         UploadGrant,
                                         UpgradeInfo,
@@ -63,6 +64,55 @@ _CACHE_TIMEOUT_S = 600.0
 
 #: How long a multi-campaign delete may take -- the same walk, over several campaigns.
 _DELETE_CAMPAIGNS_TIMEOUT_S = 600.0
+
+
+def _session(base_url: str):
+    """A ``requests.Session`` that reports a service that does not answer as one sentence.
+
+    Every request the transport makes goes through the session's adapter, the streamed
+    reads included, so this is the one place a connection failure can be caught for all of
+    them. ``requests`` raises it as a ``ConnectionError`` wrapping urllib3's retry
+    bookkeeping; what leaves here is :class:`ServiceUnreachable`, naming the address and
+    the socket-level reason, which is what a caller prints or acts on.
+
+    A refused or timed-out *connection* only: a service that answered slowly is a
+    ``ReadTimeout`` and passes through as it is, since it says something else.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    class _Adapter(HTTPAdapter):
+        def send(self, request, **kwargs):
+            try:
+                return super().send(request, **kwargs)
+            except requests.exceptions.ConnectionError as e:
+                raise ServiceUnreachable(base_url, _innermost_reason(e)) from e
+
+    session = requests.Session()
+    adapter = _Adapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _innermost_reason(exc: BaseException) -> str:
+    """The socket-level sentence inside a ``requests`` connection error.
+
+    ``requests`` wraps urllib3's ``MaxRetryError``, which carries the real error as its
+    ``reason``; that one's text starts with the connection object's repr. The innermost
+    text, without the repr, is what says "Connection refused" or "certificate verify
+    failed" -- the words a reader, and ``vast login``'s remedy, look for.
+    """
+    import re
+    inner = exc
+    while True:
+        nxt = getattr(inner, "reason", None)
+        if nxt is None and inner.args and isinstance(inner.args[0], BaseException):
+            nxt = inner.args[0]
+        if not isinstance(nxt, BaseException) or nxt is inner:
+            break
+        inner = nxt
+    return re.sub(r"^<[^>]*>: ", "", str(inner)) or inner.__class__.__name__
 
 
 class HTTPTransport(RobovastInterface):
@@ -87,10 +137,9 @@ class HTTPTransport(RobovastInterface):
 
     def __init__(self, base_url: str, timeout: float = 30.0,
                  token: str = "", user: str = ""):
-        import requests
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = _session(self.base_url)
         if token:
             self.session.headers["Authorization"] = f"Bearer {token}"
         if user:
@@ -265,8 +314,13 @@ class HTTPTransport(RobovastInterface):
             offset=offset, limit=limit))
 
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
-        return FileText.model_validate(self._get(
-            Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+        try:
+            return FileText.model_validate(self._get(
+                Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+        except ServiceError as e:
+            if e.code == BINARY_FILE:
+                raise BinaryFile(address, e.detail) from e
+            raise
 
     def read_file_bytes(self, address: str) -> bytes:
         resp = self.session.get(f"{self.base_url}{Routes.file(address)}",
@@ -740,13 +794,17 @@ class HTTPTransport(RobovastInterface):
 
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
                             at=None, view=None, focus=None, camera=None,
-                            size: str = "960x720") -> str:
+                            size: str = "960x720") -> "ScreenshotFrame":
         """POST the render and land the PNG in a temp dir, keeping the local contract.
 
         The interface returns a *path* because the service builds one, and a path means
         nothing across HTTP — so the bytes are written into the same directory shape
         ``screenshot.render`` produces, and ``screenshot.discard`` removes it either way. One
         cleanup rule for both, rather than a caller that has to know which implementation answered.
+
+        The name the service kept the render under is read off the response's
+        ``Content-Location``, the one place it travels. A response without one kept nothing,
+        and the name is left empty rather than guessed.
 
         **A long timeout, deliberately.** This is the one call that may pull a 2 GB image
         before it can start, inside the request; the default would give up on a cold node and
@@ -756,6 +814,7 @@ class HTTPTransport(RobovastInterface):
         from pathlib import Path
         from urllib.parse import urlencode
 
+        from robovast.service.interface import ScreenshotFrame
 
         params = [("config_name", config_name), ("run_id", str(run_id)), ("size", size)]
         if at is not None:
@@ -772,7 +831,19 @@ class HTTPTransport(RobovastInterface):
         out.mkdir()
         frame = out / "frame.png"
         frame.write_bytes(resp.content)
-        return str(frame)
+        prefix = Routes.campaign_screenshot_frame(campaign_id, "")
+        kept = resp.headers.get("Content-Location", "")
+        name = kept[len(prefix):] if kept.startswith(prefix) else ""
+        return ScreenshotFrame(path=str(frame), name=name)
+
+    def resolve_campaign_screenshot(self, campaign_id: str, name: str) -> str:
+        # A path on the service's disk means nothing here; the kept render is fetched over HTTP
+        # from the route its name addresses.
+        del campaign_id, name
+        raise UnsupportedOperation(
+            "resolve_campaign_screenshot", self.IMPLEMENTATION,
+            hint="a kept screenshot is fetched over HTTP from "
+                 "Routes.campaign_screenshot_frame, not resolved to a local path")
 
     def workspace_scene_status(self, workspace_id: str, path: str = "") -> "SceneStatus":
         from robovast.service.interface import SceneStatus

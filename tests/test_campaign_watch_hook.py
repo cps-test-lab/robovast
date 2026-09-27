@@ -153,7 +153,7 @@ def _rearm(hook, campaign, stalled, session="s1"):
 
 
 def test_a_stall_re_arms_a_campaign_the_waiter_handed_off(hook, capsys):
-    """`vast campaign wait` exits 4 on a stall, which leaves the campaign alive and still marked
+    """`vast campaign wait` ends as ``STALLED`` on a stall, which leaves the campaign alive and still marked
     handed-off. Without re-arming, the guard is spent and the agent can stop silently on a
     wedged campaign — the exact failure this hook exists to prevent."""
     _start(hook, "camp-a")
@@ -199,7 +199,7 @@ def _handed_off(hook, capsys, campaign="camp-a"):
 
 
 def test_an_error_finding_re_arms_too(hook, capsys):
-    """`vast campaign wait` exits 5 on one, leaving the campaign live and still marked handed-off — the
+    """`vast campaign wait` ends as ``HEALTH_FINDING`` on one, leaving the campaign live and still marked handed-off — the
     same hole a stall opens, so it needs the same patch. Claiming both and covering one would
     make the guard's own docstring wrong."""
     campaign = _handed_off(hook, capsys)
