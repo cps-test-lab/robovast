@@ -104,3 +104,33 @@ def test_a_missing_declared_objective_still_raises(tmp_path):
     ev = _evaluator(NAV, {"failure_rate": 0.0})
     with pytest.raises(ValueError, match="robustness"):
         ev.evaluate(tmp_path, ParamSet(id="p", values={}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_objective_is_refused_naming_it(tmp_path, value):
+    """Every comparison with a NaN is false, so no strategy can rank it."""
+    with pytest.raises(ValueError, match="robustness"):
+        _evaluator(NAV, {**NAV_REPORT, "robustness": value}).evaluate(
+            tmp_path, ParamSet(id="p", values={}))
+
+
+@pytest.mark.parametrize("value", ["nan", "fast", None])
+def test_a_non_numeric_objective_is_refused_naming_it(tmp_path, value):
+    """A strategy's float() would read "nan" as NaN and fail on the others inside tell()."""
+    with pytest.raises(ValueError, match="failure_rate.*robustness"):
+        _evaluator(NAV, {**NAV_REPORT, "robustness": value}).evaluate(
+            tmp_path, ParamSet(id="p", values={}))
+
+
+def test_a_numeric_string_objective_is_kept(tmp_path):
+    """Extractors read CSVs; a finite value arriving as text is not an error."""
+    got = _evaluator(NAV, {**NAV_REPORT, "robustness": "-0.09"}).evaluate(
+        tmp_path, ParamSet(id="p", values={}))
+    assert got.objectives == {"robustness": "-0.09"}
+
+
+def test_a_non_finite_diagnostic_beside_the_objective_is_kept(tmp_path):
+    """Only an optimized value must be comparable; a diagnostic is kept as measured."""
+    got = _evaluator(NAV, {**NAV_REPORT, "time_to_goal": float("nan")}).evaluate(
+        tmp_path, ParamSet(id="p", values={}))
+    assert got.objectives == {"robustness": -0.09}

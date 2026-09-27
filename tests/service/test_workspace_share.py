@@ -225,3 +225,52 @@ def test_exporting_without_a_share_is_a_refusal_not_a_silence(monkeypatch, tmp_p
     ws = transport.store.registry.create(name="lonely")["workspace_id"]
     with pytest.raises(RuntimeError, match="no share configured"):
         transport.export_workspace(ws)
+
+
+def _bomb(tmp_path, unpacked: int):
+    """A workspace archive a few kilobytes on the share that unpacks to *unpacked* bytes."""
+    import io
+
+    out = tmp_path / "bomb.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        info = tarfile.TarInfo("ws-elsewhere/zeros.bin")
+        info.size = unpacked
+        tar.addfile(info, io.BytesIO(bytes(unpacked)))
+    return out
+
+
+def test_an_archive_that_unpacks_past_the_room_is_refused_before_anything_is_written(
+        env, tmp_path, monkeypatch):
+    """Held to the room above the reserve on the workspaces volume, from the tar's index."""
+    from robovast.common.errors import InsufficientStorageError
+
+    transport, share, _ws = env
+    (share.root / "bomb.workspace.tar.gz").write_bytes(
+        _bomb(tmp_path, 4 * 1024 * 1024).read_bytes())
+    measured = []
+
+    def room(path):
+        measured.append(path)
+        return 1024 * 1024
+
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", room)
+
+    before = {w["workspace_id"] for w in transport.store.registry.list()}
+    with pytest.raises(InsufficientStorageError,
+                       match=r"bomb.workspace.tar.gz unpacks to .* GB, and the workspaces "
+                             r"volume has .* GB free above its reserve"):
+        transport.create_workspace(CreateWorkspaceRequest(from_share="bomb"))
+    assert {w["workspace_id"] for w in transport.store.registry.list()} == before
+    assert not list((tmp_path / "workspaces").rglob("zeros.bin"))
+    assert all(p.is_relative_to(tmp_path / "workspaces") for p in measured)
+
+
+def test_an_archive_that_fits_seeds_the_workspace(env, tmp_path, monkeypatch):
+    transport, share, _ws = env
+    (share.root / "bomb.workspace.tar.gz").write_bytes(
+        _bomb(tmp_path, 4 * 1024 * 1024).read_bytes())
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 10 ** 9)
+
+    taken = transport.create_workspace(CreateWorkspaceRequest(from_share="bomb"))
+    project = transport.store.registry.project_dir(taken.workspace_id)
+    assert (project / "zeros.bin").stat().st_size == 4 * 1024 * 1024
