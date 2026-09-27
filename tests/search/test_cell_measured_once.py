@@ -60,7 +60,7 @@ class ScriptedStrategy:
     def resume(self, batches):
         for batch in batches:
             self.ask(batch.asked)
-            self.tell(batch.evaluations)
+            self.tell(batch.told)
 
     def report(self):
         return SearchReport(extra={})
@@ -75,12 +75,14 @@ def _run(tmp_path, script, batches=None):
     return controller, store, backend, strategy
 
 
-def _units(store):
+def _units(store, recalled=False):
+    """The cells measured, or with *recalled* the rows of cells a batch recalled."""
     conn = sqlite3.connect(store.db_path)
     conn.row_factory = sqlite3.Row
     return conn.execute(
         "SELECT b.idx AS batch, u.paramset_id, u.status FROM unit u "
-        "JOIN batch b ON u.batch_id = b.id ORDER BY u.id").fetchall()
+        "JOIN batch b ON u.batch_id = b.id WHERE (u.status = 'recalled') = ? "
+        "ORDER BY u.id", (recalled,)).fetchall()
 
 
 def test_a_cell_from_an_earlier_batch_is_not_run_again(tmp_path):
@@ -109,6 +111,8 @@ def test_a_batch_that_proposes_only_known_cells_runs_nothing(tmp_path):
     controller, store, backend, strategy = _run(tmp_path, [[1.0, 2.0], [2.0, 1.0]])
 
     assert len(_units(store)) == 2                # batch 1 recorded no new cell
+    assert [(u["batch"], u["status"]) for u in _units(store, recalled=True)] == [
+        (1, "recalled"), (1, "recalled")]         # but both of its cells as recalled
     assert backend.batch_runs == [2]              # and executed no runs at all
     assert strategy.told == [[1.0, 2.0], [1.0, 2.0]]
     assert controller._runs_done == 4             # noqa: SLF001
