@@ -2538,6 +2538,32 @@ class UnsupportedOperation(ServiceError):
                          code=UNSUPPORTED_OPERATION)
 
 
+#: A text read of a binary file -- :class:`BinaryFile` crossing HTTP.
+BINARY_FILE = "binary_file"
+
+
+class BinaryFile(ServiceError, ValueError):
+    """A text read refused because the file is binary.
+
+    ``url`` is the route that serves the file's bytes, relative to the service's origin. A
+    ``ValueError`` like any refused input, so the app answers ``400``, with
+    :data:`BINARY_FILE` in :data:`ERROR_CODE_HEADER`; the HTTP transport raises this class
+    again from that code, so a caller catches one type wherever the service runs.
+    """
+
+    STATUS = 400
+
+    def __init__(self, address: str, detail: str = ""):
+        name = address.rstrip("/").rsplit("/", 1)[-1]
+        super().__init__(
+            self.STATUS,
+            detail or (f"{name} is a binary file — read it as bytes (GET the address "
+                       "without 'as=text', or 'vast files get'), or download the "
+                       "campaign archive."),
+            url=Routes.file(address), code=BINARY_FILE)
+        self.address = address
+
+
 API_VERSION = "0"
 
 #: The port a robovast-service listens on unless told otherwise, and the one every
@@ -3130,8 +3156,8 @@ class RobovastInterface(ABC):
         Line-based paging happens **server-side**, so a caller reading 100 lines of a
         log on the cluster transfers 100 lines, not the file.
 
-        Raises ``ValueError`` on a malformed address or a binary file (→ 400) and
-        ``KeyError`` when the file does not exist (→ 404).
+        Raises :class:`BinaryFile` on a binary file and ``ValueError`` on a malformed
+        address (both → 400), and ``KeyError`` when the file does not exist (→ 404).
         """
 
     @abstractmethod
