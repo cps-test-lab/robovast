@@ -303,10 +303,15 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     # {table: role} of what an earlier recording of the run already gives, so a later one
     # does not fill the same table.
     claimed: Dict[str, str] = {}
+    # {table: sources} of each bag table: the one recording it comes from, which is what
+    # its entry is current against, rows or none.
+    bag_sources: Dict[str, dict] = {}
     for role, bag_dir in sources:
         recorded = recorded_topics(bag_dir)
         plan = plan_for(role, recorded, groups.get(role), taken=claimed)
         claimed.update({t: role for t in plan.tables})
+        rel_bag = os.path.relpath(bag_dir, campaign_dir)
+        bag_sources.update({t: {rel_bag: sizes[rel_bag]} for t in plan.tables})
         known_tables.update(plan.tables)
         run_bag_tables.update(plan.tables)
         handlers, _unknown = narrow(plan, wanted_tables)
@@ -377,7 +382,7 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                                report, known_tables,
                                reserved=run_bag_tables | DERIVED_TABLES)
     if wanted_tables is not None:
-        _record_absent(campaign_dir, run, wanted_tables, report, sizes,
+        _record_absent(campaign_dir, run, wanted_tables, report, sizes, bag_sources,
                        known=run_bag_tables | file_tables | {RECORDING_TABLE})
 
 
@@ -519,11 +524,14 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
 
 
 def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildReport,
-                   sizes: dict, known: set) -> None:
+                   sizes: dict, bag_sources: Dict[str, dict], known: set) -> None:
     """Enter the asked-for tables *run* has no rows for, and why where a build failed.
 
-    *known* are the tables the run's records can give at all: a table outside it is one this
-    run never had, which is a different answer from one it had and came out empty.
+    A bag table's entry records the one recording it comes from (*bag_sources*), as an entry
+    with rows does, so the next build finds it current; any other records every recording
+    of the run (*sizes*). *known* are the tables the run's records can give at all: a table
+    outside it is one this run never had, which is a different answer from one it had and
+    came out empty.
     """
     have = {t for t, keys in report.built.items() if run.key in keys}
     have |= {t for t, keys in report.skipped.items() if run.key in keys}
@@ -535,7 +543,8 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
         manifest = read_manifest(campaign_dir)
         for table in missing:
             reason = report.failed.get(table, {}).get(run.key)
-            record_run_absent(manifest, table, run.key, sources=sizes, complete=complete,
+            record_run_absent(manifest, table, run.key,
+                              sources=bag_sources.get(table, sizes), complete=complete,
                               reason=reason, known=table in known)
         write_manifest(campaign_dir, manifest)
 
