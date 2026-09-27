@@ -5,7 +5,9 @@
   "idx INTEGER",
   "dir TEXT",
   "created_at REAL",
-  "asked INTEGER"
+  "asked INTEGER",
+  "recalls_recorded INTEGER",
+  "complete INTEGER"
  ],
  "campaign.campaign": [
   "campaign_id TEXT",
@@ -117,7 +119,8 @@
   "result_dir TEXT",
   "created_at REAL",
   "n_reps INTEGER",
-  "channels_json TEXT"
+  "channels_json TEXT",
+  "recalled_from INTEGER"
  ],
  "main._recording": [
   "campaign_id TEXT",

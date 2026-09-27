@@ -437,7 +437,9 @@ resolves and the API server answers, that the caller may create ClusterRoles (se
 does), and that the nodes report allocatable capacity at all. It reports the largest
 node rather than judging against a threshold: a campaign's pod is whatever its ``.vast``
 asks for, and a request no node can hold is refused when the campaign launches, naming
-both the request and each node's allocatable.
+both the request and each node's allocatable. These cluster checks come with
+``robovast-cluster``; without it they are absent and one ``cluster support: not installed``
+line says why.
 
 **It also checks whether the deployment can build experiment images**, which is the one
 prerequisite that would otherwise surface only when a campaign is submitted and refused:

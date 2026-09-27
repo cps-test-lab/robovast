@@ -54,3 +54,18 @@ def test_what_a_service_said_is_printed_as_it_arrived(capsys):
     def answer():
         raise ServiceError(400, detail)
     assert _report(answer, capsys) == f"Error: {detail}\n"
+
+
+def test_clicks_own_exceptions_pass_through(capsys):
+    """A usage error, or the refusal raised before a verb's body runs, is click's to
+    render as ``Error: <message>``; reported here it would read as a bug, with the frames
+    of the ``raise`` under it."""
+    import click
+
+    with pytest.raises(click.ClickException) as raised:
+        try:
+            raise click.ClickException("no robovast-service found")
+        except Exception as e:  # noqa: BLE001
+            handle_cli_exception(e)
+    assert raised.value.message == "no robovast-service found"
+    assert capsys.readouterr().err == ""
