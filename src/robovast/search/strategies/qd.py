@@ -183,14 +183,10 @@ class QDStrategy(SearchStrategy):
         self._direction = self.single_objective.direction
 
     def ask(self, n: int) -> list[ParamSet]:
-        """*n* proposals: a generation, or the first *n* of one.
+        """The first *n* of one generation of ``per_batch`` proposals.
 
-        The emitters draw a whole generation (``per_batch``) at once, and pyribs offers no
-        way to ask for fewer. A caller wanting less -- a preview capped at a few draws -- gets
-        the first *n*; the rest stay in the outstanding generation, so a ``tell`` of what was
-        proposed closes it through :meth:`_tell_incomplete` rather than mismatching it. More
-        than a generation is refused, since one generation is all the emitters can draw
-        before they are told.
+        pyribs draws a whole generation at once; the unproposed rest is closed by
+        :meth:`_tell_incomplete` on ``tell``.
         """
         if n > self.cfg.per_batch:
             raise ValueError(
