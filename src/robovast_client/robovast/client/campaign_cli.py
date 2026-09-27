@@ -109,7 +109,7 @@ def stop(campaign, namespace, context):
               help='Why you stopped it — stored with the run and shown in the results')
 @target_options
 def stop_job(job_name, campaign, reason, namespace, context):
-    """Kill ONE running job; the rest of the campaign keeps going.
+    """Stop ONE running job; the rest of the campaign keeps going.
 
     For a job that is visibly wedged and will not exit on its own. This is not how a
     campaign is ended -- that is ``vast campaign stop``, which stops all of it.
@@ -453,13 +453,13 @@ def wait(campaign, interval, timeout, namespace, context):
     offers no campaign-wait tool: an agent harness can background this command and be
     notified when it exits, hours or days later, where a blocking tool call would occupy
     the conversation for as long as the campaign ran — and still not outlive the session.
-    The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
+    The loop itself is ``wait_for_campaign_status`` in ``robovast.execution.campaign_wait``,
     shared with every other surface that waits.
 
     **A stall ends the wait too** (``STALLED``), because a stalled campaign never reaches a
     terminal phase: it holds ``running`` for its whole life, so a waiter that stopped only
     on terminality would never return and nobody would be told. The verdict is
-    :func:`~robovast.client.status.stall_report`'s, not a second opinion computed here.
+    ``stall_report``'s (``robovast.client.status``), not a second opinion computed here.
 
     **An ``error``-level health finding ends it too** (``HEALTH_FINDING``), and earlier: a
     stall is only visible once a run is past its declared budget, and needs one to have been
