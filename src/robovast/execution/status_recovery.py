@@ -26,6 +26,10 @@ results for the same campaign.
 
 Precedence, loud and fixed:
 
+0. ``_execution/importing.json`` — an import that never concluded. The tree is whatever
+   part of an archive had landed when the importing process died, and every record in
+   it, ``outcome.json`` included, came out of that archive and describes the campaign
+   that was archived. Such a tree is ``failed``, whatever those records say.
 1. ``_execution/outcome.json`` — the durable terminal record the controller
    writes on any terminal exit (finished / failed / stopped / crashed). This is
    the canonical status journal and wins when present — with the two exceptions
@@ -62,7 +66,7 @@ from typing import Optional
 
 from robovast.common.campaign_data import (campaign_has_derived_data,
                                            get_vast_configuration_info, read_execution_outcome,
-                                           write_execution_outcome)
+                                           read_import_marker, write_execution_outcome)
 from robovast.common.store import read_campaign_mode, read_run_counts
 from robovast.execution.control_server import Phase, Status, is_terminal
 
@@ -129,6 +133,20 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
     campaign_id = campaign_dir.name
     if not campaign_dir.is_dir():
         return Status(phase=Phase.UNKNOWN, campaign_id=campaign_id)
+
+    # An import that never concluded: nothing else in the tree may speak for it, because
+    # everything else in the tree came out of the archive (see the module docstring).
+    interrupted = read_import_marker(campaign_dir)
+    if interrupted is not None:
+        started = interrupted.get("started_at")
+        return Status(
+            phase=Phase.FAILED, campaign_id=campaign_id,
+            error=(f"the import of this campaign was interrupted before it concluded"
+                   f"{f' (started {started})' if started else ''}: what is here is the "
+                   f"part of the archive that had landed, and its records describe the "
+                   f"campaign that was archived, not this tree. Delete it with "
+                   f"'vast campaign delete {campaign_id}', or import the archive again "
+                   f"with force."))
 
     # ``postprocessed`` is a fact about the campaign, not about who last drove it:
     # postprocessing's own provenance record is the ground truth (postprocessing can chain
