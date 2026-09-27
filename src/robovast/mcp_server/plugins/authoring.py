@@ -67,14 +67,9 @@ def list_workspaces(workspace_id: str = "") -> dict:
     Returns:
         ``{workspaces, total}`` of ``{workspace_id, name, created_at}``, or ``{error}``.
     """
+    from robovast.client.workspace_report import workspace_listing
     try:
-        client = service_access.require_service()
-        if workspace_id:
-            found = [client.get_workspace(workspace_id).model_dump()]
-        else:
-            found = [w.model_dump()
-                     for w in client.list_workspaces().workspaces]
-        return {"workspaces": found, "total": len(found)}
+        return workspace_listing(service_access.require_service(), workspace_id)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
