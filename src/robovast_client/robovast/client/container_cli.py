@@ -20,6 +20,7 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
+from robovast.execution.wait_exit import CommonExit
 
 @click.group()
 def container():
@@ -40,11 +41,18 @@ def container():
               help="Use an existing campaign's _config/ as the project instead.")
 @click.option('--config-name', 'config_name', default='',
               help='Stage this configuration. Omitted, the bare image is used.')
+@click.option('--container', default='',
+              help='Which container: scenario (the default), simulation, sut, or an ad-hoc '
+                   "container's name -- the names a scenario's remote() uses.")
 @click.option('--keep-alive', is_flag=True,
               help='Leave the container running so later calls can inspect it.')
+@click.option('--fresh', is_flag=True,
+              help='Replace the held container rather than join it, so the image is '
+                   'fetched again: how to check that a re-pushed tag landed.')
 @target_options
 def exec_command(shell_command, workspace_id, config_path, campaign_id, config_name,
-                 keep_alive, namespace, context):  # pylint: disable=redefined-outer-name
+                 container, keep_alive, fresh, namespace,
+                 context):  # pylint: disable=redefined-outer-name
     """Test a container and its setup by running SHELL_COMMAND in the experiment image.
 
     Produces **no campaign data** — nothing durable, no provenance, no repetitions. Use
@@ -58,10 +66,17 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
     The image is the one this host's copy of the project builds, so a stale checkout
     checks a stale image; the ``build:<tag>@<hash>`` that ran is printed with the exit line.
 
+    ``--container`` names which of the campaign's containers answers -- the check that
+    matters is often not in the same one as the thing being debugged, and only the
+    simulation container has the simulator in it.
+
     There is at most one such container at a time; ``vast container stop``
     ends it. No ``--timeout``: the limit is derived from what is being run (the
     project's ``execution.timeout`` for a scenario, a fixed cap for a command) and
     reported with the result.
+
+    A command that fails or times out makes this exit as failed. Its own exit status is on
+    the ``[exit ...]`` line and not passed through, where it would read as one of ``vast``'s.
     """
     from robovast.service.interface import ExecRequest
     try:
@@ -70,7 +85,8 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
             result = client.exec_in_container(ExecRequest(
                 command=shell_command, workspace_id=workspace_id,
                 config_path=config_path, campaign_id=campaign_id,
-                config_name=config_name, keep_alive=keep_alive))
+                config_name=config_name, container=container, keep_alive=keep_alive,
+                fresh=fresh))
     except Exception as e:  # noqa: BLE001 - handled uniformly as a CLI error
         handle_cli_exception(e)
         return
@@ -91,7 +107,7 @@ def exec_command(shell_command, workspace_id, config_path, campaign_id, config_n
                    f"{', config ' + result.container.config if result.container.config else ''}"
                    f", hard stop in {result.container.deadline_in_s}s]", err=True)
     if result.timed_out or result.exit_code != 0:
-        sys.exit(result.exit_code or 1)
+        sys.exit(CommonExit.FAILED)
 
 
 @container.command('stop')

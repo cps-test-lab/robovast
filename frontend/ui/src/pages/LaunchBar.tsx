@@ -19,11 +19,14 @@ import { isGlob, matchConfigs, matchesPattern } from '@/lib/configFilter'
 import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
 import { ErrorText } from '@/components/StatusView'
 
-// Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can prefill "Runs per config"
-// with whatever the file declares. We scan for the top-level `execution:` block and read the integer
+// Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can show "Runs per config"
+// as the file declares it. We scan for the top-level `execution:` block and read the integer
 // `runs:` directly under it. Returns null when runs is absent or a non-literal (e.g. `runs: runs`
-// referencing a variable), in which case the caller keeps the current value.
-function runsFromVast(content: string): number | null {
+// referencing a variable): the field is then left blank, which launches with the .vast's own
+// count -- the service reads a non-positive `runs` as "as declared", exactly as
+// `vast workspace run` sends 0 when `--runs` is not given. Sending a guess instead would
+// silently shrink a campaign to that guess.
+export function runsFromVast(content: string): number | null {
   const lines = content.split(/\r?\n/)
   let inExecution = false
   for (const line of lines) {
@@ -56,7 +59,9 @@ export function LaunchBar() {
   const [filterInput, setFilterInput] = useState('')
   const [campaignName, setCampaignName] = useState('')
   const [description, setDescription] = useState('')
-  const [runs, setRuns] = useState(1)
+  // null: as the .vast declares (sent as 0). A number only when the file's count was read, or
+  // the user typed one.
+  const [runs, setRuns] = useState<number | null>(null)
   const [postprocess, setPostprocess] = useState(true)
   // Off by default: uploading streams the campaign to an external share, which is a
   // deliberate act of publication rather than a step of running one.
@@ -108,13 +113,14 @@ export function LaunchBar() {
     enabled: active && !!workspaceId && !!configPath,
   })
 
-  // When the selected .vast changes (or its content is edited), adopt its declared runs count. Keyed
-  // on the content string, so a later manual edit to the Runs field is not clobbered by re-renders.
+  // When the selected .vast changes (or its content is edited), adopt its declared runs count --
+  // or blank the field when the count cannot be read, so the previous file's count is not carried
+  // over to this one. Keyed on the content string, so a later manual edit to the Runs field is
+  // not clobbered by re-renders.
   useEffect(() => {
     const content = configFile.data?.content
     if (!content) return
-    const declared = runsFromVast(content)
-    if (declared != null) setRuns(declared)
+    setRuns(runsFromVast(content))
   }, [configFile.data?.content])
 
   // The names the selected .vast expands to, for the filter's dropdown. Composing can take long, so
@@ -166,7 +172,7 @@ export function LaunchBar() {
         config_filter: configFilter,
         campaign_name: campaignName.trim(),
         description: description.trim(),
-        runs,
+        runs: runs ?? 0,
         postprocess,
         upload_to_share: uploadToShare,
       }),
@@ -280,11 +286,15 @@ export function LaunchBar() {
             <TextField
               label="Runs per config"
               type="number"
-              value={runs}
-              onChange={(e) => setRuns(Math.max(1, Number(e.target.value) || 1))}
+              value={runs ?? ''}
+              onChange={(e) => {
+                const n = Number(e.target.value)
+                setRuns(e.target.value === '' || !(n >= 1) ? null : Math.floor(n))
+              }}
+              placeholder="as declared"
               size="small"
               sx={{ width: 140 }}
-              slotProps={{ htmlInput: { min: 1 } }}
+              slotProps={{ inputLabel: { shrink: true }, htmlInput: { min: 1 } }}
             />
             <Autocomplete
               multiple

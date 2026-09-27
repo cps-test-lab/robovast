@@ -94,6 +94,10 @@ class Handler:
         """The tables this handler fills, whether or not the recording yields rows for them."""
         raise NotImplementedError
 
+    def tables_of(self, topic: str) -> List[str]:
+        """The tables *topic*'s messages go into: every table, unless a handler says less."""
+        return self.tables()
+
     def message(self, topic: str, msg, typename: str, log_time: int) -> None:
         raise NotImplementedError
 
@@ -268,6 +272,9 @@ class TopicTable(Handler):
     def tables(self):
         return [self.table_for(t) for t in self._topics]
 
+    def tables_of(self, topic):
+        return [self.table_for(topic)]
+
     def table_for(self, topic: str) -> str:
         return f"{self._bag}_{topic.strip('/').replace('/', '_')}"
 
@@ -343,6 +350,9 @@ class ActionTopics(Handler):
 
     def tables(self):
         return [f"{self._prefix}_feedback", f"{self._prefix}_status"]
+
+    def tables_of(self, topic):
+        return [f"{self._prefix}_feedback" if topic == self._feedback else f"{self._prefix}_status"]
 
     def message(self, topic, msg, typename, log_time):
         entry = {"timestamp": log_time / 1_000_000_000.0}

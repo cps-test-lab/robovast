@@ -37,6 +37,7 @@ import os
 from pathlib import Path
 
 from robovast.client.file_address import SOURCES, format_address
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.client.workspaces import is_campaign_results_dir
 from robovast.client.workspaces import is_skipped as _should_skip
 
@@ -154,6 +155,17 @@ def push_campaign_archive(client, path: Path) -> str:
     return str(path)
 
 
+class NoSuchWorkspace(ValueError):
+    """A workspace reference that names nothing, or names more than one.
+
+    A ``ValueError``, so every caller that treats a bad reference as bad input keeps
+    doing so; ``include_traceback = False`` because the message is the whole report --
+    the frames would show the lookup, not the typo.
+    """
+
+    include_traceback = False
+
+
 def _resolve_workspace_id(client, ref: str) -> str:
     """Resolve a workspace id-or-name to a concrete ``workspace_id``.
 
@@ -165,9 +177,9 @@ def _resolve_workspace_id(client, ref: str) -> str:
         return ref
     matches = [w for w in client.list_workspaces().workspaces if w.name == ref]
     if not matches:
-        raise ValueError(f"no workspace named {ref!r}")
+        raise NoSuchWorkspace(f"no workspace named {ref!r}")
     if len(matches) > 1:
-        raise ValueError(
+        raise NoSuchWorkspace(
             f"workspace name {ref!r} is ambiguous ({len(matches)} matches); "
             "use the ws-… id")
     return matches[0].workspace_id
@@ -233,13 +245,14 @@ def pull_workspace_to_directory(client, workspace_id: str, directory, *,
 def _safe_target(root: Path, rel: str) -> Path:
     """*rel* resolved under *root*, or a ``ValueError`` when it would leave it.
 
-    An archive is the one input here that came from another machine, so a member naming
-    ``..`` or an absolute path is refused rather than written.
+    An archive is the one input here that came from another machine, so a member that
+    leaves *root* is refused rather than written.
     """
-    target = (root / rel).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise ValueError(f"{rel!r} would be written outside {root}, so the archive is refused")
-    return target
+    try:
+        return safe_join(root, rel)
+    except UnsafePathError as e:
+        raise ValueError(
+            f"{rel!r} would be written outside {root}, so the archive is refused") from e
 
 
 class _ChunkReader:
@@ -462,10 +475,10 @@ def _served_filename(disposition) -> str:
         key, _, value = part.strip().partition("=")
         if key.strip().lower() != "filename":
             continue
-        name = value.strip().strip('"')
-        if not name or name in (".", "..") or "/" in name or "\\" in name:
+        try:
+            return check_segment(value.strip().strip('"'))
+        except UnsafePathError:
             return ""
-        return name
     return ""
 
 
@@ -520,6 +533,11 @@ def extract_campaign_archive(client, campaign_id: str, out_dir: str,
             client.raise_for_status(resp)
             served = _served_filename(resp.headers.get("Content-Disposition")) or f"{campaign_id}.tar.gz"
             name = served[:-len(".tar.gz")] if served.endswith(".tar.gz") else served
+            try:
+                check_segment(name)
+            except UnsafePathError as err:
+                raise RuntimeError(f"the archive of {campaign_id} is named {served!r}, which "
+                                   "names no directory to extract it into") from err
             incoming = os.path.join(out_dir, f".{name}.incoming")
             shutil.rmtree(incoming, ignore_errors=True)
             os.makedirs(incoming)

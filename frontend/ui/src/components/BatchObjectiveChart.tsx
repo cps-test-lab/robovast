@@ -136,7 +136,8 @@ export function BatchObjectiveChart({
                 `batch ${rows[i].idx} — best so far ${fmt(rows[i].best_so_far)}` +
                 ` · this round ${fmt(rows[i].min)}–${fmt(rows[i].max)}` +
                 ` (mean ${fmt(rows[i].mean)})` +
-                ` · ${rows[i].n_scored}/${rows[i].n_units} scored`
+                ` · ${rows[i].n_scored}/${rows[i].n_units} scored` +
+                (rows[i].complete ? '' : ' so far')
               }
             >
               <Box

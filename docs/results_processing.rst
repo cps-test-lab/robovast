@@ -100,7 +100,8 @@ The structure inside is domain-specific, but typically includes:
    ├── share.log                             # ``share`` phase (export to share, when re-run)
    ├── sections/                             # earlier runs of the repeatable phases
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
-   └── import.json                           # per-stage import report (only on an imported campaign)
+   ├── import.json                           # per-stage import report (only on an imported campaign)
+   └── importing.json                        # left only by an import that never concluded
 
 Each pre-/post-run **phase** writes its own log file here, and the files are the record. The
 service reads them in phase order as one campaign log of **rows** -- ``vast campaign log``, the
@@ -461,7 +462,8 @@ header, and a file whose name is a table the run's records already give (rename 
 **The** ``_recording`` **table** is one row per topic of every recording of the run —
 ``recording``, ``topic``, ``type``, ``messages``, ``bytes``, and either the ``table`` it went to
 or the ``reason`` it is not one. An undecodable topic is a row here naming its type and why,
-rather than a table that is silently missing::
+rather than a table that is silently missing, and the tables it feeds carry the same reason
+(:ref:`results-table-cache`)::
 
    SELECT topic, type, reason FROM _recording WHERE reason IS NOT NULL
 
@@ -486,10 +488,23 @@ no ROS install, no execution image, no container. The service, a notebook on a l
 
 ``.cache/MANIFEST.json`` records, per table and run, the files that make it up, their schema,
 the source bytes they were built from, the decoder version that built them — and, for a run that
-has no rows for a table, the reason. A later request builds only what is missing: a table not yet
-asked for, a run whose records have grown, or anything a different decoder version wrote. A run
-that has not finished — no ``test.xml`` yet, or a recording still open — is looked at again on
-the next request, so **SQL works while a campaign is running** and follows it as it goes.
+has no rows for a table or only part of them, the reason.
+
+**A table a topic stopped decoding for is incomplete, and says why.** A topic whose type
+neither the recording, its sidecar nor the ROS distribution defines gives its table no rows; a
+message that does not decode as its type ends the topic there, and its table keeps the rows from
+before it. Either way the run's entry for each table the topic feeds carries the reason, naming
+the topic and its type — a build and a session following the run record the same. The run is
+listed under the table's ``failed`` with that reason in ``describe_campaign_data`` (and counted
+there in ``Campaign.tables``), and counted in ``built`` where it has rows; a query over the table
+answers with the rows there are and names it as incomplete for that run beside them; and
+``robovast-decode build`` prints it as ``PARTIAL`` and exits non-zero.
+
+A later request builds only what is missing: a table not yet asked for, a run whose records have
+grown, a recording whose definitions sidecar came or changed since (it decides what decodes), or
+anything a different decoder version wrote. A run that has not finished — no ``test.xml`` yet, or
+a recording still open — is looked at again on the next request, so **SQL works while a campaign
+is running** and follows it as it goes.
 
 A run being followed *as it records* (:mod:`robovast_decode.live`) is the exception: a session
 reads each new record of the growing bag, flushes the handlers' rows in batches, and writes them
@@ -1273,13 +1288,30 @@ campaign this deployment never ran, from an archive
 — when what arrived is a raw archive, carrying no postprocessing record — rolls straight
 on into ``postprocessing``. Its per-stage verdicts land in ``_execution/import.json`` and its
 narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
-rather than a failure.
+rather than a failure. One such stage is ``environment``: it names the variation types,
+postprocessing commands, metadata processors, health checks and plugin packages the
+campaign's ``.vast`` uses that this deployment does not have, so a raw import says what
+its postprocessing will lack before running it.
 
 A genuine failure is **kept, as a failed campaign**, and the refusal names what was
 missing rather than which check noticed. Registering the campaign is what makes it visible
 while it arrives, so the entry outlives the failure, and keeping the directory keeps the
 ``import.log`` and ``import.json`` that explain it. Remove it with ``vast campaign delete``, or
 import again with ``--force``.
+
+An import the service **died in the middle of** is kept the same way and reads as failed
+too: the directory is marked as an import under way (``_execution/importing.json``) from
+the moment it is claimed until the import has concluded, and a tree still carrying the
+marker is reported as the interrupted import it is -- not as the campaign whose
+``outcome.json`` the archive brought, which lands before the runs do and would otherwise
+describe a finished campaign over a partial tree.
+
+An archive that would unpack to more than the results volume has room for above its
+free-space reserve is refused with a 507 before anything is extracted. Its size is read from
+the archive's index, not from the compressed file, whose size says nothing about what
+extraction writes: each member counts as at least one block of the results volume, and a
+file as its size rounded up to whole blocks. A share archive is checked once it is
+downloaded, when its size is known.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no
 frozen ``_config/`` instead of writing an archive whose only possible future is an ingest
@@ -1399,7 +1431,10 @@ The tarball holds ``export.json`` -- the request, the decoder version, the data 
 was built -- then ``tables/`` and the campaign tree under ``<campaign_id>/``. That layout is
 public: pandas and DuckDB read ``tables/<name>.parquet`` directly, and ``Campaign()`` opens
 the export as it opens the campaign, reading the tables it carries and building nothing
-(:ref:`evaluation-notebooks`).
+(:ref:`evaluation-notebooks`). It opens only an export written under its own data contract:
+a table the export carries is never rebuilt, so one laid out under another contract is
+refused by number rather than read as the table its name promises -- export the campaign
+again from a current service, or read the files directly.
 
 **Download or export.** ``vast campaign download`` is the campaign as the service holds it:
 records and recordings, no table, for a copy that builds its tables on first use, re-runs,
@@ -1407,6 +1442,8 @@ or goes back into a service; ``--extract`` unpacks it as it streams into ``<id>/
 no archive. ``vast campaign export`` is the campaign to read: the tables built once, the
 records, and the recordings only when asked. Images and point clouds are read from the
 recordings alone, so an export made without ``--bags`` has tables and no frames, and says so.
+Only the download imports: an export handed to ``vast campaign import`` is refused as an
+export, naming the download.
 
 .. list-table::
    :header-rows: 1
@@ -1435,7 +1472,10 @@ campaign's ``.cache/exports/<export_id>/`` -- rebuildable and disposable like th
 beside it, counted and cleared with the ``table cache`` (:ref:`results-tables-ahead`) --
 and its status is answered from that directory once it is finished, so a status read after
 a service restart still answers; an export that was building when the service stopped reads
-as failed, to be started again.
+as failed, to be started again. An export is kept for 24 hours after it finished
+(``EXPORT_KEEP_S``): past that its address answers as for an export that never was, and the
+export is made again on request. Its files are removed when the campaign's next export
+starts; a download already reading the tarball finishes.
 
 
 .. _results-querying:
@@ -1641,10 +1681,6 @@ and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
 :ref:`mcp-files`. Reading a campaign on this machine needs no running service; against a
 cluster service the read serves that one file off the service's results volume, not the
 campaign.
-
-If the service runs on your own machine, ``get_service_info`` also reports a
-``results_root`` you can open directly with your own tools; it is absent whenever
-that would be a path you cannot actually read.
 
 
 .. _results-metadata:
@@ -1954,6 +1990,11 @@ Merging Results
 
 Merges campaign-directories with identical configs into one ``merged_campaign_dir``.
 Groups ``campaign-directory/config-directory`` by ``config_identifier`` from ``config.yaml``.
+The identifier hashes the configuration's ``.vast`` block, the content of the files it names
+and of the files its variations read beyond those (the image a map YAML points at), the run
+files, the scenario file, the ``sut:`` sources, and the variations' names as written. A
+packaged variation counts by name, not by its installed source, so a configuration has the
+same identifier on every host and robovast release.
 Run folders (0, 1, 2, …) from all campaigns are renumbered and copied.
 Original campaign-directories are not modified.
 
