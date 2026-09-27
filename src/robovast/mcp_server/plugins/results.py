@@ -27,8 +27,7 @@ What stays a dedicated tool is the campaign listing (it spans campaigns) and the
 aggregate asked constantly, itself computed over the same SQL. Campaign **files** are read
 through the address space (``/results/<campaign_id>/<path>``) — with one exception, which is
 why this module is not only SQL: **looking at** a run means decoding a recording, and a
-decoder takes a path rather than an address. Those tools return an image, so they *raise*
-where the SQL ones return ``{"error": ...}`` — an image response has no dict to carry one.
+decoder takes a path rather than an address.
 """
 
 import json
@@ -44,6 +43,7 @@ from fastmcp.utilities.types import Image
 from robovast.client.campaign_report import campaign_listing
 from robovast.mcp_server import data_access, run_artifacts, service_access
 from robovast.mcp_server.lacks import lacks
+from robovast.results_processing.data_query import DataQueryError
 
 logger = logging.getLogger(__name__)
 
@@ -75,22 +75,13 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         or this host's results root when none is reachable, since "no campaigns" means
         different things from the two.
     """
-    from pydantic import ValidationError
-
     from robovast.service.interface import ListCampaignsRequest
-    try:
-        # Built first so a value outside the vocabulary is refused before anything is asked.
-        request = ListCampaignsRequest(limit=limit, offset=offset, sort=sort, order=order)
-    except ValidationError as e:
-        return {"error": str(e)}
-    client = service_access.service_client()
-    if client is None:
-        return {"error": service_access.NO_SERVICE}
+
+    # Built first so a value outside the vocabulary is refused before anything is asked.
+    request = ListCampaignsRequest(limit=limit, offset=offset, sort=sort, order=order)
+    client = service_access.require_service()
     source = "service"
-    try:
-        listing = campaign_listing(client, request, running_only)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    listing = campaign_listing(client, request, running_only)
     return {**listing, "source": source}
 
 
@@ -245,14 +236,13 @@ def get_campaign_summary(campaign_id: str) -> dict:
 
     # Where the campaign came from -- the same kind of question as the block above, asked of
     # the same row, but read SEPARATELY on purpose: these columns arrived in store schema 7,
-    # and `rows()` turns any error (including "no such column" on an older or downloaded
-    # campaign) into []. Folded into the query above, one old campaign would silently lose
-    # its robovast_version and image as well. Two reads fail independently, so an old
+    # and a store that predates them rejects the query. Folded into the query above, one
+    # old campaign would lose its robovast_version and image as well; read apart, an old
     # campaign loses only what it genuinely does not have.
     #
     # Deliberately NOT added to list_campaigns: that listing is for triage, already drops
     # created_by and mode, and a `running_only` walk renders hundreds of entries.
-    origin = data_access.rows(campaign_id, """
+    origin = _unless_unrecorded(campaign_id, """
         SELECT origin_kind, origin_workspace_id, origin_workspace_name,
                origin_config_path, origin_from_campaign
         FROM campaign.campaign LIMIT 1
@@ -266,7 +256,7 @@ def get_campaign_summary(campaign_id: str) -> dict:
     # re-run, so an empty step list says the frozen config was read exactly as written, where
     # an absent key says nothing recorded it -- and a re-run that read a different config
     # version than the campaign it reproduces is not repeating the same experiment.
-    migration = data_access.rows(campaign_id, """
+    migration = _unless_unrecorded(campaign_id, """
         SELECT origin_config_version_from, origin_config_migration_steps
         FROM campaign.campaign LIMIT 1
     """)
@@ -282,6 +272,15 @@ def get_campaign_summary(campaign_id: str) -> dict:
     # surface -- it answers "which robovast, which image, which backend" three lines up.
     result.update(_retrigger_view(campaign_id))
     return result
+
+
+def _unless_unrecorded(campaign_id: str, sql: str, max_rows: int = 5000) -> list[dict]:
+    """:func:`~robovast.mcp_server.data_access.rows`, or ``[]`` when the campaign's store
+    has no table or column the query names. A lookup that failed still raises."""
+    try:
+        return data_access.rows(campaign_id, sql, max_rows=max_rows)
+    except DataQueryError:
+        return []
 
 
 def _retrigger_view(campaign_id: str) -> dict:
@@ -321,7 +320,8 @@ async def describe_campaign_data(campaign_id: str, ctx: Context | None = None) -
     and its ``columns`` are empty until it is built for one.
 
     Args:
-        campaign_id: Campaign identifier, or an absolute campaign path.
+        campaign_id: Campaign identifier; with no service reachable, also an absolute
+            path to a campaign folder on this host.
 
     Returns:
         ``{campaign_id, tables, note}`` — each table
@@ -353,7 +353,8 @@ async def query_campaign_data_sql(campaign_id: str, sql: str, limit: int = 500,
     result. Reach for SQL when no tool fits.
 
     Args:
-        campaign_id: Campaign identifier or absolute path (schema ``main``).
+        campaign_id: Campaign identifier (schema ``main``); with no service reachable,
+            also an absolute path to a campaign folder on this host.
         sql: A single ``SELECT``.
         limit: Maximum rows (clamped to 1..5000); ``truncated`` marks when more matched.
 
@@ -395,7 +396,7 @@ def list_campaign_plots(campaign_id: str) -> dict:
     SQL beyond them.
 
     Args:
-        campaign_id: Campaign identifier or an absolute campaign path.
+        campaign_id: Campaign identifier.
 
     Returns:
         ``{campaign_id, plots}`` of ``{title, query, vega_lite}``, or ``{error}``.
@@ -407,11 +408,8 @@ def list_campaign_plots(campaign_id: str) -> dict:
     # ``campaign.campaign.config_json`` and has nothing until the store has a campaign
     # row. Moving to SQL would make a just-started campaign's plots unreadable and would
     # duplicate a reader the service already owns for the web UI.
-    try:
-        client = service_access.require_service()
-        return client.list_campaign_plots(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.list_campaign_plots(campaign_id).model_dump()
 
 
 @lacks(run_id="the contribution belongs to the configuration, the same in every run")
@@ -430,12 +428,9 @@ def get_config_contribution(campaign_id: str, config_name: str) -> dict:
         ``/results/<campaign_id>/``. ``errors`` names a variation that could not contribute:
         an empty view with errors is not an empty configuration. Or ``{error}``.
     """
-    try:
-        client = service_access.require_service()
-        return client.get_config_contribution(campaign_id, config_name).model_dump(
-            exclude_none=True)
-    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.get_config_contribution(campaign_id, config_name).model_dump(
+        exclude_none=True)
 
 
 def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
@@ -457,13 +452,10 @@ def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
         ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
         has no heights. Or ``{error}``.
     """
-    try:
-        client = service_access.require_service()
-        return client.get_track_deviation(
-            campaign_id, config_name, run_id, source=source, frame=frame,
-            marker_label=marker_label).model_dump()
-    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.get_track_deviation(
+        campaign_id, config_name, run_id, source=source, frame=frame,
+        marker_label=marker_label).model_dump()
 
 
 #: Track points a drawing asks for: an even stride over the whole run beyond that.
@@ -548,7 +540,7 @@ def draw_config(campaign_id: str, config_name: str, run_id: Optional[int] = None
         frame: Tracked entity.
         projection: ``xy`` (top-down, over a map), ``xz`` or ``yz`` (side views).
 
-    Returns a PNG, so a failure **raises**. What could not be drawn is printed on the image.
+    Returns a PNG, or ``{error}``. What could not be drawn is printed on the image.
     """
     from robovast.client.file_address import \
         RESULTS, format_address  # noqa: PLC0415
@@ -589,14 +581,9 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
         told apart from an ordinary cold start before it times out. ``overrides_known: false``
         means the recording carries no overrides, so geometry may miss per-config overrides.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": service_access.NO_SERVICE}
-        st = client.campaign_scene_status(campaign_id, config_name, str(run_id))
-        return st.model_dump() if hasattr(st, "model_dump") else dict(st)
-    except Exception as e:  # noqa: BLE001 - surface resolution/transport errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    st = client.campaign_scene_status(campaign_id, config_name, str(run_id))
+    return st.model_dump() if hasattr(st, "model_dump") else dict(st)
 
 
 # -- Looking at a run --------------------------------------------------------
@@ -613,9 +600,9 @@ def _video_row(campaign_id: str, config_name: str, run_id: int, topic: Optional[
     sql = (f"SELECT topic, file, t_start, t_end, fps, frames FROM {_VIDEOS_TABLE} "
            f"WHERE {scope}" + (f" AND topic = {_lit(topic)}" if topic else "")
            + " ORDER BY topic")
-    rows = data_access.rows(campaign_id, sql, max_rows=50)
+    rows = _unless_unrecorded(campaign_id, sql, max_rows=50)
     if not rows:
-        known = data_access.rows(
+        known = _unless_unrecorded(
             campaign_id,
             f"SELECT DISTINCT topic FROM {_VIDEOS_TABLE} "
             f"WHERE config_name = {_lit(config_name)} AND run_id = {_lit(run_id)}",
@@ -651,7 +638,7 @@ def _image_topics(campaign_id: str, config_name: str, run_id: int) -> list:
     """The image topics the run recorded, from its ``_recording`` report; ``[]`` when the
     report is not built or names none."""
     types = ", ".join(_lit(t) for t in _IMAGE_TYPES)
-    rows = data_access.rows(
+    rows = _unless_unrecorded(
         campaign_id,
         f"SELECT DISTINCT topic FROM _recording WHERE config_name = {_lit(config_name)} "
         f"AND run_id = {_lit(run_id)} AND type IN ({types}) ORDER BY topic", max_rows=50)
@@ -671,9 +658,7 @@ def _frame_from_recording(campaign_id: str, config_name: str, run_id: int,
         raise run_artifacts.RunArtifactError(
             f"run {run_id} of {config_name!r} recorded several cameras "
             f"({', '.join(topics)}); pass topic= to choose one.")
-    client = service_access.service_client()
-    if client is None:
-        raise run_artifacts.RunArtifactError(service_access.NO_SERVICE)
+    client = service_access.require_service()
     try:
         _stamp, jpeg = client.campaign_frame(campaign_id, f"{config_name}/{run_id}", topics[0],
                                              None if time is None else float(time))
@@ -692,8 +677,8 @@ def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
     """One frame of a camera the run recorded, as a PNG: the frame at or before ``time``
     of an image topic, no wider than 640 px, or from the run's ``rosbags_to_webm`` video
     when it recorded no image topic. The viewpoint is the camera's;
-    ``get_simulation_screenshot`` picks one. A failure **raises**: no camera and no video,
-    an ambiguous ``topic``, an unreadable recording.
+    ``get_simulation_screenshot`` picks one. Or ``{error}``: no camera and no video, an
+    ambiguous ``topic``, an unreadable recording.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -761,7 +746,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     (roqsim can; Gazebo cannot) and a run that recorded its state, written on a clean stop
     only; it runs a container in the campaign's simulation image, seconds when the image is
     on the node. For a camera the run itself carried, ``get_camera_frame`` is the cheap read.
-    A failure **raises**: no such capability, no recorded state, a render that failed.
+    Or ``{error}``: no such capability, no recorded state, a render that failed.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -773,28 +758,15 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
         focus: Entity or body names to frame on; the simulator picks a clear angle.
         camera: A camera the world defines. It owns its pose — not with ``view``/``focus``.
         size: ``WxH``, default ``960x720``.
-
-    Raises:
-        RunArtifactError: no such capability, no recorded state, or the render failed.
     """
     from robovast.common.simulators import parse_view  # pylint: disable=import-outside-toplevel
     from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
-    client = service_access.service_client()
-    if client is None:
-        raise run_artifacts.RunArtifactError(service_access.NO_SERVICE)
-    try:
-        parsed = parse_view(view)
-    except ValueError as e:
-        raise run_artifacts.RunArtifactError(str(e)) from e
-
-    try:
-        frame = client.campaign_screenshot(
-            campaign_id, config_name, str(run_id), at=at, view=parsed,
-            focus=list(focus or []), camera=camera, size=size)
-    except Exception as e:  # noqa: BLE001 - the reason is the whole value of this failing
-        raise run_artifacts.RunArtifactError(str(e)) from e
+    client = service_access.require_service()
+    frame = client.campaign_screenshot(
+        campaign_id, config_name, str(run_id), at=at, view=parse_view(view),
+        focus=list(focus or []), camera=camera, size=size)
 
     path = Path(frame.path)
     try:
@@ -854,20 +826,16 @@ def _container_failures(campaign_id: str) -> list:
     """One entry per container that died and was restarted, newest first.
 
     Read separately from the run rollup because it must answer on a campaign that has NO
-    run rows -- one that died mid-batch never recorded any. Best-effort: a store that
-    predates the table simply has nothing to say, and a summary must not fail because its
-    post-mortem section could not be built.
+    run rows -- one that died mid-batch never recorded any. A store that predates the table
+    has nothing to say.
     """
-    try:
-        rows = data_access.rows(campaign_id, """
-            SELECT detected_at, job_name, node_label, container, role, reason, exit_code,
-                   signal_name, memory_limit, cpu_limit, log_status, runs_json
-            FROM campaign.container_failure ORDER BY detected_at DESC
-        """)
-    except Exception:  # noqa: BLE001 - no table, no store, nothing to report
-        return []
+    rows = _unless_unrecorded(campaign_id, """
+        SELECT detected_at, job_name, node_label, container, role, reason, exit_code,
+               signal_name, memory_limit, cpu_limit, log_status, runs_json
+        FROM campaign.container_failure ORDER BY detected_at DESC
+    """)
     out = []
-    for row in rows or ():
+    for row in rows:
         entry = {k: row.get(k) for k in
                  ("detected_at", "job_name", "node_label", "container", "role", "reason",
                   "exit_code", "signal_name", "log_status")}

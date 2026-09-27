@@ -1,14 +1,16 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""What the exit status of a waiting command says: the one definition of each code.
+"""What the exit status of a ``vast`` verb says: the one definition of each code.
 
-A caller of ``vast campaign wait`` or ``vast image wait`` branches on the exit status
-without parsing anything, so the codes are an interface. Each is defined here once, with
-its meaning; the commands raise these members, and every other place that lists the
-codes renders them from here -- the command's ``--help``, the ``next_step`` an MCP tool
-hands back, the run-experiments prompt, and the table in ``docs/client.rst`` (rendered by
-``docs/_ext/wait_exit_codes.py``). Prose elsewhere names a member, never its number;
+Every verb shares :class:`CommonExit`. A waiting verb (``vast campaign wait``,
+``vast image wait``) adds outcome codes from :data:`FIRST_OUTCOME_CODE` up, so a script
+can branch on the exit status without parsing anything and never mistakes an outcome for
+a usage error. Each code is defined here once, with its meaning; the commands raise these
+members, and every other place that lists the codes renders them from here -- the
+command's ``--help``, the ``next_step`` an MCP tool hands back, the run-experiments prompt,
+and the tables in ``docs/client.rst`` (rendered by ``docs/_ext/wait_exit_codes.py``).
+Prose elsewhere names a member, never its number;
 ``tests/execution/test_wait_exit_codes_sync.py`` keeps it that way.
 
 Deliberately free of imports beyond the standard library: the CLI builds its help text
@@ -24,13 +26,39 @@ from enum import IntEnum
 EXIT_CODES_PLACEHOLDER = "{exit_codes}"
 
 
+class CommonExit(IntEnum):
+    """The exit codes every ``vast`` verb shares.
+
+    ``USAGE_ERROR`` is click's, raised before the verb runs, and cannot be renumbered; so
+    no verb gives its code another meaning.
+    """
+
+    def __new__(cls, code: int, meaning: str):
+        member = int.__new__(cls, code)
+        member._value_ = code
+        member.meaning = meaning
+        member.full_meaning = meaning
+        return member
+
+    SUCCESS = 0, "Success: the command did what it was asked."
+    FAILED = 1, "Failed; the message on stderr says why."
+    USAGE_ERROR = (2, "Usage error: an unknown command or option, or a missing or malformed "
+                      "argument. Nothing was run.")
+
+
+#: The lowest code a verb may give an outcome of its own.
+FIRST_OUTCOME_CODE = max(CommonExit) + 1
+
+
 class WaitExit(IntEnum):
     """Base for a waiting command's exit codes; a subclass declares one member per code.
 
     Each member is ``CODE, label, meaning`` with an optional ``still_running``: *label* is
     the few words an inline list uses, *meaning* the sentence the help and the docs use, and
     *still_running* marks a code that ends the wait while the waited-on work goes on --
-    a hand-off to the caller, not an ending.
+    a hand-off to the caller, not an ending. *CODE* is ``CommonExit.SUCCESS`` or
+    ``CommonExit.FAILED``, or at least :data:`FIRST_OUTCOME_CODE`; a member that means the
+    same in two subclasses has the same name and code in both.
     """
 
     def __new__(cls, code: int, label: str, meaning: str, still_running: bool = False):
@@ -53,10 +81,14 @@ class WaitExit(IntEnum):
 
     @classmethod
     def help_block(cls) -> str:
-        r"""The codes as a click help block, one per line (``\b`` keeps click from rewrapping)."""
-        width = max(len(m.name) for m in cls)
+        r"""The codes as a click help block, one per line (``\b`` keeps click from rewrapping).
+
+        Includes click's usage error, which the command can exit with too.
+        """
+        rows = sorted([*cls, CommonExit.USAGE_ERROR])
+        width = max(len(m.name) for m in rows)
         lines = ["\b", "Exit codes:"]
-        for m in cls:
+        for m in rows:
             head = f"  {m.value}  {m.name.ljust(width)}  "
             lines += textwrap.wrap(m.full_meaning, width=76, initial_indent=head,
                                    subsequent_indent=" " * len(head))
@@ -73,17 +105,17 @@ class WaitExit(IntEnum):
 class CampaignWaitExit(WaitExit):
     """``vast campaign wait``: how the campaign ended, or why the wait ended without it."""
 
-    FINISHED = 0, "finished", "Finished, past postprocessing."
-    FAILED = 1, "failed/stopped", "Failed, or stopped."
-    STOPPED_WAITING = (2, "stopped waiting",
+    FINISHED = CommonExit.SUCCESS, "finished", "Finished, past postprocessing."
+    FAILED = CommonExit.FAILED, "failed/stopped", "Failed, or stopped."
+    STOPPED_WAITING = (3, "stopped waiting",
                        "Stopped waiting: --timeout elapsed, or the service stopped answering. "
                        "The campaign is unaffected and can be waited on again.")
-    NO_PHASE = (3, "no such campaign",
+    NO_PHASE = (4, "no such campaign",
                 "The service knows no phase for this id: a typo, or a campaign that died "
                 "before recording one.")
-    STALLED = (4, "stalled",
+    STALLED = (5, "stalled",
                "Stalled: nothing has completed for longer than one run may take.", True)
-    HEALTH_FINDING = (5, "simulator fault",
+    HEALTH_FINDING = (6, "simulator fault",
                       "A running job's simulator reported an error-level health finding "
                       "about itself.", True)
 
@@ -91,9 +123,9 @@ class CampaignWaitExit(WaitExit):
 class ImageWaitExit(WaitExit):
     """``vast image wait``, and ``vast image build`` unless ``--no-wait``: how the builds ended."""
 
-    BUILT = 0, "built", "Every build finished and its image is available."
-    FAILED = 1, "failed", "At least one build failed."
-    STOPPED_WAITING = (2, "stopped waiting",
+    BUILT = CommonExit.SUCCESS, "built", "Every build finished and its image is available."
+    FAILED = CommonExit.FAILED, "failed", "At least one build failed."
+    STOPPED_WAITING = (3, "stopped waiting",
                        "Stopped waiting: --timeout elapsed, or the service stopped answering. "
                        "The builds are unaffected and can be waited on again.")
 

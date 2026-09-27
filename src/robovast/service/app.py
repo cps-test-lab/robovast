@@ -55,7 +55,7 @@ from robovast.service.interface import (ActionResult, ArrowQueryRequest,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
                                         EXEC_PATH_UNAVAILABLE, NEXT_STEP_HEADER,
-                                        UNSUPPORTED_OPERATION,
+                                        UNSUPPORTED_OPERATION, BINARY_FILE, BinaryFile,
                                         UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         ExportRef, ExportRequest, ExportStatus,
@@ -484,6 +484,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             # command that changes that.
             raise HTTPException(status_code=409, detail=str(e),
                                 headers=_next_step_headers(e)) from e
+        except BinaryFile as e:
+            raise HTTPException(status_code=e.status, detail=str(e),
+                                headers={ERROR_CODE_HEADER: BINARY_FILE}) from e
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id

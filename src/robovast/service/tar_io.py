@@ -30,9 +30,9 @@ not ask for:
   tree already has, which is what a symlink is for; one to a file outside it is an escape.
   Neither has a use in campaign output.
 * **A name the caller may not write.** Given per call as *deny*: the campaign's own
-  store, which the driver holds open, and the driver's logs, which have one writer.
-  Judged by where the member lands with the tree's symlinks followed, so a link into
-  a directory is not a way around it.
+  store, which the driver holds open, and the directories the service writes the
+  campaign's records into. Judged by where the member lands with the tree's symlinks
+  followed, so a link into a directory is not a way around it.
 
 Refused members are named in the result rather than raised on: a pod's output is many
 files, and one it may not write is not a reason to lose the rest.
@@ -91,8 +91,9 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
     """Extract the tar read from *stream* under *dest_root*; return what happened.
 
     *stream* is any binary file-like with ``read``; gzip or plain is detected from the
-    bytes (``r|*``). *deny* is a set of campaign-relative names, or names of files under
-    any directory (a bare file name), that are refused on top of :data:`DENY_ALWAYS`.
+    bytes (``r|*``). *deny* is a set of campaign-relative names, names of files under
+    any directory (a bare file name), or directories ending in ``/`` (the directory and
+    everything under it), that are refused on top of :data:`DENY_ALWAYS`.
 
     Members are written in stream order and the last one wins, which is how several
     containers of one pod, each contributing its own files to a shared tree, resolve.
@@ -102,7 +103,8 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
     """
     root = Path(dest_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    denied = frozenset(DENY_ALWAYS) | frozenset(deny or ())
+    denied = frozenset(DENY_ALWAYS) | frozenset(d for d in deny or () if not d.endswith("/"))
+    denied_dirs = tuple(d for d in deny or () if d.endswith("/"))
     out = Extracted()
     with tarfile.open(fileobj=stream, mode="r|*") as tar:
         for member in tar:
@@ -123,7 +125,8 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
                 continue
             # A symlink already in the tree is a second name for a directory.
             landing = (parent / target.name).relative_to(root).as_posix()
-            if landing in denied or target.name in denied:
+            if (landing in denied or target.name in denied
+                    or (landing + "/").startswith(denied_dirs)):
                 out.refused.append(member.name)
                 continue
             try:

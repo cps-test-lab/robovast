@@ -66,7 +66,7 @@ from robovast.common.store import read_campaign_created_at, read_campaign_descri
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
-from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
+from robovast.service.interface import (ActionResult, BinaryFile, CampaignOrigin, CampaignRef,
                                         CampaignDeletion, CampaignTablesCleared,
                                         DeleteCampaignsRequest, ExportRef, ExportStatus,
                                         DeleteCampaignsResponse, OutputsIngested,
@@ -1088,8 +1088,10 @@ class ServiceBase(RobovastInterface):
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
         namespace, owner, rel, target = self._address_target(address)
         self._require_file(address, target)
-        return FileText(address=file_address.format_address(namespace, owner, rel),
-                        **file_view.read_text_page(target, lines, offset))
+        address = file_address.format_address(namespace, owner, rel)
+        if file_view.is_binary(target):
+            raise BinaryFile(address)
+        return FileText(address=address, **file_view.read_text_page(target, lines, offset))
 
     def read_file_bytes(self, address: str) -> bytes:
         _, _, _, target = self._address_target(address)
@@ -4337,8 +4339,8 @@ class ServiceBase(RobovastInterface):
         removed:
 
         * The id must be one directory name matching the campaign naming pattern. The
-          pattern alone lets a separator through (``../x-<stamp>``, ``/elsewhere/x-<stamp>``),
-          and :meth:`campaign_dir` honours an absolute id (``ValueError`` → 400).
+          pattern alone lets a separator through (``../x-<stamp>``, ``/elsewhere/x-<stamp>``)
+          (``ValueError`` → 400).
         * No live in-memory driver entry may exist — the authoritative "still
           running here" signal. Stop the campaign first (``RuntimeError`` → 409).
         """
@@ -4945,7 +4947,7 @@ class ServiceBase(RobovastInterface):
                     sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
-                         if k.startswith("_") and k != "_config_block"}),
+                         if k.startswith("_") and k not in ("_config_block", "_read_files")}),
                     contribution=_config_view_contribution(c, vast_dir),
                     previews=_config_previews(c, remotes))
                  for c in shown]
@@ -5055,14 +5057,18 @@ class ServiceBase(RobovastInterface):
         (:mod:`robovast.service.endpoint_plugin`), so a plugin reads the same tree
         whichever service serves it.
 
-        Campaigns all live under the shared results root (see :meth:`_campaigns_root`);
-        an absolute id is honoured as-is, for analysis of an arbitrary folder. A relative
-        id is one directory name (:func:`~robovast.client.safe_path.check_segment`), since
-        every reader here confines its path against the campaign's directory alone.
-        ``ValueError`` for one that is not.
+        Campaigns all live under the shared results root (see :meth:`_campaigns_root`),
+        and an id is one directory name there
+        (:func:`~robovast.client.safe_path.check_segment`), since every reader here confines
+        its path against the campaign's directory alone. ``ValueError`` for one that is
+        not; an absolute id is refused by name, since a caller of the service may read its
+        campaigns and no other folder on its host.
         """
         if os.path.isabs(campaign_id):
-            return Path(campaign_id)
+            raise ValueError(
+                f"{campaign_id!r} is a folder, not a campaign id: the service reads only "
+                "the campaigns in its results tree. An absolute campaign folder is read "
+                "by the MCP tools only when they run without a service.")
         return self._campaigns_root() / check_segment(campaign_id)
 
     # -- results data query (eval viewer) -----------------------------------
@@ -5084,10 +5090,13 @@ class ServiceBase(RobovastInterface):
         ``WHERE campaign_id = ...`` answers about this campaign rather than a corpus.
 
         *campaigns* is the deliberate way out, for a comparison: name every campaign the
-        query may see and it may see them.
+        query may see and it may see them. Each is held to :meth:`campaign_dir` as
+        *campaign_id* is.
         """
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
+        for other in campaigns or []:
+            self.campaign_dir(other)
         result = query_data_db(self.campaign_dir(campaign_id), sql, max_rows,
                                max_bytes=max_bytes, campaigns=campaigns,
                                campaign_id=campaign_id)
@@ -5559,6 +5568,10 @@ class ServiceBase(RobovastInterface):
         del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign
         from robovast.service import scene_cache
         key, _, rel = str(path).partition("/")
+        try:
+            check_segment(key)
+        except UnsafePathError:
+            key = ""
         if not key or not rel:
             raise KeyError(f"scene asset path must be '<key>/<file>', got {path!r}")
         scene_cache.touch(key)

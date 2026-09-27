@@ -427,6 +427,41 @@ the single ``{"error": …}`` convention, that no retired name survives in text 
 reads, and a ceiling on the surface's total token cost.
 
 
+.. _mcp-errors:
+
+One answer for every failure
+----------------------------
+
+A tool that fails answers ``{"error": …}``, sometimes with ``next_step``, and never with a
+protocol-level error. The registry wraps every tool a plugin registers
+(:func:`~robovast.mcp_server.service_access.answering_errors`), so a tool does not catch an
+exception only to report it: what it raises is rendered by
+:func:`~robovast.mcp_server.service_access.error_result`, one way for the whole surface.
+
+* **No service** -- none configured, or none answering at the configured address -- is the one
+  sentence that says to stop rather than work around it; an address that did not answer is
+  named in front of it.
+* **A deployment that cannot run a container** is its cause, plus which tools that disables
+  and which still answer.
+* **A full disk** is the sentence the HTTP surface answers a 507 with, not an errno.
+* **A refusal** -- a service error, a bad argument, an unknown id, a conflict, or any error
+  declared a clean refusal -- is its message. One that knows the caller's next move carries it
+  as ``next_step``; an absent ``next_step`` says there is nothing obvious to do.
+* **Anything else is a bug**: its type, message and the tail of its traceback, as a failed
+  campaign records one.
+
+A tool still returns ``{"error": …}`` itself where it checks an argument before doing any
+work, and still catches an exception it turns into a different answer (a binary file read
+as text is answered with the URL that serves its bytes). The call log counts a call that
+answered with the error document as failed.
+
+**A failed read is not an empty campaign.** A tool that computes over a campaign's data --
+``get_campaign_summary``, ``get_camera_frame`` -- answers a lookup that failed (no such
+campaign, no service, a transport error) with that failure. Only data the campaign does not
+have reads as absent: a campaign with no runs is "no run data", a run with no ``videos`` row
+"registered no video", and a table or column a store predates is left out of the answer.
+
+
 .. _mcp-analysis:
 
 Reading results: SQL, not a tool per scope
@@ -447,8 +482,10 @@ query names it.
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
   question is written down**. Read its ``note`` first. It lists every table the campaign's
   records can give, each with its ``kind`` (``view``, ``table``, ``record``) and, for a
-  per-run table, ``built`` of ``runs`` — for how many runs it is built already. Describing
-  builds nothing; a table's ``columns`` are empty until it is built for some run.
+  per-run table, ``built`` of ``runs`` — for how many runs it is built already — and under
+  ``failed`` the runs it has no rows for, or only part of them, with the reason
+  (:ref:`results-table-cache`). Describing builds nothing; a table's ``columns`` are empty
+  until it is built for some run.
 * ``query_campaign_data_sql`` — one ``SELECT`` in DuckDB's dialect, **confined to the
   campaign it names**: the query sees only that campaign's files, so ``WHERE campaign_id =
   ...`` is never needed to keep another campaign's rows out. Before it runs, the tables it
@@ -541,9 +578,8 @@ camera the world defines). That needs a simulator that can re-render — roqsim 
 cannot — and a run that recorded its state, and it runs a container in the campaign's own
 simulation image: seconds if that image is on the node, minutes if it must be pulled.
 
-Both return an image, so both **raise** rather than returning ``{"error": …}``: an image
-response has no dict to carry one. And for a *human* who wants to watch a run, neither is the
-answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
+Both return an image, and a failure as ``{"error": …}`` like every tool
+(:ref:`mcp-errors`). For a *human* who wants to watch a run, neither is the answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
 through this interface one frame at a time.
 
 A screenshot is also **kept**, so it can be attached, saved or handed on without rendering it
@@ -579,6 +615,11 @@ A query costs the rows it touches
 A query is answered by the service, next to the campaign's directory, and nothing has to be
 prepared before a question can be asked — so ``describe_campaign_data`` takes a campaign id
 and returns the schema, and a query works while the campaign runs.
+
+A service reads only the campaigns in its own results tree and refuses an absolute path in
+place of a campaign id. With no service reachable, ``describe_campaign_data`` and
+``query_campaign_data_sql`` read the campaign in the MCP server's own process instead, and
+there also take an absolute path to a campaign folder on this host.
 
 The first query to name a table for a run pays for building it from that run's records; every
 later one reads the parquet file it left in ``.cache/``. After that, cost tracks the rows a
@@ -674,7 +715,7 @@ The ``execution`` plugin lets an assistant drive campaigns. It is a
 login``, or the one answering on the conventional port. The service is the single
 execution authority and owns run-state tracking; there is **no local subprocess path**.
 When no service is reachable every tool fails loudly (``{"error": "no robovast-service
-reachable — …"}``) rather than silently running or reading something else. There is no
+reachable — …"}``, :ref:`mcp-errors`) rather than silently running or reading something else. There is no
 serviceless run at all: which service answers is the only thing that differs between a
 deployment on this machine and one across the room.
 

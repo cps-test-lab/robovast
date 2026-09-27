@@ -33,7 +33,8 @@ from robovast.client import file_address
 from robovast.client.app_version import running_version
 from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
-from robovast.service.interface import (ActionResult, BuildImageRequest,
+from robovast.service.interface import (ActionResult, BINARY_FILE, BinaryFile,
+                                        BuildImageRequest,
                                         CampaignLogChunk, CampaignLogRow, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DeleteCampaignsRequest,
@@ -314,8 +315,13 @@ class HTTPTransport(RobovastInterface):
             offset=offset, limit=limit))
 
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
-        return FileText.model_validate(self._get(
-            Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+        try:
+            return FileText.model_validate(self._get(
+                Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+        except ServiceError as e:
+            if e.code == BINARY_FILE:
+                raise BinaryFile(address, e.detail) from e
+            raise
 
     def read_file_bytes(self, address: str) -> bytes:
         resp = self.session.get(f"{self.base_url}{Routes.file(address)}",
