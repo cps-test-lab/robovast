@@ -27,8 +27,7 @@ What stays a dedicated tool is the campaign listing (it spans campaigns) and the
 aggregate asked constantly, itself computed over the same SQL. Campaign **files** are read
 through the address space (``/results/<campaign_id>/<path>``) — with one exception, which is
 why this module is not only SQL: **looking at** a run means decoding a recording, and a
-decoder takes a path rather than an address. Those tools return an image, so they *raise*
-where the SQL ones return ``{"error": ...}`` — an image response has no dict to carry one.
+decoder takes a path rather than an address.
 """
 
 import json
@@ -75,22 +74,13 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         or this host's results root when none is reachable, since "no campaigns" means
         different things from the two.
     """
-    from pydantic import ValidationError
-
     from robovast.service.interface import ListCampaignsRequest
-    try:
-        # Built first so a value outside the vocabulary is refused before anything is asked.
-        request = ListCampaignsRequest(limit=limit, offset=offset, sort=sort, order=order)
-    except ValidationError as e:
-        return {"error": str(e)}
-    client = service_access.service_client()
-    if client is None:
-        return {"error": service_access.NO_SERVICE}
+
+    # Built first so a value outside the vocabulary is refused before anything is asked.
+    request = ListCampaignsRequest(limit=limit, offset=offset, sort=sort, order=order)
+    client = service_access.require_service()
     source = "service"
-    try:
-        listing = campaign_listing(client, request, running_only)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    listing = campaign_listing(client, request, running_only)
     return {**listing, "source": source}
 
 
@@ -407,11 +397,8 @@ def list_campaign_plots(campaign_id: str) -> dict:
     # ``campaign.campaign.config_json`` and has nothing until the store has a campaign
     # row. Moving to SQL would make a just-started campaign's plots unreadable and would
     # duplicate a reader the service already owns for the web UI.
-    try:
-        client = service_access.require_service()
-        return client.list_campaign_plots(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.list_campaign_plots(campaign_id).model_dump()
 
 
 @lacks(run_id="the contribution belongs to the configuration, the same in every run")
@@ -430,12 +417,9 @@ def get_config_contribution(campaign_id: str, config_name: str) -> dict:
         ``/results/<campaign_id>/``. ``errors`` names a variation that could not contribute:
         an empty view with errors is not an empty configuration. Or ``{error}``.
     """
-    try:
-        client = service_access.require_service()
-        return client.get_config_contribution(campaign_id, config_name).model_dump(
-            exclude_none=True)
-    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.get_config_contribution(campaign_id, config_name).model_dump(
+        exclude_none=True)
 
 
 def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
@@ -457,13 +441,10 @@ def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
         ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
         has no heights. Or ``{error}``.
     """
-    try:
-        client = service_access.require_service()
-        return client.get_track_deviation(
-            campaign_id, config_name, run_id, source=source, frame=frame,
-            marker_label=marker_label).model_dump()
-    except Exception as e:  # noqa: BLE001 - surface resolution/parse errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.get_track_deviation(
+        campaign_id, config_name, run_id, source=source, frame=frame,
+        marker_label=marker_label).model_dump()
 
 
 #: Track points a drawing asks for: an even stride over the whole run beyond that.
@@ -548,7 +529,7 @@ def draw_config(campaign_id: str, config_name: str, run_id: Optional[int] = None
         frame: Tracked entity.
         projection: ``xy`` (top-down, over a map), ``xz`` or ``yz`` (side views).
 
-    Returns a PNG, so a failure **raises**. What could not be drawn is printed on the image.
+    Returns a PNG, or ``{error}``. What could not be drawn is printed on the image.
     """
     from robovast.client.file_address import \
         RESULTS, format_address  # noqa: PLC0415
@@ -589,14 +570,9 @@ def get_run_scene_status(campaign_id: str, config_name: str, run_id: int = 0) ->
         told apart from an ordinary cold start before it times out. ``overrides_known: false``
         means the recording carries no overrides, so geometry may miss per-config overrides.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": service_access.NO_SERVICE}
-        st = client.campaign_scene_status(campaign_id, config_name, str(run_id))
-        return st.model_dump() if hasattr(st, "model_dump") else dict(st)
-    except Exception as e:  # noqa: BLE001 - surface resolution/transport errors to the client
-        return {"error": str(e)}
+    client = service_access.require_service()
+    st = client.campaign_scene_status(campaign_id, config_name, str(run_id))
+    return st.model_dump() if hasattr(st, "model_dump") else dict(st)
 
 
 # -- Looking at a run --------------------------------------------------------
@@ -671,9 +647,7 @@ def _frame_from_recording(campaign_id: str, config_name: str, run_id: int,
         raise run_artifacts.RunArtifactError(
             f"run {run_id} of {config_name!r} recorded several cameras "
             f"({', '.join(topics)}); pass topic= to choose one.")
-    client = service_access.service_client()
-    if client is None:
-        raise run_artifacts.RunArtifactError(service_access.NO_SERVICE)
+    client = service_access.require_service()
     try:
         _stamp, jpeg = client.campaign_frame(campaign_id, f"{config_name}/{run_id}", topics[0],
                                              None if time is None else float(time))
@@ -692,8 +666,8 @@ def get_camera_frame(campaign_id: str, config_name: str, run_id: int = 0,
     """One frame of a camera the run recorded, as a PNG: the frame at or before ``time``
     of an image topic, no wider than 640 px, or from the run's ``rosbags_to_webm`` video
     when it recorded no image topic. The viewpoint is the camera's;
-    ``get_simulation_screenshot`` picks one. A failure **raises**: no camera and no video,
-    an ambiguous ``topic``, an unreadable recording.
+    ``get_simulation_screenshot`` picks one. Or ``{error}``: no camera and no video, an
+    ambiguous ``topic``, an unreadable recording.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -761,7 +735,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
     (roqsim can; Gazebo cannot) and a run that recorded its state, written on a clean stop
     only; it runs a container in the campaign's simulation image, seconds when the image is
     on the node. For a camera the run itself carried, ``get_camera_frame`` is the cheap read.
-    A failure **raises**: no such capability, no recorded state, a render that failed.
+    Or ``{error}``: no such capability, no recorded state, a render that failed.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -773,28 +747,15 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
         focus: Entity or body names to frame on; the simulator picks a clear angle.
         camera: A camera the world defines. It owns its pose — not with ``view``/``focus``.
         size: ``WxH``, default ``960x720``.
-
-    Raises:
-        RunArtifactError: no such capability, no recorded state, or the render failed.
     """
     from robovast.common.simulators import parse_view  # pylint: disable=import-outside-toplevel
     from robovast.service import screenshot  # pylint: disable=import-outside-toplevel
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
-    client = service_access.service_client()
-    if client is None:
-        raise run_artifacts.RunArtifactError(service_access.NO_SERVICE)
-    try:
-        parsed = parse_view(view)
-    except ValueError as e:
-        raise run_artifacts.RunArtifactError(str(e)) from e
-
-    try:
-        frame = client.campaign_screenshot(
-            campaign_id, config_name, str(run_id), at=at, view=parsed,
-            focus=list(focus or []), camera=camera, size=size)
-    except Exception as e:  # noqa: BLE001 - the reason is the whole value of this failing
-        raise run_artifacts.RunArtifactError(str(e)) from e
+    client = service_access.require_service()
+    frame = client.campaign_screenshot(
+        campaign_id, config_name, str(run_id), at=at, view=parse_view(view),
+        focus=list(focus or []), camera=camera, size=size)
 
     path = Path(frame.path)
     try:
