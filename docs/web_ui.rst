@@ -267,10 +267,10 @@ It provides four views:
   longer exists to export. A campaign ends up on the share as *both* by being uploaded at
   campaign end (before postprocessing, hence raw) and exported again afterwards.
 * **Launcher** — starts a campaign from a workspace (which ``.vast``, config filter,
-  runs per configuration, *Postprocess when done* and *Upload to share when done*
-  toggles) and watches its live status. The browser equivalent of ``vast workspace run``. *Upload to share when done* streams a raw, pre-postprocessing
-  ``tar.gz`` to the configured external share the moment the runs finish (off by
-  default; the share destination comes from the service's ``.env``).
+  runs per configuration, *Postprocess* and *Upload to share* toggles) and watches its
+  live status. The browser equivalent of ``vast workspace run``. *Upload to share* streams a
+  raw, pre-postprocessing ``tar.gz`` to the configured external share the moment the runs
+  finish (off by default; the share destination comes from the service's ``.env``).
   Once a ``.vast`` is selected the service composes it in the background, with a spinner and
   how many variation steps are done, and the config filter then offers its configuration
   names: pick one or several, or type a glob to narrow the list. A filter that matches none
@@ -1472,7 +1472,7 @@ built there and kept for the next query.
 
    The Results tab lists a campaign as soon as it has results -- runs recorded, or trials under
    way; what postprocessing adds (the derived tables, the notebooks) appears once it has run.
-   Launching with **Postprocess when done** (the default) postprocesses it automatically;
+   Launching with **Postprocess** checked (the default) postprocesses it automatically;
    otherwise run ``vast campaign postprocess <id>``, or use **Retrigger postprocessing** in the
    campaign's actions menu, which is also how to *change* the postprocessing parameters and
    re-run. Postprocessing runs the campaign's own steps and builds the tables it declares
