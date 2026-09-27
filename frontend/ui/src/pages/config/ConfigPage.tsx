@@ -13,7 +13,7 @@ import Typography from '@mui/material/Typography'
 import { useActiveView } from '@/lib/activeView'
 import { campaignConfigNote } from '@/lib/campaignConfig'
 import { robovast } from '@/lib/robovastClient'
-import { configureVastSchema, isSchemaConfigured } from '@/lib/monaco'
+import { configSchemaQuery } from '@/lib/monaco'
 import { type ConfigSource } from '@/lib/configSource'
 import { useDialogs } from '@/components/DialogProvider'
 import { useToasts } from '@/components/ToastProvider'
@@ -75,15 +75,7 @@ export function ConfigPage({
     queryFn: () => robovast.listWorkspaces(),
     enabled: active,
   })
-  useQuery({
-    queryKey: ['configSchema'],
-    queryFn: async () => {
-      const schema = await robovast.getConfigSchema()
-      if (!isSchemaConfigured()) configureVastSchema(schema)
-      return schema
-    },
-    staleTime: Infinity,
-  })
+  useQuery(configSchemaQuery)
 
   // Once workspaces load, default to the first if none is selected.
   useEffect(() => {
