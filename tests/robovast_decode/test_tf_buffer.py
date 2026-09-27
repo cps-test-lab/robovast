@@ -102,3 +102,19 @@ def test_the_answer_is_tf2s_canonical_quaternion():
 def test_a_denormalised_quaternion_is_refused():
     b = TransformBuffer()
     assert not b.set_transform("a", "map", 1 * S, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 2.0))
+
+
+def test_a_quaternion_typed_to_four_places_is_accepted_as_tf2_accepts_it():
+    """``0.7071`` twice has a squared norm 2e-5 off one: inside tf2's bound of 10e-3."""
+    b = TransformBuffer()
+    assert b.set_transform("laser", "base_link", 0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.7071, 0.7071),
+                           static=True)
+    assert b.set_transform("cam", "base_link", 0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.707, 0.707),
+                           static=True)
+
+
+def test_tf2s_bound_separates_accepted_from_refused():
+    """A squared norm 0.008 off one is inside tf2's 10e-3; 0.0201 off is outside it."""
+    b = TransformBuffer()
+    assert b.set_transform("a", "map", 1 * S, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.004))
+    assert not b.set_transform("b", "map", 1 * S, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.01))
