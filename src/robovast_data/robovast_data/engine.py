@@ -68,7 +68,7 @@ from robovast_decode.build import (CAMPAIGN_TABLES, DERIVED_TABLES, RECORDING_TA
 from robovast_decode.layout import decoder_config
 from robovast_decode.runs import RUNS_TABLE, StoreError, build_runs
 from robovast_decode.tables import (LIVE_STALE_S, TABLES_DIR, cache_root, read_manifest,
-                                    schema_of)
+                                    schema_of, written_here)
 
 from . import record, views
 from .statement import Narrowing, QueryError, Statement, parse
@@ -494,7 +494,8 @@ class Engine:
 
         ``{name: {"kind": "table"|"view"|"record", "runs": n, "built": n,
         "failed": {run: reason}, "columns": [[name, type], ...] | None}}``. A table's columns
-        are known once it is built for some run; ``None`` until then.
+        are known once it is built for some run by this decoder under its contract; ``None``
+        until then.
         """
         out: Dict[str, dict] = {}
         for scope in self.scopes:
@@ -522,7 +523,7 @@ class Engine:
                 entry["built"] += count["built"]
                 built = manifest.get("tables", {}).get(table, {}).get("runs", {})
                 entry["rows"] += sum(e.get("rows", 0) for k, e in built.items()
-                                     if keys is None or k in keys)
+                                     if (keys is None or k in keys) and written_here(e))
                 entry["failed"].update({f"{scope.campaign_id}/{k}": v
                                         for k, v in count["failed"].items()})
                 table_entry = manifest.get("tables", {}).get(table, {})
@@ -530,8 +531,8 @@ class Engine:
                 # The first type seen for a name is the one listed; one pass per column,
                 # since a table can be thousands of columns wide.
                 seen = {c for c, _ in entry["columns"] or []}
-                for run_entry in list(table_entry.get("runs", {}).values()) + (
-                        [held_whole] if held_whole else []):
+                current = [e for e in table_entry.get("runs", {}).values() if written_here(e)]
+                for run_entry in current + ([held_whole] if held_whole else []):
                     for name, kind in schema_of(manifest, run_entry):
                         if name in seen:
                             continue
