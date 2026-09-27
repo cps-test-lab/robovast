@@ -46,31 +46,18 @@ class MapVisualizer:
         self.fig = None
         self.ax = None
 
-    def load_map(self, yaml_path: str) -> bool:
+    def load_map(self, yaml_path: str) -> None:
         """
         Load a map from a YAML file.
 
         Args:
             yaml_path: Path to the map.yaml file
 
-        Returns:
-            True if successful, False otherwise
+        Raises:
+            FileNotFoundError: If the map YAML or its image is missing
+            ValueError: If the map cannot be read
         """
-        try:
-            # Load map using shared map_loader utility
-            self.map = load_map(yaml_path)
-
-            # print(f"Map loaded successfully:")
-            # print(f"  Image: {self.map.image_path}")
-            # print(f"  Resolution: {self.map.resolution} m/pixel")
-            # print(f"  Origin: {self.map.origin}")
-            # print(f"  Size: {self.map.width} x {self.map.height} pixels")
-
-            return True
-
-        except Exception as e:
-            print(f"Error loading map: {str(e)}")
-            return False
+        self.map = load_map(yaml_path)
 
     def pixel_to_world(self, pixel_x: int, pixel_y: int) -> Tuple[float, float]:
         """

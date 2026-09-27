@@ -98,6 +98,22 @@ def test_a_scenario_in_a_subdirectory_is_put_where_the_vast_says(svc, tmp_path):
     assert written["execution"]["scenario_file"] == "scenarios/pilot.osc"
 
 
+@pytest.mark.parametrize("declared", ["../../escaped/pilot.osc", "{outside}/pilot.osc"])
+def test_a_scenario_path_that_leaves_the_project_is_refused(svc, tmp_path, declared):
+    """``execution.scenario_file`` comes from the campaign's archived ``.vast``, which an
+    imported archive supplies: the copy that places the scenario stays inside the project."""
+    outside = tmp_path / "outside"
+    declared = declared.format(outside=outside)
+    campaign = _source_campaign(tmp_path / "results", vast=_vast(declared))
+    (campaign / "_config" / "scenario.osc").rename(campaign / "_config" / "pilot.osc")
+
+    with pytest.raises(ValueError, match="outside the project"):
+        _create(svc)
+    assert not outside.exists()
+    assert not (tmp_path / "escaped").exists()
+    assert svc.list_workspaces().workspaces == []
+
+
 def test_an_empty_workspace_is_still_empty(svc):
     """``from_campaign`` is opt-in: the ordinary create must not acquire a source."""
     info = svc.create_workspace(CreateWorkspaceRequest(name="plain"))
