@@ -74,6 +74,14 @@ def _iter_package_files(package_path: str) -> list[str]:
     return sorted(result)
 
 
+def variation_refs(config_block: dict) -> list[str]:
+    """The variation references a configuration block names, as the ``.vast`` wrote them."""
+    listed = config_block.get("variations")
+    if not isinstance(listed, list):
+        return []
+    return [ref for item in listed if isinstance(item, dict) for ref in item]
+
+
 def _hash_variation_entrypoints_impl(variation_type_names: list[str]) -> str:
     """Hash the source of every module in the package of each variation entry point."""
     eps_by_name = {}
@@ -117,6 +125,27 @@ def _hash_variation_entrypoints_impl(variation_type_names: list[str]) -> str:
 def hash_variation_entrypoints(variation_type_names: tuple[str, ...]) -> str:
     """Hash variation entry points used in config. Cached by frozenset of names."""
     return _hash_variation_entrypoints_impl(list(variation_type_names))
+
+
+def hash_variation_refs(refs) -> str:
+    """Hash the variation references as written, so the identity does not move with a release."""
+    return hashlib.sha256(",".join(sorted(set(refs))).encode()).hexdigest()[:12]
+
+
+def hash_read_files(vast_dir: str, paths) -> str:
+    """Hash the files a configuration's variations read, by content.
+
+    A file inside *vast_dir* is named by its relative path, so a campaign composed again
+    from its archived copy keeps its identity.
+    """
+    vast_dir = os.path.abspath(vast_dir)
+    hasher = hashlib.sha256()
+    for path in sorted(set(paths)):
+        rel = os.path.relpath(path, vast_dir)
+        hasher.update((path if rel.startswith("..") else rel).encode())
+        with open(path, "rb") as f:
+            hasher.update(f.read())
+    return hasher.hexdigest()[:12]
 
 
 def _canonical_config_block(config_block: dict) -> str:
@@ -209,8 +238,9 @@ def compute_config_identifier(
     config_block: dict,
     run_files_hash: str,
     scenario_file_hash: str,
-    variation_type_names: list[str],
+    variations: list[str],
     sut_sources_hash: str = "",
+    read_files=(),
 ) -> tuple[str, dict[str, str]]:
     """Compute unique config identifier from all inputs that affect config generation.
 
@@ -219,29 +249,31 @@ def compute_config_identifier(
         config_block: Configuration entry from vast (name, parameters, variations).
         run_files_hash: Precomputed hash of run_files files.
         scenario_file_hash: Precomputed hash of scenario file content.
-        variation_type_names: List of variation type names used in this config.
+        variations: The variation references the config block names
+            (:func:`variation_refs`).
         sut_sources_hash: Content hash of the config files the ``sut:`` channel
             addresses, or ``""`` when the campaign declares none. They are inputs
             to generation exactly as a world is, but they cannot ride in
             ``run_files_hash``: that list is also *staged*, and a source mounted
             un-rewritten beside its rewritten copy is what the channel refuses.
+        read_files: Absolute paths of the files the config's variations read beyond what
+            the block names (``Variation.get_read_files``) -- the image a map YAML names.
 
     Returns:
         Tuple of (12-char hex digest, dict of sub-identifiers for debugging).
     """
     canonical = _canonical_config_block(config_block)
-    var_tuple = tuple(sorted(variation_type_names))
 
     block_hash = _hash_config_block_cached(canonical)
     ref_files_hash = hash_config_referenced_files(vast_dir, canonical)
-    var_hash = hash_variation_entrypoints(var_tuple)
+    var_hash = hash_variation_refs(variations)
 
     sub_identifier = {
         "block": block_hash,
         "run_files": run_files_hash,
         "scenario_file": scenario_file_hash,
         "config_referenced_files": ref_files_hash,
-        "variation_entrypoints": var_hash,
+        "variations": var_hash,
     }
 
     combined = (
@@ -258,6 +290,11 @@ def compute_config_identifier(
     if sut_sources_hash:
         sub_identifier["sut_sources"] = sut_sources_hash
         combined += f",sut={sut_sources_hash}"
+    # Same reason: appended only when a variation read a file.
+    if read_files:
+        read_hash = hash_read_files(vast_dir, read_files)
+        sub_identifier["read_files"] = read_hash
+        combined += f",read={read_hash}"
     config_identifier = hashlib.sha256(combined.encode()).hexdigest()[:12]
 
     return config_identifier, sub_identifier

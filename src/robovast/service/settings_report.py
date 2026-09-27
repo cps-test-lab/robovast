@@ -249,6 +249,8 @@ KNOWN: dict[str, Known] = {
         _STORAGE, "Root holding image build contexts.", Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE": Known(
         _STORAGE, "Root of the shared generated-scene cache.", Sensitivity.HOST_PATH),
+    "ROBOVAST_SCREENSHOTS": Known(
+        _STORAGE, "Root holding kept simulation screenshots.", Sensitivity.HOST_PATH),
     "ROBOVAST_SCENE_CACHE_BYTES": Known(
         _STORAGE, "Ceiling the scene cache is trimmed to.",
         default=str(DEFAULT_MAX_CACHE_BYTES)),
@@ -336,8 +338,7 @@ def describe(loopback: bool = False) -> list[Described]:
 
     Args:
         loopback: whether the caller reached this service over the loopback interface, and
-            may therefore be shown host paths — the rule ``/version`` already applies to
-            ``results_root`` / ``sources_root``.
+            may therefore be shown host paths.
 
     The environment decides what is reported; :data:`KNOWN` decides only how. A key it does
     not cover still appears, without its value.
