@@ -55,6 +55,9 @@ class _InputsRunner:
         self._sink.append(list(command))
         emit(json.dumps({"packaged": False, "inputs": [command[-1]]}))
 
+    def image_digest(self):
+        return "sha256:" + "0" * 64
+
     def close(self):
         pass
 
