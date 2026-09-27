@@ -258,15 +258,17 @@ that reconciles it. Also *reconcile when convenient*. ``get`` and ``list`` are t
 what ``metrics.k8s.io`` serves — it has no watch — so the numbers are polled, once per sample
 window for the whole service rather than per campaign or per job.
 
-Before rolling, it lists the live campaigns and asks. A live campaign survives a roll on
-its own — its Jobs are not children of the pod being replaced, and the new pod re-attaches
-to them (:doc:`cluster_execution`) — except one nothing could re-launch: one with no
-records, or a search with no ``search.seed``. The service knows which those are, so
-``vast service restart`` (below) refuses only them, named with their reason; ``upgrade``
-does not go through the service and asks about every live one. ``--yes`` skips the
-question; without it a non-interactive run aborts rather than rolling silently. A service that cannot be reached is reported and the roll proceeds, since
-a wedged service is a reason to upgrade rather than a reason to refuse, but it says so —
-a silent roll must never be read as "nothing was running".
+Before rolling, it asks the service for the live campaigns, names every one and asks. A
+live campaign survives a roll on its own — its Jobs are not children of the pod being
+replaced, and the new pod re-attaches to them (:doc:`cluster_execution`) — except one
+nothing could re-launch: one with no records, a search with no ``search.seed``, or a
+search whose strategy declares itself not resumable. Only the web UI's button leaves that
+distinction to the service, which refuses those campaigns alone, each named with its
+reason; ``upgrade`` and ``vast service restart`` ask about every live campaign.
+``--yes`` skips the question; without it a non-interactive run aborts rather than rolling
+silently. A service that cannot be reached is reported and the roll proceeds, since a
+wedged service is a reason to upgrade rather than a reason to refuse, but it says so — a
+silent roll must never be read as "nothing was running".
 
 There is a smaller verb for the common case, and it needs no kubeconfig:
 
@@ -276,9 +278,10 @@ There is a smaller verb for the common case, and it needs no kubeconfig:
 
 That asks the service to roll *itself* — the Deployment's restart annotation, and nothing
 else. It is the same thing the web UI's Admin page button does (:ref:`web-ui-admin`), and
-it exists because ``upgrade`` needs cluster access, so somebody who reached the deployment
-through ``vast login`` had a button in the browser and no command at all. It carries the
-same live-campaign guard and the same ``--yes``.
+it exists because ``upgrade`` needs cluster access, which somebody who reached the
+deployment through ``vast login`` does not have. It asks about live campaigns as
+``upgrade`` does and takes the same ``--yes``; once answered, it forces the roll past the
+service's own refusal.
 
 **It reconciles nothing.** RBAC, the registry ingress route, the
 credential Secrets and the build daemon are all untouched, so a version needing a new
