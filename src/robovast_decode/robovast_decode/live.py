@@ -261,9 +261,7 @@ class Session:
         record_offset, ordinal = -1, 0
         for record in tail.read():
             if isinstance(record, Schema):
-                if record.encoding in ("ros2msg", "ros2idl") and record.data:
-                    self.catalog.add_definition(record.name, record.encoding,
-                                                record.data.decode("utf-8", errors="replace"))
+                self.catalog.add_schema(record)
                 continue
             if isinstance(record, Channel):
                 if record.topic not in self.recorded:

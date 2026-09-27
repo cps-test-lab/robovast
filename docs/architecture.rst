@@ -183,7 +183,7 @@ running campaign is a property of the implementation, answered in its own
 ``_shutdown_running_campaigns``: ``ClusterService`` leaves its Jobs running, because they
 outlive any one service process and the next one adopts them
 (:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
-is not, and it never was a good way to say it — the cooperative stop persists a
+is not — the cooperative stop persists a
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
@@ -303,7 +303,7 @@ and container specs, so the long-lived service carries no MuJoCo). A backend the
 by returning a **question**, :class:`~robovast.common.simulators.ContainerQuery`: a command and
 the image to run it in, whose one line of JSON RoboVAST reads.
 
-Four rules make those answers trustworthy, and each of them was a bug first:
+Four rules make those answers trustworthy:
 
 * **In the image the campaign runs.** Which world a ref even names depends on what is
   *installed*, so a query answered in a fixed base image describes a different world -- or none,
@@ -313,13 +313,13 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   a second copy would be free to disagree with it.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
-  pre-check that logged this at debug and carried on was indistinguishable from a check that
-  passed, which is how a misspelled plugin key reached the container after the image pull.
+  pre-check that logged this at debug and carried on would be indistinguishable from a check
+  that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
   answered what it could, and that payload is taken. A world whose model does not compile in the
   image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
-  say which plugin keys it has -- that half needs no build -- and discarding the reply cost the
-  campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
+  say which plugin keys it has -- that half needs no build -- and discarding the reply would
+  cost the campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
 * **A container runner is not implied.** The query runs a container, and in-cluster a container
@@ -523,9 +523,8 @@ scenario* logs to a file inside the container and the result carries ``log_path`
 of that output.
 
 **A running campaign is never a target.** There is no code path from this operation to a
-job's container or pod. An earlier draft made exec'ing a live campaign "safe" by annotating
-its log; that was an admission the operation was wrong rather than a fix. To inspect a live
-stack, the caller starts that stack in its own exec container.
+job's container or pod. To inspect a live stack, the caller starts that stack in its own exec
+container.
 
 **One container, so there is no state to manage.** At most one exists at a time, under a
 fixed name (``robovast-exec``). That removes
@@ -1263,9 +1262,8 @@ published dataset's config? — does not arise rather than being answered.
 
 **``family:<member>`` mirrors ``build:<tag>``.** Both are symbolic refs core resolves late
 from context the author does not hold, and both fail loudly if one reaches a container spec
-unresolved. The alternative considered was a rewrite pass that matched family
-repositories in already-concrete refs and moved them to another project. It was
-rejected: it needs a
+unresolved. A rewrite pass that matched family repositories in already-concrete refs and
+moved them to another project would need a
 whitelist of names to match, and anything a whitelist can match by mistake it can
 *redirect* by mistake — a campaign's own ``sut`` image silently pulled from somewhere the
 author never named. A prefix marker cannot do that, because writing it is a request.
@@ -1287,12 +1285,11 @@ exist *before* composition (the images are what the campaign then runs in). So
 ``extract_build_specs`` calls ``apply_backend`` itself, and therefore has to resolve what that
 contributes itself: ``image_project`` rides ``CreateCampaignRequest`` → ``RunOptions`` →
 ``_start_build_images`` / ``_resolve_built_images`` → ``extract_build_specs``.
-Missing this was asymmetric, which is what hid it: a container taking the default member was
-resolved on the composition path, so ``sut`` and ``scenario`` built correctly while the one
-container declaring a ``backend:`` carried ``family:robovast-roqsim`` into its Dockerfile's
-``FROM``. Docker read that as repository ``family``, tag ``robovast-roqsim``, and the campaign
-died in BuildKit with a registry ``insufficient_scope`` — a credentials error three layers from
-the cause. ``generate_dockerfile`` now refuses either prefix outright, so the promise that an
+Getting this wrong is asymmetric and so hard to see: a container taking the default member is
+resolved on the composition path either way, and only a container declaring a ``backend:``
+would carry ``family:robovast-roqsim`` into its Dockerfile's ``FROM``, which Docker reads as
+repository ``family``, tag ``robovast-roqsim`` — a registry credentials error three layers from
+the cause. ``generate_dockerfile`` refuses either prefix outright, so the promise that an
 unresolved ref fails loudly holds for a build and not only for a pod spec.
 
 Resolving into the campaign data — rather than at each point of use — is what makes
@@ -1396,9 +1393,8 @@ Three properties of the **Job** shape, and each replaces machinery rather than a
 * **Idempotent by name.** The Job name is derived from the image ref, so a duplicate create is
   a 409 meaning "already warming". No in-process record, and a service restart changes nothing —
   the same trick ``build_id_for`` uses to make a resubmit idempotent.
-* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient, and assuming it was
-  would have reproduced a bug this codebase already paid for: TTL starts only once a Job is
-  terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
+* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient: TTL starts only
+  once a Job is terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
   counters at zero and the Job ``active`` forever. That is precisely why the build path carries a
   ``blocked``-phase probe. A prewarm has nobody watching it, so it gets
   ``activeDeadlineSeconds`` instead of a watcher.
@@ -1423,7 +1419,7 @@ campaign-completion hook — the first is the placement limit below, and the sec
 prewarmed copy just as readily. Warming at view time is no better, since ``AuxPodSession``
 creates a pod with that image immediately anyway and a second pod would race the same pull for
 no gain. So the honest answer is that this particular latency needs multi-node warming rather
-than another fire point — which the family DaemonSet now provides for a campaign that ran a
+than another fire point — which the family DaemonSet provides for a campaign that ran a
 family image directly, and still does not for one that built its own.
 
 Two further things it deliberately does not do. It does **not** fire on the restart branch of

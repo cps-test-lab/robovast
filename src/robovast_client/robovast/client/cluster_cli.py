@@ -9,13 +9,13 @@ What is deliberately not here: launching (``vast workspace run`` -- a campaign r
 workspace's project, never a property of the cluster), and ``stop``/``stop-job``/``log``,
 which only drive the service and so are ``vast campaign`` verbs.
 
-What stays in ``robovast-cluster`` is the half that genuinely needs a cluster: ``setup``,
-``cleanup``, ``upgrade``, ``token``, ``jobs-cleanup``, and ``monitor``. They attach here
-through the ``robovast.cluster_plugins`` entry-point group, so they are listed without
-being imported and an install without that package is short a subcommand rather than
-broken.
+The verbs are ``robovast-cluster``'s, the half that genuinely needs a cluster: ``setup``,
+``cleanup``, ``jobs-cleanup`` and ``monitor``. They attach here through the
+``robovast.cluster_plugins`` entry-point group, so they are listed without being imported
+and an install without that package is short a subcommand rather than broken. ``upgrade``
+and ``token`` act on the deployed service and attach to ``vast service`` instead.
 
-``monitor`` is the one that could have come along and deliberately did not. Its
+``monitor`` is deliberately not client code. Its
 service-driven view is pure client code, but its kubeconfig view is not, and the two are
 one command chosen at runtime -- so moving it would split a single function's body across
 two distributions. Everything it offers a *client* user (runs done/total, pending job
