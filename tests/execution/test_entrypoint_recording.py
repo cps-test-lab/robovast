@@ -255,7 +255,8 @@ def test_a_campaign_stages_the_preset_into_its_transient_dir(tmp_path, cluster):
     out = tmp_path / "campaign"
     execution.prepare_campaign_configs(str(out), {
         "vast": str(tmp_path / "s.vast"), "scenario_file": str(tmp_path / "s.osc"),
-        "configs": [{"name": "c1", "config": {}}], "execution": {"runs": 1}}, cluster=cluster)
+        "configs": [{"name": "c1", "config": {}, "_config_block": {"name": "c1"},
+                     "_read_files": []}], "execution": {"runs": 1}}, cluster=cluster)
     staged = out / "_transient" / MCAP_STORAGE_CONFIG
     assert staged.read_bytes() == \
         files("robovast.execution.data").joinpath(MCAP_STORAGE_CONFIG).read_bytes()

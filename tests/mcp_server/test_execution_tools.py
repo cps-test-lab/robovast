@@ -420,9 +420,17 @@ def _dummy_arguments(fn) -> dict:
             if param.default is inspect.Parameter.empty}
 
 
-@pytest.mark.parametrize("tool", [fn for fn in execution._TOOLS
-                                  if fn is not execution.get_campaign_log],
-                         ids=lambda fn: fn.__name__)
+def _tools_of(*modules):
+    """The registered tools whose functions live in *modules*, as test parameters."""
+    from tests.mcp_server.conftest import registered_tools
+    for name, tool in sorted(registered_tools().items()):
+        module = tool.fn.__wrapped__.__module__.rsplit(".", 1)[-1]
+        if module in modules:
+            yield pytest.param(tool.fn, id=f"{module}.{name}")
+
+
+@pytest.mark.parametrize("tool", [p for p in _tools_of("execution")
+                                  if p.id != "execution.get_campaign_log"])
 def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service, tool):
     """The server instructions promise that every control tool says so when no service
     answers, and the sentence they say is the one that tells the caller what not to do
@@ -446,17 +454,13 @@ _SERVICELESS_TOOLS = {"get_config_schema", "get_cli_help", "get_campaign_log",
 
 
 def _control_tools():
-    import importlib
     import pkgutil
 
     from robovast.mcp_server import plugins
-    for info in pkgutil.iter_modules(plugins.__path__):
-        if info.name in _SERVICELESS_PLUGINS:
-            continue
-        module = importlib.import_module(f"{plugins.__name__}.{info.name}")
-        for fn in getattr(module, "_TOOLS", []):
-            if fn.__name__ not in _SERVICELESS_TOOLS:
-                yield pytest.param(fn, id=f"{info.name}.{fn.__name__}")
+    modules = {info.name for info in pkgutil.iter_modules(plugins.__path__)}
+    for param in _tools_of(*(modules - _SERVICELESS_PLUGINS)):
+        if param.id.split(".", 1)[1] not in _SERVICELESS_TOOLS:
+            yield param
 
 
 def _workspace_arguments(fn) -> dict:
@@ -481,17 +485,14 @@ def _workspace_arguments(fn) -> dict:
 @pytest.mark.parametrize("tool", list(_control_tools()))
 def test_every_plugins_control_tools_say_the_no_service_sentence(no_service, tool):
     """The promise is the server's, not one module's: a tool added to any plugin answers
-    with the shared sentence, whether it returns it, raises it or, as ``validate_project``
-    does, lists it as a problem."""
+    with the shared sentence, whether it raises it or, as ``validate_project`` does, lists
+    it as a problem."""
     import asyncio
 
     from robovast.mcp_server.service_access import NO_SERVICE
-    try:
-        answer = tool(**_workspace_arguments(tool))
-        if asyncio.iscoroutine(answer):
-            answer = asyncio.run(answer)
-    except Exception as e:  # noqa: BLE001 - a raised refusal reaches the caller too
-        answer = str(e)
+    answer = tool(**_workspace_arguments(tool))
+    if asyncio.iscoroutine(answer):
+        answer = asyncio.run(answer)
     assert NO_SERVICE in str(answer)
 
 

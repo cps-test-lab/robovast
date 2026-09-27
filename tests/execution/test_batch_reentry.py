@@ -181,7 +181,7 @@ def test_preparing_a_campaign_from_its_own_config_copies_nothing_onto_itself(tmp
         "scenario_file": str(config_dir / "scenario.osc"),
         "vast": str(config_dir / "camp.vast"),
         "_run_files": ["files/params.yaml"],
-        "configs": [{"name": "cfg-a"}],
+        "configs": [{"name": "cfg-a", "_config_block": {"name": "cfg-a"}, "_read_files": []}],
         "execution": {},
     }
     # The campaign's own directory as the project: what a resume hands the backend.
