@@ -250,7 +250,7 @@ def test_ranking_mixes_both_signals_without_crashing():
 
 @pytest.mark.parametrize("value,expected", [
     ("900G", 900 * 1000**3), ("10Gi", 10 * 1024**3), ("1024", 1024),
-    (None, 0), ("nonsense", 0)])
+    (None, 0), ("nonsense", 0), ("inf", 0), ("NaN", 0)])
 def test_storage_quantities_parse_or_sort_last(value, expected):
     assert np._parse_quantity(value) == expected
 

@@ -58,7 +58,9 @@ _LAYOUT = """
       _execution/           launch.yaml (what it was asked to run), outcome.json (why it
                             ended), execution.yaml, controller.log, postprocessing.log
       _transient/           configurations.yaml, entrypoint.sh, postprocessing.yaml
-      _jobs/batch-N/job-M/  sysinfo.yaml, resource_usage_*.csv, logs/system*.log
+      _jobs/job-M/          sysinfo.yaml, resource_usage_*.csv, logs/system*.log; a
+                            search nests jobs as batch-N/job-M/, or batch-N/reps-K/job-M/
+                            when a batch runs several repetition groups
       <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
       <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, roqsim_bag/, *.webm (a
                             recorded camera; videos.csv lists them with their timing)
