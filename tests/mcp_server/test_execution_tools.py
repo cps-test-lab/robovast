@@ -379,7 +379,10 @@ def _refusing(operation):
     ("retrigger_campaign", lambda: execution.start_campaign(from_campaign="c1")),
     ("import_campaign", lambda: results_lifecycle.import_campaign(archive_path="/a.tar.gz")),
     ("run_postprocessing", lambda: results_lifecycle.run_postprocessing("c1")),
-], ids=["create_campaign", "retrigger_campaign", "import_campaign", "run_postprocessing"])
+    ("build_campaign_tables", lambda: results_lifecycle.build_campaign_tables("c1")),
+    ("create_export", lambda: results_lifecycle.export_campaign("c1")),
+], ids=["create_campaign", "retrigger_campaign", "import_campaign", "run_postprocessing",
+        "build_campaign_tables", "create_export"])
 def test_a_storage_refusal_carries_the_command_that_frees_space(monkeypatch, operation, call):
     monkeypatch.setattr(service_access, "service_client", lambda: _refusing(operation))
     out = call()

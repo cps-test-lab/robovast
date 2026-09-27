@@ -118,7 +118,7 @@ def build_campaign_tables(campaign_id: str, tables: list | None = None) -> dict:
             BuildCampaignTablesRequest(campaign_id=campaign_id,
                                        tables=list(tables or []))).model_dump()
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return service_access.error_result(e)
 
 
 def clear_campaign_tables(campaign_id: str) -> dict:
@@ -298,7 +298,7 @@ def export_campaign(campaign_id: str, tables: list | None = None, format: str = 
         ref = client.create_export(campaign_id, request)
         status = client.get_export_status(campaign_id, ref.export_id)
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return service_access.error_result(e)
     url = service_access.web_url(client, ref.url)
     options = [f"--format {format}", f"--bags {bags}"]
     if tables is not None:
