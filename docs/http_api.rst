@@ -252,10 +252,10 @@ What may ride on a polled payload
 
 ``GET /campaigns/{id}/status`` and ``GET /campaigns/events`` are **hot fan-out payloads**, and
 that governs what may be put on them. The web UI renders every campaign in the list as a card;
-each card polls the status every 1.5 seconds, and the list stream re-lists the newest hundred
-campaigns once a second for as long as any tab is open. So the cost of a field there is multiplied by campaigns on
-screen, by polls, and by open tabs — and served over HTTP/2, where no connection limit throttles a
-page-load burst the way it once did.
+each running campaign's card polls the status every 1.5 seconds, and the list stream re-lists
+the newest hundred campaigns once a second for as long as any tab is open. So the cost of a
+field there is multiplied by campaigns on screen, by polls, and by open tabs — and served over
+HTTP/2, where no connection limit throttles a page-load burst.
 
 Four tiers, and the question to ask of any new data is which one it is in:
 
@@ -278,11 +278,10 @@ Four tiers, and the question to ask of any new data is which one it is in:
      - a run's tables as it records, ``GET /data/campaigns/{id}/live``
      - its own stream, per run
 
-The **series** row is the one that gets this wrong. ``Status`` carried a ``batch_history`` — one entry
-per batch, growing for the whole run — that **nothing ever read**, on the payload polled most
-often in the system. It was replaced by ``GET /campaigns/{id}/search/history``, which is requested
-only while something is displaying it and re-requested only when ``batches_done`` (a single integer
-on the status) moves. A series is almost never so small that it belongs on the status; if it grows
+The **series** row is the one most easily got wrong: a per-batch list on ``Status`` would grow
+for the whole run on the payload polled most often in the system. A search's trajectory is
+``GET /campaigns/{id}/search/history`` instead, requested only while something is displaying it
+and re-requested only when ``batches_done`` (a single integer on the status) moves. A series is almost never so small that it belongs on the status; if it grows
 with batches, runs, or time, it does not.
 
 ``GET /admin/events`` is the **series** row done the way that row prescribes: its own
@@ -318,10 +317,9 @@ drift; the CSV is the same rows as a download.
 Their record is a SQLite file of its own, ``mcp_calls.db`` on the workspaces volume beside
 ``events.db``, rather than rows in the event log, which is the one place these depart from the
 events above: the rows carry a truncated copy of each call's arguments and answer, so they are
-bulky and they age out on their own bounds (30 days, or 200 000 calls, whichever bites first),
-apart from the event log's tighter ones (30 days, or 20 000 rows). Both bounds are reported on
-the ranking's response
-(``max_age_s``, ``max_rows``), because a reader told "a month" during a burst that emptied it in
+bulky and they age out on bounds of their own (30 days, or 200 000 calls, whichever bites
+first), where the event log keeps 30 days or 20 000 rows. The call log's two bounds are reported
+on the ranking's response (``max_age_s``, ``max_rows``), because a reader told "a month" during a burst that emptied it in
 a day would be told a wrong thing.
 
 A page of ``/admin/mcp-calls`` reports the same way. It carries ``total``, ``truncated`` and the
