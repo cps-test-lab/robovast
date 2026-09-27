@@ -2692,42 +2692,15 @@ class BatchJobRunner:
             logger.debug("Could not determine GPU support (%s); assuming none", exc)
 
     def _gpu_request(self, resources, container=None) -> int:
-        """How many GPUs one container should request. **Opt-in: none unless declared.**
+        """How many GPUs one container requests: ``resources.gpu``, none unless declared.
 
-        ``resources.gpu`` is the whole answer. A campaign that renders asks for a device; one
-        that does not gets none, and the cluster having a GPU is not taken as a reason to hand
-        one out.
-
-        Handing the simulator one automatically whenever the cluster advertises any -- so
-        "use the GPU if there is one" needs no ``.vast`` edit -- buys nothing measurable. On a
-        headless nav2 campaign that device does nothing: with ``gpu: 0`` the simulator's CPU is
-        unchanged (mean 0.34 cores either way), trials take the same time (33.8 s against
-        33.5 s), and the recording the 3D run view replays is still written -- it is pose and
-        geometry, not rendered frames. Nothing in such a world draws anything: no camera, and a
-        lidar is a raycaster on the CPU. roqsim selects ``osmesa`` over ``egl`` by itself when no
-        device is present (``roqsim.gl.select_offscreen_gl``), so there is nothing to fall back
-        from.
-
-        What it costs is concurrency, silently. A request is charged against the cluster's
-        ``nvidia.com/gpu`` capacity at admission, and time-slicing replicas are a concurrency cap
-        and not a VRAM budget (see :data:`DEFAULT_GPU_REPLICAS`) -- so one auto-claimed device
-        per run caps a campaign that never renders a frame. Worse, it caps it *invisibly*: the
-        default replica count is chosen to sit above the CPU ceiling, so the GPU only starts
-        binding once someone right-sizes CPU, which is exactly when they are looking at CPU.
-
-        A simulator that DOES render -- a camera or image sensor in the world, a video in the
-        postprocessing -- declares ``resources: {gpu: 1}``, including on a CPU-only cluster,
-        where the declaration stands and the pre-flight refuses the campaign rather than
-        scheduling a job that would hang.
+        Opt-in, not "one wherever the cluster has one": a request is charged against
+        ``nvidia.com/gpu`` at admission, and time-slicing replicas cap concurrency
+        (:data:`DEFAULT_GPU_REPLICAS`), so a device claimed by a campaign that never renders
+        caps it for nothing. A world with a camera or image sensor declares ``gpu: 1``.
         """
         declared = (resources or {}).get('gpu')
-        if declared is None:
-            return 0
-        try:
-            return max(0, int(declared))
-        except (TypeError, ValueError):
-            logger.warning("Ignoring non-numeric resources.gpu %r", declared)
-            return 0
+        return 0 if declared is None else int(declared)
 
     def _apply_gpu_to_container(self, spec, env_list, count) -> None:
         """Put *count* GPUs on one container spec, with the env the runtime needs."""

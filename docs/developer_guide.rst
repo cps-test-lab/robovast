@@ -1598,7 +1598,10 @@ responsibility:
            )
 
 ``objectives`` and ``measures`` are named dicts, so single- and multi-objective
-use the same shape. The framework records how many runs backed each result.
+use the same shape. The framework records how many runs backed each result. Every
+declared objective must be a finite number: a NaN, an infinity or a non-number is refused
+when the result is read, naming the extractor and the configuration, because no strategy
+can compare it.
 
 Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
 or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:
