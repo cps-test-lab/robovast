@@ -293,12 +293,8 @@ class ResourcesConfig(BaseModel):
     @field_validator('memory', 'memory_limit')
     @classmethod
     def validate_memory_quantity(cls, v):
-        """Reject a memory value that is not a memory quantity.
-
-        The annotation alone accepts any string, and a spelling Kubernetes does not read
-        (``"4GB"`` for ``4G``) reached the manifest, where the API server refused every Job
-        of the batch.
-        """
+        """The annotation accepts any string; a spelling Kubernetes does not read (``"4GB"``)
+        would otherwise be refused by the API server for every Job of the batch."""
         def check(value):
             if to_bytes(value) is None:
                 raise ValueError(

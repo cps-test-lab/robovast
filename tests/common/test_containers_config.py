@@ -457,8 +457,6 @@ def test_a_stepped_simulator_keeps_the_calibration_of_the_block_it_folds():
 
 @pytest.mark.parametrize("memory", ["4GB", "lots", ""])
 def test_memory_that_is_not_a_memory_quantity_is_refused_here(memory):
-    """``memory`` was only typed as a string, so ``"4GB"`` (Kubernetes spells it ``4G``)
-    reached the manifest, where the API server rejected every Job of the batch."""
     with pytest.raises(ValueError, match="is not a memory quantity"):
         validate_config(_cfg(scenario={"image": "a", "resources": {"memory": memory}}))
 
