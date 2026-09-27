@@ -41,7 +41,8 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast login <url>`` / ``vast logout``
      - Store or forget the service credentials, verified before saving.
    * - ``vast workspace init|update|download|list|delete``
-     - Move a directory into a service workspace, and back out again.
+     - Move a directory into a service workspace, and back out again. ``list --json``
+       prints what the MCP ``list_workspaces`` tool returns.
    * - ``vast workspace validate|preview``
      - Check a project, and see what its sweep expands to — both before spending compute.
    * - ``vast workspace run <ws> [vast]``
@@ -80,7 +81,8 @@ Every group is named after what it acts on, so the group tells you what you are 
        for it, and pull it down as one ``.tar.gz`` (:ref:`results-export`).
    * - ``vast service info|resources``
      - Which service is answering, which code it runs and whether it has a queue to order;
-       whether the cluster has room.
+       whether the cluster has room. ``--json`` prints what the MCP ``get_service_info`` and
+       ``get_resource_usage`` tools return.
    * - ``vast service cache [--clear]``
      - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
@@ -94,8 +96,14 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Read and write single files by address.
    * - ``vast image build|wait|status|log``
      - Have the service build the derived images a project's containers declare.
+       ``status --json`` prints what the MCP ``get_image_build_status`` tool returns,
+       ``next_step`` included.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
+
+A verb whose ``--json`` names an MCP tool prints the document that tool returns, built by the
+same function, and draws its plain lines from that document. With ``--json``, stdout carries
+only the JSON and the ``Target:`` line goes to stderr.
 
 That is the whole loop — validate, preview, launch, wait, fetch — and none of it needs the
 core. What the core adds is *local analysis*: ``vast config`` reads and expands a ``.vast``
