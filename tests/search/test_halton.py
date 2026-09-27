@@ -158,3 +158,22 @@ def test_a_short_generation_is_tolerated():
 def test_unknown_strategy_parameter_is_refused():
     with pytest.raises(Exception):
         build_strategy(_cfg(params={'nonsense': 1}))
+
+
+def test_a_different_seed_changes_every_dimension():
+    """Permuting a base's non-zero digits leaves base 2 -- dimension 0 -- with nothing to
+    permute, so only the seeded shift makes the first factor, and a 1-D search as a whole,
+    depend on the seed."""
+    a = _points(build_strategy(_cfg(seed=7)))
+    b = _points(build_strategy(_cfg(seed=9)))
+    assert [p[0] for p in a] != [p[0] for p in b]
+
+    one_a = _points(build_strategy(_cfg(dims=1, seed=1)), dims=1)
+    one_b = _points(build_strategy(_cfg(dims=1, seed=2)), dims=1)
+    assert one_a != one_b
+
+
+def test_an_unscrambled_sequence_is_the_textbook_one():
+    first = build_strategy(_cfg(seed=3, params={'scramble': False})).ask(3)
+    assert [(p.values['x0'], p.values['x1']) for p in first] == [
+        (0.5, 1 / 3), (0.25, 2 / 3), (0.75, 1 / 9)]

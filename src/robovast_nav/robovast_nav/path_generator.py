@@ -48,6 +48,15 @@ def path_length(path: Optional[List[Position]]) -> float:
                for i in range(1, len(path)))
 
 
+class WaypointRefused(ValueError):
+    """The planner refuses a waypoint: it lies off the map or on an occupied cell.
+
+    The one planner error that belongs to the draw rather than to the planner. A caller that
+    redraws on it catches this type, so a map that did not load or a call without waypoints
+    still ends the composition with its own error.
+    """
+
+
 class PathGenerator:
     """Standalone utility class for generating navigation paths on maps using A* algorithm."""
 
@@ -60,7 +69,7 @@ class PathGenerator:
             robot_diameter: Diameter of the robot in meters (used for obstacle inflation)
         """
         self.map_file_path = map_file_path
-        self.map: Optional[Map] = None
+        self.map: Map
         self.robot_diameter = robot_diameter
         self.robot_radius = robot_diameter / 2.0
 
@@ -68,9 +77,6 @@ class PathGenerator:
 
     def _inflate_obstacles(self):
         """Inflate obstacles in the occupancy grid by the robot's radius."""
-        if self.map is None or self.map.occupancy_grid is None:
-            return
-
         # Compute the number of pixels to inflate
         inflation_radius_px = int(np.ceil(self.robot_radius / self.map.resolution))
 
@@ -85,17 +91,9 @@ class PathGenerator:
         self.map.occupancy_grid = inflated_grid
 
     def _load_map(self):
-        """Load the map file and initialize internal data structures."""
-        try:
-            # Load map using shared map_loader utility
-            self.map = load_map(self.map_file_path)
-
-            # Inflate obstacles for robot size
-            self._inflate_obstacles()
-
-        except Exception as e:
-            print(f"Error loading map {self.map_file_path}: {e}")
-            self.map = None
+        """Load the map file and inflate its obstacles by the robot's radius."""
+        self.map = load_map(self.map_file_path)
+        self._inflate_obstacles()
 
     def _heuristic(self, a: Tuple[int, int], b: Tuple[int, int]) -> float:
         """Calculate Manhattan distance heuristic for A*."""
@@ -198,8 +196,8 @@ class PathGenerator:
         Returns:
             List of Position objects forming a valid path, or None if no path exists
         """
-        if self.map is None or self.map.occupancy_grid is None or not waypoints:
-            raise ValueError("Occupancy grid not loaded or no waypoints provided.")
+        if not waypoints:
+            raise ValueError("No waypoints provided.")
 
         if len(waypoints) < 2:
             raise ValueError("At least two waypoints are required to generate a path.")
@@ -218,7 +216,7 @@ class PathGenerator:
                 grid_x, grid_y = self.map.world_to_grid(pose.position.x, pose.position.y)
 
                 if not self.map.is_valid_grid_position(grid_x, grid_y):
-                    raise ValueError(f"Invalid waypoint grid position: ({grid_x}, {grid_y})")
+                    raise WaypointRefused(f"Invalid waypoint grid position: ({grid_x}, {grid_y})")
 
                 grid_waypoints.append((grid_x, grid_y))
 
@@ -365,7 +363,7 @@ class PathGenerator:
         Args:
             obstacles: List of StaticObject instances to add as obstacles
         """
-        if self.map is None or self.map.occupancy_grid is None or not obstacles:
+        if not obstacles:
             return
 
         for obstacle in obstacles:
@@ -405,7 +403,7 @@ class PathGenerator:
 
     def get_costmap_with_obstacles(
         self, obstacles: List[StaticObject] = None
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray:
         """
         Generate a costmap that includes dynamic obstacles.
 
@@ -413,11 +411,8 @@ class PathGenerator:
             obstacles: Optional list of dynamic obstacles to include
 
         Returns:
-            Costmap as numpy array where 0=free, 255=occupied, or None if no map loaded
+            Costmap as numpy array where 0=free, 255=occupied
         """
-        if self.map is None or self.map.occupancy_grid is None:
-            return None
-
         # Create a copy of the occupancy grid to avoid modifying the original
         original_grid = self.map.occupancy_grid.copy()
 
