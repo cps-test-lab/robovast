@@ -901,6 +901,15 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         handle_cli_exception(e)
 
 
+def _refuse_ambiguous_context(kube_context, vast):
+    """Refuse a ``--vast`` naming several contexts when ``--context`` does not pick one."""
+    from .cluster_context import require_context_for_multi_cluster  # pylint: disable=import-outside-toplevel
+    try:
+        require_context_for_multi_cluster(kube_context, vast)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+
 @click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
@@ -932,6 +941,7 @@ def run_cleanup(campaign, namespace, context, vast):
     from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
     from .kubernetes import get_kubernetes_client
+    _refuse_ambiguous_context(context, vast)
     try:
         k8s_client = get_kubernetes_client(context=context)
         click.echo("Checking Kubernetes cluster access...")
@@ -1448,6 +1458,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement,
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
     # level they made `vast login` and `vast wait` pay for the cluster stack.
     from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
+    _refuse_ambiguous_context(kube_context, vast)
     try:
         cluster_kwargs = {}
         if namespace is not None:

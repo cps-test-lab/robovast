@@ -131,11 +131,9 @@ def require_context_for_multi_cluster(kube_context: Optional[str],
     Scans *config_path* for per-cluster resource lists and raises an informative error
     when more than one context name is present and no *kube_context* was specified.
 
-    Which config to scan is the **caller's** decision, never discovered here: this used
-    to find a ``.robovast_project`` by walking up to the filesystem root, so a project
-    far above the CWD could demand ``--context`` from a command that was never told
-    about it. There is no ambient project at all now -- callers pass the config the
-    operator named with ``--vast``, or ``None``.
+    Which config to scan is the **caller's** decision, never discovered here: callers
+    pass the config the operator named with ``--vast``, or ``None``, so a file the
+    command was never told about cannot demand ``--context``.
 
     This is a no-op when:
 
