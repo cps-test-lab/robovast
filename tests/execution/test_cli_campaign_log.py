@@ -90,3 +90,47 @@ def test_json_prints_one_object_per_row(monkeypatch):
     rows = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
     assert [r["message"] for r in rows] == ["#1 load", "run 1 failed\nTraceback"]
     assert rows[1]["level"] == "ERROR" and rows[1]["phase"] == "RUN"
+
+
+def test_json_stdout_is_nothing_but_the_rows(monkeypatch):
+    """``--json`` is read by a program: which service answered goes to stderr."""
+    import json
+
+    client = _Client()
+
+    @contextlib.contextmanager
+    def _service(*_a, **_k):
+        yield client, "fake service"
+
+    monkeypatch.setattr(campaign_cli, "service_client", _service)
+    result = CliRunner().invoke(campaign_cli.campaign, ["log", CID, "--json"])
+
+    assert result.exit_code == 0, result.output
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [r["message"] for r in rows] == ["#1 load", "run 1 failed\nTraceback"]
+    assert "Target: fake service" in result.stderr
+
+
+def test_workspace_world_json_stdout_is_one_document(monkeypatch):
+    import json
+
+    from robovast.client import cli
+    from robovast.service.interface import WorldDescription
+
+    class _World:
+        def list_workspaces(self):
+            return []
+
+        def describe_world(self, *_a):
+            return WorldDescription(backend="roqsim", world="depot")
+
+    @contextlib.contextmanager
+    def _service(*_a, **_k):
+        yield _World(), "fake service"
+
+    monkeypatch.setattr(cli, "service_client", _service)
+    result = CliRunner().invoke(cli.workspace, ["world", "ws-0123456789", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["world"] == "depot"
+    assert "Target: fake service" in result.stderr
