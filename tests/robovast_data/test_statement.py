@@ -92,3 +92,17 @@ def test_threads_parsing_at_once_each_get_their_own_statement():
     for sql, result in zip(queries * 8, results):
         number = sql.split()[1]
         assert f"value_{number}" in result, (sql, result)
+
+
+def test_an_integer_cast_of_text_still_binds():
+    """A mixed CSV column is TEXT, and DuckDB has no ``trunc(VARCHAR)``."""
+    row = duckdb.sql(parse("SELECT CAST(c AS INTEGER) AS v, CAST(d AS INT) AS w "
+                           "FROM (SELECT '12' AS c, '8.6' AS d)").sql).fetchone()
+    assert row == (12, 8)
+
+
+def test_an_integer_cast_of_text_that_is_no_number_fails_and_a_try_cast_is_null():
+    sql = "SELECT {}(c AS INTEGER) FROM (SELECT 'abc' AS c)"
+    with pytest.raises(duckdb.ConversionException):
+        duckdb.sql(parse(sql.format("CAST")).sql).fetchone()
+    assert duckdb.sql(parse(sql.format("TRY_CAST")).sql).fetchone() == (None,)
