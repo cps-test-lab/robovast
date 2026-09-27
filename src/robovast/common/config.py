@@ -258,11 +258,7 @@ class ResourcesConfig(BaseModel):
     cpu_limit: Optional[Union[int, float, str,
                               list[dict[str, Union[int, float, str]]]]] = None
     memory_limit: Optional[Union[str, list[dict[str, str]]]] = None
-    #: Whole GPUs for this container. Omit it and the container running the simulator gets
-    #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
-    #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
-    #: because pydantic's default ``extra='ignore'`` was dropping it from the model, so the
-    #: documented option only worked where the raw mapping happened to be read.
+    #: Whole GPUs for this container. Omitted, it gets none, whatever the cluster advertises.
     gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
     @field_validator('cpu', 'cpu_limit')
@@ -314,7 +310,6 @@ class ResourcesConfig(BaseModel):
     @field_validator('gpu')
     @classmethod
     def validate_gpu_count(cls, v):
-        """The Job builder clamps a negative count to no GPU."""
         values = [value for entry in v for value in entry.values()] if isinstance(v, list) \
             else [v]
         for value in values:
