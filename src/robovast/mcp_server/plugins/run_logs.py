@@ -331,14 +331,11 @@ def search_run_logs(
     # They cost more than they earn here -- `query_campaign_data_sql` reaches the same columns
     # directly for the rare question that needs them.
     offset, top = 0, log_summary.DEFAULT_TOP
-    try:
-        campaigns, skip_note = _resolve_campaigns(
-            campaign_id, campaign_regex, max(1, int(max_campaigns)))
-        terms = _predicates(grep=grep, min_severity=min_severity, config_filter=config_filter,
-                            run_id=run_id, container=container, node=node, source="",
-                            t0=t0, t1=t1, in_window=None)
-    except (ValueError, service_access.NoService) as e:
-        return {"error": str(e)}
+    campaigns, skip_note = _resolve_campaigns(
+        campaign_id, campaign_regex, max(1, int(max_campaigns)))
+    terms = _predicates(grep=grep, min_severity=min_severity, config_filter=config_filter,
+                        run_id=run_id, container=container, node=node, source="",
+                        t0=t0, t1=t1, in_window=None)
     if not campaigns:
         return {"error": f"no campaign matches {campaign_id!r}"}
 
@@ -378,8 +375,8 @@ def search_run_logs(
             lines.extend(rows)
             if summarize and len(rows) >= scan:
                 scan_capped.append(cid)
-            counted = data_access.query(cid, _count_sql(scoped), 1)
-            total_rows = (counted.get("rows") or [{}])[0].get("n")
+            counted = data_access.rows(cid, _count_sql(scoped), 1)
+            total_rows = (counted or [{}])[0].get("n")
             lines_total += int(total_rows) if total_rows is not None else len(rows)
 
     out: dict = {"campaigns": searched, "campaigns_skipped": skipped}

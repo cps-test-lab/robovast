@@ -48,6 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
+from robovast.client.safe_path import UnsafePathError, check_segment
 from robovast_decode.live import Batch, Watcher
 from robovast_decode.runs import campaign_finished, is_live
 
@@ -83,10 +84,15 @@ class Dropped(RuntimeError):
 
 def parse_run(run: str) -> Tuple[str, int]:
     """``(config_name, run_id)`` of a ``<config>/<run_id>`` key; ``ValueError`` otherwise."""
+    refusal = f"a run is named <config>/<run_id>, not {run!r}"
     match = _RUN_KEY.match(run or "")
     if match is None:
-        raise ValueError(f"a run is named <config>/<run_id>, not {run!r}")
-    return match.group(1), int(match.group(2))
+        raise ValueError(refusal)
+    try:
+        config_name = check_segment(match.group(1))
+    except UnsafePathError as err:
+        raise ValueError(refusal) from err
+    return config_name, int(match.group(2))
 
 
 def check_tables(tables: Iterable[str]) -> List[str]:
@@ -222,8 +228,10 @@ class LiveCampaigns:
 
     def campaign_dir(self, campaign_id: str) -> str:
         """The campaign's directory under the root; ``KeyError`` when it is not there."""
-        if not campaign_id or "/" in campaign_id or campaign_id.startswith("."):
-            raise KeyError(f"no campaign {campaign_id!r} on this service")
+        try:
+            check_segment(campaign_id)
+        except UnsafePathError as err:
+            raise KeyError(f"no campaign {campaign_id!r} on this service") from err
         path = os.path.join(self.results_root, campaign_id)
         if not os.path.isdir(path):
             raise KeyError(f"no campaign {campaign_id!r} on this service")
