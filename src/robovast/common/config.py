@@ -290,6 +290,38 @@ class ResourcesConfig(BaseModel):
             check(v)
         return v
 
+    @field_validator('memory', 'memory_limit')
+    @classmethod
+    def validate_memory_quantity(cls, v):
+        """The annotation accepts any string; a spelling Kubernetes does not read (``"4GB"``)
+        would otherwise be refused by the API server for every Job of the batch."""
+        def check(value):
+            if to_bytes(value) is None:
+                raise ValueError(
+                    f'memory {value!r} is not a memory quantity: use bytes with a binary '
+                    '("16Gi", "512Mi") or decimal ("4G") unit')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
+
+    @field_validator('gpu')
+    @classmethod
+    def validate_gpu_count(cls, v):
+        """The Job builder clamps a negative count to no GPU."""
+        values = [value for entry in v for value in entry.values()] if isinstance(v, list) \
+            else [v]
+        for value in values:
+            if value is not None and value < 0:
+                raise ValueError(f'gpu {value!r} is not a GPU count: use 0 or more')
+        return v
+
     @model_validator(mode="after")
     def validate_limits_are_not_below_requests(self):
         """A ceiling under its own reservation is refused here rather than by the cluster.
