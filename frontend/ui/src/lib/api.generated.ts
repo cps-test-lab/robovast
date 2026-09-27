@@ -2832,7 +2832,7 @@ export interface components {
             description: string;
             /** Failed */
             failed: {
-                [key: string]: unknown;
+                [key: string]: string;
             };
             /**
              * Kind
