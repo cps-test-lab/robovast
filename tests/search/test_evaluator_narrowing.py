@@ -114,6 +114,14 @@ def test_a_non_finite_objective_is_refused_naming_it(tmp_path, value):
             tmp_path, ParamSet(id="p", values={}))
 
 
+@pytest.mark.parametrize("value", ["nan", "0.5", None])
+def test_a_non_numeric_objective_is_refused_naming_it(tmp_path, value):
+    """A strategy's float() would read "nan" as NaN and fail on None far from the extractor."""
+    with pytest.raises(ValueError, match="failure_rate.*robustness"):
+        _evaluator(NAV, {**NAV_REPORT, "robustness": value}).evaluate(
+            tmp_path, ParamSet(id="p", values={}))
+
+
 def test_a_non_finite_diagnostic_beside_the_objective_is_kept(tmp_path):
     """Only an optimized value must be comparable; a diagnostic is kept as measured."""
     got = _evaluator(NAV, {**NAV_REPORT, "time_to_goal": float("nan")}).evaluate(
