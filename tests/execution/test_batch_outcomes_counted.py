@@ -212,23 +212,23 @@ def test_a_status_recovered_from_disk_is_counted_by_construction():
 def test_the_status_tool_reports_the_flag_beside_the_count():
     """A caller that has not read the docstring is the caller that misreads the number."""
     from robovast.client.status import RunProgress, Status
-    from robovast.mcp_server.plugins.execution import _status_to_dict
+    from robovast.client.campaign_report import status_to_dict
 
     mid_batch = Status(phase="running", mode="search",
                        runs=RunProgress(completed=1, total=4))
-    result = _status_to_dict("camp", "service", mid_batch)
+    result = status_to_dict("camp", "service", mid_batch)
     assert result["batch_runs_failed"] == 0
     assert result["batch_outcomes_counted"] is False
 
     tallied = Status(phase="running", mode="search",
                      runs=RunProgress(completed=4, total=4, outcomes_counted=True))
-    assert _status_to_dict("camp", "service", tallied)["batch_outcomes_counted"] is True
+    assert status_to_dict("camp", "service", tallied)["batch_outcomes_counted"] is True
 
 
 def test_a_status_with_no_run_progress_at_all_is_not_counted():
     """``initializing`` has no runs sub-model; absent must not read as "counted"."""
     from robovast.client.status import Status
-    from robovast.mcp_server.plugins.execution import _status_to_dict
+    from robovast.client.campaign_report import status_to_dict
 
-    result = _status_to_dict("camp", "service", Status(phase="initializing"))
+    result = status_to_dict("camp", "service", Status(phase="initializing"))
     assert result["batch_outcomes_counted"] is False

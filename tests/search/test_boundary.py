@@ -67,6 +67,18 @@ def test_the_same_seed_reproduces_the_search():
     assert [p.values['x'] for p in a.ask(6)] == [p.values['x'] for p in b.ask(6)]
 
 
+@pytest.mark.parametrize('seed', [None, 0, 1, 5, 12345])
+def test_the_candidate_stream_is_not_the_scramble_stream(seed):
+    """Both derive from ``search.seed``; sharing one generator would make the first
+    candidate's first coordinate the first dimension's scramble shift."""
+    from robovast.search.strategies.halton import _scramble_tables
+
+    strategy = build_strategy(_cfg(seed=seed))
+    shifts = [t.shift for t in _scramble_tables(strategy._bases, seed, True)]
+    first = strategy._rng.random(len(shifts))
+    assert not set(first.tolist()) & set(shifts)
+
+
 # -- cold start -------------------------------------------------------------
 
 def test_with_no_history_it_covers_rather_than_guesses():

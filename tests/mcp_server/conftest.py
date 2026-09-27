@@ -2,7 +2,32 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared fixtures for the MCP plugin tests."""
 
+import functools
+import sys
+
 import pytest
+
+
+@functools.cache
+def registered_tools() -> dict:
+    """``{name: Tool}`` for every tool of every installed plugin, as the server registers it."""
+    from fastmcp import FastMCP
+
+    from robovast.mcp_server.registry import load_plugins
+    from robovast.mcp_server.registry import registered_tools as tools_of
+    mcp = FastMCP("tests")
+    load_plugins(mcp)
+    return tools_of(mcp)
+
+
+@pytest.fixture(autouse=True)
+def _tools_as_registered(monkeypatch):
+    """Every plugin module's tool is the one the server registered, so a test that calls
+    ``execution.stop_campaign(...)`` is answered as a caller is -- an exception the tool
+    raises arrives as the error document."""
+    for tool in registered_tools().values():
+        bare = tool.fn.__wrapped__
+        monkeypatch.setattr(sys.modules[bare.__module__], bare.__name__, tool.fn)
 
 
 @pytest.fixture(autouse=True)
