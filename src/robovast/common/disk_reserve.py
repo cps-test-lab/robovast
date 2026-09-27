@@ -104,18 +104,24 @@ def shortfall(label: str, free_bytes: int, capacity_bytes: int) -> Optional[str]
             f"reserve ({how}).")
 
 
-def _usage(path):
-    """``psutil.disk_usage`` of the filesystem *path* is or will be created on.
-
-    Measured at the nearest existing ancestor, so a directory not created yet is judged by
-    the disk it will be created on.
-    """
-    import psutil  # pylint: disable=import-outside-toplevel
-
+def _existing(path) -> Path:
+    """*path*'s nearest existing ancestor, so a directory not created yet is judged by the
+    disk it will be created on."""
     target = Path(path)
     while not target.exists() and target != target.parent:
         target = target.parent
-    return psutil.disk_usage(str(target))
+    return target
+
+
+def _usage(path):
+    import psutil  # pylint: disable=import-outside-toplevel
+
+    return psutil.disk_usage(str(_existing(path)))
+
+
+def block_bytes(path) -> int:
+    """The allocation unit of the filesystem *path* is or will be created on."""
+    return os.statvfs(_existing(path)).f_frsize
 
 
 def room_bytes(path) -> int:

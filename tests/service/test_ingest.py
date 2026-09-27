@@ -400,3 +400,21 @@ def test_an_archive_that_unpacks_past_the_room_above_the_reserve_is_refused(
 
     monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 10 ** 9)
     assert read_campaign_id(archive, fits_in=tmp_path / "results") == "bomb-2026-01-01-000000"
+
+
+def test_an_archive_of_many_empty_entries_is_held_to_the_blocks_they_take(tmp_path, monkeypatch):
+    """Sizes of zero still take a block each: an archive of empty entries is charged for them."""
+    from robovast.common.errors import InsufficientStorageError
+    out = tmp_path / "entries.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500",
+                arcname="entries-2026-01-01-000000")
+        for i in range(2000):
+            info = tarfile.TarInfo(f"entries-2026-01-01-000000/empty/{i}")
+            info.type = tarfile.DIRTYPE if i % 2 else tarfile.REGTYPE
+            tar.addfile(info)
+    monkeypatch.setattr("robovast.common.disk_reserve.block_bytes", lambda _path: 4096)
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 2000 * 4096 - 1)
+
+    with pytest.raises(InsufficientStorageError, match="unpacks to"):
+        read_campaign_id(out, fits_in=tmp_path / "results")

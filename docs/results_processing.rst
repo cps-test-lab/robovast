@@ -1284,7 +1284,9 @@ import again with ``--force``.
 An archive that would unpack to more than the results volume has room for above its
 free-space reserve is refused with a 507 before anything is extracted. Its size is read from
 the archive's index, not from the compressed file, whose size says nothing about what
-extraction writes. A share archive is checked once it is downloaded, when its size is known.
+extraction writes: each member counts as at least one block of the results volume, and a
+file as its size rounded up to whole blocks. A share archive is checked once it is
+downloaded, when its size is known.
 
 The mirror of that check runs on the way **out**: an export refuses a campaign with no
 frozen ``_config/`` instead of writing an archive whose only possible future is an ingest
