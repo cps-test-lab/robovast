@@ -74,7 +74,7 @@ from robovast.service.interface import (ActionResult, BinaryFile, CampaignOrigin
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText,
-                                        ImportCampaignRequest, JobKind,
+                                        IMAGE_BUILT_PHASES, ImportCampaignRequest, JobKind,
                                         ListCampaignsRequest, ListCampaignsResponse,
                                         CampaignLogChunk, JobLogChunk,
                                         ListWorkspacesResponse, TAP_MAX_S,
@@ -2942,7 +2942,7 @@ class ServiceBase(RobovastInterface):
                 raise CampaignStopped(
                     f"campaign stopped while waiting for image build {build_id}")
             time.sleep(self._BUILD_POLL_SECONDS)
-        if status.phase not in ("succeeded", "cached"):
+        if status.phase not in IMAGE_BUILT_PHASES:
             from robovast.common.errors import ImageBuildFailed
             err = status.error
             detail = f" ({err.message})" if err and err.message else ""
