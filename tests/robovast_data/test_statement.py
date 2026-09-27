@@ -95,9 +95,7 @@ def test_threads_parsing_at_once_each_get_their_own_statement():
 
 
 def test_an_integer_cast_of_text_still_binds():
-    """A TEXT column is what a mixed CSV column becomes, and ``CAST(col AS INTEGER)`` is
-    the SQLite idiom on one. DuckDB has no ``trunc(VARCHAR)``, so the truncation is applied
-    to the value read as a DOUBLE."""
+    """A mixed CSV column is TEXT, and DuckDB has no ``trunc(VARCHAR)``."""
     row = duckdb.sql(parse("SELECT CAST(c AS INTEGER) AS v, CAST(d AS INT) AS w "
                            "FROM (SELECT '12' AS c, '8.6' AS d)").sql).fetchone()
     assert row == (12, 8)

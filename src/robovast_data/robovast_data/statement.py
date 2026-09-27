@@ -32,8 +32,8 @@ exactly what will run -- no second parser with its own idea of the grammar.
     ``8`` in the other. That sits in every panel's downsampling query
     (``CAST(CAST("timestamp" AS REAL) * <hz> AS INTEGER)``), where it moves every bucket boundary
     by half a bucket and the chart still looks fine. It becomes
-    ``CAST(trunc(CAST(x AS DOUBLE)) AS BIGINT)`` -- through ``DOUBLE`` because ``trunc`` has no
-    text form, and a text column is where the SQLite idiom is used most.
+    ``CAST(trunc(CAST(x AS DOUBLE)) AS BIGINT)``, through ``DOUBLE`` because ``trunc`` has no
+    text form.
 
   Nothing else is translated. A spelling DuckDB rejects outright is left to fail, because its
   author sees the error and fixes the query.
@@ -127,8 +127,6 @@ def _rewrite_casts(node) -> None:
     elif cast_type.get("id") == "INTEGER":
         child = node["child"]
         location = child.get("query_location", 0)
-        # Read as a DOUBLE first: ``trunc`` has no VARCHAR form, and a text column -- what a
-        # mixed CSV column is typed as -- is where the SQLite idiom is used most.
         as_double = {"class": "CAST", "type": "OPERATOR_CAST", "alias": "",
                      "query_location": location, "child": child,
                      "cast_type": {"id": "DOUBLE", "type_info": None}, "try_cast": False}
