@@ -31,6 +31,8 @@ not ask for:
   Neither has a use in campaign output.
 * **A name the caller may not write.** Given per call as *deny*: the campaign's own
   store, which the driver holds open, and the driver's logs, which have one writer.
+  Judged by where the member lands with the tree's symlinks followed, so a link into
+  a directory is not a way around it.
 
 Refused members are named in the result rather than raised on: a pod's output is many
 files, and one it may not write is not a reason to lose the rest.
@@ -114,49 +116,63 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
             except UnsafePathError:
                 out.refused.append(member.name)
                 continue
-            if rel in denied or os.path.basename(rel) in denied:
-                out.refused.append(member.name)
-                continue
             target = root / rel
-            if _escapes(root, target.parent):
+            parent = target.parent.resolve()
+            if _escapes(root, parent):
                 out.refused.append(member.name)
                 continue
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                _chmod(target, member.mode | 0o700)
-            elif member.issym():
-                if _escapes(root, (target.parent / member.linkname)):
-                    out.refused.append(member.name)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _replace_with_symlink(target, member.linkname)
-            elif member.isfile() and OFFSET_HEADER in member.pax_headers:
-                offset = _offset_of(member)
-                if offset is None:
-                    out.refused.append(member.name)
-                    continue
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                outcome = _append_range(target, source, offset, member.size, member.mode)
-                if outcome == _APPENDED:
-                    out.files += 1
-                    out.bytes += member.size
-                elif outcome == _RESYNC:
-                    out.resync.append(rel)
-            elif member.isfile():
-                source = tar.extractfile(member)
-                if source is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _write_atomic(target, source, member.mode)
-                out.files += 1
-                out.bytes += member.size
-            else:
-                # Hard links, devices, FIFOs: nothing campaign output has a use for.
+            # A symlink already in the tree is a second name for a directory.
+            landing = (parent / target.name).relative_to(root).as_posix()
+            if landing in denied or target.name in denied:
+                out.refused.append(member.name)
+                continue
+            try:
+                _place(tar, member, rel, root, target, out)
+            except (FileExistsError, NotADirectoryError):
+                # A file or a dangling symlink where a directory is needed refuses this
+                # member only; an error of the disk itself still ends the extraction.
                 out.refused.append(member.name)
     return out
+
+
+def _place(tar: tarfile.TarFile, member: tarfile.TarInfo, rel: str, root: Path,
+           target: Path, out: Extracted) -> None:
+    """Write one member, already confined and allowed, at *target*; count it in *out*."""
+    if member.isdir():
+        target.mkdir(parents=True, exist_ok=True)
+        _chmod(target, member.mode | 0o700)
+    elif member.issym():
+        if _escapes(root, (target.parent / member.linkname)):
+            out.refused.append(member.name)
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _replace_with_symlink(target, member.linkname)
+    elif member.isfile() and OFFSET_HEADER in member.pax_headers:
+        offset = _offset_of(member)
+        if offset is None:
+            out.refused.append(member.name)
+            return
+        source = tar.extractfile(member)
+        if source is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        outcome = _append_range(target, source, offset, member.size, member.mode)
+        if outcome == _APPENDED:
+            out.files += 1
+            out.bytes += member.size
+        elif outcome == _RESYNC:
+            out.resync.append(rel)
+    elif member.isfile():
+        source = tar.extractfile(member)
+        if source is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(target, source, member.mode)
+        out.files += 1
+        out.bytes += member.size
+    else:
+        # Hard links, devices, FIFOs: nothing campaign output has a use for.
+        out.refused.append(member.name)
 
 
 def _member_rel(name: str) -> "str | None":

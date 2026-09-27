@@ -47,7 +47,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, TAP_MAX_S,
+                                        ServiceCache, ServiceError, ServiceUnreachable, TAP_MAX_S,
                                         UnsupportedOperation,
                                         UploadGrant,
                                         UpgradeInfo,
@@ -63,6 +63,55 @@ _CACHE_TIMEOUT_S = 600.0
 
 #: How long a multi-campaign delete may take -- the same walk, over several campaigns.
 _DELETE_CAMPAIGNS_TIMEOUT_S = 600.0
+
+
+def _session(base_url: str):
+    """A ``requests.Session`` that reports a service that does not answer as one sentence.
+
+    Every request the transport makes goes through the session's adapter, the streamed
+    reads included, so this is the one place a connection failure can be caught for all of
+    them. ``requests`` raises it as a ``ConnectionError`` wrapping urllib3's retry
+    bookkeeping; what leaves here is :class:`ServiceUnreachable`, naming the address and
+    the socket-level reason, which is what a caller prints or acts on.
+
+    A refused or timed-out *connection* only: a service that answered slowly is a
+    ``ReadTimeout`` and passes through as it is, since it says something else.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    class _Adapter(HTTPAdapter):
+        def send(self, request, **kwargs):
+            try:
+                return super().send(request, **kwargs)
+            except requests.exceptions.ConnectionError as e:
+                raise ServiceUnreachable(base_url, _innermost_reason(e)) from e
+
+    session = requests.Session()
+    adapter = _Adapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _innermost_reason(exc: BaseException) -> str:
+    """The socket-level sentence inside a ``requests`` connection error.
+
+    ``requests`` wraps urllib3's ``MaxRetryError``, which carries the real error as its
+    ``reason``; that one's text starts with the connection object's repr. The innermost
+    text, without the repr, is what says "Connection refused" or "certificate verify
+    failed" -- the words a reader, and ``vast login``'s remedy, look for.
+    """
+    import re
+    inner = exc
+    while True:
+        nxt = getattr(inner, "reason", None)
+        if nxt is None and inner.args and isinstance(inner.args[0], BaseException):
+            nxt = inner.args[0]
+        if not isinstance(nxt, BaseException) or nxt is inner:
+            break
+        inner = nxt
+    return re.sub(r"^<[^>]*>: ", "", str(inner)) or inner.__class__.__name__
 
 
 class HTTPTransport(RobovastInterface):
@@ -87,10 +136,9 @@ class HTTPTransport(RobovastInterface):
 
     def __init__(self, base_url: str, timeout: float = 30.0,
                  token: str = "", user: str = ""):
-        import requests
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = _session(self.base_url)
         if token:
             self.session.headers["Authorization"] = f"Bearer {token}"
         if user:
