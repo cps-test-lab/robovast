@@ -1052,11 +1052,10 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               {nodesSkipped.length} node(s) left out
             </Typography>
           ) : null}
-          {/* A simulator saying "sim time is not advancing" is true within a minute and needs no
-              run budget, where a stall is only visible once a run is past its budget -- so it is
-              the earlier of the two warnings, and the one `vast campaign wait` exits on (code 5).
-              The run is not touched by anyone for it; the hover carries which job and check, and
-              what the simulator said, which is what decides whether to stop the job. */}
+          {/* A simulator saying "sim time is not advancing" is true within a minute, where a stall
+              shows only once a run is past its budget: the earlier warning, on which `vast campaign
+              wait` exits too. Nothing acts on it; the hover carries which job and check, and what
+              the simulator said, which is what decides whether to stop the job. */}
           {healthErrors.length ? (
             <Typography
               variant="caption"
