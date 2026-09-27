@@ -26,14 +26,14 @@ serve.
 """
 
 import logging
-import time
 from collections import Counter
 from urllib.parse import urlencode
 
 from fastmcp import FastMCP
 
-from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
-                                    error_findings, stall_report, stopping_soon_report)
+from robovast.client.campaign_report import status_report
+from robovast.client.image_report import build_status_report
+from robovast.client.service_report import resource_usage_report
 from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
@@ -42,222 +42,6 @@ from robovast.service.interface import Routes
 from robovast_decode.log_summary import DEFAULT_TOP
 
 logger = logging.getLogger(__name__)
-
-
-def _binding_budget(st):
-    """The budget row closest to exhausting and its share, or ``None`` when none is usable.
-
-    The campaign stops at whichever criterion fires first, so the closest one is the only
-    one describing a moment this campaign will actually reach; any other describes a moment
-    it never will.
-
-    Read through :func:`budget_positions`, so a ``time`` budget reports where the search is
-    now rather than where it was when the last round closed.
-
-    The single implementation of that rule on this side: :func:`_progress_from_status` takes
-    the share from here and the status dict takes the row, so the reported progress and the
-    criterion it is named against cannot disagree. The web UI's ``ringBudget`` (lib/eta.ts)
-    applies the same rule to draw the ring, and ``campaignEtaSeconds`` expresses it in time
-    units where "fires first" is the *smaller* duration -- a change to any of the three must
-    be made looking at the other two.
-    """
-    best, best_share = None, -1.0
-    for b in budget_positions(st):
-        if b.current is None or not b.limit:
-            continue
-        share = max(0.0, min(1.0, b.current / b.limit))
-        if share > best_share:
-            best, best_share = b, share
-    return None if best is None else (best, best_share)
-
-
-def _progress_from_status(st) -> float | None:
-    """Overall progress in ``[0, 1]``, or ``None`` when it cannot be known honestly.
-
-    - **batch** mode: ``completed / total`` — the total is known up front.
-    - **search** mode: the loop ends when a stopping criterion fires, so progress is
-      the closest criterion, ``max(current / limit)`` over the ``budget``. A search's
-      per-batch run ratio is deliberately **not** used — it would read as overall
-      completion when it is only progress through one batch of an open-ended search.
-
-    The search case is :func:`_binding_budget`'s share -- see there for the rule and for the
-    two other readers that must agree with it.
-
-    Returns ``None`` (never a misleading number) when a search has no usable budget
-    value yet.
-    """
-    if st.budget:
-        binding = _binding_budget(st)
-        return binding[1] if binding else None
-    mode = (st.mode or "").lower()
-    if mode in ("", "batch") and st.runs and st.runs.total:
-        return max(0.0, min(1.0, st.runs.completed / st.runs.total))
-    return None
-
-
-#: How many batches of the objective trajectory ride along on a status read. Bounded on purpose:
-#: this is an agent's context, which is the scarce resource here, and the useful signal for "is it
-#: still improving?" is the recent shape plus the level already reached — which the window's first
-#: `best_so_far` still carries. The whole history is queryable from `campaign.db` once the campaign
-#: ends; this is the live read.
-OBJECTIVE_HISTORY_WINDOW = 20
-
-
-def _attach_objective_history(result: dict, client, campaign_id: str) -> None:
-    """Add a search's objective trajectory to a status dict, in place.
-
-    On ``get_campaign_status`` rather than behind a tool of its own, and that is a deliberate
-    reversal. The first design put it in a separate ``get_search_progress`` on the grounds that a
-    per-batch array does not belong on a polled payload — true of the HTTP status, which every
-    campaign card fetches every 1.5s, and false here: this is an occasional agent call, and the
-    tooling steers agents to ``vast campaign wait`` rather than to polling it. Meanwhile a second tool has to
-    be *discovered*, and an agent that must remember to make a follow-up call does not make it —
-    which is the same lesson ``_wait_next_step`` exists for.
-
-    ``batches_since_improvement`` is a FACT, not a verdict. Whether a flat stretch means "converged"
-    is only RoboVAST's to say when the campaign declared a ``no_improvement`` criterion — and then
-    ``budget`` already carries that criterion's progress and the campaign will stop itself. Same
-    rule as ``stalled: None`` when no timeout is declared: no verdict is possible, which is not the
-    same as "healthy".
-
-    Best-effort: a service that cannot answer leaves the status untouched rather than failing the
-    read, because the trajectory is a bonus on a call whose job is the phase.
-    """
-    try:
-        history = client.get_search_history(campaign_id)
-    except Exception:  # noqa: BLE001 - a status read must not fail over its garnish
-        return
-    if history.unavailable:
-        # Named rather than silent: "several objectives, so there is no scalar to trend" is a
-        # different fact from "this search has found nothing", and an absent field reads as the
-        # second one.
-        if history.unavailable == "multi_objective":
-            result["objective_history_unavailable"] = history.unavailable
-        return
-    batches = [b for b in history.batches if b.n_scored]
-    if not batches:
-        return
-    best = batches[-1].best_so_far
-    since = 0
-    for b in reversed(batches):
-        if b.best_so_far != best:
-            break
-        since += 1
-    result["objective_name"] = history.objective_name
-    result["objective_direction"] = history.direction
-    # Rounds completed since the best last MOVED, so the round that set it does not count itself.
-    result["batches_since_improvement"] = max(0, since - 1)
-    window = batches[-OBJECTIVE_HISTORY_WINDOW:]
-    omitted = len(batches) - len(window)
-    if omitted:
-        result["objective_history_omitted"] = omitted
-    result["objective_history"] = [b.model_dump() for b in window]
-
-
-def _status_to_dict(campaign_id: str, backend, st) -> dict:
-    """Render a controller :class:`Status` into the MCP status dict.
-
-    Faithful to both batch and search campaigns: run counts are **batch-scoped**
-    (``batch_runs_*``) and ``progress`` is computed mode-aware (see
-    :func:`_progress_from_status`), while the search-only fields (best objective,
-    budget, batches done, stop reason) are surfaced when present.
-    """
-    result: dict = {
-        "campaign_id": campaign_id,
-        "backend": backend,
-        "status": st.phase,
-        "mode": st.mode,
-        "batch_runs_done": st.runs.completed if st.runs else 0,
-        "batch_runs_total": st.runs.total if st.runs else 0,
-        # Two distinct outcomes, because a run can deliver nothing *or* deliver a
-        # failing trial, and reporting only the former made a sweep with a failed
-        # trial look clean. See RunProgress.
-        "batch_runs_no_result": st.runs.no_result if st.runs else 0,
-        "batch_runs_failed": st.runs.failed if st.runs else 0,
-        # Whether the two counts above are final for this batch, because 0 alone cannot
-        # say. They are written once, when the batch's verdicts are tallied, so a poll
-        # partway through a batch that had already lost runs reads 0 -- which is also what
-        # a batch that lost nothing reads. Reported beside them rather than left to the
-        # docstring: a caller that has not read the docstring is exactly the caller that
-        # misreads the number.
-        "batch_outcomes_counted": bool(st.runs.outcomes_counted) if st.runs else False,
-        "progress": _progress_from_status(st),
-    }
-    # How long the campaign has held this phase. A phase alone cannot separate slow
-    # from wedged: an image build and a build that will never finish both read
-    # "building", and a pre-run step that hangs is otherwise invisible until someone
-    # notices the run count has not moved.
-    if getattr(st, "phase_since", None):
-        result["phase_age_s"] = round(max(0.0, time.time() - st.phase_since), 1)
-    # Progress age and the stall verdict, derived once in the status contract so the
-    # CLI monitor and this tool cannot disagree about whether a run is wedged.
-    result.update(stall_report(st))
-    # The early-stop verdict, from the same contract and for the same reason: an agent weighing
-    # `progress: 0.67` against a flat objective has to know whether the search will actually
-    # spend the rest of its budget. `_attach_objective_history` reports
-    # `batches_since_improvement` as a FACT and declines to judge it -- correctly, since the
-    # judgement is only RoboVAST's to make when the campaign declared a criterion. When it did,
-    # this is that judgement.
-    result.update(stopping_soon_report(st))
-    # Only when a running job's simulator reported one, but then always: an error-level finding
-    # is what stops `vast campaign wait` (HEALTH_FINDING), so a reader of this tool has to be
-    # shown the same thing the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
-    # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
-    findings = error_findings(st)
-    if findings:
-        result["health_findings"] = [f.model_dump() for f in findings]
-        result["health_next_step"] = HEALTH_NEXT_STEP
-    # Beside the findings and only with them: a check that reached no verdict matters precisely
-    # when something else did fire, because that is when a reader starts treating the rest of the
-    # run as fine. On its own it is noise on every healthy campaign.
-    if findings and st.health_skipped:
-        result["health_checks_not_run"] = list(st.health_skipped)
-    # Only when it happened, but then always, and NOT gated on a finding: a campaign running on
-    # fewer machines than the cluster has is slower than its plan and says so nowhere else while
-    # it runs. It is a fact about the campaign, not a diagnostic about a job, so it is reported
-    # on its own rather than beside the health block.
-    if st.nodes_skipped:
-        result["nodes_skipped"] = dict(st.nodes_skipped)
-    # Only when it happened, but then always: a killed run is inside ``no_result``, so
-    # without this the count reads as a run that vanished on its own rather than one
-    # somebody deliberately ended — and the reader goes looking for a fault there is none.
-    if st.runs and st.runs.killed:
-        result["batch_runs_killed"] = st.runs.killed
-    # Same rule, and the sharper case: an invalidated run may have written a PASSING
-    # verdict against a container that had lost its state. Silence here would leave a
-    # reader counting it among the results.
-    if st.runs and st.runs.invalid:
-        result["batch_runs_invalid"] = st.runs.invalid
-    if st.batches_done:
-        result["batches_done"] = st.batches_done
-    if st.best_objective is not None:
-        result["best_objective"] = st.best_objective
-    if st.budget:
-        # Through budget_positions, so a `time` row reports where the search is now rather than
-        # where it was when the last round closed.
-        result["budget"] = [b.model_dump() for b in budget_positions(st)]
-        # Which criterion `progress` is a share OF. A bare 0.67 does not say whether that is
-        # runs, rounds, evaluations or seconds, and an agent should not have to re-derive the
-        # max to find out -- nor guess, since the answer changes which criterion it should
-        # weigh a stall or a flat objective against.
-        binding = _binding_budget(st)
-        if binding is not None:
-            result["progress_of"] = binding[0].kind or binding[0].label
-    if st.stop:
-        result["stop"] = st.stop
-    if st.error:
-        result["error"] = st.error
-    # Postprocessing is a separate fact from ``phase`` on purpose (see Status): a
-    # campaign whose runs all passed but whose postprocessing failed stays
-    # ``finished``, because the runs are the deliverable. That only works if the fact
-    # is *reported* — folded into ``stage`` it reads like a progress note, and a
-    # campaign with no metrics at all looks as green as a complete one.
-    result["postprocessed"] = st.postprocessed
-    if st.postprocessing_error:
-        result["postprocessing_error"] = st.postprocessing_error
-    if st.share_error:
-        result["share_error"] = st.share_error
-    return result
 
 
 def _wait_next_step(campaign_id: str) -> str:
@@ -395,52 +179,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             out["note"] = ref.note
         return out
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def _campaign_next_step(result: dict) -> str:
-    """What to do about the campaign state just reported, or "" when nothing is obvious.
-
-    The same reason :func:`_status_next_step` exists for builds: a caller reads this to
-    decide, and leaving that decision to be *remembered* is the defect
-    :data:`~robovast.client.status.STALL_NEXT_STEP` is written against. Empty when the
-    campaign is simply progressing, per AGENTS.md: a hint on every reply is a field callers
-    learn to skip.
-
-    Ordered cheapest-first where a stall is reported, because the untainted options come
-    before anything that perturbs the run.
-    """
-    findings = result.get("health_findings") or []
-    if findings:
-        # Before the stall verdict deliberately: a finding names a fault class ("sim time is not
-        # advancing") where a stall says only "nothing finished in time", and it is true within a
-        # minute of the fault rather than one declared budget later.
-        first = findings[0]
-        return (f"{first.get('job_name', '')}: {first.get('check', '')} — "
-                f"{first.get('detail', '')}. Next: {STALL_NEXT_STEP}")
-    if result.get("stalled") is True:
-        return result.get("stall_reason", "")
-    if result.get("status") == "finished" and result.get("postprocessed") is False:
-        # A campaign can finish green and still have nothing derived; saying "finished"
-        # alone sends the caller looking for results that were never written.
-        #
-        # But "postprocessed is false" covers two states that need opposite actions, and
-        # collapsing them told a reader the wrong one. A step that RAISES leaves the
-        # campaign not-postprocessed while the steps beside it already derived their data
-        # and loaded it: measured on such a campaign, one plugin of four failed and 10252
-        # pose rows, its logs and its behaviour tree were all queryable. Reporting "there
-        # are no CSVs" there is simply false, and it invites re-running everything to
-        # recover what is already there.
-        error = result.get("postprocessing_error")
-        if error:
-            return (f"finished, but postprocessing reported an error: {error}. What the "
-                    f"steps that DID succeed derived is already loaded and queryable "
-                    f"(describe_campaign_data); run_postprocessing re-runs the failed "
-                    f"step without re-running any trial")
-        return ("finished, but postprocessing did not run: nothing was derived from the "
-                "runs yet, so only the campaign's own record (run_view, campaign.*) will "
-                "answer. run_postprocessing fixes that without re-running trials")
-    return ""
+        return error_result(e)
 
 
 def get_campaign_status(campaign_id: str) -> dict:
@@ -513,15 +252,7 @@ def get_campaign_status(campaign_id: str) -> dict:
         client = service_access.service_client()
         if client is None:
             return {"error": NO_SERVICE}
-        st = client.get_status(campaign_id)
-        result = _status_to_dict(campaign_id, "service", st)
-        result["stage"] = st.stage or ""  # a live marker string, not a log tail
-        if (st.mode or "").lower() == "search":
-            _attach_objective_history(result, client, campaign_id)
-        next_step = _campaign_next_step(result)
-        if next_step:
-            result["next_step"] = next_step
-        return result
+        return status_report(client, campaign_id)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -717,9 +448,7 @@ def list_campaign_jobs(campaign_id: str) -> dict:
     """
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); live job listing is served "
-                         "by the service"}
+        return {"error": NO_SERVICE}
     try:
         return client.list_jobs(campaign_id).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -924,8 +653,7 @@ def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); job logs are served by the service"}
+        return {"error": NO_SERVICE}
     try:
         chunk = client.get_job_log(campaign_id, job_name, cursor).model_dump()
     except Exception as e:  # noqa: BLE001
@@ -1023,7 +751,7 @@ def get_resource_usage() -> dict:
     if client is None:
         return {"error": NO_SERVICE}
     try:
-        return client.resource_usage().model_dump()
+        return resource_usage_report(client)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -1129,33 +857,6 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         return error_result(e)
 
 
-def _status_next_step(status) -> str:
-    """What to do about the build state just reported.
-
-    Four phases, four different actions, and the caller is here *because* it is deciding
-    between them: a build still running wants a wait rather than a second build; a *blocked*
-    one wants neither, since its pod is not running and its inputs are not the problem; a
-    failed one wants the diagnosis rather than a retry of identical inputs; a finished one
-    wants the run.
-    """
-    if status.phase == "blocked":
-        # Not done, but telling the caller to wait is what wasted its time last: the builder
-        # pod cannot start, so no amount of waiting or rebuilding produces an image, and
-        # get_image_build_log has nothing in it either.
-        return ("the build pod cannot start -- read error_detail above; it names the image "
-                "or the capacity at fault. Nothing in the project's build: section is "
-                "involved, and the build fails on its own shortly if this does not clear")
-    if not status.done:
-        return (f"run in the background: vast image wait {status.build_id} --interval 5 "
-                f"({ImageWaitExit.summary()})")
-    if status.phase == "failed":
-        return (f"read error_detail above, then "
-                f"get_image_build_log(build_id='{status.build_id}', summarize=True) "
-                f"for the builder's own output")
-    return ("the image is ready — start_campaign(...) to run it, or "
-            "exec_in_container(...) to look inside it")
-
-
 def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. ``error_detail`` says what to change.
 
@@ -1187,15 +888,9 @@ def get_image_build_status(build_id: str) -> dict:
     """
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable"}
+        return {"error": NO_SERVICE}
     try:
-        s = client.get_image_build_status(build_id)
-        out = {"build_id": s.build_id, "tag": s.tag, "phase": s.phase,
-               "done": s.done, "cached": s.cached, "image_ref": s.image_ref,
-               "next_step": _status_next_step(s)}
-        if s.error is not None:
-            out["error_detail"] = s.error.model_dump()
-        return out
+        return build_status_report(client, build_id)
     except Exception as e:  # noqa: BLE001
         return error_result(e)
 
@@ -1233,7 +928,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     client = service_access.service_client()
     if client is None:
-        return {"error": "no robovast-service reachable"}
+        return {"error": NO_SERVICE}
     try:
         chunk = client.get_image_build_log(build_id, offset)
     except Exception as e:  # noqa: BLE001

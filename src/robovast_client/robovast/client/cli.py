@@ -76,7 +76,29 @@ def _print_version(ctx, param, value):  # pylint: disable=unused-argument
     ctx.exit()
 
 
-@click.group()
+class _RootGroup(click.Group):
+    """The root group, which reports a verb's failure when the verb did not.
+
+    Every verb that reaches a service can fail on the way -- a connection refused, a
+    workspace name that matches nothing -- and a verb with no handler of its own would
+    let that escape as a raw interpreter traceback. One handler here, over every verb any
+    distribution attaches, reports the failure the way :func:`handle_cli_exception`
+    reports it everywhere else: a refusal as its message, a bug with its type and frames,
+    and exit code 1 either way. Click's own exceptions and exits pass through, as they are
+    click's to render.
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (click.ClickException, click.Abort, click.exceptions.Exit):
+            raise
+        except Exception as e:  # noqa: BLE001 - every verb's failure, reported once
+            handle_cli_exception(e)
+            return None
+
+
+@click.group(cls=_RootGroup)
 @click.option('--log-level', '-l',
               type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
               help='Set logging level (overrides project configuration)',
@@ -444,16 +466,30 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
 
 
 @workspace.command('list')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the listing as one JSON object, the fields the MCP '
+                   'list_workspaces tool returns.')
 @target_options
-def workspace_list(namespace, context):
-    """List workspaces (newest first)."""
+def workspace_list(as_json, namespace, context):
+    """List workspaces (newest first), with the campaigns running out of each.
+
+    ``--json`` prints ``{workspaces, total}`` on stdout and the target on stderr.
+    """
+    import json as json_mod
+
+    from robovast.client.workspace_report import workspace_listing
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
-        workspaces = client.list_workspaces().workspaces
-        if not workspaces:
-            click.echo("(none)")
-        for w in workspaces:
-            click.echo(f"{w.workspace_id}  {w.name or '-':20}  {w.created_at or ''}")
+        _echo_target(target, err=as_json)
+        listing = workspace_listing(client)
+    if as_json:
+        click.echo(json_mod.dumps(listing))
+        return
+    if not listing["workspaces"]:
+        click.echo("(none)")
+    for w in listing["workspaces"]:
+        running = w["running_campaigns"]
+        click.echo(f"{w['workspace_id']}  {w['name'] or '-':20}  {w['created_at'] or ''}"
+                   + (f"  [running: {', '.join(running)}]" if running else ""))
 
 
 @workspace.command('world')
@@ -487,7 +523,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 
     from robovast.service.project_push import _resolve_workspace_id
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
+        _echo_target(target, err=as_json)
         wid = _resolve_workspace_id(client, workspace)
         described = client.describe_world(wid, path, targets, entities)
         if as_json:
@@ -1150,17 +1186,31 @@ def image_wait(build_ids, interval, timeout, namespace, context):
 
 @image.command('status')
 @click.argument('build_id')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the status as one JSON object, the fields the MCP '
+                   'get_image_build_status tool returns.')
 @target_options
-def image_status(build_id, namespace, context):
-    """Show an image build's status."""
+def image_status(build_id, as_json, namespace, context):
+    """Show an image build's status and what to do next.
+
+    ``--json`` prints the status on stdout and the target on stderr.
+    """
+    import json as json_mod
+
+    from robovast.client.image_report import build_status_report
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
-        s = client.get_image_build_status(build_id)
-        click.echo(f"{s.build_id}: phase={s.phase} done={s.done} cached={s.cached} "
-                   f"image={s.image_ref}")
-        if s.error:
-            click.echo(f"  error [{s.error.phase}] {s.error.message} "
-                       f"(entry={s.error.entry!r}, fixable_by={s.error.fixable_by})")
+        _echo_target(target, err=as_json)
+        s = build_status_report(client, build_id)
+    if as_json:
+        click.echo(json_mod.dumps(s))
+        return
+    click.echo(f"{s['build_id']}: phase={s['phase']} done={s['done']} cached={s['cached']} "
+               f"image={s['image_ref']}")
+    error = s.get("error_detail")
+    if error:
+        click.echo(f"  error [{error['phase']}] {error['message']} "
+                   f"(entry={error['entry']!r}, fixable_by={error['fixable_by']})")
+    click.echo(f"  next  {s['next_step']}")
 
 
 @image.command('log')

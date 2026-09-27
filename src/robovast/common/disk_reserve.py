@@ -130,6 +130,31 @@ def room_bytes(path) -> int:
     return max(0, usage.free - reserve_bytes(usage.used + usage.free))
 
 
+def unpacked_bytes(members, block: int) -> int:
+    """What extracting the tar *members* takes on a filesystem allocating *block* bytes at a
+    time: each member at least one block, a file its size rounded up to whole blocks."""
+    return block * sum(max(1, -(-(m.size if m.isfile() else 0) // block)) for m in members)
+
+
+def refuse_unless_room(archive_name: str, members, dest, volume: str, remedy: str) -> None:
+    """Raise :class:`~robovast.common.errors.InsufficientStorageError` (507) when the tar
+    *members* would take more than *dest*'s filesystem has room for above the reserve.
+
+    Asked of the tar's index before extraction: the compressed size bounds nothing, since a
+    crafted archive packs a terabyte of zeros, or a million empty entries, into kilobytes.
+    *volume* names the filesystem in the refusal and *remedy* says what frees it.
+    """
+    from robovast.common.errors import \
+        InsufficientStorageError  # pylint: disable=import-outside-toplevel
+
+    unpacked = unpacked_bytes(members, block_bytes(dest))
+    room = room_bytes(dest)
+    if unpacked > room:
+        raise InsufficientStorageError(
+            f"{archive_name} unpacks to {unpacked / _GB:.1f} GB, and {volume} has "
+            f"{room / _GB:.1f} GB free above its reserve. Nothing was extracted; {remedy}.")
+
+
 def disk_shortfall(path, label: str = "the service's disk") -> Optional[str]:
     """The sentence saying the filesystem holding *path* is below the reserve, else ``None``.
 

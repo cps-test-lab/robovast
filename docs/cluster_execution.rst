@@ -2397,6 +2397,10 @@ the importing service — so nothing is replaced, ``--force`` does not apply, an
 workspace is named after the archive unless ``--name`` says otherwise. A name already taken
 is suffixed (``growth-sim-2``), so re-importing is how you get a second copy to edit.
 
+An archive that would unpack to more than the workspaces volume has room for above its
+free-space reserve is refused with a 507 before anything is written, measured from the
+archive's index as a campaign import is (:doc:`results_processing`).
+
 Export and import are **synchronous**, unlike a campaign's: a campaign's upload is tracked
 as a phase of the campaign and returns as soon as it is under way, while a project tree is
 small enough that the answer is the object that landed.

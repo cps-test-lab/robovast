@@ -70,6 +70,11 @@
             ],
             "title": "Best So Far"
           },
+          "complete": {
+            "default": false,
+            "title": "Complete",
+            "type": "boolean"
+          },
           "idx": {
             "title": "Idx",
             "type": "integer"
@@ -120,6 +125,7 @@
         },
         "required": [
           "best_so_far",
+          "complete",
           "idx",
           "max",
           "mean",

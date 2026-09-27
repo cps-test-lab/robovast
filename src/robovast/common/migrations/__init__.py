@@ -9,7 +9,7 @@ Public API:
 * the refusals: :class:`ConfigTooNew`, :class:`ConfigTooOld`, :class:`UnmigratableConfig`.
 
 ``README.md`` in this directory is the entry point for adding a migration step, and lists
-all three version surfaces (config, campaign store, host<->container).
+all four version surfaces (archive layout, config, campaign store, host<->container).
 """
 
 import logging

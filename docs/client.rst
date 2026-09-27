@@ -41,7 +41,8 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast login <url>`` / ``vast logout``
      - Store or forget the service credentials, verified before saving.
    * - ``vast workspace init|update|download|list|delete``
-     - Move a directory into a service workspace, and back out again.
+     - Move a directory into a service workspace, and back out again. ``list --json``
+       prints what the MCP ``list_workspaces`` tool returns.
    * - ``vast workspace validate|preview``
      - Check a project, and see what its sweep expands to — both before spending compute.
    * - ``vast workspace run <ws> [vast]``
@@ -49,7 +50,10 @@ Every group is named after what it acts on, so the group tells you what you are 
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
    * - ``vast campaign list|status``
      - What has run, and where one campaign has got to. The list marks a live campaign whose
-       queue priority or hold is not the default (``[prio -1]``, ``[paused]``).
+       queue priority or hold is not the default (``[prio -1]``, ``[paused]``). ``--json``
+       prints one JSON object with the fields the MCP ``list_campaigns`` and
+       ``get_campaign_status`` tools return (stall verdict, health findings and ``next_step``
+       included), with the ``Target:`` line on stderr so stdout parses.
    * - ``vast campaign wait <id>``
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
@@ -77,7 +81,8 @@ Every group is named after what it acts on, so the group tells you what you are 
        for it, and pull it down as one ``.tar.gz`` (:ref:`results-export`).
    * - ``vast service info|resources``
      - Which service is answering, which code it runs and whether it has a queue to order;
-       whether the cluster has room.
+       whether the cluster has room. ``--json`` prints what the MCP ``get_service_info`` and
+       ``get_resource_usage`` tools return.
    * - ``vast service cache [--clear]``
      - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
@@ -91,8 +96,14 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Read and write single files by address.
    * - ``vast image build|wait|status|log``
      - Have the service build the derived images a project's containers declare.
+       ``status --json`` prints what the MCP ``get_image_build_status`` tool returns,
+       ``next_step`` included.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
+
+A verb whose ``--json`` names an MCP tool prints the document that tool returns, built by the
+same function, and draws its plain lines from that document. With ``--json``, stdout carries
+only the JSON and the ``Target:`` line goes to stderr.
 
 That is the whole loop — validate, preview, launch, wait, fetch — and none of it needs the
 core. What the core adds is *local analysis*: ``vast config`` reads and expands a ``.vast``
@@ -104,6 +115,24 @@ installed at all — see :ref:`mcp`. ``vast login`` prints the ``claude mcp add`
 registers it. The two are not alternatives with a gap between them: the control verbs are
 deliberately on both sides, and each side additionally owns what only it can do — bulk bytes
 and long waits here, results queries and diff-based authoring there.
+
+
+.. _client-exit-codes:
+
+Exit codes
+----------
+
+Every verb exits with one of these, defined once as the members of
+``robovast.execution.wait_exit.CommonExit``:
+
+.. wait-exit-codes:: robovast.execution.wait_exit.CommonExit
+
+Only a waiting verb adds outcome codes of its own, numbered above these, from 3 up, so
+that none reads as a usage error: ``vast campaign wait``
+(:ref:`its codes <client-wait-exit-codes>`) and ``vast image wait``
+(:ref:`its codes <client-image-wait-exit-codes>`). ``vast container exec`` exits
+as failed when its command does, and prints the command's own status instead of passing it
+through.
 
 
 .. _client-partial-surface:
@@ -237,7 +266,9 @@ Its exit codes
 **The exit code is the answer.** The codes are defined once, as the members of
 ``robovast.execution.wait_exit.CampaignWaitExit``: the command raises them, and this table, its
 ``--help`` and every list of them an MCP tool or prompt hands out are rendered from them.
-Anything else refers to a code by its name.
+Anything else refers to a code by its name. Success and failure are the common codes, and a
+usage error is ``USAGE_ERROR`` as for every verb (:ref:`client-exit-codes`); the other
+outcomes are numbered above those.
 
 .. wait-exit-codes:: robovast.execution.wait_exit.CampaignWaitExit
 

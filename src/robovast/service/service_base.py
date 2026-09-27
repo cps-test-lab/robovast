@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from robovast.client import file_address
-from robovast.client.safe_path import safe_join
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
@@ -86,7 +86,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
-from robovast.common.disk_reserve import reserve_disabled
+from robovast.common.disk_reserve import refuse_unless_room, reserve_disabled
 from robovast.common.query_limits import query_limits
 from robovast.service.storage_reserve import storage_refusal
 
@@ -912,6 +912,9 @@ class ServiceBase(RobovastInterface):
         different id. Anything else is refused rather than flattened: an archive with two
         top-level entries is not one of ours, and guessing which to take would seed a
         project from half of something.
+
+        An archive that would unpack past the workspaces volume's room above the reserve is
+        refused before anything is written.
         """
         import tarfile  # pylint: disable=import-outside-toplevel
 
@@ -927,6 +930,8 @@ class ServiceBase(RobovastInterface):
             provider.download_archive(object_name, str(staged))
             with tarfile.open(staged, "r:gz") as tar:
                 members = tar.getmembers()
+                refuse_unless_room(object_name, members, project_dir, "the workspaces volume",
+                                   "free space there, then create the workspace again")
                 # `./` is not a top-level entry: `tar` writes it for the archive root, so an
                 # archive rolled by hand carries one and reading it as the project's
                 # directory would nest the whole tree one level down -- silently, which is
@@ -1683,7 +1688,8 @@ class ServiceBase(RobovastInterface):
                     f"would then mean what it says.")
             logger.info("extracting %s into %s ...", Path(archive).name,
                         self._campaigns_root())
-            extract_archive(archive, self._campaigns_root(), remove_archive=owned)
+            extract_archive(archive, self._campaigns_root(), campaign_id,
+                            remove_archive=owned)
             report = ingest_campaign(target, rebuild_store=request.rebuild_store)
             for name, stage in report["stages"].items():
                 logger.info("  %-15s %-10s %s", name, stage["verdict"], stage["detail"])
@@ -4330,14 +4336,18 @@ class ServiceBase(RobovastInterface):
         Two guards shared by the local and cluster transports before anything is
         removed:
 
-        * The id must match the campaign naming pattern — this blocks a traversal
-          value like ``..`` from ever reaching the ``rmtree`` / bucket delete and
-          taking out the results root or an unrelated bucket (``ValueError`` → 400).
+        * The id must be one directory name matching the campaign naming pattern. The
+          pattern alone lets a separator through (``../x-<stamp>``, ``/elsewhere/x-<stamp>``),
+          and :meth:`campaign_dir` honours an absolute id (``ValueError`` → 400).
         * No live in-memory driver entry may exist — the authoritative "still
           running here" signal. Stop the campaign first (``RuntimeError`` → 409).
         """
         from robovast.common.execution import is_campaign_dir
-        if not campaign_id or not is_campaign_dir(campaign_id):
+        try:
+            valid = is_campaign_dir(check_segment(campaign_id))
+        except UnsafePathError:
+            valid = False
+        if not valid:
             raise ValueError(
                 f"Refusing to delete {campaign_id!r}: not a valid campaign id.")
         with self._lock:
@@ -5046,11 +5056,14 @@ class ServiceBase(RobovastInterface):
         whichever service serves it.
 
         Campaigns all live under the shared results root (see :meth:`_campaigns_root`);
-        an absolute id is honoured as-is, for analysis of an arbitrary folder.
+        an absolute id is honoured as-is, for analysis of an arbitrary folder. A relative
+        id is one directory name (:func:`~robovast.client.safe_path.check_segment`), since
+        every reader here confines its path against the campaign's directory alone.
+        ``ValueError`` for one that is not.
         """
         if os.path.isabs(campaign_id):
             return Path(campaign_id)
-        return self._campaigns_root() / campaign_id
+        return self._campaigns_root() / check_segment(campaign_id)
 
     # -- results data query (eval viewer) -----------------------------------
 
