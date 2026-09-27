@@ -61,7 +61,7 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         sort: ``size`` orders by ``results_bytes``, unknown last; live ones lead.
 
     Returns:
-        ``{campaigns, total, offset, source}`` — each campaign ``{campaign_id, status,
+        ``{campaigns, total, offset}`` — each campaign ``{campaign_id, status,
         mode, started_at, postprocessed, num_runs, num_passed, num_failed,
         num_composition_failed, num_no_sample}`` plus ``description``, ``finished_at`` and
         ``results_bytes`` where recorded, and ``paused``/``priority`` where either is not the default (a
@@ -71,18 +71,15 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         ``description`` is what its launcher said the run was for, and is usually the
         only thing telling two same-day ``campaign-<timestamp>`` ids apart.
         ``postprocessed`` says whether the metric tables exist; per-run *outcomes* are
-        queryable either way (``run_view``). ``source`` names who answered — the service,
-        or this host's results root when none is reachable, since "no campaigns" means
-        different things from the two.
+        queryable either way (``run_view``). The service is the only source: with none
+        reachable this is ``{error}``, never a listing of this host's disk.
     """
     from robovast.service.interface import ListCampaignsRequest
 
     # Built first so a value outside the vocabulary is refused before anything is asked.
     request = ListCampaignsRequest(limit=limit, offset=offset, sort=sort, order=order)
     client = service_access.require_service()
-    source = "service"
-    listing = campaign_listing(client, request, running_only)
-    return {**listing, "source": source}
+    return campaign_listing(client, request, running_only)
 
 
 def get_campaign_summary(campaign_id: str) -> dict:

@@ -1,8 +1,6 @@
 // DataProvider: the panel↔data seam. Panels ask for rows by table + time and never learn where the
 // data comes from. The host's only implementation is `dbDataProvider`, which reads a single run's rows
 // out of the campaign's postprocessed results tables through the read-only query/describe endpoints.
-// A future live view can implement the same interface over a rosbridge buffer (nearest = latest sample)
-// without touching any panel.
 //
 // The interface lives here (shared by the host UI and package-provided panel remotes); the
 // implementation stays in the host, where the HTTP client and React Query cache belong.

@@ -241,9 +241,7 @@ def _walk(tail: McapTail, topic: str, catalog: TypeCatalog) -> Iterator[Tuple[Fr
     record_offset, index = -1, 0
     for record in tail.read():
         if isinstance(record, Schema):
-            if record.encoding in ("ros2msg", "ros2idl") and record.data:
-                catalog.add_definition(record.name, record.encoding,
-                                       record.data.decode("utf-8", errors="replace"))
+            catalog.add_schema(record)
             continue
         if isinstance(record, Channel):
             if record.topic == topic:
