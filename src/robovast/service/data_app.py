@@ -58,7 +58,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from robovast.client.safe_path import UnsafePathError, check_relative, safe_join
+from robovast.client.safe_path import UnsafePathError, check_relative, check_segment, safe_join
 from robovast.service.interface import OutputsIngested, Routes
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,11 @@ class DataPlane:
     def campaign_dir(self, campaign_id: str) -> Path:
         """The campaign's directory, which must exist. ``KeyError`` when it does not."""
         from robovast.common.execution import is_campaign_dir  # pylint: disable=import-outside-toplevel
-        if "/" in campaign_id or not is_campaign_dir(campaign_id):
+        try:
+            valid = is_campaign_dir(check_segment(campaign_id))
+        except UnsafePathError:
+            valid = False
+        if not valid:
             raise KeyError(f"no campaign {campaign_id!r} on this service")
         path = self.results_root / campaign_id
         if not path.is_dir():

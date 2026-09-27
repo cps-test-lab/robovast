@@ -57,6 +57,8 @@ import sqlite3
 import tarfile
 from pathlib import Path
 
+from robovast.client.safe_path import UnsafePathError, check_segment
+
 logger = logging.getLogger(__name__)
 
 STAGE_OK = "ok"
@@ -112,9 +114,11 @@ def _checked_campaign_name(name: str) -> str:
     """
     from robovast.common.execution import is_campaign_dir
 
-    if name in ('.', '..') or '/' in name or '\\' in name:
+    try:
+        check_segment(name)
+    except UnsafePathError as err:
         raise ValueError(
-            f"the archive's top-level entry {name!r} is not a campaign directory name")
+            f"the archive's top-level entry {name!r} is not a campaign directory name") from err
     if not is_campaign_dir(name):
         raise ValueError(
             f"{name!r} is not a campaign directory name (expected "

@@ -37,7 +37,7 @@ import os
 from pathlib import Path
 
 from robovast.client.file_address import SOURCES, format_address
-from robovast.client.safe_path import UnsafePathError, safe_join
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.client.workspaces import is_campaign_results_dir
 from robovast.client.workspaces import is_skipped as _should_skip
 
@@ -464,10 +464,10 @@ def _served_filename(disposition) -> str:
         key, _, value = part.strip().partition("=")
         if key.strip().lower() != "filename":
             continue
-        name = value.strip().strip('"')
-        if not name or name in (".", "..") or "/" in name or "\\" in name:
+        try:
+            return check_segment(value.strip().strip('"'))
+        except UnsafePathError:
             return ""
-        return name
     return ""
 
 
@@ -522,6 +522,11 @@ def extract_campaign_archive(client, campaign_id: str, out_dir: str,
             client.raise_for_status(resp)
             served = _served_filename(resp.headers.get("Content-Disposition")) or f"{campaign_id}.tar.gz"
             name = served[:-len(".tar.gz")] if served.endswith(".tar.gz") else served
+            try:
+                check_segment(name)
+            except UnsafePathError as err:
+                raise RuntimeError(f"the archive of {campaign_id} is named {served!r}, which "
+                                   "names no directory to extract it into") from err
             incoming = os.path.join(out_dir, f".{name}.incoming")
             shutil.rmtree(incoming, ignore_errors=True)
             os.makedirs(incoming)
