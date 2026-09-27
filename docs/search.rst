@@ -573,6 +573,20 @@ an answer the strategy was given, so a replay that left it out would hand the st
 shorter generation than it saw — ``optuna`` would close that trial as failed — and the
 resumed search would propose differently from there.
 
+Only a **finished** batch is replayed. A batch is marked ``closed`` once the strategy has
+been told it; a process that dies inside one leaves it open, holding some of its cells. On a
+resume that batch's rows are discarded and it is asked again: the replay leaves the strategy
+where it stood before the batch, so it proposes the same cells, and the runs they already
+completed on disk are adopted rather than run twice.
+
+A batch recorded before store schema 15 carries no marker, and the migration decides for it.
+Every batch of a search but the last is finished — the loop opens a batch only once the
+previous one was told. The last is finished only if the campaign's recorded outcome counted
+it (``campaign.batches``, the number of batches told, written on every ending the process
+lived to record). A campaign with no outcome died without recording one, most likely inside
+that batch, so it is asked again; if it had in fact finished, asking it again re-proposes the
+same cells and adopts their runs, so the cost is re-reading them, never a different search.
+
 A batch recorded before store schema 14 kept no row for a recalled cell, and which cells it
 recalled cannot be recovered from what it did keep. Such a campaign still resumes: each of
 those batches replays the evaluations it recorded. Where one of them asked for more cells

@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS batch (
     dir         TEXT,
     created_at  REAL,
     asked       INTEGER,         -- parameter sets the strategy PROPOSED for this batch
-    recalls_recorded INTEGER     -- 1: its recalled cells have unit rows; NULL: written before they could
+    recalls_recorded INTEGER,    -- 1: its recalled cells have unit rows; NULL: written before they could
+    closed      INTEGER          -- 1 once a search batch's tell completed; NULL: the batch did not finish
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -532,8 +533,30 @@ ALTER TABLE batch ADD COLUMN recalls_recorded INTEGER;
 ALTER TABLE unit ADD COLUMN recalled_from INTEGER REFERENCES unit(id);
 """
 
+# 14 -> 15: which search batches FINISHED.
+#
+# A batch row is written when the batch opens and its unit rows as its cells are scored, so a
+# process that dies part-way leaves a batch with some of its rows and no way to tell it from
+# one that completed. A resume that counted it replayed a partial generation as a whole one
+# and began the next batch after it. ``closed`` is set once the strategy has been told the
+# batch, and a resume discards a batch without it and asks it again.
+#
+# Backfilled, because which batches finished is known for all but one of them: the loop opens
+# a batch only after the previous one was told, so every batch of a search before its last
+# finished. The last finished only if the campaign's recorded outcome counted it -- ``batches``
+# is the number of batches told, written on every ending the process lived to record. With no
+# outcome, the process died without one, most likely inside that batch, and it stays open: it
+# is asked again, and the runs it completed on disk are adopted rather than run twice.
+_MIGRATION_ADD_BATCH_CLOSED = """
+ALTER TABLE batch ADD COLUMN closed INTEGER;
+UPDATE batch SET closed = 1
+WHERE campaign_id IN (SELECT id FROM campaign WHERE mode = 'search')
+  AND (idx < (SELECT MAX(b.idx) FROM batch b WHERE b.campaign_id = batch.campaign_id)
+       OR idx < COALESCE((SELECT c.batches FROM campaign c WHERE c.id = batch.campaign_id), 0));
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -557,6 +580,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_UNIT_CHANNELS,
     _MIGRATION_ADD_ORIGIN_CONFIG_VERSION,
     _MIGRATION_ADD_RECALLED,
+    _MIGRATION_ADD_BATCH_CLOSED,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -1081,6 +1105,35 @@ class CampaignStore:
         return list(self._conn.execute(
             "SELECT * FROM campaign ORDER BY created_at DESC"
         ).fetchall())
+
+    def close_batch(self, batch_id: int) -> None:
+        """Mark a search batch finished: its strategy has been told everything it recorded.
+
+        Only a closed batch is replayed on a resume (see :meth:`discard_open_batches`).
+        """
+        self._conn.execute("UPDATE batch SET closed = 1 WHERE id = ?", (batch_id,))
+        self._conn.commit()
+
+    def discard_open_batches(self, campaign_id: int) -> list[int]:
+        """Delete every batch of *campaign_id* that was never closed, with its units and runs.
+
+        What a search does before it resumes: a batch its process died inside recorded some
+        of its cells and was never told, so it is not part of the sequence the strategy saw.
+        It is asked again from where the replay leaves the strategy -- the same proposals --
+        and its rows are recorded again as its cells are scored. Its runs on disk are kept;
+        the batch runner adopts every one that has a verdict. Returns the discarded indices.
+        """
+        rows = self._conn.execute(
+            "SELECT id, idx FROM batch WHERE campaign_id = ? AND closed IS NULL ORDER BY idx",
+            (campaign_id,)).fetchall()
+        for row in rows:
+            self._conn.execute(
+                "DELETE FROM run WHERE unit_id IN (SELECT id FROM unit WHERE batch_id = ?)",
+                (row["id"],))
+            self._conn.execute("DELETE FROM unit WHERE batch_id = ?", (row["id"],))
+            self._conn.execute("DELETE FROM batch WHERE id = ?", (row["id"],))
+        self._conn.commit()
+        return [row["idx"] for row in rows]
 
     def batches(self, campaign_id: int) -> list[sqlite3.Row]:
         """Batches of a campaign, in execution order (idx ascending)."""

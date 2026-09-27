@@ -198,10 +198,17 @@ def recorded_batches(store, campaign_row_id: int) -> list:
     A ``recalled`` row resolves to the evaluation of the unit it names, which an earlier
     batch recorded and this walk has therefore already read. One that names no unit read so
     far is a store that contradicts itself, and raises rather than tell a replay less.
+
+    Only CLOSED batches are read: one never closed is a batch the process died inside,
+    whose strategy was never told it, so it is no part of the sequence a replay rebuilds.
+    A resume discards it and asks it again
+    (:meth:`~robovast.common.store.CampaignStore.discard_open_batches`).
     """
     out = []
     by_unit: dict = {}
     for batch in store.batches(campaign_row_id):
+        if batch["closed"] is None:
+            continue
         rows = store.units(batch["id"])
         evaluations, recalled = [], []
         for row in rows:

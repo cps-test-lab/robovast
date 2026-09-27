@@ -779,6 +779,11 @@ class CampaignController:
         """
         from robovast.search.history import position_from, recorded_batches
 
+        discarded = self.store.discard_open_batches(campaign_id)
+        if discarded:
+            logger.info("Batch(es) %s did not finish before the search stopped; their records "
+                        "are discarded and they are asked again.",
+                        ", ".join(str(i) for i in discarded))
         batches = recorded_batches(self.store, campaign_id)
         position = position_from(
             batches, default_runs=self.runs, fold_best=fold_best,
@@ -908,6 +913,9 @@ class CampaignController:
             for ev in recalled:
                 self.store.record_recall(batch_id, ev.params.id, ev.params.values)
             self.strategy.tell(RecordedBatch(evaluations=scored, recalled=recalled).told)
+            # The batch is part of the sequence a resume replays from here on, and not
+            # before: a process that dies inside it leaves it open, and it is asked again.
+            self.store.close_batch(batch_id)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
             self._batches_done = batch_idx

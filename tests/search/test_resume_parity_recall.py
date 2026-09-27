@@ -150,7 +150,9 @@ def test_a_batch_recorded_before_recalls_had_rows_is_flagged(tmp_path):
     for step in _MIGRATIONS[1:13]:
         conn.executescript(step)
     conn.execute("PRAGMA user_version = 13")
-    conn.execute("INSERT INTO campaign (id, name, mode) VALUES (1, 'old', 'search')")
+    # Its outcome counted both batches, so both finished (see test_resume_mid_batch).
+    conn.execute(
+        "INSERT INTO campaign (id, name, mode, batches) VALUES (1, 'old', 'search', 2)")
     # Batch 0 recorded every cell it asked for; batch 1 asked for three and recorded two.
     for batch_id, asked, cells in ((1, 2, ("a", "b")), (2, 3, ("c", "d"))):
         conn.execute("INSERT INTO batch (id, campaign_id, idx, asked) VALUES (?, 1, ?, ?)",

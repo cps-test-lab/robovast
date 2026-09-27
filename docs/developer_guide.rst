@@ -1663,7 +1663,8 @@ Schema
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
   batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
   ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
-  written before schema 14).
+  written before schema 14). ``closed`` is 1 once a search batch's tell completed; a resume
+  discards a batch without it and asks it again.
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
