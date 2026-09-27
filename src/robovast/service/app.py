@@ -2322,9 +2322,10 @@ def _from_loopback(request) -> bool:
     """Did this request come from the same machine?
 
     Conservative on purpose: anything unparseable, absent (a Unix socket has no peer
-    address) or forwarded counts as *not* loopback, because the field this gates is only
-    useful to a caller that can open the service host's filesystem, and being wrong in
-    that direction merely costs a caller two fields it could not have used.
+    address) or forwarded counts as *not* loopback, because what this gates -- the
+    ``host_path`` settings -- is only useful to a caller that can open the service host's
+    filesystem, and being wrong in that direction merely withholds paths it could not have
+    used.
     """
     import ipaddress  # pylint: disable=import-outside-toplevel
     client = getattr(request, "client", None)
