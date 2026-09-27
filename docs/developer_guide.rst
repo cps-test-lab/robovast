@@ -557,8 +557,8 @@ The referenced module travels with the campaign: it is archived into
 from that snapshot rather than replaying recorded configurations — can resolve it, and it
 is content-hashed into the campaign's ``config_identifier``, because the source
 that decides which configurations exist is part of what the experiment is. Editing it
-therefore gives the campaign a new identity, exactly as editing a packaged variation's
-module does.
+therefore gives the campaign a new identity. A packaged variation counts by its name, so a
+new release of its package leaves the identity as it was.
 
 .. important::
 

@@ -38,8 +38,7 @@ from robovast.client.status import failure_detail
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters, load_config
 from .config_channels import SCENARIO, SIM, SUT, channel
-from .config_identifier import (VariationSourceNotFound, collect_paths_from_config,
-                                hash_variation_entrypoints, variation_refs)
+from .config_identifier import collect_paths_from_config, hash_variation_entrypoints
 from .config_location import variation_line
 from .config_plugins import ensure_workspace_plugins
 from .errors import (ActionableError, AuxContainerUnavailable, CampaignStopped,
@@ -1734,10 +1733,17 @@ def _build_generate_cache_key(
             if os.path.exists(abs_path):
                 key.add_file(abs_path, base_dir=vast_dir)
 
-    # The source of every variation the .vast names, so a changed plugin misses.
-    key.add("variation_entrypoints_hash", hash_variation_entrypoints(
-        [ref for config_block in configurations for ref in variation_refs(config_block)],
-        vast_dir))
+    # Hash the source code of every variation plugin referenced in the .vast file.
+    # This ensures a cache miss when plugin implementation changes, even if the
+    # .vast file and input data files are untouched.
+    all_variation_names = tuple(sorted({
+        class_name
+        for config_block in configurations
+        for item in config_block.get('variations', [])
+        if isinstance(item, dict)
+        for class_name in item.keys()
+    }))
+    key.add("variation_entrypoints_hash", hash_variation_entrypoints(all_variation_names))
 
     # A replay's recorded digests (``image_pins``) replace the project in resolving `family:`
     # refs, so an entry composed from the project's tags must never satisfy a replay, and one
@@ -2174,30 +2180,22 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     #   config_generation_{key}.json      – config metadata
     #   config_generation_artifacts_{key}.tar.gz – artifact files written to output_dir
     #     by variation plugins (only created/restored when non-empty _config_files exist)
-    _cache_key = None
-    if use_cache and variation_classes is None:
-        try:
-            _cache_key = _build_generate_cache_key(
-                variation_file=os.path.abspath(variation_file),
-                vast_dir=vast_dir,
-                scenario_file=scenario_file,
-                run_files=run_files,
-                analysis_files=analysis_files,
-                configurations=configurations,
-                tolerate_infeasible=tolerate_infeasible,
-                image_project=image_project,
-                image_project_tag=image_project_tag,
-                image_pins=image_pins,
-            )
-        except VariationSourceNotFound as e:
-            # A variation whose source cannot be found yet -- a workspace plugin not
-            # installed before its first composition -- leaves nothing to key on, so this
-            # composition is neither looked up nor stored. A misspelt name is reported when
-            # composition resolves it.
-            logger.debug("Composing %s uncached: %s", variation_file, e)
-    if _cache_key is not None:
+    _cache_enabled = use_cache and variation_classes is None
+    if _cache_enabled:
         _cache_meta = FileCache2(vast_dir, "config_generation_", suffix=".json")
         _cache_artifacts = FileCache2(vast_dir, "config_generation_artifacts_", suffix=".tar.gz")
+        _cache_key = _build_generate_cache_key(
+            variation_file=os.path.abspath(variation_file),
+            vast_dir=vast_dir,
+            scenario_file=scenario_file,
+            run_files=run_files,
+            analysis_files=analysis_files,
+            configurations=configurations,
+            tolerate_infeasible=tolerate_infeasible,
+            image_project=image_project,
+            image_project_tag=image_project_tag,
+            image_pins=image_pins,
+        )
         _cached = _cache_meta.get_json(_cache_key)
         # Checking a hit fixes the helper images it names, as a started helper's would be.
         if _cached is not None and _cached_entry_is_current(
@@ -2221,6 +2219,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     else:
         _cache_meta = None
         _cache_artifacts = None
+        _cache_key = None
 
     # Cache miss for a plugin campaign: compose in an isolated subprocess so the
     # plugin (and its pinned deps) are imported there, never in this process. The
