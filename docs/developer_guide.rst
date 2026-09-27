@@ -212,6 +212,11 @@ checkout looks entirely normal in the meantime. The failure mode depends on whic
   hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
   reconciles Secrets from the environment — concludes the registry and git credentials
   are gone and deletes both.
+* ``robovast.doctor_checks`` — the checks ``vast doctor`` runs beyond the client's own
+  (Docker from the core; the Kubernetes tools, cluster and deployment from
+  ``robovast-cluster``). Each entry takes the command's ``DoctorOptions`` and returns a list
+  of ``Check`` (both in ``robovast.client.doctor``). A plugin that fails, and a provider that
+  is installed but registered nothing, are each reported as a failed check naming it.
 
 The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block, reinstall
 before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
@@ -711,9 +716,9 @@ front of whoever is authoring the plugin.
 
    :mod:`robovast.common.container_runner_proxy` closes that: the parent serves its own
    live factory on a Unix socket beside the job file, and the worker installs a factory
-   whose runners forward ``run`` / ``close`` / ``expose`` back across it. The runner —
-   and with it the Kubernetes client, the storage client and the credentials both
-   authenticate with — stays in the parent; only the four calls of the
+   whose runners forward ``run`` / ``image_digest`` / ``close`` / ``expose`` back across
+   it. The runner — and with it the Kubernetes client, the storage client and the
+   credentials both authenticate with — stays in the parent; only the calls of the
    :class:`~robovast.common.variation.container_runner.ContainerRunner` contract cross,
    plus ``workspace``, which is a path both sides can already see. Command output is
    streamed frame by frame, so a plugin's progress still reaches the campaign log while
@@ -1598,7 +1603,10 @@ responsibility:
            )
 
 ``objectives`` and ``measures`` are named dicts, so single- and multi-objective
-use the same shape. The framework records how many runs backed each result.
+use the same shape. The framework records how many runs backed each result. Every
+declared objective must be a finite number: a NaN, an infinity or a non-number is refused
+when the result is read, naming the extractor and the configuration, because no strategy
+can compare it.
 
 Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
 or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:
@@ -1661,11 +1669,15 @@ Schema
   reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
-  batch-mode campaign.
+  batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
+  ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
+  written before schema 14).
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
-  of the unit's ``run`` rows, kept for convenience.
+  of the unit's ``run`` rows, kept for convenience. A search cell re-proposed after an
+  earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
+  that measured it, with no outcome of its own.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
   ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
@@ -1673,6 +1685,11 @@ Schema
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
+
+These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads them
+back into the ``ask``/``tell`` sequence a resumed strategy is re-driven through
+(:doc:`search`, "Surviving a service restart"), and the live loop builds what it tells from
+the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
 
 .. rubric:: Two definitions of the schema, on purpose
 
