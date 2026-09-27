@@ -346,3 +346,26 @@ def test_a_listing_carries_the_title_of_an_image_s_page(monkeypatch):
 
     assert row["title"] == "World YAML"
     assert row["source"] == "roqsim"
+
+
+def test_the_mcp_page_shows_the_layout_list_files_carries():
+    """The page includes the tool's layout rather than restating it, so the two cannot
+    describe different trees -- and the page an agent reads through this tool must show
+    that text, not the directive that names it."""
+    import textwrap
+
+    from robovast.mcp_server.plugins import files
+    if "mcp" not in docs._doc_files:
+        pytest.skip("no documentation directory in this checkout")
+    page = docs.search_docs(page="mcp")["content"]
+    assert "literalinclude" not in page
+    assert textwrap.dedent(files._LAYOUT).strip() in page
+
+
+def test_a_literalinclude_is_cut_where_its_markers_say(tmp_path):
+    (tmp_path / "src.py").write_text('x = 1\nTEXT = """\n    one\n      two\n"""\ny = 2\n')
+    out = docs._render_literalinclude(
+        "src.py", {"start-after": 'TEXT = """', "end-before": '"""', "dedent": "4"}, tmp_path)
+    assert out.splitlines()[1:-1] == ["one", "  two"]
+    missing = docs._render_literalinclude("src.py", {"start-after": "nowhere"}, tmp_path)
+    assert "nowhere" in missing

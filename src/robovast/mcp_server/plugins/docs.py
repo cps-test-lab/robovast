@@ -183,15 +183,36 @@ def _select_lines(lines: list[str], spec: str) -> list[str]:
 
 
 def _render_literalinclude(rel_path: str, options: dict[str, str], base_dir: Path) -> str:
-    """Embed a ``.. literalinclude::`` target as a fenced code block."""
+    """Embed a ``.. literalinclude::`` target as a fenced code block.
+
+    Applies ``:start-after:``, ``:end-before:``, ``:lines:`` and ``:dedent:`` in the order
+    Sphinx does, so the text read here is the text the rendered page shows.
+    """
     path = (base_dir / rel_path).resolve()
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as e:
         return f"*[literalinclude:: {rel_path} — could not read: {e}]*"
+    after = options.get("start-after")
+    if after:
+        start = next((i for i, line in enumerate(lines) if after in line), None)
+        if start is None:
+            return f"*[literalinclude:: {rel_path} — no line holds {after!r}]*"
+        lines = lines[start + 1:]
+    before = options.get("end-before")
+    if before:
+        end = next((i for i, line in enumerate(lines) if before in line), None)
+        if end is None:
+            return f"*[literalinclude:: {rel_path} — no line holds {before!r}]*"
+        lines = lines[:end]
     spec = options.get("lines")
     if spec:
         lines = _select_lines(lines, spec)
+    dedent = options.get("dedent")
+    if dedent:
+        width = int(dedent)
+        lines = [line[width:] if not line[:width].strip() else line.lstrip()
+                 for line in lines]
     lang = options.get("language", "").strip()
     out: list[str] = []
     caption = options.get("caption")
