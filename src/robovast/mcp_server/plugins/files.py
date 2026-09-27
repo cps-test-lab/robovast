@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 #: of the ten tool schemas it stands in for, and unlike them it also covers what has no
 #: tool.
 #:
+#: ``docs/mcp.rst`` includes this text rather than restating it, so the page and the tool
+#: cannot describe two layouts.
+#:
 #: Attached to ``list_files`` alone, not to both discovery tools: every tool description
 #: is sent on every request, so a table repeated across two of them is paid for twice per
 #: turn, and the tool that *finds* a path is the one that needs it.
@@ -52,10 +55,10 @@ logger = logging.getLogger(__name__)
 _LAYOUT = """
     Under ``/results/<campaign_id>/``:
       _config/              scenario.osc, <name>.vast, run files, notebooks
-      _execution/           outcome.json (why it ended), execution.yaml, controller.log,
-                            postprocessing.log
+      _execution/           launch.yaml (what it was asked to run), outcome.json (why it
+                            ended), execution.yaml, controller.log, postprocessing.log
       _transient/           configurations.yaml, entrypoint.sh, postprocessing.yaml
-      _jobs/job-N/          sysinfo.yaml, resource_usage_*.csv, logs/system*.log
+      _jobs/batch-N/job-M/  sysinfo.yaml, resource_usage_*.csv, logs/system*.log
       <config_name>/        _config/ (config.yaml, maps/), _transient/, one dir per run
       <config_name>/<run>/  test.xml (JUnit), out.csv, rosbag2/, roqsim_bag/, *.webm (a
                             recorded camera; videos.csv lists them with their timing)
