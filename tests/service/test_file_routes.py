@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robovast.service.app import build_app
+from robovast.service.interface import BINARY_FILE, ERROR_CODE_HEADER
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 from tests.service.null_service import NullService
 
@@ -82,6 +83,7 @@ def test_text_view_refuses_binary_rather_than_mangling_it(env):
     resp = client.get("/results/camp-1/nav/3/scene/scene.bin", params={"as": "text"})
     assert resp.status_code == 400
     assert "binary" in resp.json()["detail"].lower()
+    assert resp.headers[ERROR_CODE_HEADER] == BINARY_FILE
 
 
 def test_missing_file_is_404(env):
@@ -217,6 +219,22 @@ def test_path_escape_is_rejected(env):
     assert resp.status_code in (400, 404)
     with pytest.raises(ValueError):
         transport.read_file_bytes("/results/camp-1/../../secret.txt")
+
+
+@pytest.mark.parametrize("owner", ["..", "."])
+def test_a_results_owner_is_confined_to_the_results_root(env, owner):
+    """The owner segment is a directory name under the results root, never a step
+    beside it: ``/results/../`` is the directory holding the results tree and the
+    workspace store, and ``/results/./`` the tree itself."""
+    client, transport, _ = env
+    with pytest.raises(ValueError):
+        transport.read_file_bytes(f"/results/{owner}/secret.txt")
+    with pytest.raises(ValueError):
+        transport.list_files(f"/results/{owner}/")
+    # httpx normalizes a dot segment away, so the route sees it percent-encoded only.
+    encoded = owner.replace(".", "%2e")
+    assert client.get(f"/results/{encoded}/secret.txt").status_code == 400
+    assert client.get(f"/results/{encoded}/").status_code == 400
 
 
 def test_a_results_address_cannot_reach_a_workspace(env):

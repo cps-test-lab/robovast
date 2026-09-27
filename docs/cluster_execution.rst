@@ -66,7 +66,8 @@ them. Internally:
    scenario. (A composition that reaches for an auxiliary container — a variation, an
    input generator, the simulator's own world query — gets a pod per container, created
    when it asks and deleted when the campaign ends; a composition that asks for none
-   creates nothing. Composing *outside* a campaign — ``preview_configurations`` — gets
+   creates nothing. Composing *outside* a campaign — ``validate_project``,
+   ``preview_configurations``, and ``exec_in_container`` for one configuration — gets
    the same pod held by the container-exec manager instead, so an authoring loop reuses
    one warm pod and idleness reaps it.)
 3. **Queueing** — a Job is created only when sufficient CPU/memory is available,
@@ -509,10 +510,9 @@ without one it falls back to software rendering, which is correct but roughly an
 magnitude slower and burns a dozen CPU cores doing it. On a sweep that is often the
 difference between a campaign that finishes and one that does not.
 
-**There is nothing to configure.** Setup detects a GPU and makes it schedulable, and the
-container that runs the simulator then requests one because the cluster advertises it — no
-flag, and no change to the ``.vast``. The same file renders in hardware on a GPU cluster and
-in software on a CPU one.
+Setup detects a GPU and makes it schedulable; a container gets one only when its ``.vast``
+declares ``resources: {gpu: 1}``. Undeclared, it gets none even where the cluster has them, so
+a campaign that never renders does not spend GPU quota, which caps concurrency.
 
 .. code-block:: bash
 
@@ -596,9 +596,7 @@ unlike a remembered number it cannot go stale::
 A bare re-run of ``setup --force`` preserves whatever count is deployed, so it will not
 quietly undo a deliberate ``--gpu-replicas 24``.
 
-**Opting a campaign out.** Set ``gpu: 0`` on the simulation container to leave the GPU alone
-— worth doing for a camera-less world, which never renders and would otherwise hold a
-replica for nothing:
+**Asking for one.** Declare it on the container that renders:
 
 .. code-block:: yaml
 
@@ -606,7 +604,10 @@ replica for nothing:
      containers:
        simulation:
          resources:
-           gpu: 0
+           gpu: 1
+
+On a cluster where no node advertises a GPU, such a job fails rather than waits: no amount
+of waiting produces the device.
 
 ``gpu`` also takes the per-cluster form, for one ``.vast`` across a GPU and a non-GPU
 cluster: ``gpu: [{local: 1}, {gcp-c4: 0}]``.
@@ -1867,7 +1868,8 @@ cached for the campaign):
 - each **auxiliary helper image** (a composition's ``aux-<member>`` pod), when composition
   first asks for it — the pod and its ``transfer`` container run digests. A step served from
   a cache — a composition, an up-to-date input generator — starts no helper, and has the ones
-  it would have started fixed all the same, because a replay recomposes and runs them;
+  it would have started fixed all the same: the cache is served only while that digest is the
+  one it was built with, and a replay recomposes and runs them;
 - every **planned container** (scenario, simulation, sut, any declared one) before the first
   batch creates a Job.
 
@@ -2396,6 +2398,10 @@ An import always **creates** a workspace. The archive holds project files and no
 the importing service — so nothing is replaced, ``--force`` does not apply, and the new
 workspace is named after the archive unless ``--name`` says otherwise. A name already taken
 is suffixed (``growth-sim-2``), so re-importing is how you get a second copy to edit.
+
+An archive that would unpack to more than the workspaces volume has room for above its
+free-space reserve is refused with a 507 before anything is written, measured from the
+archive's index as a campaign import is (:doc:`results_processing`).
 
 Export and import are **synchronous**, unlike a campaign's: a campaign's upload is tracked
 as a phase of the campaign and returns as soon as it is under way, while a project tree is
