@@ -538,14 +538,14 @@ def test_an_archive_at_the_current_layout_is_ok(campaign):
     assert report["ok"] is True
 
 
-def test_an_archive_from_a_newer_layout_is_degraded_and_named(campaign):
+def test_an_archive_from_a_newer_layout_is_newer_and_named(campaign):
     """Somebody's data from a newer robovast still lists; the stage says which layout and
     which robovast wrote it, rather than refusing or passing it silently."""
     from robovast.common.migrations.archive import ARCHIVE_LAYOUT
     _stamp(campaign, layout=ARCHIVE_LAYOUT + 1, robovast="99.0.0")
     report = ingest_campaign(campaign)
     stage = report["stages"]["archive"]
-    assert stage["verdict"] == STAGE_DEGRADED
+    assert stage["verdict"] == STAGE_NEWER
     assert f"layout {ARCHIVE_LAYOUT + 1}" in stage["detail"] and "99.0.0" in stage["detail"]
     assert f"up to {ARCHIVE_LAYOUT}" in stage["detail"]
     assert report["ok"] is True

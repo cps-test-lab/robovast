@@ -121,7 +121,8 @@ def _is_stamp(rel: str) -> bool:
 
 
 def _make_filter(exclude, on_member=None):
-    """Return a ``tarfile.add`` filter dropping any member under an *exclude* name.
+    """Return a ``tarfile.add`` filter dropping the layout stamp and any member under an
+    *exclude* name.
 
     Excluding a *directory* prunes its whole subtree: ``tarfile.add`` does not
     recurse into a member whose filter returns ``None``. That is how the campaign's

@@ -1,39 +1,27 @@
 """The campaign archive's layout ladder.
 
-One of the version surfaces ``migrations/README.md`` lists. The ``.vast`` and ``campaign.db``
-carry their own numbers; everything else a campaign tree holds -- where its records sit and
-what ``_execution/outcome.json``, ``launch.yaml``, ``execution.yaml`` and the other records
-under it look like -- is versioned by this one number, the **archive layout**. A record whose
-format changes moves the layout, and the step that carries an older tree forward rewrites it.
+The ``.vast`` and ``campaign.db`` carry their own numbers; everything else a campaign tree
+holds -- where its records sit and the formats of ``_execution/outcome.json``,
+``launch.yaml``, ``execution.yaml`` and the other records -- is versioned by the **archive
+layout**. A record whose format changes moves the layout, and a step rewrites an older tree.
 
-The number travels in :data:`ARCHIVE_STAMP`, which every archive of a campaign carries: both
-streams in :mod:`robovast.execution.campaign_archive` add it as they write, so a download and
-a share upload say the same thing. An import reads it before anything else in the tree is
-parsed (:func:`robovast.service.ingest.ingest_campaign`), because every other reader relies on
-the layout it describes.
-
-An archive with **no stamp** was written before archives were stamped. It is layout
-:data:`BASELINE_ARCHIVE_LAYOUT`, which is what makes every archive written so far importable:
-absent is a version, not an error.
-
-Mirrors the config ladder's shape: a current version, an ordered append-only list of steps,
-and an assert tying the two together.
+Both streams in :mod:`robovast.execution.campaign_archive` write :data:`ARCHIVE_STAMP`, and
+an import reads it before anything else in the tree
+(:func:`robovast.service.ingest.ingest_campaign`). An archive with no stamp is layout
+:data:`BASELINE_ARCHIVE_LAYOUT`.
 """
 
-# Steps are imported explicitly rather than discovered, so the ladder is auditable in one
-# place. tools/new_archive_migration.py appends to both this block and _MIGRATIONS below,
-# keyed on the markers.
+# tools/new_archive_migration.py appends to this block and _MIGRATIONS, keyed on the markers.
 from . import v0_to_v1  # noqa: F401
 # <new-migration-import>
 
 import json
 from pathlib import Path
 
-#: Campaign-relative path of the stamp. In ``_execution/`` because that is where a campaign
-#: keeps what happened to it -- and being archived is one of those things.
+#: Campaign-relative path of the stamp.
 ARCHIVE_STAMP = "_execution/archive.json"
 
-#: The layout of an archive that carries no stamp: every archive written before the stamp.
+#: The layout of an archive that carries no stamp.
 BASELINE_ARCHIVE_LAYOUT = 0
 
 #: The layout this robovast writes, and the one an import brings an older tree to.
@@ -63,27 +51,20 @@ def archive_stamp(campaign_id: str) -> bytes:
 
     ``layout`` is the only field an importer acts on. The others are what the writing
     robovast was, for whoever has to decide what to do with an archive this one cannot read:
-    the package version, and the numbers of the surfaces that carry their own (the ``.vast``
+    its version as ``execution.yaml`` records it, and the numbers of the surfaces that carry their own (the ``.vast``
     ladder, the ``campaign.db`` schema, the data contract, the host-container protocol).
     """
-    from importlib.metadata import (  # pylint: disable=import-outside-toplevel
-        PackageNotFoundError, version)
-
     from robovast.common import store  # pylint: disable=import-outside-toplevel
-    from robovast.common.execution import \
-        COMPAT_VERSION  # pylint: disable=import-outside-toplevel
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        COMPAT_VERSION, get_app_version)
     from robovast_decode import DATA_CONTRACT  # pylint: disable=import-outside-toplevel
 
     from .. import config  # pylint: disable=import-outside-toplevel
 
-    try:
-        robovast_version = version("robovast")
-    except PackageNotFoundError:
-        robovast_version = "0+unknown"
     return json.dumps({
         "layout": ARCHIVE_LAYOUT,
         "campaign_id": campaign_id,
-        "robovast": robovast_version,
+        "robovast": get_app_version(),
         "config_version": config.SUPPORTED_CONFIG_VERSION,
         "store_schema": store.SCHEMA_VERSION,
         "data_contract": DATA_CONTRACT,
@@ -94,9 +75,8 @@ def archive_stamp(campaign_id: str) -> bytes:
 def read_layout(campaign_dir) -> "tuple[int, dict]":
     """``(layout, stamp)`` of the campaign tree at *campaign_dir*.
 
-    No stamp is :data:`BASELINE_ARCHIVE_LAYOUT` with an empty stamp. A stamp that is there
-    and cannot be read as a layout raises :class:`ArchiveLayoutError`: it is this system's
-    own record in its own format, so guessing a layout for it would be an invention.
+    No stamp is :data:`BASELINE_ARCHIVE_LAYOUT` with an empty stamp. A stamp that cannot be
+    read as a layout raises :class:`ArchiveLayoutError` rather than being guessed at.
     """
     path = Path(campaign_dir) / ARCHIVE_STAMP
     if not path.is_file():

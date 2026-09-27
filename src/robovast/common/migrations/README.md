@@ -53,7 +53,7 @@ test to `_STEP_TESTS` in `tests/common/test_archive_migrations.py` --
 Every archive carries `_execution/archive.json`, written by both streams in
 `robovast.execution.campaign_archive`. An archive with none is layout 0 -- every archive written
 before the stamp -- so absent is a version, not an error. An import (`ingest_campaign`'s
-`archive` stage) walks the ladder first; a newer layout is imported degraded, named.
+`archive` stage) walks the ladder first; a newer layout imports with the verdict `newer`, named.
 
 ## Adding a `.vast` config migration step
 

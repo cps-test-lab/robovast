@@ -241,12 +241,10 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
     has to reach around this function to do.
     """
     campaign_dir = Path(campaign_dir)
-    # First, and before anything else in the tree is read: every other stage reads records
-    # whose paths and formats the layout decides, so they read the tree once it is current.
+    # First: every other stage reads records whose paths and formats the layout decides.
     stages = {"archive": _migrate_archive(campaign_dir)}
     if stages["archive"]["verdict"] == STAGE_FAILED:
-        blocking = ["archive"]
-        return {"campaign_id": campaign_dir.name, "ok": False, "blocking": blocking,
+        return {"campaign_id": campaign_dir.name, "ok": False, "blocking": ["archive"],
                 "stages": stages}
     stages["layout"] = _check_layout(campaign_dir)
     stages["config"] = _check_config(campaign_dir)
@@ -319,11 +317,10 @@ def missing_for_import_in(campaign_root) -> list:
 def _migrate_archive(campaign_dir: Path) -> dict:
     """Bring the extracted tree to the archive layout this robovast reads.
 
-    No stamp is the archive layout that predates it, and walks the ladder like any older
-    one. A newer layout is **degraded, not blocking**: the campaign is somebody's data and
-    still lists, but records this robovast does not know may be misread, so the stage says
-    which layout it is and which robovast wrote it. A stamp that cannot be read, or a step
-    that fails, blocks: nothing after it knows what the tree holds.
+    No stamp walks the ladder from the baseline layout. A newer layout is ``newer``, as a
+    newer ``.vast`` or store is, and not blocking: the campaign still lists, but its records
+    may be misread, so the stage names the layout and the robovast that wrote it. An
+    unreadable stamp or a failing step blocks: nothing after it knows what the tree holds.
     """
     from robovast.common.migrations.archive import (  # pylint: disable=import-outside-toplevel
         ARCHIVE_LAYOUT, BASELINE_ARCHIVE_LAYOUT, ArchiveLayoutError, ArchiveTooNew,
@@ -332,7 +329,7 @@ def _migrate_archive(campaign_dir: Path) -> dict:
     try:
         found, applied = upgrade_archive(campaign_dir)
     except ArchiveTooNew as e:
-        return _stage(STAGE_DEGRADED,
+        return _stage(STAGE_NEWER,
                       f"{e} The campaign is registered as it is, and records this robovast "
                       f"does not know may be misread.", recovery="upgrade robovast")
     except ArchiveLayoutError as e:
