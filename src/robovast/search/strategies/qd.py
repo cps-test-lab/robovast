@@ -27,7 +27,6 @@ extra to use it.
 """
 
 import logging
-import math
 from typing import Literal, Optional
 
 import numpy as np
@@ -164,12 +163,17 @@ class QDStrategy(SearchStrategy):
 
         x0 = 0.5 * np.ones(self.codec.dim)       # centre of the unit cube
         sigma0 = float(params.sigma)             # scalar step (fraction of unit range)
-        n_emitters = max(1, params.emitters)
-        batch = max(1, math.ceil(cfg.per_batch / n_emitters))
+        # One generation is one batch: the emitters' batch sizes sum to per_batch.
+        n_emitters = params.emitters
+        if not 1 <= n_emitters <= cfg.per_batch:
+            raise ValueError(
+                f"qd splits each batch of {cfg.per_batch} draw(s) between its emitters, so "
+                f"'emitters' must be between 1 and per_batch; got {n_emitters}.")
+        base, extra = divmod(cfg.per_batch, n_emitters)
         seed = cfg.seed
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x0, sigma0=sigma0, bounds=bounds,
-                                     batch_size=batch,
+                                     batch_size=base + (1 if i < extra else 0),
                                      seed=None if seed is None else seed + i)
             for i in range(n_emitters)
         ]
@@ -183,6 +187,16 @@ class QDStrategy(SearchStrategy):
         self._direction = self.single_objective.direction
 
     def ask(self, n: int) -> list[ParamSet]:
+        """The first *n* of one generation of ``per_batch`` proposals.
+
+        pyribs draws a whole generation at once; the unproposed rest is closed by
+        :meth:`_tell_incomplete` on ``tell``.
+        """
+        if n > self.cfg.per_batch:
+            raise ValueError(
+                f"qd asked for {n} proposals, but one generation is per_batch = "
+                f"{self.cfg.per_batch} draw(s) and the emitters cannot draw another before "
+                f"this one is told.")
         solutions = self.scheduler.ask()
         self._ask = []
         proposals = []
@@ -191,8 +205,8 @@ class QDStrategy(SearchStrategy):
             ps = ParamSet(values=values)
             proposals.append(ps)
             self._ask.append((ps.id, np.asarray(sol)))
-        logger.debug("QD proposed %d solution(s)", len(proposals))
-        return proposals
+        logger.debug("QD proposed %d solution(s), %d asked for", len(proposals), n)
+        return proposals[:n]
 
     def tell(self, evaluations: list[Evaluation]) -> None:
         by_id = {ev.params.id: ev for ev in evaluations}
