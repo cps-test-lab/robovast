@@ -78,16 +78,19 @@ def query(campaign_id: str, sql: str, max_rows: int = 500,
     """
     client = service_access.service_client()
     try:
-        if client is not None:
-            result = client.query_campaign_data_sql(
-                campaign_id, sql, max_rows, max_bytes=max_bytes).model_dump()
-        else:
-            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-            result = {"campaign_id": campaign_id,
-                      **query_data_db(campaign_dir, sql, max_rows, max_bytes=max_bytes)}
+        return _query(client, campaign_id, sql, max_rows, max_bytes)
     except _REPORTED as e:
         return {"error": _message(e, client)}
-    return result
+
+
+def _query(client, campaign_id: str, sql: str, max_rows: int,
+           max_bytes: int | None = None) -> dict:
+    if client is not None:
+        return client.query_campaign_data_sql(
+            campaign_id, sql, max_rows, max_bytes=max_bytes).model_dump()
+    campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+    return {"campaign_id": campaign_id,
+            **query_data_db(campaign_dir, sql, max_rows, max_bytes=max_bytes)}
 
 
 def _message(exc: Exception, client) -> str:
@@ -105,14 +108,22 @@ def _message(exc: Exception, client) -> str:
 
 
 def rows(campaign_id: str, sql: str, max_rows: int = 5000) -> list[dict]:
-    """Just the rows of a query, or ``[]``.
+    """Just the rows of a query; ``[]`` only when it matched none.
 
-    For a tool that computes over the result rather than returning it. Errors are logged
-    and yield ``[]``: a convenience tool built on SQL must not turn a missing table into a
-    traceback, and its caller reports the empty case in its own terms.
+    For a tool that computes over the result rather than returning it. A query the
+    campaign's data cannot answer -- a table or column its store does not have -- raises
+    :class:`~robovast.results_processing.data_query.DataQueryError`, which a caller reading
+    something optional may take as "not recorded". A lookup that failed (no such campaign,
+    no service, a transport error) raises what it raised.
     """
-    result = query(campaign_id, sql, max_rows)
-    if "error" in result:
-        logger.debug("query failed for %s: %s", campaign_id, result["error"])
-        return []
-    return result.get("rows") or []
+    from robovast.service.interface import ServiceError
+    client = service_access.service_client()
+    try:
+        return _query(client, campaign_id, sql, max_rows).get("rows") or []
+    except DataQueryError as e:
+        raise DataQueryError(_message(e, client)) from e
+    except ServiceError as e:
+        # The service answers a query its data cannot answer with a 400.
+        if e.status == 400:
+            raise DataQueryError(_message(e, client)) from e
+        raise
