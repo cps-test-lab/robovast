@@ -114,7 +114,7 @@ export function DataBrowser({
     retry: false,
   })
   // A failed campaign never produces derived data — surface *why* it failed (the same
-  // reason the Monitor shows) instead of an endless "run postprocessing" prompt.
+  // reason the Campaigns page shows) instead of an endless "run postprocessing" prompt.
   const status = useQuery({
     queryKey: ['status', campaignId],
     queryFn: () => robovast.getStatus(campaignId),

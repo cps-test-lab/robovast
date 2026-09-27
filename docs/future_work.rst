@@ -68,7 +68,7 @@ cheap 90%: the failure being fixed is forgetting, not being unable.
 Server-rendered figures (optional)
 ----------------------------------
 
-A machine-readable figure layer **now exists**: a campaign's ``visualization.results.data_browser.plots``
+A machine-readable figure layer **exists**: a campaign's ``visualization.results.data_browser.plots``
 declare ``{title, query, vega_lite}`` entries, surfaced over MCP by
 ``list_campaign_plots`` and over the service by ``GET
 /campaigns/{id}/plots``. The web UI can render those Vega-Lite specs directly, and
@@ -117,25 +117,16 @@ easier to lose than the code.
   second way to ask the same question.
 
 
-
-* A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
-  ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
-  every postprocessed artifact was present -- the campaign-level counters were never
-  populated. **Traced** to the backend's ``count_run_artifacts`` answering ``None``,
-  which made ``_start_progress_poller`` return early, so nothing ever wrote the counters
-  and a live campaign also published a ``progress`` that could not move.
-  ``ExecutionBackend.count_run_artifacts`` now counts the per-run ``test.xml`` files under
-  the campaign root, where a run's results land, and a backend that genuinely cannot
-  count is logged rather than passed over. What is still unverified is whether a search's
-  per-batch record and the campaign row's aggregate agree with those counters over
-  a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
-  from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``
-  this used to name is gone; the per-batch record now lives in ``campaign.db``'s ``batch``
-  and ``unit`` tables, read by ``read_batch_objectives``.)
+**9. A search's per-batch record is not checked against the run counters.**
+Whether a search's per-batch record (``campaign.db``'s ``batch`` and ``unit`` tables,
+read by ``read_batch_objectives``) and the campaign row's aggregate agree with the run
+counters ``ExecutionBackend.count_run_artifacts`` produces over a multi-batch run is
+unverified. That aggregate is where a sweep's flakiness rate would be read from, so it
+wants one deliberate check before it is trusted.
 
 **10. The cloud instance-type commands are untested.**
-``get_instance_type_command`` is now wired into the generated entrypoint, so a run records
-the node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
+``get_instance_type_command`` runs in the generated entrypoint, so a run records the
+node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
 Only the bare-metal implementations have actually run: ``rke2`` and ``minikube`` return
 ``uname -m``, which is verifiable locally. The **GCP and Azure** commands query a cloud
 metadata service —
@@ -149,9 +140,9 @@ metadata service —
 
 — and neither has been exercised on a real node. Both fail *quietly*: ``curl -s`` on a
 wrong URL, a changed response shape, or a blocked metadata endpoint yields an empty string,
-which records exactly like the old hardcoded empty. So a green campaign proves nothing;
-verify by running one on each provider and checking ``SELECT DISTINCT instance_type FROM
-runs`` is a machine type rather than ``NULL``. The API versions in particular age: Azure's
+which records exactly like a provider that reports no instance type. So a green campaign
+proves nothing; verify by running one on each provider and checking ``SELECT DISTINCT
+instance_type FROM runs`` is a machine type rather than ``NULL``. The API versions in particular age: Azure's
 ``api-version`` is pinned in the URL.
 
 .. _future-dev-loop:
@@ -222,29 +213,27 @@ stream tar, which nginx cannot produce — so this is ``/results`` alone.
 Scheduling: what admission still does not do
 ---------------------------------------------
 
-Per-node budgets and in-campaign calibration were the open items here and both now ship --
-:ref:`cluster-admission` and :ref:`cluster-node-calibration` describe what they do and
-the measurements behind them. What follows is what is still open, and why each was left.
+Per-node budgets and in-campaign calibration are described in :ref:`cluster-admission` and
+:ref:`cluster-node-calibration`. What follows is what is still open, and why each was left.
 
 **The drain loop is O(pending x nodes) under a global lock.** ``AdmissionController.drain``
-forces a fresh cluster reading (``BUDGET_TTL_S`` is bypassed on this path), then asks
-``sizing_for_node`` for every pending item against every candidate node -- and that callback
-renders a full Job manifest each time, uncached -- and then creates Jobs, all while holding the
-one lock every campaign needs. Every campaign thread does this every two seconds. At the ~1435
-jobs a large campaign submits, on four nodes, that is roughly 5700 manifest renders per drain.
-It is invisible on a small bare-metal cluster and will not be on a large or managed one, where
-listing every pod in every namespace at that cadence also meets the client's own QPS throttle
-and reads as a campaign stalling. In order of value: memoize the per-node sizing for the life
+takes a fresh cluster reading (``BUDGET_TTL_S`` is bypassed on this path), then, holding the
+one lock every campaign needs, asks ``sizing_for_node`` for every pending item against every
+candidate node -- and that callback renders a full Job manifest each time, uncached -- and
+creates Jobs. Every campaign thread does this every two seconds, so a drain renders one
+manifest per pending job per candidate node. It is invisible on a small bare-metal cluster and
+will not be on a large or managed one, where listing every pod in every namespace at that
+cadence also meets the client's own QPS throttle and reads as a campaign stalling. In order of value: memoize the per-node sizing for the life
 of a calibration; let ``drain`` honour the budget TTL, or share one reading across the drains
 in a tick; move ``create()`` outside the lock, recording the reservation under it.
 
 **The two callbacks are why the lock has to be reentrant.** ``submit`` takes
 ``sizing_for_node`` and ``accepts_node``, and ``drain`` calls them with the lock held. That
-breaks the module's own "values in, values out" contract, and it has already cost a live
-campaign: a callback that asked the queue anything deadlocked it, silently, until the
-no-progress deadline called the campaign stalled. Making the lock reentrant removed the
-deadlock; the coupling is still there, and ``_node_figures`` carries a "must never ask the
-queue" warning that only code review enforces.
+breaks the module's own "values in, values out" contract: with a plain lock, a callback that
+asks the queue anything deadlocks it, silently, until the no-progress deadline calls the
+campaign stalled. The reentrant lock prevents the deadlock, not the coupling, and
+``_node_figures`` carries a "must never ask the queue" warning that only code review
+enforces.
 
 The shape that removes it is a **``NodeView`` value** -- ``{node_id: JobSizing}`` plus the set
 of nodes this owner may use -- computed by the caller and handed in before each drain. Then no
@@ -255,7 +244,7 @@ tick instead of once per (item, node), which is also the fix above. Separately,
 scheduler: the queue stores an object it never reads, purely because it is the only thing
 whose lifetime is the campaign's rather than the batch's. An owner-scoped registry outside the
 queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
-one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
+one thing.
 
 **Three constants are a nav2 trial's dimensions, and should be derived.**
 
@@ -271,7 +260,7 @@ one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
   60 s trial, the p95 measures bring-up and the node is calibrated for the wrong thing.
 
 **Cloud.** :ref:`cluster-cloud-limits` records what does not hold on managed Kubernetes. The
-growth ceiling now reaches the service pod, because ``setup`` asks the provider and records the
+growth ceiling reaches the service pod, because ``setup`` asks the provider and records the
 answer in the deployment's environment; what is still open is that the recording **ages**, so a
 resized node pool needs an ``upgrade`` before admission knows. Reading the autoscaler's maximum
 from the API server instead -- the ``cluster-autoscaler-status`` ConfigMap names each node
@@ -296,7 +285,7 @@ Per-job GPU usage, and why device-wide sampling is not it
 **Motivation.** A campaign records what each run cost in CPU and memory — sampled at 1 Hz per
 process per container and consolidated into the ``resource_usage`` table (see
 :ref:`merged-run-log` for the sibling log path). Since simulation cameras render on the GPU
-(:ref:`cluster-gpu`), the same question is now open for the device: how much of it did *this
+(:ref:`cluster-gpu`), the same question is open for the device: how much of it did *this
 job* use? That is what decides whether ``--gpu-replicas`` can be raised, and it is the one
 figure a GPU campaign cannot currently produce.
 
