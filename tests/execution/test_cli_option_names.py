@@ -30,9 +30,8 @@ def _commands(group, prefix=()):
     ctx = click.Context(group, info_name=prefix[-1] if prefix else "vast")
     for name in group.list_commands(ctx):
         command = group.get_command(ctx, name)
-        if command is None:
-            continue
         path = prefix + (name,)
+        assert command is not None, f"'{' '.join(path)}' is listed but does not load"
         if isinstance(command, click.Group):
             yield from _commands(command, path)
         else:
