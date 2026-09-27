@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from robovast.client import campaign_report
 from robovast.mcp_server import service_access
 from robovast.mcp_server.plugins import authoring, execution, results_lifecycle
 from robovast.service.job_log import _records, _row
@@ -704,7 +705,7 @@ def test_the_status_reports_a_stall_and_names_the_next_call():
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
                 progress_deadline_s=600, progress_since=time.time() - 700)
-    out = execution._status_to_dict("camp", "service", st)
+    out = campaign_report.status_to_dict("camp", "service", st)
     assert out["stalled"] is True
     assert out["progress_age_s"] >= 700
     assert "summarize=True" in out["stall_reason"]
@@ -720,7 +721,7 @@ def test_the_status_says_it_cannot_judge_rather_than_saying_healthy():
 
     st = Status(phase="running", mode="batch", runs={"completed": 0, "total": 10},
                 progress_since=time.time() - 99999)
-    out = execution._status_to_dict("camp", "service", st)
+    out = campaign_report.status_to_dict("camp", "service", st)
     assert out["stalled"] is None
     assert "execution.timeout" in out["stall_verdict"]
     assert out["progress_age_s"] > 0
@@ -871,9 +872,9 @@ def test_a_failed_postprocessing_step_does_not_report_the_campaign_as_empty():
     Both halves were false -- the steps beside the failing one had already derived and
     loaded their data -- and it invited re-running everything to recover what was there.
     """
-    from robovast.mcp_server.plugins.execution import _campaign_next_step
+    from robovast.client.campaign_report import campaign_next_step
 
-    step = _campaign_next_step({
+    step = campaign_next_step({
         "status": "finished", "postprocessed": False,
         "postprocessing_error": "1 of 4 step(s) — ./break.py:Break: deliberate failure",
     })
@@ -890,9 +891,9 @@ def test_postprocessing_that_never_ran_says_only_the_record_will_answer():
     Nothing was derived, so the campaign's own record is all there is -- which is worth
     saying, because it is not nothing: run_view and the campaign.* tables answer.
     """
-    from robovast.mcp_server.plugins.execution import _campaign_next_step
+    from robovast.client.campaign_report import campaign_next_step
 
-    step = _campaign_next_step({"status": "finished", "postprocessed": False})
+    step = campaign_next_step({"status": "finished", "postprocessed": False})
 
     assert "did not run" in step
     assert "run_view" in step, "say what still answers, rather than implying nothing does"
@@ -901,10 +902,10 @@ def test_postprocessing_that_never_ran_says_only_the_record_will_answer():
 
 def test_a_progressing_campaign_still_gets_no_hint():
     """A hint on every reply is a field callers learn to skip."""
-    from robovast.mcp_server.plugins.execution import _campaign_next_step
+    from robovast.client.campaign_report import campaign_next_step
 
-    assert _campaign_next_step({"status": "running", "postprocessed": False}) == ""
-    assert _campaign_next_step({"status": "finished", "postprocessed": True}) == ""
+    assert campaign_next_step({"status": "running", "postprocessed": False}) == ""
+    assert campaign_next_step({"status": "finished", "postprocessed": True}) == ""
 
 
 def test_a_local_file_check_does_not_call_an_unchecked_world_a_pass(
@@ -971,10 +972,10 @@ def test_a_scenario_nobody_could_parse_is_not_a_pass(tmp_path, monkeypatch,
 def test_the_listing_says_when_a_campaign_is_held():
     """No progress is a fault everywhere except here. Without this an agent reads a campaign
     somebody parked as one that is stuck, and the reasonable next move is the wrong one."""
-    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.client.campaign_report import summary_to_dict
     from robovast.service.interface import CampaignSummary
 
-    entry = _summary_to_dict(CampaignSummary(
+    entry = summary_to_dict(CampaignSummary(
         campaign_id="c-1", phase="running", priority=-3, paused=True))
     assert entry["paused"] is True
     assert entry["priority"] == -3
@@ -983,8 +984,8 @@ def test_the_listing_says_when_a_campaign_is_held():
 def test_an_ordinary_campaign_carries_neither():
     """Omitted at the default, like description: every campaign reporting "priority 0"
     spends context on a fact about none of them."""
-    from robovast.mcp_server.plugins.results import _summary_to_dict
+    from robovast.client.campaign_report import summary_to_dict
     from robovast.service.interface import CampaignSummary
 
-    entry = _summary_to_dict(CampaignSummary(campaign_id="c-1", phase="running"))
+    entry = summary_to_dict(CampaignSummary(campaign_id="c-1", phase="running"))
     assert "paused" not in entry and "priority" not in entry

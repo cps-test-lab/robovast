@@ -41,82 +41,11 @@ from fastmcp import Context, FastMCP
 from fastmcp.tools import ToolResult
 from fastmcp.utilities.types import Image
 
+from robovast.client.campaign_report import campaign_listing
 from robovast.mcp_server import data_access, run_artifacts, service_access
 from robovast.mcp_server.lacks import lacks
 
 logger = logging.getLogger(__name__)
-
-#: Page size used when the whole list has to be walked (``running_only``). The service
-#: pages *before* the filter can be applied, so asking for the caller's ``limit`` would
-#: filter a window instead of the list — a long-running campaign started last week would
-#: drop out of "what is running now" simply for not being among the 20 newest.
-_WALK_PAGE = 200
-
-
-def _summary_to_dict(summary) -> dict:
-    """Render a service ``CampaignSummary`` into the MCP listing entry.
-
-    ``description`` and ``finished_at`` are omitted when empty rather than reported as
-    ``""``/null: a campaign started without a description has none, which is not the same
-    fact as "the description is the empty string".
-
-    ``paused`` and ``priority`` are carried the same way -- only when they are not the
-    default -- because a held campaign is the one case where no progress is not a fault.
-    Without them a campaign somebody parked is indistinguishable here from one that is
-    wedged, and the reasonable next move (diagnose it, or start it again) is the wrong one.
-
-    ``mode`` is carried because this listing is the only view an agent has: without it a
-    search and a sweep are indistinguishable here, and a search is read with different
-    queries (``run_view``'s ``batch``/``objective``/``paramset_id``). ``num_composition_failed``
-    and ``num_no_sample`` come along for the same reason — a search whose draws never
-    composed, or never scored, has ``num_runs`` telling only part of that.
-    """
-    entry = {
-        "campaign_id": summary.campaign_id,
-        "status": summary.phase,
-        "mode": summary.mode,
-        "started_at": summary.started_at,
-        "postprocessed": summary.postprocessed,
-        "num_runs": summary.num_runs,
-        "num_passed": summary.num_passed,
-        "num_failed": summary.num_failed,
-        "num_composition_failed": summary.num_composition_failed,
-        "num_no_sample": summary.num_no_sample,
-    }
-    # Omitted when not recorded, like ``finished_at``: a running or unmeasured campaign has
-    # no size, which is a different fact from a size of 0.
-    if summary.results_bytes is not None:
-        entry["results_bytes"] = summary.results_bytes
-    if summary.description:
-        entry["description"] = summary.description
-    if summary.finished_at:
-        entry["finished_at"] = summary.finished_at
-    if summary.paused:
-        entry["paused"] = True
-    if summary.priority:
-        entry["priority"] = summary.priority
-    return entry
-
-
-def _walk_all(client, sort: str, order: str) -> list:
-    """Every campaign summary the service knows, in the service's order (live first,
-    then by *sort*/*order*).
-
-    Only for ``running_only``. The service now leads with the live campaigns, so the
-    first page usually holds them all — but "usually" is not an answer to "which are
-    running", and nothing bounds their number, so this still walks every page.
-    """
-    from robovast.service.interface import ListCampaignsRequest
-    out: list = []
-    offset = 0
-    while True:
-        page = client.list_campaigns(
-            ListCampaignsRequest(limit=_WALK_PAGE, offset=offset, sort=sort, order=order))
-        out.extend(page.campaigns)
-        offset += _WALK_PAGE
-        if offset >= page.total or not page.campaigns:
-            return out
-
 
 def list_campaigns(limit: int = 20, offset: int = 0,
                    running_only: bool = False,
@@ -159,24 +88,10 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         return {"error": service_access.NO_SERVICE}
     source = "service"
     try:
-        if running_only:
-            from robovast.execution.control_server import is_running
-            matched = [c for c in _walk_all(client, request.sort, request.order)
-                       if is_running(c.phase)]
-            total = len(matched)
-            window = matched[offset:offset + limit]
-        else:
-            page = client.list_campaigns(request)
-            total = page.total
-            window = page.campaigns
+        listing = campaign_listing(client, request, running_only)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
-    return {
-        "campaigns": [_summary_to_dict(c) for c in window],
-        "total": total,
-        "offset": offset,
-        "source": source,
-    }
+    return {**listing, "source": source}
 
 
 def get_campaign_summary(campaign_id: str) -> dict:
