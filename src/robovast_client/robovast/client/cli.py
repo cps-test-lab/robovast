@@ -1102,8 +1102,8 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
     ``fixable_by`` say *what to change*, and a caller that prints only "build failed"
     sends the reader to the builder log for something the status already knew.
     """
-    from robovast.execution.image_build_wait import (SUCCESS_PHASES,
-                                                     wait_for_image_builds)
+    from robovast.execution.image_build_wait import wait_for_image_builds
+    from robovast.service.interface import IMAGE_BUILT_PHASES
     from robovast.execution.poll_health import PollsStopped
     try:
         done = wait_for_image_builds(build_ids, client=client, interval=interval,
@@ -1120,7 +1120,7 @@ def _wait_for_builds(client, build_ids, *, interval, timeout):
         raise SystemExit(ImageWaitExit.STOPPED_WAITING) from e
     failed = False
     for build_id, status in done.items():
-        if status.phase in SUCCESS_PHASES:
+        if status.phase in IMAGE_BUILT_PHASES:
             click.echo(f"✓ built 'build:{status.tag}'")
             continue
         failed = True

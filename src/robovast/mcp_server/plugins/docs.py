@@ -148,8 +148,10 @@ _DIRECTIVE_RE = re.compile(
     re.MULTILINE,
 )
 
+# The bare form, as docs/_ext/mcp_tools.py declares it: the listing is registry-driven, so
+# the directive names nothing.
 _MCP_TOOLS_RE = re.compile(
-    r"^\.\.\s+mcp-tools::\s+(\S+)\s*$",
+    r"^\.\.\s+mcp-tools::\s*$",
     re.MULTILINE,
 )
 
@@ -234,20 +236,26 @@ def _strip_inline_roles(text: str) -> str:
     return _INLINE_ROLE_RE.sub(_repl, text)
 
 
-def _resolve_mcp_tools_directive(target: str) -> str:
-    """Expand a ``.. mcp-tools::`` directive into a plain-text tool listing."""
+def _resolve_mcp_tools_directive() -> str:
+    """Expand ``.. mcp-tools::`` into a plain-text listing of every registered tool.
+
+    The same registry the Sphinx directive renders, so the page an agent reads through
+    ``search_docs`` lists what the server it is talking to registers.
+    """
     try:
-        module_path, attr = target.rsplit(".", 1)
-        mod = importlib.import_module(module_path)
-        tools = getattr(mod, attr)
+        from robovast.mcp_server.registry import \
+            load_registered_tool_details  # pylint: disable=import-outside-toplevel
         lines = []
-        for fn in tools:
-            doc = (fn.__doc__ or "").strip().split("\n")[0]
-            lines.append(f"- ``{fn.__name__}``: {doc}")
+        for plugin_name, tools in sorted(load_registered_tool_details().items()):
+            if not tools:
+                continue
+            lines += [f"**{plugin_name}**", ""]
+            lines += [f"- ``{t['name']}``: {t['summary']}" for t in tools]
+            lines.append("")
         return "\n".join(lines)
     except Exception as e:
-        logger.debug("mcp-tools resolution failed for %s: %s", target, e)
-        return f"*[mcp-tools:: {target} — could not resolve: {e}]*"
+        logger.debug("mcp-tools resolution failed: %s", e)
+        return f"*[mcp-tools:: — could not resolve: {e}]*"
 
 
 def _resolve_directives(text: str, base_dir: Path) -> str:
@@ -260,7 +268,7 @@ def _resolve_directives(text: str, base_dir: Path) -> str:
     directory the document lives in, used to resolve ``literalinclude`` paths.
     """
     def _replace_mcp_tools(m: re.Match) -> str:
-        return _resolve_mcp_tools_directive(m.group(1)) + "\n"
+        return _resolve_mcp_tools_directive() + "\n"
 
     text = _MCP_TOOLS_RE.sub(_replace_mcp_tools, text)
 
@@ -607,8 +615,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     """RoboVAST's documentation, and the simulator's and OpenSCENARIO DSL's alongside it.
 
     Args:
-        query: Case-insensitive search term. Returns matching excerpts with 2 lines of
-            context, grouped by page; adjacent matches share one excerpt.
+        query: Case-insensitive words, all required: pages are ranked by them, and an
+            excerpt is a line holding every one, with 2 lines of context; adjacent
+            matches share one excerpt.
         page: Read this page in full (a ``name`` from the listing).
         limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
             is megabytes). Narrow the term or read the page instead of raising this.
@@ -624,6 +633,7 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         ``matches`` are the excerpts returned and ``matching_lines`` is how many lines
         of that page matched at all. ``truncated`` marks a page whose excerpts were
         capped, so a narrowed read is never mistaken for the whole answer.
+        ``pages_without_a_matching_line`` names pages holding every word, never on one line.
         Page: ``{page, title, content}``. Or ``{error}``.
     """
     if not _doc_files:
@@ -670,13 +680,20 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     words = [w.lower() for w in query.split() if w]
 
     results = []
+    spread = []
     matching_lines_total = 0
     truncated = False
     for name in ranked:
         lines = texts[name].splitlines()
+        # A line is a hit when it holds EVERY word, as the ranking requires of a page. Any
+        # one word of "campaign wait" is on thousands of lines, so matching either would
+        # bury the few that answer the question under the ones that merely mention a word.
         hits = [i for i, line in enumerate(lines)
-                if any(w in line.lower() for w in words)]
+                if all(w in line.lower() for w in words)]
         if not hits:
+            # The page holds every word, just never on one line: named rather than
+            # dropped, so a reply with no excerpts from it does not read as "not there".
+            spread.append(name)
             continue
         matches, excerpts_total = _excerpts(lines, hits, limit)
         matching_lines_total += len(hits)
@@ -687,6 +704,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                         "truncated": cut})
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if spread:
+        out["pages_without_a_matching_line"] = spread
     if len(_json.dumps(out)) > _REPLY_BUDGET_CHARS:
         # Excerpts from every page that matched a common term are a sample, not an answer, and
         # the sample costs more than the pages it samples. Named instead, best first, so the
