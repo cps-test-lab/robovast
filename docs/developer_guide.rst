@@ -711,9 +711,9 @@ front of whoever is authoring the plugin.
 
    :mod:`robovast.common.container_runner_proxy` closes that: the parent serves its own
    live factory on a Unix socket beside the job file, and the worker installs a factory
-   whose runners forward ``run`` / ``close`` / ``expose`` back across it. The runner —
-   and with it the Kubernetes client, the storage client and the credentials both
-   authenticate with — stays in the parent; only the four calls of the
+   whose runners forward ``run`` / ``image_digest`` / ``close`` / ``expose`` back across
+   it. The runner — and with it the Kubernetes client, the storage client and the
+   credentials both authenticate with — stays in the parent; only the calls of the
    :class:`~robovast.common.variation.container_runner.ContainerRunner` contract cross,
    plus ``workspace``, which is a path both sides can already see. Command output is
    streamed frame by frame, so a plugin's progress still reaches the campaign log while
@@ -1598,7 +1598,10 @@ responsibility:
            )
 
 ``objectives`` and ``measures`` are named dicts, so single- and multi-objective
-use the same shape. The framework records how many runs backed each result.
+use the same shape. The framework records how many runs backed each result. Every
+declared objective must be a finite number: a NaN, an infinity or a non-number is refused
+when the result is read, naming the extractor and the configuration, because no strategy
+can compare it.
 
 Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
 or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:

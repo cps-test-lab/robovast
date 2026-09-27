@@ -33,13 +33,15 @@ not "Sobol" but "random".
 
 **Scrambled**, because the raw sequence is deterministic: two campaigns with different
 seeds would otherwise sample the identical points and their comparison would measure
-nothing. Digit-permutation scrambling (Owen-style in spirit, per-base rather than
-per-level) keeps the low-discrepancy property while making the series a function of the
-seed.
+nothing. Two seeded operations, both of which keep the low-discrepancy property: a digit
+permutation per base (Owen-style in spirit, per-base rather than per-level), and a shift
+per dimension on the unit torus (Cranley-Patterson). The shift is what makes every
+dimension a function of the seed: base 2 has one non-zero digit and so no permutation,
+and without the shift the first factor would follow one sequence whatever the seed.
 """
 
 import logging
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -64,20 +66,28 @@ class HaltonParams(BaseModel):
     scramble: bool = True
 
 
+class _Scramble(NamedTuple):
+    """How one dimension is scrambled: its digit permutation and its shift on [0, 1)."""
+    digits: np.ndarray
+    shift: float
+
+
 def _scramble_tables(bases, seed: Optional[int], scramble: bool):
-    """One digit permutation per base, or the identity when scrambling is off."""
+    """One :class:`_Scramble` per base; the identity and no shift when scrambling is off."""
     rng = np.random.default_rng(0 if seed is None else int(seed))
     tables = []
     for base in bases:
         digits = np.arange(base)
+        shift = 0.0
         if scramble:
-            # 0 stays 0 so the sequence still starts at the origin corner rather than
-            # jumping; permuting it as well shifts every point by a constant and buys
-            # nothing that the per-base permutation has not already bought.
+            # 0 stays 0: a permuted zero digit is a constant offset of every point, which
+            # is what the shift below does explicitly, seeded, for every base -- base 2
+            # included, whose single non-zero digit leaves nothing to permute.
             tail = digits[1:].copy()
             rng.shuffle(tail)
             digits = np.concatenate([digits[:1], tail])
-        tables.append(digits)
+            shift = float(rng.random())
+        tables.append(_Scramble(digits, shift))
     return tables
 
 
@@ -89,13 +99,13 @@ def _halton_point(index: int, bases, tables) -> np.ndarray:
     replaying the sequence that preceded it.
     """
     out = np.empty(len(bases))
-    for dim, (base, table) in enumerate(zip(bases, tables)):
+    for dim, (base, (table, shift)) in enumerate(zip(bases, tables)):
         value, denom, n = 0.0, 1.0, index
         while n > 0:
             n, digit = divmod(n, base)
             denom *= base
             value += table[digit] / denom
-        out[dim] = value
+        out[dim] = (value + shift) % 1.0
     return out
 
 
@@ -116,8 +126,9 @@ class HaltonSearch(SearchStrategy):
         self._tables = _scramble_tables(self._bases, cfg.seed, params.scramble)
         # Continues across batches. Restarting per batch would re-draw the same points and
         # cover *less* than random -- the evenness is a property of the whole series.
-        # Index 1 rather than 0: the zeroth point is the origin corner in every dimension,
-        # which is a boundary of the space rather than a sample from it.
+        # Index 1 rather than 0: the zeroth point has no digits, so it is the origin
+        # corner unscrambled and the bare shift vector scrambled -- in neither case a
+        # point of the sequence.
         self._index = 1
         self._batches_done = 0
         self._history: list[Evaluation] = []
