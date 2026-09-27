@@ -40,8 +40,7 @@ def test_a_page_with_no_match_is_absent(corpus):
 
 def test_an_excerpt_is_a_line_holding_every_word(monkeypatch):
     """Two ordinary words are each on many lines, and a line holding one of them rarely
-    answers a question about both; matching either buried the few that do, until the
-    reply was too large to carry any excerpt at all."""
+    answers a question about both."""
     pages = {"guide": "\n".join(["campaign one", "wait here",
                                    "use vast campaign wait <id>", "campaign two"])}
     monkeypatch.setattr(docs, "_doc_files", {name: name for name in pages})
@@ -67,8 +66,8 @@ def test_a_page_holding_the_words_apart_is_named_not_dropped(monkeypatch):
 
 
 def test_campaign_wait_is_answered_with_excerpts_from_the_real_docs(monkeypatch):
-    """The query that motivated the rule: on the whole corpus it came back as a list of
-    pages and no line of any of them."""
+    """Two common words over the whole corpus still fit the reply with excerpts, rather than
+    falling back to a digest of page names."""
     if not docs._doc_files:
         pytest.skip("no documentation directory in this checkout")
     monkeypatch.setattr(docs, "_indexes", {})

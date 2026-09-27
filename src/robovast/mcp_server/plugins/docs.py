@@ -676,7 +676,7 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
     if spread:
-        out["pages_without_a_matching_line"] = spread[:_DIGEST_PAGES]
+        out["pages_without_a_matching_line"] = spread
     if len(_json.dumps(out)) > _REPLY_BUDGET_CHARS:
         # Excerpts from every page that matched a common term are a sample, not an answer, and
         # the sample costs more than the pages it samples. Named instead, best first, so the
