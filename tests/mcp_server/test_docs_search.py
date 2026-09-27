@@ -327,5 +327,23 @@ def test_a_literalinclude_is_cut_where_its_markers_say(tmp_path):
     out = docs._render_literalinclude(
         "src.py", {"start-after": 'TEXT = """', "end-before": '"""', "dedent": "4"}, tmp_path)
     assert out.splitlines()[1:-1] == ["one", "  two"]
-    missing = docs._render_literalinclude("src.py", {"start-after": "nowhere"}, tmp_path)
-    assert "nowhere" in missing
+    with pytest.raises(docs.DirectiveUnresolved, match="no line holds 'nowhere'"):
+        docs._render_literalinclude("src.py", {"start-after": "nowhere"}, tmp_path)
+
+
+def test_a_directive_that_cannot_be_resolved_raises_rather_than_becoming_page_text(tmp_path):
+    """A placeholder in the page would read as its content, with the cause in a debug log."""
+    with pytest.raises(docs.DirectiveUnresolved, match="robovast.no_such_module") as exc:
+        docs._resolve_directives(".. autofunction:: robovast.no_such_module.f\n", tmp_path)
+    assert "ModuleNotFoundError" in str(exc.value)
+
+
+def test_a_page_that_did_not_resolve_is_refused_by_name_and_listed(corpus, monkeypatch):
+    monkeypatch.setattr(docs, "_doc_unresolved",
+                        {"quiet": ".. autoclass:: x.Y could not be resolved: ImportError: x"})
+    read = docs.search_docs(page="quiet")
+    assert set(read) == {"error"}
+    assert "'quiet'" in read["error"] and "x.Y could not be resolved" in read["error"]
+    assert docs.search_docs()["unresolved"] == docs._doc_unresolved
+    assert docs.search_docs(query="needle")["unresolved"] == docs._doc_unresolved
+    assert "content" in docs.search_docs(page="clustered")
