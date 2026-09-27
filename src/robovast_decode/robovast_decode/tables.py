@@ -319,6 +319,18 @@ def record_run_table(manifest: dict, table: str, run_key: str, *, files: List[st
     return [f for f in before.get("files") or [] if f not in files]
 
 
+def written_here(entry: Optional[dict]) -> bool:
+    """Whether *entry* was written by this decoder under the contract it follows now.
+
+    Two versions of the decoder can carry one package version -- every build of a branch
+    does -- so the contract number is checked beside it: a table laid out under another
+    contract is not the table a reader was promised, whatever version wrote it. An entry
+    that fails this is built again, never read as current.
+    """
+    return bool(entry) and (entry.get("decoder") == __version__
+                            and entry.get("contract") == DATA_CONTRACT)
+
+
 def live_owned(entry: Optional[dict], now: Optional[float] = None) -> bool:
     """Whether a session is writing *entry* in parts right now (its ``live`` is fresh).
 
@@ -393,4 +405,4 @@ __all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "LIVE_STALE_S", "MANIFEST", "TableBuf
            "cache_root", "campaign_table_path", "fixed", "leading_then_sorted", "live_owned",
            "manifest_lock", "read_manifest", "record_campaign_table", "record_run_absent",
            "record_run_table", "remove_files", "run_part_path", "run_table_path", "schema_of",
-           "write_manifest", "write_table"]
+           "write_manifest", "write_table", "written_here"]
