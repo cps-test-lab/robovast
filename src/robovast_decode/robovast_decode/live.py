@@ -373,11 +373,11 @@ class PartWriter:
 
         *sources* is what the rows were built from (:meth:`Session.sources`), *incomplete*
         the reasons of the tables a topic stopped decoding for (:attr:`Session.incomplete`),
-        entered with their parts. Returns the
-        parts written, relative to the cache root. With nothing accumulated the entries are
-        still stamped ``live`` again: the stamp is what keeps a build from taking over a
-        table whose run is quiet. Raises :class:`LostOwnership` when an entry this writer
-        appended to before was rewritten by something else in the meantime.
+        entered with their parts. Returns the parts written, relative to the cache root. With
+        nothing accumulated the entries are still stamped ``live`` again: the stamp is what
+        keeps a build from taking over a table whose run is quiet. Raises
+        :class:`LostOwnership` when an entry this writer appended to before was rewritten by
+        something else in the meantime.
         """
         if self.finalised:
             raise RuntimeError(f"{self.key}: the writer is finalised")

@@ -487,7 +487,7 @@ no ROS install, no execution image, no container. The service, a notebook on a l
 
 ``.cache/MANIFEST.json`` records, per table and run, the files that make it up, their schema,
 the source bytes they were built from, the decoder version that built them — and, for a run that
-has no rows for a table, the reason.
+has no rows for a table or only part of them, the reason.
 
 **A table a topic stopped decoding for is incomplete, and says why.** A topic whose type
 neither the recording, its sidecar nor the ROS distribution defines gives its table no rows; a
@@ -499,10 +499,10 @@ there in ``Campaign.tables``), and counted in ``built`` where it has rows; a que
 answers with the rows there are and names it as incomplete for that run beside them; and
 ``robovast-decode build`` prints it as ``PARTIAL`` and exits non-zero.
 
-A later request builds only what is missing: a table not yet
-asked for, a run whose records have grown, or anything a different decoder version wrote. A run
-that has not finished — no ``test.xml`` yet, or a recording still open — is looked at again on
-the next request, so **SQL works while a campaign is running** and follows it as it goes.
+A later request builds only what is missing: a table not yet asked for, a run whose records have
+grown, or anything a different decoder version wrote. A run that has not finished — no
+``test.xml`` yet, or a recording still open — is looked at again on the next request, so **SQL
+works while a campaign is running** and follows it as it goes.
 
 A run being followed *as it records* (:mod:`robovast_decode.live`) is the exception: a session
 reads each new record of the growing bag, flushes the handlers' rows in batches, and writes them
