@@ -407,16 +407,18 @@ def _check_environment(campaign_dir: Path) -> dict:
     from robovast.common.config_plugins import \
         is_installed  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
-        ConfigVersionError, read_vast, upgrade_config)
+        read_vast, upgrade_config)
     from robovast.common.plugin_ref import is_file_ref  # pylint: disable=import-outside-toplevel
     from robovast.common.results_utils import \
         campaign_vast_or_none  # pylint: disable=import-outside-toplevel
 
     vast_path = campaign_vast_or_none(campaign_dir)
-    try:
-        config, _ = upgrade_config(read_vast(vast_path)) if vast_path else ({}, [])
-    except (ConfigVersionError, OSError, ValueError):
-        config = None
+    config = None
+    if vast_path is not None:
+        try:
+            config, _ = upgrade_config(read_vast(vast_path))
+        except Exception:  # pylint: disable=broad-except -- the config stage says why
+            config = None
     if not isinstance(config, dict):
         return _stage(STAGE_ABSENT, "the configuration could not be read (see the config "
                                     "stage), so what it needs cannot be listed")

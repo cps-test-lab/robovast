@@ -410,3 +410,17 @@ def test_a_configuration_this_deployment_can_run_is_ok(campaign):
     _declare(campaign, variations=[{"ParameterVariationList": {}}],
              postprocessing=["rosbags_tf_to_csv"])
     assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_OK
+
+
+def test_a_configuration_that_cannot_be_parsed_is_reported_not_raised(campaign):
+    """The config stage refuses such a file by name; the environment stage must not turn that
+    refusal into an exception that loses the whole report."""
+    _vast(campaign).write_text("version: [unclosed\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    assert report["stages"]["config"]["verdict"] == STAGE_FAILED
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_no_configuration_is_not_reported_as_needing_nothing(campaign):
+    _vast(campaign).unlink()
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_ABSENT
