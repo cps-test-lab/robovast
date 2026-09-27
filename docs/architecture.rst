@@ -235,11 +235,11 @@ campaign has none, reads as not postprocessed, and asks for the re-run that sett
 tables stay queryable in the meantime: a query builds what it names from the records whether
 or not the campaign has been postprocessed.
 
-Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
-handler raises a process-wide flag (uvicorn's ``should_exit``, on ``app.state``) *before*
-the clock starts, and the layers that would otherwise fight the teardown consult it. The
-SSE streams do not *wait* for their
-next pull either: a watchdog closes the stream the moment shutdown is announced and
+Winding down is a race against uvicorn's graceful-shutdown deadline, and an SSE stream
+only ends when its client disconnects, so every stream polls uvicorn's own
+``should_exit`` (probed through ``app.state.should_exit``), which its signal handler sets
+*before* the clock starts. Nor does a stream *wait* for its next pull: a watchdog closes
+the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
 response task canceled and the cancellation logged as an "Exception in ASGI
 application" traceback with the server already gone.
@@ -418,7 +418,8 @@ imported in a process that may have no kubeconfig. Reaching for one belongs insi
 
 That indirection is what lets the cluster implementation ship as its own distribution,
 ``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
-install without it carries no ``kubernetes`` at all, and still validates, composes, stores workspaces and processes results. Declining
+install without it carries no ``kubernetes`` at all, and still validates, composes, stores
+workspaces and processes results. Declining
 it is a supported configuration for everything but running a service.
 
 .. _refuse-by-name:
@@ -1074,9 +1075,11 @@ three:
   rows/frames by table + time, decoupled from transport. It reads one run's rows through the
   ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
-  ``has`` / ``fetchRun``) is shaped so ``LiveDataProvider`` — the same interface over a
-  running run's feed, which a panel asks for with ``isLiveProvider`` — drops in without
-  touching any panel.
+  ``has`` / ``fetchRun``) names no transport, so a panel reads a finished run and one still
+  recording alike. For a recording run the host's ``LiveDataProvider`` extends it with
+  ``subscribeLive``: the rows that land after the history a query gave, over one live
+  subscription per run (``frontend/ui/src/lib/panels/liveFeed.ts``). The extension is the
+  host's, not the kit's, so a panel that wants those rows asks ``isLiveProvider`` first.
 
 **Camera delivery.** A recorded video is the one panel input that never passes through the data
 seam: the panel resolves a ``videos`` row to a URL (``DataProvider.runFileUrl``) and puts it in a
@@ -1208,9 +1211,9 @@ lives in the ``results`` MCP plugin):
   ``query_campaign_data_sql``.
 
 **New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
-``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
-``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (``ClusterService``'s
-own ``build_image`` calls it too). It reads
+``retrigger_campaign``, ``create_archive_upload``, ``import_campaign``,
+``run_postprocessing``, ``build_campaign_tables`` and ``create_export`` each call
+``ServiceBase._admit_storage`` first, and so does ``ClusterService.build_image``. It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
 refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
