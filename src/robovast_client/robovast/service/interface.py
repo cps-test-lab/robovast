@@ -187,7 +187,7 @@ class ImageBuildError(BaseModel):
     """
 
     #: base-pull | base-image | apt | pip | source-build | build | push | resource |
-    #: validate | builder | builder-pod
+    #: builder | builder-pod
     #:
     #: ``base-image`` is distinct from ``base-pull``: the image was fetched fine, it
     #: simply does not contain something the project's own packages depend on.

@@ -132,8 +132,9 @@ reading results. Each phase is one plugin, so the generated table below is also 
        :ref:`testing a container <mcp-container-exec>`, which produces no campaign data.
    * - ``results``
      - Reading what a campaign did: :ref:`read-only SQL <mcp-analysis>` plus the campaign
-       listing, one aggregate, the declared plots, and the pictures — a configuration
-       drawn, a camera frame, a screenshot, a run's track against its plan.
+       listing, one aggregate, the declared plots, what a configuration's variations placed,
+       a run's track against its plan, and the pictures — a configuration drawn, a camera
+       frame, a screenshot, whether a run view's 3D scene is ready.
    * - ``run_logs``
      - Searching what the runs said, joined to how they ended (``search_run_logs``).
    * - ``image_catalog``
@@ -152,7 +153,8 @@ leaves "which module owns this?" without an answer, and puts build, postprocessi
 deletion and download inside a module named for execution control.
 
 Names read ``<verb>_<resource>``: ``get`` retrieves, ``list`` enumerates, ``search``
-filters, ``describe``/``query`` are the SQL pair, and the rest — ``validate``, ``preview``,
+filters, ``describe`` explains a structure (a campaign's tables, a world, a scenario),
+``query`` runs SQL, and the rest — ``validate``, ``preview``,
 ``start``, ``stop``, ``run``, ``build``, ``delete``, ``create``, ``export``, ``import``,
 ``update``, ``read``, ``write``, ``edit``, ``exec``, ``tap``, ``draw``, ``clear`` — do what
 they say.
@@ -222,7 +224,8 @@ pinned image, and a world can be newer than it: a key a later plugin reads is, t
 older plugin, a key nobody reads, and most plugins do not refuse one — the run starts and the key
 does nothing. So every component the world *document* declares has its top-level config keys
 compared with what that image's own plugin publishes (``get_image_catalog_entry`` with
-``catalog="roqsim_plugins"``: its ``parameters``, and ``schema`` where it declares one), and a key missing from it comes back as
+``catalog="roqsim_plugins"``: its ``parameters``, and ``schema`` where it declares one), and
+a key missing from it comes back as
 ``severity: "advice"``:
 
 .. code-block:: text
@@ -238,7 +241,7 @@ image will refuse the key. Not compared: the keys roqsim lets any component carr
 ``prefix``, a transport scope, a fault block — read from the image, which is what applies them),
 components a model's manifest adds (they ship with the plugin that reads them), a plugin that
 publishes no keys at all, and a plugin the world loads by path. The catalog is asked once per
-image and cached with the ``list_image_catalog`` tools' own; a catalog that could not be read is
+image and cached with the ``image_catalog`` tools' own; a catalog that could not be read is
 itself an advice problem saying the keys were not checked.
 
 ``check_scenario`` is the second such check, on the same pool but in the **scenario** container
@@ -668,7 +671,7 @@ is the **real on-disk path**, so what a listing shows is what you can read:
                                       controller.log, postprocessing.log
                          _transient/  configurations.yaml, entrypoint.sh,
                                       postprocessing.yaml
-                         _jobs/<batch>/job-N/ sysinfo.yaml, logs/system.log
+                         _jobs/[<batch>/]job-N/ sysinfo.yaml, logs/system.log
                          <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
 
 ``<config_name>`` is the directory name, the same ``config_name`` the results tools
@@ -1245,7 +1248,7 @@ exposes:
   waiting for the first says nothing about the rest.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus a **structured**
   ``error_detail`` (``phase`` = base-pull / base-image / apt / pip / source-build / build /
-  push / resource / validate / builder / builder-pod, the offending ``build:`` ``entry``,
+  push / resource / builder / builder-pod, the offending ``build:`` ``entry``,
   and ``fixable_by`` = ``agent`` or
   ``infra``). Carries a ``next_step`` for the phase it reports — this is the tool that is
   polled while deciding what to do next, and a build still running, one that cannot start,
