@@ -34,17 +34,16 @@ import {
 } from '@/lib/campaignDetails'
 
 // "Did this run well, and what did it cost?" for one finished campaign -- the question the
-// Results Explorer does not answer. Small charts side by side, because the Monitor page exists to
+// Results Explorer does not answer. Small charts side by side, because the Campaigns page exists to
 // show campaigns and their status: this panel widens, it does not grow.
 //
 // **It does not query until it is opened.** Every campaign on the page would otherwise run four
 // SQL statements on mount, and the CPU one scans every 1 Hz sample of every run. Behind a closed
 // box that cost is zero, which is what lets the panel exist on a list view at all.
 //
-// The charts are imported directly, not lazily. They were Vega specs, and `lazyView` was here to
-// keep that library out of Monitor's entry chunk (Monitor is the default route and is not
-// code-split). They are DOM now -- see `DetailsCharts.tsx` for why -- so there is nothing left to
-// defer, and the charts arrive with the frame instead of a moment after it.
+// The charts are imported directly, not lazily. They are DOM -- see `DetailsCharts.tsx` for why --
+// so there is no heavy library to defer, and the charts arrive with the frame instead of a moment
+// after it.
 
 /** Height of one column's chart, and the reason every column looks the same height.
  *

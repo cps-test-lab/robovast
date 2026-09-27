@@ -26,8 +26,9 @@ import {
 //
 // Three things it deliberately is not:
 //
-//  - **Not for errors.** `Severity` has no `error` member (see lib/toasts.ts). A failure carries
-//    backend text worth reading twice and belongs in an inline Alert with its ErrorText.
+//  - **Not a failure's only home.** An `error` toast lives longer and is capped apart (see
+//    lib/toasts.ts), but it still clears itself, so a failure worth keeping is also shown
+//    where it happened -- an inline Alert with its ErrorText, or the campaign's card.
 //  - **Not a notifier.** This draws a rectangle and nothing else -- no OS notification, no
 //    sound, no push. A caller that also wants an OS-level notice calls browserNotify itself,
 //    next to its notify(). Threading an `important` flag through the queue would put the

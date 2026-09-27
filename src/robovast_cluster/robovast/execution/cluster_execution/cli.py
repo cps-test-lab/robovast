@@ -931,8 +931,8 @@ def run_cleanup(campaign, namespace, context):
                    'binds its port; a pod that is genuinely broken (ImagePullBackOff, a crash '
                    'loop) still fails fast on its own, without spending this.')
 @click.option('--no-restart', is_flag=True, default=False,
-              help='Reconcile only what does not need the pod rolled -- RBAC, the '
-                   'queues, the registry ingress route -- then stop. For granting a '
+              help='Reconcile only what does not need the pod rolled -- RBAC, node '
+                   'labels, the registry ingress route -- then stop. For granting a '
                    'permission the RUNNING version is missing without a version change or '
                    'an API blip, e.g. while a campaign is in flight.')
 @click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
@@ -958,8 +958,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     looking like a hang -- and "✓ upgraded and ready" means it. Use ``--timeout`` for a
     registry slow enough to need longer.
 
-    Always restarts the pod, even when nothing appears to have changed. That is the
-    point: an image ref that is a floating tag, or a change confined to the Secrets,
+    Without ``--no-restart`` it always restarts the pod, even when nothing appears to
+    have changed. That is the point: an image ref that is a floating tag, or a change confined to the Secrets,
     leaves the Deployment spec byte-identical, and Kubernetes then rolls nothing while
     this command reports success. It also makes the restart the *only* way the env
     Secrets are re-read -- the pod loads them through ``envFrom`` at container start and
@@ -970,12 +970,13 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
-    ``--no-restart`` reconciles just that part — RBAC, the registry
-    ingress route, the optional tailnet node — and stops before the Deployment is touched. All three are picked up by
-    the *running* pod (the API server evaluates RBAC per request, and
-    workload, a route is the gateway's own state), so a permission the running version is
-    missing can be granted without a version change and without the API blip. That is the
-    difference between fixing a missed migration and rolling a service: it is the only way
+    ``--no-restart`` reconciles just what the *running* pod picks up — RBAC, the node
+    identity labels, the registry ingress route, the optional tailnet node and the job
+    node aliases — and stops before the Deployment is touched. The API server evaluates
+    RBAC per request, a node label is the node's own state, a route is the gateway's own
+    state and the tailnet node is a Deployment of its own, so a permission the running
+    version is missing can be granted without a version change and without the API blip.
+    That is the difference between fixing a missed migration and rolling a service: it is the only way
     to do the former while a campaign is in flight, because the campaign controller lives in
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
@@ -984,9 +985,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     ``ROBOVAST_JOB_NODE_LABELS`` and ``ROBOVAST_JOB_NODE_ALIASES`` in the environment -- so an
     upgrade from a shell without them clears the pool and removes the aliases, and says so --
     after checking every alias against that pool, before anything changes. With
-    ``--no-restart`` the pool is not applied, since it lives in the pod's environment.
-    ``--no-restart`` reconciles them too: they are node labels a campaign reads when it
-    starts, not the pod's environment.
+    ``--no-restart`` the pool is not applied, since it lives in the pod's environment; the
+    aliases are, since they are node labels a campaign reads when it starts.
 
     Before the roll it asks the service which campaigns are live and names them, for the
     reason ``--no-restart`` exists: the pod being replaced is where their controller runs.
