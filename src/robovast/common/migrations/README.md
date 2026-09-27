@@ -12,7 +12,8 @@ Everything about versioning and migration in robovast starts here. If you were a
 | campaign store (`campaign.db`) | `SCHEMA_VERSION` (`../store.py`) | `../store.py`, beside `_SCHEMA` | forward, on open |
 | host ↔ container protocol | `COMPAT_VERSION` (`../execution.py`) | not a ladder — a supported window | n/a |
 
-`registry.py` enumerates the two ladders programmatically, so nothing about them has to be kept in sync by hand; the protocol window is not a ladder and is not listed there.
+`registry.py` enumerates the three ladders programmatically, so nothing about them has to be
+kept in sync by hand; the protocol window is not a ladder and is not listed there.
 
 **A campaign's built tables have no ladder, on purpose.** They are *derived* from the
 campaign's records into its `.cache/`, and building them again is the definition of correct:
@@ -59,7 +60,7 @@ make new-config-migration        # scaffolds the step file, the list entry, and 
 
 Then implement the transform in the generated `config/vN_to_vM.py`.
 
-### The two rules
+### The three rules
 
 1. **A step is a pure `dict -> dict` and must never import `robovast.common.config`.**
    This is the rule that keeps old steps correct. A step that reads the *current* model
@@ -126,15 +127,16 @@ would be refused.
 
 ## Reading an old config
 
-Three policies, all in `robovast.common.common` (`load_config` and its helpers). Pick by what the caller is doing, not by convenience:
+Three policies, all in `load_config` (`../common.py`). Pick by what the caller is doing, not by
+convenience:
 
 | policy | used by | old version |
 |---|---|---|
 | strict | authoring, launching a **new** campaign | rejected |
-| subsection | reading one section (e.g. `results_processing`) | warn only |
+| subsection | reading one section (e.g. `results_processing`) | logged, not refused |
 | upgrade-in-memory | displaying/importing/retriggering an **archived** campaign | laddered in memory |
 
-`upgrade_config()` takes a dict and is what every reading path uses.
+`upgrade_config()` takes a dict and is what every in-memory upgrade uses.
 `upgrade_config_file()` preserves comments (`ruamel.yaml`) and is only for rewriting a file
 a human will then edit.
 
