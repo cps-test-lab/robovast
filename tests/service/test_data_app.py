@@ -171,6 +171,16 @@ def test_a_cells_file_cannot_name_another_campaigns_cell(client, root):
     assert resp.status_code == 400, resp.text
 
 
+def test_a_cells_file_cannot_lead_out_of_its_campaign_through_a_link(client, root):
+    """A one-segment name is still a way out when the cell is a symlink to another
+    campaign's cell: the file is refused where it resolves, not by how it is spelled."""
+    _campaign(root, _OTHER)
+    (root / _CAMPAIGN / "cell-b").symlink_to(root / _OTHER / "cell-a")
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"], "config_file": ["cell-b:campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
 def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, root):
     payload = _tar([("cell-a/1/test.xml", b"<testsuite/>"),
                     ("cell-a/1/logs/system.log", b"ran\n"),

@@ -49,7 +49,7 @@ import tarfile
 import threading
 import time
 
-from robovast.client.safe_path import check_relative
+from robovast.client.safe_path import check_relative, check_segment, safe_join
 
 logger = logging.getLogger(__name__)
 
@@ -477,16 +477,12 @@ def iter_inputs_tar(campaign_root: str, job_tags, config_files=None,
         raise ValueError("a job pod's inputs name the job they are for: pass at least one tag")
     transient = os.path.join(root, "_transient")
     for tag in sorted(tags):
-        if not tag or "/" in tag or tag in (".", ".."):
-            raise ValueError(f"a job tag is one path segment, got {tag!r}")
-        if not os.path.isfile(os.path.join(transient, job_documents(tag)[0])):
+        if not os.path.isfile(os.path.join(transient, job_documents(check_segment(tag))[0])):
             raise KeyError(f"no parameter document for job {tag!r} in this campaign")
-    for config_name, rel in (config_files or ()):
-        # A cell is one directory of this campaign; a name with a separator, or a step
-        # up, would read a file of another campaign under the token of this one.
-        if not config_name or "/" in config_name or config_name in (".", ".."):
-            raise ValueError(f"a configuration name is one path segment, got {config_name!r}")
-        check_relative(rel)
+    # Each cell file stays inside this campaign, which is all the pod's token reaches.
+    cell_files = [(safe_join(root, os.path.join(check_segment(config_name), "_config",
+                                                str(check_relative(rel)))), rel)
+                  for config_name, rel in (config_files or ())]
 
     def _keep(arc: str) -> bool:
         tag = None if "/" in arc else _job_document_tag(arc)
@@ -498,8 +494,7 @@ def iter_inputs_tar(campaign_root: str, job_tags, config_files=None,
             if not os.path.isdir(src):
                 continue
             _add_tree_flat(tar, src, keep=_keep if src == transient else None)
-        for config_name, rel in (config_files or ()):
-            src = os.path.join(root, config_name, "_config", rel)
+        for src, rel in cell_files:
             try:
                 with open(src, "rb") as raw:
                     info = tar.gettarinfo(arcname=rel, fileobj=raw)
