@@ -86,7 +86,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
-from robovast.common.disk_reserve import reserve_disabled
+from robovast.common.disk_reserve import refuse_unless_room, reserve_disabled
 from robovast.common.query_limits import query_limits
 from robovast.service.storage_reserve import storage_refusal
 
@@ -912,6 +912,9 @@ class ServiceBase(RobovastInterface):
         different id. Anything else is refused rather than flattened: an archive with two
         top-level entries is not one of ours, and guessing which to take would seed a
         project from half of something.
+
+        An archive that would unpack past the workspaces volume's room above the reserve is
+        refused before anything is written.
         """
         import tarfile  # pylint: disable=import-outside-toplevel
 
@@ -927,6 +930,8 @@ class ServiceBase(RobovastInterface):
             provider.download_archive(object_name, str(staged))
             with tarfile.open(staged, "r:gz") as tar:
                 members = tar.getmembers()
+                refuse_unless_room(object_name, members, project_dir, "the workspaces volume",
+                                   "free space there, then create the workspace again")
                 # `./` is not a top-level entry: `tar` writes it for the archive root, so an
                 # archive rolled by hand carries one and reading it as the project's
                 # directory would nest the whole tree one level down -- silently, which is
