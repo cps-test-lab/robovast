@@ -538,6 +538,14 @@ def _is_pullable(image: str) -> bool:
 #: crash that never produces derived data still leaves a durable, queryable reason.
 _OUTCOME_FILENAME = "outcome.json"
 
+#: An import that has not concluded. Written beside ``outcome.json`` when a campaign's
+#: directory is claimed for an archive and removed once the import is over -- landed, or
+#: failed with its reason recorded. It stays only when the process died mid-import, and it
+#: is then the one record that says what the tree is: every other file there, the archived
+#: ``outcome.json`` included, came out of the archive and describes the campaign that was
+#: archived, not the part of it that landed.
+IMPORT_MARKER_FILENAME = "importing.json"
+
 
 #: Postprocessing's own provenance record, relative to the campaign directory. Written by
 #: ``results_processing.postprocessing`` as the **last** step, after the tables are built, and
@@ -618,6 +626,44 @@ def read_execution_outcome(campaign_dir: Path):
     if not path.exists():
         return None
     return Status.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def write_import_marker(campaign_root: Path, **facts) -> None:
+    """Record in ``_execution/importing.json`` that an import of this campaign is under way.
+
+    *facts* are what the importer knows at that moment (when it started, from where); the
+    file's presence is the signal and its contents are for whoever reads the tree.
+    """
+    exec_dir = Path(campaign_root) / "_execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    (exec_dir / IMPORT_MARKER_FILENAME).write_text(
+        json.dumps({"started_at": datetime.now(timezone.utc).isoformat(), **facts},
+                   indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def read_import_marker(campaign_dir: Path) -> Optional[dict]:
+    """The facts of an import of *campaign_dir* that never concluded, or ``None``.
+
+    A marker whose contents cannot be read still marks: it is its presence that says the
+    import did not conclude, so an unreadable one reads as an empty record.
+    """
+    path = Path(campaign_dir) / "_execution" / IMPORT_MARKER_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        facts = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return facts if isinstance(facts, dict) else {}
+
+
+def clear_import_marker(campaign_root: Path) -> None:
+    """Remove ``_execution/importing.json``: the import concluded, however it ended."""
+    path = Path(campaign_root) / "_execution" / IMPORT_MARKER_FILENAME
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def read_campaign_finished_at(campaign_dir: Path) -> Optional[str]:
