@@ -8,6 +8,8 @@ metric, so adding a probe is a one-line change. The second is that it marks the 
 trial window** as ``resource_usage``, keeping bring-up and teardown rather than dropping them.
 """
 
+import pytest
+
 from robovast.execution.data import monitor_resources as mon
 from robovast_decode import clock_map, run_slices, system_usage
 
@@ -252,16 +254,30 @@ def test_the_cgroup_peak_replaces_summed_rss_and_the_advice_says_which(monkeypat
 
 
 def test_absent_system_usage_table_does_not_break_advice():
-    """A campaign recorded before the probe existed has no such table; the query raises and
-    the advice must fall back rather than propagate."""
+    """A campaign recorded before the probe existed has no such table; the query is refused
+    and the advice has nothing to say about it."""
+    from robovast.results_processing import advice
+    from robovast.results_processing.data_query import DataQueryError
+
+    def query_rows(sql):
+        if "system_usage" in sql:
+            raise DataQueryError("no such table: system_usage")
+        return []
+
+    assert advice.campaign_advice(query_rows) == {"advice": []}
+
+
+def test_a_failed_lookup_is_not_an_absent_measurement():
+    """Only a query the campaign's data cannot answer reads as nothing measured."""
     from robovast.results_processing import advice
 
     def query_rows(sql):
         if "system_usage" in sql:
-            raise RuntimeError("no such table: system_usage")
+            raise OSError("connection reset")
         return []
 
-    assert advice.campaign_advice(query_rows) == {"advice": []}
+    with pytest.raises(OSError):
+        advice.campaign_advice(query_rows)
 
 
 # -- the SUT validity screen ------------------------------------------------------------

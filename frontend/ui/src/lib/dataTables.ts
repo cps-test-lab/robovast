@@ -32,3 +32,9 @@ export function tableLabel(t: DataTable): string {
 export function columnsPlaceholder(t: DataTable): string {
   return t.kind === 'table' ? 'columns appear once a query builds it' : ''
 }
+
+/** The runs *t* is missing or incomplete for, `[run, reason]` sorted by run: a build that
+ *  failed for the run, or a topic that stopped decoding and left only the rows before it. */
+export function tableFailures(t: DataTable): [string, string][] {
+  return Object.entries(t.failed ?? {}).sort(([a], [b]) => a.localeCompare(b))
+}

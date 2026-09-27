@@ -35,17 +35,18 @@ parent keeps owning the aux Pod's lifetime, which it already did.
 Serializing a per-backend "runner descriptor" instead was the alternative, and it is worse
 in the way that matters: every backend would have to describe itself, the worker would have
 to rebuild live clients from that description, and the description would have to carry the
-secrets those clients authenticate with — into a file, for a subprocess. Forwarding four
+secrets those clients authenticate with — into a file, for a subprocess. Forwarding the
 method calls needs none of that and is written once for every backend, including the local
 ``docker`` one and any added later.
 
 **What crosses, and what does not.** Only the contract in
 :class:`~robovast.common.variation.container_runner.ContainerRunner`: ``workspace`` (a
-path), ``run``, ``close``, and ``expose`` where the real runner has it. Parent and worker
-share a filesystem — the worker is a child process on the same host — so a path is a
-valid answer to both, which is what lets the proxy carry no data. ``run``'s output is
-streamed frame by frame rather than returned at the end, so a plugin's progress reaches
-the campaign log while the command is still running, exactly as it does in-process.
+path), ``run``, ``image_digest``, ``close``, and ``expose`` where the real runner has it.
+Parent and worker share a filesystem — the worker is a child process on the same host —
+so a path is a valid answer to both, which is what lets the proxy carry no data.
+``run``'s output is streamed frame by frame rather than returned at the end, so a
+plugin's progress reaches the campaign log while the command is still running, exactly as
+it does in-process.
 
 Failures cross faithfully: a non-zero command raises
 :class:`subprocess.CalledProcessError` in the worker with its ``returncode``, ``cmd`` and
@@ -223,6 +224,8 @@ class ContainerRunnerServer:
                 self._runner(request).expose(request["host_path"],
                                              request["container_path"])
                 return {"ok": True}
+            if op == "image_digest":
+                return {"ok": True, "digest": self._runner(request).image_digest()}
             if op == "close":
                 return self._op_close(request)
             return {"ok": False, "error": {"kind": "error", "type": "ValueError",
@@ -319,6 +322,9 @@ class _ProxyRunner:
 
     def run(self, command, progress_update_callback=None) -> None:
         self._call({"op": "run", "command": list(command)}, progress_update_callback)
+
+    def image_digest(self) -> str:
+        return self._call({"op": "image_digest"})["digest"]
 
     def close(self) -> None:
         if self._closed:
